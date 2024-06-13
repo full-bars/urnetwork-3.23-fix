@@ -1,5 +1,9 @@
-package extender
+package connect
 
+
+// FIXME switch to big endian order
+// FIXME the extender context should be a tls context. do the tls handshake at the end. 
+// this is easier to understand and matches the resilient context
 
 import (
     "context"
@@ -10,8 +14,8 @@ import (
     "strings"
     "time"
     "fmt"
-    // "strconv"
-    "slices"
+    "strconv"
+    // "slices"
 
 
     "crypto/tls"
@@ -32,31 +36,33 @@ import (
     // "crypto/md5"
     "encoding/binary"
     // "encoding/hex"
-    
+    // "syscall"
+
+    mathrand "math/rand"
 
     
 
-    "golang.org/x/crypto/cryptobyte"
+    // "golang.org/x/crypto/cryptobyte"
     "golang.org/x/net/idna"
 
     "google.golang.org/protobuf/proto"
 
-    "src.agwa.name/tlshacks"
+    // "src.agwa.name/tlshacks"
 
     "bringyour.com/protocol"
 )
 
 
 
-// (ctx, network, address)
-type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
+// an extender uses an independent url that is hard-coded to forward to the platform
+// the `platformUrl` here must match the hard coded url in the extender, which is
+// done by using a prior vetted extender
+// The connection to the platform is end-to-end encrypted with TLS,
+// using the hostname from `platformUrl`
 
 
 
 
-// TODO function to search ports and organization/host names for connectivity
-// uses api.bringyour.com/hello with the extender client
-// listen on secure mail, 443, and other ports
 
 
 
@@ -73,11 +79,66 @@ const ValidFor = 180 * 24 * time.Hour
 
 
 type ExtenderConfig struct {
-    SpoofHost string
-    ExtenderIp net.IP
-    ExtenderPort int
-    DestinationHost string
-    DestinationPort int
+    ExtenderSecrets []string
+    SpoofHosts []string
+    ExtenderIps []net.IP
+    ExtenderPorts []int
+    // DestinationHost string
+    // DestinationPort int
+}
+
+
+func TestExtenderConfig() *ExtenderConfig {
+    return &ExtenderConfig{
+        ExtenderSecrets: []string{"moonshot"},
+        SpoofHosts: []string{"ec.europa.eu"},
+        ExtenderIps: []net.IP{
+            net.ParseIP("185.209.49.33"),
+            net.ParseIP("94.141.96.105"),
+            net.ParseIP("78.140.246.78"),
+            net.ParseIP("92.246.130.21"),
+        },
+        ExtenderPorts: []int{
+            // https and secure dns
+            443,
+            // dns
+            853,
+            // ldap
+            636,
+            // ftp
+            989,
+            990,
+            // telnet
+            992,
+            // irc
+            994,
+            // docker
+            2376,
+            // ldap
+            3269,
+            // sip
+            5061,
+            // powershell
+            5986,
+            // alt https
+            8443,
+            // tor
+            9001,
+            // imap
+            993,
+            // pop
+            995,
+            // smtp
+            465,
+            // ntp, nts
+            4460,
+            // cpanel
+            2083,
+            2096,
+            // webhost mail
+            2087,
+        },
+    }
 }
 
 
@@ -106,6 +167,11 @@ func NewExtenderHttpClient(
 }
 
 
+// 
+// newResilientHttpClient
+
+
+
 
 // client
 
@@ -114,6 +180,7 @@ func NewExtenderHttpClient(
 
 // create a tls connect to (destinationHost, destinationPort) on the connection
 // returned by this
+// the returned connection is not a tls connection
 func NewExtenderDialContext(
     dialer *net.Dialer,
     config *ExtenderConfig,
@@ -123,43 +190,73 @@ func NewExtenderDialContext(
         network string,
         address string,
     ) (net.Conn, error) {
+        if network != "tcp" {
+            panic(fmt.Errorf("Extender only support tcp network."))
+        }
 
+        host, portStr, err := net.SplitHostPort(address)
+        if err != nil {
+            panic(err)
+        }
+        port, err := strconv.Atoi(portStr)
+        if err != nil {
+            panic(err)
+        }
+        fmt.Printf("EXTEND TO %s:%d\n", host, port)
+
+        extenderIp := config.ExtenderIps[mathrand.Intn(len(config.ExtenderIps))]
+        extenderPort := config.ExtenderPorts[mathrand.Intn(len(config.ExtenderPorts))]
         authority := net.JoinHostPort(
-            config.ExtenderIp.String(),
-            fmt.Sprintf("%d", config.ExtenderPort),
+            extenderIp.String(),
+            fmt.Sprintf("%d", extenderPort),
         )
 
-        fmt.Printf("Extender client 1\n")
+        // fmt.Printf("Extender client 1\n")
 
         conn, err := dialer.Dial("tcp", authority)
         if err != nil {
             return nil, err
         }
 
-        fmt.Printf("Extender client 2\n")
+        // fmt.Printf("Extender client 2\n")
 
-        serverConn := tls.Client(conn, &tls.Config{
-            ServerName: config.SpoofHost,
+        // fragmentConn(conn)
+        // fragment handshake records
+        // set ttl 0 on every other handshake records
+
+
+        spoofHost := config.SpoofHosts[mathrand.Intn(len(config.SpoofHosts))]
+
+        rconn := NewResilientTlsConn(conn)
+        serverConn := tls.Client(rconn, &tls.Config{
+            ServerName: spoofHost,
             InsecureSkipVerify: true,
+            // require 1.3 to mask self-signed certs
+            MinVersion: tls.VersionTLS13,
         })
 
         err = serverConn.HandshakeContext(ctx)
         if err != nil {
             return nil, err
         }
+        // once the stream is established, no longer need the resilient features
+        rconn.Off()
 
-        fmt.Printf("Extender client 3\n")
+        // fragmentConn.Off()
 
+        // fmt.Printf("Extender client 3\n")
 
+        extenderSecret := config.ExtenderSecrets[mathrand.Intn(len(config.ExtenderSecrets))]
         headerMessageBytes, err := proto.Marshal(&protocol.ExtenderHeader{
-            DestinationHost: config.DestinationHost,
-            DestinationPort: uint32(config.DestinationPort),
+            Secret: extenderSecret,
+            DestinationHost: host,
+            DestinationPort: uint32(port),
         })
         if err != nil {
             return nil, err
         }
 
-        fmt.Printf("Extender client 4\n")
+        // fmt.Printf("Extender client 4\n")
 
         headerBytes := make([]byte, 4 + len(headerMessageBytes))
         binary.LittleEndian.PutUint32(headerBytes[0:4], uint32(len(headerMessageBytes)))
@@ -169,12 +266,11 @@ func NewExtenderDialContext(
             return nil, err
         }
 
-        fmt.Printf("Extender client 5\n")
+        // fmt.Printf("Extender client 5\n")
 
         return serverConn, nil
     }
 }
-
 
 
 
@@ -194,13 +290,15 @@ type ExtenderServer struct {
     ctx context.Context
     cancel context.CancelFunc
 
+    allowedSecrets []string
     // exact (x) or wildcard (*.x)
     // wildcard *.x does not match exact x
     allowedHosts []string
     ports []int
+    forwardDialer *net.Dialer
 }
 
-func NewExtenderServer(ctx context.Context, allowedHosts []string, ports []int) *ExtenderServer {
+func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHosts []string, ports []int, forwardDialer *net.Dialer) *ExtenderServer {
 
 
     cancelCtx, cancel := context.WithCancel(ctx)
@@ -208,8 +306,10 @@ func NewExtenderServer(ctx context.Context, allowedHosts []string, ports []int) 
     return &ExtenderServer{
         ctx: cancelCtx,
         cancel: cancel,
+        allowedSecrets: allowedSecrets,
         allowedHosts: allowedHosts,
         ports: ports,
+        forwardDialer: forwardDialer,
     }
 
 
@@ -240,7 +340,7 @@ func (self *ExtenderServer) ListenAndServe() error {
                 if err != nil {
                     return
                 }
-                fmt.Printf("Extender pre\n")
+                // fmt.Printf("Extender pre\n")
                 go self.HandleExtenderConnection(self.ctx, conn)
             }
         }()
@@ -259,6 +359,15 @@ func (self *ExtenderServer) ListenAndServe() error {
 
 func (self *ExtenderServer) Close() {
     self.cancel()
+}
+
+func (self *ExtenderServer) IsAllowedSecret(secret string) bool {
+    for _, allowedSecret := range self.allowedSecrets {
+        if allowedSecret == secret {
+            return true
+        }
+    }
+    return false
 }
 
 func (self *ExtenderServer) IsAllowedHost(host string) bool {
@@ -287,7 +396,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 
     defer conn.Close()
 
-    fmt.Printf("Extender 1\n")
+    // fmt.Printf("Extender 1\n")
 
 
 
@@ -397,14 +506,14 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
     clientConn := tls.Server(conn, tlsConfig)
     defer clientConn.Close()
 
-    fmt.Printf("Extender 5\n")
+    // fmt.Printf("Extender 5\n")
 
     err := clientConn.HandshakeContext(handleCtx)
     if err != nil {
-        panic(err)
+        return
     }
 
-    fmt.Printf("Extender 6\n")
+    // fmt.Printf("Extender 6\n")
 
 
 	// read extender header
@@ -419,7 +528,11 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
         i += n
     }
     headerByteCount := int(binary.LittleEndian.Uint32(headerBytes[0:4]))
-    fmt.Printf("Extender 6: %d\n", headerByteCount)
+    if 1024 < headerByteCount {
+        // bad data
+        return
+    }
+    // fmt.Printf("Extender 6: %d\n", headerByteCount)
     for i := 0; i < headerByteCount; {
         clientConn.SetReadDeadline(time.Now().Add(ReadTimeout))
         n, err := clientConn.Read(headerBytes[i:headerByteCount])
@@ -428,7 +541,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
         }
         i += n
     }
-    fmt.Printf("Extender 7\n")
+    // fmt.Printf("Extender 7\n")
 
     header := &protocol.ExtenderHeader{}
     err = proto.Unmarshal(headerBytes[0:headerByteCount], header)
@@ -436,15 +549,17 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
         return
     }
 
-
-    // if header error, return http misconfigured server error with hostname
-
-    if !self.IsAllowedHost(header.DestinationHost) {
-        // return http misconfigured server error with hostname
+    if !self.IsAllowedSecret(header.Secret) {
+        // fmt.Printf("Extender secret failed: %s\n", header.Secret)
         return
     }
 
-    forwardConn, err := net.Dial("tcp", net.JoinHostPort(
+    if !self.IsAllowedHost(header.DestinationHost) {
+        // fmt.Printf("Extender destination failed: %s\n", header.DestinationHost)
+        return
+    }
+
+    forwardConn, err := self.forwardDialer.Dial("tcp", net.JoinHostPort(
         header.DestinationHost,
         fmt.Sprintf("%d", header.DestinationPort),
     ))
@@ -527,7 +642,7 @@ func guessOrganizationName(host string) string {
 
 
 
-
+/*
 type readerRecordInitialBytes struct {
     conn net.Conn
     initialBytes []byte
@@ -606,7 +721,7 @@ func (self *connWithInitialBytes) SetReadDeadline(t time.Time) error {
 func (self *connWithInitialBytes) SetWriteDeadline(t time.Time) error {
     return self.conn.SetWriteDeadline(t)
 }
-
+*/
 
 
 
@@ -620,140 +735,6 @@ func (self *connWithInitialBytes) SetWriteDeadline(t time.Time) error {
 // client issues tls connect to for a spoof name and ip:port, and does not check the tls cert
 // on top of that connection, sends a header (protocol/extender) that lists the upstream host
 // and then makes a tls connection through that
-
-
-
-
-// https://github.com/AGWA/tlshacks/blob/main/client_hello.go
-
-
-func UnmarshalClientHello(handshakeBytes []byte) *tlshacks.ClientHelloInfo {
-    info := &tlshacks.ClientHelloInfo{Raw: handshakeBytes}
-    handshakeMessage := cryptobyte.String(handshakeBytes)
-
-    var messageType uint8
-    if !handshakeMessage.ReadUint8(&messageType) || messageType != 1 {
-        fmt.Printf("hello 1\n")
-        return nil
-    }
-
-    var clientHello cryptobyte.String
-    if !handshakeMessage.ReadUint24LengthPrefixed(&clientHello) || !handshakeMessage.Empty() {
-        fmt.Printf("hello 2\n")
-        return nil
-    }
-
-    if !clientHello.ReadUint16((*uint16)(&info.Version)) {
-        fmt.Printf("hello 3\n")
-        return nil
-    }
-
-    if !clientHello.ReadBytes(&info.Random, 32) {
-        fmt.Printf("hello 4\n")
-        return nil
-    }
-
-    if !clientHello.ReadUint8LengthPrefixed((*cryptobyte.String)(&info.SessionID)) {
-        fmt.Printf("hello 5\n")
-        return nil
-    }
-
-    var cipherSuites cryptobyte.String
-    if !clientHello.ReadUint16LengthPrefixed(&cipherSuites) {
-        fmt.Printf("hello 6\n")
-        return nil
-    }
-    info.CipherSuites = []tlshacks.CipherSuite{}
-    for !cipherSuites.Empty() {
-        var suite uint16
-        if !cipherSuites.ReadUint16(&suite) {
-            fmt.Printf("hello 7\n")
-            return nil
-        }
-        info.CipherSuites = append(info.CipherSuites, tlshacks.MakeCipherSuite(suite))
-    }
-
-    var compressionMethods cryptobyte.String
-    if !clientHello.ReadUint8LengthPrefixed(&compressionMethods) {
-        fmt.Printf("hello 8\n")
-        return nil
-    }
-    info.CompressionMethods = []tlshacks.CompressionMethod{}
-    for !compressionMethods.Empty() {
-        var method uint8
-        if !compressionMethods.ReadUint8(&method) {
-            fmt.Printf("hello 9\n")
-            return nil
-        }
-        info.CompressionMethods = append(info.CompressionMethods, tlshacks.CompressionMethod(method))
-    }
-
-    info.Extensions = []tlshacks.Extension{}
-
-    if clientHello.Empty() {
-        fmt.Printf("hello 10\n")
-        return info
-    }
-    var extensions cryptobyte.String
-    if !clientHello.ReadUint16LengthPrefixed(&extensions) {
-        fmt.Printf("hello 11\n")
-        return nil
-    }
-    for !extensions.Empty() {
-        var extType uint16
-        var extData cryptobyte.String
-        if !extensions.ReadUint16(&extType) || !extensions.ReadUint16LengthPrefixed(&extData) {
-            fmt.Printf("hello 12\n")
-            return nil
-        }
-
-        parseData := extensionParsers[extType]
-        if parseData == nil {
-            parseData = tlshacks.ParseUnknownExtensionData
-        }
-        data := parseData(extData)
-
-        info.Extensions = append(info.Extensions, tlshacks.Extension{
-            Type:    extType,
-            Name:    tlshacks.Extensions[extType].Name,
-            Grease:  tlshacks.Extensions[extType].Grease,
-            Private: tlshacks.Extensions[extType].Private,
-            Data:    data,
-        })
-
-        switch extType {
-        case 0:
-            info.Info.ServerName = &data.(*tlshacks.ServerNameData).HostName
-        case 16:
-            info.Info.Protocols = data.(*tlshacks.ALPNData).Protocols
-        case 18:
-            info.Info.SCTs = true
-        }
-
-    }
-
-    if !clientHello.Empty() {
-        fmt.Printf("hello 13\n")
-        return nil
-    }
-
-    info.Info.JA3String = tlshacks.JA3String(info)
-    info.Info.JA3Fingerprint = tlshacks.JA3Fingerprint(info.Info.JA3String)
-
-    fmt.Printf("hello 14\n")
-    return info
-}
-
-var extensionParsers = map[uint16]func([]byte) tlshacks.ExtensionData{
-    0:  tlshacks.ParseServerNameData,
-    10: tlshacks.ParseSupportedGroupsData,
-    11: tlshacks.ParseECPointFormatsData,
-    16: tlshacks.ParseALPNData,
-    18: tlshacks.ParseEmptyExtensionData,
-    22: tlshacks.ParseEmptyExtensionData,
-    23: tlshacks.ParseEmptyExtensionData,
-    49: tlshacks.ParseEmptyExtensionData,
-}
 
 
 

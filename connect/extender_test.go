@@ -1,4 +1,4 @@
-package extender
+package connect
 
 import (
 	"context"
@@ -53,18 +53,22 @@ func TestExtender(t *testing.T) {
 		Addr: fmt.Sprintf(":%d", 443),
 		Handler: &testExtenderServer{},
 	}
-	go server.ListenAndServeTLS(certFile, keyFile)
 	defer server.Close()
+	go server.ListenAndServeTLS(certFile, keyFile)
+	
 
 
 
 	extenderServer := NewExtenderServer(
 		ctx,
+		[]string{"montrose"},
 		[]string{"localhost"},
 		[]int{442},
+		&net.Dialer{},
 	)
-	go extenderServer.ListenAndServe()
 	defer extenderServer.Close()
+	go extenderServer.ListenAndServe()
+	
 
 	select {
 	case <- time.After(1 * time.Second):
@@ -72,11 +76,12 @@ func TestExtender(t *testing.T) {
 
 	client := NewExtenderHttpClient(
 		&ExtenderConfig{
-			SpoofHost: "bringyour.com",
-		    ExtenderIp: net.ParseIP("127.0.0.1"),
-		    ExtenderPort: 442,
-		    DestinationHost: "localhost",
-		    DestinationPort: 443,
+			ExtenderSecrets: []string{"montrose"},
+			SpoofHosts: []string{"bringyour.com"},
+		    ExtenderIps: []net.IP{net.ParseIP("127.0.0.1")},
+		    ExtenderPorts: []int{442},
+		    // DestinationHost: "localhost",
+		    // DestinationPort: 443,
 		},
 		&tls.Config{
             InsecureSkipVerify: true,
