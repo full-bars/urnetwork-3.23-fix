@@ -46,6 +46,7 @@ import (
     "golang.org/x/net/idna"
 
     "google.golang.org/protobuf/proto"
+    quic "github.com/quic-go/quic-go"
 
     // "src.agwa.name/tlshacks"
 
@@ -77,30 +78,41 @@ const ValidFrom = 180 * 24 * time.Hour
 const ValidFor = 180 * 24 * time.Hour
 
 
+type ExtenderConnectMode string
+const (
+    ExtenderConnectModeTcpTls ExtenderConnectMode = "tcptls"
+    ExtenderConnectModeQuic ExtenderConnectMode = "quic"
+    ExtenderConnectModeUdp ExtenderConnectMode = "udp"
+)
+
 
 type ExtenderConfig struct {
     ExtenderSecrets []string
     SpoofHosts []string
     ExtenderIps []net.IP
-    ExtenderPorts []int
-    // DestinationHost string
-    // DestinationPort int
+    ExtenderPorts map[int][]ExtenderConnectMode
+    
+    // FIXME reliable udp config
 }
 
 
 func TestExtenderConfig() *ExtenderConfig {
     return &ExtenderConfig{
         ExtenderSecrets: []string{"moonshot"},
-        SpoofHosts: []string{"ec.europa.eu"},
+        SpoofHosts: []string{"example.org"},
         ExtenderIps: []net.IP{
-            net.ParseIP("185.209.49.33"),
-            net.ParseIP("94.141.96.105"),
-            net.ParseIP("78.140.246.78"),
+            // net.ParseIP("185.209.49.33"),
+            // net.ParseIP("94.141.96.105"),
+            // net.ParseIP("78.140.246.78"),
             net.ParseIP("92.246.130.21"),
         },
         ExtenderPorts: []int{
+            53,
             // https and secure dns
-            443,
+            // 443,
+            // // alt https
+            // 8443,
+            /*
             // dns
             853,
             // ldap
@@ -120,8 +132,6 @@ func TestExtenderConfig() *ExtenderConfig {
             5061,
             // powershell
             5986,
-            // alt https
-            8443,
             // tor
             9001,
             // imap
@@ -137,6 +147,7 @@ func TestExtenderConfig() *ExtenderConfig {
             2096,
             // webhost mail
             2087,
+            */
         },
     }
 }
@@ -144,6 +155,7 @@ func TestExtenderConfig() *ExtenderConfig {
 
 
 func NewExtenderHttpClient(
+    connectMode ExtenderConnectMode,
     config *ExtenderConfig,
     tlsConfig *tls.Config,
 ) *http.Client {
@@ -152,7 +164,7 @@ func NewExtenderHttpClient(
         KeepAlive: 30 * time.Second,
     }
     transport := &http.Transport{
-        DialContext: NewExtenderDialContext(dialer, config),
+        DialContext: NewExtenderDialContext(connectMode, dialer, config),
         TLSClientConfig: tlsConfig,
         ForceAttemptHTTP2:     true,
         MaxIdleConns:          100,
@@ -181,9 +193,10 @@ func NewExtenderHttpClient(
 // create a tls connect to (destinationHost, destinationPort) on the connection
 // returned by this
 // the returned connection is not a tls connection
-func NewExtenderDialContext(
+func NewExtenderTlsDialContext(
     dialer *net.Dialer,
     config *ExtenderConfig,
+    tlsConfig *tls.Config,
 ) DialContextFunc {
     return func(
         ctx context.Context,
@@ -202,7 +215,7 @@ func NewExtenderDialContext(
         if err != nil {
             panic(err)
         }
-        fmt.Printf("EXTEND TO %s:%d\n", host, port)
+        // fmt.Printf("EXTEND TO %s:%d\n", host, port)
 
         extenderIp := config.ExtenderIps[mathrand.Intn(len(config.ExtenderIps))]
         extenderPort := config.ExtenderPorts[mathrand.Intn(len(config.ExtenderPorts))]
@@ -211,12 +224,12 @@ func NewExtenderDialContext(
             fmt.Sprintf("%d", extenderPort),
         )
 
+
+        spoofHost := config.SpoofHosts[mathrand.Intn(len(config.SpoofHosts))]
+
+
         // fmt.Printf("Extender client 1\n")
 
-        conn, err := dialer.Dial("tcp", authority)
-        if err != nil {
-            return nil, err
-        }
 
         // fmt.Printf("Extender client 2\n")
 
@@ -224,27 +237,77 @@ func NewExtenderDialContext(
         // fragment handshake records
         // set ttl 0 on every other handshake records
 
+        var serverConn net.Conn
 
-        spoofHost := config.SpoofHosts[mathrand.Intn(len(config.SpoofHosts))]
-
-        rconn := NewResilientTlsConn(conn)
-        serverConn := tls.Client(rconn, &tls.Config{
+        extenderTlsConfig := &tls.Config{
             ServerName: spoofHost,
             InsecureSkipVerify: true,
             // require 1.3 to mask self-signed certs
             MinVersion: tls.VersionTLS13,
-        })
-
-        err = serverConn.HandshakeContext(ctx)
-        if err != nil {
-            return nil, err
         }
-        // once the stream is established, no longer need the resilient features
-        rconn.Off()
 
-        // fragmentConn.Off()
+        if connectMode == ExtenderConnectModeTcpTls {
 
-        // fmt.Printf("Extender client 3\n")
+            conn, err := dialer.Dial("tcp", authority)
+            if err != nil {
+                return nil, err
+            }
+
+            rconn := NewResilientTlsConn(conn)
+            tlsServerConn := tls.Client(
+                rconn,
+                // conn,
+                extenderTlsConfig,
+            )
+
+            err = tlsServerConn.HandshakeContext(ctx)
+            if err != nil {
+                return nil, err
+            }
+            // once the stream is established, no longer need the resilient features
+            rconn.Off()
+
+            serverConn = tlsServerConn
+
+            // fragmentConn.Off()
+
+            // fmt.Printf("Extender client 3\n")
+
+        } else if connectMode == ExtenderConnectModeQuic {
+            // quic
+
+            quicConfig := &quic.Config{}
+            conn, err := quic.DialAddr(ctx, authority, extenderTlsConfig, quicConfig)
+            if err != nil {
+                return nil, err
+            }
+
+            fmt.Printf("quic conn\n")
+
+            stream, err := conn.OpenStream()
+            if err != nil {
+                return nil, err
+            }
+
+            fmt.Printf("quic stream\n")
+
+            serverConn = newStreamConn(stream)
+
+        } else if connectMode == ExtenderConnectModeUdp {
+
+            conn, err := dialer.Dial("udp", authority)
+            if err != nil {
+                return nil, err
+            }
+
+            serverConn = newClientPacketStream(conn, UdpMtu)
+
+
+
+        } else {
+            panic(fmt.Errorf("bad connect mode %s", connectMode))
+        }
+
 
         extenderSecret := config.ExtenderSecrets[mathrand.Intn(len(config.ExtenderSecrets))]
         headerMessageBytes, err := proto.Marshal(&protocol.ExtenderHeader{
@@ -268,10 +331,201 @@ func NewExtenderDialContext(
 
         // fmt.Printf("Extender client 5\n")
 
-        return serverConn, nil
+        // return serverConn, nil
+
+        tlsServerConn := tls.Client(
+            serverConn
+            tlsConfig,
+        )
+
+        err = tlsServerConn.HandshakeContext(ctx)
+        if err != nil {
+            return nil, err
+        }
+
+        return tlsServerConn, nil
     }
 }
 
+
+
+
+// basic flow control protocol
+// [packet_index,length,total_length]
+// server buffers m lowest sized packets
+// ack sent of min buffer on each ack
+// client resend packet after fixed timeout if no ack
+
+
+type clientPacketStream struct {
+    conn net.Conn
+    mtu int
+
+    buffer []byte
+}
+
+func newClientPacketStream(conn net.Conn, mtu int) *clientPacketStream {
+
+
+
+}
+
+
+func (self *clientPacketStream) Read(b []byte) (int, error) {
+    // read from buffer
+    // if empty, read from conn into buffer
+    if len(b) == 0 {
+        return 0, nil
+    }
+
+    if len(self.buffer) == 0 {
+        readBuffer := make([]byte, UdpMtu)
+        n, err := self.conn.Read(readBuffer)
+        if err != nil {
+            return 0, err
+        }
+        self.buffer = append(self.buffer, readBuffer[0:n]...)
+    }
+
+    m = min(len(self.buffer), len(b))
+    if 0 < m {
+        copy(b[0:m], self.buffer[0:m])
+        self.buffer = self.buffer[m:]
+        
+    }
+    return m, nil
+}
+
+func (self *clientPacketStream) Write(b []byte) (int, error) {
+    // packetize and write to conn
+
+    m := 0
+    for i := 0; i < len(b); i += self.mtu {
+        j := min(len(b), i + self.mtu)
+        n, err := self.conn.Write(b[i:j])
+        m += n
+        if err != nil {
+            return m, err
+        }
+    }
+
+    return m, err
+
+}
+
+func (self *clientPacketStream) Close() error {
+    return self.stream.Close()
+}
+
+func (self *clientPacketStream) LocalAddr() net.Addr {
+    return self.conn.LocalAddr()
+}
+
+func (self *clientPacketStream) RemoteAddr() net.Addr {
+    return self.conn.RemoteAddr()
+}
+
+func (self *clientPacketStream) SetDeadline(t time.Time) error {
+    return self.stream.SetDeadline(t)
+}
+
+func (self *clientPacketStream) SetReadDeadline(t time.Time) error {
+    return self.stream.SetReadDeadline(t)
+}
+
+func (self *clientPacketStream) SetWriteDeadline(t time.Time) error {
+    return self.stream.SetWriteDeadline(t)
+} 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+type serverPacketStream struct {
+    packetConn net.PacketConn
+    addr net.Addr
+    mtu int
+    
+    mutex *sync.Mutex
+    bufferCond *sync.Cond
+    buffer []byte
+}
+
+func newServerPacketStream(packetConn net.PacketConn, addr net.Addr, mtu int) *serverPacketStream {
+
+}
+
+func Add(b []byte) {
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    self.buffer = append(self.buffer, b...)
+    self.bufferCond.Broadcast()
+}
+
+
+func (self *serverPacketStream) Read(b []byte) (int, error) {
+    if len(b) == 0 {
+        return 0, nil
+    }
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    for len(self.buffer) == 0 {
+        self.bufferCond.Wait()
+    }
+    m := min(len(self.buffer), len(b))
+    copy(b[0:m], self.buffer[0:m])
+    self.buffer = self.buffer[m:]
+    return m, nil
+}
+
+func (self *serverPacketStream) Write(b []byte) (int, error) {
+    // packetize and write to conn
+
+    m := 0
+    for i := 0; i < len(b); i += self.mtu {
+        j := min(len(b), i + self.mtu)
+        n, err := self.conn.Write(b[i:j])
+        m += n
+        if err != nil {
+            return m, err
+        }
+    }
+
+    return m, err
+}
+
+func (self *serverPacketStream) Close() error {
+    return self.conn.Close()
+}
+
+func (self *serverPacketStream) LocalAddr() net.Addr {
+    return self.conn.LocalAddr()
+}
+
+func (self *serverPacketStream) RemoteAddr() net.Addr {
+    return self.conn.RemoteAddr()
+}
+
+func (self *serverPacketStream) SetDeadline(t time.Time) error {
+    return self.conn.SetDeadline(t)
+}
+
+func (self *serverPacketStream) SetReadDeadline(t time.Time) error {
+    return self.conn.SetReadDeadline(t)
+}
+
+func (self *serverPacketStream) SetWriteDeadline(t time.Time) error {
+    return self.conn.SetWriteDeadline(t)
+}
 
 
 
@@ -294,7 +548,7 @@ type ExtenderServer struct {
     // exact (x) or wildcard (*.x)
     // wildcard *.x does not match exact x
     allowedHosts []string
-    ports []int
+    ports map[int][]ExtenderConnectMode
     forwardDialer *net.Dialer
 }
 
@@ -318,10 +572,13 @@ func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHost
 func (self *ExtenderServer) ListenAndServe() error {
 
     listeners := map[int]net.Listener{}
+    quicListeners := map[int]*quic.Listener{}
 
     for _, port := range self.ports {
+        fmt.Printf("listen tcp %d\n", port)
         listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
         if err != nil {
+            fmt.Printf("%s\n", err)
             return err
         }
         listeners[port] = listener
@@ -338,11 +595,118 @@ func (self *ExtenderServer) ListenAndServe() error {
 
                 conn, err := listener.Accept()
                 if err != nil {
+                    fmt.Printf("%s\n", err)
                     return
                 }
                 // fmt.Printf("Extender pre\n")
                 go self.HandleExtenderConnection(self.ctx, conn)
             }
+        }()
+    }
+    
+    for _, port := range self.ports {
+        fmt.Printf("listen quic %d\n", port)
+        certPemBytes, keyPemBytes, err := selfSign(
+            []string{"example.org"},
+            guessOrganizationName("example.org"),
+        )
+        if err != nil {
+            return err
+        }
+        // X509KeyPair
+        cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
+        if err != nil {
+            return err
+        }
+
+        tlsConfig := &tls.Config{
+            GetConfigForClient: func(clientHello *tls.ClientHelloInfo) (*tls.Config, error) {
+                certPemBytes, keyPemBytes, err := selfSign(
+                    []string{clientHello.ServerName},
+                    guessOrganizationName(clientHello.ServerName),
+                )
+                if err != nil {
+                    return nil, err
+                }
+                // X509KeyPair
+                cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
+                return &tls.Config{
+                    Certificates: []tls.Certificate{cert},
+                }, err
+            },
+        }
+        quicConfig := &quic.Config{}
+        listener, err := quic.ListenAddr(fmt.Sprintf(":%d", port), tlsConfig, quicConfig)
+        if err != nil {
+            fmt.Printf("%s\n", err)
+            return err
+        }
+        quicListeners[port] = listener
+        go func() {
+            defer self.cancel()
+
+
+            for {
+                select {
+                case <- self.ctx.Done():
+                    return
+                default:
+                }
+
+                conn, err := listener.Accept(self.ctx)
+                if err != nil {
+                    fmt.Printf("%s\n", err)
+                    return
+                }
+                // fmt.Printf("Extender pre\n")
+                go self.HandleQuicExtenderConnection(self.ctx, conn)
+            }
+        }()
+    }
+
+    for _, port := range self.ports {
+        fmt.Printf("listen udp %d\n", port)
+        packetConn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+        go func() {
+            defer self.cancel()
+
+            packetStreams := map[src]*packetStream{}
+
+            buffer := make([]byte, 4096)
+
+            for {
+                select {
+                case <- self.ctx.Done():
+                    return
+                default:
+                }
+
+
+
+                n, addr, err := packetConn.ReadFrom(buffer)
+                if err != nil {
+                    fmt.Printf("%s\n", err)
+                    return
+                }
+
+                address := addr.String()
+
+                packetSteam, ok := packetStreams[address]
+                if !ok {
+                    packetStream = newServerPacketStream(packetConn, addr, UdpMtu)
+                    // fixme clean up packet stream
+                    // go func() {
+                    //     select {
+                    //     case <- packetStream.Done():
+                    //     }
+
+                    // }()
+                    go HandleExtenderConnection(self.ctx, packetStream)
+                }
+
+                packetStream.AddPacket(buffer[0:n])
+            }
+
         }()
     }
 
@@ -351,6 +715,9 @@ func (self *ExtenderServer) ListenAndServe() error {
     case <- self.ctx.Done():
     }
     for _, listener := range listeners {
+        listener.Close()
+    }
+    for _, listener := range quicListeners {
         listener.Close()
     }
 
@@ -629,6 +996,163 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 }
 
 
+
+func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, conn quic.Connection) {
+
+    fmt.Printf("quic conn\n")
+
+    handleCtx, handleCancel := context.WithCancel(ctx)
+    defer handleCancel()
+
+    clientStream, err := conn.AcceptStream(ctx)
+    if err != nil {
+        return
+    }
+    defer clientStream.Close()
+
+    fmt.Printf("quic stream\n")
+
+
+    // read extender header
+    headerBytes := make([]byte, 1024)
+
+    fmt.Printf("q 1\n")
+
+    clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+    for i := 0; i < 4; {
+        n, err := clientStream.Read(headerBytes[i:4])
+        if err != nil {
+            return
+        }
+        i += n
+    }
+    fmt.Printf("q 2\n")
+    headerByteCount := int(binary.LittleEndian.Uint32(headerBytes[0:4]))
+    if 1024 < headerByteCount {
+        // bad data
+        return
+    }
+    fmt.Printf("q 3\n")
+    // fmt.Printf("Extender 6: %d\n", headerByteCount)
+    for i := 0; i < headerByteCount; {
+        clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+        n, err := clientStream.Read(headerBytes[i:headerByteCount])
+        if err != nil {
+            return
+        }
+        i += n
+    }
+    // fmt.Printf("Extender 7\n")
+    fmt.Printf("q 4\n")
+
+    header := &protocol.ExtenderHeader{}
+    err = proto.Unmarshal(headerBytes[0:headerByteCount], header)
+    if err != nil {
+        return
+    }
+
+    fmt.Printf("q 5\n")
+
+    if !self.IsAllowedSecret(header.Secret) {
+        // fmt.Printf("Extender secret failed: %s\n", header.Secret)
+        return
+    }
+
+    fmt.Printf("q 6\n")
+
+    if !self.IsAllowedHost(header.DestinationHost) {
+        // fmt.Printf("Extender destination failed: %s\n", header.DestinationHost)
+        return
+    }
+
+    fmt.Printf("q 7: %s %d\n", header.DestinationHost, header.DestinationPort)
+
+    var resolvedHost string 
+    if header.DestinationHost == "api.bringyour.com" {
+        resolvedHost = "65.19.157.41"
+    } else if header.DestinationHost == "connect.bringyour.com" {
+        resolvedHost = "65.49.70.71"
+    } else {
+        resolvedHost = header.DestinationHost
+    }
+
+    forwardConn, err := self.forwardDialer.Dial("tcp", net.JoinHostPort(
+        // header.DestinationHost,
+        resolvedHost,
+        fmt.Sprintf("%d", header.DestinationPort),
+    ))
+    if err != nil {
+        return
+    }
+    defer forwardConn.Close()
+
+    fmt.Printf("q 8\n")
+
+
+    go func() {
+        // read packet from clientConn, write to forwardConn
+        defer handleCancel()
+
+        buffer := make([]byte, 4096)
+
+        for {
+            select {
+            case <- handleCtx.Done():
+                return
+            default:
+            }
+
+            clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+            n, err := clientStream.Read(buffer)
+            if err != nil {
+                return
+            }
+            forwardConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+            _, err = forwardConn.Write(buffer[0:n])
+            if err != nil {
+                fmt.Printf("q r end\n")
+                return
+            }
+        }
+    }()
+
+
+    go func() {
+        // read packet from forwardConn, write to clientConn
+        defer handleCancel()
+
+        buffer := make([]byte, 4096)
+
+        for {
+            select {
+            case <- handleCtx.Done():
+                return
+            default:
+            }
+
+            forwardConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+            n, err := forwardConn.Read(buffer)
+            if err != nil {
+                return
+            }
+            clientStream.SetWriteDeadline(time.Now().Add(WriteTimeout))
+            _, err = clientStream.Write(buffer[0:n])
+            if err != nil {
+                fmt.Printf("q w end\n")
+                return
+            }
+        }
+    }()
+
+
+    select {
+    case <- handleCtx.Done():
+    }
+
+    fmt.Printf("q end\n")
+}
+
+
 func guessOrganizationName(host string) string {
 
     // FIXME bringyour api for organization name
@@ -832,4 +1356,49 @@ func selfSign(hosts []string, organization string) (certPemBytes []byte, keyPemB
 }
 
 
+
+
+
+
+type streamConn struct {
+    stream quic.Stream
+}
+
+func newStreamConn(stream quic.Stream) *streamConn {
+    return &streamConn{
+        stream: stream,
+    }
+}
+
+func (self *streamConn) Read(b []byte) (int, error) {
+    return self.stream.Read(b)
+}
+
+func (self *streamConn) Write(b []byte) (int, error) {
+    return self.stream.Write(b)
+}
+
+func (self *streamConn) Close() error {
+    return self.stream.Close()
+}
+
+func (self *streamConn) LocalAddr() net.Addr {
+    return nil
+}
+
+func (self *streamConn) RemoteAddr() net.Addr {
+    return nil
+}
+
+func (self *streamConn) SetDeadline(t time.Time) error {
+    return self.stream.SetDeadline(t)
+}
+
+func (self *streamConn) SetReadDeadline(t time.Time) error {
+    return self.stream.SetReadDeadline(t)
+}
+
+func (self *streamConn) SetWriteDeadline(t time.Time) error {
+    return self.stream.SetWriteDeadline(t)
+}
 

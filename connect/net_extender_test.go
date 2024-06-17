@@ -75,6 +75,7 @@ func TestExtender(t *testing.T) {
 	}
 
 	client := NewExtenderHttpClient(
+		ExtenderConnectModeQuic,
 		&ExtenderConfig{
 			ExtenderSecrets: []string{"montrose"},
 			SpoofHosts: []string{"bringyour.com"},
