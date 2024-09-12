@@ -1,4 +1,4 @@
-module bringyour.com/connect/provider
+module bringyour.com/extenderctl
 
 go 1.22.0
 
@@ -11,7 +11,6 @@ require (
 	bringyour.com/protocol v0.0.0
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
 	github.com/golang-jwt/jwt/v5 v5.2.0
-	golang.org/x/term v0.20.0
 )
 
 require (
@@ -22,7 +21,7 @@ require (
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
-	github.com/quic-go/quic-go v0.46.0 // indirect
+	github.com/quic-go/quic-go v0.45.0 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/crypto v0.23.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
