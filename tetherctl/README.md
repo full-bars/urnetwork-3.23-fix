@@ -1,5 +1,7 @@
 # tetherctl
-A way to manage wireguard devices as well as create your own without the need for a kernel module.
+A way to manage wireguard devices as well as create your own without the need for a kernel module. 
+
+***Note***: the tetherctl module looks for `bringyour.com/userspace-wireguard` at `../../userspace-wireguard` so make sure to clone `https://github.com/bringyour/userspace-wireguard` in the same folder as the `connect` module.
 
 ## Using the package locally
 When run the package allows for a cli interface where user can enter multiple command after each other. To start run:
