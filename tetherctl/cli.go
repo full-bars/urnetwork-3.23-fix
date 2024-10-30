@@ -23,7 +23,7 @@ import (
 )
 
 const DefaultDeviceName = "bywg0"
-const DefaultConfigFile = "/etc/tethercli/"
+const DefaultConfigFile = "/etc/tetherctl/"
 const DefaultApiUrl = "localhost:9090"
 const DefaultEndpointType = string(tether.EndpointIPv4)
 
