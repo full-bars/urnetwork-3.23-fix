@@ -13,6 +13,7 @@ import (
 
 	// "slices"
 	// "runtime/debug"
+	mathrand "math/rand"
 
 	"golang.org/x/exp/maps"
 
@@ -84,6 +85,8 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 
 		// TODO change this once main has been deployed with the p2p contract changes
 		LegacyCreateContract: true,
+
+		ProvidePingTimeout: 5 * time.Second,
 	}
 }
 
@@ -101,6 +104,9 @@ type ContractManagerSettings struct {
 	NetworkEventTimeEnableContracts time.Time
 
 	LegacyCreateContract bool
+
+	// an active ping to the control fast-tracks any timeouts
+	ProvidePingTimeout time.Duration
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -115,9 +121,14 @@ type ContractManager struct {
 
 	mutex sync.Mutex
 
+	// `provideSecretKeys` retains all keys until app restart (typically system restart)
+	// this makes it faster for clients to reconnect with existing contracts
+	// otherwise the client will have to time out the send sequence and flush its pending contracts
 	provideSecretKeys map[protocol.ProvideMode][]byte
+	provideModes      map[protocol.ProvideMode]bool
 	// provide paused overrides the set provide modes
-	providePaused bool
+	providePaused  bool
+	provideMonitor *Monitor
 
 	destinationContracts map[ContractKey]*contractQueue
 
@@ -127,6 +138,8 @@ type ContractManager struct {
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 
 	localStats *ContractManagerStats
+
+	controlSyncProvide *ControlSync
 }
 
 func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
@@ -156,15 +169,102 @@ func NewContractManager(
 		client:                     client,
 		settings:                   settings,
 		provideSecretKeys:          map[protocol.ProvideMode][]byte{},
+		provideModes:               map[protocol.ProvideMode]bool{},
 		providePaused:              false,
+		provideMonitor:             NewMonitor(),
 		destinationContracts:       map[ContractKey]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds:    sendNoContractClientIds,
 		contractErrorCallbacks:     NewCallbackList[ContractErrorFunction](),
 		localStats:                 NewContractManagerStats(),
+		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
+	}
+
+	if client.ClientId() != ControlId {
+		go contractManager.providePing()
 	}
 
 	return contractManager
+}
+
+func (self *ContractManager) providePing() {
+	// used for logging states only
+	logWait := false
+
+	waitForProvide := func() bool {
+		for {
+			notify := self.provideMonitor.NotifyChannel()
+			var provide bool
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				if self.providePaused {
+					provide = false
+				} else {
+					provide = self.provideModes[protocol.ProvideMode_Public] || self.provideModes[protocol.ProvideMode_PublicStream]
+				}
+			}()
+			if provide {
+				if logWait {
+					logWait = false
+					glog.Infof("[contract]provide ping continue\n")
+				}
+				return true
+			}
+			if !logWait {
+				logWait = true
+				glog.Infof("[contract]provide ping wait\n")
+			}
+			select {
+			case <-self.ctx.Done():
+				return false
+			case <-notify:
+			}
+		}
+	}
+
+	lastPingTime := time.Time{}
+	for {
+		if !waitForProvide() {
+			return
+		}
+
+		// uniform timeout with mean `ProvidePingTimeout`
+		timeout := time.Duration(mathrand.Int63n(int64(2*self.settings.ProvidePingTimeout))) - time.Now().Sub(lastPingTime)
+		if 0 < timeout {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-time.After(timeout):
+			}
+		} else {
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+		}
+
+		ack := make(chan error)
+		providePing := &protocol.ProvidePing{}
+		self.client.SendControl(RequireToFrame(providePing), func(err error) {
+			select {
+			case ack <- err:
+			case <-self.ctx.Done():
+			}
+		})
+		// wait for the ack before sending another ping
+		select {
+		case err := <-ack:
+			if err != nil {
+				glog.Infof("[contract]provide ping err = %s\n", err)
+			}
+		case <-self.ctx.Done():
+			return
+		}
+		lastPingTime = time.Now()
+	}
 }
 
 func (self *ContractManager) StandardContractTransferByteCount() ByteCount {
@@ -202,6 +302,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 			}
 		}
 		for _, contractError := range contractErrors {
+			glog.Infof("[contract]error = %s\n", contractError)
 			c := func() {
 				self.contractError(contractError)
 			}
@@ -276,6 +377,41 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 	}
 }
 
+func (self *ContractManager) GetProvideSecretKeys() map[protocol.ProvideMode][]byte {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return maps.Clone(self.provideSecretKeys)
+}
+
+func (self *ContractManager) LoadProvideSecretKeys(provideSecretKeys map[protocol.ProvideMode][]byte) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for provideMode, provideSecretKey := range provideSecretKeys {
+		self.provideSecretKeys[provideMode] = provideSecretKey
+	}
+}
+
+func (self *ContractManager) InitProvideSecretKeys() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for i, _ := range protocol.ProvideMode_name {
+		provideMode := protocol.ProvideMode(i)
+		provideSecretKey, ok := self.provideSecretKeys[provideMode]
+		if !ok {
+			// generate a new key
+			provideSecretKey = make([]byte, 32)
+			_, err := rand.Read(provideSecretKey)
+			if err != nil {
+				panic(err)
+			}
+			self.provideSecretKeys[provideMode] = provideSecretKey
+		}
+	}
+}
+
 func (self *ContractManager) SetProvidePaused(providePaused bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -285,29 +421,35 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 	}
 
 	self.providePaused = providePaused
+	self.provideMonitor.NotifyAll()
 
 	if providePaused {
 		provide := &protocol.Provide{
 			Keys: []*protocol.ProvideKey{},
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			nil,
 		)
 	} else {
 		provideKeys := []*protocol.ProvideKey{}
-		for provideMode, provideSecretKey := range self.provideSecretKeys {
-			provideKeys = append(provideKeys, &protocol.ProvideKey{
-				Mode:             provideMode,
-				ProvideSecretKey: provideSecretKey,
-			})
+		for provideMode, allow := range self.provideModes {
+			if allow {
+				provideSecretKey := self.provideSecretKeys[provideMode]
+				provideKeys = append(provideKeys, &protocol.ProvideKey{
+					Mode:             provideMode,
+					ProvideSecretKey: provideSecretKey,
+				})
+			}
 		}
 
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			nil,
 		)
 	}
@@ -340,13 +482,9 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	// keep current keys included in the new modes
+	// keep all keys (see note on `provideSecretKeys`)
 
-	for provideMode, _ := range self.provideSecretKeys {
-		if allow, ok := provideModes[provideMode]; !ok || !allow {
-			delete(self.provideSecretKeys, provideMode)
-		}
-	}
+	self.provideModes = maps.Clone(provideModes)
 
 	provideKeys := []*protocol.ProvideKey{}
 	for provideMode, allow := range provideModes {
@@ -367,13 +505,15 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 			})
 		}
 	}
+	self.provideMonitor.NotifyAll()
 
 	if !self.providePaused {
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			ackCallback,
 		)
 	}
@@ -383,11 +523,7 @@ func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	provideModes := map[protocol.ProvideMode]bool{}
-	for provideMode, _ := range self.provideSecretKeys {
-		provideModes[provideMode] = true
-	}
-	return provideModes
+	return maps.Clone(self.provideModes)
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -395,6 +531,10 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	defer self.mutex.Unlock()
 
 	if self.providePaused {
+		return false
+	}
+
+	if !self.provideModes[provideMode] {
 		return false
 	}
 
@@ -410,6 +550,13 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 }
 
 func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if !self.provideModes[provideMode] {
+		return nil, false
+	}
+
 	provideSecretKey, ok := self.provideSecretKeys[provideMode]
 	return provideSecretKey, ok
 }
@@ -569,7 +716,12 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, timeout tim
 			if err == nil {
 				self.Receive(SourceId(ControlId), resultFrames, protocol.ProvideMode_Network)
 			} else {
-				glog.Warningf("[contract]oob err = %s\n", err)
+				select {
+				case <-self.client.Done():
+					// no need to log warnings when the client closes
+				default:
+					glog.Infof("[contract]oob err = %s\n", err)
+				}
 			}
 		},
 	)
@@ -731,13 +883,13 @@ func (self *ContractManager) closeContractQueueWithForceRemove(contractKey Contr
 	defer self.mutex.Unlock()
 
 	contractQueue, ok := self.destinationContracts[contractKey]
-	if !ok {
-		panic("Open and close must be equally paired")
+	if ok {
+		contractQueue.Close()
+		if contractQueue.IsDone() || forceRemove {
+			delete(self.destinationContracts, contractKey)
+		}
 	}
-	contractQueue.Close()
-	if contractQueue.IsDone() || forceRemove {
-		delete(self.destinationContracts, contractKey)
-	}
+	// else the contract was already force removed
 }
 
 type contractQueue struct {

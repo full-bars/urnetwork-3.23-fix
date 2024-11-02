@@ -220,6 +220,22 @@ func (self Id) Bytes() []byte {
 	return self[0:16]
 }
 
+func (self Id) LessThan(b Id) bool {
+	return self.Cmp(b) < 0
+}
+
+func (self Id) Cmp(b Id) int {
+	for i, v := range self {
+		if v < b[i] {
+			return -1
+		}
+		if b[i] < v {
+			return 1
+		}
+	}
+	return 0
+}
+
 func (self Id) String() string {
 	return encodeUuid(self)
 }
@@ -372,9 +388,9 @@ func kib(c ByteCount) ByteCount {
 }
 
 func mib(c ByteCount) ByteCount {
-	return c * ByteCount(1024*1024)
+	return c * ByteCount(1024) * ByteCount(1024)
 }
 
 func gib(c ByteCount) ByteCount {
-	return c * ByteCount(1024*1024*1024)
+	return c * ByteCount(1024) * ByteCount(1024) * ByteCount(1024)
 }

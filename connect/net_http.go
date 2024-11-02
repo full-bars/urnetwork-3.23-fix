@@ -53,18 +53,29 @@ func DefaultClientStrategySettings() *ClientStrategySettings {
 		ExtenderMinimumWeight:      0.1,
 		ExtenderDropTimeout:        5 * time.Minute,
 
-		DohSettings:     DefaultDohSettings(),
+		DohSettings: DefaultDohSettings(),
+
+		HelloRetryTimeout: 5 * time.Second,
+
 		ConnectSettings: *DefaultConnectSettings(),
 	}
 }
 
 func DefaultConnectSettings() *ConnectSettings {
 	return &ConnectSettings{
-		RequestTimeout:   60 * time.Second,
-		ConnectTimeout:   2 * time.Second,
-		TlsTimeout:       4 * time.Second,
-		HandshakeTimeout: 4 * time.Second,
-		TlsConfig:        nil,
+		RequestTimeout:   30 * time.Second,
+		ConnectTimeout:   5 * time.Second,
+		TlsTimeout:       5 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
+		IdleConnTimeout:  90 * time.Second,
+		KeepAliveTimeout: 5 * time.Second,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     5 * time.Second,
+			Interval: 5 * time.Second,
+			Count:    1,
+		},
+		TlsConfig: nil,
 	}
 }
 
@@ -73,6 +84,9 @@ type ConnectSettings struct {
 	ConnectTimeout   time.Duration
 	TlsTimeout       time.Duration
 	HandshakeTimeout time.Duration
+	IdleConnTimeout  time.Duration
+	KeepAliveTimeout time.Duration
+	KeepAliveConfig  net.KeepAliveConfig
 
 	TlsConfig *tls.Config
 }
@@ -109,6 +123,8 @@ type ClientStrategySettings struct {
 
 	DohSettings *DohSettings
 
+	HelloRetryTimeout time.Duration
+
 	ConnectSettings
 }
 
@@ -143,7 +159,9 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		if settings.ExposeServerHostNames && settings.ExposeServerIps {
 			tlsDialer := &tls.Dialer{
 				NetDialer: &net.Dialer{
-					Timeout: settings.ConnectTimeout,
+					Timeout:         settings.ConnectTimeout,
+					KeepAlive:       settings.KeepAliveTimeout,
+					KeepAliveConfig: settings.KeepAliveConfig,
 				},
 				Config: settings.TlsConfig,
 			}
@@ -153,6 +171,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.5,
 				priority:       25,
 				dialTlsContext: tlsDialer.DialContext,
+				settings:       settings,
 			}
 			dialers[dialer] = true
 		}
@@ -166,6 +185,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       50,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
+				settings:       settings,
 			}
 			// fragment
 			// this is the highest priority because it has no performance impact and additional security benefits
@@ -174,6 +194,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       0,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
+				settings:       settings,
 			}
 			// reorder
 			dialer3 := &clientDialer{
@@ -181,6 +202,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       50,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
+				settings:       settings,
 			}
 
 			dialers[dialer1] = true
@@ -241,9 +263,13 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 }
 
 type httpResult struct {
-	response          *http.Response
-	responseBodyBytes []byte
-	responseErr       error
+	response *http.Response
+
+	// status string
+	// statusCode int
+	// header http.Header
+	// trailer http.Header
+	bodyBytes []byte
 }
 
 type evalResult struct {
@@ -257,12 +283,16 @@ type evalResult struct {
 func newEvalResultFromHttpResponse(response *http.Response, err error) *evalResult {
 	if err == nil {
 		defer response.Body.Close()
-		responseBodyBytes, responseErr := io.ReadAll(response.Body)
+		bodyBytes, err := io.ReadAll(response.Body)
 		return &evalResult{
+			err: err,
 			httpResult: httpResult{
-				response:          response,
-				responseBodyBytes: responseBodyBytes,
-				responseErr:       responseErr,
+				response: response,
+				// status: response.Status,
+				// statusCode: response.StatusCode,
+				// header: response.Header.Clone(),
+				// trailer: response.Trailer.Clone(),
+				bodyBytes: bodyBytes,
 			},
 		}
 	} else {
@@ -345,14 +375,14 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		}
 
 		result := eval(handleCtx, dialer)
-		if result == nil {
-			return nil
+		if result != nil {
+			if result.err == nil {
+				glog.Infof("[net][p]select: %s\n", dialer.String())
+				return result
+			}
+			glog.V(2).Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
+			result.Close()
 		}
-		if result.err == nil {
-			glog.Infof("[net][p]select: %s\n", dialer.String())
-			return result
-		}
-		result.Close()
 	}
 
 	// note parallel dialers is in the original weighted order
@@ -366,13 +396,15 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		case <-handleCtx.Done():
 			return nil
 		case result := <-out:
-			if result.err == nil {
-				glog.Infof("[net][p]select: %s\n", result.dialer.String())
-				return result
-			} else {
+			if result != nil {
+				if result.err == nil {
+					glog.Infof("[net][p]select: %s\n", result.dialer.String())
+					return result
+				}
+				glog.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
 				result.Close()
-				go run(dialer)
 			}
+			go run(dialer)
 		}
 	}
 
@@ -405,10 +437,10 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				if result.err == nil {
 					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
-				} else {
-					result.Close()
-					go run(dialer)
 				}
+				glog.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+				result.Close()
+				go run(dialer)
 			}
 		}
 
@@ -487,27 +519,57 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			}
 
 			result := eval(handleCtx, dialer)
-			if result == nil {
-				return nil
+			if result != nil {
+				if result.err == nil {
+					glog.Infof("[net][s]select: %s\n", dialer.String())
+					return result
+				}
+				glog.V(2).Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+				result.Close()
 			}
-			if result.err == nil {
-				glog.Infof("[net][s]select: %s\n", dialer.String())
-				return result
-			}
-			result.Close()
 		}
 
 		// it's more efficient to iterate with a parallel hello
-		result := self.parallelEval(handleCtx, helloEval)
-		if result == nil {
-			return nil
-		}
-		result.Close()
-		if result.err != nil {
-			return &evalResult{
-				err: result.err,
+		// keep retrying hello until at least one dialer is success
+		for {
+			helloStartTime := time.Now()
+			result := self.parallelEval(handleCtx, helloEval)
+			if result != nil {
+				result.Close()
+			}
+			helloEndTime := time.Now()
+
+			// check if any dialer succeeded
+			successCount := 0
+			for dialer, _ := range self.dialerWeights() {
+				if dialer.IsLastSuccess() {
+					successCount += 1
+				}
+			}
+			if 0 < successCount {
+				break
+			}
+
+			timeout := self.settings.HelloRetryTimeout - helloEndTime.Sub(helloStartTime)
+			if 0 < timeout {
+				select {
+				case <-handleCtx.Done():
+					return nil
+				case <-time.After(timeout):
+				}
+			} else {
+				select {
+				case <-handleCtx.Done():
+					return nil
+				default:
+				}
 			}
 		}
+		// if result.err != nil {
+		// 	return &evalResult{
+		// 		err: result.err,
+		// 	}
+		// }
 	}
 
 	return &evalResult{
@@ -517,10 +579,15 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 
 func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http parallel %s %s\n", request.Method, request.URL)
-
-		httpClient := dialer.HttpClient(self.settings)
+		httpClient := dialer.HttpClient()
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
+			} else {
+				glog.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -542,20 +609,30 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	// 3. continue from 1 until timeout
 
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http serial %s %s\n", request.Method, request.URL)
-
-		httpClient := dialer.HttpClient(self.settings)
+		httpClient := dialer.HttpClient()
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
+			} else {
+				glog.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http serial hello %s %s\n", request.Method, request.URL)
-
-		httpClient := dialer.HttpClient(self.settings)
+		httpClient := dialer.HttpClient()
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
+			} else {
+				glog.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -571,10 +648,15 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]ws dial %s\n", url)
-
 		wsDialer := dialer.WsDialer(self.settings)
 		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]ws dial %s = %s\n", url, err)
+			} else {
+				glog.Infof("[net]ws dial %s = %s\n", url, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -582,6 +664,9 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			wsConn: wsConn,
 			err:    err,
 			httpResult: httpResult{
+				// status: response.Status,
+				// statusCode: response.StatusCode,
+				// header: response.Header.Clone(),
 				response: response,
 			},
 		}
@@ -782,6 +867,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			priority:       100,
 			dialTlsContext: dialTlsContext,
 			extenderConfig: extenderConfig,
+			settings:       self.settings,
 		}
 		expandedDialers = append(expandedDialers, dialer)
 	}
@@ -813,19 +899,26 @@ type clientDialer struct {
 
 	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
+
+	settings *ClientStrategySettings
 }
 
-func (self *clientDialer) HttpClient(settings *ClientStrategySettings) *http.Client {
+func (self *clientDialer) HttpClient() *http.Client {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if self.httpClient == nil {
 		transport := &http.Transport{
-			DialTLSContext: self.dialTlsContext,
+			DialTLSContext:        self.dialTlsContext,
+			IdleConnTimeout:       self.settings.ConnectSettings.IdleConnTimeout,
+			TLSHandshakeTimeout:   self.settings.ConnectSettings.TlsTimeout,
+			ResponseHeaderTimeout: self.settings.ConnectTimeout,
+			ExpectContinueTimeout: self.settings.ConnectTimeout,
+			DisableKeepAlives:     false,
 		}
 		self.httpClient = &http.Client{
 			Transport: transport,
-			Timeout:   settings.RequestTimeout,
+			Timeout:   self.settings.RequestTimeout,
 		}
 	}
 	return self.httpClient
@@ -985,21 +1078,16 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 		callback.Result(empty, err)
 		return empty, err
 	}
-	if r.responseErr != nil {
-		var empty R
-		callback.Result(empty, r.responseErr)
-		return empty, r.responseErr
-	}
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	err = json.Unmarshal(r.responseBodyBytes, &result)
+	err = json.Unmarshal(r.bodyBytes, &result)
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)
@@ -1016,7 +1104,7 @@ func HelloRequestFromUrl(ctx context.Context, requestUrl string, byJwt string) (
 	if err != nil {
 		return nil, err
 	}
-	helloUrl := fmt.Sprintf("%s%s/hello", u.Scheme, u.Host)
+	helloUrl := fmt.Sprintf("%s://%s/hello", u.Scheme, u.Host)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", helloUrl, nil)
 	if err != nil {
@@ -1054,21 +1142,16 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 		callback.Result(empty, err)
 		return empty, err
 	}
-	if r.responseErr != nil {
-		var empty R
-		callback.Result(empty, r.responseErr)
-		return empty, r.responseErr
-	}
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	err = json.Unmarshal(r.responseBodyBytes, &result)
+	err = json.Unmarshal(r.bodyBytes, &result)
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)
