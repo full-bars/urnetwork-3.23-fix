@@ -1,7 +1,7 @@
 # tetherctl
 A way to manage wireguard devices as well as create your own without the need for a kernel module. 
 
-***Note***: the tetherctl module looks for `bringyour.com/userspace-wireguard` at `../../userspace-wireguard` so make sure to clone `https://github.com/bringyour/userspace-wireguard` in the same folder as the `connect` module.
+***Note***: the tetherctl module looks for `bringyour.com/userspace-wireguard` at `../../userspace-wireguard` so make sure to clone `https://github.com/bringyour/userspace-wireguard` in the same folder as this repository.
 
 ## Using the package locally
 When run the package allows for a cli interface where user can enter multiple command after each other. To start run:
@@ -69,14 +69,14 @@ To start the api use the `start-api` command. By default the API is set on `loca
 
  The API has the following endpoints:
  
- * POST `/peer/add/:endpoint_type/*pubKey` - adds a peer with the given public key to the WireGuard device. The endpoint type specifies which type of endpoint the peer wants to communicate with the server on (available values: any, ipv4, ipv6, domain).  The request has no body. The config that the peer can use to setup its own wireguard cilent is returned here (essentially runs `add-peer` command). *Example: .../peer/add/any/this_is_a_private_key*
+ * POST `/peer/add/:endpoint_type/*pubKey` - adds a peer with the given public key to the WireGuard device. The endpoint type specifies which type of endpoint the peer wants to communicate with the server on (available values: any, ipv4, ipv6, domain).  The request has no body. The config that the peer can use to setup its own wireguard client is returned here (essentially runs `add-peer` command). *Example: .../peer/add/any/this_is_a_private_key*
  * DELETE `/peer/remove/*pubKey` - removes a peer with the given public key from the WireGuard device (essentially runs `remove-peer` command). Request will succeed even if peer does not exist meaning that even if a request is accidentally repeated, the peer will only be removed once.
 * GET `/peer/config/:endpoint_type/*pubKey` - returns the config of a peer with the given public key (essentially runs `get-peer-config` command) and the specified endpoint type of the server (available values: any, ipv4, ipv6, domain).
 
 To stop the api use the `stop-api` command or just stop the program using `Ctrl+C`. Note, only one API is allowed to run at a time.
 
 ## Example 
-This is an example how to use `tetherctl` to setup a device. Then, add a peer through the api allowig the peer to connect to the device.
+This is an example how to use `tetherctl` to setup a device. Then, add a peer through the api allowing the peer to connect to the device.
 1. Start `tetherctl` in `cli` mode
 ```bash
 go run . cli
