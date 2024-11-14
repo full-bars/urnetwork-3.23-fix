@@ -356,6 +356,11 @@ func testClient[P comparable](
 	packetGenerator PacketGeneratorFunction,
 	toComparableIpPath func(*IpPath) P,
 ) {
+
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
+
 	// runs a send-receive test on the `UserNatClient` produced by `userNatClientGenerator`
 	// this is a multi-threaded stress test that is meant to stress the buffers and routing
 

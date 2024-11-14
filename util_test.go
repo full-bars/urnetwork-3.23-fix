@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+
 	// "math"
 	mathrand "math/rand"
 
@@ -152,6 +153,10 @@ func TestWeightedShuffle(t *testing.T) {
 	// weighted shuffle many times and look at the average position
 	// the average position order should trend with the weight order
 
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
+
 	k := 64
 	n := 512
 
@@ -197,6 +202,10 @@ func TestWeightedShuffle(t *testing.T) {
 
 func TestWeightedShuffleWithEntropy(t *testing.T) {
 	// as entropy approaches 1, the weighted shuffle should become uniform
+
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 
 	k := 64
 	n := 256
