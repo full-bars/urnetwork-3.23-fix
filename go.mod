@@ -1,4 +1,4 @@
-module bringyour.com/connect
+module github.com/urnetwork/connect
 
 go 1.22.0
 
