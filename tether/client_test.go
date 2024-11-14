@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/urnetwork/connect/wireguard/tun"
+	uwgtun "github.com/urnetwork/userwireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -37,8 +37,8 @@ func (m *mockDevice) IpcSet(cfg *wgtypes.Config) error {
 	m.ipcSetCalled = true
 	return m.ipcSetErr
 }
-func (m *mockDevice) AddEvent(event tun.Event) { m.eventAdded = true }
-func (d *mockDevice) GetAddresses() []string   { return d.addresses }
+func (m *mockDevice) AddEvent(event uwgtun.Event) { m.eventAdded = true }
+func (d *mockDevice) GetAddresses() []string      { return d.addresses }
 func (d *mockDevice) SetAddresses(addresses []string, replace bool) {
 	if replace {
 		d.addresses = addresses
@@ -340,7 +340,7 @@ func TestClientAddEventToDevice(t *testing.T) {
 		name               string
 		deviceName         string
 		device             *mockDevice
-		event              tun.Event
+		event              uwgtun.Event
 		wantErr            error
 		expectAddEventCall bool // flag to check if AddEvent should be called
 	}{
@@ -348,7 +348,7 @@ func TestClientAddEventToDevice(t *testing.T) {
 			name:               "Add event to existing device",
 			deviceName:         "bywg0",
 			device:             &mockDevice{name: "bywg0"},
-			event:              tun.EventUp, // Example event
+			event:              uwgtun.EventUp, // Example event
 			wantErr:            nil,
 			expectAddEventCall: true,
 		},
@@ -356,7 +356,7 @@ func TestClientAddEventToDevice(t *testing.T) {
 			name:               "Add event to non-existent device",
 			deviceName:         "nonexistent",
 			device:             nil,
-			event:              tun.EventUp,
+			event:              uwgtun.EventUp,
 			wantErr:            ErrDeviceNotFound,
 			expectAddEventCall: false,
 		},

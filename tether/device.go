@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/urnetwork/connect/wireguard/tun"
 	"github.com/urnetwork/userwireguard/device"
+	uwgtun "github.com/urnetwork/userwireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -16,7 +16,7 @@ const TETHER_CMD string = "[sh]"
 // Methods needeed by a WireGuard device
 type IDevice interface {
 	Close()
-	AddEvent(event tun.Event)
+	AddEvent(event uwgtun.Event)
 	IpcSet(deviceConfig *wgtypes.Config) error
 	IpcGet() (*wgtypes.Device, error)
 	GetAddresses() []string                        // returns the list of addresses associated with the device.
@@ -81,7 +81,7 @@ func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 
 	// bring up device
 
-	if err := c.AddEventToDevice(deviceName, tun.EventUp); err != nil {
+	if err := c.AddEventToDevice(deviceName, uwgtun.EventUp); err != nil {
 		return fmt.Errorf("error running up event: %w", err)
 	}
 
@@ -107,7 +107,7 @@ func (c *Client) BringDownDevice(deviceName string, bywgConf ByWgConfig, configS
 	if bywgConf.SaveConfig {
 		c.SaveConfigToFile(deviceName, bywgConf, configSavePath)
 	}
-	if err := c.AddEventToDevice(deviceName, tun.EventDown); err != nil {
+	if err := c.AddEventToDevice(deviceName, uwgtun.EventDown); err != nil {
 		return fmt.Errorf("error running down event: %w", err)
 	}
 	runCommands(bywgConf.PostDown, deviceName)

@@ -11,10 +11,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/urnetwork/connect/wireguard/tun"
 	"github.com/urnetwork/userwireguard/conn"
 	"github.com/urnetwork/userwireguard/device"
 	"github.com/urnetwork/userwireguard/logger"
-	"github.com/urnetwork/connect/wireguard/tun"
+	uwgtun "github.com/urnetwork/userwireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -82,7 +83,7 @@ func main() {
 
 	term := make(chan os.Signal, 1) // channel for termination
 
-	device.AddEvent(tun.EventUp) // start up the device
+	device.AddEvent(uwgtun.EventUp) // start up the device
 
 	// wait for program to terminate
 	signal.Notify(term, syscall.SIGTERM)

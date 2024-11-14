@@ -21,9 +21,9 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/urnetwork/connect"
 	"github.com/urnetwork/protocol"
-	"github.com/urnetwork/userwireguard"
 	"github.com/urnetwork/userwireguard/conn"
 	"github.com/urnetwork/userwireguard/logger"
+	"github.com/urnetwork/userwireguard/tun"
 )
 
 type NATKey struct {
@@ -37,8 +37,8 @@ type NATValue struct {
 
 type UserspaceTun struct {
 	closeOnce sync.Once
-	events    chan Event  // device related events
-	natRcv    chan []byte // channel to receive packets from NAT
+	events    chan tun.Event // device related events
+	natRcv    chan []byte    // channel to receive packets from NAT
 	log       *logger.Logger
 
 	writeOpMu sync.Mutex // writeOpMu guards toWrite
@@ -60,11 +60,11 @@ func (tun *UserspaceTun) MTU() int {
 	return 0
 }
 
-func (tun *UserspaceTun) Events() <-chan Event {
+func (tun *UserspaceTun) Events() <-chan tun.Event {
 	return tun.events
 }
 
-func (tun *UserspaceTun) AddEvent(event Event) {
+func (tun *UserspaceTun) AddEvent(event tun.Event) {
 	tun.events <- event
 }
 
@@ -210,9 +210,9 @@ func (tun *UserspaceTun) Read(bufs [][]byte, sizes []int, offset int) (int, erro
 // CreateTUN creates a Device using userspace sockets.
 //
 // TODO: add arguments for UserLocalNat from bringyour/connect.
-func CreateUserspaceTUN(logger *logger.Logger, publicIPv4 *net.IP, publicIPv6 *net.IP) (wireguard.Device, error) {
+func CreateUserspaceTUN(logger *logger.Logger, publicIPv4 *net.IP, publicIPv6 *net.IP) (tun.Device, error) {
 	tun := &UserspaceTun{
-		events:   make(chan Event, 5),
+		events:   make(chan tun.Event, 5),
 		toWrite:  make([]int, 0, conn.IdealBatchSize),
 		natTable: make(map[NATKey]NATValue),
 		natRcv:   make(chan []byte),
