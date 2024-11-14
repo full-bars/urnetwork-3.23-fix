@@ -19,11 +19,11 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-
 	"github.com/urnetwork/connect"
-	"github.com/urnetwork/connect/wireguard/conn"
-	"github.com/urnetwork/connect/wireguard/logger"
 	"github.com/urnetwork/protocol"
+	"github.com/urnetwork/userwireguard"
+	"github.com/urnetwork/userwireguard/conn"
+	"github.com/urnetwork/userwireguard/logger"
 )
 
 type NATKey struct {
@@ -210,7 +210,7 @@ func (tun *UserspaceTun) Read(bufs [][]byte, sizes []int, offset int) (int, erro
 // CreateTUN creates a Device using userspace sockets.
 //
 // TODO: add arguments for UserLocalNat from bringyour/connect.
-func CreateUserspaceTUN(logger *logger.Logger, publicIPv4 *net.IP, publicIPv6 *net.IP) (Device, error) {
+func CreateUserspaceTUN(logger *logger.Logger, publicIPv4 *net.IP, publicIPv6 *net.IP) (wireguard.Device, error) {
 	tun := &UserspaceTun{
 		events:   make(chan Event, 5),
 		toWrite:  make([]int, 0, conn.IdealBatchSize),

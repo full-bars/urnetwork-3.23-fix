@@ -10,7 +10,7 @@ import (
 	"github.com/urnetwork/connect/tether"
 	"github.com/urnetwork/connect/tetherctl/builder"
 	"github.com/urnetwork/connect/tetherctl/helper"
-	"github.com/urnetwork/connect/wireguard/logger"
+	"github.com/urnetwork/userwireguard/logger"
 )
 
 const TetherCtlVersion = "0.0.1"

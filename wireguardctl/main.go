@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/urnetwork/connect/wireguard/conn"
-	"github.com/urnetwork/connect/wireguard/device"
-	"github.com/urnetwork/connect/wireguard/logger"
+	"github.com/urnetwork/userwireguard/conn"
+	"github.com/urnetwork/userwireguard/device"
+	"github.com/urnetwork/userwireguard/logger"
 	"github.com/urnetwork/connect/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )

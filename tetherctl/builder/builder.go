@@ -3,7 +3,7 @@ package builder
 import (
 	"github.com/urnetwork/connect/tether"
 	"github.com/urnetwork/connect/tetherctl/api"
-	"github.com/urnetwork/connect/wireguard/logger"
+	"github.com/urnetwork/userwireguard/logger"
 )
 
 type EndpointOptions struct {

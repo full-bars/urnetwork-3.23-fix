@@ -13,12 +13,13 @@ import (
 	"github.com/mattn/go-shellwords"
 	"github.com/urnetwork/connect/tetherctl/api"
 	"github.com/urnetwork/connect/tetherctl/helper"
-	"github.com/urnetwork/connect/wireguard/conn"
-	"github.com/urnetwork/connect/wireguard/device"
+	"github.com/urnetwork/userwireguard/conn"
+	"github.com/urnetwork/userwireguard/device"
+	"github.com/urnetwork/userwireguard/logger"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/urnetwork/connect/tether"
-	"github.com/urnetwork/connect/wireguard/logger"
+
 	"github.com/urnetwork/connect/wireguard/tun"
 )
 
