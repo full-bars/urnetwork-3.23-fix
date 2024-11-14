@@ -9,17 +9,18 @@ import (
 	"strings"
 	"syscall"
 
-	"bringyour.com/tetherctl/api"
-	"bringyour.com/tetherctl/helper"
-	"bringyour.com/wireguard/conn"
-	"bringyour.com/wireguard/device"
 	"github.com/docopt/docopt-go"
 	"github.com/mattn/go-shellwords"
+	"github.com/urnetwork/connect/tetherctl/api"
+	"github.com/urnetwork/connect/tetherctl/helper"
+	"github.com/urnetwork/userwireguard/conn"
+	"github.com/urnetwork/userwireguard/device"
+	"github.com/urnetwork/userwireguard/logger"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"bringyour.com/connect/tether"
-	"bringyour.com/wireguard/logger"
-	"bringyour.com/wireguard/tun"
+	"github.com/urnetwork/connect/tether"
+
+	"github.com/urnetwork/connect/wireguard/tun"
 )
 
 const DefaultDeviceName = "bywg0"

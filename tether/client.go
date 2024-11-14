@@ -3,7 +3,7 @@ package tether
 import (
 	"fmt"
 
-	"bringyour.com/wireguard/tun"
+	uwgtun "github.com/urnetwork/userwireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -110,7 +110,7 @@ func (c *Client) ConfigureDevice(name string, cfg wgtypes.Config) error {
 // AddEventToDevice adds an event to a device by its name.
 //
 // If the device does not exist an error is returned which can be checked using errors.Is(err, ErrDeviceNotFound).
-func (c *Client) AddEventToDevice(name string, event tun.Event) error {
+func (c *Client) AddEventToDevice(name string, event uwgtun.Event) error {
 	device, ok := c.devices[name]
 	if !ok {
 		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)

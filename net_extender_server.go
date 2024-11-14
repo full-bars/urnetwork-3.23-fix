@@ -3,18 +3,21 @@ package connect
 import (
 	"context"
 	"net"
+
 	// "net/http"
 
 	// "os"
 	"fmt"
 	"strings"
 	"time"
+
 	// "strconv"
 	"slices"
 
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/tls"
+
 	// "crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
@@ -23,6 +26,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+
 	// "encoding/json"
 	// "flag"
 	"log"
@@ -43,7 +47,7 @@ import (
 
 	// "src.agwa.name/tlshacks"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 // server listens for a tls connect and replies with a self-signed cert

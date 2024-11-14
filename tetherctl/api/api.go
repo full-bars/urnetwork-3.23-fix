@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"bringyour.com/connect/tether"
+	"github.com/urnetwork/connect/tether"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 

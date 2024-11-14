@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"net"
 
-	"bringyour.com/connect/tether"
-	"bringyour.com/tetherctl/api"
-	"bringyour.com/tetherctl/helper"
-	"bringyour.com/wireguard/conn"
-	"bringyour.com/wireguard/device"
-	"bringyour.com/wireguard/logger"
-	"bringyour.com/wireguard/tun"
+	"github.com/urnetwork/connect/tether"
+	"github.com/urnetwork/connect/tetherctl/api"
+	"github.com/urnetwork/connect/tetherctl/helper"
+	"github.com/urnetwork/connect/wireguard/tun"
+	"github.com/urnetwork/userwireguard/conn"
+	"github.com/urnetwork/userwireguard/device"
+	"github.com/urnetwork/userwireguard/logger"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 

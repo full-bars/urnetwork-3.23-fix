@@ -14,12 +14,16 @@ import (
 
 	"github.com/go-playground/assert/v2"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestSendReceiveSenderReset(t *testing.T) {
 	// in this case two senders with the same client_id send after each other
 	// The receiver should be able to reset using the new sequence_id
+
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 
 	// timeout between receives or acks
 	timeout := 60 * time.Second

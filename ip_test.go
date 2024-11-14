@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
 	// "sync"
 	"fmt"
 
@@ -15,7 +16,7 @@ import (
 
 	"github.com/go-playground/assert/v2"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestClientUdp4(t *testing.T) {
@@ -355,6 +356,11 @@ func testClient[P comparable](
 	packetGenerator PacketGeneratorFunction,
 	toComparableIpPath func(*IpPath) P,
 ) {
+
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
+
 	// runs a send-receive test on the `UserNatClient` produced by `userNatClientGenerator`
 	// this is a multi-threaded stress test that is meant to stress the buffers and routing
 
@@ -503,7 +509,9 @@ func testClient[P comparable](
 	comparableIpPathSources := map[P]map[TransferPath]bool{}
 
 	for i := 0; i < totalCount; i += 1 {
-		fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100*float32(i)/float32(totalCount))
+		if totalCount < 100 || i%(totalCount/100) == 0 {
+			fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100*float32(i)/float32(totalCount))
+		}
 		select {
 		case receivePacket := <-receivePackets:
 			// fmt.Printf("Receive %d/%d (%.2f%%)\n", i + 1, totalCount, 100.0 * float32(i + 1) / float32(totalCount))

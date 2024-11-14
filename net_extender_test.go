@@ -18,6 +18,9 @@ import (
 )
 
 func TestExtender(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 
 	// actual content server, port 443 (127.0.0.1)
 	// https, self signed
@@ -55,7 +58,7 @@ func TestExtender(t *testing.T) {
 		[]string{"montrose"},
 		[]string{"localhost"},
 		map[int][]ExtenderConnectMode{
-			442: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
+			1442: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
 		},
 		&net.Dialer{},
 	)
@@ -80,7 +83,7 @@ func TestExtender(t *testing.T) {
 			Profile: ExtenderProfile{
 				ConnectMode: ExtenderConnectModeQuic,
 				ServerName:  "bringyour.com",
-				Port:        442,
+				Port:        1442,
 			},
 			Ip:     localIp,
 			Secret: "montrose",

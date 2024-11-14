@@ -5,12 +5,13 @@ import (
 	"math"
 	"testing"
 	"time"
+
 	// "slices"
 	"sync"
 
 	"github.com/go-playground/assert/v2"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestMultiClientUdp4(t *testing.T) {

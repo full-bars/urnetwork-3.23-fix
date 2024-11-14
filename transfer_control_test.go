@@ -9,12 +9,16 @@ import (
 
 	"github.com/go-playground/assert/v2"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestControlSync(t *testing.T) {
 	// control sync to flood control messages,
 	// drop transports for longer than ack timeout
+
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

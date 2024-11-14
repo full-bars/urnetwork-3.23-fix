@@ -7,10 +7,10 @@ import (
 
 	"github.com/docopt/docopt-go"
 
-	"bringyour.com/connect/tether"
-	"bringyour.com/tetherctl/builder"
-	"bringyour.com/tetherctl/helper"
-	"bringyour.com/wireguard/logger"
+	"github.com/urnetwork/connect/tether"
+	"github.com/urnetwork/connect/tetherctl/builder"
+	"github.com/urnetwork/connect/tetherctl/helper"
+	"github.com/urnetwork/userwireguard/logger"
 )
 
 const TetherCtlVersion = "0.0.1"

@@ -1,9 +1,9 @@
 package builder
 
 import (
-	"bringyour.com/connect/tether"
-	"bringyour.com/tetherctl/api"
-	"bringyour.com/wireguard/logger"
+	"github.com/urnetwork/connect/tether"
+	"github.com/urnetwork/connect/tetherctl/api"
+	"github.com/urnetwork/userwireguard/logger"
 )
 
 type EndpointOptions struct {
