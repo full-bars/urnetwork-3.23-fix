@@ -167,6 +167,9 @@ func parseConfig(configName string, scanner *bufio.Scanner) (config ByWgConfig, 
 				if err != nil {
 					return ByWgConfig{}, fmt.Errorf("invalid ListenPort: %w", err)
 				}
+				if port < 0 || port > 65535 {
+					return ByWgConfig{}, fmt.Errorf("ListenPort out of range: %d", port)
+				}
 				config.ListenPort = &port
 			case "PrivateKey":
 				config.PrivateKey = value
