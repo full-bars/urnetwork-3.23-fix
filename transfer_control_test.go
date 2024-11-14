@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-playground/assert/v2"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestControlSync(t *testing.T) {

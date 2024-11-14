@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+
 	// mathrand "math/rand"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -12,7 +13,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"bringyour.com/protocol"
+	"github.com/urnetwork/protocol"
 )
 
 func TestTakeContract(t *testing.T) {

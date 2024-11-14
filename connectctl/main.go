@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+
 	// "os/exec"
 	// "path/filepath"
 	// "encoding/json"
@@ -20,6 +21,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+
 	// "encoding/base64"
 	"bytes"
 
@@ -29,8 +31,8 @@ import (
 
 	"github.com/docopt/docopt-go"
 
-	"bringyour.com/connect"
-	"bringyour.com/protocol"
+	"github.com/urnetwork/connect"
+	"github.com/urnetwork/protocol"
 )
 
 const ConnectCtlVersion = "0.0.1"
@@ -509,7 +511,9 @@ func send(opts docopt.Opts) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	api := connect.NewBringYourApi(apiUrl)
+	clientStrategy := connect.NewClientStrategyWithDefaults(cancelCtx)
+
+	api := connect.NewBringYourApi(cancelCtx, clientStrategy, apiUrl)
 	api.SetByJwt(jwt)
 	oobControl := connect.NewApiOutOfBandControlWithApi(api)
 
@@ -535,9 +539,10 @@ func send(opts docopt.Opts) {
 	for i := 0; i < transportCount; i += 1 {
 		platformTransport := connect.NewPlatformTransportWithDefaults(
 			cancelCtx,
+			clientStrategy,
+			client.RouteManager(),
 			fmt.Sprintf("%s/", connectUrl),
 			auth,
-			client.RouteManager(),
 		)
 		defer platformTransport.Close()
 		// go platformTransport.Run(routeManager)
@@ -646,7 +651,9 @@ func sink(opts docopt.Opts) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	api := connect.NewBringYourApi(apiUrl)
+	clientStrategy := connect.NewClientStrategyWithDefaults(cancelCtx)
+
+	api := connect.NewBringYourApi(cancelCtx, clientStrategy, apiUrl)
 	api.SetByJwt(jwt)
 	oobControl := connect.NewApiOutOfBandControlWithApi(api)
 
@@ -678,9 +685,10 @@ func sink(opts docopt.Opts) {
 	for i := 0; i < transportCount; i += 1 {
 		platformTransport := connect.NewPlatformTransportWithDefaults(
 			cancelCtx,
+			clientStrategy,
+			client.RouteManager(),
 			fmt.Sprintf("%s/", connectUrl),
 			auth,
-			client.RouteManager(),
 		)
 		defer platformTransport.Close()
 		// go platformTransport.Run(routeManager)

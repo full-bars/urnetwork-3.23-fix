@@ -200,7 +200,7 @@ func (self *Sender) Run(connectEgress EgressFunction) {
 		egress := connectEgress(connectionTuple)
 		// fmt.Printf("Get egress done\n")
 		egressId = egress.EgressId
-		fmt.Printf("Connect to %d from %s\n", egressId, connectionTuple)
+		fmt.Printf("Connect to %v from %v\n", egressId, connectionTuple)
 
 		out = make(chan *Packet)
 		in = make(chan *Packet)
@@ -756,7 +756,7 @@ func (self *StatisticalHopWindow) Run() error {
 				ps = append(ps, p)
 			}
 		}
-		fmt.Printf("ps = %s\n", ps)
+		fmt.Printf("ps = %v\n", ps)
 		r := mathrand.Float64()
 		for i, p := range ps {
 			r -= p

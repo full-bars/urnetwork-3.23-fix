@@ -3,7 +3,7 @@ package tether
 import (
 	"fmt"
 
-	"bringyour.com/wireguard/tun"
+	"github.com/urnetwork/connect/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"bringyour.com/wireguard/logger"
+	"github.com/urnetwork/connect/wireguard/logger"
 )
 
 // getLogLevel returns the log level from the log string.

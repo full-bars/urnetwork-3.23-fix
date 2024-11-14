@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"bringyour.com/wireguard/device"
-	"bringyour.com/wireguard/tun"
+	"github.com/urnetwork/connect/wireguard/device"
+	"github.com/urnetwork/connect/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
