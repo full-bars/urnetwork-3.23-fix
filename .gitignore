@@ -3,6 +3,7 @@
 
 provider/provider
 connectctl/connectctl
+tetherctl/*.conf
 test-ip-local/test-ip-local
 api/redoc-static.html
 client2-sim/client2-sim
