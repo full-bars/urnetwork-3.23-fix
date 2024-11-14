@@ -504,7 +504,9 @@ func testClient[P comparable](
 	comparableIpPathSources := map[P]map[TransferPath]bool{}
 
 	for i := 0; i < totalCount; i += 1 {
-		fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100*float32(i)/float32(totalCount))
+		if totalCount < 100 || i%(totalCount/100) == 0 {
+			fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100*float32(i)/float32(totalCount))
+		}
 		select {
 		case receivePacket := <-receivePackets:
 			// fmt.Printf("Receive %d/%d (%.2f%%)\n", i + 1, totalCount, 100.0 * float32(i + 1) / float32(totalCount))
