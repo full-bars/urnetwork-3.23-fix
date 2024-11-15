@@ -10,6 +10,7 @@ client2-sim/client2-sim
 connect/connect.test
 connect.test
 connect/profile
+tether/tether.test
 profile
 .direnv/
 
