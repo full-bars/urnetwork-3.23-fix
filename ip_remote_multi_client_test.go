@@ -169,6 +169,10 @@ func (self *TestMultiClientGenerator) NewClient(ctx context.Context, args *Multi
 	return self.newClient(ctx, args, clientSettings)
 }
 
+func (self *TestMultiClientGenerator) FixedDestinationSize() (int, bool) {
+	return 0, false
+}
+
 func TestMultiClientChannelWindowStats(t *testing.T) {
 	// ensure that the bucket counts are bounded
 	// if this is broken, the coalesce logic is broken and there will be a memory issue

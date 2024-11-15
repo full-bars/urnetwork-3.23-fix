@@ -49,6 +49,7 @@ type MultiClientGenerator interface {
 	RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs)
 	NewClientSettings() *ClientSettings
 	NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
+	FixedDestinationSize() (int, bool)
 }
 
 func DefaultMultiClientSettings() *MultiClientSettings {
@@ -767,6 +768,17 @@ func (self *ApiMultiClientGenerator) NewClient(
 	return client, nil
 }
 
+func (self *ApiMultiClientGenerator) FixedDestinationSize() (int, bool) {
+	specClientIds := []Id{}
+	for _, spec := range self.specs {
+		if spec.ClientId != nil {
+			specClientIds = append(specClientIds, *spec.ClientId)
+		}
+	}
+	// glog.Infof("[multi]eval fixed %d/%d\n", len(specClientIds), len(self.specs))
+	return len(specClientIds), len(specClientIds) == len(self.specs)
+}
+
 type multiClientWindow struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -952,24 +964,34 @@ func (self *multiClientWindow) resize() {
 			}
 		})
 
-		targetWindowSize := min(
-			self.settings.WindowSizeMax,
-			max(
-				self.settings.WindowSizeMin,
-				int(math.Ceil(float64(maxSourceCount)*self.settings.WindowSizeReconnectScale)),
-			),
-		)
+		var targetWindowSize int
+		var expandWindowSize int
+		var collapseWindowSize int
+		if fixedDestinationSize, fixed := self.generator.FixedDestinationSize(); fixed {
+			glog.Infof("[multi]fixed = %d\n", fixedDestinationSize)
+			targetWindowSize = fixedDestinationSize
+			expandWindowSize = fixedDestinationSize
+			collapseWindowSize = fixedDestinationSize
+		} else {
+			targetWindowSize = min(
+				self.settings.WindowSizeMax,
+				max(
+					self.settings.WindowSizeMin,
+					int(math.Ceil(float64(maxSourceCount)*self.settings.WindowSizeReconnectScale)),
+				),
+			)
 
-		// expand and collapse have scale thresholds to avoid jittery resizing
-		// too much resing wastes device resources
-		expandWindowSize := min(
-			self.settings.WindowSizeMax,
-			max(
-				self.settings.WindowSizeMin,
-				int(math.Ceil(self.settings.WindowExpandScale*float64(len(clients)))),
-			),
-		)
-		collapseWindowSize := int(math.Ceil(self.settings.WindowCollapseScale * float64(len(clients))))
+			// expand and collapse have scale thresholds to avoid jittery resizing
+			// too much resing wastes device resources
+			expandWindowSize = min(
+				self.settings.WindowSizeMax,
+				max(
+					self.settings.WindowSizeMin,
+					int(math.Ceil(self.settings.WindowExpandScale*float64(len(clients)))),
+				),
+			)
+			collapseWindowSize = int(math.Ceil(self.settings.WindowCollapseScale * float64(len(clients))))
+		}
 
 		collapseLowestWeighted := func(windowSize int) []*multiClientChannel {
 			// try to remove the lowest weighted clients to resize the window to `windowSize`
