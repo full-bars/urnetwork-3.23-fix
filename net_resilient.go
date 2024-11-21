@@ -153,7 +153,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 								tcpConn.SetNoDelay(true)
 
 								f, _ := tcpConn.File()
-								fd := int(f.Fd())
+								fd := SocketHandle(f.Fd())
 
 								nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
 
@@ -208,7 +208,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 								tcpConn.SetNoDelay(true)
 
 								f, _ := tcpConn.File()
-								fd := int(f.Fd())
+								fd := SocketHandle(f.Fd())
 
 								nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
 
