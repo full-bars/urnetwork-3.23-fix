@@ -1,4 +1,4 @@
-package connect
+package extender
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/go-playground/assert/v2"
+
+	"github.com/urnetwork/connect"
 )
 
 func TestExtender(t *testing.T) {
@@ -32,10 +34,12 @@ func TestExtender(t *testing.T) {
 
 	// test uses extender http client to GET /hello
 
+	settings := DefaultExtenderSettings()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	certPemBytes, keyPemBytes, err := selfSign([]string{"localhost"}, "Connect Test")
+	certPemBytes, keyPemBytes, err := selfSign([]string{"localhost"}, "Connect Test", settings.ValidFrom, settings.ValidFor)
 	assert.Equal(t, err, nil)
 
 	tempDirPath, err := os.MkdirTemp("", "connect")
@@ -57,10 +61,11 @@ func TestExtender(t *testing.T) {
 		ctx,
 		[]string{"montrose"},
 		[]string{"localhost"},
-		map[int][]ExtenderConnectMode{
-			1442: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
+		map[int][]connect.ExtenderConnectMode{
+			1442: []connect.ExtenderConnectMode{connect.ExtenderConnectModeTcpTls, connect.ExtenderConnectModeQuic},
 		},
 		&net.Dialer{},
+		settings,
 	)
 	defer extenderServer.Close()
 	go extenderServer.ListenAndServe()
@@ -72,16 +77,16 @@ func TestExtender(t *testing.T) {
 	localIp, err := netip.ParseAddr("127.0.0.1")
 	assert.Equal(t, err, nil)
 
-	connectSettings := DefaultConnectSettings()
+	connectSettings := connect.DefaultConnectSettings()
 	connectSettings.TlsConfig = &tls.Config{
 		InsecureSkipVerify: true,
 	}
 
-	client := NewExtenderHttpClient(
+	client := connect.NewExtenderHttpClient(
 		connectSettings,
-		&ExtenderConfig{
-			Profile: ExtenderProfile{
-				ConnectMode: ExtenderConnectModeQuic,
+		&connect.ExtenderConfig{
+			Profile: connect.ExtenderProfile{
+				ConnectMode: connect.ExtenderConnectModeQuic,
 				ServerName:  "bringyour.com",
 				Port:        1442,
 			},

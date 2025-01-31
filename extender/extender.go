@@ -1,4 +1,4 @@
-package connect
+package extender
 
 import (
 	"context"
@@ -47,6 +47,7 @@ import (
 
 	// "src.agwa.name/tlshacks"
 
+	"github.com/urnetwork/connect"
 	"github.com/urnetwork/protocol"
 )
 
@@ -64,6 +65,25 @@ import (
 
 // https://go.dev/src/crypto/tls/generate_cert.go
 
+
+func DefaultExtenderSettings() *ExtenderSettings {
+	return &ExtenderSettings{
+		ReadTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		ValidFrom: 180 * 24 * time.Hour,
+		ValidFor: 180 * 24 * time.Hour,
+	}
+}
+
+
+type ExtenderSettings struct {
+	ReadTimeout time.Duration
+	WriteTimeout time.Duration
+	ValidFrom time.Duration
+	ValidFor time.Duration
+}
+
+
 type ExtenderServer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -73,12 +93,37 @@ type ExtenderServer struct {
 	// exact (x) or wildcard (*.x)
 	// wildcard *.x does not match exact x
 	allowedHosts  []string
-	ports         map[int][]ExtenderConnectMode
+	ports         map[int][]connect.ExtenderConnectMode
 	forwardDialer *net.Dialer
+
+	settings *ExtenderSettings
 }
 
-func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHosts []string, ports map[int][]ExtenderConnectMode, forwardDialer *net.Dialer) *ExtenderServer {
+func NewExtenderServerWithDefaults(
+	ctx context.Context,
+	allowedSecrets []string,
+	allowedHosts []string,
+	ports map[int][]connect.ExtenderConnectMode,
+	forwardDialer *net.Dialer,
+) *ExtenderServer {
+	return NewExtenderServer(
+		ctx,
+		allowedSecrets,
+		allowedHosts,
+		ports,
+		forwardDialer,
+		DefaultExtenderSettings(),
+	)
+}
 
+func NewExtenderServer(
+	ctx context.Context,
+	allowedSecrets []string,
+	allowedHosts []string,
+	ports map[int][]connect.ExtenderConnectMode,
+	forwardDialer *net.Dialer,
+	settings *ExtenderSettings,
+) *ExtenderServer {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	return &ExtenderServer{
@@ -88,6 +133,7 @@ func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHost
 		allowedHosts:   allowedHosts,
 		ports:          ports,
 		forwardDialer:  forwardDialer,
+		settings: settings,
 	}
 
 }
@@ -98,7 +144,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 	quicListeners := map[int]*quic.Listener{}
 
 	for port, connectModes := range self.ports {
-		if !slices.Contains(connectModes, ExtenderConnectModeTcpTls) {
+		if !slices.Contains(connectModes, connect.ExtenderConnectModeTcpTls) {
 			continue
 		}
 
@@ -131,7 +177,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 	}
 
 	for port, connectModes := range self.ports {
-		if !slices.Contains(connectModes, ExtenderConnectModeQuic) {
+		if !slices.Contains(connectModes, connect.ExtenderConnectModeQuic) {
 			continue
 		}
 
@@ -154,6 +200,8 @@ func (self *ExtenderServer) ListenAndServe() error {
 				certPemBytes, keyPemBytes, err := selfSign(
 					[]string{clientHello.ServerName},
 					guessOrganizationName(clientHello.ServerName),
+					self.settings.ValidFrom,
+					self.settings.ValidFor,
 				)
 				if err != nil {
 					return nil, err
@@ -396,6 +444,8 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 			certPemBytes, keyPemBytes, err := selfSign(
 				[]string{clientHello.ServerName},
 				guessOrganizationName(clientHello.ServerName),
+				self.settings.ValidFrom,
+				self.settings.ValidFor,
 			)
 			if err != nil {
 				return nil, err
@@ -422,7 +472,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 
 	// TODO is header parsing doesn't work, forward the traffic to the SNI site and write the header bytes
 
-	clientConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+	clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 	for i := 0; i < 4; {
 		n, err := clientConn.Read(headerBytes[i:4])
 		if err != nil {
@@ -437,7 +487,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 	}
 	// fmt.Printf("Extender 6: %d\n", headerByteCount)
 	for i := 0; i < headerByteCount; {
-		clientConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+		clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 		n, err := clientConn.Read(headerBytes[i:headerByteCount])
 		if err != nil {
 			return
@@ -484,12 +534,12 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 			default:
 			}
 
-			clientConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+			clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := clientConn.Read(buffer)
 			if err != nil {
 				return
 			}
-			forwardConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+			forwardConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 			_, err = forwardConn.Write(buffer[0:n])
 			if err != nil {
 				return
@@ -510,12 +560,12 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 			default:
 			}
 
-			forwardConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+			forwardConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := forwardConn.Read(buffer)
 			if err != nil {
 				return
 			}
-			clientConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+			clientConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 			_, err = clientConn.Write(buffer[0:n])
 			if err != nil {
 				return
@@ -548,7 +598,7 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
 
 	fmt.Printf("q 1\n")
 
-	clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+	clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 	for i := 0; i < 4; {
 		n, err := clientStream.Read(headerBytes[i:4])
 		if err != nil {
@@ -565,7 +615,7 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
 	fmt.Printf("q 3\n")
 	// fmt.Printf("Extender 6: %d\n", headerByteCount)
 	for i := 0; i < headerByteCount; {
-		clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+		clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 		n, err := clientStream.Read(headerBytes[i:headerByteCount])
 		if err != nil {
 			return
@@ -631,12 +681,12 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
 			default:
 			}
 
-			clientStream.SetReadDeadline(time.Now().Add(ReadTimeout))
+			clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := clientStream.Read(buffer)
 			if err != nil {
 				return
 			}
-			forwardConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+			forwardConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 			_, err = forwardConn.Write(buffer[0:n])
 			if err != nil {
 				fmt.Printf("q r end\n")
@@ -658,12 +708,12 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
 			default:
 			}
 
-			forwardConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+			forwardConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := forwardConn.Read(buffer)
 			if err != nil {
 				return
 			}
-			clientStream.SetWriteDeadline(time.Now().Add(WriteTimeout))
+			clientStream.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 			_, err = clientStream.Write(buffer[0:n])
 			if err != nil {
 				fmt.Printf("q w end\n")
@@ -781,7 +831,7 @@ func (self *connWithInitialBytes) SetWriteDeadline(t time.Time) error {
 
 // https://go.dev/src/crypto/tls/generate_cert.go
 
-func selfSign(hosts []string, organization string) (certPemBytes []byte, keyPemBytes []byte, returnErr error) {
+func selfSign(hosts []string, organization string, validFrom time.Duration, validFor time.Duration) (certPemBytes []byte, keyPemBytes []byte, returnErr error) {
 
 	var priv any
 	var err error
@@ -816,8 +866,8 @@ func selfSign(hosts []string, organization string) (certPemBytes []byte, keyPemB
 		keyUsage |= x509.KeyUsageKeyEncipherment
 	}
 
-	notBefore := time.Now().Add(-ValidFrom)
-	notAfter := notBefore.Add(ValidFor)
+	notBefore := time.Now().Add(-validFrom)
+	notAfter := notBefore.Add(validFor)
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -867,44 +917,3 @@ func selfSign(hosts []string, organization string) (certPemBytes []byte, keyPemB
 	return
 }
 
-type streamConn struct {
-	stream quic.Stream
-}
-
-func newStreamConn(stream quic.Stream) *streamConn {
-	return &streamConn{
-		stream: stream,
-	}
-}
-
-func (self *streamConn) Read(b []byte) (int, error) {
-	return self.stream.Read(b)
-}
-
-func (self *streamConn) Write(b []byte) (int, error) {
-	return self.stream.Write(b)
-}
-
-func (self *streamConn) Close() error {
-	return self.stream.Close()
-}
-
-func (self *streamConn) LocalAddr() net.Addr {
-	return nil
-}
-
-func (self *streamConn) RemoteAddr() net.Addr {
-	return nil
-}
-
-func (self *streamConn) SetDeadline(t time.Time) error {
-	return self.stream.SetDeadline(t)
-}
-
-func (self *streamConn) SetReadDeadline(t time.Time) error {
-	return self.stream.SetReadDeadline(t)
-}
-
-func (self *streamConn) SetWriteDeadline(t time.Time) error {
-	return self.stream.SetWriteDeadline(t)
-}
