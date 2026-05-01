@@ -1,5 +1,5 @@
 # --- Build Stage ---
-FROM --platform=\$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 WORKDIR /app
@@ -11,7 +11,7 @@ RUN apk add --no-cache git gcc musl-dev
 COPY . .
 
 # Build for the target architecture
-RUN GOOS=linux GOARCH=\$TARGETARCH CGO_ENABLED=0 \
+RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath -ldflags "-s -w" -o provider_bin ./provider/main.go
 
 # --- Final Stage ---
@@ -38,8 +38,8 @@ COPY docker/scripts/*.sh /app/
 COPY docker/scripts/stats /app/cgi-bin/
 
 # Copy our custom compiled binary
-# We name it according to techroy's expectations in start_jwt.sh: urnetwork_\${A_SYS_ARCH}_stable
-COPY --from=builder /app/provider_bin /app/urnetwork_\${TARGETARCH}_stable
+# We name it according to techroy's expectations in start_jwt.sh: urnetwork_${A_SYS_ARCH}_stable
+COPY --from=builder /app/provider_bin /app/urnetwork_${TARGETARCH}_stable
 
 # Set permissions
 RUN dos2unix /app/*.sh /app/cgi-bin/stats && chmod +x /app/*.sh /app/cgi-bin/stats
