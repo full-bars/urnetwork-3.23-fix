@@ -12,7 +12,8 @@ require (
 	github.com/pion/datachannel v1.6.0
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/quic-go/quic-go v0.59.0
-	github.com/urnetwork/glog v0.0.0
+	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd
+	github.com/wlynxg/anet v0.0.5
 	golang.org/x/crypto v0.48.0
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
 	golang.org/x/net v0.51.0
@@ -37,7 +38,6 @@ require (
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
