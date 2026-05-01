@@ -10,15 +10,20 @@ RUN apk add --no-cache git gcc musl-dev
 # Copy source
 COPY . .
 
-# Build for the target architecture
+# Build for the target architecture with version injection
 RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
-    go build -trimpath -ldflags "-s -w" -o provider_bin ./provider/main.go
+    go build -trimpath \
+    -ldflags "-s -w -X main.Version=v3.23.0-fix.1" \
+    -o provider_bin ./provider/main.go
 
 # --- Final Stage ---
 FROM alpine:latest
 
 ARG TARGETARCH
 WORKDIR /app
+
+# Set version environment variable as a backup
+ENV WARP_VERSION=v3.23.0-fix.1
 
 # Install TechRoy's dependencies
 RUN apk update && apk add --no-cache \
@@ -38,7 +43,6 @@ COPY docker/scripts/*.sh /app/
 COPY docker/scripts/stats /app/cgi-bin/
 
 # Copy our custom compiled binary
-# We name it according to techroy's expectations in start_jwt.sh: urnetwork_${A_SYS_ARCH}_stable
 COPY --from=builder /app/provider_bin /app/urnetwork_${TARGETARCH}_stable
 
 # Set permissions
