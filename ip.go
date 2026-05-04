@@ -33,7 +33,7 @@ import (
 // The UNAT emulates a raw socket using user-space sockets.
 
 // use 0 for deadlock testing
-const DefaultIpBufferSize = 32
+const DefaultIpBufferSize = 256
 
 const DefaultMtu = 1440
 const Ipv4HeaderSizeWithoutExtensions = 20
@@ -88,7 +88,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		Mtu:                DefaultMtu,
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-		MinWindowSize:       uint32(kib(64)),
+		MinWindowSize:       uint32(kib(4)),
 		MaxWindowSize:       uint32(mib(1)),
 		UserLimit:           0,
 		ConnectSettings:     *DefaultConnectSettings(),
