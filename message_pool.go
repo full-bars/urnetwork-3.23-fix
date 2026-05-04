@@ -119,6 +119,9 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 	pools := []*messagePool{
 		newMessagePool(2048, int(InitialMessagePoolByteCount/ByteCount(2048))),
 		newMessagePool(4096, int(InitialMessagePoolByteCount/ByteCount(4096))),
+		newMessagePool(16384, int(InitialMessagePoolByteCount/ByteCount(16384))),
+		newMessagePool(32768, int(InitialMessagePoolByteCount/ByteCount(32768))),
+		newMessagePool(65536, int(InitialMessagePoolByteCount/ByteCount(65536))),
 	}
 
 	go HandleError(func() {
