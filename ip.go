@@ -84,6 +84,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		WriteTimeout:       15 * time.Second,
 		AckCompressTimeout: time.Duration(0),
 		IdleTimeout:        300 * time.Second,
+		ScaleDownTimeout:   30 * time.Second,
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
 		// avoid fragmentation
@@ -1083,6 +1084,7 @@ type TcpBufferSettings struct {
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
+	ScaleDownTimeout    time.Duration
 	ReadBufferByteCount int
 	SequenceBufferSize  int
 	Mtu                 int
@@ -1893,6 +1895,7 @@ func (self *TcpSequence) Run() {
 	// window scaling depends on `nonBlockingByteCount` and `blockingByteCount` per `self.windowSize`
 	nonBlockingByteCount := uint32(0)
 	blockingByteCount := uint32(0)
+	lastActivityTime := time.Now()
 	fin := false
 	for sendIter := uint64(0); !fin; sendIter += 1 {
 		checkpointId := self.idleCondition.Checkpoint()
@@ -1900,6 +1903,7 @@ func (self *TcpSequence) Run() {
 		case <-self.ctx.Done():
 			return
 		case sendItem := <-self.sendItems:
+			lastActivityTime = time.Now()
 			if glog.V(2) {
 				if "ACK" != tcpFlagsString(sendItem.tcp) {
 					glog.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
@@ -1910,13 +1914,10 @@ func (self *TcpSequence) Run() {
 				// a RST typically appears for a bad TCP segment
 				glog.V(2).Infof("[r%d]RST\n", sendIter)
 				MessagePoolReturn(sendItem.ipPacket)
-				// FIXME
 				return
-				// continue
 			}
 
 			drop := false
-			// seq := uint32(0)
 
 			func() {
 				self.mutex.Lock()
@@ -1958,17 +1959,11 @@ func (self *TcpSequence) Run() {
 
 			payload := sendItem.tcp.Payload
 			if 0 < len(payload) {
-				// seq += uint32(len(payload))
 				writePayload := writePayload{
 					payload:  payload,
 					sendIter: sendIter,
 					ipPacket: sendItem.ipPacket,
 				}
-				// FIXME count the number of non-blocking versus blocking channel adds
-				// FIXME every window size, check the count:
-				// FIXME - if 0 blocking, double window size
-				// FIXME - if >half blocking, half the window size
-				// FIXME else leave the window size unchanged
 				select {
 				case writePayloads <- writePayload:
 					nonBlockingByteCount += uint32(len(payload))
@@ -1984,7 +1979,6 @@ func (self *TcpSequence) Run() {
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
-					// glog.Infof("[r%d]eval window size (%d, %d, %d)\n", sendIter, self.windowSize, nonBlockingByteCount, blockingByteCount)
 					if self.windowSize <= blockingByteCount+nonBlockingByteCount {
 						if self.windowSize <= nonBlockingByteCount {
 							nextWindowSize := min(self.windowSize*2, self.tcpBufferSettings.MaxWindowSize)
@@ -1999,7 +1993,6 @@ func (self *TcpSequence) Run() {
 								self.windowSize = nextWindowSize
 							}
 						}
-						// else no change to the window
 						// reset the stats
 						nonBlockingByteCount = uint32(0)
 						blockingByteCount = uint32(0)
@@ -2012,38 +2005,41 @@ func (self *TcpSequence) Run() {
 				MessagePoolReturn(sendItem.ipPacket)
 			}
 
-			// if 0 < seq {
-			// 	func() {
-			// 		self.mutex.Lock()
-			// 		defer self.mutex.Unlock()
-
-			// 		self.sendSeq += seq
-			// 		ackCond.Broadcast()
-			// 	}()
-			// }
-
 			if sendItem.tcp.FIN {
 				// flush the write channel to propage the FIN and close the sequence
 				close(writePayloads)
 				fin = true
 			}
 
-		case <-time.After(self.tcpBufferSettings.IdleTimeout):
-			done := false
+		case <-time.After(self.tcpBufferSettings.ScaleDownTimeout):
 			func() {
-				self.sendMutex.Lock()
-				defer self.sendMutex.Unlock()
-				if self.idleCondition.Close(checkpointId) {
-					// close the sequence
-					done = true
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+				if self.windowSize != self.tcpBufferSettings.MinWindowSize {
+					glog.V(1).Infof("[r%d]idle scale down window size %d -> %d\n", sendIter, self.windowSize, self.tcpBufferSettings.MinWindowSize)
+					self.windowSize = self.tcpBufferSettings.MinWindowSize
+					nonBlockingByteCount = uint32(0)
+					blockingByteCount = uint32(0)
+					ackCond.Broadcast()
 				}
 			}()
-			if done {
-				// close the sequence
-				glog.V(2).Infof("[r%d]timeout\n", sendIter)
-				return
+
+			if self.tcpBufferSettings.IdleTimeout <= time.Since(lastActivityTime) {
+				done := false
+				func() {
+					self.sendMutex.Lock()
+					defer self.sendMutex.Unlock()
+					if self.idleCondition.Close(checkpointId) {
+						// close the sequence
+						done = true
+					}
+				}()
+				if done {
+					// close the sequence
+					glog.V(2).Infof("[r%d]timeout\n", sendIter)
+					return
+				}
 			}
-			// else there pending updates
 		}
 	}
 
