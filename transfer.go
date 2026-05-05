@@ -95,7 +95,7 @@ func DefaultClientSettingsNoNetworkEvents() *ClientSettings {
 
 func DefaultSendBufferSettings() *SendBufferSettings {
 	return &SendBufferSettings{
-		CreateContractTimeout:       30 * time.Second,
+		CreateContractTimeout:       60 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
 		MinResendInterval:           2 * time.Second,
 		MaxResendInterval:           8 * time.Second,
@@ -114,7 +114,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// this includes transport reconnections
 		WriteTimeout:            15 * time.Second,
 		ResendQueueMaxByteCount: mib(2),
-		ContractFillFraction:    0.8,
+		ContractFillFraction:    0.7,
 		ProtocolVersion:         DefaultProtocolVersion,
 	}
 }
