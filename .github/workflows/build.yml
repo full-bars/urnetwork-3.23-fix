@@ -58,7 +58,8 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
           else
-            VERSION="v3.23.0-fix.1"
+            # For main branch, get the most recent tag
+            VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v3.23.0-fix.1")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
