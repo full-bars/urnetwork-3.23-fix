@@ -7,12 +7,14 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
 ### 1. High-Signal Monitoring (Promoted Logs)
 In standard builds, connection handshake logs are hidden behind debug flags, leading to "silent" nodes. In this version:
 *   **[net][s]select (Serial Select)**: Promoted from Debug Level 2 to **Standard INFO level**. You will see exactly one clean line every time a proxy connection is successfully established.
-*   **Noise Reduction**: Parallel selection logs ([net][p]) remain silenced, ensuring that even with 4000+ proxies, your logs stay readable and useful.
+*   **Noise Reduction**: Parallel selection logs ([net][p]) remain silenced, ensuring that even with high-scale proxy lists, your logs stay readable and useful.
 
-### 2. Throughput Optimization (Unlocked Contract Cap)
-The default "Initial Contract" size in UrNetwork is often too small for high-bandwidth providers, leading to "100% full" bottlenecks.
-*   **Increased Budget**: Boosted `InitialContractTransferByteCount` from 16 KiB to **256 KiB**.
-*   **Result**: Faster ramp-up for new connections and significantly higher immediate throughput.
+### 2. Throughput & Scalability (Unlocked Engine)
+The default UrNetwork engine is often bottlenecked for high-bandwidth providers, leading to capacity caps and micro-stutters.
+*   **Contract Cap**: Boosted `InitialContractTransferByteCount` from 16 KiB to **256 KiB** for faster connection ramp-up.
+*   **Accordion Scaling**: Implemented dynamic TCP window scaling. Windows start small (**4KB**) to save RAM on idle connections and grow on demand (up to **1MB**) for active throughput. Windows automatically shrink back to 4KB after 30s of inactivity.
+*   **Zero-Allocation Path**: Expanded internal Message Pools (16KB, 32KB, 64KB) to eliminate Garbage Collector CPU spikes during high-throughput transfers.
+*   **Burst Protection**: Quadrupled IP Buffer Depth to **256** to absorb network volatility without dropping packets.
 
 ### 3. Professional Docker Integration
 This image integrates the excellent wrapper scripts from the community-maintained `techroy23/Docker-UrNetwork` project.
