@@ -2,6 +2,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
+ARG VERSION=v3.23.0-fix.1
 WORKDIR /app
 
 # Install build dependencies
@@ -13,17 +14,18 @@ COPY . .
 # Build for the target architecture with version injection
 RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath \
-    -ldflags "-s -w -X main.Version=v3.23.0-fix.1" \
+    -ldflags "-s -w -X main.Version=${VERSION}" \
     -o provider_bin ./provider/main.go
 
 # --- Final Stage ---
 FROM alpine:latest
 
 ARG TARGETARCH
+ARG VERSION=v3.23.0-fix.1
 WORKDIR /app
 
 # Set version environment variable as a backup
-ENV WARP_VERSION=v3.23.0-fix.1
+ENV WARP_VERSION=${VERSION}
 
 # Install TechRoy's dependencies
 RUN apk update && apk add --no-cache \
