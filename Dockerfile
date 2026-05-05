@@ -2,7 +2,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
-ARG VERSION=v3.23.0-fix.1
+ARG VERSION=v.unknown
 WORKDIR /app
 
 # Install build dependencies
@@ -21,7 +21,7 @@ RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
 FROM alpine:latest
 
 ARG TARGETARCH
-ARG VERSION=v3.23.0-fix.1
+ARG VERSION=v.unknown
 WORKDIR /app
 
 # Set version environment variable as a backup
