@@ -29,11 +29,13 @@ This image integrates the excellent wrapper scripts from the community-maintaine
 
 Install the optimized provider directly as a background service:
 
+**Install:**
 ```bash
-# Install
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
+```
 
-# Uninstall
+**Uninstall:**
+```bash
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
