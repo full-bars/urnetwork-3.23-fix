@@ -670,14 +670,9 @@ EOF
 	fi
     fi
 
-    if ! loginctl enable-linger 2>/dev/null 1>/dev/null; then
-        printf "\n\e[1;33mNote:\e[0m To ensure the provider keeps running in the background after you log out,\nplease enable systemd lingering with: \e[1msudo loginctl enable-linger $USER\e[0m\n"
-    fi
-
     case "$operation" in
         install)
-            pr_info "Installation complete"
-            printf "\n"
+            pr_info "Installation complete"            printf "\n"
             printf "\e[1;32mCustom Build Improvements:\e[0m\n"
             printf " - Logs: [net][s]select promoted to INFO (High-signal monitoring).\n"
             printf " - Throughput: InitialContractTransferByteCount increased to 256 KiB.\n"
