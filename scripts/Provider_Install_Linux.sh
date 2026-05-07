@@ -690,7 +690,7 @@ EOF
                 
                 
                 printf "\n"
-                printf "\e[1;33mNote:\e[0m To ensure the provider keeps running in the background after you log out,\nplease enable systemd lingering with: \e[1msudo loginctl enable-linger $USER\e[0m\n"
+                printf "\e[1;33mNote:\e[0m To ensure the provider keeps running in the background after you log out,\nplease enable systemd lingering with: \e[1msudo loginctl enable-linger $(whoami)\e[0m\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
