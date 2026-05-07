@@ -672,7 +672,8 @@ EOF
 
     case "$operation" in
         install)
-            pr_info "Installation complete"            printf "\n"
+            pr_info "Installation complete (Systemd check: %s)" "$has_systemd"
+            printf "\n"
             printf "\e[1;32mCustom Build Improvements:\e[0m\n"
             printf " - Logs: [net][s]select promoted to INFO (High-signal monitoring).\n"
             printf " - Throughput: InitialContractTransferByteCount increased to 256 KiB.\n"
