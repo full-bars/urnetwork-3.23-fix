@@ -1,7 +1,7 @@
 #!/bin/sh
 # Credits: Ar Rakin, Ryan Mello
 # urnet-tools -- URnetwork manager script (also acts as an installation script)
-# GitHub: <https://github.com/urnetwork/connect>
+# GitHub: <https://github.com/full-bars/urnetwork-3.23-fix>
 
 me="$0"
 script_rundir="$(pwd)"
@@ -105,7 +105,7 @@ arch="$(get_arch)"
 has_systemd=0
 update_timer_oncalendar=daily
 
-api_base="https://api.github.com/repos/urnetwork/connect"
+api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 version_file="$install_path/.version"
@@ -625,7 +625,7 @@ do_install ()
     if [ -z "$script" ]; then
         pr_err "Script path is '%s', cannot operate on it" "$0"
 
-        if ! script="$(network_fetch https://raw.githubusercontent.com/urnetwork/connect/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
+        if ! script="$(network_fetch https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
             pr_err "Failed to fetch script contents"
             exit 1
         fi
