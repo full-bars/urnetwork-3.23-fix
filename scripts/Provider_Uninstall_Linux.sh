@@ -93,12 +93,27 @@ rm -rf "$HOME/.urnetwork"
 
 if command -v systemctl > /dev/null; then
     service_path="$HOME/.config/systemd/user/urnetwork.service"
+    update_service_path="$HOME/.config/systemd/user/urnetwork-update.service"
+    update_timer_path="$HOME/.config/systemd/user/urnetwork-update.timer"
 
     if [ -f "$service_path" ]; then
 	echo "$me: Removing systemd service - urnetwork.service"
 	systemctl --user disable --now urnetwork.service
 	rm -f "$service_path"
     fi
+
+    if [ -f "$update_timer_path" ]; then
+	echo "$me: Removing systemd timer - urnetwork-update.timer"
+	systemctl --user disable --now urnetwork-update.timer
+	rm -f "$update_timer_path"
+    fi
+
+    if [ -f "$update_service_path" ]; then
+	echo "$me: Removing systemd service - urnetwork-update.service"
+	rm -f "$update_service_path"
+    fi
+    
+    systemctl --user daemon-reload
 fi
 
 if [ "$no_modify_bashrc" -eq 0 ]; then
