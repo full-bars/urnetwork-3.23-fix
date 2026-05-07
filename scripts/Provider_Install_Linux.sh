@@ -623,17 +623,10 @@ do_install ()
     script="$(cat "$0" 2>/dev/null)"
 
     if [ -z "$script" ]; then
-        case "$0" in
-            sh|bash|zsh|dash|/bin/sh|/bin/bash|/bin/dash|/usr/bin/sh|/usr/bin/bash|/usr/bin/dash)
-                pr_info "Running from pipe, fetching script source from GitHub..."
-                ;;
-            *)
-                pr_err "Script path is '%s', cannot operate on it; falling back to network fetch" "$0"
-                ;;
-        esac
+        pr_info "Installing management tools (urnet-tools)..."
 
         if ! script="$(network_fetch https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
-            pr_err "Failed to fetch script contents from GitHub"
+            pr_err "Failed to fetch management tools from GitHub"
             exit 1
         fi
     fi
@@ -682,6 +675,12 @@ EOF
     case "$operation" in
         install)
             pr_info "Installation complete"
+            printf "\n"
+            printf "\e[1;32mCustom Build Improvements:\e[0m\n"
+            printf " - Logs: [net][s]select promoted to INFO (High-signal monitoring).\n"
+            printf " - Throughput: InitialContractTransferByteCount increased to 256 KiB.\n"
+            printf " - Stability: IP Buffer Depth quadrupled to 256 for burst protection.\n"
+            printf " - Scaling: Accordion TCP window scaling (4KB idle -> 1MB active).\n"
             printf "\n"
             printf "Reload shell:          \e[1msource ~/.bashrc\e[0m           # or restart your terminal\n"
             printf "First run:             \e[1murnetwork auth\e[0m             # auth code can be found at <https://ur.io>\n"
