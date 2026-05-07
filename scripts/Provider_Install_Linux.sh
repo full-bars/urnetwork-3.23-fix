@@ -692,6 +692,8 @@ EOF
                 printf "Start service:         \e[1msystemctl --user start urnetwork\e[0m\n"
                 printf "Disable service:       \e[1msystemctl --user disable urnetwork\e[0m\n"
                 printf "Disable auto-updates:  \e[1msystemctl --user disable urnetwork-update.timer\e[0m\n"
+                
+                
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
