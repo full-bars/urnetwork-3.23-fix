@@ -670,7 +670,7 @@ EOF
 	fi
     fi
 
-    if ! loginctl enable-linger >/dev/null 2>&1; then
+    if ! loginctl enable-linger 2>/dev/null 1>/dev/null; then
         printf "\n\e[1;33mNote:\e[0m To ensure the provider keeps running in the background after you log out,\nplease enable systemd lingering with: \e[1msudo loginctl enable-linger $USER\e[0m\n"
     fi
 
