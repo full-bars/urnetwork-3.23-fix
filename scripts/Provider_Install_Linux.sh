@@ -623,10 +623,17 @@ do_install ()
     script="$(cat "$0" 2>/dev/null)"
 
     if [ -z "$script" ]; then
-        pr_err "Script path is '%s', cannot operate on it" "$0"
+        case "$0" in
+            sh|bash|zsh|dash|/bin/sh|/bin/bash|/bin/dash|/usr/bin/sh|/usr/bin/bash|/usr/bin/dash)
+                pr_info "Running from pipe, fetching script source from GitHub..."
+                ;;
+            *)
+                pr_err "Script path is '%s', cannot operate on it; falling back to network fetch" "$0"
+                ;;
+        esac
 
         if ! script="$(network_fetch https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
-            pr_err "Failed to fetch script contents"
+            pr_err "Failed to fetch script contents from GitHub"
             exit 1
         fi
     fi
