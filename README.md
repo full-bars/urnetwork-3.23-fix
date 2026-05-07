@@ -25,6 +25,22 @@ This image integrates the excellent wrapper scripts from the community-maintaine
 
 ---
 
+## ⚡ Quick Start (Linux)
+
+Install the optimized provider directly as a background service:
+
+```bash
+# Install
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
+
+# Uninstall
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
+```
+
+*This method sets up the provider as a **systemd user service**, ensuring it starts on boot and restarts automatically if it fails.*
+
+---
+
 ## 🛠 Usage
 
 ### Standard Docker Run (JWT)
