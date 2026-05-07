@@ -1,0 +1,85 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        run: |
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+          go build -trimpath \
+          -ldflags "-s -w -X main.Version=${VERSION}" \
+          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/main.go
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-${{ matrix.goarch }}
+          path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider
+
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download amd64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-amd64
+          path: release_tmp/linux/amd64/
+
+      - name: Download arm64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-arm64
+          path: release_tmp/linux/arm64/
+
+      - name: Prepare Binaries
+        run: |
+          # download-artifact@v4 might create subfolders or keep names depending on structure
+          # Ensuring they are named 'provider' in the correct structure
+          find release_tmp -name "provider*" -type f -exec chmod +x {} \;
+          # If they were renamed to 'provider-amd64' inside the folder, move them
+          mv release_tmp/linux/amd64/provider-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
+          mv release_tmp/linux/arm64/provider-arm64 release_tmp/linux/arm64/provider 2>/dev/null || true
+
+      - name: Create Tarball
+        run: |
+          VERSION=${GITHUB_REF_NAME:-latest}
+          cd release_tmp
+          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/
+          cd ..
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: urnetwork-provider-*.tar.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
