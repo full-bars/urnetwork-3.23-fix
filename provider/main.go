@@ -52,6 +52,27 @@ func initGlog() {
 	flag.Set("v", "0")
 	// unlike unix, the android/ios standard is for diagnostics to go to stdout
 	os.Stderr = os.Stdout
+
+	if os.Getenv("URNETWORK_PROFILE") == "lowmem" {
+		initSHMLogger()
+	}
+}
+
+func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
+	if os.Getenv("URNETWORK_PROFILE") != "lowmem" {
+		return
+	}
+
+	// 1. Initial Contract Size: 2 MiB -> 16 KiB
+	clientSettings.ContractManagerSettings.InitialContractTransferByteCount = 16 * 1024
+
+	// 2. IP Buffer Depth: 256 -> 16
+	localUserNatSettings.SequenceBufferSize = 16
+	localUserNatSettings.TcpBufferSettings.SequenceBufferSize = 16
+	localUserNatSettings.UdpBufferSettings.SequenceBufferSize = 16
+
+	// 3. TCP Accordion Window: 1MB -> 32KB
+	localUserNatSettings.TcpBufferSettings.MaxWindowSize = 32 * 1024
 }
 
 func main() {
@@ -314,6 +335,7 @@ func provide(opts docopt.Opts) {
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
+		applyLowmodeSettings(clientSettings, localUserNatSettings)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
