@@ -53,7 +53,7 @@ func initGlog() {
 	// unlike unix, the android/ios standard is for diagnostics to go to stdout
 	os.Stderr = os.Stdout
 
-	if os.Getenv("URNETWORK_PROFILE") == "lowmem" {
+	if os.Getenv("URNETWORK_PROFILE") == "lowmem" || os.Getenv("URNETWORK_RAMLOGS") == "1" {
 		initSHMLogger()
 	}
 }

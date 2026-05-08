@@ -45,6 +45,7 @@ show_help ()
         echo "  status                  Show the status of URnetwork provider service"
         echo "  logs                    Stream the provider logs (RAM or journald)"
         echo "  lowmode <on|off>        Toggle low-memory mode"
+        echo "  ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
         echo "  reinstall               Reinstall URnetwork"
         echo "  uninstall               Uninstall URnetwork"
         echo "  auto-update             Manage auto update settings.  If no argument is"
@@ -923,17 +924,75 @@ show_status ()
 show_logs ()
 {
     override_file="$HOME/.config/systemd/user/urnetwork.service.d/override.conf"
-    if [ -f "$override_file" ] && grep -q "URNETWORK_PROFILE=lowmem" "$override_file"; then
-        pr_info "Lowmode active: streaming from RAM disk (/dev/shm/urnetwork.log)"
+    is_ramlog=0
+    if [ -f "$override_file" ]; then
+        if grep -q "URNETWORK_PROFILE=lowmem" "$override_file" || grep -q "URNETWORK_RAMLOGS=1" "$override_file"; then
+            is_ramlog=1
+        fi
+    fi
+
+    if [ "$is_ramlog" -eq 1 ]; then
+        pr_info "Streaming from RAM disk (/dev/shm/urnetwork.log)"
         if [ ! -f "/dev/shm/urnetwork.log" ]; then
             pr_err "Log file not found. Is the provider running?"
             exit 1
         fi
         tail -f /dev/shm/urnetwork.log
     else
-        pr_info "Lowmode inactive: streaming from journald"
+        pr_info "Streaming from journald"
         journalctl --user -fu urnetwork.service
     fi
+}
+
+toggle_ramlogs ()
+{
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        on)
+            pr_info "Enabling RAM logging..."
+            mkdir -p "$override_dir"
+            if [ -f "$override_file" ]; then
+                if ! grep -q "URNETWORK_RAMLOGS=1" "$override_file"; then
+                    # Append to existing [Service] block or add it
+                    if grep -q "\[Service\]" "$override_file"; then
+                        sed -i '/\[Service\]/a Environment="URNETWORK_RAMLOGS=1"' "$override_file"
+                    else
+                        echo -e "\n[Service]\nEnvironment=\"URNETWORK_RAMLOGS=1\"" >> "$override_file"
+                    fi
+                fi
+            else
+                cat > "$override_file" <<EOF
+[Service]
+Environment="URNETWORK_RAMLOGS=1"
+EOF
+            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "RAM logging enabled and service restarted."
+            ;;
+        off)
+            pr_info "Disabling RAM logging..."
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
+                # If file is empty or only has [Service], remove it
+                if [ ! -s "$override_file" ] || [ "$(grep -v "^\[" "$override_file" | grep -v "^$" | wc -l)" -eq 0 ]; then
+                    rm -f "$override_file"
+                    # If directory is empty, remove it
+                    rmdir "$override_dir" 2>/dev/null || true
+                fi
+                systemctl --user daemon-reload
+                systemctl --user restart urnetwork.service
+            fi
+            pr_info "RAM logging disabled and service restarted."
+            ;;
+        *)
+            pr_err "Usage: urnet-tools ramlogs <on|off>"
+            exit 1
+            ;;
+    esac
 }
 
 toggle_lowmode ()
@@ -1008,6 +1067,11 @@ case "$operation" in
 
     logs)
         show_logs
+        exit 0
+        ;;
+
+    ramlogs)
+        toggle_ramlogs "$@"
         exit 0
         ;;
 
