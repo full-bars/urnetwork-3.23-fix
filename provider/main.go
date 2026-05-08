@@ -332,7 +332,7 @@ func provide(opts docopt.Opts) {
 					retryDelay := 30 * time.Second
 					select {
 					case <-proxyCtx.Done():
-						return "", connect.Id{}, proxyCtx.Done()
+						return "", connect.Id{}, proxyCtx.Err()
 					case <-time.After(retryDelay):
 						continue
 					}
@@ -342,7 +342,7 @@ func provide(opts docopt.Opts) {
 				fmt.Printf("init proxy auth failed: %v. Will retry in %.2fs\n", err, float64(retryDelay/time.Millisecond)/1000.0)
 				select {
 				case <-proxyCtx.Done():
-					return "", connect.Id{}, proxyCtx.Done()
+					return "", connect.Id{}, proxyCtx.Err()
 				case <-time.After(retryDelay):
 				}
 			}
