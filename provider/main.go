@@ -326,10 +326,23 @@ func provide(opts docopt.Opts) {
 				if err == nil {
 					return byClientJwt, clientId, nil
 				}
+
+				if strings.Contains(err.Error(), "Jwt does not exist") {
+					fmt.Printf("Authentication missing. Please run 'urnetwork auth' to configure your provider.\n")
+					retryDelay := 30 * time.Second
+					select {
+					case <-proxyCtx.Done():
+						return "", connect.Id{}, proxyCtx.Done()
+					case <-time.After(retryDelay):
+						continue
+					}
+				}
+
 				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
-				fmt.Printf("init proxy auth failed. Will retry in %.2fs\n", float64(retryDelay/time.Millisecond)/1000.0)
+				fmt.Printf("init proxy auth failed: %v. Will retry in %.2fs\n", err, float64(retryDelay/time.Millisecond)/1000.0)
 				select {
 				case <-proxyCtx.Done():
+					return "", connect.Id{}, proxyCtx.Done()
 				case <-time.After(retryDelay):
 				}
 			}
@@ -846,6 +859,13 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	proxyPath := filepath.Join(urNetworkDir, "proxy")
+
+	if _, err := os.Stat(urNetworkDir); os.IsNotExist(err) {
+		err = os.MkdirAll(urNetworkDir, 0700)
+		if err != nil {
+			panic(err)
+		}
+	}
 
 	b, err := json.Marshal(proxyConfig)
 	if err != nil {
