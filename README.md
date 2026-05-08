@@ -23,6 +23,11 @@ This image integrates the excellent wrapper scripts from the community-maintaine
 *   **vnStat Integration**: Real-time traffic monitoring built-in (accessible via port 8080).
 *   **Multi-Arch**: Native builds for both **AMD64** (Intel/AMD) and **ARM64** (Oracle Cloud, Raspberry Pi, Graviton).
 
+### 4. Advanced Optimization (New)
+For servers with limited resources (e.g., 1GB RAM) or high-volume nodes sensitive to disk I/O latency:
+*   **Lowmode**: A specialized profile that reduces buffer sizes, tunes the Go Garbage Collector (`GOGC=50`), and sets a dynamic `GOMEMLIMIT` (85% of system RAM).
+*   **RAM Logging**: Redirects all provider logs to `/dev/shm` (Linux RAM disk) with a 1MB rotation cap. This eliminates disk I/O overhead and is ideal for weak cloud instances.
+
 ---
 
 ## ⚡ Quick Start (Linux)
@@ -39,7 +44,16 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/s
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
-*This method sets up the provider as a **systemd user service**, ensuring it starts on boot and restarts automatically if it fails.*
+### 🛠 Post-Install Commands
+The installation includes the `urnet-tools` suite for easy management:
+
+| Command | Description |
+| :--- | :--- |
+| `urnet-tools status` | Check service health and uptime. |
+| `urnet-tools logs` | Stream logs (automatically detects RAM vs Disk). |
+| `urnet-tools lowmode on/off` | Toggle Low-Memory mode with dynamic RAM scaling. |
+| `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
+| `urnet-tools update` | Upgrade to the latest version. |
 
 ---
 
