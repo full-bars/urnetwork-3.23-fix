@@ -43,6 +43,8 @@ show_help ()
         echo "  stop                    Stop URnetwork provider"
         echo "  update                  Upgrade URnetwork, if updates are available"
         echo "  status                  Show the status of URnetwork provider service"
+        echo "  logs                    Stream the provider logs (RAM or journald)"
+        echo "  lowmode <on|off>        Toggle low-memory mode"
         echo "  reinstall               Reinstall URnetwork"
         echo "  uninstall               Uninstall URnetwork"
         echo "  auto-update             Manage auto update settings.  If no argument is"
@@ -918,6 +920,56 @@ show_status ()
 	systemctl --user status urnetwork.service
 }
 
+show_logs ()
+{
+    override_file="$HOME/.config/systemd/user/urnetwork.service.d/override.conf"
+    if [ -f "$override_file" ] && grep -q "URNETWORK_PROFILE=lowmem" "$override_file"; then
+        pr_info "Lowmode active: streaming from RAM disk (/dev/shm/urnetwork.log)"
+        if [ ! -f "/dev/shm/urnetwork.log" ]; then
+            pr_err "Log file not found. Is the provider running?"
+            exit 1
+        fi
+        tail -f /dev/shm/urnetwork.log
+    else
+        pr_info "Lowmode inactive: streaming from journald"
+        journalctl --user -fu urnetwork.service
+    fi
+}
+
+toggle_lowmode ()
+{
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        on)
+            pr_info "Enabling lowmode..."
+            mkdir -p "$override_dir"
+            cat > "$override_file" <<EOF
+[Service]
+Environment="URNETWORK_PROFILE=lowmem"
+Environment="GOMEMLIMIT=850MiB"
+Environment="GOGC=50"
+EOF
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Lowmode enabled and service restarted."
+            ;;
+        off)
+            pr_info "Disabling lowmode..."
+            rm -rf "$override_dir"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Lowmode disabled and service restarted."
+            ;;
+        *)
+            pr_err "Usage: urnet-tools lowmode <on|off>"
+            exit 1
+            ;;
+    esac
+}
+
 case "$operation" in
     install|update|reinstall)
         do_install "$@"
@@ -953,6 +1005,16 @@ case "$operation" in
 		show_status
 		exit 0
 		;;
+
+    logs)
+        show_logs
+        exit 0
+        ;;
+
+    lowmode)
+        toggle_lowmode "$@"
+        exit 0
+        ;;
     
     *)
         pr_err "Invalid operation '%s'" "$operation"
