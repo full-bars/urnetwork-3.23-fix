@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"syscall"
 	"time"
 )
 
@@ -30,8 +29,8 @@ func initSHMLogger() {
 	}
 
 	// Redirect stdout and stderr to the write end of the pipe
-	syscall.Dup2(int(w.Fd()), int(os.Stdout.Fd()))
-	syscall.Dup2(int(w.Fd()), int(os.Stderr.Fd()))
+	dup2(int(w.Fd()), int(os.Stdout.Fd()))
+	dup2(int(w.Fd()), int(os.Stderr.Fd()))
 
 	go func() {
 		defer f.Close()
