@@ -1004,11 +1004,23 @@ toggle_lowmode ()
     case "$mode" in
         on)
             pr_info "Enabling lowmode..."
+            
+            # Calculate 85% of total RAM for GOMEMLIMIT
+            total_ram_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+            if [ -n "$total_ram_kb" ]; then
+                # (RAM_KB * 85 / 100) / 1024 = 85% of RAM in MiB
+                gomem_mib=$(( (total_ram_kb * 85 / 100) / 1024 ))
+                pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of system RAM)"
+            else
+                gomem_mib=850
+                pr_info "Could not detect RAM, falling back to default 850MiB GOMEMLIMIT"
+            fi
+
             mkdir -p "$override_dir"
             cat > "$override_file" <<EOF
 [Service]
 Environment="URNETWORK_PROFILE=lowmem"
-Environment="GOMEMLIMIT=850MiB"
+Environment="GOMEMLIMIT=${gomem_mib}MiB"
 Environment="GOGC=50"
 EOF
             systemctl --user daemon-reload
