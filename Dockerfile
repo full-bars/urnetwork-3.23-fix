@@ -15,7 +15,7 @@ COPY . .
 RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath \
     -ldflags "-s -w -X main.Version=${VERSION}" \
-    -o provider_bin ./provider/main.go
+    -o provider_bin ./provider/
 
 # --- Final Stage ---
 FROM alpine:latest
