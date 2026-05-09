@@ -60,7 +60,7 @@ The installation includes the `urnet-tools` suite for easy management:
 ## 🛠 Usage
 
 ### Standard Docker Run (JWT)
-Replace `YOUR_JWT_HERE` with your token from [ur.io](https://ur.io).
+Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io).
 
 ```bash
 docker run -d \
@@ -75,13 +75,13 @@ docker run -d \
   -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_JWT_HERE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
 ### Environment Variables
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `BUILD` | `stable` | Set to `jwt` for token auth, or `stable` for email/pass. |
+| `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
 | `USER_AUTH` | - | Your email (required if BUILD=stable). |
 | `PASSWORD` | - | Your password (required if BUILD=stable). |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
