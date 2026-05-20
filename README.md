@@ -8,6 +8,7 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
 In standard builds, connection handshake logs are hidden behind debug flags, leading to "silent" nodes. In this version:
 *   **[net][s]select (Serial Select)**: Promoted from Debug Level 2 to **Standard INFO level**. You will see exactly one clean line every time a proxy connection is successfully established.
 *   **Noise Reduction**: Parallel selection logs ([net][p]) remain silenced, ensuring that even with high-scale proxy lists, your logs stay readable and useful.
+*   **Log Spam Reduction**: During backend outages, `[t]auth error` and `[contract]oob err` are rate-limited to one line per minute globally across all proxy instances. A suppressed-count suffix (e.g. `(3,952 suppressed)`) is appended when the outage clears so no errors are silently dropped.
 
 ### 2. Throughput & Scalability (Unlocked Engine)
 The default UrNetwork engine is often bottlenecked for high-bandwidth providers, leading to capacity caps and micro-stutters.
