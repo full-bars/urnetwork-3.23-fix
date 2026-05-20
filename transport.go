@@ -26,6 +26,24 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+var lastAuthErrLogNano atomic.Int64
+var suppressedAuthErrCount atomic.Int64
+
+func shouldLogAuthErr() (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastAuthErrLogNano.Load()
+	if now-last < int64(time.Minute) {
+		suppressedAuthErrCount.Add(1)
+		return false, 0
+	}
+	if !lastAuthErrLogNano.CompareAndSwap(last, now) {
+		suppressedAuthErrCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedAuthErrCount.Swap(0)
+	return true, suppressed
+}
+
 // note that it is possible to have multiple transports for the same client destination
 // e.g. platform, p2p, and a bunch of extenders
 
@@ -482,7 +500,13 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			ws, err = connect()
 		}
 		if err != nil {
-			glog.Infof("[t]auth error %s = %s\n", clientId, err)
+			if ok, suppressed := shouldLogAuthErr(); ok {
+				if suppressed > 0 {
+					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
+				} else {
+					glog.Infof("[t]auth error %s = %s\n", clientId, err)
+				}
+			}
 			select {
 			case <-self.ctx.Done():
 				return
@@ -1020,7 +1044,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			connStream, err = connect()
 		}
 		if err != nil {
-			glog.Infof("[t]auth error %s = %s\n", clientId, err)
+			if ok, suppressed := shouldLogAuthErr(); ok {
+				if suppressed > 0 {
+					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
+				} else {
+					glog.Infof("[t]auth error %s = %s\n", clientId, err)
+				}
+			}
 			select {
 			case <-self.ctx.Done():
 				return
