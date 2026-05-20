@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "errors"
@@ -23,6 +24,24 @@ import (
 
 	"github.com/urnetwork/connect/protocol"
 )
+
+var lastOobErrLogNano atomic.Int64
+var suppressedOobErrCount atomic.Int64
+
+func shouldLogOobErr() (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastOobErrLogNano.Load()
+	if now-last < int64(time.Minute) {
+		suppressedOobErrCount.Add(1)
+		return false, 0
+	}
+	if !lastOobErrLogNano.CompareAndSwap(last, now) {
+		suppressedOobErrCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedOobErrCount.Swap(0)
+	return true, suppressed
+}
 
 // manage contracts which are embedded into each transfer sequence
 
@@ -862,7 +881,13 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 				case <-self.client.Done():
 					// no need to log warnings when the client closes
 				default:
-					glog.Infof("[contract]oob err = %s\n", err)
+					if ok, suppressed := shouldLogOobErr(); ok {
+						if suppressed > 0 {
+							glog.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
+						} else {
+							glog.Infof("[contract]oob err = %s\n", err)
+						}
+					}
 				}
 			}
 		},
