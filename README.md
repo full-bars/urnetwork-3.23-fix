@@ -71,6 +71,9 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e BUILD='jwt' \
   -e ENABLE_VNSTAT=true \
   -v vnstat_data:/var/lib/vnstat \
@@ -87,6 +90,19 @@ docker run -d \
 | `PASSWORD` | - | Your password (required if BUILD=stable). |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
 | `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
+
+### RAM Logging (Optional)
+Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
+
+> **Note:** `URNETWORK_RAMLOGS=1` and `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout so Docker's log driver has nothing to capture. Remove the `--log-driver` and `--log-opt` flags if you enable this.
+
+To view logs live (replace `urfix` with your container name if different):
+```bash
+docker exec -it urfix tail -f /dev/shm/urnetwork.log
+```
+
+RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
 
 ---
 
