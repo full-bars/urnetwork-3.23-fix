@@ -74,6 +74,7 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
+  -e URNETWORK_RAMLOGS=0 \
   -e BUILD='jwt' \
   -e ENABLE_VNSTAT=true \
   -v vnstat_data:/var/lib/vnstat \
