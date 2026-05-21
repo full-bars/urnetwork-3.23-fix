@@ -74,6 +74,7 @@ show_help ()
     echo "  -h, --help              Show this help and exit"
     echo "  -v, --version           Show the version of URnetwork that's installed"
     echo "  -i, --install=[PATH]    Installation path"
+    echo "  -4, --ipv4              Force IPv4 for network requests (fixes IPv6 hangs)"
     echo ""
     echo "Refer to the online documentation for more help."
 }
@@ -209,13 +210,23 @@ get_current_date ()
     echo "$date"
 }
 
+FORCE_IPV4=0
+
 network_fetch ()
 {
     if command -v curl > /dev/null; then
-        curl -fSsL "$1"
+        if [ "$FORCE_IPV4" -eq 1 ]; then
+            curl -4 --connect-timeout 10 -fSsL "$1"
+        else
+            curl --connect-timeout 10 -fSsL "$1"
+        fi
         return $?
     elif command -v wget > /dev/null; then
-        wget -qO- "$1"
+        if [ "$FORCE_IPV4" -eq 1 ]; then
+            wget -4 --connect-timeout=10 -qO- "$1"
+        else
+            wget --connect-timeout=10 -qO- "$1"
+        fi
         return $?
     else
         pr_err "Neither curl nor wget is available"
@@ -412,6 +423,11 @@ do_install ()
                         shift 2
                         ;;
 
+                    -4|--ipv4)
+                        FORCE_IPV4=1
+                        shift
+                        ;;
+
                     -B|--no_modify_bashrc)
                         no_modify_bashrc=1
                         shift
@@ -473,6 +489,11 @@ do_install ()
                         fi 
 
                         shift 2
+                        ;;
+
+                    -4|--ipv4)
+                        FORCE_IPV4=1
+                        shift
                         ;;
 
                     -B|--no_modify_bashrc)
@@ -623,15 +644,16 @@ do_install ()
     fi
 
     cd "$script_rundir" || exit 1
-    script="$(cat "$0" 2>/dev/null)"
 
-    if [ -z "$script" ]; then
-        pr_info "Installing management tools (urnet-tools)..."
+    if [ "$operation" = "update" ] || [ "$operation" = "reinstall" ] || [ -z "$(cat "$0" 2>/dev/null)" ]; then
+        pr_info "Fetching latest urnet-tools from GitHub..."
 
         if ! script="$(network_fetch https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
-            pr_err "Failed to fetch management tools from GitHub"
-            exit 1
+            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
+            script="$(cat "$0" 2>/dev/null)"
         fi
+    else
+        script="$(cat "$0" 2>/dev/null)"
     fi
 
     cd "$workdir" || exit 1
