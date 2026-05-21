@@ -92,6 +92,7 @@ docker run -d \
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
 | `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
+| `URNETWORK_PROFILE` | - | Set to `lowmem` to enable a resource-constrained profile: reduces buffer sizes, tunes the Go GC (`GOGC=50`), sets a dynamic memory limit (85% of system RAM), and enables RAM logging. Ideal for 1GB RAM nodes. Cannot be used with `--log-opt`. |
 
 ### RAM Logging (Optional)
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
