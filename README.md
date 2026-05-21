@@ -98,6 +98,8 @@ docker run -d \
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
 
 > **Note:** `URNETWORK_RAMLOGS=1` and `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout so Docker's log driver has nothing to capture. Remove the `--log-driver` and `--log-opt` flags if you enable this.
+>
+> **Note:** `URNETWORK_PROFILE=lowmem` also enables RAM logging unconditionally. If you use lowmem mode, remove `--log-driver` and `--log-opt` from your docker run command and use `docker exec` to view logs as shown below.
 
 To view logs live (replace `urfix` with your container name if different):
 ```bash
