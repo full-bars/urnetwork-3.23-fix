@@ -198,6 +198,8 @@ type PlatformTransport struct {
 	availableModes map[TransportMode]bool
 	targetMode     TransportMode
 	mode           TransportMode
+
+	failureCount int
 }
 
 func NewPlatformTransportWithDefaults(
@@ -284,6 +286,47 @@ func (self *PlatformTransport) setModeAvailable(mode TransportMode, available bo
 	defer self.stateLock.Unlock()
 
 	self.availableModes[mode] = available
+	if available {
+		self.failureCount = 0
+	}
+}
+
+func (self *PlatformTransport) incrementFailureCount() time.Duration {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.failureCount += 1
+	// calculate exponential backoff: base * 2^(failCount-1)
+	// 5s, 10s, 20s, 40s, 80s, ... cap at 1 hour
+	base := self.settings.ReconnectTimeout
+	multiplier := time.Duration(1) << uint(min(self.failureCount-1, 10)) // cap multiplier at 1024
+	timeout := base * multiplier
+	if timeout > time.Hour {
+		timeout = time.Hour
+	}
+	return timeout
+}
+
+func (self *PlatformTransport) getBackoffTimeout() time.Duration {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	if self.failureCount == 0 {
+		return self.settings.ReconnectTimeout
+	}
+	base := self.settings.ReconnectTimeout
+	multiplier := time.Duration(1) << uint(min(self.failureCount, 10))
+	timeout := base * multiplier
+	if timeout > time.Hour {
+		timeout = time.Hour
+	}
+	return timeout
+}
+
+func (self *PlatformTransport) ResetFailureCount() {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.failureCount = 0
 }
 
 func (self *PlatformTransport) modeAvailable(mode TransportMode) (bool, chan struct{}) {
@@ -427,7 +470,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}()
 
-		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		reconnect := NewReconnect(self.getBackoffTimeout())
 		connect := func() (*websocket.Conn, error) {
 			header := http.Header{}
 			if self.settings.V2H1Auth {
@@ -489,6 +532,8 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			case <-self.ctx.Done():
 				return
 			case <-time.After(connectDelay):
+			case <-Pulse():
+				self.clientStrategy.ResetHealth()
 			}
 		}
 
@@ -507,10 +552,15 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
+			self.incrementFailureCount()
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-reconnect.After():
+				continue
+			case <-Pulse():
+				self.ResetFailureCount()
+				self.clientStrategy.ResetHealth()
 				continue
 			}
 		}
@@ -837,7 +887,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}
 
-		reconnect = NewReconnect(self.settings.ReconnectTimeout)
+		reconnect = NewReconnect(self.getBackoffTimeout())
 		if glog.V(2) {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
@@ -848,6 +898,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		case <-self.ctx.Done():
 			return
 		case <-reconnect.After():
+		case <-Pulse():
+			self.ResetFailureCount()
+			self.clientStrategy.ResetHealth()
 		}
 	}
 }
@@ -896,7 +949,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}()
 
-		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		reconnect := NewReconnect(self.getBackoffTimeout())
 
 		type ConnStream struct {
 			conn   *quic.Conn
@@ -1051,10 +1104,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
+			self.incrementFailureCount()
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-reconnect.After():
+				continue
+			case <-Pulse():
+				self.ResetFailureCount()
+				self.clientStrategy.ResetHealth()
 				continue
 			}
 		}
@@ -1208,7 +1266,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			case <-handleCtx.Done():
 			}
 		}
-		reconnect = NewReconnect(self.settings.ReconnectTimeout)
+		reconnect = NewReconnect(self.getBackoffTimeout())
 		if glog.V(2) {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
@@ -1219,6 +1277,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		case <-self.ctx.Done():
 			return
 		case <-reconnect.After():
+		case <-Pulse():
+			self.ResetFailureCount()
+			self.clientStrategy.ResetHealth()
 		}
 	}
 }

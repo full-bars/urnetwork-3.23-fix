@@ -327,6 +327,19 @@ func provide(opts docopt.Opts) {
 	ctx, cancel := context.WithCancel(event.Ctx())
 	defer cancel()
 
+	// Start the automated proxy recovery pulse loop (triggers every 1 hour)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Hour):
+				fmt.Printf("[INFO] Triggering automated proxy recovery pulse...\n")
+				connect.TriggerPulse()
+			}
+		}
+	}()
+
 	provideWithProxy := func(proxySettings *connect.ProxySettings) {
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		defer proxyCancel()
