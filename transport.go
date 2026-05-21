@@ -44,6 +44,15 @@ func shouldLogAuthErr() (bool, int64) {
 	return true, suppressed
 }
 
+// isBackendDegraded returns true if a backend auth or contract error has been
+// logged within the last 60 seconds, indicating the platform is unreachable.
+// Uses package-level atomics from transport.go and transfer_contract_manager.go.
+func isBackendDegraded() bool {
+	now := time.Now().UnixNano()
+	window := int64(60 * time.Second)
+	return now-lastAuthErrLogNano.Load() < window || now-lastOobErrLogNano.Load() < window
+}
+
 // note that it is possible to have multiple transports for the same client destination
 // e.g. platform, p2p, and a bunch of extenders
 
