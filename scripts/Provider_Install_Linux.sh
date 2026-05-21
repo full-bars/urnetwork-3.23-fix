@@ -107,7 +107,7 @@ get_arch ()
 operation=""
 arch="$(get_arch)"
 has_systemd=0
-update_timer_oncalendar=daily
+update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
 api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
@@ -317,18 +317,29 @@ stop_systemd_units ()
 {
     if [ -f "$systemd_service" ]; then
         if [ "$(systemctl --user is-active urnetwork.service)" = "active" ]; then
-            pr_err "warning: urnetwork.service is running, it will be stopped to perform an update/reinstall"
-	        pr_err "warning: It will be started again automatically, once the update finishes"
-            pr_err "warning: You will need to restart this service after this update/reinstall if auto start fails"
-	        systemd_units_stopped=1
+            if [ "$operation" = "update" ]; then
+                pr_info "urnetwork.service is running — binary will be updated on disk."
+                pr_info "Restart the service when convenient to apply the update: systemctl --user restart urnetwork.service"
+                systemd_units_stopped=0
+
+                systemctl --user disable --now urnetwork-update.timer || {
+                    pr_err "Failed to disable urnetwork-update.timer before update; continuing anyway"
+                }
+                return
+            fi
+
+            pr_err "warning: urnetwork.service is running, it will be stopped to perform a reinstall"
+            pr_err "warning: It will be started again automatically, once the reinstall finishes"
+            pr_err "warning: You will need to restart this service after this reinstall if auto start fails"
+            systemd_units_stopped=1
         fi
 
         systemctl --user disable --now urnetwork.service || {
-            pr_err "Failed to disable urnetwork.service early before update/reinstall; continuing anyway"
+            pr_err "Failed to disable urnetwork.service early before reinstall; continuing anyway"
         }
-	
+
         systemctl --user disable --now urnetwork-update.timer || {
-            pr_err "Failed to disable urnetwork-update.timer early before update/reinstall; continuing anyway"
+            pr_err "Failed to disable urnetwork-update.timer before reinstall; continuing anyway"
         }
     fi
 }
@@ -797,7 +808,7 @@ do_uninstall ()
 change_auto_update_prefs ()
 {
     mode=""
-    interval="daily"
+    interval="weekly"
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -854,7 +865,13 @@ change_auto_update_prefs ()
         on)
             pr_info "Updating systemd unit files"
 
-            if ! sed -e "s/daily/$interval/g; s/weekly/$interval/g; s/monthly/$interval/g" -i "$HOME/.config/systemd/user/urnetwork-update.timer"; then
+            case "$interval" in
+                daily)   new_calendar="daily" ;;
+                weekly)  new_calendar="Sun *-*-* 00:00:00 UTC" ;;
+                monthly) new_calendar="monthly" ;;
+            esac
+
+            if ! sed -e "s|^OnCalendar=.*|OnCalendar=$new_calendar|" -i "$HOME/.config/systemd/user/urnetwork-update.timer"; then
                 pr_err "Failed to update auto update interval: sed substitution failed"
                 exit 1
             fi
