@@ -163,7 +163,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		MultiRacePacketMaxCount:              32,
 		MultiRaceClientEarlyCompleteFraction: 0.25,
 		// TODO on platforms with more memory, increase this
-		MultiRaceClientCount: 0,
+		MultiRaceClientCount: 2,
 
 		StatsWindowMaxUnhealthyDuration:  15 * time.Second,
 		StatsWindowWarnUnhealthyDuration: 5 * time.Second,
@@ -2103,7 +2103,7 @@ func (self *multiClientWindow) resize() {
 		}
 
 		addedCount := 0
-		if len(clients) < targetWindowSize {
+		if len(clients) < targetWindowSize && !isBackendDegraded() {
 			// expand
 			n := targetWindowSize - len(clients)
 			self.monitor.AddWindowExpandEvent(
