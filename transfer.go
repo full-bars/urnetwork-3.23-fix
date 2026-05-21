@@ -116,6 +116,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		ResendQueueMaxByteCount: mib(2),
 		ContractFillFraction:    0.7,
 		ProtocolVersion:         DefaultProtocolVersion,
+		MaxResendCount:          16,
 	}
 }
 
@@ -1026,6 +1027,10 @@ type SendBufferSettings struct {
 	ContractFillFraction float32
 
 	ProtocolVersion int
+
+	// MaxResendCount caps the number of times a packet is retransmitted before
+	// being dropped from the resend queue. 0 means unlimited (legacy behavior).
+	MaxResendCount int
 }
 
 type sendSequenceId struct {
@@ -1596,7 +1601,18 @@ func (self *SendSequence) Run() {
 				}
 
 				item.sendCount += 1
-				itemResendTimeout := self.rttWindow.ScaledRtt()
+				maxResendCount := self.sendBufferSettings.MaxResendCount
+				if maxResendCount > 0 && item.sendCount >= maxResendCount {
+					glog.V(1).Infof("[s]resend cap drop after %d sends %s->%s...%s s(%s)\n", item.sendCount, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+					continue
+				}
+				var itemResendTimeout time.Duration
+				if isBackendDegraded() {
+					shift := uint(min(item.sendCount, 6))
+					itemResendTimeout = self.rttWindow.ScaledRtt() << shift
+				} else {
+					itemResendTimeout = self.rttWindow.ScaledRtt()
+				}
 				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
