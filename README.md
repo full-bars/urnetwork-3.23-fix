@@ -63,6 +63,7 @@ The installation includes the `urnet-tools` suite for easy management:
 ### Standard Docker Run (JWT)
 Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io).
 
+**Using GHCR (GitHub Registry):**
 ```bash
 docker run -d \
   --name=urfix \
@@ -81,6 +82,23 @@ docker run -d \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+```
+
+**Using Docker Hub (Alternative):**
+If you experience `denied` errors or rate-limiting on GitHub, use our official Docker Hub mirror:
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD='jwt' \
+  -e ENABLE_VNSTAT=true \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
 ### Environment Variables
