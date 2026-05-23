@@ -1799,9 +1799,15 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		endTime := time.Now().Add(self.sendBufferSettings.CreateContractTimeout)
 
+		// back off contract retries when the backend is unreachable to reduce API storm
+		contractRetryInterval := self.sendBufferSettings.CreateContractRetryInterval
+		if isBackendDegraded() {
+			contractRetryInterval = 30 * time.Second
+		}
+
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, self.sendBufferSettings.CreateContractRetryInterval)) {
+			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, contractRetryInterval)) {
 				return true
 			}
 		}
@@ -1818,20 +1824,23 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				return false
 			}
 
-			// async queue up the next contract
-			contractKey := ContractKey{
-				Destination:       self.destination,
-				IntermediaryIds:   self.intermediaryIds,
-				CompanionContract: self.companionContract,
-				ForceStream:       self.forceStream,
+			// async queue up the next contract; skip when backend is degraded
+			// to avoid launching goroutines against a dead API
+			if !isBackendDegraded() {
+				contractKey := ContractKey{
+					Destination:       self.destination,
+					IntermediaryIds:   self.intermediaryIds,
+					CompanionContract: self.companionContract,
+					ForceStream:       self.forceStream,
+				}
+				self.client.ContractManager().CreateContract(
+					contractKey,
+					self.contractSeqIndex,
+					ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.sendBufferSettings.ContractFillFraction),
+				)
 			}
-			self.client.ContractManager().CreateContract(
-				contractKey,
-				self.contractSeqIndex,
-				ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.sendBufferSettings.ContractFillFraction),
-			)
 
-			if traceNextContract(min(timeout, self.sendBufferSettings.CreateContractRetryInterval)) {
+			if traceNextContract(min(timeout, contractRetryInterval)) {
 				return true
 			}
 		}
