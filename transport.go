@@ -533,6 +533,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				return
 			case <-time.After(authErrBackoff):
 				continue
+			case <-Pulse():
+				authErrBackoff = 0
+				self.clientStrategy.ResetHealth()
+				continue
 			}
 		}
 		authErrBackoff = 0
@@ -1086,6 +1090,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			case <-self.ctx.Done():
 				return
 			case <-time.After(authErrBackoff):
+				continue
+			case <-Pulse():
+				authErrBackoff = 0
+				self.clientStrategy.ResetHealth()
 				continue
 			}
 		}
