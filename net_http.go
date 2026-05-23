@@ -124,6 +124,30 @@ type ClientStrategy struct {
 	extenderIpSecrets map[netip.Addr]string
 
 	nextConnectTime time.Time
+	failureCount    int
+}
+
+func (self *ClientStrategy) getBackoffTimeout() time.Duration {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	if self.failureCount == 0 {
+		return self.settings.ReconnectTimeout
+	}
+	multiplier := time.Duration(1) << uint(min(self.failureCount, 10))
+	timeout := self.settings.ReconnectTimeout * multiplier
+	if timeout > time.Hour {
+		timeout = time.Hour
+	}
+	return timeout
+}
+
+func (self *ClientStrategy) ResetHealth() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	self.failureCount = 0
+	for dialer := range self.dialers {
+		dialer.ResetHealth()
+	}
 }
 
 func NewClientStrategyWithDefaults(ctx context.Context) *ClientStrategy {
@@ -455,7 +479,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		default:
 		}
 
-		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		reconnect := NewReconnect(self.getBackoffTimeout())
 
 		self.collapseExtenderDialers()
 
@@ -577,10 +601,15 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 
 		// the rate limit is important when when the connect timeout is small
 		// e.g. local closes due to disconnected network
+		self.mutex.Lock()
+		self.failureCount += 1
+		self.mutex.Unlock()
 		select {
 		case <-handleCtx.Done():
 			return nil
 		case <-reconnect.After():
+		case <-Pulse():
+			self.ResetHealth()
 		}
 	}
 
@@ -636,6 +665,9 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			result := eval(handleCtx, dialer)
 			if result != nil {
 				if result.err == nil {
+					self.mutex.Lock()
+					self.failureCount = 0
+					self.mutex.Unlock()
 					glog.Infof("[net][s]select: %s\n", dialer.String())
 					return result
 				}
@@ -1100,6 +1132,15 @@ func (self *clientDialer) IsLastSuccess() bool {
 	defer self.mutex.Unlock()
 
 	return !self.lastSuccessTime.Before(self.lastErrorTime)
+}
+
+func (self *clientDialer) ResetHealth() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	self.successCount = 0
+	self.errorCount = 0
+	self.lastSuccessTime = time.Time{}
+	self.lastErrorTime = time.Time{}
 }
 
 func (self *clientDialer) String() string {
