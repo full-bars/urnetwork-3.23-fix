@@ -29,6 +29,11 @@ import (
 var lastAuthErrLogNano atomic.Int64
 var suppressedAuthErrCount atomic.Int64
 
+// lastBackendFailNano is updated on every backend failure (auth or OOB), not
+// rate-limited. Used by isBackendDegraded() to avoid the boundary flicker that
+// occurs when using the rate-limited log timestamps.
+var lastBackendFailNano atomic.Int64
+
 func shouldLogAuthErr() (bool, int64) {
 	now := time.Now().UnixNano()
 	last := lastAuthErrLogNano.Load()
@@ -45,12 +50,11 @@ func shouldLogAuthErr() (bool, int64) {
 }
 
 // isBackendDegraded returns true if a backend auth or contract error has been
-// logged within the last 60 seconds, indicating the platform is unreachable.
-// Uses package-level atomics from transport.go and transfer_contract_manager.go.
+// seen within the last 60 seconds, indicating the platform is unreachable.
 func isBackendDegraded() bool {
 	now := time.Now().UnixNano()
 	window := int64(60 * time.Second)
-	return now-lastAuthErrLogNano.Load() < window || now-lastOobErrLogNano.Load() < window
+	return now-lastBackendFailNano.Load() < window
 }
 
 // note that it is possible to have multiple transports for the same client destination
@@ -511,6 +515,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			ws, err = connect()
 		}
 		if err != nil {
+			lastBackendFailNano.Store(time.Now().UnixNano())
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
@@ -518,19 +523,15 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if isBackendDegraded() {
-				if authErrBackoff == 0 {
-					authErrBackoff = self.settings.ReconnectTimeout
-				} else {
-					authErrBackoff = min(authErrBackoff*2, 60*time.Second)
-				}
+			if authErrBackoff == 0 {
+				authErrBackoff = self.settings.ReconnectTimeout
 			} else {
-				authErrBackoff = 0
+				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
 			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(authErrBackoff + self.settings.ReconnectTimeout):
+			case <-time.After(authErrBackoff):
 				continue
 			}
 		}
@@ -1067,6 +1068,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			connStream, err = connect()
 		}
 		if err != nil {
+			lastBackendFailNano.Store(time.Now().UnixNano())
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
@@ -1074,19 +1076,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if isBackendDegraded() {
-				if authErrBackoff == 0 {
-					authErrBackoff = self.settings.ReconnectTimeout
-				} else {
-					authErrBackoff = min(authErrBackoff*2, 60*time.Second)
-				}
+			if authErrBackoff == 0 {
+				authErrBackoff = self.settings.ReconnectTimeout
 			} else {
-				authErrBackoff = 0
+				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
 			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(authErrBackoff + self.settings.ReconnectTimeout):
+			case <-time.After(authErrBackoff):
 				continue
 			}
 		}

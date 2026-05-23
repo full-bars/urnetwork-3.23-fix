@@ -384,10 +384,6 @@ type ConnectControlError struct {
 }
 
 func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, callback ConnectControlCallback) {
-	if isBackendDegraded() {
-		callback.Result(nil, fmt.Errorf("backend degraded"))
-		return
-	}
 	go HandleError(func() {
 		HttpPostWithStrategy(
 			self.ctx,

@@ -881,6 +881,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 				case <-self.client.Done():
 					// no need to log warnings when the client closes
 				default:
+					lastBackendFailNano.Store(time.Now().UnixNano())
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
 							glog.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
