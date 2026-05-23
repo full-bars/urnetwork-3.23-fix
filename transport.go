@@ -536,6 +536,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}
 		authErrBackoff = 0
+		lastBackendFailNano.Store(0)
 
 		c := func() {
 			defer ws.Close()
@@ -1089,6 +1090,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
+		lastBackendFailNano.Store(0)
 
 		conn := connStream.conn
 		stream := connStream.stream
