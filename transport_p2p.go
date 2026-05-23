@@ -69,6 +69,20 @@ type P2pTransport struct {
 	peerType PeerType
 
 	settings *P2pTransportSettings
+
+	failureCount int
+}
+
+func (self *P2pTransport) getBackoffTimeout() time.Duration {
+	if self.failureCount == 0 {
+		return self.settings.ReconnectTimeout
+	}
+	multiplier := time.Duration(1) << uint(min(self.failureCount, 10))
+	timeout := self.settings.ReconnectTimeout * multiplier
+	if timeout > time.Hour {
+		timeout = time.Hour
+	}
+	return timeout
 }
 
 func NewP2pTransport(
@@ -106,7 +120,7 @@ func (self *P2pTransport) run() {
 	for {
 		// TODO using net.Conn as a stand in for the actual interface
 
-		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		reconnect := NewReconnect(self.getBackoffTimeout())
 		var conn WebRtcConn
 		var err error
 		// note, one side of the P2P connection will be driving the setup process (active).
@@ -121,13 +135,17 @@ func (self *P2pTransport) run() {
 			return
 		}
 		if err != nil {
+			self.failureCount += 1
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-reconnect.After():
+			case <-Pulse():
+				self.failureCount = 0
 			}
 			continue
 		}
+		self.failureCount = 0
 
 		// at this point, the connection should be able to ping the other side
 		// now we wait for the entire stream to be ready by propagating the `ReaderHeader`
