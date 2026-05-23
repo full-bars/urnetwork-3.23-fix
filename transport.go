@@ -419,6 +419,8 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		}
 	}
 
+	var authErrBackoff time.Duration
+
 	for {
 		// wait until we are back in h1 or worse
 		func() {
@@ -516,17 +518,23 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			reconnectDelay := self.settings.ReconnectTimeout
 			if isBackendDegraded() {
-				reconnectDelay = 30 * time.Second
+				if authErrBackoff == 0 {
+					authErrBackoff = self.settings.ReconnectTimeout
+				} else {
+					authErrBackoff = min(authErrBackoff*2, 60*time.Second)
+				}
+			} else {
+				authErrBackoff = 0
 			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(reconnectDelay):
+			case <-time.After(authErrBackoff + self.settings.ReconnectTimeout):
 				continue
 			}
 		}
+		authErrBackoff = 0
 
 		c := func() {
 			defer ws.Close()
@@ -892,6 +900,8 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		}
 	}
 
+	var authErrBackoff time.Duration
+
 	for {
 		// wait until we are back in the specific pt mode or auto mode
 		func() {
@@ -1064,17 +1074,24 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			reconnectDelay := self.settings.ReconnectTimeout
 			if isBackendDegraded() {
-				reconnectDelay = 30 * time.Second
+				if authErrBackoff == 0 {
+					authErrBackoff = self.settings.ReconnectTimeout
+				} else {
+					authErrBackoff = min(authErrBackoff*2, 60*time.Second)
+				}
+			} else {
+				authErrBackoff = 0
 			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(reconnectDelay):
+			case <-time.After(authErrBackoff + self.settings.ReconnectTimeout):
 				continue
 			}
 		}
+		authErrBackoff = 0
+
 		conn := connStream.conn
 		stream := connStream.stream
 
