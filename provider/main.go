@@ -327,6 +327,19 @@ func provide(opts docopt.Opts) {
 	ctx, cancel := context.WithCancel(event.Ctx())
 	defer cancel()
 
+	// Hourly pulse: wakes all stalled transports and proxies so they retry
+	// connections without needing a provider restart.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Hour):
+				connect.TriggerPulse()
+			}
+		}
+	}()
+
 	provideWithProxy := func(proxySettings *connect.ProxySettings) {
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		defer proxyCancel()
