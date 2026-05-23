@@ -516,10 +516,14 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
+			reconnectDelay := self.settings.ReconnectTimeout
+			if isBackendDegraded() {
+				reconnectDelay = 30 * time.Second
+			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-reconnect.After():
+			case <-time.After(reconnectDelay):
 				continue
 			}
 		}
@@ -1060,10 +1064,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					glog.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
+			reconnectDelay := self.settings.ReconnectTimeout
+			if isBackendDegraded() {
+				reconnectDelay = 30 * time.Second
+			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-reconnect.After():
+			case <-time.After(reconnectDelay):
 				continue
 			}
 		}

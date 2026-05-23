@@ -1799,9 +1799,15 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		endTime := time.Now().Add(self.sendBufferSettings.CreateContractTimeout)
 
+		// back off contract retries when the backend is unreachable to reduce API storm
+		contractRetryInterval := self.sendBufferSettings.CreateContractRetryInterval
+		if isBackendDegraded() {
+			contractRetryInterval = 30 * time.Second
+		}
+
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, self.sendBufferSettings.CreateContractRetryInterval)) {
+			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, contractRetryInterval)) {
 				return true
 			}
 		}
@@ -1831,7 +1837,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.sendBufferSettings.ContractFillFraction),
 			)
 
-			if traceNextContract(min(timeout, self.sendBufferSettings.CreateContractRetryInterval)) {
+			if traceNextContract(min(timeout, contractRetryInterval)) {
 				return true
 			}
 		}
