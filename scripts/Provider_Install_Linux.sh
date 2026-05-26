@@ -392,7 +392,7 @@ EOF
         exit 1
     fi
     
-    if ! systemctl --user enable urnetwork-update.timer; then
+    if ! systemctl --user enable --now urnetwork-update.timer; then
         pr_err "Could not enable the newly installed update timer"
         exit 1
     fi
