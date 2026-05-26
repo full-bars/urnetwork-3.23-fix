@@ -6,7 +6,8 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- Auto-update timer no longer silently dead after install or reinstall. The install script was using `systemctl --user enable` instead of `enable --now`, so the timer was registered but never started. On long-running servers that hadn't rebooted, it never fired.
 
 ---
 
