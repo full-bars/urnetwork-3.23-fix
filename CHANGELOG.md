@@ -6,13 +6,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+---
+
+## [v3.23.0-fix.12] — 2026-05-26
+
 ### Fixed
 - Raised `lowmem` mode initial contract size from 16 KiB to 256 KiB. The 16 KiB floor forced constant contract renegotiation that hurt throughput and earnings without meaningfully reducing RAM usage.
 
 ### Added
-- Eco mode (`URNETWORK_PROFILE=eco`): GC-tuned memory profile for providers on constrained systems. Sets GOMEMLIMIT to 75% of detected RAM (cgroup-aware, works correctly inside Docker containers with `--memory` limits), enables `GOGC=50`, and resizes message pools accordingly. Buffers and contract sizes are unchanged so throughput and earnings are unaffected.
-- `runEcoMemoryMonitor` goroutine: watches system `MemAvailable` every 30 seconds and dynamically tightens GC pressure (`GOGC=25` under pressure, `GOGC=10` at critical) when available RAM drops, then relaxes when it recovers. Hysteresis prevents oscillation between states.
-- `urnet-tools eco <on|off>`: toggles eco mode on the systemd provider service, with cgroup-aware RAM detection for correct `GOMEMLIMIT` calculation on both bare metal and Docker hosts.
+- Eco mode (`URNETWORK_PROFILE=eco`): GC-tuned memory profile for providers on RAM-constrained systems. Sets GOMEMLIMIT to 75% of detected RAM (cgroup-aware; reads cgroup v2/v1 limits so Docker `--memory` containers get the correct ceiling), enables `GOGC=50`, and leaves all buffers and contract sizes untouched so throughput and earnings are unaffected.
+- `runEcoMemoryMonitor` goroutine: watches available memory every 30 seconds and dynamically tightens GC pressure when RAM is low — `GOGC=25` under pressure (<300 MiB available), `GOGC=10` at critical (<150 MiB) — then relaxes when it recovers. Hysteresis prevents oscillation. Inside Docker containers, uses cgroup headroom rather than host `MemAvailable` so pressure detection fires correctly.
+- `urnet-tools eco <on|off>`: toggles eco mode on the systemd provider service. Merges eco-specific env vars into the existing override.conf rather than overwriting it, preserving other settings such as ramlogs.
 
 ---
 
