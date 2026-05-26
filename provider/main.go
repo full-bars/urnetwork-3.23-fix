@@ -115,7 +115,7 @@ func detectEffectiveRAMLimitBytes() int64 {
 	return 850 * 1024 * 1024
 }
 
-func applyEcoSettings() {
+func applyEcoSettings(maxMemory connect.ByteCount) {
 	if os.Getenv("URNETWORK_PROFILE") != "eco" {
 		return
 	}
@@ -124,14 +124,13 @@ func applyEcoSettings() {
 		debug.SetGCPercent(50)
 	}
 
-	ramBytes := detectEffectiveRAMLimitBytes()
-	ecoLimit := ramBytes * 75 / 100
-
-	if os.Getenv("GOMEMLIMIT") == "" {
+	// Only set GOMEMLIMIT if neither --max-memory nor the GOMEMLIMIT env var
+	// were provided explicitly; those take precedence.
+	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
+		ramBytes := detectEffectiveRAMLimitBytes()
+		ecoLimit := ramBytes * 75 / 100
 		debug.SetMemoryLimit(ecoLimit)
 	}
-
-	connect.ResizeMessagePools(connect.ByteCount(ecoLimit / 8))
 }
 
 func readMemAvailableMiB() int64 {
@@ -152,6 +151,47 @@ func readMemAvailableMiB() int64 {
 			}
 		}
 	}
+	return -1
+}
+
+// readCgroupAvailableMiB returns the free headroom within the active cgroup
+// memory limit in MiB, or -1 if no cgroup limit is set.
+// This is necessary for correct pressure detection inside Docker containers
+// where /proc/meminfo MemAvailable reflects host RAM, not the container limit.
+func readCgroupAvailableMiB() int64 {
+	const oneTiB = int64(1) << 40
+
+	// cgroup v2
+	maxData, maxErr := os.ReadFile("/sys/fs/cgroup/memory.max")
+	currData, currErr := os.ReadFile("/sys/fs/cgroup/memory.current")
+	if maxErr == nil && currErr == nil {
+		maxStr := strings.TrimSpace(string(maxData))
+		if maxStr != "max" {
+			limit, err1 := strconv.ParseInt(maxStr, 10, 64)
+			curr, err2 := strconv.ParseInt(strings.TrimSpace(string(currData)), 10, 64)
+			if err1 == nil && err2 == nil && limit > 0 && limit < oneTiB {
+				if avail := (limit - curr) / 1024 / 1024; avail >= 0 {
+					return avail
+				}
+				return 0
+			}
+		}
+	}
+
+	// cgroup v1
+	limitData, limitErr := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+	usageData, usageErr := os.ReadFile("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+	if limitErr == nil && usageErr == nil {
+		limit, err1 := strconv.ParseInt(strings.TrimSpace(string(limitData)), 10, 64)
+		usage, err2 := strconv.ParseInt(strings.TrimSpace(string(usageData)), 10, 64)
+		if err1 == nil && err2 == nil && limit > 0 && limit < oneTiB {
+			if avail := (limit - usage) / 1024 / 1024; avail >= 0 {
+				return avail
+			}
+			return 0
+		}
+	}
+
 	return -1
 }
 
@@ -190,6 +230,11 @@ func runEcoMemoryMonitor(ctx context.Context) {
 			avail := readMemAvailableMiB()
 			if avail < 0 {
 				continue
+			}
+			// Inside a Docker container, /proc/meminfo reflects host RAM.
+			// Take the tighter of host available and cgroup headroom.
+			if cgroupAvail := readCgroupAvailableMiB(); cgroupAvail >= 0 && cgroupAvail < avail {
+				avail = cgroupAvail
 			}
 
 			var next ecoState
@@ -510,7 +555,7 @@ func provide(opts docopt.Opts) {
 		clientSettings := connect.DefaultClientSettings()
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
 		applyLowmodeSettings(clientSettings, localUserNatSettings)
-		applyEcoSettings()
+		applyEcoSettings(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()

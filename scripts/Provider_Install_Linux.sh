@@ -1112,23 +1112,35 @@ toggle_ecomode ()
         on)
             pr_info "Enabling eco mode..."
             ram_mib=$(detect_mem_limit_mib)
-            gomem_mib=$(( ram_mib * 65 / 100 ))
-            pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (65%% of ${ram_mib}MiB detected RAM)"
+            gomem_mib=$(( ram_mib * 75 / 100 ))
+            pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (75%% of ${ram_mib}MiB detected RAM)"
 
             mkdir -p "$override_dir"
-            cat > "$override_file" <<EOF
-[Service]
-Environment="URNETWORK_PROFILE=eco"
-Environment="GOMEMLIMIT=${gomem_mib}MiB"
-Environment="GOGC=50"
-EOF
+            # Preserve unrelated settings (e.g. URNETWORK_RAMLOGS) while
+            # writing the eco-specific vars. Strip any prior profile/GC lines
+            # then append the new ones under an existing [Service] header or
+            # create the file fresh.
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_PROFILE=eco"\n' >> "$override_file"
+            printf 'Environment="GOMEMLIMIT=%sMiB"\n' "$gomem_mib" >> "$override_file"
+            printf 'Environment="GOGC=50"\n' >> "$override_file"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
             pr_info "Disabling eco mode..."
-            rm -rf "$override_dir"
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                # Remove the file entirely if nothing meaningful remains
+                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
+                    rm -rf "$override_dir"
+                fi
+            fi
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Eco mode disabled and service restarted."
