@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,7 +54,8 @@ func initGlog() {
 	// unlike unix, the android/ios standard is for diagnostics to go to stdout
 	os.Stderr = os.Stdout
 
-	if os.Getenv("URNETWORK_PROFILE") == "lowmem" || os.Getenv("URNETWORK_RAMLOGS") == "1" {
+	profile := os.Getenv("URNETWORK_PROFILE")
+	if profile == "lowmem" || profile == "eco" || os.Getenv("URNETWORK_RAMLOGS") == "1" {
 		initSHMLogger()
 	}
 }
@@ -73,6 +75,161 @@ func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSe
 
 	// 3. TCP Accordion Window: 1MB -> 32KB
 	localUserNatSettings.TcpBufferSettings.MaxWindowSize = 32 * 1024
+}
+
+// detectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
+// Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
+func detectEffectiveRAMLimitBytes() int64 {
+	// cgroup v2
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		s := strings.TrimSpace(string(data))
+		if s != "max" {
+			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
+	const oneTiB = 1 << 40
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
+			return v
+		}
+	}
+	// /proc/meminfo MemTotal (kB)
+	if f, err := os.Open("/proc/meminfo"); err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+						return v * 1024
+					}
+				}
+			}
+		}
+	}
+	return 850 * 1024 * 1024
+}
+
+func applyEcoSettings() {
+	if os.Getenv("URNETWORK_PROFILE") != "eco" {
+		return
+	}
+
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+
+	ramBytes := detectEffectiveRAMLimitBytes()
+	ecoLimit := ramBytes * 75 / 100
+
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(ecoLimit)
+	}
+
+	connect.ResizeMessagePools(connect.ByteCount(ecoLimit / 8))
+}
+
+func readMemAvailableMiB() int64 {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return v / 1024
+				}
+			}
+		}
+	}
+	return -1
+}
+
+type ecoState int
+
+const (
+	ecoStateNormal   ecoState = iota
+	ecoStatePressure
+	ecoStateCritical
+)
+
+// runEcoMemoryMonitor watches system memory availability and dynamically tightens
+// GC pressure when RAM is low. This complements the static GOMEMLIMIT ceiling set
+// at startup by responding to actual OS memory conditions at runtime.
+func runEcoMemoryMonitor(ctx context.Context) {
+	const (
+		criticalMiB int64 = 150
+		pressureMiB int64 = 300
+		recoveryMiB int64 = 450
+
+		gcNormal   = 50
+		gcPressure = 25
+		gcCritical = 10
+	)
+
+	state := ecoStateNormal
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			avail := readMemAvailableMiB()
+			if avail < 0 {
+				continue
+			}
+
+			var next ecoState
+			switch {
+			case avail <= criticalMiB:
+				next = ecoStateCritical
+			case avail <= pressureMiB:
+				next = ecoStatePressure
+			case avail >= recoveryMiB:
+				next = ecoStateNormal
+			default:
+				// hysteresis zone (300-450 MiB): hold current state
+				if state == ecoStateCritical {
+					runtime.GC()
+				}
+				continue
+			}
+
+			if next == state {
+				if state == ecoStateCritical {
+					runtime.GC()
+				}
+				continue
+			}
+
+			state = next
+			switch state {
+			case ecoStateNormal:
+				debug.SetGCPercent(gcNormal)
+				fmt.Printf("[eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
+			case ecoStatePressure:
+				debug.SetGCPercent(gcPressure)
+				fmt.Printf("[eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
+			case ecoStateCritical:
+				debug.SetGCPercent(gcCritical)
+				runtime.GC()
+				fmt.Printf("[eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
+			}
+		}
+	}
 }
 
 func main() {
@@ -340,6 +497,10 @@ func provide(opts docopt.Opts) {
 		}
 	}()
 
+	if os.Getenv("URNETWORK_PROFILE") == "eco" {
+		go runEcoMemoryMonitor(ctx)
+	}
+
 	provideWithProxy := func(proxySettings *connect.ProxySettings) {
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		defer proxyCancel()
@@ -349,6 +510,7 @@ func provide(opts docopt.Opts) {
 		clientSettings := connect.DefaultClientSettings()
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
 		applyLowmodeSettings(clientSettings, localUserNatSettings)
+		applyEcoSettings()
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
