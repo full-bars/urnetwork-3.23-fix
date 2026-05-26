@@ -6,12 +6,42 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
-- `urnet-tools update` now self-updates from GitHub instead of reinstalling the current version
-- Auto-update default interval changed from daily to weekly (Sunday midnight UTC)
-- `urnet-tools update` no longer stops a running provider — binary is updated on disk and the user is prompted to restart when convenient
-- Added `URNETWORK_RAMLOGS` environment variable to Docker documentation
-- Added log rotation defaults (`--log-opt max-size=10m --log-opt max-file=3`) to sample Docker run command
-- Added RAM Logging section to README explaining mutual exclusivity with `--log-opt`
+_Nothing yet._
+
+---
+
+## [v3.23.0-fix.11] — 2026-05-22
+
+Productionizes the experimental work from the `v3.23.0-beta.1` pre-release (automated proxy recovery pulse and smart exponential backoff), folding it into main.
+
+### Added
+- Autonomous proxy recovery via an hourly global pulse (`pulse.go`). A pulse fired every 60 minutes wakes all goroutines blocked on `Pulse()`, so proxies stuck in exponential backoff recover without a provider restart.
+- Exponential backoff (5s up to 1h cap) for parallel route selection; on pulse, failure counts and dialer health reset so blacklisted routes get a fair retry.
+- Pulse integration and matching backoff for the P2P reconnect loop, which fix.10 did not cover.
+
+---
+
+## [v3.23.0-fix.10] — 2026-05-22
+
+### Fixed
+- Prevented bandwidth leak during backend API outages by gating retries when the backend is degraded:
+  - Contract retry storm: `CreateContract` no longer launches API goroutines every 5s when degraded.
+  - Transport reconnect storm: H1/H3 auth-error loops use exponential backoff (5s to 60s cap) instead of a near-instant retry timer.
+  - Added `lastBackendFailNano` for accurate degraded-state detection without log-rate-limit flicker.
+  - Degraded state clears immediately on successful reconnect rather than after a 60s timeout.
+
+---
+
+## [v3.23.0-fix.9] — 2026-05-21
+
+### Fixed
+- Limited resend amplification during backend outages (`MaxResendCount=16`, `MultiRaceClientCount=2`) so the resend queue can't grow unbounded when the API is unreachable.
+
+### Added
+- `urnet-tools update` now self-updates from GitHub instead of reinstalling the current version.
+- Auto-update default interval changed from daily to weekly (Sunday midnight UTC).
+- `urnet-tools update` no longer stops a running provider; the binary is updated on disk and you're prompted to restart when convenient.
+- Documented `URNETWORK_RAMLOGS` and `URNETWORK_PROFILE=lowmem` in the Docker README, plus log rotation defaults and a RAM Logging section.
 
 ---
 
