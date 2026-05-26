@@ -63,8 +63,8 @@ func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSe
 		return
 	}
 
-	// 1. Initial Contract Size: 2 MiB -> 16 KiB
-	clientSettings.ContractManagerSettings.InitialContractTransferByteCount = 16 * 1024
+	// 1. Initial Contract Size: 2 MiB -> 256 KiB
+	clientSettings.ContractManagerSettings.InitialContractTransferByteCount = 256 * 1024
 
 	// 2. IP Buffer Depth: 256 -> 16
 	localUserNatSettings.SequenceBufferSize = 16
