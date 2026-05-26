@@ -44,7 +44,8 @@ show_help ()
         echo "  update                  Upgrade URnetwork, if updates are available"
         echo "  status                  Show the status of URnetwork provider service"
         echo "  logs                    Stream the provider logs (RAM or journald)"
-        echo "  lowmode <on|off>        Toggle low-memory mode"
+        echo "  eco <on|off>            🌿 Toggle eco mode (GC-tuned for low-RAM systems, full throughput)"
+  echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
         echo "  ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
         echo "  reinstall               Reinstall URnetwork"
         echo "  uninstall               Uninstall URnetwork"
@@ -1034,6 +1035,35 @@ EOF
     esac
 }
 
+# Returns the effective RAM ceiling in MiB.
+# Checks cgroup v2, cgroup v1, then /proc/meminfo MemTotal.
+detect_mem_limit_mib ()
+{
+    # cgroup v2 (Docker with --memory, modern systemd slices)
+    if [ -f /sys/fs/cgroup/memory.max ]; then
+        cg_val=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+        if [ -n "$cg_val" ] && [ "$cg_val" != "max" ]; then
+            echo $(( cg_val / 1024 / 1024 ))
+            return
+        fi
+    fi
+    # cgroup v1 — sentinel for "no limit" is near max int64; ignore anything >= 1 TiB
+    if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        cg_val=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)
+        if [ -n "$cg_val" ] && [ "$cg_val" -lt 1099511627776 ] 2>/dev/null; then
+            echo $(( cg_val / 1024 / 1024 ))
+            return
+        fi
+    fi
+    # Fall back to MemTotal
+    total_ram_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
+    if [ -n "$total_ram_kb" ]; then
+        echo $(( total_ram_kb / 1024 ))
+        return
+    fi
+    echo 850
+}
+
 toggle_lowmode ()
 {
     mode="$1"
@@ -1043,17 +1073,9 @@ toggle_lowmode ()
     case "$mode" in
         on)
             pr_info "Enabling lowmode..."
-            
-            # Calculate 85% of total RAM for GOMEMLIMIT
-            total_ram_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-            if [ -n "$total_ram_kb" ]; then
-                # (RAM_KB * 85 / 100) / 1024 = 85% of RAM in MiB
-                gomem_mib=$(( (total_ram_kb * 85 / 100) / 1024 ))
-                pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of system RAM)"
-            else
-                gomem_mib=850
-                pr_info "Could not detect RAM, falling back to default 850MiB GOMEMLIMIT"
-            fi
+            ram_mib=$(detect_mem_limit_mib)
+            gomem_mib=$(( ram_mib * 85 / 100 ))
+            pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of ${ram_mib}MiB detected RAM)"
 
             mkdir -p "$override_dir"
             cat > "$override_file" <<EOF
@@ -1075,6 +1097,56 @@ EOF
             ;;
         *)
             pr_err "Usage: urnet-tools lowmode <on|off>"
+            exit 1
+            ;;
+    esac
+}
+
+toggle_ecomode ()
+{
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        on)
+            pr_info "Enabling eco mode..."
+            ram_mib=$(detect_mem_limit_mib)
+            gomem_mib=$(( ram_mib * 75 / 100 ))
+            pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (75%% of ${ram_mib}MiB detected RAM)"
+
+            mkdir -p "$override_dir"
+            # Preserve unrelated settings (e.g. URNETWORK_RAMLOGS) while
+            # writing the eco-specific vars. Strip any prior profile/GC lines
+            # then append the new ones under an existing [Service] header or
+            # create the file fresh.
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_PROFILE=eco"\n' >> "$override_file"
+            printf 'Environment="GOMEMLIMIT=%sMiB"\n' "$gomem_mib" >> "$override_file"
+            printf 'Environment="GOGC=50"\n' >> "$override_file"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Eco mode enabled and service restarted."
+            ;;
+        off)
+            pr_info "Disabling eco mode..."
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                # Remove the file entirely if nothing meaningful remains
+                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
+                    rm -rf "$override_dir"
+                fi
+            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Eco mode disabled and service restarted."
+            ;;
+        *)
+            pr_err "Usage: urnet-tools eco <on|off>"
             exit 1
             ;;
     esac
@@ -1123,6 +1195,11 @@ case "$operation" in
 
     ramlogs)
         toggle_ramlogs "$@"
+        exit 0
+        ;;
+
+    eco)
+        toggle_ecomode "$@"
         exit 0
         ;;
 
