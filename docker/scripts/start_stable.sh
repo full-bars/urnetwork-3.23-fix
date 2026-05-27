@@ -187,7 +187,7 @@ func_start_provider(){
         if [ "$failures" -ge 3 ]; then
             log "[ERROR] Too many crashes; clearing JWT and reauthenticating"
             rm -f "$JWT_FILE" || true
-            func_check_credentials
+            func_do_login
             failures=0
         fi
         log "[INFO] Waiting 60s before retry"
