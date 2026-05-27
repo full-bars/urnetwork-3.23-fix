@@ -157,9 +157,6 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(200)
 	}
-
-	fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n",
-		profile, windowSize/1024/1024, queueBytes/1024/1024)
 }
 
 func applyEcoSettings(maxMemory connect.ByteCount) {
@@ -703,6 +700,17 @@ func provide(opts docopt.Opts) {
 	}
 
 	var wg sync.WaitGroup
+
+	if profile := os.Getenv("URNETWORK_PROFILE"); profile == "turbo-v4" || profile == "turbo-v8" {
+		var windowMiB, queueMiB uint32
+		switch profile {
+		case "turbo-v4":
+			windowMiB, queueMiB = 4, 8
+		case "turbo-v8":
+			windowMiB, queueMiB = 8, 16
+		}
+		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
+	}
 
 	if allProxySettings := readProxySettings(); 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
