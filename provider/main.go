@@ -115,6 +115,53 @@ func detectEffectiveRAMLimitBytes() int64 {
 	return 850 * 1024 * 1024
 }
 
+func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
+	profile := os.Getenv("URNETWORK_PROFILE")
+	var windowSize uint32
+	var queueBytes connect.ByteCount
+	switch profile {
+	case "turbo-v4":
+		windowSize = 4 * 1024 * 1024
+		queueBytes = 8 * 1024 * 1024
+	case "turbo-v8":
+		windowSize = 8 * 1024 * 1024
+		queueBytes = 16 * 1024 * 1024
+	default:
+		return
+	}
+
+	// TCP Accordion window — primary per-connection throughput ceiling (window / RTT)
+	localUserNatSettings.TcpBufferSettings.MaxWindowSize = windowSize
+	localUserNatSettings.UdpBufferSettings.MaxWindowSize = windowSize
+
+	// IP-layer packet queue depth
+	localUserNatSettings.SequenceBufferSize = 512
+	localUserNatSettings.TcpBufferSettings.SequenceBufferSize = 512
+	localUserNatSettings.UdpBufferSettings.SequenceBufferSize = 512
+
+	// Transfer-layer send/receive queues — must scale with window or they become the bottleneck
+	clientSettings.SendBufferSettings.ResendQueueMaxByteCount = queueBytes
+	clientSettings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = queueBytes
+
+	// Transfer-layer goroutine queue depth
+	clientSettings.SendBufferSettings.SequenceBufferSize = 64
+	clientSettings.ReceiveBufferSettings.SequenceBufferSize = 64
+
+	// WebRTC per-peer DataChannel buffer
+	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize) * 2
+
+	// Faster contract ramp: reach StandardContractTransferByteCount in 2 contracts instead of 4
+	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 2
+
+	// Let the heap breathe; no GOMEMLIMIT on RAM-rich boxes
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(200)
+	}
+
+	fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n",
+		profile, windowSize/1024/1024, queueBytes/1024/1024)
+}
+
 func applyEcoSettings(maxMemory connect.ByteCount) {
 	if os.Getenv("URNETWORK_PROFILE") != "eco" {
 		return
@@ -555,6 +602,7 @@ func provide(opts docopt.Opts) {
 		clientSettings := connect.DefaultClientSettings()
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
 		applyLowmodeSettings(clientSettings, localUserNatSettings)
+		applyTurboSettings(clientSettings, localUserNatSettings)
 		applyEcoSettings(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
