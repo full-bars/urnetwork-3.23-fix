@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- Turbo mode (`URNETWORK_PROFILE=turbo-v4` / `turbo-v8`): raises the TCP Accordion window ceiling from 1 MiB to 4 MiB (V4) or 8 MiB (V8), removing the ~100–150 Mbps per-connection limit that existed because throughput is bounded by window/RTT. At 10ms RTT: V4 ~400 Mbps ceiling, V8 ~800 Mbps ceiling.
+  - Transfer-layer resend and receive queues scale with the window (8 MiB for V4, 16 MiB for V8) so they don't become the new bottleneck.
+  - IP and transfer goroutine buffer depths doubled (512 and 64 respectively).
+  - WebRTC DataChannel buffer set to 2× window size per peer.
+  - Contract ramp accelerated: `ContractTransferByteSeqScale` 4 → 2 (full speed in 2 contracts instead of 4).
+  - GOGC raised to 200 with no GOMEMLIMIT — lets the heap breathe on RAM-rich boxes.
+- `urnet-tools turbo <v4|v8|off>`: toggles turbo mode on the systemd provider service. Bare `urnet-tools turbo` prints current state.
+- Docker `TURBO=v4` / `TURBO=v8` environment variable: single env var support for containers. The entrypoint translates it to `URNETWORK_PROFILE` before exec; GOGC is handled internally by the binary.
+
 ### Fixed
 - Auto-update timer no longer silently dead after install or reinstall. The install script was using `systemctl --user enable` instead of `enable --now`, so the timer was registered but never started. On long-running servers that hadn't rebooted, it never fired.
 

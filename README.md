@@ -24,10 +24,22 @@ This image integrates the excellent wrapper scripts from the community-maintaine
 *   **vnStat Integration**: Real-time traffic monitoring built-in (accessible via port 8080).
 *   **Multi-Arch**: Native builds for both **AMD64** (Intel/AMD) and **ARM64** (Oracle Cloud, Raspberry Pi, Graviton).
 
-### 4. Advanced Optimization (New)
-For servers with limited resources (e.g., 1GB RAM) or high-volume nodes sensitive to disk I/O latency:
-*   **Lowmode**: A specialized profile that reduces buffer sizes, tunes the Go Garbage Collector (`GOGC=50`), and sets a dynamic `GOMEMLIMIT` (85% of system RAM).
-*   **RAM Logging**: Redirects all provider logs to `/dev/shm` (Linux RAM disk) with a 1MB rotation cap. This eliminates disk I/O overhead and is ideal for weak cloud instances.
+### 4. Performance Profiles
+
+Choose the profile that matches your server's available RAM:
+
+| Profile | Best For | RAM |
+| :--- | :--- | :--- |
+| **Turbo V8** | Maximum throughput, dedicated servers | 16 GiB+ |
+| **Turbo V4** | High throughput, well-provisioned VPS | 4–16 GiB |
+| *(default)* | General use | 2–4 GiB |
+| **Eco** | RAM-constrained, full throughput | 1–2 GiB |
+| **Lowmode** | Minimum RAM, reduced throughput | < 1 GiB |
+
+*   **Turbo V4 / V8**: Raises the TCP Accordion window from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection ceiling that exists at typical internet RTTs. Scales resend/receive queues, buffer depths, and WebRTC buffers to match. GOGC is raised to 200 and GOMEMLIMIT is unset so the heap can use available RAM freely. For RAM-rich boxes where throughput and earnings are the priority.
+*   **Eco**: GC-tuned for RAM-constrained systems. Sets GOMEMLIMIT to 75% of detected RAM (cgroup-aware), enables dynamic GC pressure monitoring, and leaves all buffers untouched so throughput is unaffected.
+*   **Lowmode**: Reduces buffer sizes and sets a hard GOMEMLIMIT (85% of RAM) for the most constrained environments. Some throughput impact.
+*   **RAM Logging**: Redirects all provider logs to `/dev/shm` (Linux RAM disk) with a 1MB rotation cap. Eliminates disk I/O overhead on weak cloud instances.
 
 ---
 
@@ -52,6 +64,11 @@ The installation includes the `urnet-tools` suite for easy management:
 | :--- | :--- |
 | `urnet-tools status` | Check service health and uptime. |
 | `urnet-tools logs` | Stream logs (automatically detects RAM vs Disk). |
+| `urnet-tools turbo v4` | Enable Turbo V4 mode (~400 Mbps ceiling at 10ms RTT). |
+| `urnet-tools turbo v8` | Enable Turbo V8 mode (~800 Mbps ceiling at 10ms RTT). |
+| `urnet-tools turbo off` | Disable turbo mode. |
+| `urnet-tools turbo` | Show current turbo state. |
+| `urnet-tools eco on/off` | Toggle Eco mode (GC-tuned, full throughput, RAM-constrained boxes). |
 | `urnet-tools lowmode on/off` | Toggle Low-Memory mode with dynamic RAM scaling. |
 | `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
 | `urnet-tools update` | Upgrade to the latest version. |
@@ -109,8 +126,9 @@ docker run -d \
 | `PASSWORD` | - | Your password (required if BUILD=stable). |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
 | `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
-| `URNETWORK_PROFILE` | - | Set to `lowmem` to enable a resource-constrained profile: reduces buffer sizes, tunes the Go GC (`GOGC=50`), sets a dynamic memory limit (85% of system RAM), and enables RAM logging. Ideal for 1GB RAM nodes. Cannot be used with `--log-opt`. |
+| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. For lowmem/eco, use this variable. Cannot be used with `--log-opt` when set to `lowmem`. |
 
 ### RAM Logging (Optional)
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
