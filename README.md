@@ -95,11 +95,14 @@ docker run -d \
   -e URNETWORK_RAMLOGS=0 \
   -e BUILD='jwt' \
   -e ENABLE_VNSTAT=true \
+  -v urnetwork_config:/root/.urnetwork \
   -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
+
+> **Note:** The `-v urnetwork_config:/root/.urnetwork` volume persists your JWT so Watchtower image updates and container restarts don't require re-authentication. Auth codes are single-use — without this volume, any restart after a Watchtower update will fail. Use a separate named volume per container if running multiple instances.
 
 **Using Docker Hub (Alternative):**
 If you experience `denied` errors or rate-limiting on GitHub, use our official Docker Hub mirror:
@@ -113,6 +116,7 @@ docker run -d \
   --sysctl net.ipv4.ip_forward=1 \
   -e BUILD='jwt' \
   -e ENABLE_VNSTAT=true \
+  -v urnetwork_config:/root/.urnetwork \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
