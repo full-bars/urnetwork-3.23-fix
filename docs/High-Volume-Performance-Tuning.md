@@ -6,6 +6,56 @@ This guide explains the architectural tuning parameters available in the `urnetw
 
 ---
 
+## 0. Turbo Mode (V4 / V8) — For RAM-Rich Servers
+
+The default 1 MiB TCP Accordion window creates a hard per-connection throughput ceiling: `max_speed = window / RTT`. At a typical 10ms RTT that's ~100 Mbps per connection regardless of available server bandwidth. Turbo mode raises this ceiling.
+
+### Enabling Turbo Mode
+
+**Binary (systemd):**
+```bash
+urnet-tools turbo v4    # 4 MiB window — ~400 Mbps ceiling at 10ms RTT
+urnet-tools turbo v8    # 8 MiB window — ~800 Mbps ceiling at 10ms RTT
+urnet-tools turbo off   # return to default
+urnet-tools turbo       # show current state
+```
+
+**Docker:**
+```bash
+-e TURBO=v4    # or TURBO=v8
+```
+
+### What Gets Tuned
+
+| Parameter | Default | V4 | V8 |
+| :--- | :--- | :--- | :--- |
+| TCP/UDP Accordion window | 1 MiB | 4 MiB | 8 MiB |
+| Transfer resend queue | 2 MiB | 8 MiB | 16 MiB |
+| Transfer receive queue | 2.5 MiB | 8 MiB | 16 MiB |
+| IP sequence buffer depth | 256 | 512 | 512 |
+| Transfer goroutine buffer depth | 16 | 64 | 64 |
+| WebRTC DataChannel buffer | 4 MiB/peer | 8 MiB/peer | 16 MiB/peer |
+| Contract ramp (SeqScale) | 4 | 2 | 2 |
+| GOGC | 100 | 200 | 200 |
+| GOMEMLIMIT | runtime default | unset | unset |
+
+### Theoretical Speed Ceilings
+
+| RTT | Default | V4 | V8 |
+| :--- | :--- | :--- | :--- |
+| 5ms (same city) | ~210 Mbps | ~838 Mbps | ~1.6 Gbps |
+| 10ms (same region) | ~105 Mbps | ~419 Mbps | ~838 Mbps |
+| 20ms (nearby country) | ~52 Mbps | ~210 Mbps | ~419 Mbps |
+| 50ms (cross-continent) | ~21 Mbps | ~84 Mbps | ~168 Mbps |
+
+### When to Use Each Level
+
+- **V4**: Good starting point for boxes with 4–16 GiB RAM. Lower memory pressure per connection than V8.
+- **V8**: Maximum throughput for dedicated servers with 16 GiB+ RAM. Higher per-connection memory cost — validate RSS under load before deploying broadly.
+- **Do not use on RAM-constrained boxes.** The larger window and queues will increase memory usage under load. Use the default, eco, or lowmode profiles instead.
+
+---
+
 ## 1. Signaling & Contract Management
 
 In the URnetwork protocol, a **Contract** represents the authorized bandwidth quota for a connection. Managing these contracts efficiently is critical for stability in high-volume environments.

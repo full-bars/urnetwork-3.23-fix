@@ -148,6 +148,36 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 
 ---
 
+## 7. Turbo Mode (V4 / V8)
+
+**Purpose**: Remove the ~100–150 Mbps per-connection throughput ceiling on RAM-rich servers. The ceiling exists because per-connection bandwidth is bounded by `MaxWindowSize / RTT` — at the 1 MiB default and a 10ms RTT that's ~100 Mbps. Turbo raises the window to 4 or 8 MiB and scales all dependent buffers accordingly.
+
+**Files Modified**: `provider/main.go`, `scripts/Provider_Install_Linux.sh`, `docker/scripts/entrypoint.sh`
+
+**Changes**:
+- `applyTurboSettings()` in `provider/main.go` — reads `URNETWORK_PROFILE=turbo-v4` or `turbo-v8` and applies:
+  - `MaxWindowSize`: 1 MiB → 4 MiB (V4) / 8 MiB (V8) for both TCP and UDP
+  - `ResendQueueMaxByteCount` / `ReceiveQueueMaxByteCount`: scaled to 2× window (8/16 MiB)
+  - IP-layer `SequenceBufferSize`: 256 → 512
+  - Transfer-layer `SequenceBufferSize`: 16 → 64
+  - WebRTC `ReceiveBufferSize`: 2× window per peer
+  - `ContractTransferByteSeqScale`: 4 → 2 (reaches full contract size in 2 contracts)
+  - `GOGC`: 200, no GOMEMLIMIT
+- `toggle_turbomode()` in `Provider_Install_Linux.sh` — `urnet-tools turbo <v4|v8|off>` command
+- `entrypoint.sh` — translates Docker `TURBO=v4/v8` env var to `URNETWORK_PROFILE` before exec
+
+**Theoretical speed ceiling**:
+- V4 at 10ms RTT: ~400 Mbps / V8: ~800 Mbps (vs ~100 Mbps default)
+
+**How to Identify in New Upstream**:
+- If upstream changes `TcpBufferSettings`, `SendBufferSettings`, or `ReceiveBufferSettings` struct fields, verify `applyTurboSettings` still sets valid fields
+- If upstream changes `WebRtcSettings`, verify `ReceiveBufferSize` field still exists
+- `ContractTransferByteSeqScale` lives in `ContractManagerSettings` — verify path if contract manager is refactored
+
+**Status**: ✅ Shipped in fix.13. Custom to this fork. Needs netem/Detroit testing before tuning values further.
+
+---
+
 ## Porting Checklist for Future Upstream Versions
 
 When merging a new upstream version (e.g., v3.24, v4.0):
@@ -162,6 +192,7 @@ When merging a new upstream version (e.g., v3.24, v4.0):
 - [ ] **Error logging**: Check for new error paths; apply rate-limiting if spam appears ([t]auth, [contract]oob, [r]drop)
 - [ ] **Docker**: If upstream adds Dockerfile, review and merge; preserve BUILD env var routing and multi-arch build
 - [ ] **Makefile**: Preserve greenteagc, strip flags, version injection
+- [ ] **Turbo mode**: Verify `TcpBufferSettings`, `SendBufferSettings`, `ReceiveBufferSettings`, and `WebRtcSettings` struct fields used in `applyTurboSettings` still exist; re-check field names if contract manager or IP stack is refactored
 
 ### Testing
 - [ ] Build for current platform: `go build -ldflags "-X main.Version=dev" -o provider_bin ./provider/main.go`
