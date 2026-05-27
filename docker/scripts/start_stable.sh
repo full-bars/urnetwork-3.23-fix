@@ -112,11 +112,18 @@ func_start_vnstat() {
 
 # === Authentication (JWT) ===
 func_do_login() {
-    rm -f "$JWT_FILE" || true
-    log "[INFO] Removed existing JWT (if any)"
-    
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
-    
+
+    # If a JWT already exists (e.g. persisted via a Docker volume), skip auth entirely.
+    # This is the Watchtower-safe path: container restarts after an image update reuse
+    # the existing token rather than hitting the API again with a spent auth code.
+    if [ -s "$JWT_FILE" ]; then
+        log "[INFO] Existing JWT found at $JWT_FILE — skipping authentication"
+        return 0
+    fi
+
+    log "[INFO] No JWT found, starting authentication flow..."
+
     # Retry loop for authentication
     while true; do
         log "[INFO] Sleeping 15s before obtaining new JWT..."
