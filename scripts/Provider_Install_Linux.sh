@@ -45,7 +45,9 @@ show_help ()
         echo "  status                  Show the status of URnetwork provider service"
         echo "  logs                    Stream the provider logs (RAM or journald)"
         echo "  eco <on|off>            🌿 Toggle eco mode (GC-tuned for low-RAM systems, full throughput)"
-  echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
+        echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
+        echo "  turbo <v4|v8|off>       🚀 Turbo mode: raise throughput limits for RAM-rich boxes"
+        echo "                          v4=4MiB window (~400Mbps/10ms), v8=8MiB (~800Mbps/10ms)"
         echo "  ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
         echo "  reinstall               Reinstall URnetwork"
         echo "  uninstall               Uninstall URnetwork"
@@ -1152,6 +1154,53 @@ toggle_ecomode ()
     esac
 }
 
+toggle_turbomode ()
+{
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        v4|v8)
+            pr_info "Enabling turbo %s..." "$mode"
+            mkdir -p "$override_dir"
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_PROFILE=turbo-%s"\n' "$mode" >> "$override_file"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Turbo %s enabled and service restarted." "$mode"
+            ;;
+        off)
+            pr_info "Disabling turbo mode..."
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
+                    rm -rf "$override_dir"
+                fi
+            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Turbo mode disabled and service restarted."
+            ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=turbo-' "$override_file" 2>/dev/null; then
+                level=$(grep 'URNETWORK_PROFILE=turbo-' "$override_file" | sed 's/.*turbo-\([^"]*\).*/\1/')
+                pr_info "Turbo mode is enabled: %s" "$level"
+            else
+                pr_info "Turbo mode is off."
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools turbo <v4|v8|off>"
+            exit 1
+            ;;
+    esac
+}
+
 case "$operation" in
     install|update|reinstall)
         do_install "$@"
@@ -1207,7 +1256,12 @@ case "$operation" in
         toggle_lowmode "$@"
         exit 0
         ;;
-    
+
+    turbo)
+        toggle_turbomode "$@"
+        exit 0
+        ;;
+
     *)
         pr_err "Invalid operation '%s'" "$operation"
         exit 1
