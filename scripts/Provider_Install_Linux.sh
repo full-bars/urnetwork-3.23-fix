@@ -968,7 +968,7 @@ show_logs ()
     override_file="$HOME/.config/systemd/user/urnetwork.service.d/override.conf"
     is_ramlog=0
     if [ -f "$override_file" ]; then
-        if grep -q "URNETWORK_PROFILE=lowmem" "$override_file" || grep -q "URNETWORK_RAMLOGS=1" "$override_file"; then
+        if grep -q "URNETWORK_PROFILE=lowmem" "$override_file" || grep -q "URNETWORK_PROFILE=eco" "$override_file" || grep -q "URNETWORK_RAMLOGS=1" "$override_file"; then
             is_ramlog=1
         fi
     fi
