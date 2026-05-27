@@ -1166,6 +1166,9 @@ toggle_turbomode ()
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                if ! grep -q '^\[Service\]' "$override_file" 2>/dev/null; then
+                    sed -i '1i[Service]' "$override_file"
+                fi
             else
                 printf '[Service]\n' > "$override_file"
             fi
