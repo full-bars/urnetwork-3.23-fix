@@ -24,6 +24,21 @@ log() {
 BUILD="${BUILD:-stable}"
 BUILD="$(echo "$BUILD" | tr '[:upper:]' '[:lower:]')"
 
+# Translate TURBO=v4|v8 into URNETWORK_PROFILE so the binary picks it up.
+# GOGC is handled internally by the binary when turbo is active.
+TURBO="$(echo "${TURBO:-}" | tr '[:upper:]' '[:lower:]')"
+case "$TURBO" in
+  v4|v8)
+    export URNETWORK_PROFILE="turbo-${TURBO}"
+    log "Turbo mode: ${TURBO} (window=$([ "$TURBO" = "v4" ] && echo 4 || echo 8)MiB)"
+    ;;
+  "")
+    ;;
+  *)
+    log "WARNING: unknown TURBO value '$TURBO' — ignoring (valid: v4, v8)"
+    ;;
+esac
+
 log "Script version: v3.23.2026"
 #log "Starting with"
 #log "*** *** *** *** *** *** *** *** *** ***"
