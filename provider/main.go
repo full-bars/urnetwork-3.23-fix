@@ -407,7 +407,8 @@ Options:
 func auth(opts docopt.Opts) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error: could not determine home directory: %v\n", err)
+		os.Exit(1)
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	jwtPath := filepath.Join(urNetworkDir, "jwt")
@@ -488,13 +489,16 @@ func auth(opts docopt.Opts) {
 		}
 
 		if loginResult.Error != nil {
-			panic(loginResult.Error)
+			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", loginResult.Error)
+			os.Exit(1)
 		}
 		if loginResult.Result.Error != nil {
-			panic(fmt.Errorf("%s", loginResult.Result.Error.Message))
+			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", loginResult.Result.Error.Message)
+			os.Exit(1)
 		}
 		if loginResult.Result.VerificationRequired != nil {
-			panic(fmt.Errorf("Verification required for %s. Use the app or web to complete account setup.", loginResult.Result.VerificationRequired.UserAuth))
+			fmt.Fprintf(os.Stderr, "Error: verification required for %s — complete account setup via the app or web first.\n", loginResult.Result.VerificationRequired.UserAuth)
+			os.Exit(1)
 		}
 
 		byJwt = loginResult.Result.Network.ByJwt
@@ -527,10 +531,13 @@ func auth(opts docopt.Opts) {
 		}
 
 		if authCodeLoginResult.Error != nil {
-			panic(authCodeLoginResult.Error)
+			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", authCodeLoginResult.Error)
+			os.Exit(1)
 		}
 		if authCodeLoginResult.Result.Error != nil {
-			panic(fmt.Errorf("%s", authCodeLoginResult.Result.Error.Message))
+			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", authCodeLoginResult.Result.Error.Message)
+			fmt.Fprintf(os.Stderr, "Hint: auth codes are single-use. If this container was restarted, mount a persistent volume at /root/.urnetwork so the JWT survives restarts.\n")
+			os.Exit(1)
 		}
 
 		byJwt = authCodeLoginResult.Result.ByJwt
@@ -538,7 +545,8 @@ func auth(opts docopt.Opts) {
 
 	if byJwt != "" {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Error: could not create %s: %v\n", urNetworkDir, err)
+			os.Exit(1)
 		}
 		os.WriteFile(jwtPath, []byte(byJwt), 0700)
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -611,6 +619,13 @@ func provide(opts docopt.Opts) {
 		clientStrategy := connect.NewClientStrategy(proxyCtx, clientStrategySettings)
 
 		byClientJwt, clientId, err := func() (string, connect.Id, error) {
+			// Consecutive failures where the JWT file exists but the API rejects it
+			// (expired, revoked, or bad token). After maxAuthFailures the binary
+			// exits so the shell restart loop can delete the JWT and re-authenticate.
+			// "Jwt does not exist" is a configuration issue, not a bad token — it
+			// retries indefinitely until the user runs 'urnetwork auth'.
+			const maxAuthFailures = 10
+			authFailures := 0
 			for {
 				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts)
 				if err == nil {
@@ -618,6 +633,7 @@ func provide(opts docopt.Opts) {
 				}
 
 				if strings.Contains(err.Error(), "Jwt does not exist") {
+					authFailures = 0
 					fmt.Printf("Authentication missing. Please run 'urnetwork auth' to configure your provider.\n")
 					retryDelay := 30 * time.Second
 					select {
@@ -626,6 +642,11 @@ func provide(opts docopt.Opts) {
 					case <-time.After(retryDelay):
 						continue
 					}
+				}
+
+				authFailures++
+				if authFailures >= maxAuthFailures {
+					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts, JWT may be expired or revoked: %w", maxAuthFailures, err)
 				}
 
 				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
@@ -638,7 +659,8 @@ func provide(opts docopt.Opts) {
 			}
 		}()
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 
 		instanceId := connect.NewId()
