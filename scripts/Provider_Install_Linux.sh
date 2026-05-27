@@ -1170,7 +1170,6 @@ toggle_turbomode ()
                 printf '[Service]\n' > "$override_file"
             fi
             printf 'Environment="URNETWORK_PROFILE=turbo-%s"\n' "$mode" >> "$override_file"
-            printf 'Environment="GOGC=200"\n' >> "$override_file"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Turbo %s enabled and service restarted." "$mode"
