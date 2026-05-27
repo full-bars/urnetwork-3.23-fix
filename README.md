@@ -130,6 +130,30 @@ docker run -d \
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
 | `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces IP/transfer buffer sizes and sets GOMEMLIMIT=85% RAM while preserving the 256 KiB contract floor. Cannot be used with `--log-opt` when set to `lowmem`. |
 
+### Persistent JWT (Required for Watchtower / Auto-Updates)
+
+By default the JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it — Watchtower updates and `--restart=unless-stopped` restarts will force a re-authentication. If you're running many containers and they all hit the API simultaneously after an update, the auth code gets exhausted and containers start panicking.
+
+**Fix**: mount a named volume or host path at `/root/.urnetwork`:
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=stable \
+  -e USER_AUTH=you@example.com \
+  -e PASSWORD=yourpassword \
+  -v urnetwork_config:/root/.urnetwork \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+With the volume in place, the startup script detects the existing JWT and skips authentication entirely. The provider starts immediately without touching the API. Auth codes are only used once — on first run or after a manual `docker volume rm`.
+
 ### RAM Logging (Optional)
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
 
