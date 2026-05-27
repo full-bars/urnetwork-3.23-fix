@@ -38,7 +38,7 @@ Choose the profile that matches your server's available RAM:
 
 *   **Turbo V4 / V8**: Raises the TCP Accordion window from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection ceiling that exists at typical internet RTTs. Scales resend/receive queues, buffer depths, and WebRTC buffers to match. GOGC is raised to 200 and GOMEMLIMIT is unset so the heap can use available RAM freely. For RAM-rich boxes where throughput and earnings are the priority.
 *   **Eco**: GC-tuned for RAM-constrained systems. Sets GOMEMLIMIT to 75% of detected RAM (cgroup-aware), enables dynamic GC pressure monitoring, and leaves all buffers untouched so throughput is unaffected.
-*   **Lowmode**: Reduces buffer sizes and sets a hard GOMEMLIMIT (85% of RAM) for the most constrained environments. Some throughput impact.
+*   **Lowmode**: Reduces buffer sizes and sets a hard GOMEMLIMIT (85% of RAM) for the most constrained environments. Initial contract size is kept at 256 KiB (not reduced) so throughput ramp-up is preserved even in low-memory mode.
 *   **RAM Logging**: Redirects all provider logs to `/dev/shm` (Linux RAM disk) with a 1MB rotation cap. Eliminates disk I/O overhead on weak cloud instances.
 
 ---
@@ -128,7 +128,7 @@ docker run -d \
 | `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
-| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. For lowmem/eco, use this variable. Cannot be used with `--log-opt` when set to `lowmem`. |
+| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces IP/transfer buffer sizes and sets GOMEMLIMIT=85% RAM while preserving the 256 KiB contract floor. Cannot be used with `--log-opt` when set to `lowmem`. |
 
 ### RAM Logging (Optional)
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
