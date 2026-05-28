@@ -1322,8 +1322,12 @@ do_optimize ()
         exec sudo "$0" "$operation" "$@"
     fi
 
-    # Increase ulimit immediately for the session to prevent "Too many open files" during optimization
+    # 0. Immediate Pre-Optimization (prevents failures during the optimization itself)
+    # Increase ulimit and inotify limits immediately for the session to prevent "Too many open files"
     ulimit -n 1048576 2>/dev/null || true
+    sysctl -w fs.inotify.max_user_watches=524288 >/dev/null 2>&1 || true
+    sysctl -w fs.inotify.max_user_instances=512 >/dev/null 2>&1 || true
+    sysctl -w fs.file-max=2097152 >/dev/null 2>&1 || true
 
     pr_info "⚡ Starting System Optimizer..."
 
