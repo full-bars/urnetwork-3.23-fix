@@ -150,7 +150,7 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 
 ## 7. Turbo Mode (V4 / V8)
 
-**Purpose**: Remove the ~100–150 Mbps per-connection throughput ceiling on RAM-rich servers. The ceiling exists because per-connection bandwidth is bounded by `MaxWindowSize / RTT` — at the 1 MiB default and a 10ms RTT that's ~100 Mbps. Turbo raises the window to 4 or 8 MiB and scales all dependent buffers accordingly.
+**Purpose**: Remove the per-connection throughput ceiling on RAM-rich servers. The ceiling exists because per-connection bandwidth is bounded by `MaxWindowSize / RTT`. Turbo raises the window to 4 or 8 MiB and scales all dependent buffers accordingly.
 
 **Files Modified**: `provider/main.go`, `scripts/Provider_Install_Linux.sh`, `docker/scripts/entrypoint.sh`
 
@@ -166,8 +166,9 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 - `toggle_turbomode()` in `Provider_Install_Linux.sh` — `urnet-tools turbo <v4|v8|off>` command
 - `entrypoint.sh` — translates Docker `TURBO=v4/v8` env var to `URNETWORK_PROFILE` before exec
 
-**Theoretical speed ceiling**:
-- V4 at 10ms RTT: ~400 Mbps / V8: ~800 Mbps (vs ~100 Mbps default)
+**Impact**:
+- Significantly higher theoretical throughput ceilings for low-latency paths.
+- Removes the mathematical cap inherent in the upstream window defaults.
 
 **How to Identify in New Upstream**:
 - If upstream changes `TcpBufferSettings`, `SendBufferSettings`, or `ReceiveBufferSettings` struct fields, verify `applyTurboSettings` still sets valid fields

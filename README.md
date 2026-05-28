@@ -106,7 +106,7 @@ The installation includes the `urnet-tools` suite for easy management:
 | `PASSWORD` | - | Your password (required if `BUILD=stable`). |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
 | `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
-| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
+| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the per-connection limit that exists at standard window sizes. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
 | `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
 | `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires a JSON payload when the backend becomes unreachable and again when it recovers. See [Outage Alerting](#outage-alerting-optional). |

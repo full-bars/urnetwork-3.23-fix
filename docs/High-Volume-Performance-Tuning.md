@@ -107,16 +107,19 @@ The `auto` profile is the recommended setting for most users. It detects availab
 
 ### Turbo Mode (V4 / V8)
 
-The default 1 MiB TCP Accordion window creates a hard per-connection throughput ceiling: `throughput = window / RTT`. At a typical 10ms RTT that caps each connection at ~100 Mbps regardless of available bandwidth. Turbo mode raises this ceiling by scaling the window and all dependent buffers.
+The default 1 MiB TCP Accordion window creates a theoretical per-connection throughput ceiling based on latency: `ceiling = window / RTT`. At a typical 10ms RTT, the protocol is mathematically capped at ~100 Mbps regardless of available bandwidth. Turbo mode raises this mathematical ceiling by scaling the window and all dependent buffers.
 
-**Theoretical ceilings per connection:**
+**Theoretical Window Ceilings (Mathematical Maximums):**
 
-| RTT | Default | V4 | V8 |
+| RTT (Latency) | Upstream/Fork Default (1 MiB) | Turbo V4 (4 MiB) | Turbo V8 (8 MiB) |
 | :--- | :--- | :--- | :--- |
-| 5 ms | ~210 Mbps | ~838 Mbps | ~1.6 Gbps |
-| 10 ms | ~105 Mbps | ~419 Mbps | ~838 Mbps |
-| 20 ms | ~52 Mbps | ~210 Mbps | ~419 Mbps |
-| 50 ms | ~21 Mbps | ~84 Mbps | ~168 Mbps |
+| 5 ms | ~1.6 Gbps (unlikely real-world) | ~6.4 Gbps | ~12.8 Gbps |
+| 10 ms | ~100 Mbps | ~400 Mbps | ~800 Mbps |
+| 20 ms | ~50 Mbps | ~200 Mbps | ~400 Mbps |
+| 50 ms | ~20 Mbps | ~80 Mbps | ~160 Mbps |
+
+*Actual throughput will always be lower due to packet loss, processing overhead, and network congestion.*
+
 
 **What turbo changes:**
 - TCP/UDP Accordion window ceiling: 1 MiB → 4 MiB (V4) / 8 MiB (V8)

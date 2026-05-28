@@ -47,7 +47,7 @@ show_help ()
         echo "  eco <on|off>            🌿 Toggle eco mode (GC-tuned for low-RAM systems, full throughput)"
         echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
         echo "  $me [options] turbo <v4|v8|off>       🚀 Turbo mode: raise throughput limits for RAM-rich boxes"
-        echo "                          v4=4MiB window (~400Mbps/10ms), v8=8MiB (~800Mbps/10ms)"
+        echo "                          v4=4MiB window, v8=8MiB window (higher ceilings for low-RTT paths)"
         echo "  $me [options] auto <on|off>           🧠 Auto-Tune: detect hardware and pick best performance profile"
         echo "  $me [options] optimize          ⚡ Optimize OS limits (ulimit, conntrack) for high volume"
         echo "  $me [options] ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
