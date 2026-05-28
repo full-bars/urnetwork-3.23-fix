@@ -1400,6 +1400,8 @@ net.netfilter.nf_conntrack_tcp_timeout_established = $timeout
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 fs.file-max = 2097152
 EOF
         sysctl --system >/dev/null 2>&1 || pr_err "Warning: some sysctl settings could not be applied."
