@@ -617,12 +617,13 @@ do_install ()
     if command -v jq > /dev/null; then
         asset="$(echo "$release" | tr -d '\000-\037' | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-"))' 2>/dev/null)"
 
-        if [ -z "$asset" ]; then
-            dl_url=""
-        else
+        if [ -n "$asset" ]; then
             dl_url="$(echo "$asset" | jq -r '.browser_download_url' 2>/dev/null)"
         fi
-    elif command -v python3 > /dev/null; then
+    fi
+
+    # Fall back to Python if jq failed or is not available
+    if [ -z "$dl_url" ] && command -v python3 > /dev/null; then
         dl_url="$(echo "$release" | tr -d '\000-\037' | python3 -c 'import sys, json
 try:
     data = json.load(sys.stdin)
@@ -632,13 +633,10 @@ try:
 except (json.JSONDecodeError, KeyError, StopIteration):
     print("")
 ' 2>/dev/null)"
-    else
-        pr_err "Neither python3 nor jq is available"
-        exit 1
     fi
 
     if [ -z "$dl_url" ]; then
-        pr_err "No download URL could be found for tag: %s" "$tag"
+        pr_err "No download URL could be found for tag: %s (GitHub API may be unreachable or returning invalid data)" "$tag"
         exit 1
     fi
     
