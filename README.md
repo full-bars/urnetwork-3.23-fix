@@ -278,7 +278,12 @@ Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification when the provider l
 
 `event` is either `outage_start` or `outage_clear`. The provider logs `[outage]` state transitions to stdout regardless of whether a webhook URL is set, so they are always visible in `docker logs`.
 
-**Example: Slack incoming webhook**
+**Example: Discord**
+```
+URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+```
+
+**Example: Slack**
 ```
 URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
 ```

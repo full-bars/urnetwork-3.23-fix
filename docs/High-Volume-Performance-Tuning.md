@@ -227,10 +227,11 @@ Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification on each outage even
 
 **Per-event cooldown:** webhook calls have a 5-minute per-event cooldown to prevent spam at the recovery boundary (e.g., if the backend briefly flickers back and forth). Webhook delivery is non-blocking — a slow or unreachable endpoint never delays the poll loop.
 
-**Supported services:** any HTTP endpoint accepting POST with a JSON body. Tested with Slack, Discord, PagerDuty, and ntfy.
+**Supported services:** any HTTP endpoint accepting POST with a JSON body. Tested with Discord, Slack, PagerDuty, and ntfy.
 
 ```bash
 # Examples
+URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
 URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
 ```
