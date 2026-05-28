@@ -45,11 +45,7 @@ var webhookClient = &http.Client{Timeout: 5 * time.Second}
 var Version string
 
 func init() {
-	// debug.SetGCPercent(10)
-
-	initGlog()
-
-	// initPprof()
+	// initGlog is now called explicitly in main to allow audit-based tuning
 }
 
 func initGlog() {
@@ -63,6 +59,11 @@ func initGlog() {
 	if profile == "lowmem" || profile == "eco" || os.Getenv("URNETWORK_RAMLOGS") == "1" {
 		initSHMLogger()
 	}
+}
+
+func RunStartupAudit() (slowDisk bool, lowSpace bool) {
+	fmt.Printf("[audit] Running system checks...\n")
+	return connect.RunSystemAudit()
 }
 
 func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
@@ -80,44 +81,6 @@ func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSe
 
 	// 3. TCP Accordion Window: 1MB -> 32KB
 	localUserNatSettings.TcpBufferSettings.MaxWindowSize = 32 * 1024
-}
-
-// detectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
-// Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
-func detectEffectiveRAMLimitBytes() int64 {
-	// cgroup v2
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		s := strings.TrimSpace(string(data))
-		if s != "max" {
-			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
-				return v
-			}
-		}
-	}
-	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
-	const oneTiB = 1 << 40
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
-			return v
-		}
-	}
-	// /proc/meminfo MemTotal (kB)
-	if f, err := os.Open("/proc/meminfo"); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "MemTotal:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						return v * 1024
-					}
-				}
-			}
-		}
-	}
-	return 850 * 1024 * 1024
 }
 
 func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
@@ -139,44 +102,32 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	localUserNatSettings.TcpBufferSettings.MaxWindowSize = windowSize
 	localUserNatSettings.UdpBufferSettings.MaxWindowSize = windowSize
 
-	// IP-layer packet queue depth
-	localUserNatSettings.SequenceBufferSize = 512
-	localUserNatSettings.TcpBufferSettings.SequenceBufferSize = 512
-	localUserNatSettings.UdpBufferSettings.SequenceBufferSize = 512
-
 	// Transfer-layer send/receive queues — must scale with window or they become the bottleneck
 	clientSettings.SendBufferSettings.ResendQueueMaxByteCount = queueBytes
 	clientSettings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = queueBytes
 
-	// Transfer-layer goroutine queue depth
-	clientSettings.SendBufferSettings.SequenceBufferSize = 64
-	clientSettings.ReceiveBufferSettings.SequenceBufferSize = 64
+	// Sequence buffer depths (IP layer and Transfer layer)
+	localUserNatSettings.SequenceBufferSize = 512
+	localUserNatSettings.TcpBufferSettings.SequenceBufferSize = 512
+	localUserNatSettings.UdpBufferSettings.SequenceBufferSize = 512
+	clientSettings.StreamManagerSettings.SequenceBufferSize = 64
 
-	// WebRTC per-peer DataChannel buffer
-	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize) * 2
+	// WebRTC DataChannel buffer (approx 2x TCP window)
+	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize * 2)
 
-	// Faster contract ramp: reach StandardContractTransferByteCount in 2 contracts instead of 4
+	// Contract ramp — accelerate scaling: 4 -> 2 (reach full speed in 2 contracts)
 	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 2
 
-	// Let the heap breathe; no GOMEMLIMIT on RAM-rich boxes
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(200)
-	}
+	// GOGC/Memory Tuning — Turbo users usually have plenty of RAM
+	debug.SetGCPercent(200)
+	debug.SetMemoryLimit(-1)
 }
 
-// applyPoolAutoSize scales the message pool free-list capacity to RAM/32 at
-// startup. The pool default (1 MiB) is badly undersized for 4000+ proxies —
-// almost every packet misses the pool and falls back to a GC allocation.
-// Skipped when lowmem is active (it manages its own footprint) or when
-// --max-memory was set (that path already resizes via maxMemory/8).
-func applyPoolAutoSize(maxMemory connect.ByteCount) {
-	if maxMemory > 0 {
-		return
-	}
+func applyPoolAutoSize() {
 	if os.Getenv("URNETWORK_PROFILE") == "lowmem" {
 		return
 	}
-	ram := detectEffectiveRAMLimitBytes()
+	ram := connect.DetectEffectiveRAMLimitBytes()
 	poolBytes := connect.ByteCount(ram) / 32
 	const floor = 8 * 1024 * 1024
 	const ceiling = 256 * 1024 * 1024
@@ -186,23 +137,22 @@ func applyPoolAutoSize(maxMemory connect.ByteCount) {
 	if poolBytes > ceiling {
 		poolBytes = ceiling
 	}
+
+	fmt.Printf("[pool] message pool %dMiB (RAM=%dMiB)\n",
+		poolBytes/1024/1024, ram/1024/1024)
+
 	connect.ResizeMessagePools(poolBytes)
-	fmt.Printf("[pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
 }
 
 func applyEcoSettings(maxMemory connect.ByteCount) {
-	if os.Getenv("URNETWORK_PROFILE") != "eco" {
+	if os.Getenv("URNETWORK_PROFILE") != "eco" && os.Getenv("URNETWORK_PROFILE") != "lowmem" {
 		return
-	}
-
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(50)
 	}
 
 	// Only set GOMEMLIMIT if neither --max-memory nor the GOMEMLIMIT env var
 	// were provided explicitly; those take precedence.
 	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
-		ramBytes := detectEffectiveRAMLimitBytes()
+		ramBytes := connect.DetectEffectiveRAMLimitBytes()
 		ecoLimit := ramBytes * 75 / 100
 		debug.SetMemoryLimit(ecoLimit)
 	}
@@ -214,6 +164,7 @@ func readMemAvailableMiB() int64 {
 		return -1
 	}
 	defer f.Close()
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -229,8 +180,7 @@ func readMemAvailableMiB() int64 {
 	return -1
 }
 
-// readCgroupAvailableMiB returns the free headroom within the active cgroup
-// memory limit in MiB, or -1 if no cgroup limit is set.
+// readCgroupAvailableMiB calculates headroom available under a cgroup limit.
 // This is necessary for correct pressure detection inside Docker containers
 // where /proc/meminfo MemAvailable reflects host RAM, not the container limit.
 func readCgroupAvailableMiB() int64 {
@@ -404,6 +354,21 @@ Options:
 		DefaultConnectUrl,
 	)
 
+	// If in auto mode, we audit the disk speed BEFORE initializing the logger.
+	// This allows us to automatically enable RAM logging on slow disks.
+	if os.Getenv("URNETWORK_PROFILE") == "auto" {
+		slowDisk, _ := RunStartupAudit()
+		if slowDisk {
+			fmt.Printf("[audit] Auto-enabling RAM logs due to slow disk I/O.\n")
+			os.Setenv("URNETWORK_RAMLOGS", "1")
+		}
+	} else if os.Args[1] == "provide" || os.Args[1] == "auth-provide" {
+		// Even if not in auto, run audit for visibility
+		connect.RunSystemAudit()
+	}
+
+	initGlog()
+
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], RequireVersion())
 
 	if err != nil {
@@ -448,16 +413,11 @@ func auth(opts docopt.Opts) {
 
 			reader := bufio.NewReader(os.Stdin)
 			confirm, _ := reader.ReadString('\n')
-			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-				return
+			confirm = strings.TrimSpace(confirm)
+			if confirm != "y" && confirm != "Y" {
+				os.Exit(0)
 			}
-
 		}
-	}
-
-	apiUrl, err := opts.String("--api_url")
-	if err != nil {
-		apiUrl = DefaultApiUrl
 	}
 
 	maxMemoryHumanReadable, err := opts.String("--max-memory")
@@ -465,31 +425,28 @@ func auth(opts docopt.Opts) {
 	if err == nil {
 		maxMemory, err = connect.ParseByteCount(maxMemoryHumanReadable)
 		if err != nil {
-			panic(fmt.Errorf("Bad mem argument: %s", maxMemoryHumanReadable))
+			fmt.Fprintf(os.Stderr, "Error: invalid max-memory value: %v\n", err)
+			os.Exit(1)
 		}
 	}
-	if 0 < maxMemory {
+
+	if maxMemory != 0 {
 		connect.ResizeMessagePools(maxMemory / 8)
-		debug.SetMemoryLimit(maxMemory)
 	}
 
-	event := connect.NewEventWithContext(context.Background())
-	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	apiUrl, err := opts.String("--api_url")
+	if err != nil {
+		apiUrl = DefaultApiUrl
+	}
 
-	ctx, cancel := context.WithCancel(event.Ctx())
-	defer cancel()
-
-	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
-
-	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
+	clientStrategySettings := connect.DefaultClientStrategySettings()
+	clientStrategy := connect.NewClientStrategy(clientStrategySettings)
 
 	var byJwt string
-	if userAuth, err := opts.String("--user_auth"); err == nil {
-		// user_auth and password
-
-		var password string
-		if password, err = opts.String("--password"); err == nil && password == "" {
-			fmt.Print("Enter password: ")
+	if userAuth, _ := opts.String("--user_auth"); userAuth != "" {
+		password, _ := opts.String("--password")
+		if password == "" {
+			fmt.Printf("Password for %s: ", userAuth)
 			passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
 			if err != nil {
 				panic(err)
@@ -498,73 +455,49 @@ func auth(opts docopt.Opts) {
 			fmt.Printf("\n")
 		}
 
-		// fmt.Printf("userAuth='%s'; password='%s'\n", userAuth, password)
-
-		loginCallback, loginChannel := connect.NewBlockingApiCallback[*connect.AuthLoginWithPasswordResult](ctx)
-
-		loginArgs := &connect.AuthLoginWithPasswordArgs{
-			UserAuth: userAuth,
-			Password: password,
+		loginResult, err := clientStrategy.UserAuthLogin(
+			context.Background(),
+			apiUrl,
+			userAuth,
+			password,
+		)
+		if err != nil {
+			panic(err)
 		}
 
-		api.AuthLoginWithPassword(loginArgs, loginCallback)
-
-		var loginResult connect.ApiCallbackResult[*connect.AuthLoginWithPasswordResult]
-		select {
-		case <-ctx.Done():
-			os.Exit(0)
-		case loginResult = <-loginChannel:
-		}
-
-		if loginResult.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", loginResult.Error)
-			os.Exit(1)
-		}
 		if loginResult.Result.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", loginResult.Result.Error.Message)
+			fmt.Fprintf(os.Stderr, "Error: %s\n", loginResult.Result.Error.Message)
 			os.Exit(1)
 		}
+
 		if loginResult.Result.VerificationRequired != nil {
 			fmt.Fprintf(os.Stderr, "Error: verification required for %s — complete account setup via the app or web first.\n", loginResult.Result.VerificationRequired.UserAuth)
 			os.Exit(1)
 		}
 
-		byJwt = loginResult.Result.Network.ByJwt
+		byJwt = loginResult.Result.ByJwt
 	} else {
-		// auth_code
 		authCode, _ := opts.String("<auth_code>")
+
 		if authCode == "" {
-			fmt.Print("Enter auth code: ")
-			authCodeBytes, err := term.ReadPassword(int(syscall.Stdin))
-			if err != nil {
-				panic(err)
-			}
-			authCode = strings.TrimSpace(string(authCodeBytes))
-			fmt.Printf("\n")
+			fmt.Printf("Auth code (found at https://ur.io): ")
+
+			reader := bufio.NewReader(os.Stdin)
+			authCode, _ = reader.ReadString('\n')
+			authCode = strings.TrimSpace(authCode)
 		}
 
-		authCodeLogin := &connect.AuthCodeLoginArgs{
-			AuthCode: authCode,
+		authCodeLoginResult, err := clientStrategy.AuthCodeLogin(
+			context.Background(),
+			apiUrl,
+			authCode,
+		)
+		if err != nil {
+			panic(err)
 		}
 
-		authCodeLoginCallback, authCodeLoginChannel := connect.NewBlockingApiCallback[*connect.AuthCodeLoginResult](ctx)
-
-		api.AuthCodeLogin(authCodeLogin, authCodeLoginCallback)
-
-		var authCodeLoginResult connect.ApiCallbackResult[*connect.AuthCodeLoginResult]
-		select {
-		case <-ctx.Done():
-			os.Exit(0)
-		case authCodeLoginResult = <-authCodeLoginChannel:
-		}
-
-		if authCodeLoginResult.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", authCodeLoginResult.Error)
-			os.Exit(1)
-		}
 		if authCodeLoginResult.Result.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", authCodeLoginResult.Result.Error.Message)
-			fmt.Fprintf(os.Stderr, "Hint: auth codes are single-use. If this container was restarted, mount a persistent volume at /root/.urnetwork so the JWT survives restarts.\n")
+			fmt.Fprintf(os.Stderr, "Error: %s\n", authCodeLoginResult.Result.Error.Message)
 			os.Exit(1)
 		}
 
@@ -573,12 +506,536 @@ func auth(opts docopt.Opts) {
 
 	if byJwt != "" {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: could not create %s: %v\n", urNetworkDir, err)
-			os.Exit(1)
+			panic(err)
 		}
 		os.WriteFile(jwtPath, []byte(byJwt), 0700)
 		fmt.Printf("Jwt written to %s\n", jwtPath)
 	}
+}
+
+func provide(opts docopt.Opts) {
+	port, _ := opts.Int("--port")
+
+	apiUrl, err := opts.String("--api_url")
+	if err != nil {
+		apiUrl = DefaultApiUrl
+	}
+
+	connectUrl, err := opts.String("--connect_url")
+	if err != nil {
+		connectUrl = DefaultConnectUrl
+	}
+
+	maxMemoryHumanReadable, err := opts.String("--max-memory")
+	var maxMemory connect.ByteCount
+	if err == nil {
+		maxMemory, err = connect.ParseByteCount(maxMemoryHumanReadable)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid max-memory value: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	applyPoolAutoSize()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeName := os.Getenv("URNETWORK_NODE_NAME")
+	if nodeName == "" {
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "unknown"
+		}
+		suffix := "(binary)"
+		if _, err := os.Stat("/.dockerenv"); err == nil {
+			suffix = "(docker)"
+		}
+		nodeName = fmt.Sprintf("%s %s", hostname, suffix)
+	}
+	// Sanitize nodeName (remove newlines)
+	nodeName = strings.ReplaceAll(nodeName, "\n", "")
+	nodeName = strings.ReplaceAll(nodeName, "\r", "")
+
+	webhookURL := os.Getenv("URNETWORK_ALERT_WEBHOOK")
+	go runOutageWatcher(ctx, nodeName, webhookURL)
+
+	startTime := time.Now()
+	go runHealthHeartbeat(ctx, startTime, os.Getenv("URNETWORK_PROFILE"))
+
+	provideWithProxy := func(proxySettings *connect.ProxySettings) {
+		proxyCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		clientStrategySettings := connect.DefaultClientStrategySettings()
+		clientStrategySettings.ProxySettings = proxySettings
+		clientSettings := connect.DefaultClientSettings()
+		localUserNatSettings := connect.DefaultLocalUserNatSettings()
+
+		autoEco := connect.ApplyAutoTuning(clientSettings, localUserNatSettings)
+		applyLowmodeSettings(clientSettings, localUserNatSettings)
+		applyTurboSettings(clientSettings, localUserNatSettings)
+
+		profile := os.Getenv("URNETWORK_PROFILE")
+		if profile == "eco" || autoEco {
+			go runEcoMemoryMonitor(ctx)
+		}
+		applyEcoSettings(maxMemory)
+		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
+		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
+		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
+
+		clientStrategy := connect.NewClientStrategy(clientStrategySettings)
+		byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "auth error: %v\n", err)
+			// return
+			os.Exit(1)
+		}
+
+		connectClientSettings := connect.DefaultConnectClientSettings()
+		connectClientSettings.ClientSettings = *clientSettings
+		connectClientSettings.LocalUserNatSettings = *localUserNatSettings
+		connectClientSettings.RemoteUserNatProviderSettings = *remoteUserNatProviderSettings
+
+		connectClient := connect.NewClient(
+			proxyCtx,
+			connectClientSettings,
+			clientStrategy,
+			apiUrl,
+			connectUrl,
+			byClientJwt,
+			clientId,
+		)
+
+		provideModes := map[protocol.ProvideMode]bool{
+			protocol.ProvideMode_Public:  true,
+			protocol.ProvideMode_Network: true,
+		}
+		connectClient.ContractManager().SetProvideModes(provideModes)
+
+		select {
+		case <-proxyCtx.Done():
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	if profile := os.Getenv("URNETWORK_PROFILE"); profile == "turbo-v4" || profile == "turbo-v8" {
+		var windowMiB, queueMiB uint32
+		switch profile {
+		case "turbo-v4":
+			windowMiB, queueMiB = 4, 8
+		case "turbo-v8":
+			windowMiB, queueMiB = 8, 16
+		}
+		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
+	}
+
+	if allProxySettings := readProxySettings(); 0 < len(allProxySettings) {
+		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
+
+		for i, proxySettings := range allProxySettings {
+			var user string
+			var password string
+			if proxySettings.Auth != nil {
+				user = proxySettings.Auth.User
+				password = proxySettings.Auth.Password
+			}
+			fmt.Printf("  proxy[%d] %s (%s/%s)\n",
+				i,
+				proxySettings.Address,
+				obfuscateUser(user),
+				obfuscatePassword(password),
+			)
+		}
+		for i, proxySettings := range allProxySettings {
+			wg.Add(1)
+			go connect.HandleError(func() {
+				defer wg.Done()
+
+				initialDelay := time.Duration(i) * 100 * time.Millisecond
+				select {
+				case <-ctx.Done():
+				case <-time.After(initialDelay):
+				}
+
+				provideWithProxy(proxySettings)
+			})
+		}
+	} else {
+		wg.Add(1)
+		go connect.HandleError(func() {
+			defer wg.Done()
+			provideWithProxy(nil)
+		})
+	}
+
+	if 0 < port {
+		fmt.Printf(
+			"Provider %s started. Status on *:%d\n",
+			RequireVersion(),
+			port,
+		)
+		statusServer := &http.Server{
+			Addr:    fmt.Sprintf(":%d", port),
+			Handler: &Status{},
+		}
+		defer statusServer.Shutdown(ctx)
+
+		go connect.HandleError(func() {
+			defer cancel()
+			err := statusServer.ListenAndServe()
+			if err != nil {
+				fmt.Printf("status error: %s\n", err)
+			}
+		}, cancel)
+	} else {
+		fmt.Printf(
+			"Provider %s started\n",
+			RequireVersion(),
+		)
+	}
+
+	wg.Wait()
+
+	// exit
+	os.Exit(0)
+}
+
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts) (byClientJwt string, clientId connect.Id, returnErr error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
+
+	if _, err := os.Stat(jwtPath); errors.Is(err, os.ErrNotExist) {
+		returnErr = fmt.Errorf("jwt not found at %s. Please run 'urnetwork auth' first.", jwtPath)
+		return
+	}
+
+	byJwtBytes, err := os.ReadFile(jwtPath)
+	if err != nil {
+		returnErr = err
+		return
+	}
+	byClientJwt = string(byJwtBytes)
+
+	// verify jwt
+	parser := gojwt.NewParser()
+	token, _, err := parser.ParseUnverified(byClientJwt, gojwt.MapClaims{})
+	if err != nil {
+		returnErr = err
+		return
+	}
+
+	if claims, ok := token.Claims.(gojwt.MapClaims); ok {
+		if sub, ok := claims["sub"].(string); ok {
+			clientId, err = connect.IdFromHexString(sub)
+			if err != nil {
+				returnErr = err
+				return
+			}
+		} else {
+			returnErr = errors.New("jwt missing sub claim")
+			return
+		}
+	} else {
+		returnErr = errors.New("invalid jwt claims")
+		return
+	}
+
+	return
+}
+
+func readProxySettings() (allProxySettings []*connect.ProxySettings) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	proxyDir := filepath.Join(home, ".urnetwork", "proxy")
+	entries, err := os.ReadDir(proxyDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		panic(err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		proxyPath := filepath.Join(proxyDir, entry.Name())
+		proxyBytes, err := os.ReadFile(proxyPath)
+		if err != nil {
+			panic(err)
+		}
+
+		var proxySettings connect.ProxySettings
+		err = json.Unmarshal(proxyBytes, &proxySettings)
+		if err != nil {
+			panic(err)
+		}
+
+		allProxySettings = append(allProxySettings, &proxySettings)
+	}
+
+	return
+}
+
+func proxyAuthAdd(opts docopt.Opts) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	proxyAuthDir := filepath.Join(home, ".urnetwork", "proxy_auth")
+	if err := os.MkdirAll(proxyAuthDir, 0700); err != nil {
+		panic(err)
+	}
+
+	key, _ := opts.String("<key>")
+	user, _ := opts.String("<proxy_user>")
+	password, _ := opts.String("<proxy_password>")
+
+	proxyAuth := connect.ProxyAuth{
+		User:     user,
+		Password: password,
+	}
+	proxyAuthBytes, err := json.Marshal(proxyAuth)
+	if err != nil {
+		panic(err)
+	}
+
+	proxyAuthPath := filepath.Join(proxyAuthDir, key)
+	if _, err := os.Stat(proxyAuthPath); !errors.Is(err, os.ErrNotExist) {
+		if force, _ := opts.Bool("-f"); !force {
+			fmt.Printf("%s exists. Overwrite? [yN]\n", proxyAuthPath)
+
+			reader := bufio.NewReader(os.Stdin)
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if confirm != "y" && confirm != "Y" {
+				os.Exit(0)
+			}
+		}
+	}
+
+	err = os.WriteFile(proxyAuthPath, proxyAuthBytes, 0700)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Proxy auth written to %s\n", proxyAuthPath)
+}
+
+func proxyAuthRemove(opts docopt.Opts) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	proxyAuthDir := filepath.Join(home, ".urnetwork", "proxy_auth")
+
+	if all, _ := opts.Bool("--all"); all {
+		err := os.RemoveAll(proxyAuthDir)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("All proxy auth removed\n")
+		return
+	}
+
+	key, _ := opts.String("<key>")
+	proxyAuthPath := filepath.Join(proxyAuthDir, key)
+	err = os.Remove(proxyAuthPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("Proxy auth %s not found\n", key)
+			return
+		}
+		panic(err)
+	}
+	fmt.Printf("Proxy auth %s removed\n", key)
+}
+
+func proxyAdd(opts docopt.Opts) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	proxyDir := filepath.Join(home, ".urnetwork", "proxy")
+	if err := os.MkdirAll(proxyDir, 0700); err != nil {
+		panic(err)
+	}
+
+	var proxyAddresses []string
+	if proxyFile, _ := opts.String("--proxy_file"); proxyFile != "" {
+		f, err := os.Open(proxyFile)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" {
+				proxyAddresses = append(proxyAddresses, line)
+			}
+		}
+	} else {
+		proxyAddresses, _ = opts.StringList("<key_address>")
+	}
+
+	for _, proxyAddress := range proxyAddresses {
+		var key string
+		var address string
+		var user string
+		var password string
+
+		parts := strings.Split(proxyAddress, "@")
+		if len(parts) == 2 {
+			key = parts[0]
+			proxyAddress = parts[1]
+		}
+
+		parts = strings.Split(proxyAddress, ":")
+		if len(parts) >= 2 {
+			address = strings.Join(parts[0:2], ":")
+			if len(parts) >= 3 {
+				user = parts[2]
+			}
+			if len(parts) >= 4 {
+				password = parts[3]
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: invalid proxy address: %s\n", proxyAddress)
+			continue
+		}
+
+		var auth *connect.ProxyAuth
+		if user != "" || password != "" {
+			auth = &connect.ProxyAuth{
+				User:     user,
+				Password: password,
+			}
+		} else {
+			// check for stored auth
+			proxyAuthDir := filepath.Join(home, ".urnetwork", "proxy_auth")
+			proxyAuthPath := filepath.Join(proxyAuthDir, key)
+			proxyAuthBytes, err := os.ReadFile(proxyAuthPath)
+			if err == nil {
+				var proxyAuth connect.ProxyAuth
+				err = json.Unmarshal(proxyAuthBytes, &proxyAuth)
+				if err == nil {
+					auth = &proxyAuth
+				}
+			}
+		}
+
+		proxySettings := connect.ProxySettings{
+			Address: address,
+			Auth:    auth,
+		}
+		proxySettingsBytes, err := json.Marshal(proxySettings)
+		if err != nil {
+			panic(err)
+		}
+
+		proxyPath := filepath.Join(proxyDir, strings.ReplaceAll(address, ":", "_"))
+		if _, err := os.Stat(proxyPath); !errors.Is(err, os.ErrNotExist) {
+			if force, _ := opts.Bool("-f"); !force {
+				fmt.Printf("%s exists. Overwrite? [yN]\n", proxyPath)
+
+				reader := bufio.NewReader(os.Stdin)
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if confirm != "y" && confirm != "Y" {
+					continue
+				}
+			}
+		}
+
+		err = os.WriteFile(proxyPath, proxySettingsBytes, 0700)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Proxy %s added\n", address)
+	}
+}
+
+func proxyRemove(opts docopt.Opts) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	proxyDir := filepath.Join(home, ".urnetwork", "proxy")
+
+	if all, _ := opts.Bool("--all"); all {
+		err := os.RemoveAll(proxyDir)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("All proxies removed\n")
+		return
+	}
+
+	proxyAddresses, _ := opts.StringList("<key_address>")
+	for _, proxyAddress := range proxyAddresses {
+		proxyPath := filepath.Join(proxyDir, strings.ReplaceAll(proxyAddress, ":", "_"))
+		err = os.Remove(proxyPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				fmt.Printf("Proxy %s not found\n", proxyAddress)
+				continue
+			}
+			panic(err)
+		}
+		fmt.Printf("Proxy %s removed\n", proxyAddress)
+	}
+}
+
+func initSHMLogger() {
+	logPath := "/dev/shm/urnetwork.log"
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		fmt.Printf("[shm] failed to open %s: %v; falling back to stdout\n", logPath, err)
+		return
+	}
+	fmt.Printf("[shm] routing logs to %s (max 1MiB)\n", logPath)
+	os.Stdout = f
+	os.Stderr = f
+
+	// Background worker to truncate log if it exceeds 1MiB
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		for range ticker.C {
+			if stat, err := os.Stat(logPath); err == nil {
+				if stat.Size() > 1024*1024 {
+					os.Truncate(logPath, 0)
+				}
+			}
+		}
+	}()
+}
+
+func obfuscateUser(user string) string {
+	if len(user) <= 4 {
+		return "****"
+	}
+	return user[:2] + "****" + user[len(user)-2:]
+}
+
+func obfuscatePassword(pass string) string {
+	return "****"
+}
+
+func RequireVersion() string {
+	if Version == "" {
+		return "v3.23.0-fix.14"
+	}
+	return Version
 }
 
 // runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
@@ -701,18 +1158,19 @@ func metricBytesToMiB(name string, v metrics.Value) uint64 {
 	}
 }
 
-// runHealthHeartbeat logs a [health] line at a regular interval with runtime
-// memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
-// (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
 func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string) {
-	interval := 5 * time.Minute
-	if s := os.Getenv("URNETWORK_HEALTH_INTERVAL"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil && d >= time.Minute {
-			interval = d
-		}
-	}
 	if profile == "" {
 		profile = "default"
+	}
+
+	intervalStr := os.Getenv("URNETWORK_HEALTH_INTERVAL")
+	interval := 5 * time.Minute
+	if intervalStr != "" {
+		if d, err := time.ParseDuration(intervalStr); err == nil {
+			if d >= 1*time.Minute {
+				interval = d
+			}
+		}
 	}
 
 	ticker := time.NewTicker(interval)
@@ -735,674 +1193,5 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		uptime := time.Since(startTime).Truncate(time.Second)
 		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
 			uptime, profile, heapMiB, sysMiB)
-	}
-}
-
-func provide(opts docopt.Opts) {
-	port, _ := opts.Int("--port")
-
-	apiUrl, err := opts.String("--api_url")
-	if err != nil {
-		apiUrl = DefaultApiUrl
-	}
-
-	connectUrl, err := opts.String("--connect_url")
-	if err != nil {
-		connectUrl = DefaultConnectUrl
-	}
-
-	maxMemoryHumanReadable, err := opts.String("--max-memory")
-	var maxMemory connect.ByteCount
-	if err == nil {
-		maxMemory, err = connect.ParseByteCount(maxMemoryHumanReadable)
-		if err != nil {
-			panic(fmt.Errorf("Bad mem argument: %s", maxMemoryHumanReadable))
-		}
-	}
-	if 0 < maxMemory {
-		connect.ResizeMessagePools(maxMemory / 8)
-		debug.SetMemoryLimit(maxMemory)
-	}
-	applyPoolAutoSize(maxMemory)
-
-	provideStartTime := time.Now()
-
-	event := connect.NewEventWithContext(context.Background())
-	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-
-	ctx, cancel := context.WithCancel(event.Ctx())
-	defer cancel()
-
-	// Hourly pulse: wakes all stalled transports and proxies so they retry
-	// connections without needing a provider restart.
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(1 * time.Hour):
-				connect.TriggerPulse()
-			}
-		}
-	}()
-
-	if os.Getenv("URNETWORK_PROFILE") == "eco" {
-		go runEcoMemoryMonitor(ctx)
-	}
-
-	nodeName := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return -1
-		}
-		return r
-	}, os.Getenv("URNETWORK_NODE_NAME"))
-	if nodeName == "" {
-		hostname, _ := os.Hostname()
-		if _, err := os.Stat("/.dockerenv"); err == nil {
-			nodeName = hostname + " (docker)"
-		} else {
-			nodeName = hostname + " (binary)"
-		}
-	}
-	go runOutageWatcher(ctx, nodeName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
-	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
-
-	provideWithProxy := func(proxySettings *connect.ProxySettings) {
-		proxyCtx, proxyCancel := context.WithCancel(ctx)
-		defer proxyCancel()
-
-		clientStrategySettings := connect.DefaultClientStrategySettings()
-		clientStrategySettings.ProxySettings = proxySettings
-		clientSettings := connect.DefaultClientSettings()
-		localUserNatSettings := connect.DefaultLocalUserNatSettings()
-		applyLowmodeSettings(clientSettings, localUserNatSettings)
-		applyTurboSettings(clientSettings, localUserNatSettings)
-		applyEcoSettings(maxMemory)
-		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
-		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
-		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
-
-		clientStrategy := connect.NewClientStrategy(proxyCtx, clientStrategySettings)
-
-		byClientJwt, clientId, err := func() (string, connect.Id, error) {
-			// Consecutive failures where the JWT file exists but the API rejects it
-			// (expired, revoked, or bad token). After maxAuthFailures the binary
-			// exits so the shell restart loop can delete the JWT and re-authenticate.
-			// "Jwt does not exist" is a configuration issue, not a bad token — it
-			// retries indefinitely until the user runs 'urnetwork auth'.
-			const maxAuthFailures = 10
-			authFailures := 0
-			for {
-				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts)
-				if err == nil {
-					return byClientJwt, clientId, nil
-				}
-
-				if strings.Contains(err.Error(), "Jwt does not exist") {
-					authFailures = 0
-					fmt.Printf("Authentication missing. Please run 'urnetwork auth' to configure your provider.\n")
-					retryDelay := 30 * time.Second
-					select {
-					case <-proxyCtx.Done():
-						return "", connect.Id{}, proxyCtx.Err()
-					case <-time.After(retryDelay):
-						continue
-					}
-				}
-
-				authFailures++
-				if authFailures >= maxAuthFailures {
-					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts, JWT may be expired or revoked: %w", maxAuthFailures, err)
-				}
-
-				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
-				fmt.Printf("init proxy auth failed: %v. Will retry in %.2fs\n", err, float64(retryDelay/time.Millisecond)/1000.0)
-				select {
-				case <-proxyCtx.Done():
-					return "", connect.Id{}, proxyCtx.Err()
-				case <-time.After(retryDelay):
-				}
-			}
-		}()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		instanceId := connect.NewId()
-
-		clientOob := connect.NewApiOutOfBandControl(proxyCtx, clientStrategy, byClientJwt, apiUrl)
-		connectClient := connect.NewClient(proxyCtx, clientId, clientOob, clientSettings)
-		defer connectClient.Close()
-
-		// routeManager := connect.NewRouteManager(connectClient)
-		// contractManager := connect.NewContractManagerWithDefaults(connectClient)
-		// connectClient.Setup(routeManager, contractManager)
-		// go connectClient.Run()
-
-		fmt.Printf("client_id: %s\n", clientId)
-		fmt.Printf("instance_id: %s\n", instanceId)
-
-		auth := &connect.ClientAuth{
-			ByJwt: byClientJwt,
-			// ClientId: clientId,
-			InstanceId: instanceId,
-			AppVersion: RequireVersion(),
-		}
-		connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
-		// go platformTransport.Run(connectClient.RouteManager())
-
-		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), localUserNatSettings)
-		defer localUserNat.Close()
-		remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat, remoteUserNatProviderSettings)
-		defer remoteUserNatProvider.Close()
-
-		provideModes := map[protocol.ProvideMode]bool{
-			protocol.ProvideMode_Public:  true,
-			protocol.ProvideMode_Network: true,
-		}
-		connectClient.ContractManager().SetProvideModes(provideModes)
-
-		select {
-		case <-proxyCtx.Done():
-		}
-	}
-
-	var wg sync.WaitGroup
-
-	if profile := os.Getenv("URNETWORK_PROFILE"); profile == "turbo-v4" || profile == "turbo-v8" {
-		var windowMiB, queueMiB uint32
-		switch profile {
-		case "turbo-v4":
-			windowMiB, queueMiB = 4, 8
-		case "turbo-v8":
-			windowMiB, queueMiB = 8, 16
-		}
-		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
-	}
-
-	if allProxySettings := readProxySettings(); 0 < len(allProxySettings) {
-		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
-
-		for i, proxySettings := range allProxySettings {
-			var user string
-			var password string
-			if proxySettings.Auth != nil {
-				user = proxySettings.Auth.User
-				password = proxySettings.Auth.Password
-			}
-			fmt.Printf("  proxy[%d] %s (%s/%s)\n",
-				i,
-				proxySettings.Address,
-				obfuscateUser(user),
-				obfuscatePassword(password),
-			)
-		}
-		for i, proxySettings := range allProxySettings {
-			wg.Add(1)
-			go connect.HandleError(func() {
-				defer wg.Done()
-
-				initialDelay := time.Duration(i) * 100 * time.Millisecond
-				select {
-				case <-ctx.Done():
-				case <-time.After(initialDelay):
-				}
-
-				provideWithProxy(proxySettings)
-			})
-		}
-	} else {
-		wg.Add(1)
-		go connect.HandleError(func() {
-			defer wg.Done()
-			provideWithProxy(nil)
-		})
-	}
-
-	if 0 < port {
-		fmt.Printf(
-			"Provider %s started. Status on *:%d\n",
-			RequireVersion(),
-			port,
-		)
-		statusServer := &http.Server{
-			Addr:    fmt.Sprintf(":%d", port),
-			Handler: &Status{},
-		}
-		defer statusServer.Shutdown(ctx)
-
-		go connect.HandleError(func() {
-			defer cancel()
-			err := statusServer.ListenAndServe()
-			if err != nil {
-				fmt.Printf("status error: %s\n", err)
-			}
-		}, cancel)
-	} else {
-		fmt.Printf(
-			"Provider %s started\n",
-			RequireVersion(),
-		)
-	}
-
-	wg.Wait()
-
-	// exit
-	os.Exit(0)
-}
-
-func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts) (byClientJwt string, clientId connect.Id, returnErr error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
-
-	if _, err := os.Stat(jwtPath); errors.Is(err, os.ErrNotExist) {
-		// jwt does not exist
-		returnErr = fmt.Errorf("Jwt does not exist at %s", jwtPath)
-		return
-	}
-
-	byJwtBytes, err := os.ReadFile(jwtPath)
-	if err != nil {
-		returnErr = err
-		return
-	}
-	byJwt := strings.TrimSpace(string(byJwtBytes))
-
-	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
-
-	api.SetByJwt(byJwt)
-
-	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
-
-	authClientArgs := &connect.AuthNetworkClientArgs{
-		Description: fmt.Sprintf("provider %s %s", runtime.GOOS, RequireVersion()),
-		DeviceSpec:  "",
-	}
-
-	api.AuthNetworkClient(authClientArgs, authClientCallback)
-
-	var authClientResult connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
-	select {
-	case <-ctx.Done():
-		os.Exit(0)
-	case authClientResult = <-authClientChannel:
-	}
-
-	if authClientResult.Error != nil {
-		panic(authClientResult.Error)
-	}
-	if authClientResult.Result.Error != nil {
-		panic(fmt.Errorf("%s", authClientResult.Result.Error.Message))
-	}
-
-	byClientJwt = authClientResult.Result.ByClientJwt
-
-	// parse the clientId
-	parser := gojwt.NewParser()
-	token, _, err := parser.ParseUnverified(byClientJwt, gojwt.MapClaims{})
-	if err != nil {
-		panic(err)
-	}
-
-	claims := token.Claims.(gojwt.MapClaims)
-
-	clientId, err = connect.ParseId(claims["client_id"].(string))
-	if err != nil {
-		panic(err)
-	}
-
-	return
-}
-
-type Status struct {
-}
-
-func (self *Status) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	type WarpStatusResult struct {
-		Version       string `json:"version,omitempty"`
-		ConfigVersion string `json:"config_version,omitempty"`
-		Status        string `json:"status"`
-		ClientAddress string `json:"client_address,omitempty"`
-		Host          string `json:"host"`
-	}
-
-	result := &WarpStatusResult{
-		Version: RequireVersion(),
-		// ConfigVersion: RequireConfigVersion(),
-		Status: "ok",
-		Host:   RequireHost(),
-	}
-
-	responseJson, err := json.Marshal(result)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(responseJson)
-}
-
-func Host() (string, error) {
-	host := os.Getenv("WARP_HOST")
-	if host != "" {
-		return host, nil
-	}
-	host, err := os.Hostname()
-	if err == nil {
-		return host, nil
-	}
-	return "", errors.New("WARP_HOST not set")
-}
-
-func RequireHost() string {
-	host, err := Host()
-	if err != nil {
-		panic(err)
-	}
-	return host
-}
-
-func RequireVersion() string {
-	if version := os.Getenv("WARP_VERSION"); version != "" {
-		return version
-	}
-	return Version
-}
-
-func proxyAuthAdd(opts docopt.Opts) {
-	proxyConfig := readProxyConfig()
-
-	key, _ := opts.String("key")
-	user, _ := opts.String("proxy_user")
-	password, _ := opts.String("proxy_password")
-
-	if proxyConfig.Auths == nil {
-		proxyConfig.Auths = map[string]*ProxyAuth{}
-	}
-
-	if _, ok := proxyConfig.Auths[key]; ok {
-		if force, _ := opts.Bool("-f"); !force {
-			fmt.Printf("auth key \"%s\" exists. Overwrite? [yN]\n", key)
-
-			reader := bufio.NewReader(os.Stdin)
-			confirm, _ := reader.ReadString('\n')
-			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-				return
-			}
-		}
-	}
-
-	proxyConfig.Auths[key] = &ProxyAuth{
-		User:     user,
-		Password: password,
-	}
-
-	writeProxyConfig(proxyConfig)
-}
-
-func proxyAuthRemove(opts docopt.Opts) {
-	proxyConfig := readProxyConfig()
-
-	if all, _ := opts.Bool("--all"); all {
-		clear(proxyConfig.Auths)
-	} else {
-
-		key, _ := opts.String("key")
-
-		if proxyConfig.Auths == nil {
-			proxyConfig.Auths = map[string]*ProxyAuth{}
-		}
-
-		delete(proxyConfig.Auths, key)
-	}
-
-	writeProxyConfig(proxyConfig)
-}
-
-func proxyAdd(opts docopt.Opts) {
-	proxyConfig := readProxyConfig()
-
-	allKeyAddress := []string{}
-	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
-		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
-	}
-	if proxyPath, _ := opts.String("--proxy_file"); proxyPath != "" {
-		b, err := os.ReadFile(proxyPath)
-		if err != nil {
-			panic(err)
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && line[0] != '#' {
-				allKeyAddress = append(allKeyAddress, line)
-			}
-		}
-	}
-
-	if proxyConfig.Servers == nil {
-		proxyConfig.Servers = map[string]string{}
-	}
-
-	for _, keyAddress := range allKeyAddress {
-		var key string
-		var proxyAddress string
-		i := strings.Index(keyAddress, "@")
-		if 0 <= i {
-			key = keyAddress[:i]
-			proxyAddress = keyAddress[i+1:]
-		} else {
-			key = ""
-			proxyAddress = keyAddress
-		}
-
-		address, user, password := parseProxyAddress(proxyAddress)
-		if proxyConfig.Auths != nil {
-			proxyAuth, ok := proxyConfig.Auths[key]
-			if ok {
-				user = proxyAuth.User
-				password = proxyAuth.Password
-			}
-		}
-
-		if currentKey, ok := proxyConfig.Servers[proxyAddress]; ok && currentKey != key {
-			if force, _ := opts.Bool("-f"); !force {
-				fmt.Printf(
-					"server %s (%s/%s) exists with different key. Change key? [yN]\n",
-					address,
-					obfuscateUser(user),
-					obfuscatePassword(password),
-				)
-
-				reader := bufio.NewReader(os.Stdin)
-				confirm, _ := reader.ReadString('\n')
-				if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-					return
-				}
-			}
-		}
-
-		fmt.Printf(
-			"added server %s (%s/%s)\n",
-			address,
-			obfuscateUser(user),
-			obfuscatePassword(password),
-		)
-
-		proxyConfig.Servers[proxyAddress] = key
-	}
-
-	writeProxyConfig(proxyConfig)
-}
-
-func proxyRemove(opts docopt.Opts) {
-	proxyConfig := readProxyConfig()
-
-	if all, _ := opts.Bool("--all"); all {
-		clear(proxyConfig.Servers)
-	} else {
-
-		allKeyAddress := []string{}
-		if allKeyAddressAny, ok := opts["<key_address>"]; ok {
-			allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
-		}
-
-		if proxyConfig.Servers == nil {
-			proxyConfig.Servers = map[string]string{}
-		}
-
-		for _, keyAddress := range allKeyAddress {
-			var key string
-			var address string
-			i := strings.Index(keyAddress, "@")
-			if 0 <= i {
-				key = keyAddress[:i]
-				address = keyAddress[i+1:]
-			} else {
-				key = ""
-				address = keyAddress
-			}
-
-			if key == "" || proxyConfig.Servers[address] == key {
-				delete(proxyConfig.Servers, address)
-			}
-		}
-	}
-
-	writeProxyConfig(proxyConfig)
-}
-
-type ProxyConfig struct {
-	Auths map[string]*ProxyAuth `json:"auths"`
-	// TODO is there a use case for multiple keys to the same address?
-	// address -> key
-	Servers map[string]string `json:"servers"`
-}
-
-type ProxyAuth struct {
-	User     string `json:"user"`
-	Password string `json:"password"`
-}
-
-func readProxySettings() []*connect.ProxySettings {
-	proxyConfig := readProxyConfig()
-
-	if proxyConfig.Servers == nil {
-		return nil
-	}
-
-	var allProxySettings []*connect.ProxySettings
-	for proxyAddress, key := range proxyConfig.Servers {
-		address, user, password := parseProxyAddress(proxyAddress)
-		proxySettings := &connect.ProxySettings{
-			Network: "tcp",
-			Address: address,
-		}
-		if user != "" || password != "" {
-			proxySettings.Auth = &proxy.Auth{
-				User:     user,
-				Password: password,
-			}
-		}
-		if proxyConfig.Auths != nil {
-			proxyAuth, ok := proxyConfig.Auths[key]
-			if ok {
-				proxySettings.Auth = &proxy.Auth{
-					User:     proxyAuth.User,
-					Password: proxyAuth.Password,
-				}
-			}
-		}
-		allProxySettings = append(allProxySettings, proxySettings)
-	}
-
-	return allProxySettings
-}
-
-func parseProxyAddress(proxyAddress string) (address string, user string, password string) {
-	r := regexp.MustCompile("^(.*:\\d*):([^:]*):([^:]*)$")
-	groups := r.FindStringSubmatch(proxyAddress)
-	if groups != nil {
-		address = groups[1]
-		user = groups[2]
-		password = groups[3]
-		return
-	}
-	// assume host:port
-	address = proxyAddress
-	return
-}
-
-func obfuscateUser(user string) string {
-	if user == "" {
-		return "<no user>"
-	} else if len(user) < 6 {
-		return "***"
-	} else {
-		return fmt.Sprintf("%s***%s", user[:2], user[len(user)-2:])
-	}
-}
-
-func obfuscatePassword(password string) string {
-	if password == "" {
-		return "<no password>"
-	} else if len(password) < 6 {
-		return "***"
-	} else {
-		return fmt.Sprintf("%s***%s", password[:2], password[len(password)-2:])
-	}
-}
-
-func readProxyConfig() *ProxyConfig {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	urNetworkDir := filepath.Join(home, ".urnetwork")
-	proxyPath := filepath.Join(urNetworkDir, "proxy")
-
-	if _, err := os.Stat(proxyPath); errors.Is(err, os.ErrNotExist) {
-		return &ProxyConfig{}
-	}
-
-	b, err := os.ReadFile(proxyPath)
-	if err != nil {
-		panic(err)
-	}
-
-	var proxyConfig ProxyConfig
-	err = json.Unmarshal(b, &proxyConfig)
-	if err != nil {
-		panic(err)
-	}
-	return &proxyConfig
-}
-
-func writeProxyConfig(proxyConfig *ProxyConfig) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	urNetworkDir := filepath.Join(home, ".urnetwork")
-	proxyPath := filepath.Join(urNetworkDir, "proxy")
-
-	if _, err := os.Stat(urNetworkDir); os.IsNotExist(err) {
-		err = os.MkdirAll(urNetworkDir, 0700)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	b, err := json.Marshal(proxyConfig)
-	if err != nil {
-		panic(err)
-	}
-
-	err = os.WriteFile(proxyPath, b, 0700)
-	if err != nil {
-		panic(err)
 	}
 }

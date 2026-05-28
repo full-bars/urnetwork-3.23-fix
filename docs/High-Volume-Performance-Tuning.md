@@ -8,6 +8,7 @@ This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` f
 
 | Profile | `URNETWORK_PROFILE` | RAM | Throughput | Notes |
 | :--- | :--- | :--- | :--- | :--- |
+| **Auto** | `auto` | Any | Optimized | **Recommended.** Dynamically selects Tier based on RAM. |
 | **Turbo V8** | `turbo-v8` | 16 GiB+ | Maximum | Dedicated servers, max earnings |
 | **Turbo V4** | `turbo-v4` | 4–16 GiB | High | Well-provisioned VPS |
 | *(default)* | *(unset)* | 2–4 GiB | Standard | General use |
@@ -15,6 +16,28 @@ This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` f
 | **Lowmem** | `lowmem` | < 1 GiB | Reduced | Minimum footprint, RAM logs on |
 
 Turbo mode can also be set via the `TURBO=v4` / `TURBO=v8` Docker environment variable or `urnet-tools turbo <v4|v8|off>` on systemd installs.
+
+---
+
+## System Optimizer (`urnet-tools optimize`)
+
+A high-volume provider can easily saturate default OS limits. The `optimize` command (run as root) applies "Golden Fleet" network tuning to the host:
+
+1.  **File Descriptors**: Bumps `ulimit -n` to 1,048,576.
+2.  **Conntrack Table**: Raises `nf_conntrack_max` to 2,097,152 (standard across all RAM sizes based on fleet observations).
+3.  **Timeouts**: Reduces TCP established timeout from 5 days to 1 hour, clearing stale connections faster.
+4.  **Port Range**: Expands local port range and enables TCP port reuse.
+
+**Usage:**
+```bash
+sudo urnet-tools optimize
+```
+
+The provider binary also includes a **System Auditor** that checks these limits on every startup. It also performs a **Disk I/O Latency Test** (cache-busting sync write with a dynamic file size up to 1 GB). 
+
+**Auto-Optimization:**
+*   If `URNETWORK_PROFILE=auto` is set and disk speed is below **50 MB/s**, the provider will **automatically enable RAM logging** (`/dev/shm`) to prevent I/O wait from bottlenecking the network stack.
+*   If free disk space is below **1 GiB**, it logs a critical warning.
 
 ---
 
@@ -65,6 +88,22 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 ---
 
 ## Profiles In Depth
+
+### Auto Profile (`auto`)
+
+The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. For RAM-constrained systems (Low and Balanced tiers), it **automatically enables the dynamic Eco Memory Monitor** to prevent OOMs.
+
+| Tier | RAM Range | Contract Floor | IP Buffer | TCP Window | WebRTC Recv | Eco Monitor |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Low** | < 1.2 GiB | 128 KiB | 32 | 128 KiB | 512 KiB | **Enabled** |
+| **Balanced**| 1.2 - 3 GiB | 256 KiB | 128 | 512 KiB | 1 MiB | **Enabled** |
+| **Perf** | > 3 GiB | 2 MiB | 256 | 1 MiB | 4 MiB | Disabled |
+
+**Enabling:**
+```bash
+# Docker
+-e URNETWORK_PROFILE=auto
+```
 
 ### Turbo Mode (V4 / V8)
 

@@ -242,6 +242,46 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 
 ---
 
+## 10. System Optimizer & Auditor
+
+**Purpose**: Maximize system-level throughput and stability by automatically tuning kernel limits (ulimit, conntrack) for high-volume traffic.
+
+**Files Added**: `audit.go`
+**Files Modified**: `provider/main.go`, `scripts/Provider_Install_Linux.sh`
+
+**Changes**:
+- **System Auditor**: Runs on provider startup; passively checks host `ulimit -n`, `nf_conntrack_max`, and `tcp_timeout_established`. Logs `[audit]` warnings if host settings are suboptimal. Docker-aware hint tells users to run the optimizer on the host machine.
+- **`urnet-tools optimize`**: New management command (requires root) that applies "Golden Fleet" settings:
+  - `ulimit -n`: 1,048,576
+  - `nf_conntrack_max`: 2,097,152 (standard across all RAM sizes based on fleet observations)
+  - `nf_conntrack_tcp_timeout_established`: 3,600s (1h)
+  - `net.ipv4.tcp_fin_timeout`: 10s
+  - `net.ipv4.ip_local_port_range`: 1024 65535
+  - `net.ipv4.tcp_tw_reuse`: 1
+- **Persistence**: Writes settings to `/etc/sysctl.d/99-urnetwork.conf` and systemd service overrides.
+
+**Status**: ✅ Shipped in fix.14 (unreleased).
+
+---
+
+## 11. Auto-Tune Performance Profile
+
+**Purpose**: Dynamically scale internal buffer and contract settings based on detected system RAM. Replaces the "binary" choice between `lowmem` and `default` with a smart `auto` profile.
+
+**Files Added**: `tuning.go`
+**Files Modified**: `provider/main.go`, `util.go`
+
+**Changes**:
+- **`URNETWORK_PROFILE=auto`**: Opt-in profile that selects one of three tiers:
+  - **Tier 1 (Low, <1.2GB)**: 128KB contracts, 32 seq buffers, 128KB TCP window, 512KB WebRTC.
+  - **Tier 2 (Balanced, 1.2-3GB)**: 256KB contracts, 128 seq buffers, 512KB TCP window, 1MB WebRTC.
+  - **Tier 3 (Perf, >3GB)**: 2MB contracts, 256 seq buffers, 1MB TCP window, 4MB WebRTC.
+- **Cgroup Awareness**: `DetectEffectiveRAMLimitBytes()` (moved to `util.go`) correctly reads limits in Docker/K8s environments.
+
+**Status**: ✅ Shipped in fix.14 (unreleased).
+
+---
+
 ## Porting Checklist for Future Upstream Versions
 
 When merging a new upstream version (e.g., v3.24, v4.0):
