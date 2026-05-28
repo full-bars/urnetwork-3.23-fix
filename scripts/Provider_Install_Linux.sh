@@ -81,6 +81,7 @@ show_help ()
     echo "  -v, --version           Show the version of URnetwork that's installed"
     echo "  -i, --install=[PATH]    Installation path"
     echo "  -4, --ipv4              Force IPv4 for network requests (fixes IPv6 hangs)"
+    echo "  -f, --force             Force optimization / skip confirmation prompts"
     echo ""
     echo "Refer to the online documentation for more help."
 }
@@ -217,6 +218,7 @@ get_current_date ()
 }
 
 FORCE_IPV4=0
+FORCE=0
 
 network_fetch ()
 {
@@ -285,6 +287,11 @@ while [ $# -gt 0 ]; do
 
             install_path="$2"
             shift 2
+            ;;
+
+        -f|--force)
+            FORCE=1
+            shift
             ;;
 
         --)
