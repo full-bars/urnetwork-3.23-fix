@@ -584,15 +584,20 @@ func auth(opts docopt.Opts) {
 // runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
 // state transitions. If URNETWORK_ALERT_WEBHOOK is set it also POSTs a JSON
 // payload so operators can receive push notifications.
-// "Clear" requires two consecutive healthy polls to avoid premature all-clears
-// during brief lulls mid-outage. A 5-minute per-event cooldown prevents webhook
-// spam if the backend flickers at the recovery boundary.
+// "Start" requires startConfirm consecutive degraded polls (5 minutes at the
+// 30s poll interval) before firing, so a brief blip never raises a false alarm —
+// the backend must fail continuously with zero successful connects or OOB calls
+// for the whole window. "Clear" requires two consecutive healthy polls to avoid
+// premature all-clears during brief lulls mid-outage. A 5-minute per-event
+// cooldown prevents webhook spam if the backend flickers at a boundary.
 func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 	const pollInterval = 30 * time.Second
 	const cooldown = 5 * time.Minute
 	const clearConfirm = 2
+	const startConfirm = 10 // 10 * 30s = 5 minutes of continuous degradation
 
 	degraded := false
+	degradedCount := 0
 	clearCount := 0
 	var lastStartFire, lastClearFire time.Time
 
@@ -615,15 +620,19 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 		if connect.IsBackendDegraded() {
 			clearCount = 0
 			if !degraded {
-				degraded = true
-				fmt.Printf("[outage] backend degraded — holding existing connections, not accepting new ones\n")
-				if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
-					lastStartFire = time.Now()
-					go fireWebhook(webhookURL, nodeName, "outage_start",
-						"Backend unreachable — provider holding existing connections but not accepting new ones.")
+				degradedCount++
+				if degradedCount >= startConfirm {
+					degraded = true
+					fmt.Printf("[outage] backend degraded — holding existing connections, not accepting new ones\n")
+					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
+						lastStartFire = time.Now()
+						go fireWebhook(webhookURL, nodeName, "outage_start",
+							"Backend unreachable — provider holding existing connections but not accepting new ones.")
+					}
 				}
 			}
 		} else {
+			degradedCount = 0
 			if degraded {
 				clearCount++
 				if clearCount >= clearConfirm {
