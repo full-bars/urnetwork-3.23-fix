@@ -578,8 +578,8 @@ do_install ()
         exit 1
     fi
 
-    version_to_install="$(get_version_from_api_response "$release" 2>/dev/null)"
-    release_date="$(get_release_date_from_api_response "$release" 2>/dev/null)"
+    version_to_install="$(get_version_from_api_response "$release" 2>&1)"
+    release_date="$(get_release_date_from_api_response "$release" 2>&1)"
 
     # If tag was "latest" and API failed to provide a version, try the redirect trick
     if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
@@ -602,8 +602,15 @@ do_install ()
 
         # If GitHub API parsing failed, skip update check and proceed
         if [ -z "$release_date" ] || [ -z "$version_to_install" ]; then
-            pr_info "Installed version is up-to-date"
-            exit 0
+            pr_err "Failed to parse GitHub API response (missing jq or python3?). Install both: apt-get install -y jq python3"
+            pr_err "Aborting update to prevent silent failures. Please retry after fixing dependencies."
+            exit 1
+        fi
+
+        # Validate dates are numeric before comparison
+        if ! printf '%s' "$install_release_date" | grep -qE '^[0-9]+$' || ! printf '%s' "$release_date" | grep -qE '^[0-9]+$'; then
+            pr_err "Invalid date format from API. Aborting update to prevent errors."
+            exit 1
         fi
 
         if [ "$install_release_date" -lt "$release_date" ]; then
