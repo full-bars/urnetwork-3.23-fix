@@ -612,33 +612,9 @@ do_install ()
         fi
     fi
 
-    dl_url=""
-
-    if command -v jq > /dev/null; then
-        asset="$(echo "$release" | tr -d '\000-\037' | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-"))' 2>/dev/null)"
-
-        if [ -n "$asset" ]; then
-            dl_url="$(echo "$asset" | jq -r '.browser_download_url' 2>/dev/null)"
-        fi
-    fi
-
-    # Fall back to Python if jq failed or is not available
-    if [ -z "$dl_url" ] && command -v python3 > /dev/null; then
-        dl_url="$(echo "$release" | tr -d '\000-\037' | python3 -c 'import sys, json
-try:
-    data = json.load(sys.stdin)
-    assets = data["assets"]
-    asset = next((a for a in assets if a["name"].startswith("urnetwork-provider")), None)
-    print(asset["browser_download_url"] if asset else "")
-except (json.JSONDecodeError, KeyError, StopIteration):
-    print("")
-' 2>/dev/null)"
-    fi
-
-    if [ -z "$dl_url" ]; then
-        pr_err "No download URL could be found for tag: %s (GitHub API may be unreachable or returning invalid data)" "$tag"
-        exit 1
-    fi
+    # Construct download URL directly from GitHub release pattern
+    # instead of parsing potentially malformed API JSON
+    dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-${tag#v}.tar.gz"
     
     pr_info "Downloading: %s" "$dl_url"
     
