@@ -9,9 +9,9 @@ All notable changes to this project are documented here.
 ### Added
 - **Auto-Tune Performance Profile**: New `URNETWORK_PROFILE=auto` dynamically selects buffer sizes and contract floors based on available RAM (Low/Balanced/Performance tiers). Automatically enables Eco Mode on RAM-constrained systems and enables RAM Logging if slow disk I/O is detected. Managed via `urnet-tools auto on/off`.
 - **System Optimizer**: New `urnet-tools optimize` command (requires root) to apply "Golden Fleet" network tuning to the host:
-  - **Auto-Installation**: Automatically installs `conntrack-tools` on Arch, Debian/Ubuntu, RHEL/Fedora/Amazon, Alpine, and OpenSUSE if missing.
-  - **Boot Persistence**: Configures `/etc/modules-load.d` to ensure `nf_conntrack` loads early, preventing race conditions that cause sysctl settings to fail on reboot.
-  - **ZRAM Acceleration**: Automatically configures and enables compressed RAM swap (zram, 80% RAM, zstd) to improve stability on low-RAM nodes.
+  - **Auto-Installation**: Automatically installs `conntrack-tools` and `zram` on supported distros.
+  - **Interactive Protection**: Detects pre-optimized states and asks for confirmation before overriding (skip with `-f`).
+  - **Boot Persistence**: Configures `/etc/modules-load.d` to ensure `nf_conntrack` loads early.
   - Ulimit bumped to 1,048,576.
   - Conntrack max raised to 2,097,152.
   - TCP established timeout reduced to 1 hour (from 5 days).
