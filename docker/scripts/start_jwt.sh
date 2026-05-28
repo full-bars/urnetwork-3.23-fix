@@ -120,7 +120,7 @@ func_start_provider(){
     else
         JWT_TOKEN="$1"
         log "[INFO] Starting UrNetwork with provided JWT token ..."
-        "$PROVIDER_BIN" auth-provide "$JWT_TOKEN"
+        "$PROVIDER_BIN" auth-provide "$JWT_TOKEN" || true
         code=$?
         if [ "$code" -eq 0 ]; then
             log "[INFO] UrNetwork exited cleanly."
@@ -130,11 +130,11 @@ func_start_provider(){
         return $code
     fi
 
-    # Session exists — restart loop mirrors start_stable.sh behaviour
+    # Session exists — restart loop
     failures=0
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
-        "$PROVIDER_BIN" provide
+        "$PROVIDER_BIN" provide || true
         code=$?
         if [ "$code" -eq 0 ]; then
             log "[INFO] UrNetwork exited cleanly."
