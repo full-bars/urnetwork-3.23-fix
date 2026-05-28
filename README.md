@@ -2,6 +2,26 @@
 
 This is a high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. It combines the latest protocol optimizations with surgical improvements for professional providers managing large proxy lists.
 
+---
+
+## Table of Contents
+
+- [Key Improvements](#-key-improvements)
+- [Quick Start (Linux)](#-quick-start-linux)
+- [Usage](#-usage)
+  - [Environment Variables](#environment-variables)
+  - [Docker Run — GHCR](#docker-run--github-registry-ghcr)
+  - [Docker Run — Docker Hub](#docker-run--docker-hub-alternative)
+  - [Docker Compose](#docker-compose)
+  - [Persistent JWT](#persistent-jwt)
+  - [Outage Alerting](#outage-alerting-optional)
+  - [RAM Logging](#ram-logging-optional)
+  - [Automatic Updates (Watchtower)](#automatic-updates-watchtower)
+- [Architecture & Build](#-architecture--build)
+- [Disclaimer](#%EF%B8%8F-disclaimer)
+
+---
+
 ## 🚀 Key Improvements
 
 ### 1. High-Signal Monitoring (Promoted Logs)
@@ -15,7 +35,7 @@ The default UrNetwork engine is often bottlenecked for high-bandwidth providers,
 *   **Contract Cap**: Boosted `InitialContractTransferByteCount` from 16 KiB to **2 MiB** for faster connection ramp-up.
 *   **High-Scale Stability**: Increased `CreateContractTimeout` to **60s** and tuned `ContractFillFraction` to **0.7** to prevent connection drops during massive signaling spikes.
 *   **Accordion Scaling**: Implemented dynamic TCP window scaling. Windows start small (**4KB**) to save RAM on idle connections and grow on demand (up to **1MB**) for active throughput. Windows automatically shrink back to 4KB after 30s of inactivity.
-*   **Zero-Allocation Path**: Expanded internal Message Pools (16KB, 32KB, 64KB) to eliminate Garbage Collector CPU spikes during high-throughput transfers.
+*   **Zero-Allocation Path**: Expanded internal Message Pools (16KB, 32KB, 64KB) to eliminate Garbage Collector CPU spikes during high-throughput transfers. Pool capacity now auto-scales to RAM/32 at startup (floor 8 MiB, cap 256 MiB) so the pool isn't exhausted on large proxy list deployments.
 *   **Burst Protection**: Quadrupled IP Buffer Depth to **256** to absorb network volatility without dropping packets.
 
 ### 3. Professional Docker Integration
@@ -77,13 +97,36 @@ The installation includes the `urnet-tools` suite for easy management:
 
 ## 🛠 Usage
 
-### Standard Docker Run (JWT)
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io).
+### Environment Variables
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
+| `USER_AUTH` | - | Your email (required if `BUILD=stable`). |
+| `PASSWORD` | - | Your password (required if `BUILD=stable`). |
+| `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
+| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
+| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
+| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
+| `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires a JSON payload when the backend becomes unreachable and again when it recovers. See [Outage Alerting](#outage-alerting-optional). |
+| `URNETWORK_NODE_NAME` | hostname (docker/binary) | Label included in webhook payloads and log lines to identify which server the alert came from. Defaults to the system hostname suffixed with `(docker)` or `(binary)`. |
+| `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Accepts Go duration strings (`10m`, `1h`). Minimum `1m`. |
 
-**Using GHCR (GitHub Registry):**
+---
+
+### Docker Run — GitHub Registry (GHCR)
+
+The primary image is hosted on the GitHub Container Registry.
+
+Set `NAME` once before the command. The container name, JWT storage volume, and vnStat volume are all derived from it — so running the same command twice with different `NAME` values produces two fully isolated containers with no manual volume renaming. Docker also enforces that no two containers share the same name, so conflicts are caught immediately.
+
+**JWT auth (auth code login):**
+
 ```bash
+NAME=urfix   # change this per container — volumes are named from it
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
@@ -92,71 +135,235 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e URNETWORK_RAMLOGS=0 \
-  -e BUILD='jwt' \
+  -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
-  -v vnstat_data:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-> **Note:** The `-v urnetwork_config:/root/.urnetwork` volume persists your JWT so Watchtower image updates and container restarts don't require re-authentication. Auth codes are single-use — without this volume, any restart after a Watchtower update will fail. Use a separate named volume per container if running multiple instances.
+> Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `${NAME}_config` volume on first run and reused on all subsequent starts.
+>
+> To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
 
-**Using Docker Hub (Alternative):**
-If you experience `denied` errors or rate-limiting on GitHub, use our official Docker Hub mirror:
+**Email/password auth:**
+
 ```bash
+NAME=urfix   # change this per container
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD='jwt' \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -e BUILD=stable \
+  -e USER_AUTH=you@example.com \
+  -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+---
+
+### Docker Run — Docker Hub (Alternative)
+
+If you experience `denied` errors or rate-limiting on GHCR, use the Docker Hub mirror. The commands are identical — only the image name changes.
+
+**JWT auth:**
+
+```bash
+NAME=urfix
+
+docker run -d \
+  --name=$NAME \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -e BUILD=jwt \
+  -e ENABLE_VNSTAT=true \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-### Environment Variables
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
-| `USER_AUTH` | - | Your email (required if BUILD=stable). |
-| `PASSWORD` | - | Your password (required if BUILD=stable). |
-| `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
-| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
-| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
-| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
-| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces IP/transfer buffer sizes and sets GOMEMLIMIT=85% RAM while preserving the 256 KiB contract floor. Cannot be used with `--log-opt` when set to `lowmem`. |
-
-### Persistent JWT (Required for Watchtower / Auto-Updates)
-
-By default the JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it — Watchtower updates and `--restart=unless-stopped` restarts will force a re-authentication. If you're running many containers and they all hit the API simultaneously after an update, the auth code gets exhausted and containers start panicking.
-
-**Fix**: mount a named volume or host path at `/root/.urnetwork`:
+**Email/password auth:**
 
 ```bash
+NAME=urfix
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -v urnetwork_config:/root/.urnetwork \
+  -e ENABLE_VNSTAT=true \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  -p 9001:8080 \
+  3cape/urnetwork-3.23-fix:latest
 ```
 
-With the volume in place, the startup script detects the existing JWT and skips authentication entirely. The provider starts immediately without touching the API. Auth codes are only used once — on first run or after a manual `docker volume rm`.
+---
+
+### Docker Compose
+
+Volume names are derived from a single `NAME` variable so containers on the same host can never accidentally share storage. Create a `.env` file in the same folder as your `docker-compose.yml`:
+
+```bash
+# .env
+NAME=urfix
+```
+
+Docker Compose reads `.env` automatically and substitutes `${NAME:-urfix}` everywhere — into the container name, the JWT volume, and the vnStat volume. To run a second container on the same host, copy the folder, set a different `NAME` in its `.env`, and run `docker compose up -d` from there. Each instance gets completely isolated storage with no manual renaming required.
+
+**JWT auth:**
+```yaml
+services:
+  urnetwork:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: ${NAME:-urfix}
+    restart: unless-stopped
+    pull_policy: always
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
+      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
+    volumes:
+      - ${NAME:-urfix}_config:/root/.urnetwork
+      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9001:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ${NAME:-urfix}_config:
+  ${NAME:-urfix}_vnstat:
+```
+
+Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE_HERE`
+
+After the JWT is saved to the volume, subsequent starts need no argument: `docker compose up -d`
+
+**Email/password auth:**
+```yaml
+services:
+  urnetwork:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: ${NAME:-urfix}
+    restart: unless-stopped
+    pull_policy: always
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      - BUILD=stable
+      - USER_AUTH=you@example.com
+      - PASSWORD=yourpassword
+      - ENABLE_VNSTAT=true
+      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
+      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
+    volumes:
+      - ${NAME:-urfix}_config:/root/.urnetwork
+      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9001:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ${NAME:-urfix}_config:
+  ${NAME:-urfix}_vnstat:
+```
+
+---
+
+### Persistent JWT
+
+The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code — which is single-use and will fail on the second attempt.
+
+All examples above already include `-v urnetwork_config:/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm urnetwork_config`.
+
+### Outage Alerting (Optional)
+
+Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification when the provider loses contact with the URnetwork backend and when it recovers. The provider posts a JSON payload:
+
+```json
+{
+  "event": "outage_start",
+  "node": "my-server-name (docker)",
+  "timestamp": "2026-05-27T23:48:34Z",
+  "message": "Backend unreachable — provider holding existing connections but not accepting new ones."
+}
+```
+
+`event` is either `outage_start` or `outage_clear`. The provider logs `[outage]` state transitions to stdout regardless of whether a webhook URL is set, so they are always visible in `docker logs`.
+
+**Example: Discord**
+```
+URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+```
+
+**Example: Slack**
+```
+URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
+```
+
+**Example: ntfy (self-hosted push notifications)**
+```
+URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
+```
+
+**Startup log:** On every start the provider logs:
+```
+[outage] watcher active node=my-server-name (docker) webhook=configured
+```
+This confirms the node name and webhook status without waiting for an outage to fire.
 
 ### RAM Logging (Optional)
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
@@ -171,6 +378,26 @@ docker exec -it urfix tail -f /dev/shm/urnetwork.log
 ```
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
+
+---
+
+### Automatic Updates (Watchtower)
+
+[Watchtower](https://containrrr.dev/watchtower/) can automatically pull new image versions and restart your container when an update is published. Add it to your `docker-compose.yml` alongside the `urnetwork` service:
+
+```yaml
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --cleanup --interval 3600 urfix   # check for updates hourly
+```
+
+> **Important:** The `${NAME:-urfix}_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again — which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused and the restart is seamless.
+>
+> **Multiple containers:** Because volumes are named from `NAME` in `.env`, each container folder automatically gets its own isolated volumes — no manual renaming needed. Just give each folder a different `NAME` value.
 
 ---
 
