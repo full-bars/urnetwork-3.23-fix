@@ -1,98 +1,308 @@
 # High-Volume Performance Tuning
 
-This guide explains the architectural tuning parameters available in the `urnetwork-3.23-fix` fork. These settings are designed for high-volume networking environments where standard protocol defaults may lead to signaling congestion or connection instability.
-
-> **Note:** These optimizations are experimental. High-volume environments vary significantly based on network latency, CPU overhead, and provider capacity.
+This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` fork, how to choose the right profile for your server, and how to use the operational features added for fleet management.
 
 ---
 
-## 0. Turbo Mode (V4 / V8) — For RAM-Rich Servers
+## Profile Quick Reference
 
-The default 1 MiB TCP Accordion window creates a hard per-connection throughput ceiling: `max_speed = window / RTT`. At a typical 10ms RTT that's ~100 Mbps per connection regardless of available server bandwidth. Turbo mode raises this ceiling.
+| Profile | `URNETWORK_PROFILE` | RAM | Throughput | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Turbo V8** | `turbo-v8` | 16 GiB+ | Maximum | Dedicated servers, max earnings |
+| **Turbo V4** | `turbo-v4` | 4–16 GiB | High | Well-provisioned VPS |
+| *(default)* | *(unset)* | 2–4 GiB | Standard | General use |
+| **Eco** | `eco` | 1–2 GiB | Standard | Full throughput, GC-tuned for RAM constraints |
+| **Lowmem** | `lowmem` | < 1 GiB | Reduced | Minimum footprint, RAM logs on |
 
-### Enabling Turbo Mode
+Turbo mode can also be set via the `TURBO=v4` / `TURBO=v8` Docker environment variable or `urnet-tools turbo <v4|v8|off>` on systemd installs.
 
-**Binary (systemd):**
-```bash
-urnet-tools turbo v4    # 4 MiB window — ~400 Mbps ceiling at 10ms RTT
-urnet-tools turbo v8    # 8 MiB window — ~800 Mbps ceiling at 10ms RTT
-urnet-tools turbo off   # return to default
-urnet-tools turbo       # show current state
-```
+---
 
-**Docker:**
-```bash
--e TURBO=v4    # or TURBO=v8
-```
+## Master Parameter Reference
 
-### What Gets Tuned
+All values compared across upstream defaults and fork profiles. "Fork default" is what runs when no profile is set.
 
-| Parameter | Default | V4 | V8 |
-| :--- | :--- | :--- | :--- |
-| TCP/UDP Accordion window | 1 MiB | 4 MiB | 8 MiB |
-| Transfer resend queue | 2 MiB | 8 MiB | 16 MiB |
-| Transfer receive queue | 2.5 MiB | 8 MiB | 16 MiB |
-| IP sequence buffer depth | 256 | 512 | 512 |
-| Transfer goroutine buffer depth | 16 | 64 | 64 |
-| WebRTC DataChannel buffer | 4 MiB/peer | 8 MiB/peer | 16 MiB/peer |
-| Contract ramp (SeqScale) | 4 | 2 | 2 |
-| GOGC | 100 | 200 | 200 |
-| GOMEMLIMIT | runtime default | unset | unset |
+### Contract & Transfer
 
-### Theoretical Speed Ceilings
+| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB |
+| `ContractTransferByteSeqScale` | 4 | 4 | 4 | 4 | 2 | 2 |
+| `ContractFillFraction` | 0.8 | 0.7 | 0.7 | 0.7 | 0.7 | 0.7 |
+| `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s |
+| `ResendQueueMaxByteCount` | 2 MiB | 2 MiB | reduced | 2 MiB | 8 MiB | 16 MiB |
+| `ReceiveQueueMaxByteCount` | ~2.5 MiB | ~2.5 MiB | reduced | ~2.5 MiB | 8 MiB | 16 MiB |
+| `MaxResendCount` | unlimited | 16 | 16 | 16 | 16 | 16 |
+| Transfer `SequenceBufferSize` | 16 | 16 | reduced | 16 | 64 | 64 |
+
+### TCP / IP Layer
+
+| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| TCP `MaxWindowSize` | 1 MiB | 1 MiB (Accordion) | reduced | 1 MiB | 4 MiB | 8 MiB |
+| UDP `MaxWindowSize` | 1 MiB | 1 MiB | reduced | 1 MiB | 4 MiB | 8 MiB |
+| IP `SequenceBufferSize` | 64 | 256 | reduced | 256 | 512 | 512 |
+| Accordion window start | fixed | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB |
+| Accordion idle shrink | none | 30 s | 30 s | 30 s | 30 s | 30 s |
+
+### WebRTC
+
+| Parameter | Upstream | Fork default | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- |
+| `ReceiveBufferSize` per peer | 4 MiB | 4 MiB | 8 MiB | 16 MiB |
+
+### Memory & GC
+
+| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `InitialMessagePoolByteCount` | 1 MiB | auto (RAM/32) | auto | auto | auto | auto |
+| Message pool floor | — | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB |
+| Message pool cap | — | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB |
+| GOGC | 100 | 100 | 100 | 50 (dynamic) | 200 | 200 |
+| GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | unset |
+| RAM logging | off | off | on | off | off | off |
+
+---
+
+## Profiles In Depth
+
+### Turbo Mode (V4 / V8)
+
+The default 1 MiB TCP Accordion window creates a hard per-connection throughput ceiling: `throughput = window / RTT`. At a typical 10ms RTT that caps each connection at ~100 Mbps regardless of available bandwidth. Turbo mode raises this ceiling by scaling the window and all dependent buffers.
+
+**Theoretical ceilings per connection:**
 
 | RTT | Default | V4 | V8 |
 | :--- | :--- | :--- | :--- |
-| 5ms (same city) | ~210 Mbps | ~838 Mbps | ~1.6 Gbps |
-| 10ms (same region) | ~105 Mbps | ~419 Mbps | ~838 Mbps |
-| 20ms (nearby country) | ~52 Mbps | ~210 Mbps | ~419 Mbps |
-| 50ms (cross-continent) | ~21 Mbps | ~84 Mbps | ~168 Mbps |
+| 5 ms | ~210 Mbps | ~838 Mbps | ~1.6 Gbps |
+| 10 ms | ~105 Mbps | ~419 Mbps | ~838 Mbps |
+| 20 ms | ~52 Mbps | ~210 Mbps | ~419 Mbps |
+| 50 ms | ~21 Mbps | ~84 Mbps | ~168 Mbps |
 
-### When to Use Each Level
+**What turbo changes:**
+- TCP/UDP Accordion window ceiling: 1 MiB → 4 MiB (V4) / 8 MiB (V8)
+- Transfer resend and receive queues: 2 MiB → 8/16 MiB (so they don't become the new bottleneck)
+- IP sequence buffer depth: 256 → 512
+- Transfer goroutine buffer depth: 16 → 64
+- WebRTC DataChannel buffer: 4 MiB → 8/16 MiB per peer
+- Contract ramp (`ContractTransferByteSeqScale`): 4 → 2 (full speed in 2 contracts instead of 4)
+- GOGC raised to 200, GOMEMLIMIT unset (heap breathes freely on RAM-rich boxes)
 
-- **V4**: Good starting point for boxes with 4–16 GiB RAM. Lower memory pressure per connection than V8.
-- **V8**: Maximum throughput for dedicated servers with 16 GiB+ RAM. Higher per-connection memory cost — validate RSS under load before deploying broadly.
-- **Do not use on RAM-constrained boxes.** The larger window and queues will increase memory usage under load. Use the default, eco, or lowmode profiles instead.
+**Enabling:**
+```bash
+# Binary (systemd)
+urnet-tools turbo v4      # or v8
+urnet-tools turbo off     # return to default
+urnet-tools turbo         # show current state
 
----
+# Docker
+-e TURBO=v4               # or TURBO=v8
+```
 
-## 1. Signaling & Contract Management
-
-In the URnetwork protocol, a **Contract** represents the authorized bandwidth quota for a connection. Managing these contracts efficiently is critical for stability in high-volume environments.
-
-### Initial Contract Size (`InitialContractTransferByteCount`)
-*   **Default:** 16 KiB (Upstream) / 2 MiB (Fix-4)
-*   **Rationale:** Standard defaults are optimized for anti-spam and low-volume users. In high-volume environments, a small initial quota causes an immediate "signaling storm" as thousands of connections simultaneously request refills.
-*   **Tuning:** Increasing this value reduces the initial signaling frequency, giving the provider more "breathing room" during connection spikes.
-
-### Signaling Timeout (`CreateContractTimeout`)
-*   **Default:** 30s (Upstream) / 60s (Fix-4)
-*   **Rationale:** Under heavy load, the Out-of-Band (OOB) signaling layer can become congested. If a response isn't received within the timeout window, the sequence will exit with a `could not create contract` error.
-*   **Tuning:** Extending this timeout allows the node to survive temporary signaling backlogs without dropping active connections.
-
-### Contract Fill Fraction (`ContractFillFraction`)
-*   **Default:** 0.8 (Upstream) / 0.7 (Fix-4)
-*   **Rationale:** This determines when a client requests a "refill" (a new contract). At 0.8, the client waits until 80% of the current quota is used. 
-*   **Tuning:** Lowering this to 0.7 or 0.6 starts the refill process earlier. This provides a larger "safety buffer" of remaining data to burn while waiting for the signaling layer to respond.
+**When to use V4 vs V8:** V4 is a good starting point for 4–16 GiB boxes. V8 is for dedicated servers with 16 GiB+ RAM where the extra 4 MiB per connection window is affordable. Check RSS under load before rolling V8 broadly.
 
 ---
 
-## 2. Memory & Throughput Optimizations
+### Eco Mode
 
-### Accordion TCP Scaling
-*   **Mechanism:** Connections start with a minimal **4KB** TCP window to conserve RAM. As throughput increases, the window dynamically expands (up to **1MB**).
-*   **Efficiency:** If a connection becomes idle, the window automatically shrinks back to 4KB after 30 seconds. This allows the provider to manage thousands of concurrent connections with a significantly lower memory footprint than fixed-window implementations.
+Eco mode is for providers on RAM-constrained systems who still want full throughput and earnings. It leaves all buffer and contract sizes untouched and only tunes the GC.
 
-### Message Pool Expansion
-*   **Mechanism:** We utilize pre-allocated pools for 16KB, 32KB, and 64KB message frames.
-*   **Benefit:** In high-throughput scenarios, this minimizes Garbage Collector (GC) pressure by reusing memory buffers instead of constantly allocating/deallocating frames.
+**What eco changes:**
+- GOGC: 100 → 50 (GC runs twice as often, keeping heap smaller at the cost of slightly more CPU)
+- GOMEMLIMIT: unset → 75% of detected RAM (cgroup-aware; Docker `--memory` containers get the correct ceiling)
+- Dynamic GC pressure monitor: if available memory drops below 300 MiB, GOGC drops to 25; below 150 MiB, drops to 10; recovers with hysteresis when pressure clears
+- All buffer and contract settings unchanged — throughput is unaffected
+
+**Enabling:**
+```bash
+# Binary (systemd)
+urnet-tools eco on
+urnet-tools eco off
+
+# Docker
+-e URNETWORK_PROFILE=eco
+```
 
 ---
 
-## 3. Troubleshooting Signaling Issues
+### Lowmem Mode
 
-If you continue to see `exit could not create contract` or `oob err = Timeout` in your logs:
+Lowmem mode is for the most RAM-constrained environments where the provider must share a host with other processes. It reduces buffer sizes, enables RAM logging, and applies a hard memory cap.
 
-1.  **Monitor Connection Concurrency:** Check if your system's `netstat` shows an unexpected spike in `ESTABLISHED` connections.
-2.  **Evaluate Latency:** High latency to the signaling provider will require a lower `ContractFillFraction` to compensate for the RTT (Round Trip Time).
-3.  **Check CPU Pressure:** If the CPU is pegged at 100%, the signaling thread may be starved, leading to artificial timeouts.
+**What lowmem changes:**
+- Buffer sizes reduced (IP, transfer, TCP/UDP windows)
+- GOMEMLIMIT: 85% of detected RAM (cgroup-aware)
+- RAM logging enabled unconditionally (logs go to `/dev/shm/urnetwork.log`, 1 MB cap)
+- `InitialContractTransferByteCount`: kept at 256 KiB (not reduced to stock 16 KiB) — throughput ramp-up is preserved even in low-memory mode
+
+**Enabling:**
+```bash
+# Binary (systemd)
+urnet-tools lowmode on
+urnet-tools lowmode off
+
+# Docker
+-e URNETWORK_PROFILE=lowmem
+```
+
+> **Note:** When lowmem is active, logs go to RAM (`/dev/shm`) rather than stdout. Remove `--log-driver` / `--log-opt` from your Docker run command. View logs with: `docker exec -it <container> tail -f /dev/shm/urnetwork.log`
+
+---
+
+## Accordion TCP Scaling
+
+Connections start with a minimal **4 KiB** TCP window to conserve RAM on idle connections. As throughput increases, the window doubles on each successful delivery up to the profile ceiling (1 MiB default, 4/8 MiB turbo). If a connection goes idle, the window shrinks back to 4 KiB after 30 seconds.
+
+This means the provider can hold many concurrent idle connections cheaply while still serving active ones at full speed. The overhead of an idle connection is the 4 KiB window allocation, not the profile ceiling.
+
+---
+
+## Contract Management
+
+**`InitialContractTransferByteCount`** controls how many bytes are authorized per contract on the first request. The upstream default of 16 KiB means a new connection hits its quota almost immediately and must renegotiate — under heavy load this creates a signaling storm. The fork raises this to 2 MiB, so a new connection can transfer a meaningful amount before the first renegotiation.
+
+**`ContractTransferByteSeqScale`** controls how many contracts it takes to reach full (`StandardContractTransferByteCount`) speed. At the default of 4, the ramp takes 4 contracts. Turbo mode sets this to 2, halving the ramp time.
+
+**`ContractFillFraction`** (0.7 vs upstream 0.8) starts the contract refill request earlier — when 70% of the current quota is used instead of 80%. This gives more headroom before exhaustion, which matters when signaling latency is high.
+
+**`CreateContractTimeout`** (60s vs upstream 30s) gives the OOB signaling layer more time to respond during load spikes before dropping the connection.
+
+---
+
+## Message Pool Auto-Sizing
+
+The message pool is a free-list of pre-allocated byte buffers (size classes: 2 KB, 4 KB, 16 KB, 32 KB, 64 KB). Packets are served from this pool on the hot path; a pool miss falls back to a heap allocation and GC pressure increases.
+
+The upstream default caps the pool at 1 MiB total regardless of available RAM. On a server running many proxies, this pool is exhausted quickly under real load — most packets fall back to heap allocation, creating unnecessary GC churn.
+
+**Auto-sizing** (added in fix.14) scales the pool to available RAM at startup:
+
+```
+pool_size = RAM / 32
+floor:  8 MiB
+cap:   256 MiB
+```
+
+This is skipped when `URNETWORK_PROFILE=lowmem` (lowmem manages its own footprint) and when `--max-memory` is set explicitly (that path already calls `ResizeMessagePools(maxMemory/8)`).
+
+**Startup log:**
+```
+[pool] message pool 61MiB (RAM=1964MiB)
+```
+
+No configuration is required — auto-sizing runs on every startup.
+
+---
+
+## Outage Detection and Alerting
+
+The provider monitors backend connectivity in the background and logs state transitions. This runs on every startup regardless of configuration.
+
+**Log output:**
+```
+[outage] watcher active node=my-server (docker) webhook=configured
+[outage] backend degraded
+[outage] backend recovered
+```
+
+**How it works:**
+- Polls `IsBackendDegraded()` every 30 seconds (reads a package-level atomic stamped on auth/OOB failures, reset on successful reconnect)
+- Requires 2 consecutive healthy polls before firing `outage_clear` — prevents false clears during brief mid-outage lulls
+- Logs state transitions to stdout always
+
+**Webhook alerts (optional):**
+
+Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification on each outage event. The provider POSTs JSON:
+
+```json
+{
+  "event": "outage_start",
+  "node": "my-server (docker)",
+  "timestamp": "2026-05-27T23:48:34Z",
+  "message": "Backend unreachable — provider holding existing connections but not accepting new ones."
+}
+```
+
+`event` is `outage_start` or `outage_clear`.
+
+**Per-event cooldown:** webhook calls have a 5-minute per-event cooldown to prevent spam at the recovery boundary (e.g., if the backend briefly flickers back and forth). Webhook delivery is non-blocking — a slow or unreachable endpoint never delays the poll loop.
+
+**Supported services:** any HTTP endpoint accepting POST with a JSON body. Tested with Discord, Slack, PagerDuty, and ntfy.
+
+```bash
+# Examples
+URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
+URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
+```
+
+**Node identity:**
+
+`URNETWORK_NODE_NAME` sets the label included in webhook payloads and log lines. If not set, the provider auto-generates a name from `os.Hostname()` suffixed with `(docker)` or `(binary)` depending on whether `/.dockerenv` is present.
+
+```bash
+# Docker
+-e URNETWORK_NODE_NAME=atl-provider-1
+
+# Result in payloads
+"node": "atl-provider-1 (docker)"
+```
+
+On bare-metal installs the suffix is `(binary)`, so alerts from containers and binaries on the same host are distinguishable without any configuration.
+
+> When running multiple containers on one host, set a distinct `URNETWORK_NODE_NAME` per container so webhook alerts identify which one fired.
+
+---
+
+## Health Heartbeat
+
+The provider logs a periodic heartbeat line with uptime, active profile, and memory statistics. This provides passive liveness confirmation and heap trend visibility without external tooling.
+
+**Log output:**
+```
+[health] uptime=2h34m profile=turbo-v8 heap=142MiB sys=198MiB
+```
+
+- `heap`: live Go heap allocations (bytes in use by Go objects)
+- `sys`: total memory obtained from the OS by the Go runtime
+- Uses `runtime/metrics` (lock-free, no stop-the-world pause) rather than `runtime.ReadMemStats`
+
+**Configuration:**
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `URNETWORK_HEALTH_INTERVAL` | `5m` | Heartbeat interval. Accepts Go duration strings (`10m`, `1h`). Minimum `1m`. |
+
+---
+
+## Log Spam Reduction
+
+During backend outages, certain log lines would historically fire thousands of times per minute. The fork applies global rate limiting:
+
+| Log pattern | Rate limit | Suppression summary |
+| :--- | :--- | :--- |
+| `[t]auth error` | 1 per minute | suppressed count appended when outage clears |
+| `[contract]oob err` | 1 per minute | suppressed count appended when outage clears |
+
+**Example:**
+```
+[t]auth error: connection refused (3,952 suppressed)
+```
+
+The `(N suppressed)` suffix ensures no errors are silently dropped — you see the count even if the individual lines were suppressed.
+
+---
+
+## Troubleshooting
+
+**`[net][s]select` not appearing in logs:**
+This line is promoted to INFO level in the fork (upstream logs it at Debug level 2, hidden unless `-v` is passed). If it's missing, the provider is not successfully connecting any proxies — check auth and network connectivity.
+
+**High memory usage under load:**
+If RSS grows without bound, consider switching from turbo to the default profile or enabling eco mode. The Accordion window means idle connections are cheap, but connections that have ramped up to the ceiling will hold their window allocation until they go idle. Check `[health]` log lines to track heap trend over time.
+
+**Contract renegotiation noise (`could not create contract`, `oob err = Timeout`):**
+These appear when the OOB signaling layer is overloaded. Tuning `CreateContractTimeout` higher (already 60s in fork) and `ContractFillFraction` lower gives more headroom. If they persist, it's usually a backend API outage — the `[outage]` watcher will detect and log this.
+
+**RAM logging + Docker log drivers conflict:**
+`URNETWORK_RAMLOGS=1` and `--log-driver` / `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout. Remove the Docker log driver flags and use `docker exec -it <container> tail -f /dev/shm/urnetwork.log` to view logs.
