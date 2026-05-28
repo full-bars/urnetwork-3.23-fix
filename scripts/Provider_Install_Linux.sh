@@ -193,7 +193,7 @@ get_release_date_from_api_response ()
     if command -v jq > /dev/null; then
         date="$(echo "$1" | tr -d '\000-\037' | jq -r '.published_at | fromdateiso8601')" 
     elif command -v python3 > /dev/null; then
-        date="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json; from datetime import datetime, timezone; data = json.load(sys.stdin); print(int(datetime.fromisoformat(data["published_at"]).replace(tzinfo=timezone.utc).timestamp() * 1000))')"
+        date="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json; from datetime import datetime, timezone; data = json.load(sys.stdin); iso_str = data["published_at"].replace("Z", "+00:00"); print(int(datetime.fromisoformat(iso_str).timestamp() * 1000))')"
     else
         pr_err "Neither python3 nor jq is available"
         exit 1
@@ -399,14 +399,20 @@ Persistent=true
 WantedBy=default.target
 EOF
 
-    if ! systemctl --user enable urnetwork.service; then
-        pr_err "Could not enable the newly installed systemd service"
-        exit 1
+    if ! systemctl --user enable urnetwork.service 2>/dev/null; then
+        if [ "$(id -u)" -eq 0 ]; then
+            pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
+        else
+            pr_err "Could not enable the newly installed systemd service"
+            exit 1
+        fi
     fi
-    
-    if ! systemctl --user enable --now urnetwork-update.timer; then
-        pr_err "Could not enable the newly installed update timer"
-        exit 1
+
+    if ! systemctl --user enable --now urnetwork-update.timer 2>/dev/null; then
+        if [ "$(id -u)" -ne 0 ]; then
+            pr_err "Could not enable the newly installed update timer"
+            exit 1
+        fi
     fi
 
     if [ "$start" -eq 1 ]; then
