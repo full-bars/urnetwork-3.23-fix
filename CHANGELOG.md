@@ -46,7 +46,8 @@ All notable changes to this project are documented here.
 - Auto-update timer no longer silently dead after install or reinstall. The install script was using `systemctl --user enable` instead of `enable --now`, so the timer was registered but never started. On long-running servers that hadn't rebooted, it never fired.
 
 ### Added
-- Turbo mode (`URNETWORK_PROFILE=turbo-v4` / `turbo-v8`): raises the TCP Accordion window ceiling from 1 MiB to 4 MiB (V4) or 8 MiB (V8), removing the ~100–150 Mbps per-connection limit that existed because throughput is bounded by window/RTT. At 10ms RTT: V4 ~400 Mbps ceiling, V8 ~800 Mbps ceiling.
+- Turbo mode (`URNETWORK_PROFILE=turbo-v4` / `turbo-v8`): raises the TCP Accordion window ceiling from 1 MiB to 4 MiB (V4) or 8 MiB (V8), removing the mathematical per-connection limit that existed because throughput is bounded by window/RTT.
+  - Significantly higher theoretical ceilings for low-latency paths.
   - Transfer-layer resend and receive queues scale with the window (8 MiB for V4, 16 MiB for V8) so they don't become the new bottleneck.
   - IP and transfer goroutine buffer depths doubled (512 and 64 respectively).
   - WebRTC DataChannel buffer set to 2× window size per peer.

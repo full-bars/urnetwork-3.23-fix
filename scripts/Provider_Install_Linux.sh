@@ -1226,12 +1226,37 @@ do_optimize ()
     
     if [ ! -d "/proc/sys/net/netfilter" ]; then
         pr_info "Conntrack kernel module not found. Attempting to install utilities..."
-        if [ -f /etc/arch-release ]; then
-            pacman -Sy --noconfirm conntrack-tools
-        elif [ -f /etc/debian_version ]; then
-            apt-get update && apt-get install -y conntrack
-        elif [ -f /etc/redhat-release ]; then
-            dnf install -y conntrack-tools
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            case "$ID" in
+                arch)
+                    pacman -Sy --noconfirm conntrack-tools
+                    ;;
+                debian|ubuntu|linuxmint)
+                    apt-get update && apt-get install -y conntrack
+                    ;;
+                fedora|rhel|centos|rocky|almalinux|amzn)
+                    dnf install -y conntrack-tools
+                    ;;
+                alpine)
+                    apk add conntrack-tools
+                    ;;
+                opensuse*|sles)
+                    zypper install -y conntrack-tools
+                    ;;
+                *)
+                    pr_warn "Unsupported distro ID: $ID. Please install 'conntrack' manually."
+                    ;;
+            esac
+        else
+            # Fallback for older systems
+            if [ -f /etc/arch-release ]; then
+                pacman -Sy --noconfirm conntrack-tools
+            elif [ -f /etc/debian_version ]; then
+                apt-get update && apt-get install -y conntrack
+            elif [ -f /etc/redhat-release ]; then
+                dnf install -y conntrack-tools
+            fi
         fi
         modprobe nf_conntrack || pr_err "Failed to load nf_conntrack. Please check your kernel support."
     fi
@@ -1241,7 +1266,38 @@ do_optimize ()
     mkdir -p /etc/modules-load.d
     echo "nf_conntrack" > /etc/modules-load.d/urnetwork.conf
 
-    # 2. Dynamic Calculation
+    # 2. ZRAM Optimization
+    pr_info "Checking for ZRAM (Compressed RAM Swap)..."
+    if ! swapon --show | grep -q "zram"; then
+        pr_info "ZRAM not detected. Attempting to enable..."
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            case "$ID" in
+                arch)
+                    pacman -Sy --noconfirm zram-generator
+                    printf "[zram0]\nzram-size = ram / 2\n" > /etc/systemd/zram-generator.conf
+                    systemctl daemon-reload
+                    systemctl start /dev/zram0
+                    ;;
+                debian|ubuntu|linuxmint)
+                    apt-get update && apt-get install -y zram-tools
+                    echo "ZRAM_SIZE=512" > /etc/default/zramswap
+                    systemctl restart zramswap
+                    ;;
+                fedora|rhel|centos|rocky|almalinux|amzn)
+                    dnf install -y zram-generator
+                    printf "[zram0]\nzram-size = ram / 2\n" > /etc/systemd/zram-generator.conf
+                    systemctl daemon-reload
+                    systemctl start /dev/zram0
+                    ;;
+            esac
+        fi
+        swapon --show | grep -q "zram" && pr_info "ZRAM enabled successfully." || pr_warn "ZRAM could not be auto-enabled. Highly recommended for low-RAM nodes."
+    else
+        pr_info "ZRAM is already active."
+    fi
+
+    # 3. Dynamic Calculation
     ram_mib=$(detect_mem_limit_mib)
     
     # Golden Fleet Scaling:
