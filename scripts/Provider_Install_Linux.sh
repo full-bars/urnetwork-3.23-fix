@@ -1346,41 +1346,41 @@ do_optimize ()
     pr_info "Ensuring kernel modules are loaded..."
     modprobe nf_conntrack >/dev/null 2>&1
 
-    if [ ! -d "/proc/sys/net/netfilter" ]; then
-        pr_info "Conntrack kernel module not found. Attempting to install utilities..."
+    if [ ! -d "/proc/sys/net/netfilter" ] || ! command -v jq >/dev/null; then
+        pr_info "System utilities missing (conntrack/jq). Attempting to install..."
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             case "$ID" in
                 arch)
-                    pacman -Sy --noconfirm conntrack-tools
+                    pacman -Sy --noconfirm conntrack-tools jq
                     ;;
                 debian|ubuntu|linuxmint)
-                    apt-get update && apt-get install -y conntrack
+                    apt-get update && apt-get install -y conntrack jq
                     ;;
                 fedora|rhel|centos|rocky|almalinux|amzn)
-                    dnf install -y conntrack-tools
+                    dnf install -y conntrack-tools jq
                     ;;
                 alpine)
-                    apk add conntrack-tools
+                    apk add conntrack-tools jq
                     ;;
                 opensuse*|sles)
-                    zypper install -y conntrack-tools
+                    zypper install -y conntrack-tools jq
                     ;;
                 *)
-                    pr_warn "Unsupported distro ID: %s. Please install 'conntrack' manually." "$ID"
+                    pr_warn "Unsupported distro ID: %s. Please install 'conntrack' and 'jq' manually." "$ID"
                     ;;
             esac
         else
             # Fallback for older systems
             if [ -f /etc/arch-release ]; then
-                pacman -Sy --noconfirm conntrack-tools
+                pacman -Sy --noconfirm conntrack-tools jq
             elif [ -f /etc/debian_version ]; then
-                apt-get update && apt-get install -y conntrack
+                apt-get update && apt-get install -y conntrack jq
             elif [ -f /etc/redhat-release ]; then
-                dnf install -y conntrack-tools
+                dnf install -y conntrack-tools jq
             fi
         fi
-        modprobe nf_conntrack || pr_err "Failed to load nf_conntrack. Please check your kernel support."
+        modprobe nf_conntrack >/dev/null 2>&1 || pr_warn "Warning: Failed to load nf_conntrack module."
     fi
 
     # Persistence for module (solves race condition on reboot)
