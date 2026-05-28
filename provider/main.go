@@ -663,6 +663,20 @@ func fireWebhook(url, nodeName, event, message string) {
 	}
 }
 
+// metricBytesToMiB converts a runtime/metrics Value to MiB regardless of whether
+// the underlying kind is KindUint64 or KindFloat64. Panics are avoided by checking
+// Kind first; an unrecognised kind returns 0.
+func metricBytesToMiB(v metrics.Value) uint64 {
+	switch v.Kind() {
+	case metrics.KindUint64:
+		return v.Uint64() / 1024 / 1024
+	case metrics.KindFloat64:
+		return uint64(v.Float64()) / 1024 / 1024
+	default:
+		return 0
+	}
+}
+
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
 // memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
 // (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
@@ -692,8 +706,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			{Name: "/memory/classes/total:bytes"},
 		}
 		metrics.Read(samples)
-		heapMiB := samples[0].Value.Uint64() / 1024 / 1024
-		sysMiB := samples[1].Value.Uint64() / 1024 / 1024
+		heapMiB := metricBytesToMiB(samples[0].Value)
+		sysMiB := metricBytesToMiB(samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
 		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
 			uptime, profile, heapMiB, sysMiB)
