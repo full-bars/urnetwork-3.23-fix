@@ -1282,7 +1282,7 @@ do_optimize ()
     # Helper for interactive confirmation
     confirm () {
         if [ "$FORCE" = "1" ]; then return 0; fi
-        printf "  [?] %s [y/N]: " "$1"
+        printf "  [?] " && printf '%s [y/N]: ' "$1"
         read -r response
         case "$response" in
             [yY][eE][sS]|[yY]) return 0 ;;
