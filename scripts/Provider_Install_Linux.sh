@@ -1296,44 +1296,98 @@ toggle_turbomode ()
 
 setup_zram_manual () {
     pr_info "Attempting manual ZRAM setup (kernel direct)..."
-    modprobe zram num_devices=1 2>/dev/null || true
-    
-    # Find zram device
+
+    # First, ensure zram module is loaded with enough devices
+    # For upgraded systems, try num_devices=0 (dynamic) first, then static
+    modprobe -r zram 2>/dev/null || true
+    sleep 0.5
+
+    if ! modprobe zram num_devices=0 2>/dev/null; then
+        # Fallback to static device if dynamic fails
+        if ! modprobe zram num_devices=1 2>/dev/null; then
+            pr_warn "Failed to load 'zram' kernel module. ZRAM is likely not supported by your kernel or restricted by the environment."
+            return 1
+        fi
+    fi
+
+    sleep 1
+
+    # Find or create zram device
     zdev=""
     for d in /dev/zram0 /dev/zram1; do
         if [ -b "$d" ]; then zdev="$d"; break; fi
     done
-    
+
     if [ -z "$zdev" ]; then
-        # Try to create it if it doesn't exist
-        if [ -f /sys/class/zram-control/hot_add ]; then
-            cat /sys/class/zram-control/hot_add >/dev/null 2>&1
+        # Try to create it via zram-control (newer systems)
+        if [ -w /sys/class/zram-control/hot_add ]; then
+            echo 0 > /sys/class/zram-control/hot_add 2>/dev/null
+            sleep 0.5
             [ -b /dev/zram0 ] && zdev="/dev/zram0"
         fi
     fi
 
     if [ -z "$zdev" ] || [ ! -b "$zdev" ]; then
-        pr_warn "Could not find or create a ZRAM device. Kernel support might be missing."
+        pr_warn "Could not find or create a ZRAM device (/dev/zram*). Your environment may lack device-creation permissions."
         return 1
     fi
 
     # Determine size (80% of total RAM)
     ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     zram_bytes=$(( ram_kb * 8 / 10 * 1024 ))
-    
-    # Apply configuration
-    swapoff "$zdev" 2>/dev/null || true
-    echo 1 > "/sys/block/$(basename "$zdev")/reset" 2>/dev/null || true
-    echo zstd > "/sys/block/$(basename "$zdev")/comp_algorithm" 2>/dev/null || true
-    echo "$zram_bytes" > "/sys/block/$(basename "$zdev")/disksize" 2>/dev/null || {
-        pr_warn "Failed to set ZRAM disksize. Is the device already in use?"
-        return 1
-    }
+    zdev_name=$(basename "$zdev")
 
-    mkswap "$zdev" >/dev/null 2>&1
-    swapon -p 100 "$zdev" >/dev/null 2>&1
-    
-    if swapon --show | grep -q "$(basename "$zdev")"; then
+    # Apply configuration with proper error handling for upgraded systems
+    pr_info "Configuring $zdev (${zram_bytes} bytes)..."
+
+    swapoff "$zdev" 2>/dev/null || true
+    sleep 0.2
+
+    # Reset device (if it has residual config)
+    if [ -w "/sys/block/$zdev_name/reset" ]; then
+        echo 1 > "/sys/block/$zdev_name/reset" 2>/dev/null || true
+        sleep 0.2
+    fi
+
+    # Set compression algorithm (zstd preferred, lz4 fallback)
+    if [ -w "/sys/block/$zdev_name/comp_algorithm" ]; then
+        echo zstd > "/sys/block/$zdev_name/comp_algorithm" 2>/dev/null || \
+        echo lz4 > "/sys/block/$zdev_name/comp_algorithm" 2>/dev/null || true
+    fi
+
+    # Set disksize — this may fail if device is already in use
+    if ! echo "$zram_bytes" > "/sys/block/$zdev_name/disksize" 2>/dev/null; then
+        pr_warn "Failed to set ZRAM disksize. Device may be in use or already configured."
+        # Try unloading and reloading the module to force a clean state
+        modprobe -r zram 2>/dev/null || true
+        sleep 1
+        if ! modprobe zram num_devices=1 2>/dev/null; then
+            return 1
+        fi
+        sleep 0.5
+        if ! echo "$zram_bytes" > "/sys/block/$zdev_name/disksize" 2>/dev/null; then
+            pr_warn "Still unable to set disksize after module reload."
+            return 1
+        fi
+    fi
+
+    sleep 0.2
+
+    # Format and enable swap
+    if ! mkswap "$zdev" >/dev/null 2>&1; then
+        pr_warn "Failed to mkswap on $zdev. Device may not be properly initialized."
+        return 1
+    fi
+
+    if ! swapon -p 100 "$zdev" >/dev/null 2>&1; then
+        pr_warn "Failed to swapon $zdev."
+        return 1
+    fi
+
+    sleep 0.5
+
+    if swapon --show | grep -q "$zdev_name"; then
+        pr_info "ZRAM device $zdev is now active"
         return 0
     fi
     return 1
@@ -1381,6 +1435,12 @@ do_optimize ()
         exec sudo "$0" "$operation" "$@"
     fi
 
+    # Detect if we are in a container
+    is_container=0
+    if [ -f "/.dockerenv" ] || grep -qa container= /proc/1/environ 2>/dev/null; then
+        is_container=1
+    fi
+
     # 0. Immediate Pre-Optimization (prevents failures during the optimization itself)
     # Increase ulimit and inotify limits immediately for the session to prevent "Too many open files"
     ulimit -n 1048576 2>/dev/null || true
@@ -1389,6 +1449,10 @@ do_optimize ()
     sysctl -w fs.file-max=2097152 >/dev/null 2>&1 || true
 
     pr_info "⚡ Starting System Optimizer..."
+
+    if [ "$is_container" -eq 1 ]; then
+        pr_warn "Container environment detected. OS-level kernel tuning (ZRAM, Sysctl) should be run on the HOST machine for best results."
+    fi
 
     # Helper for interactive confirmation
     confirm () {
@@ -1470,7 +1534,7 @@ do_optimize ()
                     systemctl start /dev/zram0 2>/dev/null || true
                     ;;
                 debian|ubuntu|linuxmint)
-                    apt-get update && apt-get install -y zram-tools
+                    apt-get update && apt-get install -y zram-tools 2>/dev/null || true
                     ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
                     zram_mb=$(( ram_kb * 8 / 10 / 1024 ))
                     echo "ZRAM_SIZE=$zram_mb" > /etc/default/zramswap
