@@ -48,6 +48,7 @@ show_help ()
         echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
         echo "  $me [options] turbo <v4|v8|off>       🚀 Turbo mode: raise throughput limits for RAM-rich boxes"
         echo "                          v4=4MiB window (~400Mbps/10ms), v8=8MiB (~800Mbps/10ms)"
+        echo "  $me [options] auto <on|off>           🧠 Auto-Tune: detect hardware and pick best performance profile"
         echo "  $me [options] optimize          ⚡ Optimize OS limits (ulimit, conntrack) for high volume"
         echo "  $me [options] ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
 
@@ -1156,6 +1157,55 @@ toggle_ecomode ()
     esac
 }
 
+toggle_automode ()
+{
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        on)
+            pr_info "Enabling auto-tune profile..."
+            mkdir -p "$override_dir"
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                if ! grep -q '^\[Service\]' "$override_file" 2>/dev/null; then
+                    sed -i '1i[Service]' "$override_file"
+                fi
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_PROFILE=auto"\n' >> "$override_file"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Auto-tune enabled and service restarted."
+            ;;
+        off)
+            pr_info "Disabling auto-tune profile..."
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE=auto/d' "$override_file"
+                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
+                    rm -rf "$override_dir"
+                fi
+            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Auto-tune disabled and service restarted."
+            ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=auto' "$override_file" 2>/dev/null; then
+                pr_info "Auto-tune is currently enabled."
+            else
+                pr_info "Auto-tune is currently off."
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools auto <on|off>"
+            exit 1
+            ;;
+    esac
+}
+
 toggle_turbomode ()
 {
 ... (existing toggle_turbomode code) ...
@@ -1304,6 +1354,11 @@ case "$operation" in
 
     turbo)
         toggle_turbomode "$@"
+        exit 0
+        ;;
+
+    auto)
+        toggle_automode "$@"
         exit 0
         ;;
 

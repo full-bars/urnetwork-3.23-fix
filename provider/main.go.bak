@@ -60,35 +60,9 @@ func initGlog() {
 	os.Stderr = os.Stdout
 
 	profile := os.Getenv("URNETWORK_PROFILE")
-	ramlogs := os.Getenv("URNETWORK_RAMLOGS") == "1"
-	if profile == "lowmem" || profile == "eco" || ramlogs {
-		// If explicitly requested via profile or env, just start it.
-		// Auto-detection handover is handled in main() with a countdown.
+	if profile == "lowmem" || profile == "eco" || os.Getenv("URNETWORK_RAMLOGS") == "1" {
 		initSHMLogger()
 	}
-}
-
-func initSHMLoggerWithHandover() {
-	fmt.Printf("\n[audit] Slow disk detected. Moving all subsequent logs to RAM (/dev/shm) for performance.\n")
-	fmt.Printf("[audit] >>> To view live logs, run: urnet-tools logs <<<\n")
-	fmt.Printf("[audit] Redirecting in 3...")
-	time.Sleep(1 * time.Second)
-	fmt.Printf(" 2...")
-	time.Sleep(1 * time.Second)
-	fmt.Printf(" 1...\n")
-	time.Sleep(1 * time.Second)
-	initSHMLogger()
-}
-
-func RunStartupAudit() (slowDisk bool, lowSpace bool) {
-	fmt.Printf("[audit] Running system checks...\n")
-	profile := os.Getenv("URNETWORK_PROFILE")
-	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
-
-	// If RAM logs are already ON (manually or via profile), skip disk benchmark
-	skipDisk := (ramlogs == "1" || profile == "lowmem" || profile == "eco")
-
-	return connect.RunSystemAudit(skipDisk)
 }
 
 func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
@@ -379,32 +353,6 @@ func runEcoMemoryMonitor(ctx context.Context) {
 }
 
 func main() {
-	profile := os.Getenv("URNETWORK_PROFILE")
-	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
-
-	// If in auto mode and RAM logs aren't already explicitly on, we audit the disk speed
-	// BEFORE initializing the logger. This allows us to auto-enable it.
-	autoRamLogTriggered := false
-	if profile == "auto" {
-		manualRamLogs := (ramlogs == "1")
-		slowDisk, _ := RunStartupAudit()
-		if slowDisk && !manualRamLogs {
-			fmt.Printf("[audit] Disk speed is suboptimal. Auto-enabling RAM logs for performance.\n")
-			os.Setenv("URNETWORK_RAMLOGS", "1")
-			autoRamLogTriggered = true
-		}
-	} else if len(os.Args) > 1 && (os.Args[1] == "provide" || os.Args[1] == "auth-provide") {
-		// Even if not in auto, run audit for visibility
-		RunStartupAudit()
-	}
-
-	initGlog()
-
-	// If auto-tuner enabled RAM logs, perform the countdown handover now
-	if autoRamLogTriggered {
-		initSHMLoggerWithHandover()
-	}
-
 	usage := fmt.Sprintf(
 		`Connect provider.
 
@@ -867,16 +815,8 @@ func provide(opts docopt.Opts) {
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
-
-		autoEco := connect.ApplyAutoTuning(clientSettings, localUserNatSettings)
 		applyLowmodeSettings(clientSettings, localUserNatSettings)
 		applyTurboSettings(clientSettings, localUserNatSettings)
-
-		profile := os.Getenv("URNETWORK_PROFILE")
-		if profile == "eco" || autoEco {
-			go runEcoMemoryMonitor(ctx)
-		}
-
 		applyEcoSettings(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings

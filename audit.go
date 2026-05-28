@@ -1,7 +1,8 @@
+//go:build linux
+
 package connect
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"runtime"
@@ -136,6 +137,8 @@ func RunDiskAudit() (slowDisk bool, lowSpace bool) {
 
 	elapsed := time.Since(start)
 	mbps := float64(testSizeMiB) / elapsed.Seconds()
+
+	fmt.Printf("[audit] Disk write speed: %.1f MB/s (%dMB sync test)\n", mbps, testSizeMiB)
 
 	// Fleet threshold: < 50MB/s is considered slow for high-volume logs.
 	if mbps < 50 {
