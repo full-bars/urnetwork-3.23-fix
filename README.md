@@ -87,7 +87,7 @@ The installation includes the `urnet-tools` suite for easy management:
 | `urnet-tools status` | Check service health and uptime. |
 | `urnet-tools logs` | Stream logs (automatically detects RAM vs Disk). |
 | `urnet-tools auto on` | **Enable Smart Auto (Recommended).** |
-| `urnet-tools optimize` | **Supercharge host kernel limits (ulimit, conntrack).** |
+| `urnet-tools optimize` | **Supercharge host kernel limits and benchmark storage.** |
 | `urnet-tools turbo v4` | Enable Turbo V4 mode (~400 Mbps ceiling). |
 | `urnet-tools turbo v8` | Enable Turbo V8 mode (~800 Mbps ceiling). |
 | `urnet-tools eco on/off` | Toggle Eco mode (GC-tuned). |

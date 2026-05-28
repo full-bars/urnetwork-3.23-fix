@@ -1274,11 +1274,33 @@ EOF
 
     # 4. Apply Ulimits (Systemd)
     override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    # We also want to check the system-wide ulimit for the user
-    # On most modern systems, we can use a systemd drop-in for the user slice
-    # but the simplest way to cover both binary and service is the service override.
     mkdir -p "$override_dir"
     override_file="$override_dir/override.conf"
+
+    # 5. Disk Benchmark
+    pr_info "Running disk benchmark (1GB sync test)..."
+    test_file=".io-test-optimize"
+    # Capture speed using dd (distro agnostic)
+    res=$(dd if=/dev/zero of="$test_file" bs=1M count=1024 oflag=dsync 2>&1)
+    speed_mb=$(echo "$res" | grep -oE '[0-9.]+[[:space:]]+MB/s' | awk '{print int($1)}')
+    rm -f "$test_file"
+
+    if [ -n "$speed_mb" ]; then
+        pr_info "Disk write speed: ${speed_mb} MB/s"
+        if [ "$speed_mb" -lt 50 ]; then
+            pr_warn "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
+            pr_info "Automatically enabling permanent RAM logging for performance..."
+            
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_RAMLOGS/d' "$override_file"
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
+        fi
+    fi
+
+    # Update ulimits in override
     if [ -f "$override_file" ]; then
         if ! grep -q "LimitNOFILE=" "$override_file"; then
             if grep -q "\[Service\]" "$override_file"; then
