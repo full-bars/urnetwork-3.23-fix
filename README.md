@@ -2,6 +2,24 @@
 
 This is a high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. It combines the latest protocol optimizations with surgical improvements for professional providers managing large proxy lists.
 
+---
+
+## Table of Contents
+
+- [Key Improvements](#-key-improvements)
+- [Quick Start (Linux)](#-quick-start-linux)
+- [Usage](#-usage)
+  - [Standard Docker Run (JWT)](#standard-docker-run-jwt)
+  - [Environment Variables](#environment-variables)
+  - [Docker Compose](#docker-compose)
+  - [Persistent JWT](#persistent-jwt-required-for-watchtower--auto-updates)
+  - [Outage Alerting](#outage-alerting-optional)
+  - [RAM Logging](#ram-logging-optional)
+- [Architecture & Build](#-architecture--build)
+- [Disclaimer](#%EF%B8%8F-disclaimer)
+
+---
+
 ## 🚀 Key Improvements
 
 ### 1. High-Signal Monitoring (Promoted Logs)
