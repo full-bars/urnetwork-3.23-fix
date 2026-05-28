@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.14.3] — 2026-05-28
+
+### Fixed
+- **Graceful ZRAM handling**: Systems with kernels that don't include zram support (e.g., Oracle Linux UEK) now complete `optimize` successfully. ZRAM is skipped with a simple warning; other OS optimizations (sysctl, ulimits) continue normally. Users on Ubuntu can optionally install Zabbly kernel to gain zram support.
+
+## [v3.23.0-fix.14.2] — 2026-05-28
+
+### Fixed
+- **Update command reliability**: Fixed silent update failures on systems missing `jq` or `python3`. Update now fails loudly with clear instructions to install missing JSON parsing tools instead of reporting "up-to-date" when it couldn't verify version dates.
+
+## [v3.23.0-fix.14.1] — 2026-05-28
+
+### Fixed
+- **Ubuntu 20.04→24.04 upgrade compatibility**: Hardened `setup_zram_manual()` fallback for systems where the zramswap service fails after distro upgrades. Now tries dynamic module allocation first, implements module reload recovery on disksize config failure, and adds lz4 compression fallback if zstd is unavailable. Adds sysfs permission checks and timing delays to prevent race conditions.
+
 ## [v3.23.0-fix.14] — 2026-05-27
 
 ### Added
