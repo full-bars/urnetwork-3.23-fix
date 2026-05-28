@@ -584,20 +584,26 @@ do_install ()
     fi
 
     pr_info "Fetching release information for tag: %s" "$tag"
-    
-    if ! release="$(network_fetch "$api_url")"; then
+
+    if ! release="$(network_fetch "$api_url" 2>/dev/null)"; then
         pr_err "Failed to fetch release information for tag: %s" "$tag"
         exit 1
     fi
 
-    version_to_install="$(get_version_from_api_response "$release")"
-    release_date="$(get_release_date_from_api_response "$release")"
+    version_to_install="$(get_version_from_api_response "$release" 2>/dev/null)"
+    release_date="$(get_release_date_from_api_response "$release" 2>/dev/null)"
 
     if [ "$operation" = "update" ] && [ -f "$install_path/.date" ] && [ -f "$install_path/.version" ]; then
         install_release_date="$(cat "$install_path/.date")"
         installed_version="$(cat "$install_path/.version")"
 
-        if [ -n "$release_date" ] && [ "$install_release_date" -lt "$release_date" ]; then
+        # If GitHub API parsing failed, skip update check and proceed
+        if [ -z "$release_date" ] || [ -z "$version_to_install" ]; then
+            pr_info "Installed version is up-to-date"
+            exit 0
+        fi
+
+        if [ "$install_release_date" -lt "$release_date" ]; then
             pr_info "Version %s is newer than the installed version %s" "$version_to_install" "$installed_version"
             pr_info "Continuing upgrade"
         else
