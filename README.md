@@ -402,6 +402,45 @@ RAM logs are capped at 1MB with automatic rotation and are lost when the contain
 
 ---
 
+### System Auditor & Host Optimization (Docker Users)
+
+When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
+
+```
+[audit] Conntrack Max: 262144 (Suboptimal! Target: 2097152)
+[audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.
+```
+
+The provider runs inside the container and cannot modify host-level kernel settings directly. If you see `Suboptimal!` warnings, you must run `urnet-tools optimize` **on the host machine** (not inside the container).
+
+**For Docker users without the install script:**
+
+Download and run the installer directly on your host to install the tools and services:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
+```
+
+This installs `urnet-tools` to `/usr/local/bin/urnet-tools`. Then optimize your host:
+
+```bash
+sudo urnet-tools optimize -f
+```
+
+The `-f` flag skips interactive prompts. This applies:
+- Conntrack max: 262,144 → 2,097,152
+- Conntrack timeout: 432,000s → 5,400s
+- TCP established timeout: 5 days → 1 hour
+- BBR congestion control + Fair Queuing
+- Auto-install of `zram` and `conntrack-tools` (distro-aware)
+- Boot persistence for kernel modules
+
+After optimization, your Docker container will restart and report `[audit] Conntrack Max: 2097152 (Optimal!)`.
+
+> **Note:** If you only run Docker and don't intend to use the systemd provider service, the installer still offers just the tools. You can choose `n` when prompted to enable the systemd service.
+
+---
+
 ## 📦 Architecture & Build
 
 This repository is designed to be **standalone**.
