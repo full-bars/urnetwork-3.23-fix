@@ -593,6 +593,11 @@ do_install ()
     version_to_install="$(get_version_from_api_response "$release" 2>/dev/null)"
     release_date="$(get_release_date_from_api_response "$release" 2>/dev/null)"
 
+    # If tag was "latest", resolve it to the actual tag name from the API response
+    if [ "$tag" = "latest" ] && [ -n "$version_to_install" ]; then
+        tag="$version_to_install"
+    fi
+
     if [ "$operation" = "update" ] && [ -f "$install_path/.date" ] && [ -f "$install_path/.version" ]; then
         install_release_date="$(cat "$install_path/.date")"
         installed_version="$(cat "$install_path/.version")"
