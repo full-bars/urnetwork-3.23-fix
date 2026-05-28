@@ -29,6 +29,10 @@ show_help ()
     echo "  ramlogs <on|off>        RAM LOGS: zero disk I/O logging"
     echo "  optimize                ⚡ OPTIMIZE: apply Golden Fleet OS/kernel limits"
     echo ""
+    echo "Proxy Management:"
+    echo "  proxy add <file>        🌐 ADD: bulk add proxies from a text file"
+    echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
+    echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
     echo "  uninstall               Uninstall URnetwork"
@@ -1290,6 +1294,86 @@ toggle_turbomode ()
     esac
 }
 
+setup_zram_manual () {
+    pr_info "Attempting manual ZRAM setup (kernel direct)..."
+    modprobe zram num_devices=1 2>/dev/null || true
+    
+    # Find zram device
+    zdev=""
+    for d in /dev/zram0 /dev/zram1; do
+        if [ -b "$d" ]; then zdev="$d"; break; fi
+    done
+    
+    if [ -z "$zdev" ]; then
+        # Try to create it if it doesn't exist
+        if [ -f /sys/class/zram-control/hot_add ]; then
+            cat /sys/class/zram-control/hot_add >/dev/null 2>&1
+            [ -b /dev/zram0 ] && zdev="/dev/zram0"
+        fi
+    fi
+
+    if [ -z "$zdev" ] || [ ! -b "$zdev" ]; then
+        pr_warn "Could not find or create a ZRAM device. Kernel support might be missing."
+        return 1
+    fi
+
+    # Determine size (80% of total RAM)
+    ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    zram_bytes=$(( ram_kb * 8 / 10 * 1024 ))
+    
+    # Apply configuration
+    swapoff "$zdev" 2>/dev/null || true
+    echo 1 > "/sys/block/$(basename "$zdev")/reset" 2>/dev/null || true
+    echo zstd > "/sys/block/$(basename "$zdev")/comp_algorithm" 2>/dev/null || true
+    echo "$zram_bytes" > "/sys/block/$(basename "$zdev")/disksize" 2>/dev/null || {
+        pr_warn "Failed to set ZRAM disksize. Is the device already in use?"
+        return 1
+    }
+
+    mkswap "$zdev" >/dev/null 2>&1
+    swapon -p 100 "$zdev" >/dev/null 2>&1
+    
+    if swapon --show | grep -q "$(basename "$zdev")"; then
+        return 0
+    fi
+    return 1
+}
+
+do_proxy () {
+    cmd="$1"
+    shift
+    
+    provider_bin="$install_path/bin/urnetwork"
+    if [ ! -f "$provider_bin" ]; then
+        pr_err "URnetwork binary not found at %s. Is it installed?" "$provider_bin"
+        exit 1
+    fi
+
+    case "$cmd" in
+        add)
+            proxy_file="$1"
+            if [ -z "$proxy_file" ]; then
+                pr_err "Usage: urnet-tools proxy add <path_to_proxies.txt>"
+                exit 1
+            fi
+            if [ ! -f "$proxy_file" ]; then
+                pr_err "Proxy file not found: %s" "$proxy_file"
+                exit 1
+            fi
+            pr_info "Adding proxies from %s..." "$proxy_file"
+            "$provider_bin" proxy add --proxy_file="$proxy_file" -f
+            ;;
+        clear)
+            pr_info "Clearing all proxies..."
+            "$provider_bin" proxy remove --all
+            ;;
+        *)
+            pr_err "Unknown proxy command: %s (Try 'add' or 'clear')" "$cmd"
+            exit 1
+            ;;
+    esac
+}
+
 do_optimize ()
 {
     if [ "$(id -u)" -ne 0 ]; then
@@ -1402,11 +1486,15 @@ do_optimize ()
             esac
         fi
 
-        # Verify ZRAM activation
+        # Verify ZRAM activation, with manual fallback
         if swapon --show | grep -q "zram"; then
             pr_info "ZRAM enabled successfully."
         else
-            pr_warn "ZRAM could not be auto-enabled. You may need to restart the zram service manually."
+            if setup_zram_manual; then
+                pr_info "ZRAM enabled via manual fallback."
+            else
+                pr_warn "ZRAM could not be auto-enabled. You may need to restart the zram service manually."
+            fi
         fi
     fi
 
@@ -1579,6 +1667,12 @@ case "$operation" in
 
     optimize)
         do_optimize
+        exit 0
+        ;;
+
+    proxy)
+        shift
+        do_proxy "$@"
         exit 0
         ;;
 
