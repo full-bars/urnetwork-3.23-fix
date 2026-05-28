@@ -150,7 +150,7 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 
 ## 7. Turbo Mode (V4 / V8)
 
-**Purpose**: Remove the ~100–150 Mbps per-connection throughput ceiling on RAM-rich servers. The ceiling exists because per-connection bandwidth is bounded by `MaxWindowSize / RTT` — at the 1 MiB default and a 10ms RTT that's ~100 Mbps. Turbo raises the window to 4 or 8 MiB and scales all dependent buffers accordingly.
+**Purpose**: Remove the per-connection throughput ceiling on RAM-rich servers. The ceiling exists because per-connection bandwidth is bounded by `MaxWindowSize / RTT`. Turbo raises the window to 4 or 8 MiB and scales all dependent buffers accordingly.
 
 **Files Modified**: `provider/main.go`, `scripts/Provider_Install_Linux.sh`, `docker/scripts/entrypoint.sh`
 
@@ -166,8 +166,9 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 - `toggle_turbomode()` in `Provider_Install_Linux.sh` — `urnet-tools turbo <v4|v8|off>` command
 - `entrypoint.sh` — translates Docker `TURBO=v4/v8` env var to `URNETWORK_PROFILE` before exec
 
-**Theoretical speed ceiling**:
-- V4 at 10ms RTT: ~400 Mbps / V8: ~800 Mbps (vs ~100 Mbps default)
+**Impact**:
+- Significantly higher theoretical throughput ceilings for low-latency paths.
+- Removes the mathematical cap inherent in the upstream window defaults.
 
 **How to Identify in New Upstream**:
 - If upstream changes `TcpBufferSettings`, `SendBufferSettings`, or `ReceiveBufferSettings` struct fields, verify `applyTurboSettings` still sets valid fields
@@ -239,6 +240,48 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 - `runOutageWatcher` and `runHealthHeartbeat` launch sites are in `provide()` — if the provide function is refactored, ensure these still launch with the correct `ctx`
 
 **Status**: ✅ Shipped in fix.14. Custom to this fork.
+
+---
+
+## 10. System Optimizer & Auditor
+
+**Purpose**: Maximize system-level throughput and stability by automatically tuning kernel limits (ulimit, conntrack) for high-volume traffic.
+
+**Files Added**: `audit.go`
+**Files Modified**: `provider/main.go`, `scripts/Provider_Install_Linux.sh`
+
+**Changes**:
+- **System Auditor**: Runs on provider startup; passively checks host `ulimit -n`, `nf_conntrack_max`, and `tcp_timeout_established`. Logs `[audit]` warnings if host settings are suboptimal. Docker-aware hint tells users to run the optimizer on the host machine.
+- **`urnet-tools optimize`**: New management command (requires root) that applies "Golden Fleet" settings:
+  - **Auto-Install**: Installs `conntrack` on Arch, Debian, and RHEL distros.
+  - **Boot Persistence**: Writes `nf_conntrack` to `/etc/modules-load.d/urnetwork.conf` to solve the systemd race condition where sysctl applies before the module loads.
+  - `ulimit -n`: 1,048,576
+  - `nf_conntrack_max`: 2,097,152 (standard across all RAM sizes based on fleet observations)
+  - `nf_conntrack_tcp_timeout_established`: 3,600s (1h)
+  - `net.ipv4.tcp_fin_timeout`: 10s
+  - `net.ipv4.ip_local_port_range`: 1024 65535
+  - `net.ipv4.tcp_tw_reuse`: 1
+- **Persistence**: Writes settings to `/etc/sysctl.d/99-urnetwork.conf` and systemd service overrides.
+
+**Status**: ✅ Shipped in fix.14 (unreleased).
+
+---
+
+## 11. Auto-Tune Performance Profile
+
+**Purpose**: Dynamically scale internal buffer and contract settings based on detected system RAM. Replaces the "binary" choice between `lowmem` and `default` with a smart `auto` profile.
+
+**Files Added**: `tuning.go`
+**Files Modified**: `provider/main.go`, `util.go`
+
+**Changes**:
+- **`URNETWORK_PROFILE=auto`**: Opt-in profile that selects one of three tiers:
+  - **Tier 1 (Low, <1.2GB)**: 128KB contracts, 32 seq buffers, 128KB TCP window, 512KB WebRTC.
+  - **Tier 2 (Balanced, 1.2-3GB)**: 256KB contracts, 128 seq buffers, 512KB TCP window, 1MB WebRTC.
+  - **Tier 3 (Perf, >3GB)**: 2MB contracts, 256 seq buffers, 1MB TCP window, 4MB WebRTC.
+- **Cgroup Awareness**: `DetectEffectiveRAMLimitBytes()` (moved to `util.go`) correctly reads limits in Docker/K8s environments.
+
+**Status**: ✅ Shipped in fix.14 (unreleased).
 
 ---
 

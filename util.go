@@ -1,10 +1,13 @@
 package connect
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -15,6 +18,44 @@ import (
 	// "reflect"
 	mathrand "math/rand"
 )
+
+// DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
+// Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
+func DetectEffectiveRAMLimitBytes() int64 {
+	// cgroup v2
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		s := strings.TrimSpace(string(data))
+		if s != "max" {
+			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
+	const oneTiB = 1 << 40
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
+			return v
+		}
+	}
+	// /proc/meminfo MemTotal (kB)
+	if f, err := os.Open("/proc/meminfo"); err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+						return v * 1024
+					}
+				}
+			}
+		}
+	}
+	return 850 * 1024 * 1024
+}
 
 type Monitor struct {
 	mutex  sync.Mutex
