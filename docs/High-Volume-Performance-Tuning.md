@@ -206,9 +206,19 @@ The provider monitors backend connectivity in the background and logs state tran
 ```
 
 **How it works:**
-- Polls `IsBackendDegraded()` every 30 seconds (reads a package-level atomic stamped on auth/OOB failures, reset on successful reconnect)
-- Requires 2 consecutive healthy polls before firing `outage_clear` — prevents false clears during brief mid-outage lulls
-- Logs state transitions to stdout always
+
+The watcher is built to distinguish a real, sustained outage from the isolated connection timeouts that are normal churn on a busy provider. A single failed connect or a one-off contract signaling timeout must **not** raise an alarm — only the backend being broadly unreachable should.
+
+Two mechanisms work together:
+
+1. **Consecutive-failure counter (the signal).** The provider keeps a process-wide counter of backend failures (transport auth/connect failures and contract OOB errors). *Any* successful connect or OOB result resets it to zero. `IsBackendDegraded()` reports degraded only when the counter has crossed a threshold (currently 3 consecutive failures with no intervening success) **and** the most recent failure was within the last 2 minutes. Because a single success anywhere resets the count, isolated timeouts never accumulate — the counter only climbs when essentially *every* attempt is failing, which is what a genuine platform outage looks like. The 2-minute recency guard ensures a stale count left by an old blip on an idle provider is not mistaken for a live outage.
+
+2. **Start-side debounce (the confirmation).** The watcher polls `IsBackendDegraded()` every 30 seconds and requires **10 consecutive degraded polls — a full 5 minutes of continuous degradation — before firing `outage_start`.** If the backend recovers at any point during that window (any poll reads healthy), the count resets and no alarm is sent. This trades detection latency (up to ~5 minutes) for a near-zero false-alarm rate: for an alert to fire, the backend must fail continuously with zero successful connects or OOB calls for the entire 5-minute window.
+
+- Recovery (`outage_clear`) requires 2 consecutive healthy polls — prevents premature all-clears during brief mid-outage lulls.
+- State transitions are always logged to stdout, whether or not a webhook is configured.
+
+> **Tuning the tradeoff:** the 5-minute confirmation window is deliberately conservative to avoid false positives. Detection of a true outage is therefore not instantaneous — expect the `outage_start` event roughly 5 minutes after connectivity is actually lost. Recovery is reported promptly (within ~1 minute).
 
 **Webhook alerts (optional):**
 

@@ -873,6 +873,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 		[]*protocol.Frame{frame},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil {
+				consecutiveBackendFails.Store(0)
 				for _, resultFrame := range resultFrames {
 					self.handleControlFrame(&contractKey, resultFrame)
 				}
@@ -882,6 +883,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 					// no need to log warnings when the client closes
 				default:
 					lastBackendFailNano.Store(time.Now().UnixNano())
+					consecutiveBackendFails.Add(1)
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
 							glog.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
