@@ -1521,7 +1521,12 @@ do_optimize ()
     # 2. ZRAM Optimization
     pr_info "Checking for ZRAM (Compressed RAM Swap)..."
     skip_zram=0
-    if swapon --show | grep -q "zram"; then
+
+    # Check if kernel supports zram module
+    if ! modprobe -n zram >/dev/null 2>&1; then
+        pr_warn "Your kernel does not support ZRAM. Skipping compressed memory optimization."
+        skip_zram=1
+    elif swapon --show | grep -q "zram"; then
         pr_info "ZRAM is already active."
         if ! confirm "ZRAM is already configured. Re-apply URNetwork's 80% zstd optimization?"; then
             pr_info "Skipping ZRAM configuration (respecting existing setup)."
