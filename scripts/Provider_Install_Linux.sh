@@ -143,9 +143,12 @@ pr_err ()
         argv0="$argv0: $operation"
     fi
 
-    # shellcheck disable=SC2068
     # shellcheck disable=SC2059
-    printf "$argv0: $fmt\n" $@ >&2
+    if [ $# -eq 0 ]; then
+        printf "%b: %s\n" "$argv0" "$fmt" >&2
+    else
+        printf "%b: $fmt\n" "$argv0" "$@" >&2
+    fi
 }
 
 pr_info ()
@@ -162,9 +165,12 @@ pr_info ()
         argv0="$argv0: $operation"
     fi
 
-    # shellcheck disable=SC2068
     # shellcheck disable=SC2059
-    printf "$argv0: $fmt\n" $@
+    if [ $# -eq 0 ]; then
+        printf "%b: %s\n" "$argv0" "$fmt"
+    else
+        printf "%b: $fmt\n" "$argv0" "$@"
+    fi
 }
 
 pr_warn ()
@@ -177,9 +183,12 @@ pr_warn ()
         argv0="$argv0: $operation"
     fi
 
-    # shellcheck disable=SC2068
     # shellcheck disable=SC2059
-    printf "$argv0: $fmt\n" $@
+    if [ $# -eq 0 ]; then
+        printf "%b: %s\n" "$argv0" "$fmt"
+    else
+        printf "%b: $fmt\n" "$argv0" "$@"
+    fi
 }
 
 opt_requires_arg ()
@@ -1313,6 +1322,9 @@ do_optimize ()
         exec sudo "$0" "$operation" "$@"
     fi
 
+    # Increase ulimit immediately for the session to prevent "Too many open files" during optimization
+    ulimit -n 1048576 2>/dev/null || true
+
     pr_info "⚡ Starting System Optimizer..."
 
     # Helper for interactive confirmation
@@ -1329,7 +1341,7 @@ do_optimize ()
     # 1. Dependency Check & Module Loading
     pr_info "Ensuring kernel modules are loaded..."
     modprobe nf_conntrack >/dev/null 2>&1
-    
+
     if [ ! -d "/proc/sys/net/netfilter" ]; then
         pr_info "Conntrack kernel module not found. Attempting to install utilities..."
         if [ -f /etc/os-release ]; then
@@ -1351,7 +1363,7 @@ do_optimize ()
                     zypper install -y conntrack-tools
                     ;;
                 *)
-                    pr_warn "Unsupported distro ID: $ID. Please install 'conntrack' manually."
+                    pr_warn "Unsupported distro ID: %s. Please install 'conntrack' manually." "$ID"
                     ;;
             esac
         else
@@ -1410,7 +1422,13 @@ do_optimize ()
                     ;;
             esac
         fi
-        swapon --show | grep -q "zram" && pr_info "ZRAM enabled successfully." || pr_warn "ZRAM could not be auto-enabled."
+
+        # Verify ZRAM activation
+        if swapon --show | grep -q "zram"; then
+            pr_info "ZRAM enabled successfully."
+        else
+            pr_warn "ZRAM could not be auto-enabled. You may need to restart the zram service manually."
+        fi
     fi
 
     # 3. Sysctl Optimization
@@ -1422,11 +1440,11 @@ do_optimize ()
 
     sysctl_conf="/etc/sysctl.d/99-urnetwork.conf"
     skip_sysctl=0
-    
+
     # Check if a non-URNetwork file already has high conntrack settings
     current_max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)
     if [ "$current_max" -ge "$ct_max" ] && [ ! -f "$sysctl_conf" ]; then
-        pr_info "Pre-optimized state detected (conntrack_max is already $current_max)."
+        pr_info "Pre-optimized state detected (conntrack_max is already %s)." "$current_max"
         if ! confirm "System already has high limits. Apply URNetwork's specific sysctl overrides anyway?"; then
             pr_info "Skipping sysctl configuration (respecting existing tuning)."
             skip_sysctl=1
@@ -1434,7 +1452,7 @@ do_optimize ()
     fi
 
     if [ "$skip_sysctl" -eq 0 ]; then
-        pr_info "Writing sysctl config to $sysctl_conf..."
+        pr_info "Writing sysctl config to %s..." "$sysctl_conf"
         cat > "$sysctl_conf" <<EOF
 # URNetwork Optimized Network Settings
 net.netfilter.nf_conntrack_max = $ct_max
@@ -1446,8 +1464,10 @@ net.ipv4.tcp_tw_reuse = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 fs.file-max = 2097152
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
 EOF
-        sysctl --system >/dev/null 2>&1 || pr_err "Warning: some sysctl settings could not be applied."
+        sysctl --system >/dev/null 2>&1 || pr_warn "Warning: some sysctl settings could not be applied."
     fi
 
     # 4. Apply Ulimits (Systemd)
