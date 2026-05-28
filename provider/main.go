@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -157,6 +158,32 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(200)
 	}
+}
+
+// applyPoolAutoSize scales the message pool free-list capacity to RAM/32 at
+// startup. The pool default (1 MiB) is badly undersized for 4000+ proxies —
+// almost every packet misses the pool and falls back to a GC allocation.
+// Skipped when lowmem is active (it manages its own footprint) or when
+// --max-memory was set (that path already resizes via maxMemory/8).
+func applyPoolAutoSize(maxMemory connect.ByteCount) {
+	if maxMemory > 0 {
+		return
+	}
+	if os.Getenv("URNETWORK_PROFILE") == "lowmem" {
+		return
+	}
+	ram := detectEffectiveRAMLimitBytes()
+	poolBytes := connect.ByteCount(ram) / 32
+	const floor = 8 * 1024 * 1024
+	const ceiling = 256 * 1024 * 1024
+	if poolBytes < floor {
+		poolBytes = floor
+	}
+	if poolBytes > ceiling {
+		poolBytes = ceiling
+	}
+	connect.ResizeMessagePools(poolBytes)
+	fmt.Printf("[pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
 }
 
 func applyEcoSettings(maxMemory connect.ByteCount) {
@@ -550,6 +577,114 @@ func auth(opts docopt.Opts) {
 	}
 }
 
+// runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
+// state transitions. If URNETWORK_ALERT_WEBHOOK is set it also POSTs a JSON
+// payload so operators can receive push notifications.
+// "Clear" requires two consecutive healthy polls to avoid premature all-clears
+// during brief lulls mid-outage. A 5-minute per-event cooldown prevents webhook
+// spam if the backend flickers at the recovery boundary.
+func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
+	const pollInterval = 30 * time.Second
+	const cooldown = 5 * time.Minute
+	const clearConfirm = 2
+
+	degraded := false
+	clearCount := 0
+	var lastStartFire, lastClearFire time.Time
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if connect.IsBackendDegraded() {
+			clearCount = 0
+			if !degraded {
+				degraded = true
+				fmt.Printf("[outage] backend degraded — holding existing connections, not accepting new ones\n")
+				if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
+					fireWebhook(webhookURL, nodeName, "outage_start",
+						"Backend unreachable — provider holding existing connections but not accepting new ones.")
+					lastStartFire = time.Now()
+				}
+			}
+		} else {
+			if degraded {
+				clearCount++
+				if clearCount >= clearConfirm {
+					degraded = false
+					clearCount = 0
+					fmt.Printf("[outage] backend recovered\n")
+					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
+						fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
+						lastClearFire = time.Now()
+					}
+				}
+			}
+		}
+	}
+}
+
+func fireWebhook(url, nodeName, event, message string) {
+	payload, err := json.Marshal(map[string]string{
+		"event":     event,
+		"node":      nodeName,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"message":   message,
+	})
+	if err != nil {
+		fmt.Printf("[webhook] marshal failed: %v\n", err)
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		fmt.Printf("[webhook] delivery failed (%s): %v\n", event, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fmt.Printf("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
+	}
+}
+
+// runHealthHeartbeat logs a [health] line at a regular interval with runtime
+// memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
+// (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
+func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string) {
+	interval := 5 * time.Minute
+	if s := os.Getenv("URNETWORK_HEALTH_INTERVAL"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d >= time.Minute {
+			interval = d
+		}
+	}
+	if profile == "" {
+		profile = "default"
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		uptime := time.Since(startTime).Truncate(time.Second)
+		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
+			uptime, profile, ms.HeapInuse/1024/1024, ms.Sys/1024/1024)
+	}
+}
+
 func provide(opts docopt.Opts) {
 	port, _ := opts.Int("--port")
 
@@ -572,8 +707,12 @@ func provide(opts docopt.Opts) {
 		}
 	}
 	if 0 < maxMemory {
+		connect.ResizeMessagePools(maxMemory / 8)
 		debug.SetMemoryLimit(maxMemory)
 	}
+	applyPoolAutoSize(maxMemory)
+
+	provideStartTime := time.Now()
 
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
@@ -597,6 +736,13 @@ func provide(opts docopt.Opts) {
 	if os.Getenv("URNETWORK_PROFILE") == "eco" {
 		go runEcoMemoryMonitor(ctx)
 	}
+
+	nodeName := os.Getenv("URNETWORK_NODE_NAME")
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
+	go runOutageWatcher(ctx, nodeName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
+	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 
 	provideWithProxy := func(proxySettings *connect.ProxySettings) {
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
