@@ -285,6 +285,26 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 
 ---
 
+## 12. Installer Robustness & Systemd Integration
+
+**Purpose**: Make the install and optimize experience seamless across different execution contexts (Docker, root, regular user, etc.).
+
+**Files Modified**: `scripts/Provider_Install_Linux.sh`
+
+**Changes**:
+- **Date Parsing Fix**: Python 3 `datetime.fromisoformat()` fails on ISO 8601 strings with `Z` suffix (Python < 3.11). Converted to `+00:00` before parsing. Fixes crashes when installer queries GitHub release metadata.
+- **Root Installation Handling**: When running as root in a Docker container (no user session bus), installer gracefully warns instead of exiting on `systemctl --user enable` failure. Docker users can still proceed without systemd --user services; the provider binary works standalone.
+- **Systemd Lingering Auto-Enable**: `urnet-tools optimize` now automatically enables lingering (`loginctl enable-linger <user>`) so systemd --user services persist after logout. This was previously a manual step users had to remember. Kept in `optimize` (not `install`) to defer root/sudo prompts to a single explicit optimization step.
+
+**How to Identify in New Upstream**:
+- Search for GitHub release metadata fetching in the install script; if new date parsing logic appears, apply the `Z` → `+00:00` conversion.
+- Verify `systemctl --user enable` failures are handled gracefully (warn, don't exit) for root/Docker contexts.
+- Check if `loginctl enable-linger` is called somewhere; if not, add it to the optimize command for consistency.
+
+**Status**: ✅ Shipped in fix.14. Purely operational improvements (no provider code changes).
+
+---
+
 ## Porting Checklist for Future Upstream Versions
 
 When merging a new upstream version (e.g., v3.24, v4.0):
