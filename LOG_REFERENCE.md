@@ -4,6 +4,28 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 
 ---
 
+## System Auditor & Smart Auto
+
+```
+[audit] Running system checks...
+[audit] Conntrack Max: 65536 (Suboptimal! Target: 2097152)
+[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' to fix.
+[audit] Disk write speed: 22.4 MB/s (1024MB sync test)
+[audit] Auto-enabling RAM logs due to slow disk I/O.
+[tune] auto-profile: detected 1969 MiB RAM; applying 'Balanced' settings
+```
+
+Fires once at startup if `URNETWORK_PROFILE=auto` is set or on standard provide paths.
+
+| Message | Meaning |
+|---|---|
+| `[audit] Suboptimal...` | The host OS has low limits (default ulimit or conntrack). This will throttle connections under heavy load. |
+| `[audit] Disk write speed...` | Result of the 1GB cache-busting stress test. |
+| `[audit] Auto-enabling RAM logs...` | The provider decided your disk is too slow and moved logs to `/dev/shm` to protect network performance. |
+| `[tune] auto-profile...` | Confirms which performance tier (Low/Balanced/Perf) was selected based on detected RAM. |
+
+---
+
 ## Buffer Pool Health
 
 ```

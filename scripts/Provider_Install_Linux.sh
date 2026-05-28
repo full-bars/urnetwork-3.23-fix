@@ -1213,13 +1213,12 @@ toggle_turbomode ()
 
 do_optimize ()
 {
-    pr_info "⚡ Starting System Optimizer..."
-
     if [ "$(id -u)" -ne 0 ]; then
-        pr_err "The 'optimize' command requires root privileges to modify sysctl and systemd configs."
-        pr_err "Please run: sudo urnet-tools optimize"
-        exit 1
+        pr_info "Elevation required. Re-running with sudo..."
+        exec sudo "$0" "$operation" "$@"
     fi
+
+    pr_info "⚡ Starting System Optimizer..."
 
     # 1. Dependency Check
     if ! command -v conntrack >/dev/null 2>&1; then

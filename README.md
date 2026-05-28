@@ -50,16 +50,18 @@ Choose the profile that matches your server's available RAM:
 
 | Profile | Best For | RAM |
 | :--- | :--- | :--- |
+| **Auto** | **Recommended (Zero-Config)** | Any |
 | **Turbo V8** | Maximum throughput, dedicated servers | 16 GiB+ |
 | **Turbo V4** | High throughput, well-provisioned VPS | 4–16 GiB |
 | *(default)* | General use | 2–4 GiB |
 | **Eco** | RAM-constrained, full throughput | 1–2 GiB |
 | **Lowmode** | Minimum RAM, reduced throughput | < 1 GiB |
 
-*   **Turbo V4 / V8**: Raises the TCP Accordion window from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection ceiling that exists at typical internet RTTs. Scales resend/receive queues, buffer depths, and WebRTC buffers to match. GOGC is raised to 200 and GOMEMLIMIT is unset so the heap can use available RAM freely. For RAM-rich boxes where throughput and earnings are the priority.
-*   **Eco**: GC-tuned for RAM-constrained systems. Sets GOMEMLIMIT to 75% of detected RAM (cgroup-aware), enables dynamic GC pressure monitoring, and leaves all buffers untouched so throughput is unaffected.
-*   **Lowmode**: Reduces buffer sizes and sets a hard GOMEMLIMIT (85% of RAM) for the most constrained environments. Initial contract size is kept at 256 KiB (not reduced) so throughput ramp-up is preserved even in low-memory mode.
-*   **RAM Logging**: Redirects all provider logs to `/dev/shm` (Linux RAM disk) with a 1MB rotation cap. Eliminates disk I/O overhead on weak cloud instances.
+*   **Auto**: Intelligent hardware detection. Automatically selects the best Tier for contracts/buffers, enables Eco mode on low-RAM boxes, and automatically moves logs to RAM (`/dev/shm`) if your disk is too slow to keep up with high volume.
+*   **Turbo V4 / V8**: Raises the TCP Accordion window from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection ceiling. 
+*   **Eco**: GC-tuned for RAM-constrained systems. 
+*   **Lowmode**: Reduces buffer sizes for < 1GB environments.
+*   **RAM Logging**: Redirects logs to `/dev/shm` (Linux RAM disk). Eliminates disk I/O bottlenecks.
 
 ---
 
@@ -84,12 +86,11 @@ The installation includes the `urnet-tools` suite for easy management:
 | :--- | :--- |
 | `urnet-tools status` | Check service health and uptime. |
 | `urnet-tools logs` | Stream logs (automatically detects RAM vs Disk). |
-| `urnet-tools turbo v4` | Enable Turbo V4 mode (~400 Mbps ceiling at 10ms RTT). |
-| `urnet-tools turbo v8` | Enable Turbo V8 mode (~800 Mbps ceiling at 10ms RTT). |
-| `urnet-tools turbo off` | Disable turbo mode. |
-| `urnet-tools turbo` | Show current turbo state. |
-| `urnet-tools eco on/off` | Toggle Eco mode (GC-tuned, full throughput, RAM-constrained boxes). |
-| `urnet-tools lowmode on/off` | Toggle Low-Memory mode with dynamic RAM scaling. |
+| `urnet-tools auto on` | **Enable Smart Auto (Recommended).** |
+| `urnet-tools optimize` | **Supercharge host kernel limits (ulimit, conntrack).** |
+| `urnet-tools turbo v4` | Enable Turbo V4 mode (~400 Mbps ceiling). |
+| `urnet-tools turbo v8` | Enable Turbo V8 mode (~800 Mbps ceiling). |
+| `urnet-tools eco on/off` | Toggle Eco mode (GC-tuned). |
 | `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
 | `urnet-tools update` | Upgrade to the latest version. |
 

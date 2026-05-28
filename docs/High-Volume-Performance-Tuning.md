@@ -30,7 +30,7 @@ A high-volume provider can easily saturate default OS limits. The `optimize` com
 
 **Usage:**
 ```bash
-sudo urnet-tools optimize
+urnet-tools optimize
 ```
 
 The provider binary also includes a **System Auditor** that checks these limits on every startup. It also performs a **Disk I/O Latency Test** (cache-busting sync write with a dynamic file size up to 1 GB). 
