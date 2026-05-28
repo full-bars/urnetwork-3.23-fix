@@ -9,12 +9,13 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
 - [Key Improvements](#-key-improvements)
 - [Quick Start (Linux)](#-quick-start-linux)
 - [Usage](#-usage)
-  - [Standard Docker Run (JWT)](#standard-docker-run-jwt)
   - [Environment Variables](#environment-variables)
+  - [Docker Run](#docker-run)
   - [Docker Compose](#docker-compose)
-  - [Persistent JWT](#persistent-jwt-required-for-watchtower--auto-updates)
+  - [Persistent JWT](#persistent-jwt)
   - [Outage Alerting](#outage-alerting-optional)
   - [RAM Logging](#ram-logging-optional)
+  - [Automatic Updates (Watchtower)](#automatic-updates-watchtower)
 - [Architecture & Build](#-architecture--build)
 - [Disclaimer](#%EF%B8%8F-disclaimer)
 
@@ -95,10 +96,29 @@ The installation includes the `urnet-tools` suite for easy management:
 
 ## 🛠 Usage
 
-### Standard Docker Run (JWT)
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io).
+### Environment Variables
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
+| `USER_AUTH` | - | Your email (required if `BUILD=stable`). |
+| `PASSWORD` | - | Your password (required if `BUILD=stable`). |
+| `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
+| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
+| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
+| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
+| `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires a JSON payload when the backend becomes unreachable and again when it recovers. See [Outage Alerting](#outage-alerting-optional). |
+| `URNETWORK_NODE_NAME` | hostname (docker/binary) | Label included in webhook payloads and log lines to identify which server the alert came from. Defaults to the system hostname suffixed with `(docker)` or `(binary)`. |
+| `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Accepts Go duration strings (`10m`, `1h`). Minimum `1m`. |
 
-**Using GHCR (GitHub Registry):**
+---
+
+### Docker Run
+
+All examples use the same set of flags and environment variables. The only difference between the GHCR and Docker Hub commands is the image name.
+
+**JWT auth (auth code login):**
+
 ```bash
 docker run -d \
   --name=urfix \
@@ -110,9 +130,9 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e URNETWORK_RAMLOGS=0 \
-  -e BUILD='jwt' \
+  -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
+  -e URNETWORK_NODE_NAME=my-server-name \
   -v urnetwork_config:/root/.urnetwork \
   -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
@@ -120,10 +140,12 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-> **Note:** The `-v urnetwork_config:/root/.urnetwork` volume persists your JWT so Watchtower image updates and container restarts don't require re-authentication. Auth codes are single-use — without this volume, any restart after a Watchtower update will fail. Use a separate named volume per container if running multiple instances.
+Replace `ghcr.io/full-bars/urnetwork-3.23-fix:latest` with `3cape/urnetwork-3.23-fix:latest` to use the Docker Hub mirror instead (useful if you hit GHCR rate limits).
 
-**Using Docker Hub (Alternative):**
-If you experience `denied` errors or rate-limiting on GitHub, use our official Docker Hub mirror:
+Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `urnetwork_config` volume on first run and reused on all subsequent starts.
+
+**Email/password auth:**
+
 ```bash
 docker run -d \
   --name=urfix \
@@ -132,34 +154,28 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD='jwt' \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -e BUILD=stable \
+  -e USER_AUTH=you@example.com \
+  -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
+  -e URNETWORK_NODE_NAME=my-server-name \
   -v urnetwork_config:/root/.urnetwork \
+  -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-### Environment Variables
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
-| `USER_AUTH` | - | Your email (required if BUILD=stable). |
-| `PASSWORD` | - | Your password (required if BUILD=stable). |
-| `ENABLE_VNSTAT` | `true` | Enables the traffic monitor. |
-| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
-| `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the ~100–150 Mbps per-connection limit. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
-| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See below. |
-| `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces IP/transfer buffer sizes and sets GOMEMLIMIT=85% RAM while preserving the 256 KiB contract floor. Cannot be used with `--log-opt` when set to `lowmem`. |
-| `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. When set, the provider fires a JSON payload when the backend becomes unreachable and again when it recovers. Works with Slack, Discord, PagerDuty, ntfy, or any webhook-capable service. See [Outage Alerting](#outage-alerting-optional) below. |
-| `URNETWORK_NODE_NAME` | hostname (docker/binary) | Human-readable label included in webhook payloads to identify which server the alert came from. Set this when running multiple containers so alerts are distinguishable. Defaults to the system hostname suffixed with `(docker)` or `(binary)`. |
-| `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` log line with uptime, profile, heap, and system memory. Accepts Go duration strings (`10m`, `1h`). Minimum `1m`. |
+---
 
 ### Docker Compose
 
-Compose is the recommended approach for multi-container setups or when you want Watchtower for automatic image updates. Save the following as `docker-compose.yml` and run `docker compose up -d`.
+Save as `docker-compose.yml` and run `docker compose up -d`.
 
-**JWT auth (auth code login):**
+**JWT auth:**
 ```yaml
 services:
   urnetwork:
@@ -175,15 +191,15 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
-      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
-      - URNETWORK_NODE_NAME=my-server-name              # label for webhook alerts
-      - URNETWORK_ALERT_WEBHOOK=https://your-webhook    # optional: outage alerts
+      - URNETWORK_NODE_NAME=my-server-name
+      # - TURBO=v4                        # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
-      - urnetwork_config:/root/.urnetwork               # persists JWT across restarts
+      - urnetwork_config:/root/.urnetwork
       - vnstat_data:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9001:8080"                                     # vnStat traffic monitor
+      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -197,7 +213,7 @@ volumes:
 
 Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE_HERE`
 
-After the JWT is written to the `urnetwork_config` volume, subsequent starts need no argument: `docker compose up -d`
+After the JWT is saved to the volume, subsequent starts need no argument: `docker compose up -d`
 
 **Email/password auth:**
 ```yaml
@@ -217,9 +233,9 @@ services:
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - ENABLE_VNSTAT=true
-      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       - URNETWORK_NODE_NAME=my-server-name
-      - URNETWORK_ALERT_WEBHOOK=https://your-webhook    # optional: outage alerts
+      # - TURBO=v4                        # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
       - urnetwork_config:/root/.urnetwork
       - vnstat_data:/var/lib/vnstat
@@ -237,67 +253,15 @@ volumes:
   vnstat_data:
 ```
 
-**With Watchtower for automatic updates (JWT):**
-```yaml
-services:
-  urnetwork:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: urfix
-    restart: unless-stopped
-    pull_policy: always
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    sysctls:
-      - net.ipv4.ip_forward=1
-    environment:
-      - BUILD=jwt
-      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
-      - URNETWORK_NODE_NAME=my-server-name
-      - URNETWORK_ALERT_WEBHOOK=https://your-webhook
-    volumes:
-      - urnetwork_config:/root/.urnetwork
-      - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
+> **Multiple containers on one host:** Use a separate named volume per container (`urnetwork_config_1`, `urnetwork_config_2`) so each has its own JWT. Set a distinct `URNETWORK_NODE_NAME` per container so webhook alerts are distinguishable.
 
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --cleanup --interval 3600 urfix   # checks for updates hourly
+---
 
-volumes:
-  urnetwork_config:
-```
+### Persistent JWT
 
-> **Multiple containers on one host:** Use a separate named volume per container (`urnetwork_config_1`, `urnetwork_config_2`) so each has its own JWT. Set a distinct `URNETWORK_NODE_NAME` per container so webhook alerts identify which one fired.
+The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code — which is single-use and will fail on the second attempt.
 
-### Persistent JWT (Required for Watchtower / Auto-Updates)
-
-By default the JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it — Watchtower updates and `--restart=unless-stopped` restarts will force a re-authentication. If you're running many containers and they all hit the API simultaneously after an update, the auth code gets exhausted and containers start panicking.
-
-**Fix**: mount a named volume or host path at `/root/.urnetwork`:
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=stable \
-  -e USER_AUTH=you@example.com \
-  -e PASSWORD=yourpassword \
-  -v urnetwork_config:/root/.urnetwork \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
-```
-
-With the volume in place, the startup script detects the existing JWT and skips authentication entirely. The provider starts immediately without touching the API. Auth codes are only used once — on first run or after a manual `docker volume rm`.
+All examples above already include `-v urnetwork_config:/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm urnetwork_config`.
 
 ### Outage Alerting (Optional)
 
@@ -343,6 +307,26 @@ docker exec -it urfix tail -f /dev/shm/urnetwork.log
 ```
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
+
+---
+
+### Automatic Updates (Watchtower)
+
+[Watchtower](https://containrrr.dev/watchtower/) can automatically pull new image versions and restart your container when an update is published. Add it to your `docker-compose.yml` alongside the `urnetwork` service:
+
+```yaml
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --cleanup --interval 3600 urfix   # check for updates hourly
+```
+
+> **Important:** The `urnetwork_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again — which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused and the restart is seamless.
+
+> **Multiple containers:** Use a separate named volume per container (`urnetwork_config_1`, `urnetwork_config_2`) and set a distinct `URNETWORK_NODE_NAME` per container. Otherwise all containers share the same JWT and the same alert label.
 
 ---
 
