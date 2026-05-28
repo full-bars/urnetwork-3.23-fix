@@ -593,6 +593,16 @@ do_install ()
     version_to_install="$(get_version_from_api_response "$release" 2>/dev/null)"
     release_date="$(get_release_date_from_api_response "$release" 2>/dev/null)"
 
+    # If tag was "latest" and API failed to provide a version, try the redirect trick
+    if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
+        if command -v curl > /dev/null; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+                version_to_install="${tag_url##*/}"
+            fi
+        fi
+    fi
+
     # If tag was "latest", resolve it to the actual tag name from the API response
     if [ "$tag" = "latest" ] && [ -n "$version_to_install" ]; then
         tag="$version_to_install"
@@ -618,8 +628,13 @@ do_install ()
     fi
 
     # Construct download URL directly from GitHub release pattern
-    # instead of parsing potentially malformed API JSON
-    dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-${tag#v}.tar.gz"
+    # instead of parsing potentially malformed API JSON.
+    # We MUST have a real tag name here; "latest" is not a valid download tag.
+    if [ "$tag" = "latest" ]; then
+        pr_err "Could not resolve 'latest' tag to a specific version. GitHub API might be unreachable."
+        exit 1
+    fi
+    dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     
     pr_info "Downloading: %s" "$dl_url"
     
@@ -639,7 +654,7 @@ do_install ()
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
         if command -v curl > /dev/null; then
-            if ! curl --progress-bar -L "$dl_url" -o "$tarball"; then
+            if ! curl --progress-bar -fL "$dl_url" -o "$tarball"; then
                 pr_err "Failed to download $dl_url"
                 exit 1
             fi
