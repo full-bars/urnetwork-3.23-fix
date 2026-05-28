@@ -99,29 +99,58 @@ func_start_vnstat() {
 
 # === Provider Lifecycle Management ===
 func_start_provider(){
-    log "[INFO] Starting UrNetwork ..."
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
     BIN_VER="$($PROVIDER_BIN --version)"
     log "[INFO] Running UrNetwork build v${BIN_VER}"
 
-    if [ "$#" -eq 0 ]; then
-        log "[INFO] No JWT token provided, showing help..."
-        "$PROVIDER_BIN" --help
-        return 1
+    # If a session JWT already exists in the mounted volume, skip re-auth and
+    # run provide directly. This is the Watchtower-safe path — container restarts
+    # and image updates reuse the existing session rather than consuming the
+    # (single-use) auth code again.
+    if [ -s "$JWT_FILE" ] && [ "$#" -eq 0 ]; then
+        log "[INFO] Existing session found at $JWT_FILE — skipping auth"
+    elif [ "$#" -eq 0 ]; then
+        log "[ERROR] jwt mode requires a JWT token argument on first run"
+        log "[ERROR] Usage: docker run ... IMAGE <JWT_TOKEN>"
+        log "[ERROR] After first run the session is persisted to the volume and no argument is needed."
+        exit 1
     elif [ "$#" -ne 1 ]; then
         log "[ERROR] Expected exactly 1 JWT token argument, got $#"
-        return 1
-    fi
-
-    JWT_TOKEN="$1"
-    "$PROVIDER_BIN" auth-provide "$JWT_TOKEN"
-    code=$?
-
-    if [ "$code" -eq 0 ]; then
-        log "[INFO] UrNetwork exited cleanly."
+        exit 1
     else
-        log "[ERROR] UrNetwork exited with code=$code"
+        JWT_TOKEN="$1"
+        log "[INFO] Starting UrNetwork with provided JWT token ..."
+        "$PROVIDER_BIN" auth-provide "$JWT_TOKEN"
+        code=$?
+        if [ "$code" -eq 0 ]; then
+            log "[INFO] UrNetwork exited cleanly."
+        else
+            log "[ERROR] UrNetwork exited with code=$code"
+        fi
+        return $code
     fi
+
+    # Session exists — restart loop mirrors start_stable.sh behaviour
+    failures=0
+    while :; do
+        log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
+        "$PROVIDER_BIN" provide
+        code=$?
+        if [ "$code" -eq 0 ]; then
+            log "[INFO] UrNetwork exited cleanly."
+            break
+        fi
+        failures=$((failures+1))
+        log "[WARN] UrNetwork crashed (#$failures; code=$code)"
+        if [ "$failures" -ge 3 ]; then
+            log "[ERROR] Too many crashes; clearing session and requiring re-auth"
+            rm -f "$JWT_FILE" || true
+            log "[ERROR] Session cleared. Restart the container with a fresh JWT token."
+            exit 1
+        fi
+        log "[INFO] Waiting 60s before retry"
+        sleep 60
+    done
 }
 
 # === Bootstrap Sequence ===
