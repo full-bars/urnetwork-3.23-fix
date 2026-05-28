@@ -191,7 +191,7 @@ opt_requires_arg ()
 get_version_from_api_response () 
 {    
     if command -v jq > /dev/null; then
-        latest_version="$(echo "$1" | tr -d '\000-\037' | jq -r '.tag_name')"
+        latest_version="$(echo "$1" | tr -d '\000-\037' | jq -r '.tag_name' 2>/dev/null)"
     elif command -v python3 > /dev/null; then
         latest_version="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
 try:
@@ -212,7 +212,7 @@ except (json.JSONDecodeError, KeyError):
 get_release_date_from_api_response () 
 {   
     if command -v jq > /dev/null; then
-        date="$(echo "$1" | tr -d '\000-\037' | jq -r '.published_at | fromdateiso8601')" 
+        date="$(echo "$1" | tr -d '\000-\037' | jq -r '.published_at | fromdateiso8601' 2>/dev/null)"
     elif command -v python3 > /dev/null; then
         date="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
 from datetime import datetime, timezone
