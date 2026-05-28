@@ -57,6 +57,11 @@ func isBackendDegraded() bool {
 	return now-lastBackendFailNano.Load() < window
 }
 
+// IsBackendDegraded is the exported form for use by the provider binary.
+func IsBackendDegraded() bool {
+	return isBackendDegraded()
+}
+
 // note that it is possible to have multiple transports for the same client destination
 // e.g. platform, p2p, and a bunch of extenders
 
