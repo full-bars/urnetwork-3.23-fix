@@ -1220,19 +1220,26 @@ do_optimize ()
 
     pr_info "⚡ Starting System Optimizer..."
 
-    # 1. Dependency Check
-    if ! command -v conntrack >/dev/null 2>&1; then
-        pr_info "Conntrack utilities not found. Detection distro..."
+    # 1. Dependency Check & Module Loading
+    pr_info "Ensuring kernel modules are loaded..."
+    modprobe nf_conntrack >/dev/null 2>&1
+    
+    if [ ! -d "/proc/sys/net/netfilter" ]; then
+        pr_info "Conntrack kernel module not found. Attempting to install utilities..."
         if [ -f /etc/arch-release ]; then
-            pr_info "Arch Linux detected. Suggestion: pacman -S conntrack-tools"
+            pacman -Sy --noconfirm conntrack-tools
         elif [ -f /etc/debian_version ]; then
-            pr_info "Debian/Ubuntu detected. Suggestion: apt install conntrack"
+            apt-get update && apt-get install -y conntrack
         elif [ -f /etc/redhat-release ]; then
-            pr_info "RHEL/Fedora detected. Suggestion: dnf install conntrack-tools"
-        else
-            pr_info "Generic Linux detected. Please install 'conntrack' using your package manager."
+            dnf install -y conntrack-tools
         fi
+        modprobe nf_conntrack || pr_err "Failed to load nf_conntrack. Please check your kernel support."
     fi
+
+    # Persistence for module (solves race condition on reboot)
+    pr_info "Configuring early module loading..."
+    mkdir -p /etc/modules-load.d
+    echo "nf_conntrack" > /etc/modules-load.d/urnetwork.conf
 
     # 2. Dynamic Calculation
     ram_mib=$(detect_mem_limit_mib)

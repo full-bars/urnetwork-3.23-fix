@@ -252,6 +252,8 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 **Changes**:
 - **System Auditor**: Runs on provider startup; passively checks host `ulimit -n`, `nf_conntrack_max`, and `tcp_timeout_established`. Logs `[audit]` warnings if host settings are suboptimal. Docker-aware hint tells users to run the optimizer on the host machine.
 - **`urnet-tools optimize`**: New management command (requires root) that applies "Golden Fleet" settings:
+  - **Auto-Install**: Installs `conntrack` on Arch, Debian, and RHEL distros.
+  - **Boot Persistence**: Writes `nf_conntrack` to `/etc/modules-load.d/urnetwork.conf` to solve the systemd race condition where sysctl applies before the module loads.
   - `ulimit -n`: 1,048,576
   - `nf_conntrack_max`: 2,097,152 (standard across all RAM sizes based on fleet observations)
   - `nf_conntrack_tcp_timeout_established`: 3,600s (1h)
