@@ -1431,7 +1431,7 @@ EOF
 
     # 4. Apply Ulimits (Systemd)
     # When running via sudo, we need to find the original user's home
-    actual_user=$(logname || echo "$SUDO_USER" || echo "$USER")
+    actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
     actual_home=$(getent passwd "$actual_user" | cut -d: -f6)
     
     override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
