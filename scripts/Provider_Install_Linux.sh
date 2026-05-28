@@ -12,78 +12,39 @@ fi
 
 show_help ()
 {
-    echo "Usage: "
-    
-    if [ -n "$URNETWORK_TOOLS_MODE" ]; then
-        echo "  $me [options] start"
-        echo "  $me [options] stop"
-        echo "  $me [options] update"
-        echo "  $me [options] status"
-        echo "  $me [options] reinstall [-t=TAG] [-B]"
-        echo "  $me [options] uninstall [-B]"
-        echo "  $me [options] auto-update [on | off] [--interval=INTERVAL]"
-        echo "  $me [options] auto-start [on | off]"
-        echo "  $me [-h] [-v]"
-    else
-	    echo "  $me [options] [-t=TAG] [-B]"
-    fi
-    
+    echo "Usage: $me [options] <command>"
     echo ""
-
-    if [ -z "$URNETWORK_TOOLS_MODE" ]; then    
-        echo "Installs URnetwork locally for the current user."
-    else
-	    echo "Manages URnetwork installation."
-    fi
-    
-    if [ -n "$URNETWORK_TOOLS_MODE" ]; then
-        echo ""
-        echo "Operational modes:"
-        echo "  start                   Start URnetwork provider"
-        echo "  stop                    Stop URnetwork provider"
-        echo "  update                  Upgrade URnetwork, if updates are available"
-        echo "  status                  Show the status of URnetwork provider service"
-        echo "  logs                    Stream the provider logs (RAM or journald)"
-        echo "  eco <on|off>            🌿 Toggle eco mode (GC-tuned for low-RAM systems, full throughput)"
-        echo "  lowmode <on|off>        Toggle low-memory mode (reduced buffers, max RAM savings)"
-        echo "  $me [options] turbo <v4|v8|off>       🚀 Turbo mode: raise throughput limits for RAM-rich boxes"
-        echo "                          v4=4MiB window, v8=8MiB window (higher ceilings for low-RTT paths)"
-        echo "  $me [options] auto <on|off>           🧠 Auto-Tune: detect hardware and pick best performance profile"
-        echo "  $me [options] optimize          ⚡ Optimize OS limits (ulimit, conntrack) for high volume"
-        echo "  $me [options] ramlogs <on|off>        Toggle RAM-disk logging (Zero Disk I/O)"
-
-        echo "  reinstall               Reinstall URnetwork"
-        echo "  uninstall               Uninstall URnetwork"
-        echo "  auto-update             Manage auto update settings.  If no argument is"
-        echo "                          specified, it will print the current auto update state."
-		echo "  auto-start              Turn auto-start of URnetwork provider on login on or off"
-        echo ""
-        echo "Options for reinstall:"
-        echo "  -t, --tag=TAG           Reinstall a specific version of URnetwork."
-        echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
-        echo ""
-        echo "Options for uninstall:"
-        echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
-        echo ""
-        echo "Options for auto-update:"
-        echo "  --interval=INTERVAL     Auto update interval.  Values can be:"
-        echo "                          daily, weekly, monthly.  Defaults to daily."
-    fi
-
+    echo "Core Commands:"
+    echo "  start                   Start URnetwork provider"
+    echo "  stop                    Stop URnetwork provider"
+    echo "  status                  Show the status of URnetwork provider service"
+    echo "  update                  Upgrade URnetwork to the latest version"
+    echo "  logs                    Stream the provider logs (RAM or journald)"
     echo ""
-    echo "Options for install:"
-    echo "  -t, --tag=TAG           Reinstall a specific version of URnetwork."
-    echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
-    
+    echo "Performance & Tuning:"
+    echo "  turbo <v4|v8|off>       🚀 RAISE throughput limits for RAM-rich boxes"
+    echo "  auto <on|off>           🧠 AUTO-TUNE: detect hardware and pick best profile"
+    echo "  eco <on|off>            🌿 ECO MODE: GC-tuned for low-RAM systems"
+    echo "  lowmode <on|off>        LOW-MEMORY: reduced buffers for max RAM savings"
+    echo "  ramlogs <on|off>        RAM LOGS: zero disk I/O logging"
+    echo "  optimize                ⚡ OPTIMIZE: apply Golden Fleet OS/kernel limits"
+    echo ""
+    echo "Maintenance:"
+    echo "  reinstall               Reinstall URnetwork"
+    echo "  uninstall               Uninstall URnetwork"
+    echo "  auto-update             Manage auto update settings (daily/weekly/monthly)"
+    echo "  auto-start              Toggle auto-start on login"
     echo ""
     echo "Global Options:"
     echo "  -h, --help              Show this help and exit"
-    echo "  -v, --version           Show the version of URnetwork that's installed"
-    echo "  -i, --install=[PATH]    Installation path"
-    echo "  -4, --ipv4              Force IPv4 for network requests (fixes IPv6 hangs)"
+    echo "  -v, --version           Show installed version"
+    echo "  -t, --tag=TAG           Use a specific version for (re)install"
+    echo "  -i, --install=[PATH]    Specify custom installation path"
+    echo "  -4, --ipv4              Force IPv4 for network requests"
     echo "  -f, --force             Force optimization / skip confirmation prompts"
+    echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc during install"
     echo ""
-    echo "Refer to the online documentation for more help."
+    echo "Refer to <https://github.com/full-bars/urnetwork-3.23-fix> for more help."
 }
 
 get_arch ()
@@ -121,7 +82,10 @@ api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 install_path="$HOME/.local/share/urnetwork-provider"
 version_file="$install_path/.version"
 
-if [ -z "$URNETWORK_TOOLS_MODE" ]; then
+# If no operation is specified:
+# - Default to 'install' if running as a one-off installer (curl | sh)
+# - Show help if running as the installed 'urnet-tools' command
+if [ -z "$operation" ] && [ -z "$URNETWORK_TOOLS_MODE" ]; then
     operation="install"
 fi
 
