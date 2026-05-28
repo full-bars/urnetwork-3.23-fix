@@ -1275,18 +1275,22 @@ do_optimize ()
             case "$ID" in
                 arch)
                     pacman -Sy --noconfirm zram-generator
-                    printf "[zram0]\nzram-size = ram / 2\n" > /etc/systemd/zram-generator.conf
+                    printf "[zram0]\nzram-size = ram * 0.8\ncompression-algorithm = zstd\n" > /etc/systemd/zram-generator.conf
                     systemctl daemon-reload
                     systemctl start /dev/zram0
                     ;;
                 debian|ubuntu|linuxmint)
                     apt-get update && apt-get install -y zram-tools
-                    echo "ZRAM_SIZE=512" > /etc/default/zramswap
+                    # zram-tools uses /etc/default/zramswap; percentage isn't standard, so we calculate
+                    ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+                    zram_mb=$(( ram_kb * 8 / 10 / 1024 ))
+                    echo "ZRAM_SIZE=$zram_mb" > /etc/default/zramswap
+                    echo "ZRAM_ALGORITHM=zstd" >> /etc/default/zramswap
                     systemctl restart zramswap
                     ;;
                 fedora|rhel|centos|rocky|almalinux|amzn)
                     dnf install -y zram-generator
-                    printf "[zram0]\nzram-size = ram / 2\n" > /etc/systemd/zram-generator.conf
+                    printf "[zram0]\nzram-size = ram * 0.8\ncompression-algorithm = zstd\n" > /etc/systemd/zram-generator.conf
                     systemctl daemon-reload
                     systemctl start /dev/zram0
                     ;;
