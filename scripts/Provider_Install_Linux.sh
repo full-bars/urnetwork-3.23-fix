@@ -406,18 +406,6 @@ EOF
             pr_err "Could not enable the newly installed systemd service"
             exit 1
         fi
-    else
-        # Enable lingering so user services persist after logout
-        target_user="${SUDO_USER:-$(id -un)}"
-        if [ "$(id -u)" -eq 0 ]; then
-            # Running with sudo/as root: enable linger directly
-            if command -v loginctl > /dev/null; then
-                loginctl enable-linger "$target_user" 2>/dev/null && pr_info "Enabled systemd lingering for '$target_user'"
-            fi
-        else
-            # Running as regular user: suggest sudo
-            pr_info "To keep the provider running after logout, enable lingering: sudo loginctl enable-linger \$(whoami)"
-        fi
     fi
 
     if ! systemctl --user enable --now urnetwork-update.timer 2>/dev/null; then
@@ -758,7 +746,8 @@ EOF
                 
                 
                 printf "\n"
-                printf "\e[1;32m✓\e[0m Systemd lingering is enabled — provider will keep running after you log out.\n"
+                printf "\e[1;33mNote:\e[0m Run \e[1murnet-tools optimize\e[0m to enable systemd lingering and apply OS-level optimizations.\n"
+                printf "This ensures the provider keeps running in the background after you log out.\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
@@ -1471,10 +1460,15 @@ EOF
 
     pr_info "Optimization applied successfully."
     pr_info "Restarting URnetwork service to apply ulimits..."
-    
+
     # Run as the actual user to access their systemd bus
     sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload
     sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
+
+    # Enable lingering for the user so services persist after logout
+    if command -v loginctl > /dev/null; then
+        loginctl enable-linger "$actual_user" 2>/dev/null && pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+    fi
 }
 
 case "$operation" in
