@@ -27,6 +27,7 @@ A high-volume provider can easily saturate default OS limits. The `optimize` com
 2.  **Conntrack Table**: Raises `nf_conntrack_max` to 2,097,152 (standard across all RAM sizes based on fleet observations).
 3.  **Timeouts**: Reduces TCP established timeout from 5 days to 1 hour, clearing stale connections faster.
 4.  **Port Range**: Expands local port range and enables TCP port reuse.
+5.  **TCP Congestion**: Enables **BBR** (Bottleneck Bandwidth and Round-trip propagation time) and **Fair Queuing (fq)** for superior throughput and reduced bufferbloat.
 
 **Usage:**
 ```bash

@@ -15,6 +15,7 @@ All notable changes to this project are documented here.
   - Ulimit bumped to 1,048,576.
   - Conntrack max raised to 2,097,152.
   - TCP established timeout reduced to 1 hour (from 5 days).
+  - Enabled **BBR** congestion control and **Fair Queuing (fq)** for improved network throughput.
   - Expanded local port range and enabled TCP port reuse.
 - **System Auditor**: Provider now checks OS limits (ulimit, conntrack) and performs a dynamic Disk I/O test on startup. Logs high-signal warnings for suboptimal host limits or low disk space.
 - **Message pool auto-sizing**: `InitialMessagePoolByteCount` now scales to RAM/32 at startup (floor 8 MiB, cap 256 MiB) instead of the hardcoded 1 MiB default. The 1 MiB default is far too small for large proxy list deployments — almost every packet above the pool cap fell back to a fresh GC allocation, adding unnecessary GC pressure. Skipped for `lowmem` profile and when `--max-memory` is set explicitly. Logs `[pool] message pool NMiB (RAM=NMiB)` once at startup.
