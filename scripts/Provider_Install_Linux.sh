@@ -1453,7 +1453,12 @@ EOF
     # When running via sudo, we need to find the original user's home
     actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
     actual_home=$(getent passwd "$actual_user" | cut -d: -f6)
-    
+
+    # Ensure everything in the home folder touched by root is restored to user ownership
+    if [ -d "$actual_home/.urnetwork" ]; then
+        chown -R "$actual_user":"$actual_user" "$actual_home/.urnetwork"
+    fi
+
     override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
     mkdir -p "$override_dir"
     chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null
