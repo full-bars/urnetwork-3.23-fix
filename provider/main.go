@@ -650,12 +650,26 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 }
 
 func fireWebhook(url, nodeName, event, message string) {
-	payload, err := json.Marshal(map[string]string{
-		"event":     event,
-		"node":      nodeName,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"message":   message,
-	})
+	// Format the body per service. Discord requires "content" and Slack requires
+	// "text"; a generic {event,node,...} body is rejected by both (HTTP 400). Any
+	// other endpoint (ntfy, custom) gets the structured JSON it can parse.
+	var payload []byte
+	var err error
+	switch {
+	case strings.Contains(url, "discord.com"), strings.Contains(url, "discordapp.com"):
+		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
+		payload, err = json.Marshal(map[string]string{"content": line})
+	case strings.Contains(url, "hooks.slack.com"):
+		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
+		payload, err = json.Marshal(map[string]string{"text": line})
+	default:
+		payload, err = json.Marshal(map[string]string{
+			"event":     event,
+			"node":      nodeName,
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"message":   message,
+		})
+	}
 	if err != nil {
 		fmt.Printf("[webhook] marshal failed: %v\n", err)
 		return
