@@ -141,7 +141,7 @@ docker run -d \
 
 Compose is the recommended approach for multi-container setups or when you want Watchtower for automatic image updates. Save the following as `docker-compose.yml` and run `docker compose up -d`.
 
-**Standard setup (JWT auth + webhook alerts):**
+**JWT auth (auth code login):**
 ```yaml
 services:
   urnetwork:
@@ -157,7 +157,7 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
-      - TURBO=v8                                        # or v4, or omit for default
+      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       - URNETWORK_NODE_NAME=my-server-name              # label for webhook alerts
       - URNETWORK_ALERT_WEBHOOK=https://your-webhook    # optional: outage alerts
     volumes:
@@ -181,7 +181,45 @@ Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE
 
 After the JWT is written to the `urnetwork_config` volume, subsequent starts need no argument: `docker compose up -d`
 
-**With Watchtower for automatic updates:**
+**Email/password auth:**
+```yaml
+services:
+  urnetwork:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: urfix
+    restart: unless-stopped
+    pull_policy: always
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      - BUILD=stable
+      - USER_AUTH=you@example.com
+      - PASSWORD=yourpassword
+      - ENABLE_VNSTAT=true
+      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      - URNETWORK_NODE_NAME=my-server-name
+      - URNETWORK_ALERT_WEBHOOK=https://your-webhook    # optional: outage alerts
+    volumes:
+      - urnetwork_config:/root/.urnetwork
+      - vnstat_data:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9001:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  urnetwork_config:
+  vnstat_data:
+```
+
+**With Watchtower for automatic updates (JWT):**
 ```yaml
 services:
   urnetwork:
@@ -196,7 +234,7 @@ services:
       - net.ipv4.ip_forward=1
     environment:
       - BUILD=jwt
-      - TURBO=v8
+      # - TURBO=v4                                      # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       - URNETWORK_NODE_NAME=my-server-name
       - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
