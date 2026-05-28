@@ -1208,7 +1208,52 @@ toggle_automode ()
 
 toggle_turbomode ()
 {
-... (existing toggle_turbomode code) ...
+    mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    case "$mode" in
+        v4|v8)
+            pr_info "Enabling turbo %s..." "$mode"
+            mkdir -p "$override_dir"
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                if ! grep -q '^\[Service\]' "$override_file" 2>/dev/null; then
+                    sed -i '1i[Service]' "$override_file"
+                fi
+            else
+                printf '[Service]\n' > "$override_file"
+            fi
+            printf 'Environment="URNETWORK_PROFILE=turbo-%s"\n' "$mode" >> "$override_file"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Turbo %s enabled and service restarted." "$mode"
+            ;;
+        off)
+            pr_info "Disabling turbo mode..."
+            if [ -f "$override_file" ]; then
+                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
+                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
+                    rm -rf "$override_dir"
+                fi
+            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Turbo mode disabled and service restarted."
+            ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=turbo-' "$override_file" 2>/dev/null; then
+                level=$(grep 'URNETWORK_PROFILE=turbo-' "$override_file" | sed 's/.*turbo-\([^"]*\).*/\1/')
+                pr_info "Turbo mode is enabled: %s" "$level"
+            else
+                pr_info "Turbo mode is off."
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools turbo <v4|v8|off>"
+            exit 1
+            ;;
+    esac
 }
 
 do_optimize ()
@@ -1333,14 +1378,18 @@ EOF
     sysctl --system >/dev/null 2>&1 || pr_err "Warning: some sysctl settings could not be applied."
 
     # 4. Apply Ulimits (Systemd)
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    # When running via sudo, we need to find the original user's home
+    actual_user=$(logname || echo "$SUDO_USER" || echo "$USER")
+    actual_home=$(getent passwd "$actual_user" | cut -d: -f6)
+    
+    override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
     mkdir -p "$override_dir"
+    chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null
     override_file="$override_dir/override.conf"
 
     # 5. Disk Benchmark
     pr_info "Running disk benchmark (1GB sync test)..."
-    test_file=".io-test-optimize"
-    # Capture speed using dd (distro agnostic)
+    test_file="/tmp/.io-test-optimize"
     res=$(dd if=/dev/zero of="$test_file" bs=1M count=1024 oflag=dsync 2>&1)
     speed_mb=$(echo "$res" | grep -oE '[0-9.]+[[:space:]]+MB/s' | awk '{print int($1)}')
     rm -f "$test_file"
@@ -1348,40 +1397,36 @@ EOF
     if [ -n "$speed_mb" ]; then
         pr_info "Disk write speed: ${speed_mb} MB/s"
         if [ "$speed_mb" -lt 50 ]; then
-            pr_warn "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
+            pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
             
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_RAMLOGS/d' "$override_file"
             else
-                printf '[Service]\n' > "$override_file"
+                printf "[Service]\n" > "$override_file"
             fi
             printf 'Environment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
         fi
     fi
 
     # Update ulimits in override
-    if [ -f "$override_file" ]; then
-        if ! grep -q "LimitNOFILE=" "$override_file"; then
-            if grep -q "\[Service\]" "$override_file"; then
-                sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"
-            else
-                echo -e "\n[Service]\nLimitNOFILE=$ulimit_val" >> "$override_file"
-            fi
-        else
-            sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
-        fi
-    else
-        cat > "$override_file" <<EOF
-[Service]
-LimitNOFILE=$ulimit_val
-EOF
+    if [ ! -f "$override_file" ]; then
+        printf "[Service]\n" > "$override_file"
     fi
+
+    if ! grep -q "LimitNOFILE=" "$override_file"; then
+        sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"
+    else
+        sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
+    fi
+    chown "$actual_user":"$actual_user" "$override_file"
 
     pr_info "Optimization applied successfully."
     pr_info "Restarting URnetwork service to apply ulimits..."
-    systemctl --user daemon-reload
-    systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
+    
+    # Run as the actual user to access their systemd bus
+    sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload
+    sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
 }
 
 case "$operation" in
