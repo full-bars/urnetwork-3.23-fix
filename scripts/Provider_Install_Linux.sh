@@ -167,6 +167,21 @@ pr_info ()
     printf "$argv0: $fmt\n" $@
 }
 
+pr_warn ()
+{
+    argv0="\033[1;33m$me\033[0m"
+    fmt="$1"
+    shift
+
+    if [ -n "$operation" ]; then
+        argv0="$argv0: $operation"
+    fi
+
+    # shellcheck disable=SC2068
+    # shellcheck disable=SC2059
+    printf "$argv0: $fmt\n" $@
+}
+
 opt_requires_arg ()
 {
     pr_err "Option '%s' requires an argument" "$1"
