@@ -609,14 +609,13 @@ do_install ()
     dl_url=""
 
     if command -v jq > /dev/null; then
-        asset="$(echo "$release" | tr -d '\000-\037' | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-"))')"
+        asset="$(echo "$release" | tr -d '\000-\037' | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-"))' 2>/dev/null)"
 
         if [ -z "$asset" ]; then
-            pr_err "Could not find a suitable release asset for tag: %s" "$tag"
-            exit 1
+            dl_url=""
+        else
+            dl_url="$(echo "$asset" | jq -r '.browser_download_url' 2>/dev/null)"
         fi
-
-        dl_url="$(echo "$asset" | jq -r '.browser_download_url')"
     elif command -v python3 > /dev/null; then
         dl_url="$(echo "$release" | tr -d '\000-\037' | python3 -c 'import sys, json
 try:
