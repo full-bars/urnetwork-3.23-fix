@@ -10,7 +10,8 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
 - [Quick Start (Linux)](#-quick-start-linux)
 - [Usage](#-usage)
   - [Environment Variables](#environment-variables)
-  - [Docker Run](#docker-run)
+  - [Docker Run — GHCR](#docker-run--github-registry-ghcr)
+  - [Docker Run — Docker Hub](#docker-run--docker-hub-alternative)
   - [Docker Compose](#docker-compose)
   - [Persistent JWT](#persistent-jwt)
   - [Outage Alerting](#outage-alerting-optional)
@@ -113,9 +114,9 @@ The installation includes the `urnet-tools` suite for easy management:
 
 ---
 
-### Docker Run
+### Docker Run — GitHub Registry (GHCR)
 
-All examples use the same set of flags and environment variables. The only difference between the GHCR and Docker Hub commands is the image name.
+The primary image is hosted on the GitHub Container Registry.
 
 **JWT auth (auth code login):**
 
@@ -139,11 +140,9 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-Replace `ghcr.io/full-bars/urnetwork-3.23-fix:latest` with `3cape/urnetwork-3.23-fix:latest` to use the Docker Hub mirror instead (useful if you hit GHCR rate limits).
-
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `urnetwork_config` volume on first run and reused on all subsequent starts.
-
-To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
+> Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `urnetwork_config` volume on first run and reused on all subsequent starts.
+>
+> To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
 
 **Email/password auth:**
 
@@ -167,6 +166,58 @@ docker run -d \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+---
+
+### Docker Run — Docker Hub (Alternative)
+
+If you experience `denied` errors or rate-limiting on GHCR, use the Docker Hub mirror. The commands are identical — only the image name changes.
+
+**JWT auth:**
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -e BUILD=jwt \
+  -e ENABLE_VNSTAT=true \
+  -v urnetwork_config:/root/.urnetwork \
+  -v vnstat_data:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+```
+
+**Email/password auth:**
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -e BUILD=stable \
+  -e USER_AUTH=you@example.com \
+  -e PASSWORD=yourpassword \
+  -e ENABLE_VNSTAT=true \
+  -v urnetwork_config:/root/.urnetwork \
+  -v vnstat_data:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  3cape/urnetwork-3.23-fix:latest
 ```
 
 ---
