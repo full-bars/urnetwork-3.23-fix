@@ -4,19 +4,21 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased]
+## [v3.23.0-fix.14] — 2026-05-27
 
 ### Added
 - **Auto-Tune Performance Profile**: New `URNETWORK_PROFILE=auto` dynamically selects buffer sizes and contract floors based on available RAM (Low/Balanced/Performance tiers). Automatically enables Eco Mode on RAM-constrained systems and enables RAM Logging if slow disk I/O is detected. Managed via `urnet-tools auto on/off`.
 - **System Optimizer**: New `urnet-tools optimize` command (requires root) to apply "Golden Fleet" network tuning to the host:
-  - **Auto-Installation**: Automatically installs `conntrack-tools` on Arch, Debian/Ubuntu, and RHEL/Fedora if missing.
+  - **Auto-Installation**: Automatically installs `conntrack-tools` on Arch, Debian/Ubuntu, RHEL/Fedora/Amazon, Alpine, and OpenSUSE if missing.
   - **Boot Persistence**: Configures `/etc/modules-load.d` to ensure `nf_conntrack` loads early, preventing race conditions that cause sysctl settings to fail on reboot.
+  - **ZRAM Acceleration**: Automatically configures and enables compressed RAM swap (zram, 80% RAM, zstd) to improve stability on low-RAM nodes.
   - Ulimit bumped to 1,048,576.
   - Conntrack max raised to 2,097,152.
   - TCP established timeout reduced to 1 hour (from 5 days).
   - Expanded local port range and enabled TCP port reuse.
 - **System Auditor**: Provider now checks OS limits (ulimit, conntrack) and performs a dynamic Disk I/O test on startup. Logs high-signal warnings for suboptimal host limits or low disk space.
 - **Message pool auto-sizing**: `InitialMessagePoolByteCount` now scales to RAM/32 at startup (floor 8 MiB, cap 256 MiB) instead of the hardcoded 1 MiB default. The 1 MiB default is far too small for large proxy list deployments — almost every packet above the pool cap fell back to a fresh GC allocation, adding unnecessary GC pressure. Skipped for `lowmem` profile and when `--max-memory` is set explicitly. Logs `[pool] message pool NMiB (RAM=NMiB)` once at startup.
+- **Health heartbeat**: logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB` every 5 minutes. Passive liveness confirmation and heap trend visibility without external tooling. Interval configurable via `URNETWORK_HEALTH_INTERVAL`.
 
 ### Changed
 - **Outage detection and alerting**: a background watcher polls `IsBackendDegraded()` every 30 seconds and logs `[outage] backend degraded` / `[outage] backend recovered` on state transitions. Runs always, no configuration required.
@@ -24,7 +26,7 @@ All notable changes to this project are documented here.
   - If `URNETWORK_ALERT_WEBHOOK` is set, POSTs a JSON payload on each transition. Compatible with Slack, Discord, ntfy, etc. Webhook delivery is now non-blocking and handles Discord/Slack payload formatting automatically.
   - Requires two consecutive clean polls before firing `outage_clear` to avoid premature all-clears during brief mid-outage lulls.
   - Per-event 5-minute cooldown prevents webhook spam when the backend flickers at the recovery boundary.
-  - `URNETWORK_NODE_NAME` sets the node label in payloads. Falls back to `hostname (docker)` or `hostname (binary)` automatically.
+- **RAM Log Tail Depth**: `urnet-tools logs` now displays the last 250 lines of history (up from 10) when in RAM logging mode.
 
 ### Fixed
 - Fixed a potential panic in the health monitor when reading metrics on certain Go versions.
