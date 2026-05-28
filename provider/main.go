@@ -592,6 +592,12 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 	clearCount := 0
 	var lastStartFire, lastClearFire time.Time
 
+	if webhookURL != "" {
+		fmt.Printf("[outage] watcher active node=%s webhook=configured\n", nodeName)
+	} else {
+		fmt.Printf("[outage] watcher active node=%s\n", nodeName)
+	}
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -739,7 +745,12 @@ func provide(opts docopt.Opts) {
 
 	nodeName := os.Getenv("URNETWORK_NODE_NAME")
 	if nodeName == "" {
-		nodeName, _ = os.Hostname()
+		hostname, _ := os.Hostname()
+		if _, err := os.Stat("/.dockerenv"); err == nil {
+			nodeName = hostname + " (docker)"
+		} else {
+			nodeName = hostname + " (binary)"
+		}
 	}
 	go runOutageWatcher(ctx, nodeName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
