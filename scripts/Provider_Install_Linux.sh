@@ -193,7 +193,13 @@ get_version_from_api_response ()
     if command -v jq > /dev/null; then
         latest_version="$(echo "$1" | tr -d '\000-\037' | jq -r '.tag_name')"
     elif command -v python3 > /dev/null; then
-        latest_version="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json; data = json.load(sys.stdin); print(data["tag_name"])')"
+        latest_version="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
+try:
+    data = json.load(sys.stdin)
+    print(data["tag_name"])
+except (json.JSONDecodeError, KeyError):
+    print("")
+' 2>/dev/null)"
     else
         pr_err "Neither python3 nor jq is available"
         exit 1
@@ -208,7 +214,15 @@ get_release_date_from_api_response ()
     if command -v jq > /dev/null; then
         date="$(echo "$1" | tr -d '\000-\037' | jq -r '.published_at | fromdateiso8601')" 
     elif command -v python3 > /dev/null; then
-        date="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json; from datetime import datetime, timezone; data = json.load(sys.stdin); iso_str = data["published_at"].replace("Z", "+00:00"); print(int(datetime.fromisoformat(iso_str).timestamp() * 1000))')"
+        date="$(echo "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
+from datetime import datetime, timezone
+try:
+    data = json.load(sys.stdin)
+    iso_str = data["published_at"].replace("Z", "+00:00")
+    print(int(datetime.fromisoformat(iso_str).timestamp() * 1000))
+except (json.JSONDecodeError, KeyError, ValueError):
+    print("")
+' 2>/dev/null)"
     else
         pr_err "Neither python3 nor jq is available"
         exit 1
@@ -583,7 +597,7 @@ do_install ()
         install_release_date="$(cat "$install_path/.date")"
         installed_version="$(cat "$install_path/.version")"
 
-        if [ "$install_release_date" -lt "$release_date" ]; then
+        if [ -n "$release_date" ] && [ "$install_release_date" -lt "$release_date" ]; then
             pr_info "Version %s is newer than the installed version %s" "$version_to_install" "$installed_version"
             pr_info "Continuing upgrade"
         else
@@ -604,7 +618,15 @@ do_install ()
 
         dl_url="$(echo "$asset" | jq -r '.browser_download_url')"
     elif command -v python3 > /dev/null; then
-        dl_url="$(echo "$release" | tr -d '\000-\037' | python3 -c 'import sys, json; data = json.load(sys.stdin); assets = data["assets"]; asset = next(a for a in assets if a["name"].startswith("urnetwork-provider")); print(asset["browser_download_url"] if asset else "")')"
+        dl_url="$(echo "$release" | tr -d '\000-\037' | python3 -c 'import sys, json
+try:
+    data = json.load(sys.stdin)
+    assets = data["assets"]
+    asset = next((a for a in assets if a["name"].startswith("urnetwork-provider")), None)
+    print(asset["browser_download_url"] if asset else "")
+except (json.JSONDecodeError, KeyError, StopIteration):
+    print("")
+' 2>/dev/null)"
     else
         pr_err "Neither python3 nor jq is available"
         exit 1
