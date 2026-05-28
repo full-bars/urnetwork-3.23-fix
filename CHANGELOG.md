@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Message pool auto-sizing**: `InitialMessagePoolByteCount` now scales to RAM/32 at startup (floor 8 MiB, cap 256 MiB) instead of the hardcoded 1 MiB default. The 1 MiB default is far too small for large proxy list deployments — almost every packet above the pool cap fell back to a fresh GC allocation, adding unnecessary GC pressure. Skipped for `lowmem` profile and when `--max-memory` is set explicitly. Logs `[pool] message pool NMiB (RAM=NMiB)` once at startup.
+- **Outage detection and alerting**: a background watcher polls `IsBackendDegraded()` every 30 seconds and logs `[outage] backend degraded` / `[outage] backend recovered` on state transitions. Runs always, no configuration required.
+  - If `URNETWORK_ALERT_WEBHOOK` is set, POSTs a JSON payload on each transition so operators receive push notifications. Compatible with any webhook-capable service (Slack, Discord, PagerDuty, ntfy, etc.).
+  - Requires two consecutive clean polls before firing `outage_clear` to avoid premature all-clears during brief mid-outage lulls.
+  - Per-event 5-minute cooldown prevents webhook spam when the backend flickers at the recovery boundary.
+  - `URNETWORK_NODE_NAME` sets the node label in payloads. Falls back to `hostname (docker)` or `hostname (binary)` automatically — alerts from containers and bare binaries on the same host are distinguishable without any configuration.
+- **Health heartbeat**: logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB` every 5 minutes. Passive liveness confirmation and heap trend visibility without external tooling. Interval configurable via `URNETWORK_HEALTH_INTERVAL` (Go duration string, e.g. `10m`, `1h`; minimum 1 minute).
+
+### Fixed
+- `[turbo]` startup log now fires once at provider startup instead of once per proxy goroutine. With a full proxy list it was emitting thousands of times.
+- `provide()` was missing a `ResizeMessagePools` call when `--max-memory` was set. The `auth` command path had it but `provide` did not, so manual pool sizing via `--max-memory` was silently skipped on the provide path.
+
 ---
 
 ## [v3.23.0-fix.13] — 2026-05-27
