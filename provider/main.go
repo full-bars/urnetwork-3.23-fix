@@ -663,16 +663,17 @@ func fireWebhook(url, nodeName, event, message string) {
 	}
 }
 
-// metricBytesToMiB converts a runtime/metrics Value to MiB regardless of whether
-// the underlying kind is KindUint64 or KindFloat64. Panics are avoided by checking
-// Kind first; an unrecognised kind returns 0.
-func metricBytesToMiB(v metrics.Value) uint64 {
+// metricBytesToMiB converts a runtime/metrics Value to MiB. Checks Kind before
+// dispatching to avoid panics; logs a warning and returns 0 for unrecognised kinds
+// so a wrong metric name surfaces in logs rather than silently reading 0.
+func metricBytesToMiB(name string, v metrics.Value) uint64 {
 	switch v.Kind() {
 	case metrics.KindUint64:
 		return v.Uint64() / 1024 / 1024
 	case metrics.KindFloat64:
 		return uint64(v.Float64()) / 1024 / 1024
 	default:
+		fmt.Printf("[health] warning: metric %q has unreadable kind %v — check metric name\n", name, v.Kind())
 		return 0
 	}
 }
@@ -702,12 +703,12 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		}
 
 		samples := []metrics.Sample{
-			{Name: "/memory/classes/heap/inuse:bytes"},
+			{Name: "/memory/classes/heap/objects:bytes"},
 			{Name: "/memory/classes/total:bytes"},
 		}
 		metrics.Read(samples)
-		heapMiB := metricBytesToMiB(samples[0].Value)
-		sysMiB := metricBytesToMiB(samples[1].Value)
+		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
+		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
 		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
 			uptime, profile, heapMiB, sysMiB)

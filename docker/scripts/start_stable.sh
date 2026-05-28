@@ -176,7 +176,7 @@ func_start_provider(){
         PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
 		BIN_VER="$($PROVIDER_BIN --version)"
 		log "[INFO] Running UrNetwork build v${BIN_VER}"
-        "$PROVIDER_BIN" provide
+        "$PROVIDER_BIN" provide || true
         code=$?
         if [ "$code" -eq 0 ]; then
             log " [INFO] UrNetwork exited cleanly."
