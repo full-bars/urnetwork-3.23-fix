@@ -7,17 +7,30 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Auto-Tune Performance Profile**: New `URNETWORK_PROFILE=auto` dynamically selects buffer sizes and contract floors based on available RAM (Low/Balanced/Performance tiers). Automatically enables Eco Mode on RAM-constrained systems and enables RAM Logging if slow disk I/O is detected. Managed via `urnet-tools auto on/off`.
+- **System Optimizer**: New `urnet-tools optimize` command (requires root) to apply "Golden Fleet" network tuning to the host:
+  - **Auto-Installation**: Automatically installs `conntrack-tools` on Arch, Debian/Ubuntu, and RHEL/Fedora if missing.
+  - **Boot Persistence**: Configures `/etc/modules-load.d` to ensure `nf_conntrack` loads early, preventing race conditions that cause sysctl settings to fail on reboot.
+  - Ulimit bumped to 1,048,576.
+  - Conntrack max raised to 2,097,152.
+  - TCP established timeout reduced to 1 hour (from 5 days).
+  - Expanded local port range and enabled TCP port reuse.
+- **System Auditor**: Provider now checks OS limits (ulimit, conntrack) and performs a dynamic Disk I/O test on startup. Logs high-signal warnings for suboptimal host limits or low disk space.
 - **Message pool auto-sizing**: `InitialMessagePoolByteCount` now scales to RAM/32 at startup (floor 8 MiB, cap 256 MiB) instead of the hardcoded 1 MiB default. The 1 MiB default is far too small for large proxy list deployments — almost every packet above the pool cap fell back to a fresh GC allocation, adding unnecessary GC pressure. Skipped for `lowmem` profile and when `--max-memory` is set explicitly. Logs `[pool] message pool NMiB (RAM=NMiB)` once at startup.
+
+### Changed
 - **Outage detection and alerting**: a background watcher polls `IsBackendDegraded()` every 30 seconds and logs `[outage] backend degraded` / `[outage] backend recovered` on state transitions. Runs always, no configuration required.
-  - If `URNETWORK_ALERT_WEBHOOK` is set, POSTs a JSON payload on each transition so operators receive push notifications. Compatible with any webhook-capable service (Slack, Discord, PagerDuty, ntfy, etc.).
+  - Requires 10 consecutive failures (5 minutes) before firing `outage_start` to eliminate false positives from brief network blips.
+  - If `URNETWORK_ALERT_WEBHOOK` is set, POSTs a JSON payload on each transition. Compatible with Slack, Discord, ntfy, etc. Webhook delivery is now non-blocking and handles Discord/Slack payload formatting automatically.
   - Requires two consecutive clean polls before firing `outage_clear` to avoid premature all-clears during brief mid-outage lulls.
   - Per-event 5-minute cooldown prevents webhook spam when the backend flickers at the recovery boundary.
-  - `URNETWORK_NODE_NAME` sets the node label in payloads. Falls back to `hostname (docker)` or `hostname (binary)` automatically — alerts from containers and bare binaries on the same host are distinguishable without any configuration.
-- **Health heartbeat**: logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB` every 5 minutes. Passive liveness confirmation and heap trend visibility without external tooling. Interval configurable via `URNETWORK_HEALTH_INTERVAL` (Go duration string, e.g. `10m`, `1h`; minimum 1 minute).
+  - `URNETWORK_NODE_NAME` sets the node label in payloads. Falls back to `hostname (docker)` or `hostname (binary)` automatically.
 
 ### Fixed
-- `[turbo]` startup log now fires once at provider startup instead of once per proxy goroutine. With a full proxy list it was emitting thousands of times.
-- `provide()` was missing a `ResizeMessagePools` call when `--max-memory` was set. The `auth` command path had it but `provide` did not, so manual pool sizing via `--max-memory` was silently skipped on the provide path.
+- Fixed a potential panic in the health monitor when reading metrics on certain Go versions.
+- `[turbo]` startup log now fires once at provider startup instead of once per proxy goroutine.
+- `provide()` was missing a `ResizeMessagePools` call when `--max-memory` was set.
+- **Watchtower Persistence**: `start_jwt.sh` now correctly reuses existing sessions, preventing "Invalid auth code" panics after image updates.
 
 ---
 
@@ -33,7 +46,8 @@ All notable changes to this project are documented here.
 - Auto-update timer no longer silently dead after install or reinstall. The install script was using `systemctl --user enable` instead of `enable --now`, so the timer was registered but never started. On long-running servers that hadn't rebooted, it never fired.
 
 ### Added
-- Turbo mode (`URNETWORK_PROFILE=turbo-v4` / `turbo-v8`): raises the TCP Accordion window ceiling from 1 MiB to 4 MiB (V4) or 8 MiB (V8), removing the ~100–150 Mbps per-connection limit that existed because throughput is bounded by window/RTT. At 10ms RTT: V4 ~400 Mbps ceiling, V8 ~800 Mbps ceiling.
+- Turbo mode (`URNETWORK_PROFILE=turbo-v4` / `turbo-v8`): raises the TCP Accordion window ceiling from 1 MiB to 4 MiB (V4) or 8 MiB (V8), removing the mathematical per-connection limit that existed because throughput is bounded by window/RTT.
+  - Significantly higher theoretical ceilings for low-latency paths.
   - Transfer-layer resend and receive queues scale with the window (8 MiB for V4, 16 MiB for V8) so they don't become the new bottleneck.
   - IP and transfer goroutine buffer depths doubled (512 and 64 respectively).
   - WebRTC DataChannel buffer set to 2× window size per peer.
