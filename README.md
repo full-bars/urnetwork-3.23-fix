@@ -118,11 +118,15 @@ The installation includes the `urnet-tools` suite for easy management:
 
 The primary image is hosted on the GitHub Container Registry.
 
+Set `NAME` once before the command. The container name, JWT storage volume, and vnStat volume are all derived from it — so running the same command twice with different `NAME` values produces two fully isolated containers with no manual volume renaming. Docker also enforces that no two containers share the same name, so conflicts are caught immediately.
+
 **JWT auth (auth code login):**
 
 ```bash
+NAME=urfix   # change this per container — volumes are named from it
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
@@ -133,22 +137,24 @@ docker run -d \
   --log-opt max-file=3 \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
-  -v vnstat_data:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-> Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `urnetwork_config` volume on first run and reused on all subsequent starts.
+> Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `${NAME}_config` volume on first run and reused on all subsequent starts.
 >
 > To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
 
 **Email/password auth:**
 
 ```bash
+NAME=urfix   # change this per container
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
@@ -161,8 +167,8 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
-  -v vnstat_data:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
@@ -177,8 +183,10 @@ If you experience `denied` errors or rate-limiting on GHCR, use the Docker Hub m
 **JWT auth:**
 
 ```bash
+NAME=urfix
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
@@ -189,8 +197,8 @@ docker run -d \
   --log-opt max-file=3 \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
-  -v vnstat_data:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
@@ -199,8 +207,10 @@ docker run -d \
 **Email/password auth:**
 
 ```bash
+NAME=urfix
+
 docker run -d \
-  --name=urfix \
+  --name=$NAME \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
@@ -213,8 +223,8 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -v urnetwork_config:/root/.urnetwork \
-  -v vnstat_data:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest
@@ -224,14 +234,21 @@ docker run -d \
 
 ### Docker Compose
 
-Save as `docker-compose.yml` and run `docker compose up -d`.
+Volume names are derived from a single `NAME` variable so containers on the same host can never accidentally share storage. Create a `.env` file in the same folder as your `docker-compose.yml`:
+
+```bash
+# .env
+NAME=urfix
+```
+
+Docker Compose reads `.env` automatically and substitutes `${NAME:-urfix}` everywhere — into the container name, the JWT volume, and the vnStat volume. To run a second container on the same host, copy the folder, set a different `NAME` in its `.env`, and run `docker compose up -d` from there. Each instance gets completely isolated storage with no manual renaming required.
 
 **JWT auth:**
 ```yaml
 services:
   urnetwork:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: urfix
+    container_name: ${NAME:-urfix}
     restart: unless-stopped
     pull_policy: always
     cap_add:
@@ -246,8 +263,8 @@ services:
       # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
-      - urnetwork_config:/root/.urnetwork
-      - vnstat_data:/var/lib/vnstat
+      - ${NAME:-urfix}_config:/root/.urnetwork
+      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
@@ -258,8 +275,8 @@ services:
         max-file: "3"
 
 volumes:
-  urnetwork_config:
-  vnstat_data:
+  ${NAME:-urfix}_config:
+  ${NAME:-urfix}_vnstat:
 ```
 
 Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE_HERE`
@@ -271,7 +288,7 @@ After the JWT is saved to the volume, subsequent starts need no argument: `docke
 services:
   urnetwork:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: urfix
+    container_name: ${NAME:-urfix}
     restart: unless-stopped
     pull_policy: always
     cap_add:
@@ -288,8 +305,8 @@ services:
       # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
-      - urnetwork_config:/root/.urnetwork
-      - vnstat_data:/var/lib/vnstat
+      - ${NAME:-urfix}_config:/root/.urnetwork
+      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
@@ -300,11 +317,9 @@ services:
         max-file: "3"
 
 volumes:
-  urnetwork_config:
-  vnstat_data:
+  ${NAME:-urfix}_config:
+  ${NAME:-urfix}_vnstat:
 ```
-
-> **Multiple containers on one host:** Use a separate named volume per container (`urnetwork_config_1`, `urnetwork_config_2`) so each has its own JWT. Set a distinct `URNETWORK_NODE_NAME` per container so webhook alerts are distinguishable.
 
 ---
 
@@ -380,9 +395,9 @@ RAM logs are capped at 1MB with automatic rotation and are lost when the contain
     command: --cleanup --interval 3600 urfix   # check for updates hourly
 ```
 
-> **Important:** The `urnetwork_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again — which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused and the restart is seamless.
-
-> **Multiple containers:** Use a separate named volume per container (`urnetwork_config_1`, `urnetwork_config_2`) and set a distinct `URNETWORK_NODE_NAME` per container. Otherwise all containers share the same JWT and the same alert label.
+> **Important:** The `${NAME:-urfix}_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again — which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused and the restart is seamless.
+>
+> **Multiple containers:** Because volumes are named from `NAME` in `.env`, each container folder automatically gets its own isolated volumes — no manual renaming needed. Just give each folder a different `NAME` value.
 
 ---
 
