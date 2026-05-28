@@ -406,6 +406,18 @@ EOF
             pr_err "Could not enable the newly installed systemd service"
             exit 1
         fi
+    else
+        # Enable lingering so user services persist after logout
+        target_user="${SUDO_USER:-$(id -un)}"
+        if [ "$(id -u)" -eq 0 ]; then
+            # Running with sudo/as root: enable linger directly
+            if command -v loginctl > /dev/null; then
+                loginctl enable-linger "$target_user" 2>/dev/null && pr_info "Enabled systemd lingering for '$target_user'"
+            fi
+        else
+            # Running as regular user: suggest sudo
+            pr_info "To keep the provider running after logout, enable lingering: sudo loginctl enable-linger \$(whoami)"
+        fi
     fi
 
     if ! systemctl --user enable --now urnetwork-update.timer 2>/dev/null; then
@@ -746,7 +758,7 @@ EOF
                 
                 
                 printf "\n"
-                printf "\e[1;33mNote:\e[0m To ensure the provider keeps running in the background after you log out,\nplease enable systemd lingering with: \e[1msudo loginctl enable-linger $(whoami)\e[0m\n"
+                printf "\e[1;32m✓\e[0m Systemd lingering is enabled — provider will keep running after you log out.\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
