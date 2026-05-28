@@ -132,7 +132,6 @@ docker run -d \
   --log-opt max-file=3 \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -e URNETWORK_NODE_NAME=my-server-name \
   -v urnetwork_config:/root/.urnetwork \
   -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
@@ -143,6 +142,8 @@ docker run -d \
 Replace `ghcr.io/full-bars/urnetwork-3.23-fix:latest` with `3cape/urnetwork-3.23-fix:latest` to use the Docker Hub mirror instead (useful if you hit GHCR rate limits).
 
 Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `urnetwork_config` volume on first run and reused on all subsequent starts.
+
+To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
 
 **Email/password auth:**
 
@@ -161,7 +162,6 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -e URNETWORK_NODE_NAME=my-server-name \
   -v urnetwork_config:/root/.urnetwork \
   -v vnstat_data:/var/lib/vnstat \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
@@ -191,8 +191,8 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
-      - URNETWORK_NODE_NAME=my-server-name
-      # - TURBO=v4                        # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
+      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
       - urnetwork_config:/root/.urnetwork
@@ -233,8 +233,8 @@ services:
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - ENABLE_VNSTAT=true
-      - URNETWORK_NODE_NAME=my-server-name
-      # - TURBO=v4                        # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
+      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
+      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
       # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
       - urnetwork_config:/root/.urnetwork
