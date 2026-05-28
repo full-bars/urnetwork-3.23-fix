@@ -467,6 +467,17 @@ do_install ()
     tag="latest"
     no_modify_bashrc=0
 
+    # Dependency Check
+    if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
+        pr_err "Neither 'curl' nor 'wget' is available. One of these is required for downloads."
+        exit 1
+    fi
+
+    if ! command -v jq > /dev/null && ! command -v python3 > /dev/null; then
+        pr_err "Neither 'jq' nor 'python3' is available. One of these is required for JSON parsing."
+        exit 1
+    fi
+
     case "$operation" in
         install)
             if [ -n "$URNETWORK_TOOLS_MODE" ]; then
