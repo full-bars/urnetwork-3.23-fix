@@ -1265,6 +1265,17 @@ do_optimize ()
 
     pr_info "⚡ Starting System Optimizer..."
 
+    # Helper for interactive confirmation
+    confirm () {
+        if [ "$FORCE" = "1" ]; then return 0; fi
+        printf "  [?] %s [y/N]: " "$1"
+        read -r response
+        case "$response" in
+            [yY][eE][sS]|[yY]) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
     # 1. Dependency Check & Module Loading
     pr_info "Ensuring kernel modules are loaded..."
     modprobe nf_conntrack >/dev/null 2>&1
@@ -1313,8 +1324,17 @@ do_optimize ()
 
     # 2. ZRAM Optimization
     pr_info "Checking for ZRAM (Compressed RAM Swap)..."
-    if ! swapon --show | grep -q "zram"; then
-        pr_info "ZRAM not detected. Attempting to enable..."
+    skip_zram=0
+    if swapon --show | grep -q "zram"; then
+        pr_info "ZRAM is already active."
+        if ! confirm "ZRAM is already configured. Re-apply URNetwork's 80% zstd optimization?"; then
+            pr_info "Skipping ZRAM configuration (respecting existing setup)."
+            skip_zram=1
+        fi
+    fi
+
+    if [ "$skip_zram" -eq 0 ]; then
+        pr_info "Applying ZRAM configuration (80% RAM, zstd)..."
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             case "$ID" in
@@ -1326,7 +1346,6 @@ do_optimize ()
                     ;;
                 debian|ubuntu|linuxmint)
                     apt-get update && apt-get install -y zram-tools
-                    # zram-tools uses /etc/default/zramswap; percentage isn't standard, so we calculate
                     ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
                     zram_mb=$(( ram_kb * 8 / 10 / 1024 ))
                     echo "ZRAM_SIZE=$zram_mb" > /etc/default/zramswap
@@ -1341,31 +1360,32 @@ do_optimize ()
                     ;;
             esac
         fi
-        swapon --show | grep -q "zram" && pr_info "ZRAM enabled successfully." || pr_warn "ZRAM could not be auto-enabled. Highly recommended for low-RAM nodes."
-    else
-        pr_info "ZRAM is already active."
+        swapon --show | grep -q "zram" && pr_info "ZRAM enabled successfully." || pr_warn "ZRAM could not be auto-enabled."
     fi
 
-    # 3. Dynamic Calculation
+    # 3. Sysctl Optimization
     ram_mib=$(detect_mem_limit_mib)
-    
-    # Golden Fleet Scaling:
-    # We use 2,097,152 (2M) as the standard target based on fleet observations.
     ct_max=2097152
-    
     ct_buckets=$(( ct_max / 4 ))
-    timeout=3600 # 60 minutes
+    timeout=3600
     ulimit_val=1048576
 
-    pr_info "Calculated Golden Values for ${ram_mib}MiB RAM:"
-    pr_info " - Conntrack Max: $ct_max (Buckets: $ct_buckets)"
-    pr_info " - TCP Established Timeout: ${timeout}s (1h)"
-    pr_info " - File Descriptor Limit: $ulimit_val"
-
-    # 3. Apply Sysctl
     sysctl_conf="/etc/sysctl.d/99-urnetwork.conf"
-    pr_info "Writing sysctl config to $sysctl_conf..."
-    cat > "$sysctl_conf" <<EOF
+    skip_sysctl=0
+    
+    # Check if a non-URNetwork file already has high conntrack settings
+    current_max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)
+    if [ "$current_max" -ge "$ct_max" ] && [ ! -f "$sysctl_conf" ]; then
+        pr_info "Pre-optimized state detected (conntrack_max is already $current_max)."
+        if ! confirm "System already has high limits. Apply URNetwork's specific sysctl overrides anyway?"; then
+            pr_info "Skipping sysctl configuration (respecting existing tuning)."
+            skip_sysctl=1
+        fi
+    fi
+
+    if [ "$skip_sysctl" -eq 0 ]; then
+        pr_info "Writing sysctl config to $sysctl_conf..."
+        cat > "$sysctl_conf" <<EOF
 # URNetwork Optimized Network Settings
 net.netfilter.nf_conntrack_max = $ct_max
 net.netfilter.nf_conntrack_buckets = $ct_buckets
@@ -1375,7 +1395,8 @@ net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
 fs.file-max = 2097152
 EOF
-    sysctl --system >/dev/null 2>&1 || pr_err "Warning: some sysctl settings could not be applied."
+        sysctl --system >/dev/null 2>&1 || pr_err "Warning: some sysctl settings could not be applied."
+    fi
 
     # 4. Apply Ulimits (Systemd)
     # When running via sudo, we need to find the original user's home
