@@ -64,11 +64,16 @@ run_normal() {
       exec /app/start_nightly.sh
       ;;
     jwt)
-      if [ "$#" -ne 1 ]; then
-        log "ERROR: jwt mode requires exactly 1 argument (JWT token)"
+      if [ "$#" -eq 0 ] && [ -s "/root/.urnetwork/jwt" ]; then
+        log "Existing session found — skipping auth"
+        exec /app/start_jwt.sh
+      elif [ "$#" -ne 1 ]; then
+        log "ERROR: jwt mode requires a JWT token on first run"
+        log "ERROR: Usage: docker run ... IMAGE <JWT_TOKEN>"
+        log "ERROR: On subsequent starts the session is read from the /root/.urnetwork volume automatically."
         exit 1
       fi
-      log "Entrypoint received $# arguments: $*"
+      log "Entrypoint received $# arguments"
       JWT_TOKEN="$1"
       exec /app/start_jwt.sh "$JWT_TOKEN"
       ;;
