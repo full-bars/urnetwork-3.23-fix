@@ -1419,7 +1419,8 @@ func obfuscatePassword(password string) string {
 func readProxyConfig() *ProxyConfig {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		panic(err)
+		fmt.Printf("[proxy] Error: could not find user home directory: %v\n", err)
+		return &ProxyConfig{}
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	proxyPath := filepath.Join(urNetworkDir, "proxy")
@@ -1430,13 +1431,15 @@ func readProxyConfig() *ProxyConfig {
 
 	b, err := os.ReadFile(proxyPath)
 	if err != nil {
-		panic(err)
+		fmt.Printf("[proxy] Error: could not read proxy config at %s: %v\n", proxyPath, err)
+		return &ProxyConfig{}
 	}
 
 	var proxyConfig ProxyConfig
 	err = json.Unmarshal(b, &proxyConfig)
 	if err != nil {
-		panic(err)
+		fmt.Printf("[proxy] Error: could not parse proxy config at %s: %v\n", proxyPath, err)
+		return &ProxyConfig{}
 	}
 	return &proxyConfig
 }
