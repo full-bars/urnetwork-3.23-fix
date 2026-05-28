@@ -10,12 +10,14 @@ import (
 	"fmt"
 	// "net"
 	mathrand "math/rand"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +37,8 @@ import (
 
 const DefaultApiUrl = "https://api.bringyour.com"
 const DefaultConnectUrl = "wss://connect.bringyour.com"
+
+var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
 // this value is set via the linker, e.g.
 // -ldflags "-X main.Version=$WARP_VERSION-$WARP_VERSION_CODE"
@@ -614,9 +618,9 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 				degraded = true
 				fmt.Printf("[outage] backend degraded — holding existing connections, not accepting new ones\n")
 				if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
-					fireWebhook(webhookURL, nodeName, "outage_start",
-						"Backend unreachable — provider holding existing connections but not accepting new ones.")
 					lastStartFire = time.Now()
+					go fireWebhook(webhookURL, nodeName, "outage_start",
+						"Backend unreachable — provider holding existing connections but not accepting new ones.")
 				}
 			}
 		} else {
@@ -627,8 +631,8 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 					clearCount = 0
 					fmt.Printf("[outage] backend recovered\n")
 					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
-						fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
 						lastClearFire = time.Now()
+						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
 					}
 				}
 			}
@@ -647,13 +651,13 @@ func fireWebhook(url, nodeName, event, message string) {
 		fmt.Printf("[webhook] marshal failed: %v\n", err)
 		return
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		fmt.Printf("[webhook] delivery failed (%s): %v\n", event, err)
 		return
 	}
 	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		fmt.Printf("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
 	}
@@ -683,11 +687,16 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		case <-ticker.C:
 		}
 
-		var ms runtime.MemStats
-		runtime.ReadMemStats(&ms)
+		samples := []metrics.Sample{
+			{Name: "/memory/classes/heap/inuse:bytes"},
+			{Name: "/memory/classes/total:bytes"},
+		}
+		metrics.Read(samples)
+		heapMiB := samples[0].Value.Uint64() / 1024 / 1024
+		sysMiB := samples[1].Value.Uint64() / 1024 / 1024
 		uptime := time.Since(startTime).Truncate(time.Second)
 		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
-			uptime, profile, ms.HeapInuse/1024/1024, ms.Sys/1024/1024)
+			uptime, profile, heapMiB, sysMiB)
 	}
 }
 
@@ -743,7 +752,12 @@ func provide(opts docopt.Opts) {
 		go runEcoMemoryMonitor(ctx)
 	}
 
-	nodeName := os.Getenv("URNETWORK_NODE_NAME")
+	nodeName := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, os.Getenv("URNETWORK_NODE_NAME"))
 	if nodeName == "" {
 		hostname, _ := os.Hostname()
 		if _, err := os.Stat("/.dockerenv"); err == nil {
