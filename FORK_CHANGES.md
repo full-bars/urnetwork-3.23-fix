@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.13
+**Current Version**: v3.23.0-fix.14 (unreleased)
 
 ---
 
@@ -175,6 +175,69 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 - `ContractTransferByteSeqScale` lives in `ContractManagerSettings` — verify path if contract manager is refactored
 
 **Status**: ✅ Shipped in fix.13. Custom to this fork. Needs netem/Detroit testing before tuning values further.
+
+---
+
+## 8. Message Pool Auto-Sizing
+
+**Purpose**: The message pool free-list caps at 1 MiB by default regardless of available RAM. With large proxy lists, this pool is exhausted almost immediately under any real load — every packet above the cap falls back to a `make([]byte, ...)` GC allocation, adding constant allocation churn. Auto-sizing scales the cap to available RAM so the pool actually serves its purpose.
+
+**Files Modified**: `provider/main.go`
+
+**Changes**:
+- `applyPoolAutoSize()` in `provider/main.go` — called at startup from `provide()`:
+  - Detects effective RAM via the existing cgroup-aware `detectEffectiveRAMLimitBytes()`
+  - Calls `connect.ResizeMessagePools(RAM / 32)` with floor 8 MiB and cap 256 MiB
+  - Skipped when `URNETWORK_PROFILE=lowmem` (lowmem manages its own footprint)
+  - Skipped when `--max-memory` is set (that path already calls `ResizeMessagePools(maxMemory/8)`)
+  - Logs `[pool] message pool NMiB (RAM=NMiB)` once at startup
+
+**Per-server effect (approximate)**:
+- ATL (1.9 GiB RAM): ~61 MiB (was 1 MiB)
+- ATL2 (4.7 GiB RAM): ~150 MiB (was 1 MiB)
+- honk (23 GiB RAM): 256 MiB capped (was 1 MiB)
+
+**How to Identify in New Upstream**:
+- Search for `InitialMessagePoolByteCount` in `message_pool.go`
+- Search for `ResizeMessagePools` call sites — verify `provide()` still calls it at startup
+- If upstream changes the pool size class structure (2KB, 4KB, 16KB, 32KB, 64KB tiers), verify `Resize` still accepts a byte-count argument and divides by pool size internally
+
+**Status**: ✅ Shipped in fix.14. Custom to this fork.
+
+---
+
+## 9. Outage Webhook and Health Heartbeat
+
+**Purpose**: Operators managing fleets of providers have no push signal when a backend outage starts or clears. The only indicator was log spam (rate-limited auth errors). These two features give active and passive observability: push alerts on outage events, and a regular heartbeat line for liveness and memory trend monitoring.
+
+**Files Modified**: `provider/main.go`, `transport.go`
+
+**Changes**:
+
+`transport.go`:
+- Exported `IsBackendDegraded()` — thin wrapper around the existing `isBackendDegraded()` internal function, which reads a package-level `atomic.Int64` that's stamped on every auth or contract OOB error and reset on successful auth.
+
+`provider/main.go`:
+- `runOutageWatcher(ctx, nodeName, webhookURL)` — background goroutine, always runs:
+  - Polls `connect.IsBackendDegraded()` every 30 seconds
+  - Logs `[outage] backend degraded` / `[outage] backend recovered` on state transitions
+  - Requires 2 consecutive healthy polls before firing `outage_clear` (prevents false clears mid-outage)
+  - If `URNETWORK_ALERT_WEBHOOK` is set: POSTs JSON `{event, node, timestamp, message}` via a shared `webhookClient` (5s timeout); webhook calls are in goroutines so delivery never blocks the poll loop
+  - Per-event 5-minute cooldown on webhook POSTs to prevent spam at the recovery boundary
+- `fireWebhook(url, nodeName, event, message)` — HTTP POST helper; drains response body before closing to avoid leaving server sockets in CLOSE_WAIT
+- `runHealthHeartbeat(ctx, startTime, profile)` — background goroutine, always runs:
+  - Logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB` on a configurable interval (default 5 minutes)
+  - Uses `runtime/metrics` (lock-free, no stop-the-world) rather than `runtime.ReadMemStats`
+  - Interval set via `URNETWORK_HEALTH_INTERVAL` (Go duration string, min 1 minute)
+
+**Node identity**: `URNETWORK_NODE_NAME` sets the node label in payloads. Auto-fallback: detects Docker via `/.dockerenv` and appends `(docker)` or `(binary)` to the hostname, so alerts from containers and bare binaries on the same host are distinguishable without configuration. Newlines stripped from env var to prevent log injection.
+
+**How to Identify in New Upstream**:
+- If upstream renames `lastBackendFailNano` or refactors the degraded-state machinery, update the `IsBackendDegraded()` export in `transport.go`
+- If upstream moves auth error handling out of `transport.go` (e.g., into a dedicated health module), check that `lastBackendFailNano` is still written at both auth and OOB failure paths
+- `runOutageWatcher` and `runHealthHeartbeat` launch sites are in `provide()` — if the provide function is refactored, ensure these still launch with the correct `ctx`
+
+**Status**: ✅ Shipped in fix.14. Custom to this fork.
 
 ---
 
