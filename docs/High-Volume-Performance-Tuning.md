@@ -21,7 +21,7 @@ Turbo mode can also be set via the `TURBO=v4` / `TURBO=v8` Docker environment va
 
 ## System Optimizer (`urnet-tools optimize`)
 
-A high-volume provider can easily saturate default OS limits. The `optimize` command (run as root) applies "Golden Fleet" network tuning to the host:
+A high-volume provider can easily saturate default OS limits. The `optimize` command (run as root) applies full system-level tuning to the host for high-volume network traffic:
 
 1.  **File Descriptors**: Bumps `ulimit -n` to 1,048,576.
 2.  **Conntrack Table**: Raises `nf_conntrack_max` to 2,097,152 (standard across all RAM sizes based on fleet observations).
