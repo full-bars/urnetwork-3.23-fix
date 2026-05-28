@@ -1355,8 +1355,8 @@ do_optimize ()
                 arch)
                     pacman -Sy --noconfirm zram-generator
                     printf "[zram0]\nzram-size = ram * 0.8\ncompression-algorithm = zstd\n" > /etc/systemd/zram-generator.conf
-                    systemctl daemon-reload
-                    systemctl start /dev/zram0
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl start /dev/zram0 2>/dev/null || true
                     ;;
                 debian|ubuntu|linuxmint)
                     apt-get update && apt-get install -y zram-tools
@@ -1364,13 +1364,13 @@ do_optimize ()
                     zram_mb=$(( ram_kb * 8 / 10 / 1024 ))
                     echo "ZRAM_SIZE=$zram_mb" > /etc/default/zramswap
                     echo "ZRAM_ALGORITHM=zstd" >> /etc/default/zramswap
-                    systemctl restart zramswap
+                    systemctl restart zramswap 2>/dev/null || true
                     ;;
                 fedora|rhel|centos|rocky|almalinux|amzn)
                     dnf install -y zram-generator
                     printf "[zram0]\nzram-size = ram * 0.8\ncompression-algorithm = zstd\n" > /etc/systemd/zram-generator.conf
-                    systemctl daemon-reload
-                    systemctl start /dev/zram0
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl start /dev/zram0 2>/dev/null || true
                     ;;
             esac
         fi
