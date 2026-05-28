@@ -63,10 +63,23 @@ func RunSystemAudit(skipDiskTest bool) (slowDisk bool, lowSpace bool) {
 		isDocker = true
 	}
 
-	if isDocker {
-		fmt.Printf("[audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.\n")
-	} else {
-		fmt.Printf("[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' as root to fix.\n")
+	suboptimal := false
+	if rLimit.Cur < 65535 {
+		suboptimal = true
+	}
+	if max, err := readSysctlInt("/proc/sys/net/netfilter/nf_conntrack_max"); err == nil && int64(max) < 1048576 {
+		suboptimal = true
+	}
+	if timeout, err := readSysctlInt("/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established"); err == nil && timeout > 14400 {
+		suboptimal = true
+	}
+
+	if suboptimal {
+		if isDocker {
+			fmt.Printf("[audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.\n")
+		} else {
+			fmt.Printf("[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' as root to fix.\n")
+		}
 	}
 
 	// 5. Check Disk I/O (Free Space & Latency)
