@@ -4,7 +4,10 @@ All notable changes to this project are documented here.
 
 ---
 
-## [v3.23.0-fix.15.3] — 2026-05-28
+## [v3.23.0-fix.15.3] — 2026-05-29
+
+### Fixed
+- **Log Spam**: Removed redundant "Reporting to dashboard" log that was emitted on every auth retry, causing noise during startup or API errors. The `client_id` and `instance_id` logs already signal successful provider startup.
 
 ### Documentation
 - **README Restructure**: Major overhaul of the README for better clarity and organization. Moved detailed technical guides (Installation, Docker, Scaling, Tuning, Configuration) into a dedicated `/docs` directory to keep the main page focused on essential information.
