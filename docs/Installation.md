@@ -39,7 +39,7 @@ The installation includes the `urnet-tools` suite for management:
 | `urnet-tools status` | Check service health and uptime. |
 | `urnet-tools logs` | Stream logs, automatically detecting RAM vs disk logging. |
 | `urnet-tools auto on` | Enable Smart Auto. Recommended for most hosts. |
-| `urnet-tools optimize` | Full host optimization for kernel, storage, and reliability. Add `-f` to skip prompts. |
+| `urnet-tools optimize` | Full host optimization for many-proxy deployments and high-volume traffic. Add `-f` to skip prompts. |
 | `urnet-tools turbo v4` | Enable Turbo V4 mode. |
 | `urnet-tools turbo v8` | Enable Turbo V8 mode. |
 | `urnet-tools eco on/off` | Toggle Eco mode. |
@@ -55,7 +55,7 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 [audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.
 ```
 
-The provider cannot modify host-level kernel settings from inside a container. If you see `Suboptimal!` warnings, run `urnet-tools optimize` on the host machine.
+The provider cannot modify host-level kernel settings from inside a container. Run `urnet-tools optimize` on the host machine when deploying many proxies, or whenever you see `Suboptimal!` warnings.
 
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 

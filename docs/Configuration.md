@@ -15,7 +15,7 @@
 | `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. |
 | `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires on outage start and recovery. |
 | `URNETWORK_NODE_NAME` | hostname / redacted IP | Friendly label for dashboard identity and webhook alerts. |
-| `HOST_HOSTNAME` | - | Pass the host server name into the container with `-e HOST_HOSTNAME=$(hostname)`. |
+| `HOST_HOSTNAME` | - | Pass the host server name into the container. Use `-e HOST_HOSTNAME=$(hostname)` with `docker run` or `HOST_HOSTNAME=${HOSTNAME}` in Compose. |
 | `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Accepts Go duration strings such as `10m` or `1h`. Minimum `1m`. |
 
 ## Profile Selection
