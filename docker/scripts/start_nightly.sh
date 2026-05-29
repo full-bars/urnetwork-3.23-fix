@@ -81,17 +81,14 @@ func_get_architecture() {
     esac
 }
 
-# === Public IP Checker ===
+# === Public IP Fetching ===
 func_get_ip() {
-  if [ "$ENABLE_IP_CHECKER" = "true" ]; then
-    log "[INFO] Checking current public IP..."
-    if curl -fsSL "$IP_CHECKER_URL" | sh; then
-      log "[INFO] IP checker script ran successfully"
-    else
-      log "[WARN] Could not fetch or execute IP checker script"
-    fi
+  # Use curl ip.me -4 as suggested for simplicity and IPv4 focus
+  export URNETWORK_PUBLIC_IP="$(curl -s ip.me -4 || echo "")"
+  if [ -n "$URNETWORK_PUBLIC_IP" ]; then
+    log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
   else
-    log "[INFO] IP checker disabled"
+    log "[WARN] Could not detect public IP"
   fi
 }
 
@@ -247,7 +244,7 @@ func_bootstrap() {
 	func_check_dir
 	func_check_credentials
 	func_check_proxy
-    # func_get_ip
+    func_get_ip
     func_start_vnstat
 	func_check_update
     (
