@@ -17,6 +17,7 @@
 set -e
 
 # === Configuration Variables ===
+export TZ="America/Tijuana"
 APP_DIR="/app"
 JWT_FILE="/root/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
@@ -268,9 +269,11 @@ func_bootstrap() {
     func_ip_checker
     func_start_vnstat
 	func_check_update
+    # Pass host's actual hostname (if provided) so provider reports correctly on dashboard
+    export HOST_HOSTNAME="${HOST_HOSTNAME:-}"
     (
       while :; do
-        NOW="$(TZ='Asia/Manila' date +%H:%M)"
+        NOW="$(TZ='America/Tijuana' date +%H:%M)"
         if [ "$NOW" = "$UPDATE_TIME" ]; then
             log "Watcher: hit $UPDATE_TIME, updating"
             func_check_update
