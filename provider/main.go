@@ -866,21 +866,18 @@ func provide(opts docopt.Opts) {
 		startEcoMonitorOnce(ctx)
 	}
 
-	nodeName := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' {
-			return -1
-		}
-		return r
-	}, os.Getenv("URNETWORK_NODE_NAME"))
-	if nodeName == "" {
-		hostname, _ := os.Hostname()
-		if _, err := os.Stat("/.dockerenv"); err == nil {
-			nodeName = hostname + " (docker)"
-		} else {
-			nodeName = hostname + " (binary)"
+	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
+	
+	// Determine a temporary display name for the outage watcher/heartbeat
+	watcherName := nodeName
+	if watcherName == "" {
+		watcherName, _ = os.Hostname()
+		if containerIDRe.MatchString(watcherName) {
+			watcherName = "provider"
 		}
 	}
-	go runOutageWatcher(ctx, nodeName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
+
+	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 
 	provideWithProxy := func(proxySettings *connect.ProxySettings) {
