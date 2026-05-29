@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.15.4] — 2026-05-29
+
+### Added
+- **Force Update Flag**: `urnet-tools update -f` (or `--force`) now bypasses the version check and re-downloads/reinstalls even if the installed version matches the available version. Useful when a release tag is re-tagged with updated binaries or for manual recovery.
+
+---
+
 ## [v3.23.0-fix.15.3] — 2026-05-29
 
 ### Fixed
