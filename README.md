@@ -272,6 +272,8 @@ services:
       - NET_RAW
     sysctls:
       - net.ipv4.ip_forward=1
+      - net.netfilter.nf_conntrack_max=2097152
+      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
@@ -312,6 +314,8 @@ services:
       - NET_RAW
     sysctls:
       - net.ipv4.ip_forward=1
+      - net.netfilter.nf_conntrack_max=2097152
+      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     environment:
       - BUILD=stable
       - USER_AUTH=you@example.com
@@ -626,6 +630,20 @@ The `-f` flag skips interactive prompts. This applies:
 After optimization, your Docker container will restart and report `[audit] Conntrack Max: 2097152 (Optimal!)`.
 
 > **Note:** If you only run Docker and don't intend to use the systemd provider service, the installer still offers just the tools. You can choose `n` when prompted to enable the systemd service.
+
+---
+
+## 📦 Architecture & Build
+
+This repository is designed to be **standalone**.
+*   **Base Engine**: UrNetwork v3.23.
+*   **Builder**: Go 1.25 (Alpine).
+*   **CI/CD**: GitHub Actions automatically builds and pushes multi-arch images to GHCR.
+*   **Bridge-Friendly**: Optimized to work within standard Docker bridge networks without requiring `--network host` (though NET_ADMIN capabilities are still recommended).
+
+## ⚠️ Disclaimer
+This is a private, custom modification intended for testing and professional provider use. It is not affiliated with the official UrNetwork project.
+ed to enable the systemd service.
 
 ---
 
