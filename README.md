@@ -13,11 +13,14 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
   - [Docker Run — GHCR](#docker-run--github-registry-ghcr)
   - [Docker Run — Docker Hub](#docker-run--docker-hub-alternative)
   - [Docker Compose](#docker-compose)
-  - [Multi-Container Scaling](#multi-container-scaling-advanced)
+  - [Multi-Container Scaling](#multi-container-scaling-3-in-1-guide)
   - [Persistent JWT](#persistent-jwt)
   - [Outage Alerting](#outage-alerting-optional)
   - [RAM Logging](#ram-logging-optional)
+  - [Auto-Tune Performance](#auto-tune-performance-recommended)
+  - [System Auditor & Host Optimization](#system-auditor--host-optimization)
   - [Automatic Updates (Watchtower)](#automatic-updates-watchtower)
+
 - [Architecture & Build](#-architecture--build)
 - [Disclaimer](#%EF%B8%8F-disclaimer)
 
@@ -500,6 +503,39 @@ RAM logs are capped at 1MB with automatic rotation and are lost when the contain
 
 ---
 
+### Auto-Tune Performance (Recommended)
+The Auto-Tune feature (`URNETWORK_PROFILE=auto`) is a "smart" profile that automatically optimizes the provider based on your server's hardware.
+
+**How it works:**
+*   **Memory Scaling**: It detects your total system RAM and dynamically assigns buffer sizes. It automatically picks from "Low", "Balanced", or "Performance" tiers.
+*   **Eco Mode**: On machines with very low RAM, it automatically enables Eco Mode (aggressive garbage collection) to keep the footprint small and stable.
+*   **Disk Protection**: It benchmarks your disk speed on startup. If it detects slow storage (typical on weak cloud instances), it automatically enables **RAM Logging** to prevent disk I/O bottlenecks.
+
+**Example Docker Run:**
+```bash
+NAME=urfix   # change this per container — name, volumes, and labels are derived from it
+
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e URNETWORK_PROFILE=auto \
+  -e URNETWORK_NODE_NAME=$NAME \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
+> **Note:** Because Auto-tune may enable RAM Logging if it detects a slow disk, you should omit the `--log-driver` and `--log-opt` flags from your command to avoid conflicts.
+
+---
+
 ### Automatic Updates (Watchtower)
 
 [Watchtower](https://containrrr.dev/watchtower/) can automatically pull new image versions and restart your container when an update is published. Add it to your `docker-compose.yml` alongside the `urnetwork` service:
@@ -520,7 +556,7 @@ RAM logs are capped at 1MB with automatic rotation and are lost when the contain
 
 ---
 
-### System Auditor & Host Optimization (Docker Users)
+### System Auditor & Host Optimization
 
 When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
 
