@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 ---
 
-## [v3.23.0-fix.14.3] — 2026-05-28
+## [v3.23.0-fix.14.4] — 2026-05-28
 
 ### Documentation
 - **Streamlined Multi-Container Scaling**: Documented the "Shared JWT" method for running three nodes in a single `docker-compose.yml` with one auth code and shared storage.
