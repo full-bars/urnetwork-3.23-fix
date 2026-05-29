@@ -67,6 +67,9 @@ run_normal() {
       if [ "$#" -eq 0 ] && [ -s "/root/.urnetwork/jwt" ]; then
         log "Existing session found — skipping auth"
         exec /app/start_jwt.sh
+      elif [ "$#" -eq 0 ] && [ -n "$URNETWORK_AUTH_CODE" ]; then
+        log "Authentication requested via environment variable"
+        exec /app/start_jwt.sh
       elif [ "$#" -ne 1 ]; then
         log "ERROR: jwt mode requires a JWT token on first run"
         log "ERROR: Usage: docker run ... IMAGE <JWT_TOKEN>"

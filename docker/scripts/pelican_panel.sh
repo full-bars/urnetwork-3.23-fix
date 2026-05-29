@@ -4,7 +4,6 @@ set -e
 APP_DIR="/app"
 JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="false"
-ENABLE_IP_CHECKER="false"
 
 # === Logging Helper ===
 log() {
@@ -73,6 +72,19 @@ func_do_login() {
     done
 }
 
+# === Client Identity Reporting ===
+# Fetches the public IP used to build this node's dashboard identity label
+# (node name @ redacted-IP [version]). Always on; no configuration required.
+func_report_identity() {
+  # Use curl ip.me -4 with a 5s timeout to avoid hanging startup
+  export URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
+  if [ -n "$URNETWORK_PUBLIC_IP" ]; then
+    log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
+  else
+    log "[WARN] Could not detect public IP (timeout or service unreachable)"
+  fi
+}
+
 func_get_architecture() {
     case "$(uname -m)" in
       x86_64)  A_SYS_ARCH=amd64  ;;
@@ -91,8 +103,8 @@ func_start_provider(){
         PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
 		BIN_VER="$($PROVIDER_BIN --version)"
 		log "[INFO] Running UrNetwork build v${BIN_VER}"
-        "$PROVIDER_BIN" provide
-        code=$?
+        # Capture the real exit code (set -e safe; bare `provide` would abort the loop on crash)
+        if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
         if [ "$code" -eq 0 ]; then
             log " [INFO] UrNetwork exited cleanly."
             break
@@ -116,12 +128,11 @@ func_start_provider_jwt(){
     BIN_VER="$($PROVIDER_BIN --version)"
     log "[INFO] Running UrNetwork build v${BIN_VER}"
 
-    "$PROVIDER_BIN" auth-provide "$AUTHCODE"
-    code=$?
-
-    if [ "$code" -eq 0 ]; then
+    # set -e safe: bare command + code=$? would abort before the error branch
+    if "$PROVIDER_BIN" auth-provide "$AUTHCODE"; then
         log "[INFO] UrNetwork exited cleanly."
     else
+        code=$?
         log "[ERROR] UrNetwork exited with code=$code"
     fi
 }
@@ -129,9 +140,11 @@ func_start_provider_jwt(){
 # Main
 if [ "$BUILD" = "jwt" ]; then
   func_get_architecture
+  func_report_identity
   func_start_provider_jwt
 else
   func_get_architecture
+  func_report_identity
   func_check_credentials
   func_do_login
   func_start_provider

@@ -13,10 +13,14 @@ This is a high-performance, high-visibility fork of the **UrNetwork Connect** pr
   - [Docker Run — GHCR](#docker-run--github-registry-ghcr)
   - [Docker Run — Docker Hub](#docker-run--docker-hub-alternative)
   - [Docker Compose](#docker-compose)
+  - [Multi-Container Scaling](#multi-container-scaling-3-in-1-guide)
   - [Persistent JWT](#persistent-jwt)
   - [Outage Alerting](#outage-alerting-optional)
   - [RAM Logging](#ram-logging-optional)
+  - [Auto-Tune Performance](#auto-tune-performance-recommended)
+  - [System Auditor & Host Optimization](#system-auditor--host-optimization)
   - [Automatic Updates (Watchtower)](#automatic-updates-watchtower)
+
 - [Architecture & Build](#-architecture--build)
 - [Disclaimer](#%EF%B8%8F-disclaimer)
 
@@ -104,8 +108,9 @@ The installation includes the `urnet-tools` suite for easy management:
 | `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
 | `USER_AUTH` | - | Your email (required if `BUILD=stable`). |
 | `PASSWORD` | - | Your password (required if `BUILD=stable`). |
+| `URNETWORK_AUTH_CODE` | - | First-run auth code (alternative to the positional argument). Preferred in Docker/Compose for codes starting with a dash, which the CLI would otherwise misparse. Ignored once a JWT exists in the volume. |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
-| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `ENABLE_IP_CHECKER` | `false` | Diagnostic only: prints your **full** public IP to the container logs on startup via an external script. Distinct from the always-on dashboard identity reporting (which sends only a *redacted* IP to your Client Manager) — this logs the full IP locally and is off by default. |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the per-connection limit that exists at standard window sizes. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
 | `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
@@ -235,21 +240,14 @@ docker run -d \
 
 ### Docker Compose
 
-Volume names are derived from a single `NAME` variable so containers on the same host can never accidentally share storage. Create a `.env` file in the same folder as your `docker-compose.yml`:
-
-```bash
-# .env
-NAME=urfix
-```
-
-Docker Compose reads `.env` automatically and substitutes `${NAME:-urfix}` everywhere — into the container name, the JWT volume, and the vnStat volume. To run a second container on the same host, copy the folder, set a different `NAME` in its `.env`, and run `docker compose up -d` from there. Each instance gets completely isolated storage with no manual renaming required.
+For multi-container deployments on a single host, storage isolation is handled by giving each instance a unique name. To run multiple containers, simply copy your `docker-compose.yml` to a new folder and replace the `urfix` prefix with a new unique name (e.g., `urfix-2`) in the `container_name`, `volumes`, and `volumes:` sections.
 
 **JWT auth:**
 ```yaml
 services:
   urnetwork:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: ${NAME:-urfix}
+    container_name: urfix  # Change this to rename the container
     restart: unless-stopped
     pull_policy: always
     cap_add:
@@ -260,12 +258,9 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
-      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
-      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
-      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
-      - ${NAME:-urfix}_config:/root/.urnetwork
-      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
+      - urfix_config:/root/.urnetwork   # Update 'urfix' prefix if renaming
+      - urfix_vnstat:/var/lib/vnstat     # Update 'urfix' prefix if renaming
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
@@ -276,8 +271,8 @@ services:
         max-file: "3"
 
 volumes:
-  ${NAME:-urfix}_config:
-  ${NAME:-urfix}_vnstat:
+  urfix_config:  # Update these names to match the volumes above
+  urfix_vnstat:
 ```
 
 Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE_HERE`
@@ -289,7 +284,7 @@ After the JWT is saved to the volume, subsequent starts need no argument: `docke
 services:
   urnetwork:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: ${NAME:-urfix}
+    container_name: urfix
     restart: unless-stopped
     pull_policy: always
     cap_add:
@@ -302,12 +297,9 @@ services:
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - ENABLE_VNSTAT=true
-      # - URNETWORK_NODE_NAME=my-server-name   # optional: auto-names from hostname if omitted
-      # - TURBO=v4                             # optional: v4 (4-16 GiB RAM) or v8 (16 GiB+ RAM)
-      # - URNETWORK_ALERT_WEBHOOK=https://your-webhook
     volumes:
-      - ${NAME:-urfix}_config:/root/.urnetwork
-      - ${NAME:-urfix}_vnstat:/var/lib/vnstat
+      - urfix_config:/root/.urnetwork
+      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
@@ -318,9 +310,114 @@ services:
         max-file: "3"
 
 volumes:
-  ${NAME:-urfix}_config:
-  ${NAME:-urfix}_vnstat:
+  urfix_config:
+  urfix_vnstat:
 ```
+
+---
+
+### Multi-Container Scaling (3-in-1 Guide)
+
+You can run multiple independent nodes in a single `docker-compose.yml` file. This is the most efficient way to scale on a single host as it allows all nodes to share a single authentication session.
+
+#### How it works
+By sharing a single **config volume** (`ur_config`), you only need **one auth code** to authenticate the entire stack.
+1. **Node 1** starts, detects the empty volume, and uses the `URNETWORK_AUTH_CODE` to get a JWT.
+2. **Node 2 & 3** wait — via `depends_on` and Node 1's healthcheck — until the shared JWT exists, then start and reuse it, skipping authentication entirely. (The healthcheck avoids a cold-start race where Nodes 2/3 would otherwise launch before the JWT is written and crash-loop until it appears.)
+3. Every node then registers its own distinct client identity with the backend and reports to your dashboard with its own label.
+
+#### Step 1: Create your `docker-compose.yml`
+Ensure each service has a unique **Service Name**, **Container Name**, **Host Port**, and **vnStat Volume**.
+
+```yaml
+services:
+  # Node 1: Handles the initial authentication for the whole stack
+  node-1:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: urfix-1
+    restart: unless-stopped
+    pull_policy: always
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls: [net.ipv4.ip_forward=1]
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+      - URNETWORK_NODE_NAME=urfix-1
+      - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE # Only needed on Node 1
+    volumes:
+      - ur_config:/root/.urnetwork  # SHARED volume for JWT
+      - urfix-1_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9001:8080"
+    # Reports healthy once the shared JWT is written, gating the other nodes' start
+    healthcheck:
+      test: ["CMD-SHELL", "[ -s /root/.urnetwork/jwt ]"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  # Node 2: Uses the JWT created by Node 1
+  node-2:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: urfix-2
+    restart: unless-stopped
+    pull_policy: always
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls: [net.ipv4.ip_forward=1]
+    depends_on:
+      node-1:
+        condition: service_healthy   # wait until Node 1 has written the shared JWT
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+      - URNETWORK_NODE_NAME=urfix-2
+    volumes:
+      - ur_config:/root/.urnetwork  # SHARED volume
+      - urfix-2_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9002:8080"
+
+  # Node 3: Uses the JWT created by Node 1
+  node-3:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: urfix-3
+    restart: unless-stopped
+    pull_policy: always
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls: [net.ipv4.ip_forward=1]
+    depends_on:
+      node-1:
+        condition: service_healthy   # wait until Node 1 has written the shared JWT
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+      - URNETWORK_NODE_NAME=urfix-3
+    volumes:
+      - ur_config:/root/.urnetwork  # SHARED volume
+      - urfix-3_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9003:8080"
+
+volumes:
+  ur_config:      # Shared authentication session
+  urfix-1_vnstat: # Unique traffic stats per node
+  urfix-2_vnstat:
+  urfix-3_vnstat:
+```
+
+#### Step 2: Start the stack
+```bash
+docker compose up -d
+```
+
+#### Step 3: Verify
+*   **Logs**: Check `docker logs urfix-1` to see the successful authentication.
+*   **Dashboard**: Check your Client Manager. You will see 3 nodes identified by your chosen names and a redacted public IP for privacy:
+    `urfix-1 @ 69.x.x.96 [v3.23.0-fix.14.3]`
 
 ---
 
@@ -328,7 +425,7 @@ volumes:
 
 The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code — which is single-use and will fail on the second attempt.
 
-All examples above already include `-v urnetwork_config:/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm urnetwork_config`.
+All examples above already mount a config volume at `/root/.urnetwork` (named `${NAME}_config`, e.g. `urfix_config`, or the shared `ur_config` in the multi-node guide). With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm <name>_config`.
 
 ### Outage Alerting (Optional)
 
@@ -360,6 +457,24 @@ URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
 URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
 ```
 
+**Example Docker Run:**
+```bash
+NAME=urfix   # change this per container — volumes are named from it
+
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
+  -e URNETWORK_NODE_NAME=$NAME \
+  -v ${NAME}_config:/root/.urnetwork \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
 **Startup log:** On every start the provider logs:
 ```
 [outage] watcher active node=my-server-name (docker) webhook=configured
@@ -370,15 +485,68 @@ This confirms the node name and webhook status without waiting for an outage to 
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container — a RAM-backed filesystem — instead of stdout. This keeps log I/O entirely off disk, which can help on weak cloud instances with slow storage.
 
 > **Note:** `URNETWORK_RAMLOGS=1` and `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout so Docker's log driver has nothing to capture. Remove the `--log-driver` and `--log-opt` flags if you enable this.
->
-> **Note:** `URNETWORK_PROFILE=lowmem` also enables RAM logging unconditionally. If you use lowmem mode, remove `--log-driver` and `--log-opt` from your docker run command and use `docker exec` to view logs as shown below.
 
-To view logs live (replace `urfix` with your container name if different):
+**Example Docker Run:**
+```bash
+NAME=urfix   # change this per container — volumes are named from it
+
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e URNETWORK_RAMLOGS=1 \
+  -e URNETWORK_NODE_NAME=$NAME \
+  -e BUILD=jwt \
+  -e ENABLE_VNSTAT=true \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
+To view logs live:
 ```bash
 docker exec -it urfix tail -f /dev/shm/urnetwork.log
 ```
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
+
+---
+
+### Auto-Tune Performance (Recommended)
+The Auto-Tune feature (`URNETWORK_PROFILE=auto`) is a "smart" profile that automatically optimizes the provider based on your server's hardware.
+
+**How it works:**
+*   **Memory Scaling**: It detects your total system RAM and dynamically assigns buffer sizes. It automatically picks from "Low", "Balanced", or "Performance" tiers.
+*   **Eco Mode**: On machines with very low RAM, it automatically enables Eco Mode (aggressive garbage collection) to keep the footprint small and stable.
+*   **Disk Protection**: It benchmarks your disk speed on startup. If it detects slow storage (typical on weak cloud instances), it automatically enables **RAM Logging** to prevent disk I/O bottlenecks.
+
+**Example Docker Run:**
+```bash
+NAME=urfix   # change this per container — name, volumes, and labels are derived from it
+
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e URNETWORK_PROFILE=auto \
+  -e URNETWORK_NODE_NAME=$NAME \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
+> **Note:** Because Auto-tune may enable RAM Logging if it detects a slow disk, you should omit the `--log-driver` and `--log-opt` flags from your command to avoid conflicts.
 
 ---
 
@@ -402,7 +570,7 @@ RAM logs are capped at 1MB with automatic rotation and are lost when the contain
 
 ---
 
-### System Auditor & Host Optimization (Docker Users)
+### System Auditor & Host Optimization
 
 When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
 
