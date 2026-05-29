@@ -324,6 +324,7 @@ When merging a new upstream version (e.g., v3.24, v4.0):
 - [ ] **Docker**: If upstream adds Dockerfile, review and merge; preserve BUILD env var routing and multi-arch build
 - [ ] **Makefile**: Preserve greenteagc, strip flags, version injection
 - [ ] **Turbo mode**: Verify `TcpBufferSettings`, `SendBufferSettings`, `ReceiveBufferSettings`, and `WebRtcSettings` struct fields used in `applyTurboSettings` still exist; re-check field names if contract manager or IP stack is refactored
+- [ ] **Per-proxy loop spam**: Scan any new functions or goroutine starts added inside the per-proxy provide loop (`provideWithProxy`). If a function logs an identical line or starts a monitor goroutine on every call, apply a `sync/atomic` once-guard (see Section 14 pattern)
 
 ### Testing
 - [ ] Build for current platform: `go build -ldflags "-X main.Version=dev" -o provider_bin ./provider/main.go`
@@ -372,7 +373,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
-**Last Updated**: 2026-05-28  
+**Last Updated**: 2026-05-29  
 **Maintained By**: @full-bars  
 **Contact**: Reference GitHub issues in urnetwork-3.23-fix repo
 
@@ -395,3 +396,27 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 - Ensures all new fleet deployments follow security best practices.
 
 **Status**: ✅ Shipped in v3.23.0-fix.15.
+
+---
+
+## 14. Startup Log Spam — Once-Per-Process Guards
+
+**Purpose**: Prevent identical log lines from repeating once per proxy server on startup. With large proxy lists (~3000 proxies), functions that run inside the per-proxy `provideWithProxy` closure but produce global-state side effects were firing thousands of times.
+
+**Root cause pattern**: Functions that belong logically at startup were placed inside the per-proxy closure. Settings mutation is correct per-proxy (each proxy gets its own `ClientSettings`/`LocalUserNatSettings`), but logging and goroutine starts are process-wide and must happen once.
+
+**Files Modified**: `tuning.go`, `provider/main.go`
+
+**Changes**:
+
+- **`ApplyAutoTuning` (`tuning.go`)**: The `[tune] auto-profile` log line was emitted once per proxy. Added `autoTuneLogged atomic.Bool` and `autoTuneLogf` test seam. The log now fires exactly once per process via `CompareAndSwap`; per-proxy settings application (contract floors, buffer depths, GOGC, GOMEMLIMIT) is unchanged.
+
+- **Eco memory monitor (`provider/main.go`)**: `go runEcoMemoryMonitor(ctx)` was called inside `provideWithProxy`, spawning one goroutine per proxy. Each goroutine polled independently on a 30-second ticker. Under memory pressure, all copies logged the same `[eco]` line and called `runtime.GC()` simultaneously — a log-spam and GC-storm bug. Added `ecoMonitorStarted atomic.Bool`, `startEcoMonitor` test seam, and `startEcoMonitorOnce()` wrapper. Both call sites (top-level eco profile check and per-proxy closure) now go through this wrapper so exactly one monitor goroutine starts per process.
+
+**How to Identify in New Upstream**:
+- When merging a new upstream, scan the per-proxy loop for any log calls or goroutine starts that produce global/identical output. The pattern to watch: a function called inside a proxy or connection loop whose log message would be identical across all iterations.
+- Look for new monitoring goroutines added to `provideWithProxy` or equivalent — they should always be guarded.
+
+**Status**: ✅ Shipped in v3.23.0-fix.15. Tests added: `TestApplyAutoTuningLogsOncePerProcess`, `TestApplyAutoTuningSkippedWhenProfileNotAuto`, `TestSelectTierThresholds`, `TestEcoMonitorStartsOnce`.
+
+---
