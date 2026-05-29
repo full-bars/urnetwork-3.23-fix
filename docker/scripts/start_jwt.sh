@@ -1,13 +1,7 @@
-
 #!/bin/sh
 # URNetwork Provider Entrypoint Script
 # ------------------------------------
 # This script bootstraps the URNetwork provider inside a container.
-# Responsibilities:
-#   - Configure proxy if provided
-#   - Detect system architecture
-#   - Optionally check public IP
-#   - Start vnStat monitoring and lightweight HTTP server
 
 # Exit immediately if any command fails
 set -e
@@ -39,7 +33,6 @@ func_check_dir() {
 # === Proxy Setup ===
 func_check_proxy() {
     log "[INFO] Checking proxy configuration"
-    # ls -la ~/.urnetwork/ 2>/dev/null || log "~/.urnetwork/ not found"
     rm -f ~/.urnetwork/proxy || true
     if [ -f "/app/proxy.txt" ]; then
         log "[INFO] proxy.txt found; adding proxy"
@@ -62,8 +55,25 @@ func_get_architecture() {
     esac
 }
 
-# === Public IP Checker ===
-func_get_ip() {
+# === Client Identity Reporting ===
+# Fetches the public IP used to build this node's dashboard identity label
+# (node name @ redacted-IP [version]). Always on; no configuration required.
+# Distinct from func_ip_checker below, which is an opt-in diagnostic.
+func_report_identity() {
+  # Use curl ip.me -4 with a 5s timeout to avoid hanging startup
+  export URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
+  if [ -n "$URNETWORK_PUBLIC_IP" ]; then
+    log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
+  else
+    log "[WARN] Could not detect public IP (timeout or service unreachable)"
+  fi
+}
+
+# === Public IP Checker (diagnostic) ===
+# Opt-in (ENABLE_IP_CHECKER=true). Runs the external techroy23 IP-Checker
+# script to log the full public IP to the console. Distinct from the dashboard
+# reporter above (func_report_identity), which only sends a redacted IP to the backend.
+func_ip_checker() {
   if [ "$ENABLE_IP_CHECKER" = "true" ]; then
     log "[INFO] Checking current public IP..."
     if curl -fsSL "$IP_CHECKER_URL" | sh; then
@@ -100,54 +110,70 @@ func_start_vnstat() {
 # === Provider Lifecycle Management ===
 func_start_provider(){
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
-    BIN_VER="$($PROVIDER_BIN --version)"
+    BIN_VER="$($PROVIDER_BIN --version 2>/dev/null || echo "dev")"
     log "[INFO] Running UrNetwork build v${BIN_VER}"
 
-    # If a session JWT already exists in the mounted volume, skip re-auth and
-    # run provide directly. This is the Watchtower-safe path — container restarts
-    # and image updates reuse the existing session rather than consuming the
-    # (single-use) auth code again.
-    if [ -s "$JWT_FILE" ] && [ "$#" -eq 0 ]; then
+    # Priority 1: Existing session file (Shared Volume / Watchtower Path)
+    if [ -s "$JWT_FILE" ]; then
         log "[INFO] Existing session found at $JWT_FILE — skipping auth"
-    elif [ "$#" -eq 0 ]; then
-        log "[ERROR] jwt mode requires a JWT token argument on first run"
-        log "[ERROR] Usage: docker run ... IMAGE <JWT_TOKEN>"
-        log "[ERROR] After first run the session is persisted to the volume and no argument is needed."
-        exit 1
-    elif [ "$#" -ne 1 ]; then
-        log "[ERROR] Expected exactly 1 JWT token argument, got $#"
-        exit 1
-    else
-        JWT_TOKEN="$1"
-        log "[INFO] Starting UrNetwork with provided JWT token ..."
-        "$PROVIDER_BIN" auth-provide "$JWT_TOKEN" || true
-        code=$?
-        if [ "$code" -eq 0 ]; then
-            log "[INFO] UrNetwork exited cleanly."
+    
+    # Priority 2: Authentication via Environment Variable (Safe for dash-prefixed tokens)
+    elif [ -n "$URNETWORK_AUTH_CODE" ]; then
+        log "[INFO] Starting UrNetwork with provided auth code (environment)..."
+        # We use -f to force overwrite and skip prompts.
+        if "$PROVIDER_BIN" auth -f; then
+            log "[INFO] UrNetwork authenticated successfully."
         else
-            log "[ERROR] UrNetwork exited with code=$code"
+            code=$?
+            log "[ERROR] UrNetwork authentication failed with code=$code"
+            exit $code
         fi
-        return $code
+        # Verify result
+        [ -s "$JWT_FILE" ] || { log "[ERROR] JWT file not written to $JWT_FILE"; exit 1; }
+
+    # Priority 3: Authentication via Positional Argument (Backward Compatibility)
+    elif [ "$#" -eq 1 ]; then
+        JWT_TOKEN="$1"
+        log "[INFO] Starting UrNetwork with provided auth code (argument) ..."
+        # Use -- to handle tokens starting with dashes.
+        if "$PROVIDER_BIN" auth -f -- "$JWT_TOKEN"; then
+            log "[INFO] UrNetwork authenticated successfully."
+        else
+            code=$?
+            log "[ERROR] UrNetwork authentication failed with code=$code"
+            exit $code
+        fi
+        [ -s "$JWT_FILE" ] || { log "[ERROR] JWT failed; code=$code"; exit 1; }
+
+    # Failure: No session and no auth code provided
+    else
+        log "[ERROR] No session found and no URNETWORK_AUTH_CODE provided."
+        log "[ERROR] On first run, provide your code via environment or argument."
+        exit 1
     fi
 
-    # Session exists — restart loop
+    # Start loop: Provider is now authenticated, keep it running
     failures=0
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
-        "$PROVIDER_BIN" provide || true
-        code=$?
-        if [ "$code" -eq 0 ]; then
+        if "$PROVIDER_BIN" provide; then
             log "[INFO] UrNetwork exited cleanly."
             break
         fi
+        code=$?
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
-        if [ "$failures" -ge 3 ]; then
-            log "[ERROR] Too many crashes; clearing session and requiring re-auth"
-            rm -f "$JWT_FILE" || true
-            log "[ERROR] Session cleared. Restart the container with a fresh JWT token."
+
+        # Shared-volume safety: never delete the JWT here. In the 3-in-1 shared
+        # config model that would deauth the whole stack, and the single-use auth
+        # code is already consumed — the node could not recover on its own. After
+        # repeated crashes, exit non-zero and let Docker's restart policy cycle
+        # the container with the session intact.
+        if [ "$failures" -ge 5 ]; then
+            log "[ERROR] Too many consecutive crashes ($failures); exiting for Docker to restart. Session preserved."
             exit 1
         fi
+
         log "[INFO] Waiting 60s before retry"
         sleep 60
     done
@@ -155,11 +181,11 @@ func_start_provider(){
 
 # === Bootstrap Sequence ===
 func_bootstrap() {
-    # sh /app/urnetwork_ipinfo.sh
-	func_get_architecture
-	func_check_dir
+    func_get_architecture
+    func_check_dir
     func_check_proxy
-    # func_get_ip
+    func_report_identity
+    func_ip_checker
     func_start_vnstat
     func_start_provider "$@"
 }
