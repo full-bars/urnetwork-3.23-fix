@@ -88,7 +88,8 @@ install_path="$HOME/.local/share/urnetwork-provider"
 version_file="$install_path/.version"
 
 # Canonical URL for re-running this installer in a freshly created user's context.
-urnet_install_url="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh"
+# Overridable via URNET_INSTALL_URL (e.g. to test a branch before it lands on main).
+urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh}"
 
 # If no operation is specified:
 # - Default to 'install' if running as a one-off installer (curl | sh)
