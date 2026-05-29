@@ -9,6 +9,7 @@ All notable changes to this project are documented here.
 ### Documentation
 - **Streamlined Multi-Container Scaling**: Documented the "Shared JWT" method for running three nodes in a single `docker-compose.yml` with one auth code and shared storage.
 - **Improved RAM Logging Guide**: Added a comprehensive `docker run` sample command with all common flags.
+- **Expanded Outage Alerting Guide**: Added a detailed `docker run` example for setting up Discord/Slack/ntfy webhooks.
 
 ### Added
 - **Environment Variable Authentication**: Added support for `URNETWORK_AUTH_CODE`. This allows providing auth tokens (especially those starting with dashes) without command-line parsing issues in Docker.
