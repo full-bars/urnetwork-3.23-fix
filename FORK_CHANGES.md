@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.14
+**Current Version**: v3.23.0-fix.15
 
 ---
 
@@ -372,6 +372,26 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
-**Last Updated**: 2026-05-27  
+**Last Updated**: 2026-05-28  
 **Maintained By**: @full-bars  
 **Contact**: Reference GitHub issues in urnetwork-3.23-fix repo
+
+---
+
+## 13. Root Guard & Assisted User Setup
+
+**Purpose**: Guide users away from running the provider as root on systemd hosts. Prevents "Failed to connect to bus" errors and improves fleet security by ensuring services run in a proper user session.
+
+**Files Modified**: `scripts/Provider_Install_Linux.sh`
+
+**Changes**:
+- **`func_root_guard`**: Detects root execution on systemd hosts and provides an interactive menu to correct the deployment path.
+- **Assisted Setup**: Automatically creates a dedicated `urnet` service user, detects the correct admin group (`wheel` or `sudo`) based on the Linux distribution, and enables systemd lingering.
+- **`func_run_as_user`**: A hardened hand-off mechanism using `runuser`. It is **SELinux-aware** and correctly handles `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` propagation to ensure the user-level systemd bus is reachable even from a direct-root SSH session.
+
+**Impact**:
+- Verified stable on **Arch, AlmaLinux (RHEL), Debian, and openSUSE**.
+- Eliminates "Permission Denied" errors during installation on SELinux-enforcing systems.
+- Ensures all new fleet deployments follow security best practices.
+
+**Status**: ✅ Shipped in v3.23.0-fix.15.
