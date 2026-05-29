@@ -435,6 +435,23 @@ EOF
     fi
 }
 
+# Run a command string as another user with HOME and the per-user systemd bus
+# reachable. Prefers 'runuser', which works on SELinux-enforcing hosts where a
+# root 'su' is denied ("failed to execute shell: Permission denied"); falls back
+# to 'su' only when runuser is unavailable. Usage: func_run_as_user USER "CMD".
+func_run_as_user ()
+{
+    _ru_user="$1"; shift
+    _ru_home="$(getent passwd "$_ru_user" | cut -d: -f6)"; [ -n "$_ru_home" ] || _ru_home="/home/$_ru_user"
+    _ru_uid="$(id -u "$_ru_user")"; _ru_rt="/run/user/$_ru_uid"
+    if command -v runuser >/dev/null 2>&1; then
+        runuser -u "$_ru_user" -- env HOME="$_ru_home" USER="$_ru_user" LOGNAME="$_ru_user" \
+            XDG_RUNTIME_DIR="$_ru_rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$_ru_rt/bus" sh -c "$*"
+    else
+        su - "$_ru_user" -c "export XDG_RUNTIME_DIR='$_ru_rt'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$_ru_rt/bus'; $*"
+    fi
+}
+
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
 # install in that user's systemd context. Called only from the interactive
 # root path; exits the script.
@@ -491,9 +508,9 @@ func_assisted_user_setup ()
 
     if [ -S "$runtime/bus" ]; then
         pr_info "Finishing the install as '%s'..." "$newuser"
-        su - "$newuser" -c "export XDG_RUNTIME_DIR='$runtime'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$runtime/bus'; curl -fSsL '$urnet_install_url' | sh" || true
+        func_run_as_user "$newuser" "curl -fSsL '$urnet_install_url' | sh" || true
 
-        if su - "$newuser" -c "export XDG_RUNTIME_DIR='$runtime'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$runtime/bus'; systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
+        if func_run_as_user "$newuser" "systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
             pr_info "Done. The provider is installed as a user service under '%s'." "$newuser"
             exit 0
         fi
