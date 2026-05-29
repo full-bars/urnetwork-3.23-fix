@@ -76,7 +76,8 @@ func RunSystemAudit(skipDiskTest bool) (slowDisk bool, lowSpace bool) {
 
 	if suboptimal {
 		if isDocker {
-			fmt.Printf("[audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.\n")
+			fmt.Printf("[audit] Hint: Container is isolated from host network optimizations.\n")
+			fmt.Printf("[audit] Hint: Add the optimized sysctls from the README to your Docker command to fix.\n")
 		} else {
 			fmt.Printf("[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' as root to fix.\n")
 		}
