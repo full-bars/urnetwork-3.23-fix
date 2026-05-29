@@ -1107,7 +1107,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	displayName := nodeName
 	hostname, _ := os.Hostname()
 
-	// If no manual name set, try host-provided hostname first, then container hostname
+	// 2. Allow override via HOST_HOSTNAME (for Docker users passing host $(hostname))
 	if displayName == "" {
 		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
 			displayName = hostHostname
@@ -1116,23 +1116,30 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		}
 	}
 
-	// 2. Filter Gibberish (12-char hex container IDs)
+	// 3. Smart Fallback for Gibberish (12-char hex container IDs)
+	// If it's a random hex ID and we have a public IP, use the IP as the name instead of 'provider'.
 	isContainerID := containerIDRe.MatchString(displayName)
+	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
+
 	if isContainerID {
-		displayName = "provider"
+		if publicIP != "" {
+			displayName = publicIP
+		} else {
+			displayName = "provider"
+		}
 	}
 
-	// 3. Build Dashboard Label: "Name @ redacted-IP"
+	// 4. Build Dashboard Label: "Name @ redacted-IP"
 	dashboardLabel := displayName
-	if publicIP := os.Getenv("URNETWORK_PUBLIC_IP"); publicIP != "" {
-		if ip4 := net.ParseIP(strings.TrimSpace(publicIP)).To4(); ip4 != nil {
+	if publicIP != "" {
+		if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
 			parts := strings.Split(ip4.String(), ".")
 			redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
 			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
 		}
 	}
 
-	// 4. Final Description: "Name @ IP [Version]"
+	// 5. Final Description: "Name @ IP [Version]"
 	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
 
 	authClientArgs := &connect.AuthNetworkClientArgs{

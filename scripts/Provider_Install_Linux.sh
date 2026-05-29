@@ -380,6 +380,7 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
+Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=no
 
