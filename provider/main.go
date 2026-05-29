@@ -1116,30 +1116,34 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		}
 	}
 
-	// 3. Smart Fallback for Gibberish (12-char hex container IDs)
-	// If it's a random hex ID and we have a public IP, use the IP as the name instead of 'provider'.
+	// 3. Filter Gibberish (12-char hex container IDs)
 	isContainerID := containerIDRe.MatchString(displayName)
 	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
 
-	if isContainerID {
-		if publicIP != "" {
-			displayName = publicIP
-		} else {
-			displayName = "provider"
-		}
-	}
+	// 4. Build Compact Dashboard Label
+	var dashboardLabel string
+	
+	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
+		parts := strings.Split(ip4.String(), ".")
+		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
 
-	// 4. Build Dashboard Label: "Name @ redacted-IP"
-	dashboardLabel := displayName
-	if publicIP != "" {
-		if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
-			parts := strings.Split(ip4.String(), ".")
-			redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
+		if displayName == "" || isContainerID {
+			// Scenario: No useful name. Identity is just the Redacted IP.
+			dashboardLabel = redactedIP
+		} else {
+			// Scenario: We have a useful name. Identity is "Name @ RedactedIP".
 			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
 		}
+	} else {
+		// Fallback for no IP connectivity
+		if displayName == "" || isContainerID {
+			dashboardLabel = "provider"
+		} else {
+			dashboardLabel = displayName
+		}
 	}
 
-	// 5. Final Description: "Name @ IP [Version]"
+	// 5. Final Description: "Identity [Version]"
 	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
