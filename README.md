@@ -312,22 +312,22 @@ volumes:
 
 ---
 
-### Multi-Container Scaling (Advanced)
+### Multi-Container Scaling (3-in-1 Guide)
 
-You can manage multiple provider instances in a single `docker-compose.yml` file to run several independent nodes on one host. 
+You can run multiple independent nodes in a single `docker-compose.yml` file. This is the most efficient way to scale on a single host as it allows all nodes to share a single authentication session.
 
-By sharing a single **config volume**, you only need to use **one auth code** to authenticate the entire stack. Every node will then uniquely identify itself in the dashboard using its `URNETWORK_NODE_NAME` and its automatically detected **Public IP**.
+#### How it works
+By sharing a single **config volume** (`ur_config`), you only need **one auth code** to authenticate the entire stack. 
+1. **Node 1** starts, detects the empty volume, and uses the `URNETWORK_AUTH_CODE` to get a JWT.
+2. **Node 2 & 3** start, see the JWT already exists in the shared volume, and skip authentication entirely.
+3. Every node then generates its own unique internal identity and reports to your dashboard.
 
-When adding nodes to the same file, you must ensure each service has a unique:
-1. **Service Name** (e.g., `node-1`, `node-2`, `node-3`)
-2. **Container Name** (e.g., `urfix-1`, `urfix-2`, `urfix-3`)
-3. **Host Port** (e.g., `9001`, `9002`, `9003`)
-4. **vnStat Volume** (e.g., `urfix-1_vnstat`, `urfix-2_vnstat`, `urfix-3_vnstat`)
+#### Step 1: Create your `docker-compose.yml`
+Ensure each service has a unique **Service Name**, **Container Name**, **Host Port**, and **vnStat Volume**.
 
-**Example 3-Node Configuration:**
 ```yaml
 services:
-  # Node 1
+  # Node 1: Handles the initial authentication for the whole stack
   node-1:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix-1
@@ -339,16 +339,15 @@ services:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
       - URNETWORK_NODE_NAME=urfix-1
-      # On first run, Node 1 uses this code to get a JWT for the whole stack:
-      - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
+      - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE # Only needed on Node 1
     volumes:
-      - ur_config:/root/.urnetwork  # Shared JWT storage
+      - ur_config:/root/.urnetwork  # SHARED volume for JWT
       - urfix-1_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
 
-  # Node 2
+  # Node 2: Uses the JWT created by Node 1
   node-2:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix-2
@@ -361,13 +360,13 @@ services:
       - ENABLE_VNSTAT=true
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
-      - ur_config:/root/.urnetwork  # Shared JWT storage
+      - ur_config:/root/.urnetwork  # SHARED volume
       - urfix-2_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9002:8080"
 
-  # Node 3
+  # Node 3: Uses the JWT created by Node 1
   node-3:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix-3
@@ -380,28 +379,28 @@ services:
       - ENABLE_VNSTAT=true
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
-      - ur_config:/root/.urnetwork  # Shared JWT storage
+      - ur_config:/root/.urnetwork  # SHARED volume
       - urfix-3_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9003:8080"
 
 volumes:
-  ur_config:      # Shared configuration (JWT)
+  ur_config:      # Shared authentication session
   urfix-1_vnstat: # Unique traffic stats per node
   urfix-2_vnstat:
   urfix-3_vnstat:
 ```
 
-To start the stack:
+#### Step 2: Start the stack
 ```bash
 docker compose up -d
 ```
 
-**How it works:**
-*   **Single Auth**: Node 1 detects the empty volume, authenticates using the provided code, and saves the JWT to the shared volume. Nodes 2+ see the existing JWT and start up immediately without needing their own codes.
-*   **Isolation**: Every node generates its own unique Client ID and Instance ID.
-*   **Dashboard Labeling**: Nodes automatically fetch their public IP (via `ip.me -4`) and report it alongside their `URNETWORK_NODE_NAME` and version for easy identification.
+#### Step 3: Verify
+*   **Logs**: Check `docker logs urfix-1` to see the successful authentication.
+*   **Dashboard**: Check your Client Manager. You will see 3 nodes identified by your chosen names and a redacted public IP for privacy:
+    `urfix-1 @ 66.x.x.83 [v3.23.0-fix.14.3]`
 
 ---
 
