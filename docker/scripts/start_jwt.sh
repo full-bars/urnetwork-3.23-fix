@@ -98,8 +98,9 @@ func_start_provider(){
     # Priority 2: Authentication via Environment Variable (Safe for dash-prefixed tokens)
     elif [ -n "$URNETWORK_AUTH_CODE" ]; then
         log "[INFO] Starting UrNetwork with provided auth code (environment)..."
-        # We use -f to force overwrite and skip prompts
-        "$PROVIDER_BIN" auth-provide -f || true
+        # We use -f to force overwrite and skip prompts. 
+        # Using 'auth' instead of 'auth-provide' so it exits after saving the JWT.
+        "$PROVIDER_BIN" auth -f || true
         code=$?
         if [ "$code" -eq 0 ]; then
             log "[INFO] UrNetwork exited cleanly after authentication."
