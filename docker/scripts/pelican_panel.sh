@@ -129,7 +129,7 @@ func_start_provider_jwt(){
     log "[INFO] Running UrNetwork build v${BIN_VER}"
 
     # set -e safe: bare command + code=$? would abort before the error branch
-    if "$PROVIDER_BIN" auth-provide "$AUTHCODE"; then
+    if "$PROVIDER_BIN" auth-provide "$AUTHCODE" -f; then
         log "[INFO] UrNetwork exited cleanly."
     else
         code=$?

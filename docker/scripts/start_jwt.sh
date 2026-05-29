@@ -121,7 +121,7 @@ func_start_provider(){
     elif [ -n "$URNETWORK_AUTH_CODE" ]; then
         log "[INFO] Starting UrNetwork with provided auth code (environment)..."
         # We use -f to force overwrite and skip prompts.
-        if "$PROVIDER_BIN" auth -f; then
+        if "$PROVIDER_BIN" auth "" -f; then
             log "[INFO] UrNetwork authenticated successfully."
         else
             code=$?
@@ -135,8 +135,8 @@ func_start_provider(){
     elif [ "$#" -eq 1 ]; then
         JWT_TOKEN="$1"
         log "[INFO] Starting UrNetwork with provided auth code (argument) ..."
-        # Use -- to handle tokens starting with dashes.
-        if "$PROVIDER_BIN" auth -f -- "$JWT_TOKEN"; then
+        # Shell quoting handles tokens starting with dashes safely.
+        if "$PROVIDER_BIN" auth "$JWT_TOKEN" -f; then
             log "[INFO] UrNetwork authenticated successfully."
         else
             code=$?
