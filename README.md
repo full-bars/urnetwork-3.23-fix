@@ -121,7 +121,7 @@ The installation includes the `urnet-tools` suite for easy management:
 | `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
 | `USER_AUTH` | - | Your email (required if `BUILD=stable`). |
 | `PASSWORD` | - | Your password (required if `BUILD=stable`). |
-| `URNETWORK_AUTH_CODE` | - | First-run auth code (alternative to the positional argument). Preferred in Docker/Compose for codes starting with a dash, which the CLI would otherwise misparse. Ignored once a JWT exists in the volume. |
+| `URNETWORK_AUTH_CODE` | - | First-run auth code for `BUILD=jwt`. Use this as an alternative to passing the code as a trailing argument: `docker run -e URNETWORK_AUTH_CODE=YOUR_CODE ...` instead of `docker run ... AUTH_CODE`. Ignored once a JWT exists in the volume. |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
 | `ENABLE_IP_CHECKER` | `false` | Diagnostic only: prints your **full** public IP to the container logs on startup via an external script. Distinct from the always-on dashboard identity reporting (which sends only a *redacted* IP to your Client Manager) — this logs the full IP locally and is off by default. |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the per-connection limit that exists at standard window sizes. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
@@ -164,6 +164,8 @@ docker run -d \
 ```
 
 > Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use — the token is saved to the `${NAME}_config` volume on first run and reused on all subsequent starts.
+>
+> **Alternative method:** Use `-e URNETWORK_AUTH_CODE=YOUR_CODE` instead of passing the code as a trailing argument.
 >
 > To label this server in webhook alerts and health logs, add `-e URNETWORK_NODE_NAME=your-server-name`. If omitted, the provider auto-generates a name from the hostname (e.g. `vps-123 (docker)`).
 
@@ -222,6 +224,8 @@ docker run -d \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
+
+> **Alternative method:** Use `-e URNETWORK_AUTH_CODE=YOUR_CODE` instead of passing the code as a trailing argument.
 
 **Email/password auth:**
 
@@ -288,9 +292,12 @@ volumes:
   urfix_vnstat:
 ```
 
-Pass your auth code on first start: `docker compose run --rm urnetwork AUTH_CODE_HERE`
+**On first start, provide your auth code using one of these methods:**
 
-After the JWT is saved to the volume, subsequent starts need no argument: `docker compose up -d`
+1. **Trailing argument (default):** `docker compose run --rm urnetwork AUTH_CODE_HERE`
+2. **Environment variable:** Add `-e URNETWORK_AUTH_CODE=AUTH_CODE_HERE` to the `environment:` section in the YAML, then `docker compose up -d`
+
+After the JWT is saved to the volume, subsequent starts need no auth code: `docker compose up -d`
 
 **Email/password auth:**
 ```yaml
