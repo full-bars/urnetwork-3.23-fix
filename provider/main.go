@@ -1107,13 +1107,19 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
 	hostname, _ := os.Hostname()
-	displayName := nodeName
-	if displayName == "" {
-		displayName = hostname
-	}
 
 	// Detect if hostname is a container ID (12-character hex)
 	isContainerID := containerIDRe.MatchString(hostname)
+
+	displayName := nodeName
+	if displayName == "" {
+		// If hostname is a container ID and no custom name is set, use "provider" instead
+		if isContainerID {
+			displayName = "provider"
+		} else {
+			displayName = hostname
+		}
+	}
 
 	// Build a compact label. If hostname is just a container ID, ignore it to save space.
 	label := displayName
