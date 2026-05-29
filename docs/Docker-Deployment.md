@@ -26,13 +26,11 @@ All examples below mount a config volume at `/root/.urnetwork`. With this volume
 
 ## Docker Run - GHCR
 
-Set `NAME` once before the command. The container name, JWT storage volume, and vnStat volume are all derived from it, so different `NAME` values produce isolated containers.
+The examples below use `urfix` as the default container and volume prefix. If you export a different `NAME` before running a command, the config and vnStat volume names will follow it.
 
 ### JWT Auth
 
 ```bash
-NAME=urfix   # change this per container
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -55,7 +53,7 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `${NAME}_config` volume on first run and reused on later starts.
+Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `${NAME:-urfix}_config` volume on first run and reused on later starts.
 
 Alternative method:
 
@@ -72,8 +70,6 @@ To label this server in webhook alerts and health logs, add:
 ### Email/Password Auth
 
 ```bash
-NAME=urfix   # change this per container
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -105,8 +101,6 @@ The commands are identical to GHCR except for the image name.
 ### JWT Auth
 
 ```bash
-NAME=urfix
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -138,8 +132,6 @@ Alternative method:
 ### Email/Password Auth
 
 ```bash
-NAME=urfix
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -281,8 +273,6 @@ URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
 Example Docker Run:
 
 ```bash
-NAME=urfix   # change this per container
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -296,7 +286,7 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
-  -e URNETWORK_NODE_NAME=$NAME \
+  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
   -e HOST_HOSTNAME=$(hostname) \
   -v ${NAME:-urfix}_config:/root/.urnetwork \
   -p 9001:8080 \
@@ -319,8 +309,6 @@ Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log
 Example Docker Run:
 
 ```bash
-NAME=urfix   # change this per container
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -331,7 +319,7 @@ docker run -d \
   --sysctl net.netfilter.nf_conntrack_max=2097152 \
   --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e URNETWORK_RAMLOGS=1 \
-  -e URNETWORK_NODE_NAME=$NAME \
+  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
@@ -359,8 +347,6 @@ It detects total system RAM, assigns buffer sizes, enables Eco mode on very low-
 Example Docker Run:
 
 ```bash
-NAME=urfix   # change this per container
-
 docker run -d \
   --name=urfix \
   --pull=always \
@@ -372,7 +358,7 @@ docker run -d \
   --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
-  -e URNETWORK_NODE_NAME=$NAME \
+  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v ${NAME:-urfix}_config:/root/.urnetwork \
@@ -402,4 +388,4 @@ docker run -d \
 > [!IMPORTANT]
 > The `${NAME:-urfix}_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 
-For multiple containers, give each folder a different `NAME` value so each deployment gets isolated volumes.
+For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
