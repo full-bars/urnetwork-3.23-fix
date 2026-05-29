@@ -445,8 +445,11 @@ func_run_as_user ()
     _ru_home="$(getent passwd "$_ru_user" | cut -d: -f6)"; [ -n "$_ru_home" ] || _ru_home="/home/$_ru_user"
     _ru_uid="$(id -u "$_ru_user")"; _ru_rt="/run/user/$_ru_uid"
     if command -v runuser >/dev/null 2>&1; then
+        # runuser preserves the caller's cwd (often /root, which the target user
+        # cannot enter), so move to the user's home first.
         runuser -u "$_ru_user" -- env HOME="$_ru_home" USER="$_ru_user" LOGNAME="$_ru_user" \
-            XDG_RUNTIME_DIR="$_ru_rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$_ru_rt/bus" sh -c "$*"
+            XDG_RUNTIME_DIR="$_ru_rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$_ru_rt/bus" \
+            sh -c "cd \"$_ru_home\" 2>/dev/null || cd /tmp; $*"
     else
         su - "$_ru_user" -c "export XDG_RUNTIME_DIR='$_ru_rt'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$_ru_rt/bus'; $*"
     fi
