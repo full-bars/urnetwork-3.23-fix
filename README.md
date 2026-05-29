@@ -108,8 +108,9 @@ The installation includes the `urnet-tools` suite for easy management:
 | `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/pass. |
 | `USER_AUTH` | - | Your email (required if `BUILD=stable`). |
 | `PASSWORD` | - | Your password (required if `BUILD=stable`). |
+| `URNETWORK_AUTH_CODE` | - | First-run auth code (alternative to the positional argument). Preferred in Docker/Compose for codes starting with a dash, which the CLI would otherwise misparse. Ignored once a JWT exists in the volume. |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
-| `ENABLE_IP_CHECKER` | `false` | Prints your public IP to the logs on startup. |
+| `ENABLE_IP_CHECKER` | `false` | Diagnostic only: prints your **full** public IP to the container logs on startup via an external script. Distinct from the always-on dashboard identity reporting (which sends only a *redacted* IP to your Client Manager) — this logs the full IP locally and is off by default. |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Raises the TCP window ceiling from 1 MiB to 4 or 8 MiB, removing the per-connection limit that exists at standard window sizes. Use `v4` on 4–16 GiB boxes, `v8` on 16 GiB+. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
 | `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
@@ -320,10 +321,10 @@ volumes:
 You can run multiple independent nodes in a single `docker-compose.yml` file. This is the most efficient way to scale on a single host as it allows all nodes to share a single authentication session.
 
 #### How it works
-By sharing a single **config volume** (`ur_config`), you only need **one auth code** to authenticate the entire stack. 
+By sharing a single **config volume** (`ur_config`), you only need **one auth code** to authenticate the entire stack.
 1. **Node 1** starts, detects the empty volume, and uses the `URNETWORK_AUTH_CODE` to get a JWT.
-2. **Node 2 & 3** start, see the JWT already exists in the shared volume, and skip authentication entirely.
-3. Every node then generates its own unique internal identity and reports to your dashboard.
+2. **Node 2 & 3** wait — via `depends_on` and Node 1's healthcheck — until the shared JWT exists, then start and reuse it, skipping authentication entirely. (The healthcheck avoids a cold-start race where Nodes 2/3 would otherwise launch before the JWT is written and crash-loop until it appears.)
+3. Every node then registers its own distinct client identity with the backend and reports to your dashboard with its own label.
 
 #### Step 1: Create your `docker-compose.yml`
 Ensure each service has a unique **Service Name**, **Container Name**, **Host Port**, and **vnStat Volume**.
@@ -349,6 +350,13 @@ services:
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
+    # Reports healthy once the shared JWT is written, gating the other nodes' start
+    healthcheck:
+      test: ["CMD-SHELL", "[ -s /root/.urnetwork/jwt ]"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
   # Node 2: Uses the JWT created by Node 1
   node-2:
@@ -358,6 +366,9 @@ services:
     pull_policy: always
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls: [net.ipv4.ip_forward=1]
+    depends_on:
+      node-1:
+        condition: service_healthy   # wait until Node 1 has written the shared JWT
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
@@ -377,6 +388,9 @@ services:
     pull_policy: always
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls: [net.ipv4.ip_forward=1]
+    depends_on:
+      node-1:
+        condition: service_healthy   # wait until Node 1 has written the shared JWT
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
@@ -411,7 +425,7 @@ docker compose up -d
 
 The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code — which is single-use and will fail on the second attempt.
 
-All examples above already include `-v urnetwork_config:/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm urnetwork_config`.
+All examples above already mount a config volume at `/root/.urnetwork` (named `${NAME}_config`, e.g. `urfix_config`, or the shared `ur_config` in the multi-node guide). With this volume in place, the startup script detects the existing JWT and skips authentication entirely on all subsequent starts. Auth codes are only consumed once — on first run or after a manual `docker volume rm <name>_config`.
 
 ### Outage Alerting (Optional)
 
