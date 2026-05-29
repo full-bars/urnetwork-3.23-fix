@@ -314,10 +314,17 @@ volumes:
 
 ### Multi-Container Scaling (Advanced)
 
-If you have a powerful server (e.g., 8+ cores, high RAM), you can run multiple provider instances in a single `docker-compose.yml` file to maximize throughput. 
+You can manage multiple provider instances in a single `docker-compose.yml` file to run several independent nodes on one host. 
 
-By sharing a single **config volume**, you only need to use **one auth code** to authenticate the entire stack. Each node will then uniquely identify itself in the dashboard using its `URNETWORK_NODE_NAME` and its automatically detected **Public IP**.
+By sharing a single **config volume**, you only need to use **one auth code** to authenticate the entire stack. Every node will then uniquely identify itself in the dashboard using its `URNETWORK_NODE_NAME` and its automatically detected **Public IP**.
 
+When adding nodes to the same file, you must ensure each service has a unique:
+1. **Service Name** (e.g., `node-1`, `node-2`, `node-3`)
+2. **Container Name** (e.g., `urfix-1`, `urfix-2`, `urfix-3`)
+3. **Host Port** (e.g., `9001`, `9002`, `9003`)
+4. **vnStat Volume** (e.g., `urfix-1_vnstat`, `urfix-2_vnstat`, `urfix-3_vnstat`)
+
+**Example 3-Node Configuration:**
 ```yaml
 services:
   # Node 1
@@ -332,7 +339,7 @@ services:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
       - URNETWORK_NODE_NAME=urfix-1
-      # On first run, Node 1 will use this code to get a JWT for the whole stack:
+      # On first run, Node 1 uses this code to get a JWT for the whole stack:
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
     volumes:
       - ur_config:/root/.urnetwork  # Shared JWT storage
@@ -360,10 +367,30 @@ services:
     ports:
       - "9002:8080"
 
+  # Node 3
+  node-3:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    container_name: urfix-3
+    restart: unless-stopped
+    pull_policy: always
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls: [net.ipv4.ip_forward=1]
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+      - URNETWORK_NODE_NAME=urfix-3
+    volumes:
+      - ur_config:/root/.urnetwork  # Shared JWT storage
+      - urfix-3_vnstat:/var/lib/vnstat
+      - ./proxy.txt:/app/proxy.txt
+    ports:
+      - "9003:8080"
+
 volumes:
   ur_config:      # Shared configuration (JWT)
   urfix-1_vnstat: # Unique traffic stats per node
   urfix-2_vnstat:
+  urfix-3_vnstat:
 ```
 
 To start the stack:
@@ -374,7 +401,7 @@ docker compose up -d
 **How it works:**
 *   **Single Auth**: Node 1 detects the empty volume, authenticates using the provided code, and saves the JWT to the shared volume. Nodes 2+ see the existing JWT and start up immediately without needing their own codes.
 *   **Isolation**: Every node generates its own unique Client ID and Instance ID.
-*   **Dashboard Labeling**: Nodes automatically fetch their public IP (via `ip.me`) and report it alongside their `URNETWORK_NODE_NAME` for easy identification.
+*   **Dashboard Labeling**: Nodes automatically fetch their public IP (via `ip.me -4`) and report it alongside their `URNETWORK_NODE_NAME` and version for easy identification.
 
 ---
 

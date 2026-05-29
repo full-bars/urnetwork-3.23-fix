@@ -7,12 +7,12 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.14.3] — 2026-05-28
 
 ### Documentation
-- **Streamlined Multi-Container Scaling**: Documented the "Shared JWT" method which allows scaling to multiple nodes with a single auth code and a shared volume.
+- **Streamlined Multi-Container Scaling**: Documented the "Shared JWT" method for running three nodes in a single `docker-compose.yml` with one auth code and shared storage.
 - **Improved RAM Logging Guide**: Added a comprehensive `docker run` sample command with all common flags.
 
 ### Added
 - **Environment Variable Authentication**: Added support for `URNETWORK_AUTH_CODE`. This allows providing auth tokens (especially those starting with dashes) without command-line parsing issues in Docker.
-- **Universal IP Reporting**: All provider builds (JWT, Stable, Nightly, and Pelican) now automatically detect their public IP (via `ip.me -4`) and report it to the backend description. This makes it easy to identify which server a node is running on in the dashboard.
+- **Improved Dashboard Identification**: All provider builds (JWT, Stable, Nightly, and Pelican) now automatically detect their public IP (via `ip.me -4`) and report 'NodeName @ IP (Version)' to the backend for easier identification.
 
 ### Fixed
 - **Graceful ZRAM handling**: Systems with kernels that don't include zram support (e.g., Oracle Linux UEK) now complete `optimize` successfully. ZRAM is skipped with a simple warning; other OS optimizations (sysctl, ulimits) continue normally. Users on Ubuntu can optionally install Zabbly kernel to gain zram support.
