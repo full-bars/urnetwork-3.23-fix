@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -307,6 +308,21 @@ const (
 // runEcoMemoryMonitor watches system memory availability and dynamically tightens
 // GC pressure when RAM is low. This complements the static GOMEMLIMIT ceiling set
 // at startup by responding to actual OS memory conditions at runtime.
+// The eco memory monitor is a single global watcher. It can be requested from
+// multiple places (the top-level eco profile check and the per-proxy provide
+// loop), so startEcoMonitorOnce guards it to a single instance per process.
+// startEcoMonitor is a test seam.
+var (
+	ecoMonitorStarted atomic.Bool
+	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
+)
+
+func startEcoMonitorOnce(ctx context.Context) {
+	if ecoMonitorStarted.CompareAndSwap(false, true) {
+		startEcoMonitor(ctx)
+	}
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -847,7 +863,7 @@ func provide(opts docopt.Opts) {
 	}()
 
 	if os.Getenv("URNETWORK_PROFILE") == "eco" {
-		go runEcoMemoryMonitor(ctx)
+		startEcoMonitorOnce(ctx)
 	}
 
 	nodeName := strings.Map(func(r rune) rune {
@@ -882,7 +898,7 @@ func provide(opts docopt.Opts) {
 
 		profile := os.Getenv("URNETWORK_PROFILE")
 		if profile == "eco" || autoEco {
-			go runEcoMemoryMonitor(ctx)
+			startEcoMonitorOnce(ctx)
 		}
 
 		applyEcoSettings(maxMemory)
