@@ -3,8 +3,17 @@ package connect
 import (
 	"os"
 	"runtime/debug"
+	"sync/atomic"
 
 	"github.com/urnetwork/glog"
+)
+
+// ApplyAutoTuning runs once per proxy server, but the auto-profile summary is a
+// global, identical line. autoTuneLogged gates it to one emission per process so
+// a large proxy list does not spam the log on startup. autoTuneLogf is a test seam.
+var (
+	autoTuneLogged atomic.Bool
+	autoTuneLogf   = glog.Infof
 )
 
 // Tier Definitions
@@ -26,7 +35,9 @@ func ApplyAutoTuning(cs *ClientSettings, ns *LocalUserNatSettings) bool {
 	ramLimit := DetectEffectiveRAMLimitBytes()
 	tier := selectTier(ramLimit)
 
-	glog.Infof("[tune] auto-profile: detected %d MiB RAM; applying '%s' settings", ramLimit/1024/1024, tier)
+	if autoTuneLogged.CompareAndSwap(false, true) {
+		autoTuneLogf("[tune] auto-profile: detected %d MiB RAM; applying '%s' settings", ramLimit/1024/1024, tier)
+	}
 
 	switch tier {
 	case Tier1Low:
