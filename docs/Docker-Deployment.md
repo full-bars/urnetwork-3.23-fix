@@ -179,7 +179,7 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
-      - HOST_HOSTNAME=${HOSTNAME:-unknown}
+      - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
       - urfix_vnstat:/var/lib/vnstat
@@ -229,7 +229,7 @@ services:
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - ENABLE_VNSTAT=true
-      - HOST_HOSTNAME=${HOSTNAME:-unknown}
+      - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
       - urfix_vnstat:/var/lib/vnstat
