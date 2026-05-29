@@ -10,6 +10,8 @@ set -e
 APP_DIR="/app"
 JWT_FILE="/root/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
+ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
+IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
 
 # === Logging Helper ===
 log() {
@@ -53,14 +55,34 @@ func_get_architecture() {
     esac
 }
 
-# === Public IP Fetching ===
-func_get_ip() {
-  # Use curl ip.me -4 as suggested for simplicity and IPv4 focus
-  export URNETWORK_PUBLIC_IP="$(curl -s ip.me -4 || echo "")"
+# === Client Identity Reporting ===
+# Fetches the public IP used to build this node's dashboard identity label
+# (node name @ redacted-IP [version]). Always on; no configuration required.
+# Distinct from func_ip_checker below, which is an opt-in diagnostic.
+func_report_identity() {
+  # Use curl ip.me -4 with a 5s timeout to avoid hanging startup
+  export URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
   if [ -n "$URNETWORK_PUBLIC_IP" ]; then
     log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
   else
-    log "[WARN] Could not detect public IP"
+    log "[WARN] Could not detect public IP (timeout or service unreachable)"
+  fi
+}
+
+# === Public IP Checker (diagnostic) ===
+# Opt-in (ENABLE_IP_CHECKER=true). Runs the external techroy23 IP-Checker
+# script to log the full public IP to the console. Distinct from the dashboard
+# reporter above (func_report_identity), which only sends a redacted IP to the backend.
+func_ip_checker() {
+  if [ "$ENABLE_IP_CHECKER" = "true" ]; then
+    log "[INFO] Checking current public IP..."
+    if curl -fsSL "$IP_CHECKER_URL" | sh; then
+      log "[INFO] IP checker script ran successfully"
+    else
+      log "[WARN] Could not fetch or execute IP checker script"
+    fi
+  else
+    log "[INFO] IP checker disabled"
   fi
 }
 
@@ -98,26 +120,29 @@ func_start_provider(){
     # Priority 2: Authentication via Environment Variable (Safe for dash-prefixed tokens)
     elif [ -n "$URNETWORK_AUTH_CODE" ]; then
         log "[INFO] Starting UrNetwork with provided auth code (environment)..."
-        # We use -f to force overwrite and skip prompts. 
-        # Using 'auth' instead of 'auth-provide' so it exits after saving the JWT.
-        "$PROVIDER_BIN" auth -f || true
-        code=$?
-        if [ "$code" -eq 0 ]; then
-            log "[INFO] UrNetwork exited cleanly after authentication."
+        # We use -f to force overwrite and skip prompts.
+        if "$PROVIDER_BIN" auth -f; then
+            log "[INFO] UrNetwork authenticated successfully."
         else
+            code=$?
             log "[ERROR] UrNetwork authentication failed with code=$code"
             exit $code
         fi
-        # If it successfully authed but exited (standard behavior), it's now Priority 1
+        # Verify result
         [ -s "$JWT_FILE" ] || { log "[ERROR] JWT file not written to $JWT_FILE"; exit 1; }
 
     # Priority 3: Authentication via Positional Argument (Backward Compatibility)
     elif [ "$#" -eq 1 ]; then
         JWT_TOKEN="$1"
         log "[INFO] Starting UrNetwork with provided auth code (argument) ..."
-        # Use -- to handle tokens starting with dashes
-        "$PROVIDER_BIN" auth-provide -f -- "$JWT_TOKEN" || true
-        code=$?
+        # Use -- to handle tokens starting with dashes.
+        if "$PROVIDER_BIN" auth -f -- "$JWT_TOKEN"; then
+            log "[INFO] UrNetwork authenticated successfully."
+        else
+            code=$?
+            log "[ERROR] UrNetwork authentication failed with code=$code"
+            exit $code
+        fi
         [ -s "$JWT_FILE" ] || { log "[ERROR] JWT failed; code=$code"; exit 1; }
 
     # Failure: No session and no auth code provided
@@ -131,19 +156,24 @@ func_start_provider(){
     failures=0
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
-        "$PROVIDER_BIN" provide || true
-        code=$?
-        if [ "$code" -eq 0 ]; then
+        if "$PROVIDER_BIN" provide; then
             log "[INFO] UrNetwork exited cleanly."
             break
         fi
+        code=$?
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
-        if [ "$failures" -ge 3 ]; then
-            log "[ERROR] Too many crashes; clearing session and requiring re-auth"
-            rm -f "$JWT_FILE" || true
+
+        # Shared-volume safety: never delete the JWT here. In the 3-in-1 shared
+        # config model that would deauth the whole stack, and the single-use auth
+        # code is already consumed — the node could not recover on its own. After
+        # repeated crashes, exit non-zero and let Docker's restart policy cycle
+        # the container with the session intact.
+        if [ "$failures" -ge 5 ]; then
+            log "[ERROR] Too many consecutive crashes ($failures); exiting for Docker to restart. Session preserved."
             exit 1
         fi
+
         log "[INFO] Waiting 60s before retry"
         sleep 60
     done
@@ -154,7 +184,8 @@ func_bootstrap() {
     func_get_architecture
     func_check_dir
     func_check_proxy
-    func_get_ip
+    func_report_identity
+    func_ip_checker
     func_start_vnstat
     func_start_provider "$@"
 }

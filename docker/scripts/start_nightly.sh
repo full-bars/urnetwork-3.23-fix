@@ -81,14 +81,34 @@ func_get_architecture() {
     esac
 }
 
-# === Public IP Fetching ===
-func_get_ip() {
-  # Use curl ip.me -4 as suggested for simplicity and IPv4 focus
-  export URNETWORK_PUBLIC_IP="$(curl -s ip.me -4 || echo "")"
+# === Client Identity Reporting ===
+# Fetches the public IP used to build this node's dashboard identity label
+# (node name @ redacted-IP [version]). Always on; no configuration required.
+# Distinct from func_ip_checker below, which is an opt-in diagnostic.
+func_report_identity() {
+  # Use curl ip.me -4 with a 5s timeout to avoid hanging startup
+  export URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
   if [ -n "$URNETWORK_PUBLIC_IP" ]; then
     log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
   else
-    log "[WARN] Could not detect public IP"
+    log "[WARN] Could not detect public IP (timeout or service unreachable)"
+  fi
+}
+
+# === Public IP Checker (diagnostic) ===
+# Opt-in (ENABLE_IP_CHECKER=true). Runs the external techroy23 IP-Checker
+# script to log the full public IP to the console. Distinct from the dashboard
+# reporter above (func_report_identity), which only sends a redacted IP to the backend.
+func_ip_checker() {
+  if [ "$ENABLE_IP_CHECKER" = "true" ]; then
+    log "[INFO] Checking current public IP..."
+    if curl -fsSL "$IP_CHECKER_URL" | sh; then
+      log "[INFO] IP checker script ran successfully"
+    else
+      log "[WARN] Could not fetch or execute IP checker script"
+    fi
+  else
+    log "[INFO] IP checker disabled"
   fi
 }
 
@@ -218,8 +238,8 @@ func_start_provider(){
         PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_nightly"
 		BIN_VER="$($PROVIDER_BIN --version)"
 		log "[INFO] Running UrNetwork build v${BIN_VER}"
-        "$PROVIDER_BIN" provide
-        code=$?
+        # Capture the real exit code (set -e safe; bare `provide` would abort the loop on crash)
+        if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
         if [ "$code" -eq 0 ]; then
             log " [INFO] UrNetwork exited cleanly."
             break
@@ -244,7 +264,8 @@ func_bootstrap() {
 	func_check_dir
 	func_check_credentials
 	func_check_proxy
-    func_get_ip
+    func_report_identity
+    func_ip_checker
     func_start_vnstat
 	func_check_update
     (
@@ -253,7 +274,7 @@ func_bootstrap() {
         if [ "$NOW" = "$UPDATE_TIME" ]; then
             log "Watcher: hit $UPDATE_TIME, updating"
             func_check_update
-            if ! ps aux | grep -q '[u]rnetwork_${A_SYS_ARCH}_'; then
+            if ! ps aux | grep -q "[u]rnetwork_${A_SYS_ARCH}_"; then
                 log "UrNetwork not running; launching now"
                 func_do_login
                 func_start_provider
