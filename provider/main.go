@@ -462,6 +462,11 @@ Options:
 		panic(err)
 	}
 
+	// Support auth code via environment variable for Docker/dash-prefixed tokens
+	if envAuthCode := os.Getenv("URNETWORK_AUTH_CODE"); envAuthCode != "" {
+		opts["<auth_code>"] = envAuthCode
+	}
+
 	if proxy, _ := opts.Bool("proxy"); proxy {
 		if auth, _ := opts.Bool("auth"); auth {
 			if add, _ := opts.Bool("add"); add {
@@ -893,7 +898,7 @@ func provide(opts docopt.Opts) {
 			const maxAuthFailures = 10
 			authFailures := 0
 			for {
-				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts)
+				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
 				if err == nil {
 					return byClientJwt, clientId, nil
 				}
@@ -1052,7 +1057,7 @@ func provide(opts docopt.Opts) {
 	os.Exit(0)
 }
 
-func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts) (byClientJwt string, clientId connect.Id, returnErr error) {
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(err)
@@ -1078,8 +1083,13 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
+	description := fmt.Sprintf("%s (provider %s %s)", nodeName, runtime.GOOS, RequireVersion())
+	if publicIP := os.Getenv("URNETWORK_PUBLIC_IP"); publicIP != "" {
+		description = fmt.Sprintf("%s @ %s (provider %s %s)", nodeName, publicIP, runtime.GOOS, RequireVersion())
+	}
+
 	authClientArgs := &connect.AuthNetworkClientArgs{
-		Description: fmt.Sprintf("provider %s %s", runtime.GOOS, RequireVersion()),
+		Description: description,
 		DeviceSpec:  "",
 	}
 
