@@ -71,12 +71,13 @@ Choose the profile that matches your server's available RAM:
 
 ## ⚡ Quick Start (Linux)
 
-The provider is designed to run as a **non-privileged user service** for maximum security and reliability. Our installer automatically guides you through setting up a dedicated user (`urnet`) if you run it as root.
+The provider is designed to run as a **non-privileged user service** for maximum security and reliability.
+
+> [!IMPORTANT]
+> **Recommended:** Run this command as your normal (non-root) user. If run as root, the installer will automatically guide you through creating a dedicated service user (`urnet`) to finish the setup.
 
 **Install:**
 ```bash
-# Recommended: Run as your normal user. 
-# If run as root, the installer will help you create a dedicated service user.
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
