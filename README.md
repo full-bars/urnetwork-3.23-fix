@@ -71,10 +71,12 @@ Choose the profile that matches your server's available RAM:
 
 ## ⚡ Quick Start (Linux)
 
-Install the optimized provider directly as a background service:
+The provider is designed to run as a **non-privileged user service** for maximum security and reliability. Our installer automatically guides you through setting up a dedicated user (`urnet`) if you run it as root.
 
 **Install:**
 ```bash
+# Recommended: Run as your normal user. 
+# If run as root, the installer will help you create a dedicated service user.
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
@@ -82,6 +84,16 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/s
 ```bash
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
+
+---
+
+### 🛡️ User-Level Systemd Service
+Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
+
+*   **Security**: The provider binary never needs root privileges.
+*   **Isolation**: Configurations and JWT tokens are stored in the user's home directory.
+*   **Linger**: The installer enables `loginctl enable-linger`, ensuring your provider starts automatically on boot and keeps running after you log out.
+*   **Root Guard**: If you try to install as root, the script will offer to create a restricted `urnet` user for you, added to the appropriate admin group (e.g., `wheel` on Arch/SUSE, `sudo` on Debian/Ubuntu).
 
 ### 🛠 Post-Install Commands
 The installation includes the `urnet-tools` suite for easy management:

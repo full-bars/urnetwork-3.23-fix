@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.15] — 2026-05-28
+
+### Added
+- **Installer Root Guard**: The Linux installer now detects if it is being run as root and offers an interactive menu to create a dedicated service user (`urnet`) with the correct permissions. This prevents "Failed to connect to bus" errors caused by root's lack of a user session bus.
+- **Assisted User Setup**: Automatically handles user creation, admin group detection (`wheel` or `sudo`), and systemd lingering enablement across diverse Linux distributions.
+- **Hardened User Hand-off**: Implemented a robust `runuser` mechanism that handles SELinux-enforcing environments (like openSUSE and AlmaLinux) by ensuring correct environment propagation (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`) and directory transitions.
+
+### Documentation
+- **User-Level Service Guide**: Updated README with instructions on the new recommended non-privileged deployment path.
+- **Generic Server Naming**: Standardized documentation to use generic node references for privacy.
+
+---
+
 ## [v3.23.0-fix.14.4] — 2026-05-28
 
 ### Documentation
