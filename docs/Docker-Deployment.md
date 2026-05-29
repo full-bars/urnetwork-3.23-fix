@@ -26,7 +26,7 @@ All examples below mount a config volume at `/root/.urnetwork`. With this volume
 
 ## Docker Run - GHCR
 
-The examples below use `urfix` as the default container and volume prefix. If you export a different `NAME` before running a command, the config and vnStat volume names will follow it.
+The examples below use `urfix` as the container name. Set `NAME` in your shell before running a command so the config and vnStat volume names use the same prefix, for example `NAME=urfix`.
 
 ### JWT Auth
 
@@ -46,14 +46,14 @@ docker run -d \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `${NAME:-urfix}_config` volume on first run and reused on later starts.
+Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `${NAME}_config` volume on first run and reused on later starts.
 
 Alternative method:
 
@@ -87,8 +87,8 @@ docker run -d \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
@@ -116,8 +116,8 @@ docker run -d \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
@@ -149,8 +149,8 @@ docker run -d \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest
@@ -286,9 +286,9 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
-  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
+  -e URNETWORK_NODE_NAME=${NAME} \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
+  -v ${NAME}_config:/root/.urnetwork \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
@@ -319,12 +319,12 @@ docker run -d \
   --sysctl net.netfilter.nf_conntrack_max=2097152 \
   --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e URNETWORK_RAMLOGS=1 \
-  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
+  -e URNETWORK_NODE_NAME=${NAME} \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
@@ -358,11 +358,11 @@ docker run -d \
   --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
-  -e URNETWORK_NODE_NAME=${NAME:-urfix} \
+  -e URNETWORK_NODE_NAME=${NAME} \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
-  -v ${NAME:-urfix}_config:/root/.urnetwork \
-  -v ${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v ${NAME}_config:/root/.urnetwork \
+  -v ${NAME}_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
@@ -386,6 +386,6 @@ docker run -d \
 ```
 
 > [!IMPORTANT]
-> The `${NAME:-urfix}_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
+> The `${NAME}_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 
 For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
