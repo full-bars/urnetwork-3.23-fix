@@ -400,7 +400,7 @@ docker compose up -d
 #### Step 3: Verify
 *   **Logs**: Check `docker logs urfix-1` to see the successful authentication.
 *   **Dashboard**: Check your Client Manager. You will see 3 nodes identified by your chosen names and a redacted public IP for privacy:
-    `urfix-1 @ 66.x.x.83 [v3.23.0-fix.14.3]`
+    `urfix-1 @ 69.x.x.96 [v3.23.0-fix.14.3]`
 
 ---
 
