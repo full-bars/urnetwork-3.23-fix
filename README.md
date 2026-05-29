@@ -440,6 +440,24 @@ URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
 URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
 ```
 
+**Example Docker Run:**
+```bash
+NAME=urfix   # change this per container — volumes are named from it
+
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
+  -e URNETWORK_NODE_NAME=urfix \
+  -v ${NAME}_config:/root/.urnetwork \
+  -p 9001:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
 **Startup log:** On every start the provider logs:
 ```
 [outage] watcher active node=my-server-name (docker) webhook=configured
