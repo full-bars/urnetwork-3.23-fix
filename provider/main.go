@@ -1151,8 +1151,6 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		DeviceSpec:  "",
 	}
 
-	fmt.Printf("[INFO] Reporting to dashboard as: %s\n", description)
-
 	api.AuthNetworkClient(authClientArgs, authClientCallback)
 
 	var authClientResult connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
