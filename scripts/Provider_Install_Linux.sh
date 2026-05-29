@@ -1890,7 +1890,6 @@ case "$operation" in
         ;;
 
     proxy)
-        shift
         do_proxy "$@"
         exit 0
         ;;
