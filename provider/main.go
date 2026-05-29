@@ -8,7 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	// "net"
+	"net"
 	mathrand "math/rand"
 	"io"
 	"net/http"
@@ -462,9 +462,12 @@ Options:
 		panic(err)
 	}
 
-	// Support auth code via environment variable for Docker/dash-prefixed tokens
-	if envAuthCode := os.Getenv("URNETWORK_AUTH_CODE"); envAuthCode != "" {
-		opts["<auth_code>"] = envAuthCode
+	// Support auth code via environment variable for Docker/dash-prefixed tokens.
+	// An explicit CLI positional argument takes precedence over the env var.
+	if cur, _ := opts.String("<auth_code>"); cur == "" {
+		if envAuthCode := os.Getenv("URNETWORK_AUTH_CODE"); envAuthCode != "" {
+			opts["<auth_code>"] = envAuthCode
+		}
 	}
 
 	if proxy, _ := opts.Bool("proxy"); proxy {
@@ -1057,6 +1060,10 @@ func provide(opts docopt.Opts) {
 	os.Exit(0)
 }
 
+// containerIDRe matches a default Docker container hostname (12-char hex),
+// so we can omit it from the dashboard label when it carries no useful meaning.
+var containerIDRe = regexp.MustCompile("^[0-9a-f]{12}$")
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -1090,7 +1097,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	}
 
 	// Detect if hostname is a container ID (12-character hex)
-	isContainerID, _ := regexp.MatchString("^[0-9a-f]{12}$", hostname)
+	isContainerID := containerIDRe.MatchString(hostname)
 
 	// Build a compact label. If hostname is just a container ID, ignore it to save space.
 	label := displayName
@@ -1100,10 +1107,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	description := fmt.Sprintf("%s [%s]", label, RequireVersion())
 
+	// Append a redacted public IP (first.x.x.last) for at-a-glance identification.
+	// Parse strictly so a stray port or malformed value can't leak into the label.
 	if publicIP := os.Getenv("URNETWORK_PUBLIC_IP"); publicIP != "" {
-		// Redact the IP for privacy (keep first and last octets)
-		parts := strings.Split(publicIP, ".")
-		if len(parts) == 4 {
+		if ip4 := net.ParseIP(strings.TrimSpace(publicIP)).To4(); ip4 != nil {
+			parts := strings.Split(ip4.String(), ".")
 			redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
 			description = fmt.Sprintf("%s @ %s [%s]", label, redactedIP, RequireVersion())
 		}
