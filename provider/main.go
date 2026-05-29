@@ -1083,15 +1083,38 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
-	description := fmt.Sprintf("%s (provider %s %s)", nodeName, runtime.GOOS, RequireVersion())
+	hostname, _ := os.Hostname()
+	displayName := nodeName
+	if displayName == "" {
+		displayName = hostname
+	}
+
+	// Detect if hostname is a container ID (12-character hex)
+	isContainerID, _ := regexp.MatchString("^[0-9a-f]{12}$", hostname)
+
+	// Build a compact label. If hostname is just a container ID, ignore it to save space.
+	label := displayName
+	if nodeName != "" && hostname != "" && nodeName != hostname && !isContainerID {
+		label = fmt.Sprintf("%s (%s)", nodeName, hostname)
+	}
+
+	description := fmt.Sprintf("%s [%s]", label, RequireVersion())
+
 	if publicIP := os.Getenv("URNETWORK_PUBLIC_IP"); publicIP != "" {
-		description = fmt.Sprintf("%s @ %s (provider %s %s)", nodeName, publicIP, runtime.GOOS, RequireVersion())
+		// Redact the IP for privacy (keep first and last octets)
+		parts := strings.Split(publicIP, ".")
+		if len(parts) == 4 {
+			redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
+			description = fmt.Sprintf("%s @ %s [%s]", label, redactedIP, RequireVersion())
+		}
 	}
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
 		DeviceSpec:  "",
 	}
+
+	fmt.Printf("[INFO] Reporting to dashboard as: %s\n", description)
 
 	api.AuthNetworkClient(authClientArgs, authClientCallback)
 
