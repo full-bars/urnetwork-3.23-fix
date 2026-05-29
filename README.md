@@ -23,6 +23,12 @@ Run this as your normal non-root user:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
+Uninstall:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
+```
+
 After installation:
 
 ```bash
@@ -31,11 +37,9 @@ urnet-tools logs
 urnet-tools auto on
 ```
 
-### Docker Compose
+### Docker
 
-For Docker users, Compose is the recommended starting point because it keeps JWT storage, vnStat data, ports, logging, and restart policy in one file.
-
-See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples covering JWT auth, email/password auth, GHCR, Docker Hub, RAM logs, outage alerts, and Watchtower updates.
+See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples covering `docker run`, Docker Compose, JWT auth, email/password auth, GHCR, Docker Hub, RAM logs, outage alerts, and Watchtower updates.
 
 ## Key Improvements
 
@@ -50,10 +54,10 @@ See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples 
 For most providers:
 
 - Use the Linux installer if you want a host-managed service.
-- Use Docker Compose if you prefer containers.
+- Use either `docker run` or Docker Compose if you prefer containers; both are fully documented.
 - Enable `auto` profile unless you already know you need a specific profile.
 - Keep a persistent config volume mounted at `/root/.urnetwork` for Docker deployments.
-- Run `urnet-tools optimize` on high-volume hosts when the System Auditor reports suboptimal kernel limits.
+- Run `urnet-tools optimize` when deploying many proxies, or whenever the System Auditor reports suboptimal kernel limits.
 
 ## Documentation
 

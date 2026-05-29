@@ -1,6 +1,6 @@
 # Docker Deployment
 
-This page keeps the copy-paste Docker examples from the README in one place. Start with Docker Compose unless you specifically need `docker run`.
+This page keeps the copy-paste Docker examples from the README in one place. Use either `docker run` or Docker Compose, depending on how you prefer to manage containers.
 
 ## Image Registries
 
