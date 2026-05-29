@@ -330,19 +330,23 @@ The provider logs a periodic heartbeat line with uptime, active profile, and mem
 
 ## Log Spam Reduction
 
-During backend outages, certain log lines would historically fire thousands of times per minute. The fork applies global rate limiting:
+During backend outages, certain log lines would historically fire thousands of times per minute. The fork applies rate limiting or once-per-process guards depending on the source:
 
-| Log pattern | Rate limit | Suppression summary |
+| Log pattern | Mechanism | Notes |
 | :--- | :--- | :--- |
-| `[t]auth error` | 1 per minute | suppressed count appended when outage clears |
-| `[contract]oob err` | 1 per minute | suppressed count appended when outage clears |
+| `[t]auth error` | 1 per minute rate limit | Suppressed count appended when outage clears |
+| `[contract]oob err` | 1 per minute rate limit | Suppressed count appended when outage clears |
+| `[tune] auto-profile` | Once per process | Was once per proxy on startup; fixed in fix.15 |
+| `[eco] memory pressure/critical/eased` | Once per process monitor | Was one monitor goroutine per proxy; fixed in fix.15 |
 
-**Example:**
+**Example (outage rate-limiting):**
 ```
 [t]auth error: connection refused (3,952 suppressed)
 ```
 
 The `(N suppressed)` suffix ensures no errors are silently dropped — you see the count even if the individual lines were suppressed.
+
+**Startup spam (large proxy lists):** With `URNETWORK_PROFILE=auto` and a large proxy list (e.g. 3,000 proxies), the `[tune] auto-profile` line and eco memory monitor were previously started once per proxy rather than once per process. Both are now guarded by atomic once-flags so they fire exactly once regardless of proxy count.
 
 ---
 
