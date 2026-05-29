@@ -26,7 +26,9 @@ All examples below mount a config volume at `/root/.urnetwork`. With this volume
 
 ## Docker Run - GHCR
 
-The examples below use `urfix` as the container name. Set `NAME` in your shell before running a command so the config and vnStat volume names use the same prefix, for example `NAME=urfix`.
+The examples below use `urfix` as the container name. Before running a command, set `NAME` in your shell so the config and vnStat volume names use the same prefix, for example `NAME=urfix`.
+
+For additional containers, change `--name`, `NAME`, and the host port together.
 
 ### JWT Auth
 
@@ -158,7 +160,9 @@ docker run -d \
 
 ## Docker Compose
 
-For multi-container deployments on a single host, storage isolation is handled by giving each instance a unique name. To run multiple containers, copy your `docker-compose.yml` to a new folder and replace the `urfix` prefix with a unique name in `container_name`, `volumes`, and the top-level `volumes:` section.
+For another single-container deployment on the same host, copy your `docker-compose.yml` to a new folder and replace the `urfix` prefix with a unique name in `container_name`, `volumes`, and the top-level `volumes:` section.
+
+For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Multi-Container-Scaling.md) guide.
 
 ### JWT Auth
 
