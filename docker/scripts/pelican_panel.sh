@@ -73,6 +73,17 @@ func_do_login() {
     done
 }
 
+# === Public IP Fetching ===
+func_get_ip() {
+  # Use curl ip.me -4 as suggested for simplicity and IPv4 focus
+  export URNETWORK_PUBLIC_IP="$(curl -s ip.me -4 || echo "")"
+  if [ -n "$URNETWORK_PUBLIC_IP" ]; then
+    log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
+  else
+    log "[WARN] Could not detect public IP"
+  fi
+}
+
 func_get_architecture() {
     case "$(uname -m)" in
       x86_64)  A_SYS_ARCH=amd64  ;;
@@ -129,9 +140,11 @@ func_start_provider_jwt(){
 # Main
 if [ "$BUILD" = "jwt" ]; then
   func_get_architecture
+  func_get_ip
   func_start_provider_jwt
 else
   func_get_architecture
+  func_get_ip
   func_check_credentials
   func_do_login
   func_start_provider
