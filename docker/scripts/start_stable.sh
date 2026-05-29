@@ -15,6 +15,7 @@
 set -e
 
 # === Configuration Variables ===
+export TZ="America/Tijuana"
 APP_DIR="/app"
 JWT_FILE="/root/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
@@ -222,6 +223,8 @@ func_bootstrap() {
     func_report_identity
     func_ip_checker
     func_start_vnstat
+    # Pass host's actual hostname (if provided) so provider reports correctly on dashboard
+    export HOST_HOSTNAME="${HOST_HOSTNAME:-}"
     func_do_login
     func_start_provider
 }

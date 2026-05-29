@@ -1106,38 +1106,37 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
+	// 1. Determine Display Name
+	displayName := nodeName
 	hostname, _ := os.Hostname()
 
-	// Detect if hostname is a container ID (12-character hex)
-	isContainerID := containerIDRe.MatchString(hostname)
-
-	displayName := nodeName
+	// If no manual name set, try host-provided hostname first, then container hostname
 	if displayName == "" {
-		// If hostname is a container ID and no custom name is set, use "provider" instead
-		if isContainerID {
-			displayName = "provider"
+		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
+			displayName = hostHostname
 		} else {
 			displayName = hostname
 		}
 	}
 
-	// Build a compact label. If hostname is just a container ID, ignore it to save space.
-	label := displayName
-	if nodeName != "" && hostname != "" && nodeName != hostname && !isContainerID {
-		label = fmt.Sprintf("%s (%s)", nodeName, hostname)
+	// 2. Filter Gibberish (12-char hex container IDs)
+	isContainerID := containerIDRe.MatchString(displayName)
+	if isContainerID {
+		displayName = "provider"
 	}
 
-	description := fmt.Sprintf("%s [%s]", label, RequireVersion())
-
-	// Append a redacted public IP (first.x.x.last) for at-a-glance identification.
-	// Parse strictly so a stray port or malformed value can't leak into the label.
+	// 3. Build Dashboard Label: "Name @ redacted-IP"
+	dashboardLabel := displayName
 	if publicIP := os.Getenv("URNETWORK_PUBLIC_IP"); publicIP != "" {
 		if ip4 := net.ParseIP(strings.TrimSpace(publicIP)).To4(); ip4 != nil {
 			parts := strings.Split(ip4.String(), ".")
 			redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
-			description = fmt.Sprintf("%s @ %s [%s]", label, redactedIP, RequireVersion())
+			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
 		}
 	}
+
+	// 4. Final Description: "Name @ IP [Version]"
+	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
