@@ -11,6 +11,9 @@ All notable changes to this project are documented here.
 - **Assisted User Setup**: Automatically handles user creation, admin group detection (`wheel` or `sudo`), and systemd lingering enablement across diverse Linux distributions.
 - **Hardened User Hand-off**: Implemented a robust `runuser` mechanism that handles SELinux-enforcing environments (like openSUSE and AlmaLinux) by ensuring correct environment propagation (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`) and directory transitions.
 
+### Fixed
+- **Proxy Command Syntax**: Fixed a bug in `urnet-tools proxy add` where an extra argument shift caused the file path to be misidentified as a command.
+
 ### Documentation
 - **User-Level Service Guide**: Updated README with instructions on the new recommended non-privileged deployment path.
 - **Generic Server Naming**: Standardized documentation to use generic node references for privacy.
