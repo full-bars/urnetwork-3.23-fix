@@ -640,9 +640,15 @@ do_install ()
 
         update)
             no_modify_bashrc=1
+            force_update=0
 
             while [ $# -gt 0 ]; do
                 case "$1" in
+                    -f|--force)
+                        force_update=1
+                        shift
+                        ;;
+
                     -*)
                         pr_err "Invalid option '%s'" "$1"
                         exit 1
@@ -654,7 +660,7 @@ do_install ()
                         ;;
                 esac
             done
-            
+
             ;;
 
         reinstall)
@@ -757,7 +763,9 @@ do_install ()
             exit 1
         fi
 
-        if [ "$install_release_date" -lt "$release_date" ]; then
+        if [ "$force_update" = "1" ]; then
+            pr_info "Force flag enabled, reinstalling version %s" "$version_to_install"
+        elif [ "$install_release_date" -lt "$release_date" ]; then
             pr_info "Version %s is newer than the installed version %s" "$version_to_install" "$installed_version"
             pr_info "Continuing upgrade"
         else
