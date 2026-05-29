@@ -15,7 +15,7 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 [tune] auto-profile: detected 1969 MiB RAM; applying 'Balanced' settings
 ```
 
-Fires once at startup if `URNETWORK_PROFILE=auto` is set or on standard provide paths.
+Fires **once per process** at startup when `URNETWORK_PROFILE=auto` is set, regardless of how many proxy servers are loaded. (Prior to fix.15, this line fired once per proxy server, producing thousands of identical lines on large proxy lists.)
 
 | Message | Meaning |
 |---|---|
@@ -23,6 +23,28 @@ Fires once at startup if `URNETWORK_PROFILE=auto` is set or on standard provide 
 | `[audit] Disk write speed...` | Result of the 1GB cache-busting stress test. |
 | `[audit] Auto-enabling RAM logs...` | The provider decided your disk is too slow and moved logs to `/dev/shm` to protect network performance. |
 | `[tune] auto-profile...` | Confirms which performance tier (Low/Balanced/Perf) was selected based on detected RAM. |
+
+---
+
+## Eco Memory Monitor
+
+```
+[eco] memory pressure detected (available=287MiB), GOGC=25
+[eco] memory critical (available=134MiB), GOGC=10
+[eco] memory pressure eased (available=462MiB), GOGC=50
+```
+
+Fires on state transitions when `URNETWORK_PROFILE=eco` or the `auto` profile selects a tier that enables eco mode (Low or Balanced tiers). The monitor checks available memory every 30 seconds and adjusts GOGC dynamically.
+
+Exactly **one monitor runs per process** regardless of proxy count. (Prior to fix.15, one monitor goroutine was started per proxy server, meaning all copies would log the same line and call `runtime.GC()` simultaneously under pressure.)
+
+| Message | Meaning |
+|---|---|
+| `memory pressure detected` | Available RAM dropped below 300 MiB; GOGC lowered to 25 to collect more aggressively. |
+| `memory critical` | Available RAM below 150 MiB; GOGC at minimum (10). A forced GC cycle runs each tick. |
+| `memory pressure eased` | Available RAM recovered above 450 MiB; GOGC restored to normal (50). |
+
+These only appear when memory actually changes tier — a stable system shows none of them.
 
 ---
 
