@@ -1,5 +1,6 @@
 #!/bin/sh
 # Credits: Ar Rakin, Ryan Mello
+# v3.23-fix fork & customizations: full-bars (GitHub), mesocyclone (Discord)
 # urnet-tools -- URnetwork manager script (also acts as an installation script)
 # GitHub: <https://github.com/full-bars/urnetwork-3.23-fix>
 
@@ -85,6 +86,9 @@ api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 version_file="$install_path/.version"
+
+# Canonical URL for re-running this installer in a freshly created user's context.
+urnet_install_url="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh"
 
 # If no operation is specified:
 # - Default to 'install' if running as a one-off installer (curl | sh)
@@ -430,6 +434,122 @@ EOF
     fi
 }
 
+# Distro-agnostic creation of a dedicated unprivileged user, then finish the
+# install in that user's systemd context. Called only from the interactive
+# root path; exits the script.
+func_assisted_user_setup ()
+{
+    printf "Username to create [urnet]: "
+    read -r newuser < /dev/tty
+    [ -n "$newuser" ] || newuser="urnet"
+    case "$newuser" in
+        *[!a-z0-9_-]*) pr_err "Invalid username '%s' (use lowercase letters, digits, '-' or '_')." "$newuser"; exit 1 ;;
+    esac
+
+    if id "$newuser" >/dev/null 2>&1; then
+        pr_info "User '%s' already exists; reusing it." "$newuser"
+    elif command -v useradd >/dev/null 2>&1; then
+        useradd -m -s /bin/sh "$newuser" || { pr_err "useradd failed for '%s'." "$newuser"; exit 1; }
+        pr_info "Created user '%s'." "$newuser"
+    elif command -v adduser >/dev/null 2>&1; then
+        adduser -D "$newuser" 2>/dev/null || adduser "$newuser" || { pr_err "adduser failed for '%s'." "$newuser"; exit 1; }
+        pr_info "Created user '%s'." "$newuser"
+    else
+        pr_err "No 'useradd' or 'adduser' found. Create a user manually and re-run as them."
+        exit 1
+    fi
+
+    # Grant admin group membership so the user can later run 'urnet-tools optimize'.
+    for grp in sudo wheel; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            if command -v usermod >/dev/null 2>&1; then
+                usermod -aG "$grp" "$newuser" 2>/dev/null && pr_info "Added '%s' to group '%s'." "$newuser" "$grp"
+            elif command -v addgroup >/dev/null 2>&1; then
+                addgroup "$newuser" "$grp" 2>/dev/null && pr_info "Added '%s' to group '%s'." "$newuser" "$grp"
+            fi
+            break
+        fi
+    done
+
+    uid="$(id -u "$newuser")"
+    runtime="/run/user/$uid"
+
+    # Lingering starts the user's systemd + D-Bus without a login session.
+    if command -v loginctl >/dev/null 2>&1; then
+        loginctl enable-linger "$newuser" 2>/dev/null || pr_warn "enable-linger failed; the service may stop on logout."
+    else
+        pr_warn "'loginctl' not found; cannot enable lingering automatically."
+    fi
+
+    # Wait for the per-user bus socket to appear (logind creates it asynchronously).
+    i=0
+    while [ ! -S "$runtime/bus" ] && [ "$i" -lt 15 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ -S "$runtime/bus" ]; then
+        pr_info "Finishing the install as '%s'..." "$newuser"
+        su - "$newuser" -c "export XDG_RUNTIME_DIR='$runtime'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$runtime/bus'; curl -fSsL '$urnet_install_url' | sh" || true
+
+        if su - "$newuser" -c "export XDG_RUNTIME_DIR='$runtime'; export DBUS_SESSION_BUS_ADDRESS='unix:path=$runtime/bus'; systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
+            pr_info "Done. The provider is installed as a user service under '%s'." "$newuser"
+            exit 0
+        fi
+        pr_warn "Could not confirm the user service from this session."
+    else
+        pr_warn "The user session bus for '%s' did not come up in time." "$newuser"
+    fi
+
+    # Bulletproof fallback: a real login session always sets up the bus correctly.
+    pr_info "Log in as '%s' (a fresh SSH or console session) and run:" "$newuser"
+    pr_info "    curl -fSsL %s | sh" "$urnet_install_url"
+    exit 0
+}
+
+# When run as root, the user-level systemd service cannot be set up (root has no
+# user session bus). Guide the operator rather than silently leaving a broken
+# install. Non-systemd hosts (e.g. containers) are unaffected and proceed.
+func_root_guard ()
+{
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ "$has_systemd" -eq 1 ] || return 0
+
+    pr_warn "You are running the installer as root."
+    pr_info "The provider runs as a user-level systemd service (systemctl --user), which"
+    pr_info "needs a session bus that root lacks. As root the service cannot be enabled"
+    pr_info "and you will hit 'Failed to connect to bus' errors."
+
+    # Non-interactive (curl | sh with no terminal): cannot prompt. Preserve the
+    # documented root tools-only path, but warn loudly and show the fix.
+    if [ ! -r /dev/tty ]; then
+        pr_warn "No interactive terminal; continuing with tools only (no service)."
+        pr_info "To run the provider service, create a user and install as them:"
+        pr_info "    useradd -m -s /bin/sh urnet && loginctl enable-linger urnet"
+        pr_info "    su - urnet -c 'curl -fSsL %s | sh'" "$urnet_install_url"
+        return 0
+    fi
+
+    printf "\n  1) Create a dedicated user now and finish as them (recommended)\n"
+    printf "  2) Show the manual steps and exit\n"
+    printf "  3) Continue as root (install tools only, no service)\n"
+    printf "Choose [1/2/3]: "
+    read -r choice < /dev/tty
+    printf "\n"
+
+    case "$choice" in
+        1) func_assisted_user_setup ;;
+        2)
+            pr_info "Run these as your normal (non-root) user:"
+            pr_info "    sudo useradd -m -s /bin/sh urnet && sudo loginctl enable-linger urnet"
+            pr_info "    su - urnet -c 'curl -fSsL %s | sh'" "$urnet_install_url"
+            exit 0
+            ;;
+        3) pr_warn "Continuing as root: tools only, the user service will be skipped." ;;
+        *) pr_err "Invalid choice '%s'." "$choice"; exit 1 ;;
+    esac
+}
+
 do_install ()
 {
     tag="latest"
@@ -452,6 +572,8 @@ do_install ()
                 pr_err "Invalid operation '%s'" "$operation"
                 exit 1
             fi
+
+            func_root_guard
 
             while [ $# -gt 0 ]; do
                 case "$1" in
