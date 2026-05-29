@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.15.2] — 2026-05-28
+
+### Documentation
+- **README Standardization**: Overhauled all `docker run` and `docker compose` examples to include optimized sysctls and automatic hostname detection by default.
+- **Improved Clarity**: Standardized container names to `urfix` and volumes to `${NAME:-urfix}` for safer copy-pasting. Corrected the environment variables table to reflect refined identity logic.
+
+### Fixed
+- **Dashboard Reporting**: Optimized identity logic to avoid redundant `IP @ IP` strings. If no name is provided, only the redacted public IP is reported.
+
+---
+
 ## [v3.23.0-fix.15] — 2026-05-28
 
 ### Added

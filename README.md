@@ -128,7 +128,8 @@ The installation includes the `urnet-tools` suite for easy management:
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with `--log-opt`. See [RAM Logging](#ram-logging-optional). |
 | `URNETWORK_PROFILE` | - | Advanced: directly sets the provider profile (`lowmem`, `eco`, `turbo-v4`, `turbo-v8`). For turbo, prefer the `TURBO` variable above. `lowmem` reduces buffer sizes and sets GOMEMLIMIT=85% RAM. Cannot be combined with `--log-opt`. |
 | `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires a JSON payload when the backend becomes unreachable and again when it recovers. See [Outage Alerting](#outage-alerting-optional). |
-| `URNETWORK_NODE_NAME` | hostname (docker/binary) | Label included in webhook payloads and log lines to identify which server the alert came from. Defaults to the system hostname suffixed with `(docker)` or `(binary)`. |
+| `URNETWORK_NODE_NAME` | hostname / redacted-IP | Friendly label for dashboard identity and webhook alerts. Defaults to the host's actual server name (if provided) or the redacted public IP for privacy. |
+| `HOST_HOSTNAME` | - | Pass the host's actual server name into the container using `-e HOST_HOSTNAME=$(hostname)`. Used for automatic dashboard identity. |
 | `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Accepts Go duration strings (`10m`, `1h`). Minimum `1m`. |
 
 ---
@@ -145,20 +146,23 @@ Set `NAME` once before the command. The container name, JWT storage volume, and 
 NAME=urfix   # change this per container — volumes are named from it
 
 docker run -d \
-  --name=$NAME \
+  --name=urfix \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
@@ -175,12 +179,14 @@ docker run -d \
 NAME=urfix   # change this per container
 
 docker run -d \
-  --name=$NAME \
+  --name=urfix \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
@@ -188,9 +194,10 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
@@ -207,20 +214,23 @@ If you experience `denied` errors or rate-limiting on GHCR, use the Docker Hub m
 NAME=urfix
 
 docker run -d \
-  --name=$NAME \
+  --name=urfix \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
@@ -233,12 +243,14 @@ docker run -d \
 NAME=urfix
 
 docker run -d \
-  --name=$NAME \
+  --name=urfix \
   --pull=always \
   --restart=unless-stopped \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
@@ -246,9 +258,10 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e ENABLE_VNSTAT=true \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest
 ```
@@ -277,6 +290,7 @@ services:
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
+      - HOST_HOSTNAME=\${HOSTNAME:-unknown}
     volumes:
       - urfix_config:/root/.urnetwork   # Update 'urfix' prefix if renaming
       - urfix_vnstat:/var/lib/vnstat     # Update 'urfix' prefix if renaming
@@ -321,6 +335,7 @@ services:
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - ENABLE_VNSTAT=true
+      - HOST_HOSTNAME=\${HOSTNAME:-unknown}
     volumes:
       - urfix_config:/root/.urnetwork
       - urfix_vnstat:/var/lib/vnstat
@@ -362,10 +377,14 @@ services:
     restart: unless-stopped
     pull_policy: always
     cap_add: [NET_ADMIN, NET_RAW]
-    sysctls: [net.ipv4.ip_forward=1]
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.netfilter.nf_conntrack_max=2097152
+      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
+      - HOST_HOSTNAME=\${HOSTNAME:-unknown}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE # Only needed on Node 1
     volumes:
@@ -374,6 +393,12 @@ services:
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9001:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     # Reports healthy once the shared JWT is written, gating the other nodes' start
     healthcheck:
       test: ["CMD-SHELL", "[ -s /root/.urnetwork/jwt ]"]
@@ -389,13 +414,17 @@ services:
     restart: unless-stopped
     pull_policy: always
     cap_add: [NET_ADMIN, NET_RAW]
-    sysctls: [net.ipv4.ip_forward=1]
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.netfilter.nf_conntrack_max=2097152
+      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     depends_on:
       node-1:
         condition: service_healthy   # wait until Node 1 has written the shared JWT
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
+      - HOST_HOSTNAME=\${HOSTNAME:-unknown}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
       - ur_config:/root/.urnetwork  # SHARED volume
@@ -403,6 +432,11 @@ services:
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9002:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Node 3: Uses the JWT created by Node 1
   node-3:
@@ -411,13 +445,17 @@ services:
     restart: unless-stopped
     pull_policy: always
     cap_add: [NET_ADMIN, NET_RAW]
-    sysctls: [net.ipv4.ip_forward=1]
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.netfilter.nf_conntrack_max=2097152
+      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     depends_on:
       node-1:
         condition: service_healthy   # wait until Node 1 has written the shared JWT
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
+      - HOST_HOSTNAME=\${HOSTNAME:-unknown}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
       - ur_config:/root/.urnetwork  # SHARED volume
@@ -425,6 +463,11 @@ services:
       - ./proxy.txt:/app/proxy.txt
     ports:
       - "9003:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   ur_config:      # Shared authentication session
@@ -492,9 +535,15 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
+  --log-driver=json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
-  -e URNETWORK_NODE_NAME=$NAME \
-  -v ${NAME}_config:/root/.urnetwork \
+  -e URNETWORK_NODE_NAME=\$NAME \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
@@ -521,13 +570,16 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e URNETWORK_RAMLOGS=1 \
-  -e URNETWORK_NODE_NAME=$NAME \
+  -e URNETWORK_NODE_NAME=\$NAME \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
@@ -560,12 +612,16 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.netfilter.nf_conntrack_max=2097152 \
+  --sysctl net.netfilter.nf_conntrack_tcp_timeout_established=5400 \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
-  -e URNETWORK_NODE_NAME=$NAME \
-  -v ${NAME}_config:/root/.urnetwork \
-  -v ${NAME}_vnstat:/var/lib/vnstat \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  -e URNETWORK_NODE_NAME=\$NAME \
+  -e ENABLE_VNSTAT=true \
+  -e HOST_HOSTNAME=\$(hostname) \
+  -v \${NAME:-urfix}_config:/root/.urnetwork \
+  -v \${NAME:-urfix}_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
