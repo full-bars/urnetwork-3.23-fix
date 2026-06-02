@@ -132,15 +132,17 @@ type LocalUserNat struct {
 
 	settings *LocalUserNatSettings
 
+	bw *ProxyBandwidth
+
 	// receive callback
 	receiveCallbacks *CallbackList[ReceivePacketFunction]
 }
 
-func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string) *LocalUserNat {
-	return NewLocalUserNat(ctx, clientTag, DefaultLocalUserNatSettings())
+func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string, bw *ProxyBandwidth) *LocalUserNat {
+	return NewLocalUserNat(ctx, clientTag, bw, DefaultLocalUserNatSettings())
 }
 
-func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserNatSettings) *LocalUserNat {
+func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, settings *LocalUserNatSettings) *LocalUserNat {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	localUserNat := &LocalUserNat{
@@ -149,6 +151,7 @@ func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserN
 		clientTag:        clientTag,
 		sendPackets:      make(chan *SendPacket, settings.SequenceBufferSize),
 		settings:         settings,
+		bw:               bw,
 		receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
 	}
 	go HandleError(localUserNat.Run)
@@ -2494,6 +2497,7 @@ type RemoteUserNatProvider struct {
 	localUserNat      *LocalUserNat
 	securityPolicy    SecurityPolicy
 	settings          *RemoteUserNatProviderSettings
+	bw                *ProxyBandwidth
 	localUserNatUnsub func()
 	clientUnsub       func()
 }
@@ -2501,13 +2505,15 @@ type RemoteUserNatProvider struct {
 func NewRemoteUserNatProviderWithDefaults(
 	client *Client,
 	localUserNat *LocalUserNat,
+	bw *ProxyBandwidth,
 ) *RemoteUserNatProvider {
-	return NewRemoteUserNatProvider(client, localUserNat, DefaultRemoteUserNatProviderSettings())
+	return NewRemoteUserNatProvider(client, localUserNat, bw, DefaultRemoteUserNatProviderSettings())
 }
 
 func NewRemoteUserNatProvider(
 	client *Client,
 	localUserNat *LocalUserNat,
+	bw *ProxyBandwidth,
 	settings *RemoteUserNatProviderSettings,
 ) *RemoteUserNatProvider {
 	userNatProvider := &RemoteUserNatProvider{
@@ -2515,6 +2521,7 @@ func NewRemoteUserNatProvider(
 		localUserNat:   localUserNat,
 		securityPolicy: settings.EgressSecurityPolicyGenerator(DefaultSecurityPolicyStatsCollector()),
 		settings:       settings,
+		bw:             bw,
 	}
 
 	localUserNatUnsub := localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
@@ -2536,6 +2543,9 @@ func (self *RemoteUserNatProvider) Receive(
 	ipPath *IpPath,
 	packet []byte,
 ) {
+	if self.bw != nil {
+		self.bw.BillableRx.Add(uint64(len(packet)))
+	}
 	// glog.Infof("[trace]provider return packet for %s\n", source.SourceId)
 
 	if self.client.ClientId() == source.SourceId {
@@ -2606,6 +2616,9 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 				panic(err)
 			}
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
+			if self.bw != nil {
+				self.bw.BillableTx.Add(uint64(len(ipPacketToProvider.IpPacket.PacketBytes)))
+			}
 
 			ipPath, err := ParseIpPath(ipPacketToProvider.IpPacket.PacketBytes)
 			if err == nil {
@@ -2697,7 +2710,7 @@ func NewRemoteUserNatClientWithClose(
 	// no ulimit for local traffic
 	localUserNatSettings.UdpBufferSettings.UserLimit = 0
 	localUserNatSettings.TcpBufferSettings.UserLimit = 0
-	localUserNat := NewLocalUserNat(client.Ctx(), "remote local", localUserNatSettings)
+	localUserNat := NewLocalUserNat(client.Ctx(), "remote local", nil, localUserNatSettings)
 
 	userNatClient := &RemoteUserNatClient{
 		client:                client,
