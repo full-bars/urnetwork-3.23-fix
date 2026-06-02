@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Active Connection Counter**: Added `connections=N` to the `[health]` heartbeat log. This provides real-time visibility into the number of active TCP and UDP proxy sessions directly from the standard output.
+
+---
+
 ## [v3.23.0-fix.15.4] — 2026-05-29
 
 ### Added

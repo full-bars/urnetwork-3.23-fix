@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
@@ -28,6 +29,12 @@ import (
 
 	"github.com/urnetwork/connect/protocol"
 )
+
+var activeConnectionCount int64
+
+func ActiveConnectionCount() int64 {
+	return atomic.LoadInt64(&activeConnectionCount)
+}
 
 // implements user-space NAT (UNAT) and packet inspection
 // The UNAT emulates a raw socket using user-space sockets.
@@ -639,6 +646,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		buffer:          gopacket.NewSerializeBufferExpectedSize(128, 2048),
 		userLimited:     *newUserLimited(),
 	}
+	atomic.AddInt64(&activeConnectionCount, 1)
 	return &UdpSequence{
 		ctx:               cancelCtx,
 		cancel:            cancel,
@@ -701,6 +709,7 @@ func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (boo
 
 func (self *UdpSequence) Run() {
 	defer func() {
+		atomic.AddInt64(&activeConnectionCount, -1)
 		self.cancel()
 
 		func() {
@@ -1361,7 +1370,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		buffer:      gopacket.NewSerializeBufferExpectedSize(128, 2048),
 		userLimited: *newUserLimited(),
 	}
-	return &TcpSequence{
+	sequence := &TcpSequence{
 		ctx:               cancelCtx,
 		cancel:            cancel,
 		receiveCallback:   receiveCallback,
@@ -1370,6 +1379,8 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		idleCondition:     NewIdleCondition(),
 		ConnectionState:   connectionState,
 	}
+	atomic.AddInt64(&activeConnectionCount, 1)
+	return sequence
 }
 
 func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (bool, error) {
@@ -1423,6 +1434,7 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 
 func (self *TcpSequence) Run() {
 	defer func() {
+		atomic.AddInt64(&activeConnectionCount, -1)
 		self.cancel()
 
 		func() {
