@@ -33,6 +33,7 @@ show_help ()
     echo "Proxy Management:"
     echo "  proxy add <file>        🌐 ADD: bulk add proxies from a text file"
     echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
+    echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
@@ -1579,6 +1580,24 @@ do_proxy () {
         clear)
             pr_info "Clearing all proxies..."
             "$provider_bin" proxy remove --all
+            ;;
+        health)
+            health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
+            state_file="$health_dir/proxy_health.state"
+            log_file="$health_dir/proxy_health.log"
+            if [ -f "$state_file" ]; then
+                pr_info "Current proxy health ($state_file):"
+                cat "$state_file"
+            else
+                pr_warn "No snapshot yet at %s (waiting for first heartbeat?)." "$state_file"
+            fi
+            if [ -f "$log_file" ]; then
+                echo
+                pr_info "Streaming proxy health events ($log_file). Ctrl-C to stop."
+                tail -n 20 -f "$log_file"
+            else
+                pr_warn "No event log yet at %s." "$log_file"
+            fi
             ;;
         *)
             pr_err "Unknown proxy command: %s (Try 'add' or 'clear')" "$cmd"
