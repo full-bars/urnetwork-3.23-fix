@@ -36,19 +36,36 @@ func capProxyList(items []string, cap int) string {
 	return strings.Join(shortItems[:cap], ", ") + fmt.Sprintf(", ... (+%d more)", len(shortItems)-cap)
 }
 
+func parseProxyString(s string) (string, string) {
+	parts := strings.SplitN(s, " (", 2)
+	if len(parts) == 2 {
+		return parts[0], strings.TrimRight(parts[1], ")")
+	}
+	return s, ""
+}
+
 // formatStateFile renders the complete current-state snapshot (uncapped).
 func formatStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	var b strings.Builder
 	down := len(r.Dead) + len(r.Degraded)
-	fmt.Fprintf(&b, "# updated %s  up=%d down=%d dead=%d degraded=%d\n",
-		now.UTC().Format(time.RFC3339), r.Up, down, len(r.Dead), len(r.Degraded))
-	fmt.Fprintf(&b, "# lifetime_recovered=%d lifetime_lost=%d\n", r.LifetimeRecovered, r.LifetimeLost)
+	fmt.Fprintf(&b, "=========================================================\n")
+	fmt.Fprintf(&b, " URNETWORK PROXY HEALTH REPORT\n")
+	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, " Up: %d | Down: %d | Dead: %d | Degraded: %d\n", r.Up, down, len(r.Dead), len(r.Degraded))
+	fmt.Fprintf(&b, " Lifetime Recovered: %d | Lifetime Lost: %d\n", r.LifetimeRecovered, r.LifetimeLost)
+	fmt.Fprintf(&b, "=========================================================\n")
+	fmt.Fprintf(&b, "+----------+-------------+---------------------------------+\n")
+	fmt.Fprintf(&b, "| STATUS   | PROXY ID    | IP ADDRESS                      |\n")
+	fmt.Fprintf(&b, "+----------+-------------+---------------------------------+\n")
 	for _, s := range r.Dead {
-		fmt.Fprintf(&b, "DEAD     %s\n", s)
+		p, ip := parseProxyString(s)
+		fmt.Fprintf(&b, "| %-8s | %-11s | %-31s |\n", "DEAD", p, ip)
 	}
 	for _, s := range r.Degraded {
-		fmt.Fprintf(&b, "DEGRADED %s\n", s)
+		p, ip := parseProxyString(s)
+		fmt.Fprintf(&b, "| %-8s | %-11s | %-31s |\n", "DEGRADED", p, ip)
 	}
+	fmt.Fprintf(&b, "+----------+-------------+---------------------------------+\n")
 	return b.String()
 }
 
@@ -57,23 +74,22 @@ func formatEventLines(r connect.ProxyHealthReport, now time.Time) []string {
 	ts := now.UTC().Format(time.RFC3339)
 	var lines []string
 	for _, e := range r.Recovered {
+		p := fmt.Sprintf("proxy[%d]", e.Index)
 		if e.After > 0 {
-			lines = append(lines, fmt.Sprintf("%s RECOVERED %s after=%s", ts, connectProxyEntry(e), e.After.Round(time.Second)))
+			lines = append(lines, fmt.Sprintf("| %s | %-9s | %-11s | %-21s | after=%-7s |", ts, "RECOVERED", p, e.Address, e.After.Round(time.Second)))
 		} else {
-			lines = append(lines, fmt.Sprintf("%s RECOVERED %s", ts, connectProxyEntry(e)))
+			lines = append(lines, fmt.Sprintf("| %s | %-9s | %-11s | %-21s | %-13s |", ts, "RECOVERED", p, e.Address, ""))
 		}
 	}
 	for _, e := range r.NewlyDegraded {
-		lines = append(lines, fmt.Sprintf("%s DEGRADED  %s", ts, connectProxyEntry(e)))
+		p := fmt.Sprintf("proxy[%d]", e.Index)
+		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-11s | %-21s | %-13s |", ts, "DEGRADED", p, e.Address, ""))
 	}
 	for _, e := range r.NewlyDead {
-		lines = append(lines, fmt.Sprintf("%s DEAD      %s", ts, connectProxyEntry(e)))
+		p := fmt.Sprintf("proxy[%d]", e.Index)
+		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-11s | %-21s | %-13s |", ts, "DEAD", p, e.Address, ""))
 	}
 	return lines
-}
-
-func connectProxyEntry(e connect.ProxyEvent) string {
-	return fmt.Sprintf("proxy[%d] (%s)", e.Index, e.Address)
 }
 
 const proxyHealthLogMaxBytes = 20 * 1024 * 1024 // 20 MB
