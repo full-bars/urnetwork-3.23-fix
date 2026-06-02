@@ -30,3 +30,11 @@
 | Lowmem | `URNETWORK_PROFILE=lowmem` | Minimum RAM, reduced throughput | < 1 GiB |
 
 See [High-Volume Performance Tuning](High-Volume-Performance-Tuning.md) for the detailed profile behavior and parameter tables.
+## Viewing proxy health
+
+You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions:
+
+*   **Host**: Run `urnet-tools proxy health`.
+*   **Docker**: See [Docker Deployment](Docker-Deployment.md) for the `proxy-health` command.
+
+The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).
