@@ -14,15 +14,26 @@ import (
 // apply to the persistent files, which always carry the complete list.
 const proxyHealthListCap = 50
 
-// capProxyList joins items with ", ", truncating to cap with a "(+N more)" suffix.
+// capProxyList extracts the proxy index from items, joins them with ", ", and truncates to cap with a "(+N more)" suffix.
 func capProxyList(items []string, cap int) string {
 	if len(items) == 0 {
 		return ""
 	}
-	if len(items) <= cap {
-		return strings.Join(items, ", ")
+	var shortItems []string
+	for _, item := range items {
+		start := strings.Index(item, "[")
+		end := strings.Index(item, "]")
+		if start != -1 && end != -1 && end > start {
+			shortItems = append(shortItems, item[start+1:end])
+		} else {
+			shortItems = append(shortItems, item)
+		}
 	}
-	return strings.Join(items[:cap], ", ") + fmt.Sprintf(", ... (+%d more)", len(items)-cap)
+	
+	if len(shortItems) <= cap {
+		return strings.Join(shortItems, ", ")
+	}
+	return strings.Join(shortItems[:cap], ", ") + fmt.Sprintf(", ... (+%d more)", len(shortItems)-cap)
 }
 
 // formatStateFile renders the complete current-state snapshot (uncapped).
