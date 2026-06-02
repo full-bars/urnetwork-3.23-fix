@@ -447,6 +447,19 @@ func isBetterMode(current TransportMode, other TransportMode) bool {
 	return transportModePreferences[current] < transportModePreferences[other]
 }
 
+// proxyIndex returns this transport's proxy list index when running behind a
+// proxy, or ok=false in non-proxy (direct) mode.
+func (self *PlatformTransport) proxyIndex() (int, bool) {
+	if self.clientStrategy == nil || self.clientStrategy.settings == nil {
+		return 0, false
+	}
+	ps := self.clientStrategy.settings.ProxySettings
+	if ps == nil {
+		return 0, false
+	}
+	return ps.Index, true
+}
+
 func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	// connect and update route manager for this transport
 	defer self.cancel()
@@ -665,9 +678,15 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
 			atomic.AddInt64(&activeProxyConnections, 1)
+			if idx, ok := self.proxyIndex(); ok {
+				markProxyUp(idx)
+			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
+				if idx, ok := self.proxyIndex(); ok {
+					markProxyDown(idx)
+				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
 			}()
@@ -1180,9 +1199,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
 			atomic.AddInt64(&activeProxyConnections, 1)
+			if idx, ok := self.proxyIndex(); ok {
+				markProxyUp(idx)
+			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
+				if idx, ok := self.proxyIndex(); ok {
+					markProxyDown(idx)
+				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
 
