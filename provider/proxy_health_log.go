@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -61,4 +63,57 @@ func formatEventLines(r connect.ProxyHealthReport, now time.Time) []string {
 
 func connectProxyEntry(e connect.ProxyEvent) string {
 	return fmt.Sprintf("proxy[%d] (%s)", e.Index, e.Address)
+}
+
+const proxyHealthLogMaxBytes = 20 * 1024 * 1024 // 20 MB
+
+// proxyHealthDir resolves the directory for the persistent files:
+// URNETWORK_PROXY_HEALTH_DIR, else <home>/.urnetwork. Returns ok=false if neither
+// can be resolved (persistence then disabled by the caller).
+func proxyHealthDir() (string, bool) {
+	if d := os.Getenv("URNETWORK_PROXY_HEALTH_DIR"); d != "" {
+		return d, true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(home, ".urnetwork"), true
+}
+
+// writeProxyHealthState atomically rewrites the current-state snapshot file.
+func writeProxyHealthState(dir string, r connect.ProxyHealthReport, now time.Time) {
+	path := filepath.Join(dir, "proxy_health.state")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(formatStateFile(r, now)), 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// writeProxyHealthEvents appends transition lines (if any) to the event log,
+// rotating first when it would exceed the size cap.
+func writeProxyHealthEvents(dir string, r connect.ProxyHealthReport, now time.Time) {
+	lines := formatEventLines(r, now)
+	if len(lines) == 0 {
+		return
+	}
+	path := filepath.Join(dir, "proxy_health.log")
+	rotateIfNeeded(path, proxyHealthLogMaxBytes)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(strings.Join(lines, "\n") + "\n")
+}
+
+// rotateIfNeeded renames path to path.1 (replacing any prior .1) when it exceeds
+// maxBytes, keeping one generation of history.
+func rotateIfNeeded(path string, maxBytes int64) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= maxBytes {
+		return
+	}
+	_ = os.Rename(path, path+".1")
 }
