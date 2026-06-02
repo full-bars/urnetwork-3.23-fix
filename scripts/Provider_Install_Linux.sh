@@ -34,6 +34,7 @@ show_help ()
     echo "  proxy add <file>        🌐 ADD: bulk add proxies from a text file"
     echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
     echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
+    echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
@@ -1597,6 +1598,16 @@ do_proxy () {
                 tail -n 20 -f "$log_file"
             else
                 pr_warn "No event log yet at %s." "$log_file"
+            fi
+            ;;
+        traffic)
+            health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
+            state_file="$health_dir/proxy_traffic.state"
+            if [ -f "$state_file" ]; then
+                pr_info "Current proxy traffic ($state_file):"
+                cat "$state_file"
+            else
+                pr_warn "No traffic snapshot yet at %s." "$state_file"
             fi
             ;;
         *)
