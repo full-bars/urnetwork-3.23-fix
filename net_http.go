@@ -1149,6 +1149,8 @@ func (self *clientDialer) String() string {
 
 	if self.extenderConfig != nil {
 		return fmt.Sprintf("extender (%v) success=%d error=%d", self.extenderConfig, self.successCount, self.errorCount)
+	} else if self.settings != nil && self.settings.ProxySettings != nil {
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount)
 	} else {
 		return fmt.Sprintf("%s success=%d error=%d", self.description, self.successCount, self.errorCount)
 	}

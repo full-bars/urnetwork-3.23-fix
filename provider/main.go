@@ -1006,6 +1006,7 @@ func provide(opts docopt.Opts) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
 		for i, proxySettings := range allProxySettings {
+			proxySettings.Index = i
 			var user string
 			var password string
 			if proxySettings.Auth != nil {

@@ -143,6 +143,40 @@ A contract was allocated and is filling up. The provider tried to debit bytes fr
 
 ---
 
+## Outage Watcher
+
+```
+[outage] watcher active node=my-server (docker) webhook=configured
+[outage] backend degraded
+[outage] backend recovered
+```
+
+Monitors backend connectivity. It is designed to be conservative to avoid false alarms.
+
+| Message | Meaning |
+|---|---|
+| `watcher active` | Confirms the background monitor is running and identifies the node. |
+| `backend degraded` | The provider has failed several consecutive connection attempts to the platform. New connections are likely to fail. |
+| `backend recovered` | Connectivity has been restored. The provider will resume normal operations. |
+
+**Note:** An outage is only declared after **5 minutes** of continuous failure. Alerts via webhook (if configured) fire on these transitions.
+
+---
+
+## Packet Drop Rate-Limiting
+
+```
+[r]drop: write error: connection reset by peer (1,420 suppressed)
+```
+
+The `[r]drop` message indicates the provider dropped a packet because it couldn't be delivered to the final destination (e.g., target website or proxy).
+
+- These are **rate-limited to 1 per minute** globally to prevent log flooding during network instability.
+- The `(N suppressed)` suffix shows how many other drops occurred since the last log line.
+- High drop counts are normal during global outages or if a specific proxy server goes down.
+
+---
+
 ## Health Heartbeat
 
 ```
@@ -169,13 +203,11 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 ## Connection Selection (3.23-fix variant)
 
 ```
-[net][s]select: fragment success=6086 error=192
-[net][s]select: reorder success=1114 error=140
-[net][s]select: normal success=2221 error=223
-[net][s]select: fragment+reorder success=3727 error=172
+[net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192
+[net][s]select: proxy[13] (5.6.7.8:1081) [normal] success=2221 error=223
 ```
 
-Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each line represents the provider selecting a routing strategy for a client session.
+Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each line represents the provider selecting a routing strategy for a client session. When running with a proxy list, it indicates exactly which proxy is handling the traffic, making it easy to spot failing IPs.
 
 | Mode | Meaning |
 |---|---|
@@ -183,6 +215,9 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | `fragment` | Packet fragmentation applied to work around path MTU issues |
 | `reorder` | Packets reordered to improve delivery on lossy paths |
 | `fragment+reorder` | Both applied |
+
+**What to watch for:**
+- A single proxy showing a high `error=` count relative to `success=` — indicates that specific proxy IP might be unreachable or banned by the platform. You can remove it from your `proxy.txt`.
 
 - `success=N` — cumulative successful connections using this strategy
 - `error=N` — cumulative failed attempts
