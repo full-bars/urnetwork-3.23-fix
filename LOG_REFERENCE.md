@@ -200,6 +200,35 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
 
+### Dead-Proxy Health Report
+
+In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
+
+```
+[health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
+[health][proxies] dead: proxy[112] (45.3.32.184:1081), proxy[266] (104.207.45.110:1081), ... (+2 more)
+[health][proxies] degraded: proxy[49] (209.50.167.49:1081), proxy[1037] (209.50.169.110:1081), proxy[660] (98.76.54.32:1081)
+```
+
+| Field | Meaning |
+|---|---|
+| `up` / `down` | Current proxy state (`up` agrees with `proxies=N`). |
+| `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
+| `degraded` | Proxies that worked before but are currently down. |
+| `recovered` / `lost` | Down->up and up->down transitions since the last heartbeat. |
+| `lifetime_recovered` / `lifetime_lost` | Cumulative transition counts since process start. |
+
+- The detail lines are capped at 50 entries in stdout (shows `... (+N more)` when truncated).
+- A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
+
+### Hourly Pulse Marker
+
+```
+[pulse] waking stalled transports: down=12 dead=3 degraded=9
+```
+
+An hourly retry sweep is performed to wake stalled transports. This marker logs the pre-pulse state, so you can track how many of the `down` proxies are `recovered` in the next heartbeat.
+
 ---
 
 ## Connection Selection (3.23-fix variant)

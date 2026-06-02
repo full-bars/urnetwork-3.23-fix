@@ -342,6 +342,14 @@ docker exec -it urfix tail -f /dev/shm/urnetwork.log
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
 
+## Viewing Proxy Health
+
+You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
+
+- Persistent (always): `docker exec -it <container> proxy-health`
+- Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
+- Live-tail RAMLOGS off: `docker logs -f <container> 2>&1 | grep -E '\[health\]\[proxies\]|\[pulse\]'`
+
 ## Auto-Tune Performance
 
 The Auto-Tune feature (`URNETWORK_PROFILE=auto`) automatically optimizes the provider based on server hardware.
