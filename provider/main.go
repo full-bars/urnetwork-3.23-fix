@@ -794,6 +794,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// deadConfirmDelay gates confirmed-dead event logging until one pulse cycle has
+	// elapsed, so the startup ramp is not recorded as dead.
+	const deadConfirmDelay = 65 * time.Minute
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -811,6 +815,29 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		uptime := time.Since(startTime).Truncate(time.Second)
 		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
 			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
+
+		if connect.ProxyHealthCount() == 0 {
+			continue // non-proxy mode: no [health][proxies] lines
+		}
+
+		now := time.Now()
+		report := connect.ProxyHealthHeartbeat(uptime >= deadConfirmDelay)
+		down := len(report.Dead) + len(report.Degraded)
+		fmt.Printf("[health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
+			report.Up, down, len(report.Dead), len(report.Degraded),
+			len(report.Recovered), len(report.NewlyDegraded),
+			report.LifetimeRecovered, report.LifetimeLost)
+		if len(report.Dead) > 0 {
+			fmt.Printf("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
+		}
+		if len(report.Degraded) > 0 {
+			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
+		}
+
+		if dir, ok := proxyHealthDir(); ok {
+			writeProxyHealthState(dir, report, now)
+			writeProxyHealthEvents(dir, report, now)
+		}
 	}
 }
 
@@ -857,6 +884,13 @@ func provide(opts docopt.Opts) {
 			case <-ctx.Done():
 				return
 			case <-time.After(1 * time.Hour):
+				if connect.ProxyHealthCount() > 0 {
+					up, dead, degraded := connect.ProxyHealthSnapshot()
+					down := len(dead) + len(degraded)
+					_ = up
+					fmt.Printf("[pulse] waking stalled transports: down=%d dead=%d degraded=%d\n",
+						down, len(dead), len(degraded))
+				}
 				connect.TriggerPulse()
 			}
 		}
@@ -1007,6 +1041,7 @@ func provide(opts docopt.Opts) {
 
 		for i, proxySettings := range allProxySettings {
 			proxySettings.Index = i
+			connect.RegisterProxy(i, proxySettings.Address)
 			var user string
 			var password string
 			if proxySettings.Auth != nil {
