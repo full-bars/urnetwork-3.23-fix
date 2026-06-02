@@ -809,8 +809,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB\n",
-			uptime, profile, heapMiB, sysMiB)
+		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d\n",
+			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount())
 	}
 }
 
