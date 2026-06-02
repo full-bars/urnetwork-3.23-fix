@@ -199,6 +199,9 @@ Rules:
   volume during a mass outage of a 1200-proxy fleet, consistent with the fork's
   log-spam discipline. Example when truncated:
   `[health][proxies] dead: proxy[3] (1.2.3.4:1081), ... (+217 more)`
+  **This cap applies to the stdout/combined-log lines only.** The persistent files
+  (Component 5) are never truncated and never show `(+N more)` — they always carry
+  the complete dead/degraded list.
 - On the **first** heartbeat the transition fields read
   `recovered=0 lost=0 lifetime_recovered=0 lifetime_lost=0` (baseline
   establishment), then populate from the second heartbeat onward.
@@ -250,9 +253,10 @@ DEGRADED proxy[49] (209.50.167.49:1081)
 DEGRADED proxy[660] (98.76.54.32:1081)
 DEGRADED proxy[1037] (209.50.169.110:1081)
 ```
-Written via temp-file + rename so a reader never sees a half-written file. **Not
-capped** (size is bounded by the proxy count). The snapshot lists are *not* subject
-to the 50-entry display cap — the file is the complete record.
+Written via temp-file + rename so a reader never sees a half-written file. **Never
+truncated and no `(+N more)`** — the 50-entry display cap is a stdout-only concern;
+this file always lists *every* dead and degraded proxy (size is bounded by the
+proxy count). The whole point is a complete, durable record.
 
 **(b) Durable event log — `proxy_health.log`, append-only.** Answers "which proxies
 have been problematic, and when?" One line per transition, sourced from
@@ -263,8 +267,11 @@ have been problematic, and when?" One line per transition, sourced from
 2026-06-02T15:10:03Z DEGRADED  proxy[49] (209.50.167.49:1081)
 2026-06-02T16:05:11Z RECOVERED proxy[49] (209.50.167.49:1081) after=55m8s
 ```
-Rotation: when the file exceeds **20 MB**, rename it to `proxy_health.log.1`
-(replacing any previous `.1`) and start fresh — one generation retained.
+Every transition is written in full — the event log is never list-truncated and
+never shows `(+N more)`. Rotation: when the file exceeds **20 MB**, rename it to
+`proxy_health.log.1` (replacing any previous `.1`) and start fresh — one generation
+retained. (Rotation only ages out old history; it never drops entries from a current
+write.)
 
 Mechanics:
 
@@ -388,8 +395,18 @@ pulse tick (~60m) --> ProxyHealthSnapshot() (read-only) --> log [pulse] line
   `[pulse]` marker, the `dead` / `degraded` label definitions, the persistent
   files (`proxy_health.state` / `proxy_health.log`), and the pulse-cadence framing
   ("trustworthy after ~1h").
-- **Viewing proxy health (new docs subsection, e.g. in `docs/Configuration.md` and
-  `docs/Docker-Deployment.md`):**
+- **The `proxy health` / `proxy-health` commands must be documented everywhere the
+  other ops commands are**, so operators discover them:
+  - `README.md` — add to the command/usage overview alongside `urnet-tools logs`,
+    `proxy add`, etc.
+  - `docs/Configuration.md` and `docs/Docker-Deployment.md` — the full "Viewing
+    proxy health" subsection below.
+  - `scripts/Provider_Install_Linux.sh` `usage()` help text — list `proxy health`.
+  - GitHub **wiki** — the `docs/*.md` pages mirror wiki pages; update the
+    corresponding wiki page(s) (Configuration, Docker Deployment, and any
+    Commands/Logging page) to match.
+  - `LOG_REFERENCE.md` and `FORK_CHANGES.md` as noted above.
+- **Viewing proxy health (new docs subsection):**
   - Persistent record (RAMLOGS-independent, always works):
     - Host: `urnet-tools proxy health`
     - Docker: `docker exec -it <container> proxy-health`
