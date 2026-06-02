@@ -677,9 +677,11 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			self.routeManager.UpdateTransport(sendTransport, []Route{exportedSend})
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
+			var bw *ProxyBandwidth
 			atomic.AddInt64(&activeProxyConnections, 1)
 			if idx, ok := self.proxyIndex(); ok {
 				markProxyUp(idx)
+				bw = RegisterProxyBandwidth(idx)
 			}
 
 			defer func() {
@@ -727,6 +729,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				write := func(message []byte) error {
 					ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 					err := ws.WriteMessage(websocket.BinaryMessage, message)
+					if bw != nil {
+						bw.TotalTx.Add(uint64(len(message)))
+					}
 					MessagePoolReturn(message)
 					if err != nil {
 						// note that for websocket a dealine timeout cannot be recovered
@@ -839,6 +844,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						if err != nil {
 							glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
 							return
+						}
+
+						if bw != nil {
+							bw.TotalRx.Add(uint64(len(message)))
 						}
 
 						readCounter.Add(1)
@@ -1198,9 +1207,11 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			self.routeManager.UpdateTransport(sendTransport, []Route{send})
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
+			var bw *ProxyBandwidth
 			atomic.AddInt64(&activeProxyConnections, 1)
 			if idx, ok := self.proxyIndex(); ok {
 				markProxyUp(idx)
+				bw = RegisterProxyBandwidth(idx)
 			}
 
 			defer func() {
@@ -1259,6 +1270,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						// }
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
 						err := framer.Write(stream, message)
+						if bw != nil {
+							bw.TotalTx.Add(uint64(len(message)))
+						}
 						MessagePoolReturn(message)
 						if err != nil {
 							// note that for websocket a dealine timeout cannot be recovered
@@ -1294,6 +1308,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					if err != nil {
 						glog.Infof("[tr]%s<- error = %s\n", clientId, err)
 						return
+					}
+
+					if bw != nil {
+						bw.TotalRx.Add(uint64(len(message)))
 					}
 
 					if 0 == len(message) {

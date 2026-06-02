@@ -4,8 +4,14 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// ProxyBandwidth tracks the data usage of a proxy.
+type ProxyBandwidth struct {
+	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
+}
 
 // proxyHealth tracks one proxy's platform-transport liveness for the
 // [health][proxies] report. See docs/design/dead-proxy-health-report.md.
@@ -16,7 +22,9 @@ type proxyHealth struct {
 	downSince   time.Time // when currentlyUp last went false (for recovery latency)
 	lastSeenUp  bool      // currentlyUp as of the previous heartbeat (baseline)
 	deadLogged  bool      // a confirmed-dead event has been emitted for this proxy
+	bw          *ProxyBandwidth
 }
+
 
 // ProxyEvent identifies a proxy in a transition list. After is set for
 // recovered events (time the proxy was down before coming back).
@@ -38,6 +46,8 @@ type ProxyHealthReport struct {
 
 	LifetimeRecovered int
 	LifetimeLost      int
+
+	Bandwidth map[string]ProxyBandwidth
 }
 
 var (
@@ -57,6 +67,22 @@ func RegisterProxy(index int, address string) {
 	if _, ok := proxyHealthByIndex[index]; !ok {
 		proxyHealthByIndex[index] = &proxyHealth{address: address}
 	}
+}
+
+// RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
+func RegisterProxyBandwidth(index int) *ProxyBandwidth {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	h, ok := proxyHealthByIndex[index]
+	if !ok {
+		// Initialize it if it doesn't exist
+		h = &proxyHealth{address: ""}
+		proxyHealthByIndex[index] = h
+	}
+	if h.bw == nil {
+		h.bw = &ProxyBandwidth{}
+	}
+	return h.bw
 }
 
 // markProxyUp records that the proxy's platform transport is live.
@@ -106,9 +132,10 @@ func sortedIndicesLocked() []int {
 // ProxyHealthSnapshot returns the current state without advancing the transition
 // baseline, so it is safe to call from the pulse-fire marker. Lists are complete
 // (no display cap) and index-sorted.
-func ProxyHealthSnapshot() (up int, dead []string, degraded []string) {
+func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]ProxyBandwidth) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
+	bandwidth = make(map[string]ProxyBandwidth)
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
 		switch {
@@ -119,8 +146,17 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string) {
 		default:
 			dead = append(dead, formatProxyEntry(idx, h.address))
 		}
+		
+		if h.bw != nil {
+			var pb ProxyBandwidth
+			pb.TotalRx.Store(h.bw.TotalRx.Load())
+			pb.TotalTx.Store(h.bw.TotalTx.Load())
+			pb.BillableRx.Store(h.bw.BillableRx.Load())
+			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			bandwidth[formatProxyEntry(idx, h.address)] = pb
+		}
 	}
-	return up, dead, degraded
+	return up, dead, degraded, bandwidth
 }
 
 // ProxyHealthHeartbeat builds the per-heartbeat report and advances the transition
@@ -134,6 +170,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 	now := time.Now()
 	first := !proxyBaselineSet
 	var r ProxyHealthReport
+	r.Bandwidth = make(map[string]ProxyBandwidth)
 
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
@@ -145,6 +182,15 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 			r.Degraded = append(r.Degraded, formatProxyEntry(idx, h.address))
 		default:
 			r.Dead = append(r.Dead, formatProxyEntry(idx, h.address))
+		}
+
+		if h.bw != nil {
+			var pb ProxyBandwidth
+			pb.TotalRx.Store(h.bw.TotalRx.Load())
+			pb.TotalTx.Store(h.bw.TotalTx.Load())
+			pb.BillableRx.Store(h.bw.BillableRx.Load())
+			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			r.Bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 
 		if !first {

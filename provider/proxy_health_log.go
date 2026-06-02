@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,6 +70,58 @@ func formatStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	return b.String()
 }
 
+func formatBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := float64(unit), 0
+	for n := float64(b) / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/div, "KMGTPE"[exp])
+}
+
+// formatTrafficStateFile renders the complete traffic usage report.
+func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "========================================================================\n")
+	fmt.Fprintf(&b, " URNETWORK PROXY TRAFFIC REPORT\n")
+	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "========================================================================\n")
+	fmt.Fprintf(&b, "+----------+-----------------------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "| PROXY ID | IP ADDRESS            | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
+	fmt.Fprintf(&b, "+----------+-----------------------+-------------------+-------------------+\n")
+
+	type proxyEntry struct {
+		Proxy string
+		IP    string
+		Bw    connect.ProxyBandwidth
+	}
+	var entries []proxyEntry
+	for k, bw := range r.Bandwidth {
+		p, ip := parseProxyString(k)
+		entries = append(entries, proxyEntry{Proxy: p, IP: ip, Bw: bw})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		sumI := entries[i].Bw.BillableTx.Load() + entries[i].Bw.BillableRx.Load()
+		sumJ := entries[j].Bw.BillableTx.Load() + entries[j].Bw.BillableRx.Load()
+		if sumI != sumJ {
+			return sumI > sumJ // descending order
+		}
+		return entries[i].Proxy < entries[j].Proxy
+	})
+
+	for _, e := range entries {
+		billableStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.BillableTx.Load()), formatBytes(e.Bw.BillableRx.Load()))
+		totalStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.TotalTx.Load()), formatBytes(e.Bw.TotalRx.Load()))
+		fmt.Fprintf(&b, "| %-8s | %-21s | %-17s | %-17s |\n", e.Proxy, e.IP, billableStr, totalStr)
+	}
+
+	return b.String()
+}
+
 // formatEventLines renders one append-line per transition (complete, uncapped).
 func formatEventLines(r connect.ProxyHealthReport, now time.Time) []string {
 	ts := now.UTC().Format(time.RFC3339)
@@ -113,6 +166,16 @@ func writeProxyHealthState(dir string, r connect.ProxyHealthReport, now time.Tim
 	path := filepath.Join(dir, "proxy_health.state")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(formatStateFile(r, now)), 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// writeProxyTrafficState atomically rewrites the proxy traffic snapshot file.
+func writeProxyTrafficState(dir string, r connect.ProxyHealthReport, now time.Time) {
+	path := filepath.Join(dir, "proxy_traffic.state")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(formatTrafficStateFile(r, now)), 0644); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, path)

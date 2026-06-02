@@ -1,0 +1,772 @@
+WORK=/tmp/go-build2740298335
+mkdir -p $WORK/b370/
+mkdir -p $WORK/b378/
+mkdir -p $WORK/b006/
+mkdir -p $WORK/b008/
+mkdir -p $WORK/b014/
+mkdir -p $WORK/b012/
+mkdir -p $WORK/b017/
+mkdir -p $WORK/b025/
+mkdir -p $WORK/b016/
+mkdir -p $WORK/b015/
+mkdir -p $WORK/b018/
+mkdir -p $WORK/b067/
+mkdir -p $WORK/b032/
+mkdir -p $WORK/b023/
+mkdir -p $WORK/b274/
+mkdir -p $WORK/b235/
+mkdir -p $WORK/b033/
+mkdir -p $WORK/b043/
+mkdir -p $WORK/b286/
+mkdir -p $WORK/b051/
+mkdir -p $WORK/b030/
+mkdir -p $WORK/b278/
+mkdir -p $WORK/b063/
+mkdir -p $WORK/b035/
+mkdir -p $WORK/b165/
+mkdir -p $WORK/b117/
+mkdir -p $WORK/b127/
+mkdir -p $WORK/b116/
+mkdir -p $WORK/b072/
+mkdir -p $WORK/b334/
+mkdir -p $WORK/b156/
+mkdir -p $WORK/b199/
+mkdir -p $WORK/b022/
+mkdir -p $WORK/b138/
+mkdir -p $WORK/b193/
+mkdir -p $WORK/b183/
+mkdir -p $WORK/b202/
+mkdir -p $WORK/b029/
+mkdir -p $WORK/b042/
+mkdir -p $WORK/b021/
+mkdir -p $WORK/b221/
+mkdir -p $WORK/b091/
+mkdir -p $WORK/b011/
+mkdir -p $WORK/b005/
+mkdir -p $WORK/b019/
+mkdir -p $WORK/b039/
+mkdir -p $WORK/b071/
+mkdir -p $WORK/b027/
+mkdir -p $WORK/b010/
+mkdir -p $WORK/b031/
+mkdir -p $WORK/b013/
+mkdir -p $WORK/b024/
+mkdir -p $WORK/b040/
+mkdir -p $WORK/b026/
+mkdir -p $WORK/b068/
+mkdir -p $WORK/b038/
+mkdir -p $WORK/b090/
+mkdir -p $WORK/b028/
+mkdir -p $WORK/b309/
+mkdir -p $WORK/b034/
+mkdir -p $WORK/b307/
+mkdir -p $WORK/b020/
+mkdir -p $WORK/b080/
+mkdir -p $WORK/b009/
+mkdir -p $WORK/b004/
+mkdir -p $WORK/b041/
+mkdir -p $WORK/b003/
+mkdir -p $WORK/b037/
+mkdir -p $WORK/b109/
+mkdir -p $WORK/b153/
+mkdir -p $WORK/b050/
+mkdir -p $WORK/b049/
+mkdir -p $WORK/b382/
+mkdir -p $WORK/b087/
+mkdir -p $WORK/b036/
+mkdir -p $WORK/b047/
+mkdir -p $WORK/b084/
+mkdir -p $WORK/b108/
+mkdir -p $WORK/b046/
+mkdir -p $WORK/b002/
+mkdir -p $WORK/b157/
+mkdir -p $WORK/b163/
+mkdir -p $WORK/b061/
+mkdir -p $WORK/b054/
+mkdir -p $WORK/b104/
+mkdir -p $WORK/b115/
+mkdir -p $WORK/b250/
+mkdir -p $WORK/b198/
+mkdir -p $WORK/b239/
+mkdir -p $WORK/b348/
+mkdir -p $WORK/b358/
+mkdir -p $WORK/b211/
+mkdir -p $WORK/b062/
+mkdir -p $WORK/b366/
+mkdir -p $WORK/b338/
+mkdir -p $WORK/b159/
+mkdir -p $WORK/b098/
+mkdir -p $WORK/b189/
+mkdir -p $WORK/b055/
+mkdir -p $WORK/b311/
+mkdir -p $WORK/b053/
+mkdir -p $WORK/b152/
+mkdir -p $WORK/b172/
+mkdir -p $WORK/b097/
+mkdir -p $WORK/b060/
+mkdir -p $WORK/b261/
+mkdir -p $WORK/b151/
+mkdir -p $WORK/b155/
+mkdir -p $WORK/b240/
+mkdir -p $WORK/b212/
+mkdir -p $WORK/b158/
+mkdir -p $WORK/b069/
+mkdir -p $WORK/b353/
+mkdir -p $WORK/b073/
+mkdir -p $WORK/b169/
+mkdir -p $WORK/b070/
+mkdir -p $WORK/b103/
+mkdir -p $WORK/b168/
+mkdir -p $WORK/b111/
+mkdir -p $WORK/b102/
+mkdir -p $WORK/b066/
+mkdir -p $WORK/b136/
+mkdir -p $WORK/b110/
+mkdir -p $WORK/b065/
+mkdir -p $WORK/b139/
+mkdir -p $WORK/b195/
+mkdir -p $WORK/b064/
+mkdir -p $WORK/b048/
+mkdir -p $WORK/b089/
+mkdir -p $WORK/b131/
+mkdir -p $WORK/b095/
+mkdir -p $WORK/b107/
+mkdir -p $WORK/b146/
+mkdir -p $WORK/b141/
+mkdir -p $WORK/b086/
+mkdir -p $WORK/b059/
+mkdir -p $WORK/b094/
+mkdir -p $WORK/b045/
+mkdir -p $WORK/b142/
+mkdir -p $WORK/b044/
+mkdir -p $WORK/b332/
+mkdir -p $WORK/b083/
+mkdir -p $WORK/b077/
+mkdir -p $WORK/b363/
+mkdir -p $WORK/b120/
+mkdir -p $WORK/b082/
+mkdir -p $WORK/b218/
+mkdir -p $WORK/b076/
+mkdir -p $WORK/b178/
+mkdir -p $WORK/b291/
+mkdir -p $WORK/b217/
+mkdir -p $WORK/b079/
+mkdir -p $WORK/b269/
+mkdir -p $WORK/b308/
+mkdir -p $WORK/b093/
+mkdir -p $WORK/b312/
+mkdir -p $WORK/b085/
+mkdir -p $WORK/b160/
+cp /home/klets/.cache/go-build/35/35ecbc01c116bd35989833b4c19548bb631e16537a61f6cf6fc2841cdb0db557-d $WORK/b160/_cgo_gotypes.go
+cp /home/klets/.cache/go-build/8f/8f075e6faef52cd328d62d28005ce7dda55e741b7dc67ed3637a1c845fca8fd6-d $WORK/b160/cgo.cgo1.go
+cp /home/klets/.cache/go-build/ff/ffd9a343ad5c6797b183182e025045e5118e601fc5fada1941f8bf9d80115766-d $WORK/b160/_cgo_import.go
+mkdir -p $WORK/b081/
+mkdir -p $WORK/b204/
+mkdir -p $WORK/b171/
+mkdir -p $WORK/b101/
+mkdir -p $WORK/b078/
+mkdir -p $WORK/b162/
+mkdir -p $WORK/b367/
+mkdir -p $WORK/b166/
+mkdir -p $WORK/b173/
+mkdir -p $WORK/b075/
+mkdir -p $WORK/b223/
+mkdir -p $WORK/b092/
+mkdir -p $WORK/b088/
+mkdir -p $WORK/b351/
+mkdir -p $WORK/b164/
+mkdir -p $WORK/b140/
+mkdir -p $WORK/b174/
+mkdir -p $WORK/b074/
+mkdir -p $WORK/b119/
+mkdir -p $WORK/b106/
+mkdir -p $WORK/b150/
+mkdir -p $WORK/b161/
+mkdir -p $WORK/b188/
+mkdir -p $WORK/b143/
+mkdir -p $WORK/b182/
+mkdir -p $WORK/b256/
+mkdir -p $WORK/b130/
+mkdir -p $WORK/b264/
+mkdir -p $WORK/b100/
+mkdir -p $WORK/b144/
+mkdir -p $WORK/b255/
+mkdir -p $WORK/b154/
+mkdir -p $WORK/b124/
+cp /home/klets/.cache/go-build/1c/1c315fb54dd1fee3cd91300cf670884ee961786c4b5d9162483397e875c9d355-d $WORK/b154/_cgo_gotypes.go
+mkdir -p $WORK/b345/
+mkdir -p $WORK/b326/
+cp /home/klets/.cache/go-build/ee/eef7e4d95d6e00d77b491341eaeb72989bc2bade69f10b290d5f73d5cb544a04-d $WORK/b154/cgo_linux.cgo1.go
+mkdir -p $WORK/b180/
+mkdir -p $WORK/b272/
+mkdir -p $WORK/b258/
+mkdir -p $WORK/b260/
+mkdir -p $WORK/b347/
+mkdir -p $WORK/b134/
+mkdir -p $WORK/b266/
+mkdir -p $WORK/b196/
+mkdir -p $WORK/b170/
+mkdir -p $WORK/b296/
+mkdir -p $WORK/b251/
+mkdir -p $WORK/b314/
+mkdir -p $WORK/b210/
+mkdir -p $WORK/b201/
+mkdir -p $WORK/b252/
+mkdir -p $WORK/b233/
+mkdir -p $WORK/b238/
+mkdir -p $WORK/b365/
+mkdir -p $WORK/b381/
+cp /home/klets/.cache/go-build/82/8292d8cf87d5778023f4fe3b4d7f43bf9c7965fd40f7e442951f965d35eb771e-d $WORK/b154/cgo_resnew.cgo1.go
+cp /home/klets/.cache/go-build/d3/d3d90634f3eea961bcc4c78f65e802494ead32acb7c5c9ef3e5ed60c6474c724-d $WORK/b154/cgo_socknew.cgo1.go
+cp /home/klets/.cache/go-build/23/2399a7959a60003087002087d87dc0545510c1eec504d98e92bb7b5ecdb4a0e2-d $WORK/b154/cgo_unix_cgo.cgo1.go
+cp /home/klets/.cache/go-build/29/2906372b832f5b4fda6ecc075e32b216323d9f79de33dbb9fb0b370e7be66d87-d $WORK/b154/cgo_unix_cgo_res.cgo1.go
+cp /home/klets/.cache/go-build/2f/2ffd65a65815359965d87d5b6fcac49fa116036f1ab3ddc0ce16ebc9897650c7-d $WORK/b154/_cgo_import.go
+mkdir -p $WORK/b099/
+mkdir -p $WORK/b209/
+mkdir -p $WORK/b232/
+mkdir -p $WORK/b114/
+mkdir -p $WORK/b245/
+mkdir -p $WORK/b133/
+mkdir -p $WORK/b352/
+mkdir -p $WORK/b208/
+mkdir -p $WORK/b294/
+mkdir -p $WORK/b282/
+mkdir -p $WORK/b293/
+mkdir -p $WORK/b253/
+mkdir -p $WORK/b149/
+mkdir -p $WORK/b113/
+mkdir -p $WORK/b277/
+mkdir -p $WORK/b304/
+mkdir -p $WORK/b317/
+mkdir -p $WORK/b300/
+mkdir -p $WORK/b306/
+mkdir -p $WORK/b276/
+mkdir -p $WORK/b242/
+mkdir -p $WORK/b322/
+mkdir -p $WORK/b350/
+mkdir -p $WORK/b295/
+mkdir -p $WORK/b324/
+mkdir -p $WORK/b058/
+mkdir -p $WORK/b341/
+mkdir -p $WORK/b263/
+mkdir -p $WORK/b360/
+mkdir -p $WORK/b203/
+mkdir -p $WORK/b249/
+mkdir -p $WORK/b349/
+cp /home/klets/.cache/go-build/e5/e5a8916f2e2b0a4d143e99a1a80a0491295eb556b9004ea078d17b803da3d1bf-d $WORK/b349/_cgo_gotypes.go
+mkdir -p $WORK/b292/
+mkdir -p $WORK/b364/
+mkdir -p $WORK/b321/
+mkdir -p $WORK/b167/
+mkdir -p $WORK/b137/
+mkdir -p $WORK/b129/
+mkdir -p $WORK/b279/
+mkdir -p $WORK/b359/
+mkdir -p $WORK/b192/
+mkdir -p $WORK/b057/
+mkdir -p $WORK/b361/
+mkdir -p $WORK/b096/
+mkdir -p $WORK/b305/
+mkdir -p $WORK/b105/
+mkdir -p $WORK/b145/
+mkdir -p $WORK/b125/
+mkdir -p $WORK/b380/
+mkdir -p $WORK/b284/
+mkdir -p $WORK/b122/
+mkdir -p $WORK/b248/
+mkdir -p $WORK/b121/
+mkdir -p $WORK/b357/
+mkdir -p $WORK/b148/
+mkdir -p $WORK/b207/
+mkdir -p $WORK/b135/
+mkdir -p $WORK/b056/
+mkdir -p $WORK/b128/
+mkdir -p $WORK/b303/
+cp /home/klets/.cache/go-build/35/356dbef5bc13b98df869a9c0d1c64eabfb3a92276e20d8586b0f73e591dd8675-d $WORK/b349/cgo_lookup_cgo.cgo1.go
+mkdir -p $WORK/b112/
+mkdir -p $WORK/b287/
+mkdir -p $WORK/b216/
+mkdir -p $WORK/b052/
+mkdir -p $WORK/b194/
+mkdir -p $WORK/b313/
+mkdir -p $WORK/b229/
+mkdir -p $WORK/b247/
+mkdir -p $WORK/b254/
+mkdir -p $WORK/b123/
+mkdir -p $WORK/b222/
+cp /home/klets/.cache/go-build/41/4166fdbc0d4842d709487fa74f967d3112d2a6aeb8d04705c353e1c9babe44c7-d $WORK/b349/getgrouplist_unix.cgo1.go
+mkdir -p $WORK/b215/
+mkdir -p $WORK/b257/
+cp /home/klets/.cache/go-build/fc/fc774bde60825afb49f8900d9766a24209d9ab2ed2efed0784bca80c93c90ea6-d $WORK/b349/_cgo_import.go
+mkdir -p $WORK/b281/
+mkdir -p $WORK/b268/
+mkdir -p $WORK/b220/
+mkdir -p $WORK/b280/
+mkdir -p $WORK/b219/
+mkdir -p $WORK/b299/
+mkdir -p $WORK/b343/
+mkdir -p $WORK/b227/
+mkdir -p $WORK/b224/
+mkdir -p $WORK/b228/
+mkdir -p $WORK/b346/
+mkdir -p $WORK/b132/
+mkdir -p $WORK/b356/
+mkdir -p $WORK/b339/
+mkdir -p $WORK/b337/
+mkdir -p $WORK/b237/
+mkdir -p $WORK/b288/
+mkdir -p $WORK/b325/
+mkdir -p $WORK/b197/
+mkdir -p $WORK/b328/
+mkdir -p $WORK/b323/
+mkdir -p $WORK/b344/
+mkdir -p $WORK/b330/
+mkdir -p $WORK/b327/
+mkdir -p $WORK/b267/
+mkdir -p $WORK/b118/
+mkdir -p $WORK/b329/
+mkdir -p $WORK/b335/
+mkdir -p $WORK/b336/
+mkdir -p $WORK/b331/
+mkdir -p $WORK/b340/
+mkdir -p $WORK/b333/
+mkdir -p $WORK/b355/
+mkdir -p $WORK/b265/
+mkdir -p $WORK/b225/
+mkdir -p $WORK/b200/
+mkdir -p $WORK/b205/
+mkdir -p $WORK/b147/
+mkdir -p $WORK/b310/
+mkdir -p $WORK/b226/
+mkdir -p $WORK/b234/
+mkdir -p $WORK/b297/
+mkdir -p $WORK/b241/
+mkdir -p $WORK/b214/
+mkdir -p $WORK/b243/
+mkdir -p $WORK/b236/
+mkdir -p $WORK/b126/
+mkdir -p $WORK/b259/
+mkdir -p $WORK/b289/
+mkdir -p $WORK/b262/
+mkdir -p $WORK/b179/
+mkdir -p $WORK/b362/
+mkdir -p $WORK/b368/
+mkdir -p $WORK/b185/
+mkdir -p $WORK/b187/
+mkdir -p $WORK/b181/
+mkdir -p $WORK/b290/
+mkdir -p $WORK/b190/
+mkdir -p $WORK/b285/
+mkdir -p $WORK/b231/
+mkdir -p $WORK/b283/
+mkdir -p $WORK/b186/
+mkdir -p $WORK/b230/
+mkdir -p $WORK/b275/
+mkdir -p $WORK/b213/
+mkdir -p $WORK/b246/
+mkdir -p $WORK/b184/
+mkdir -p $WORK/b206/
+mkdir -p $WORK/b273/
+mkdir -p $WORK/b177/
+mkdir -p $WORK/b191/
+mkdir -p $WORK/b244/
+mkdir -p $WORK/b176/
+mkdir -p $WORK/b354/
+mkdir -p $WORK/b175/
+mkdir -p $WORK/b271/
+mkdir -p $WORK/b302/
+mkdir -p $WORK/b301/
+mkdir -p $WORK/b318/
+mkdir -p $WORK/b316/
+mkdir -p $WORK/b319/
+mkdir -p $WORK/b320/
+mkdir -p $WORK/b315/
+mkdir -p $WORK/b298/
+mkdir -p $WORK/b342/
+mkdir -p $WORK/b270/
+mkdir -p $WORK/b369/
+mkdir -p $WORK/b001/
+mkdir -p $WORK/b379/
+cat >/tmp/go-build2740298335/b370/importcfg.link << 'EOF' # internal
+packagefile github.com/urnetwork/connect.test=/home/klets/.cache/go-build/3e/3eb673513723c938385b1a502397e0c3cd6bd13cbc669124f254aa55f15a1778-d
+packagefile os=/home/klets/.cache/go-build/b4/b4129f78340e5011598c818ea1bfffa38b73a46a75d0b20e082e3aa0ddff1a97-d
+packagefile reflect=/home/klets/.cache/go-build/41/41ebca80b21593e2594c4e80a79f88ff540b6c627a6a02702af8cb472f669f7a-d
+packagefile testing=/home/klets/.cache/go-build/ba/ba0e93b943377f9d11fa351aa789f63cdd111ed96f9749b6d578a67e077b0a43-d
+packagefile testing/internal/testdeps=/home/klets/.cache/go-build/d4/d45e946e1cd8ff891971f5813a7c906a95ac29d5fc5d2e2f106cb593996fae17-d
+packagefile runtime=/home/klets/.cache/go-build/a3/a32924165a269c8145a20b4749d406dba04fcfa5f1edb7cdb649d7b43151d7b2-d
+packagefile github.com/urnetwork/connect=/home/klets/.cache/go-build/fa/faa8bcb8a1f48746c07e7dcb082f1e3c55e851e67ffe15b310c41554ea58e69e-d
+packagefile errors=/home/klets/.cache/go-build/3f/3f321ccf95dac6ce221cac2feec37fc76c1529a9af3ea8fcde0f03f406de568c-d
+packagefile internal/bytealg=/home/klets/.cache/go-build/53/53f86882e79e08763678c2b58823fb4d3d3cdae72aef057521a2fe5c78712e84-d
+packagefile internal/byteorder=/home/klets/.cache/go-build/26/2622464e3b5262f0503922b418863df7b1224dbc2b027f5a431723a01b3ccb78-d
+packagefile internal/filepathlite=/home/klets/.cache/go-build/0c/0c2dca71314fdbb2f6c31850fc9d96731115fc7bd5ebc1f1c4aa5e24b2bffdfe-d
+packagefile internal/goarch=/home/klets/.cache/go-build/cf/cf7914d6145e39963b709066af76a293678ef1309215af9ae45d4f64d773faa0-d
+packagefile internal/poll=/home/klets/.cache/go-build/0c/0c35177fb86f44d0a62b2d6baa96a0c8baee88a8fab2e1ae4b5c5ebe945ed65d-d
+packagefile internal/strconv=/home/klets/.cache/go-build/36/36158f3805ae40c2bb0329d3dff8f2dd4035624246780ddf801b485d184d0373-d
+packagefile internal/stringslite=/home/klets/.cache/go-build/11/11939fb8e4fb4d9430fab28fc477b13d899175f9dc9aeae003dd8ad9b7696ca8-d
+packagefile internal/syscall/execenv=/home/klets/.cache/go-build/67/67f38609dd39e2c2d0fb2d47cae88e8c306215d539e54c6fca6768a26c83903e-d
+packagefile internal/syscall/unix=/home/klets/.cache/go-build/ae/aee93f8d310de5ce9dc2b354fdbf0260b123d848d12248324624280e8c5f50ac-d
+packagefile internal/testlog=/home/klets/.cache/go-build/42/42eafd15477dddb3a51e8e26a61a1cdf97f367105e28133b80d171f45e476592-d
+packagefile io=/home/klets/.cache/go-build/0d/0dde3bcd3390375673f109d5f08bf6dc4d6e2faa692df8f7156138fa9f517844-d
+packagefile io/fs=/home/klets/.cache/go-build/db/dbd3c1f0d84609f3a20961fd1b0ece7994274914b9a651e9f0cc104bc0557721-d
+packagefile slices=/home/klets/.cache/go-build/a6/a6efabe91ec7d68eac21cbef043e7adb57e11d6c3ae2c592ae053b091d824242-d
+packagefile sync=/home/klets/.cache/go-build/c4/c4fdaddd42aa2bf4b52d88d359f309eeb206a671430fa88b8c7e3b4de729fe9e-d
+packagefile sync/atomic=/home/klets/.cache/go-build/3c/3c63caa1a24c593cdb24e65cd53f87be8fb4fa06ff21ad023b9566c2afea7e7c-d
+packagefile syscall=/home/klets/.cache/go-build/6e/6e07071a302dc839346b39a811715970abbd8334d3587afcff333b2955630df7-d
+packagefile time=/home/klets/.cache/go-build/b5/b5ed4627fa0c00005fa870c57f6cbbc413b49a85e1eeab9bf38ff76bad4245fa-d
+packagefile internal/abi=/home/klets/.cache/go-build/db/db2d2607384964f6e5beca49fa5bb0dc57783264e038c60a65b23cc5f5400984-d
+packagefile internal/race=/home/klets/.cache/go-build/ef/effa6547d5efe2338c2e399c2db3490df73da9c4d9b9ee7dc81a47c367fe403b-d
+packagefile internal/runtime/maps=/home/klets/.cache/go-build/c2/c27457dfaeffd29506986c91e5fb9bab337f54ac56be15e7d0b4518ab03d5913-d
+packagefile internal/runtime/sys=/home/klets/.cache/go-build/20/20caeeae5e12167f3843173411d8c7c848019ece75acd30530cd15450e70a9e2-d
+packagefile internal/unsafeheader=/home/klets/.cache/go-build/88/8804d4aa69bf7e7967acd3782bdf93847167956084b4aa0e9c6d0f04b1cb3841-d
+packagefile iter=/home/klets/.cache/go-build/20/20c7ccb78b8458567eec15fe569f6bff0b10f7859b6d8574a72f374b28e97d9e-d
+packagefile math=/home/klets/.cache/go-build/42/4250da65a97668e272f977c2917e39172bc4ce572de5c6a978733921cd5a4fce-d
+packagefile strconv=/home/klets/.cache/go-build/b9/b9f47b14580e02acde390147c6c01ea392ab0abe4d6b4d946396878fb92b70dc-d
+packagefile unicode=/home/klets/.cache/go-build/0d/0d2336828e80d4787d05b1765c1e40aee4cbcace535b8b704f6589a96d480f28-d
+packagefile unicode/utf8=/home/klets/.cache/go-build/b9/b97c66b65a6a6cabdd9c7f7272f19e7acc6527eb4cdcffdddf686e49f36ef1ec-d
+packagefile bytes=/home/klets/.cache/go-build/c4/c40bf1155928a06fe987601c0f6f485d93c53f50a225cbacf21688c498b68eb9-d
+packagefile context=/home/klets/.cache/go-build/36/36c383d9926c3247dd2793c29aa25f1890a3250bc216ee617a0955dd43de1b56-d
+packagefile flag=/home/klets/.cache/go-build/be/be55269afb5a0fea6ad72c6e150cf856f1441c12807f04c11f69891fafa0f364-d
+packagefile fmt=/home/klets/.cache/go-build/32/324f636262cd208d9dcdbe5c173decfd15373b5051f0a71238aad643d30991ad-d
+packagefile internal/sysinfo=/home/klets/.cache/go-build/78/7861db50a90a83a31fcc1934a79d03b191aa474d647e5ea44651e9991f49624b-d
+packagefile math/rand=/home/klets/.cache/go-build/74/74948731a25143a8cca4e7a0e3a26aac0018042db37d216208d976892f39a403-d
+packagefile path/filepath=/home/klets/.cache/go-build/da/da34ed587f00438557555a742bbb377c7d7f49ae2882f2ba13be85c0c0d1d166-d
+packagefile runtime/debug=/home/klets/.cache/go-build/51/518903e7568652ca14e99bb65762b4efbef90979173c9fad0005e307feefed8f-d
+packagefile runtime/trace=/home/klets/.cache/go-build/69/69cdd9f863452abff29fc897106c8fb452283d6cf3321ede53aab09c73c3b6b1-d
+packagefile strings=/home/klets/.cache/go-build/6e/6ee719cd408002dfc5f80616ffc1827504ec619aa61a669d0e144c9844040f2a-d
+packagefile bufio=/home/klets/.cache/go-build/14/14b51b7037cb6b77a8e6c98d19067e0b9c8d2f49ed35269e3e2670e135e51dc8-d
+packagefile internal/fuzz=/home/klets/.cache/go-build/32/328949a4b42f226470cc189eee7b29557ce6180dce06ffa979356ba766210bfe-d
+packagefile os/signal=/home/klets/.cache/go-build/27/27fd296b05a0756d6f1d5b5a55b5b02ca8f3fb0dcff13545b00f1c5933a3bba5-d
+packagefile regexp=/home/klets/.cache/go-build/f4/f4d5e057adec16720f462f6b5a4f18c2b218b23ce5141983718b711519e0174a-d
+packagefile runtime/pprof=/home/klets/.cache/go-build/69/690ff011eb0a9a5d3688cecb6e2b300030950df9e6dfd035e529e0cb8295883c-d
+packagefile internal/chacha8rand=/home/klets/.cache/go-build/d7/d7f512d73ea9a148a3d59604c72c0af4628c0d9d7ea84ea46ca7047fef70de30-d
+packagefile internal/coverage/rtcov=/home/klets/.cache/go-build/fe/fe253e490d8fb0e8c713f4ed85758431a9080c109aec6d2c17f8080d774c5a28-d
+packagefile internal/cpu=/home/klets/.cache/go-build/6a/6ad21775ae469f5c3721690ff02b5fb0fcdae7cc55da6201b38faf3715fa8f19-d
+packagefile internal/godebugs=/home/klets/.cache/go-build/54/54a4f4b4c29f3c3fadf7e26bcc6630731361daf5923793ed0a30846a7c3262cb-d
+packagefile internal/goexperiment=/home/klets/.cache/go-build/f1/f1fbbcdac65287265a8929f4bcd11bfbcc8c8e349a3836113250c292e15f0853-d
+packagefile internal/goos=/home/klets/.cache/go-build/c4/c491ee570af28ace963b2f545c1f0014691a2342617daaad9e372ba400db0307-d
+packagefile internal/profilerecord=/home/klets/.cache/go-build/09/09f6d0af84bbd9d95046adb2b9c1468853d2d942ddb61ba81d990e660ad34e80-d
+packagefile internal/runtime/atomic=/home/klets/.cache/go-build/22/22afb257fa24a02c4b0e192a547d41f9c5d949cfbce0eb07ed26ece37cc12064-d
+packagefile internal/runtime/cgroup=/home/klets/.cache/go-build/d2/d25e95b0385ae430e3560c02748e72cab6b49fbe02d914d39797293f47c6e8e2-d
+packagefile internal/runtime/exithook=/home/klets/.cache/go-build/7e/7e130cb9f271b6e737d8a94a194b8310c06c90ccfaa21e57dbcb80af363b691d-d
+packagefile internal/runtime/gc=/home/klets/.cache/go-build/49/49a9ba2534f5a5415189cdf770a64fb5e111ab68866308464c75344c9e325a1c-d
+packagefile internal/runtime/gc/scan=/home/klets/.cache/go-build/8a/8ab918869f2870bb74e0d2698be1a574ce720ff53ace4095d03b1afdea99cd65-d
+packagefile internal/runtime/math=/home/klets/.cache/go-build/4a/4a3fcd1a8f0e26eec869d63ee43d29893416d9abb1f605e9bc5e1efbf3a0bdb9-d
+packagefile internal/runtime/pprof/label=/home/klets/.cache/go-build/b2/b29ffdd54119971ede79e9fd1e778385537e2972569296a89efb115951b8b5e0-d
+packagefile internal/runtime/syscall/linux=/home/klets/.cache/go-build/47/47c805a6e459a145e5cec308eed8e4baacd42802df7d3d3ec670038aeaecf397-d
+packagefile internal/trace/tracev2=/home/klets/.cache/go-build/c5/c50f522233822803c4c8e17de625adb9ab839234b666046637e717025e87fb62-d
+packagefile math/bits=/home/klets/.cache/go-build/47/47d3a1648a2b7f75f0c56f1938e0a95dafcf0a0b0caf8042753467fe7a206f4a-d
+packagefile crypto/ecdsa=/home/klets/.cache/go-build/8c/8ca6668d15bd767433f7e880dffe42799e7e7111a3ba7b5004d2ded12f3c2d10-d
+packagefile crypto/ed25519=/home/klets/.cache/go-build/1d/1d0baa62fe83c5feab534c9b584505729e965f23abc5169a97bd4f363ef37a64-d
+packagefile crypto/hmac=/home/klets/.cache/go-build/0b/0bcd66dc8b3976462f2866a087453138d3ecbf635bdf07527ef0fc5922545470-d
+packagefile crypto/rand=/home/klets/.cache/go-build/3f/3f93487091b1f7d96e17a817b5cb949678d2c9245f3ec72f8e77080c55aadcda-d
+packagefile crypto/rsa=/home/klets/.cache/go-build/12/12c16b9964a28fa6dc502b79a7fa61b66382d4e9f27d722d6690b9221ad0602c-d
+packagefile crypto/sha256=/home/klets/.cache/go-build/83/839a12bb47f7930023abccc94af65f2e56f1564ce51263e0a235f25910a7d8fd-d
+packagefile crypto/tls=/home/klets/.cache/go-build/c0/c00f12c8841f4861c1f4d9bac6381edf69a1ca85f272ab6c827e2f595086b41d-d
+packagefile crypto/x509=/home/klets/.cache/go-build/2a/2a57833b1978161a065e48a57cc4ed71d729ef1673d68cd7854c275be7bac958-d
+packagefile crypto/x509/pkix=/home/klets/.cache/go-build/48/48f97c825d971091688c0e41039f1e13a503db5ec76e595d100c9625010720fc-d
+packagefile encoding/base64=/home/klets/.cache/go-build/4a/4a48391c2e6f93e4bd7b1bbf829d0360775130563a448cdd794fb9ae75f5e9bc-d
+packagefile encoding/binary=/home/klets/.cache/go-build/74/742775d9b0e88c8aa71420313b65d2aa9a19ba3186ecb58a8ae8757c58ee2777-d
+packagefile encoding/json=/home/klets/.cache/go-build/c9/c9c5c33852500a24881c0bfc7ea60ecadd5ee29537716072b96558948a6e8f1e-d
+packagefile encoding/pem=/home/klets/.cache/go-build/8d/8d1b97974f33f23c52edbcd298384ca61d0925577610d85ac3fdeb9aeb5b2852-d
+packagefile github.com/go-playground/assert/v2=/home/klets/.cache/go-build/bb/bb78f60206a295bf2e83d7347dd74447cc89507b9489cb0e78aef216e1f555a5-d
+packagefile github.com/quic-go/quic-go=/home/klets/.cache/go-build/48/4899ac04c3be7d7a414f18dc8b10cc651806350d1c20c68a5d312dd2fcd322eb-d
+packagefile github.com/urnetwork/connect/protocol=/home/klets/.cache/go-build/ac/ac347b01cfcd17eb503d65b719b4e4a1abb49f172b03a61e4f5910bb0bee44c4-d
+packagefile math/big=/home/klets/.cache/go-build/27/27cd2eb3627c967df91d0707d84acc863599da79a8746db3f2d6b8dc1e8ec4a7-d
+packagefile net=/home/klets/.cache/go-build/85/850558aa0e850291419da38f7305cdc440fe2f02326c98be2ba878a6cfc4ba40-d
+packagefile net/netip=/home/klets/.cache/go-build/ff/ff2b1e34d5933bbaab15a97d21940135251d44be674ff403534595472f85f3e9-d
+packagefile container/heap=/home/klets/.cache/go-build/fb/fbc9ef172b501729440b34edbbe6681fd933f91b02badbdf7dafa8de415e125d-d
+packagefile embed=/home/klets/.cache/go-build/92/923c1a7f471e7d4f4b2c50b8fd2a29fa86bc490f5ba18ddec3fcb7c8f8e244c3-d
+packagefile encoding/base32=/home/klets/.cache/go-build/da/daf983b82509444ecbab5ad4ccf3e3c7551d49fb198489e1636fe6d5d05941b2-d
+packagefile encoding/hex=/home/klets/.cache/go-build/14/14bbbdbc4b5fab81a8ec76951c8472e6751b1d8fb7c5b3e0a7f46691909f4a25-d
+packagefile github.com/golang-jwt/jwt/v5=/home/klets/.cache/go-build/da/da1a5d287727889f9eb95be6ff2c7990cf0dc96067483fcfe2e22c8146540a30-d
+packagefile github.com/google/gopacket=/home/klets/.cache/go-build/b3/b3b017b00bcb7bc78a21271add17499a3af449ef3ff4b7ed13d1b6871ea7f1fb-d
+packagefile github.com/google/gopacket/layers=/home/klets/.cache/go-build/94/943810190f567a5f7a924c7c2f84113319872780e7ead0b18e10720b9e20ba46-d
+packagefile github.com/gorilla/websocket=/home/klets/.cache/go-build/c8/c819e9c1715af0d3d3379d31836b58889fc96968d1594b1e4feb44b0082196f6-d
+packagefile github.com/oklog/ulid/v2=/home/klets/.cache/go-build/dc/dc81c6414f07b39847fdbeac87bbb169453ed7aabfed38475fd7060ed387aff9-d
+packagefile github.com/pion/datachannel=/home/klets/.cache/go-build/83/835c67d6e071d74fe3c7c69e2416410bc2c7eb6d11c6045e30b4e5fddd0a6e13-d
+packagefile github.com/pion/webrtc/v4=/home/klets/.cache/go-build/ba/ba1dae623596a3460503b3c37e335583c7b6f8e11fa62f1780ae697ea8283bc4-d
+packagefile github.com/urnetwork/glog=/home/klets/.cache/go-build/41/41ef05d2dea4925f249b7b4614328ab4bdd85f7ecd811749ca14299722be4e13-d
+packagefile golang.org/x/crypto/cryptobyte=/home/klets/.cache/go-build/02/02f47f83f72e2413acaa96bbf5579e03d1f0973d929c2fde25a1dfc718ce579f-d
+packagefile golang.org/x/crypto/sha3=/home/klets/.cache/go-build/98/98387bfd5307ea495127ccac8fba6d2b92497dcf13d946adb820fdddbf97f55b-d
+packagefile golang.org/x/exp/maps=/home/klets/.cache/go-build/a6/a604ad3ed54655104b255140acba5766021e69c7fdc8f55c306aeb26be071ae9-d
+packagefile golang.org/x/net/dns/dnsmessage=/home/klets/.cache/go-build/8f/8ffe572ca67c792fdea64869e97448256c9108337b7df5dbe46106badff4d53e-d
+packagefile golang.org/x/net/http2=/home/klets/.cache/go-build/f1/f18ecfee2d4929560dc1fd77f75003530ed087285acc394fc9c366933349dca8-d
+packagefile golang.org/x/net/idna=/home/klets/.cache/go-build/69/69fc23aba6e6a7d037cdb5a12ba3a9c16b8b25e84d36134bd87162d36773a8f4-d
+packagefile golang.org/x/net/nettest=/home/klets/.cache/go-build/f0/f04d8a8204d646b11d05dada84a56f34285b5325d8e318a01228aff37b188129-d
+packagefile golang.org/x/net/proxy=/home/klets/.cache/go-build/5d/5de213f211c34c4f9691979a5a1d641924f72a3139da3d8ff1e7bceff55b96b3-d
+packagefile google.golang.org/protobuf/proto=/home/klets/.cache/go-build/bc/bc1b07fd6a283011bb10ba7fd09ff43d85ed7755c536fe2cbfda21478a98e87e-d
+packagefile hash/maphash=/home/klets/.cache/go-build/c6/c60e28a5600be4bec793908110fc1a373dc173b38ea9b78aaf30c9b9641767de-d
+packagefile net/http=/home/klets/.cache/go-build/02/02ce0f4f29cfadd16283def043d092789d2a45ccae3f987eda641cd3806cea27-d
+packagefile net/url=/home/klets/.cache/go-build/38/38e615a31a04e7173982af097af2ab2da725c36201a9f2f7aa0becd8ad492322-d
+packagefile sort=/home/klets/.cache/go-build/67/6732288f8a03462feb776bf12bad81cdc94a67de1e18d14ea88ef429760923ef-d
+packagefile src.agwa.name/tlshacks=/home/klets/.cache/go-build/d1/d1888a3a711fc993db8607f8dc7e3c809134f9976462334aad78dd4a58a90829-d
+packagefile internal/reflectlite=/home/klets/.cache/go-build/7e/7e61e804b9d325391b3e07d0188078a4df865351fa605e68b23749690e7bf476-d
+packagefile internal/oserror=/home/klets/.cache/go-build/89/8931a77a694d62bf802471d58bdb5d6bb580ec6b6abcee635371b61064115dc5-d
+packagefile path=/home/klets/.cache/go-build/4a/4aeb9c54fb836cc12ee0b27bad3f54b0803d98286470dfc1024f95a23644d1d3-d
+packagefile cmp=/home/klets/.cache/go-build/71/7147ea041acd5297db274b4c80b8d8c857d8b45031a4bde703d3b98b7c1f41a5-d
+packagefile internal/sync=/home/klets/.cache/go-build/b4/b46fd369692ee25f394860190326e64ae786ca53f696ad6096ce0f17879757a8-d
+packagefile internal/synctest=/home/klets/.cache/go-build/d3/d3938120a52cbd0fd25fd89e5bd4f81d26ba06f9778b9a33b208720ba563039a-d
+packagefile internal/asan=/home/klets/.cache/go-build/31/31886f5dec24b4b7fdaeeb691f358319da92bbd1076df0583dd6ccda4700cb41-d
+packagefile internal/msan=/home/klets/.cache/go-build/31/31ad051cd8089359289f9d2daec00f5cb312a9cfce9c916de1489682556a89b8-d
+packagefile internal/godebug=/home/klets/.cache/go-build/fa/facfe5b4a551c9bc07904107bea39a4fec3be061b40f8815339f8a41523050c8-d
+packagefile encoding=/home/klets/.cache/go-build/e9/e94f5222263fc34df7462d023af034b67f66a34ee934f644f10f796406141edf-d
+packagefile internal/fmtsort=/home/klets/.cache/go-build/d1/d147556d26db7f5c3419bb54c9150ed977f92ddd6957b33a6c48a35fddf7bdc0-d
+packagefile go/ast=/home/klets/.cache/go-build/93/930a6174a9ff372032dfa56b18bde4164a4c91be738e883d9f70fc29ebb2070c-d
+packagefile go/parser=/home/klets/.cache/go-build/b9/b9158cc0e18ffb2950b9f9f9c828d5c9a793ef0baf43636bb5ade939fe01356d-d
+packagefile go/token=/home/klets/.cache/go-build/bb/bb807ed7ef98b23136291dcfdd5d492f84d625f7b5c478411de4a0d331965751-d
+packagefile os/exec=/home/klets/.cache/go-build/c0/c03bc3909faba75f0b2f044755d6239ab6aa3b0ecd6cf100208882ea21826429-d
+packagefile regexp/syntax=/home/klets/.cache/go-build/ea/ea77153145e4806a311bb1bf32bcf16b313c799e6c1d711b7a0a7d866c53473d-d
+packagefile compress/gzip=/home/klets/.cache/go-build/36/36b3de30f0a9349b14e2111016b7384b7365cba8984974c15f4e883a5541581f-d
+packagefile text/tabwriter=/home/klets/.cache/go-build/d8/d8f3748d12eab7c747d36ece06f78693104ca35f59940a271b2e7fa80788650a-d
+packagefile crypto=/home/klets/.cache/go-build/6f/6f1b189a97d5f0f040826a8e6aec4d478263f6379480e52c664a741460649343-d
+packagefile crypto/ecdh=/home/klets/.cache/go-build/4d/4dc8f4f0f55abd4191a1191c7bf63291ffccfdd6b1f971445e85ab7fe3ab226f-d
+packagefile crypto/elliptic=/home/klets/.cache/go-build/43/4377c3ae3657411f2b3e177e862db3f970f01e8567da2b46ba496e03652fc77b-d
+packagefile crypto/internal/boring=/home/klets/.cache/go-build/d8/d8587ade6f7ab2db0bcde31a5d18ae8dedc51b10a1399978ad31421f02c3a587-d
+packagefile crypto/internal/boring/bbig=/home/klets/.cache/go-build/40/4090607598e8f1e555331766390aa95e409f46ca3bf2242ff95403590c77ae8e-d
+packagefile crypto/internal/fips140/ecdsa=/home/klets/.cache/go-build/cf/cf839e21ccceaad675b190183705530b9c23ab6ee19eeb18f9ef8a19b2cd2f1c-d
+packagefile crypto/internal/fips140/nistec=/home/klets/.cache/go-build/af/af8a958761670c695c03bb1a9b5c81eb2b66dc7c61a99d60b3424134aaf804da-d
+packagefile crypto/internal/fips140cache=/home/klets/.cache/go-build/88/8871cc1b9467623ab442f7ea9f66e17cc15817102861015fce9d6b201a08a40a-d
+packagefile crypto/internal/fips140hash=/home/klets/.cache/go-build/7e/7eadda3653916ea13fcc1cfd41d9f90b974d185a36da808dca98b06e96e7c1e9-d
+packagefile crypto/internal/fips140only=/home/klets/.cache/go-build/1d/1da48fd7f1ebc396cbb44ad94b7d0ed75468f26287f63f837561803b13f685d0-d
+packagefile crypto/internal/rand=/home/klets/.cache/go-build/55/559a586ecba437ee2cb7df16f23b8cf155b9e43f7a873bc057e55b94f6eda4ba-d
+packagefile crypto/sha512=/home/klets/.cache/go-build/df/dfe7eda2a8c78c142c5c9b1effcf34fd6236823ccdf79f7d51e2a4c832f21aef-d
+packagefile crypto/subtle=/home/klets/.cache/go-build/97/9704f7ad1032b969320a4122c3b1a3adbac9357a49be71e4180453e0adb3481b-d
+packagefile vendor/golang.org/x/crypto/cryptobyte=/home/klets/.cache/go-build/a9/a988334bac7175f610d80d1b64584780e55232ea0abed580f2c5315e7eaa2e40-d
+packagefile vendor/golang.org/x/crypto/cryptobyte/asn1=/home/klets/.cache/go-build/b7/b7622f2a476914f6828d7d2e77950eb4bee433038287225d6baa7a0ca7841a53-d
+packagefile math/rand/v2=/home/klets/.cache/go-build/8a/8a956d3fefe37998cf12f54c2bc9554932a27fb0d99d2a0ab9811701853e053c-d
+packagefile crypto/internal/fips140/ed25519=/home/klets/.cache/go-build/af/afa769aaba78dda8f6fb45dfde397af06bcf5c5506124c0d173388cef32b383e-d
+packagefile crypto/internal/fips140/hmac=/home/klets/.cache/go-build/3e/3e813e3d1b14fceb7199a2f85a0e76f586589aba369a0f935cfe75b21329fd2d-d
+packagefile hash=/home/klets/.cache/go-build/db/dbe11936d40021a7a0e9e71ae0eff1786abfe53d54f44df2ba95ad324aeb55b6-d
+packagefile crypto/internal/fips140/drbg=/home/klets/.cache/go-build/ed/ed2c5a4fee8e4fb70528603b0d754faf2c3db7e59cf132b52667b9ff621eaa22-d
+packagefile crypto/internal/fips140/bigmod=/home/klets/.cache/go-build/93/93da7dabe911ea620d6a585460521ca8381754866ef6411914ad1f99afbb6008-d
+packagefile crypto/internal/fips140/rsa=/home/klets/.cache/go-build/a6/a65c6d00a312f337abb0ee96c1bf9fdc3c7791352240231e17b3ace6816d3520-d
+packagefile crypto/internal/fips140/sha256=/home/klets/.cache/go-build/fd/fd848a5d345096f9284a09f18f5094c49d723cb64d453e6afc2327c56e787e99-d
+packagefile container/list=/home/klets/.cache/go-build/85/85fe3a3e8e734b1160195f4770a55cadbc6d5bbaf8f79a2bee605e3517b86e1c-d
+packagefile crypto/aes=/home/klets/.cache/go-build/8a/8aff337d01c025ba25e4421fa9665319e592ec52094f08f5af661f56131f2953-d
+packagefile crypto/cipher=/home/klets/.cache/go-build/13/130b1a44f10d7e01252190bb60adbea84c37244c55f20bff1f125f4717f1bf8e-d
+packagefile crypto/des=/home/klets/.cache/go-build/f3/f3d6a2e3c1090e93d19209096bea1d8f3692371886e55e515670812da8b4932b-d
+packagefile crypto/hkdf=/home/klets/.cache/go-build/f7/f75e3ec10bfe6f4f4da213828408e688d3046f45aca8d99a1ae29901644dc9c9-d
+packagefile crypto/hpke=/home/klets/.cache/go-build/fe/fe801807e692aae40577b29954ac540d3ddb775147cc48ea05e136aa60669849-d
+packagefile crypto/internal/fips140/aes=/home/klets/.cache/go-build/b2/b27737c59418b5d228d02c85b27ca6bab4279a75bf598d3d4875bb5c66ec8d85-d
+packagefile crypto/internal/fips140/aes/gcm=/home/klets/.cache/go-build/7c/7c7c8d4a084a99f8405730988160565c1f014194fd993e4e47588b324f8c1ae9-d
+packagefile crypto/internal/fips140/tls12=/home/klets/.cache/go-build/5b/5b8f1250e05f422929c99270005ba286ad46727a9a7198de9821de6e468eed6c-d
+packagefile crypto/internal/fips140/tls13=/home/klets/.cache/go-build/58/587e4a6a522b072dfbb8f654a3d8498be4110814073c5c66ef3412ad31cc97fe-d
+packagefile crypto/md5=/home/klets/.cache/go-build/fa/fa4fc2915f7b152f075b13da0f8ca7c61bb9f57641396cf486549d47c40381ad-d
+packagefile crypto/mlkem=/home/klets/.cache/go-build/28/287a632af4b27b81838b4c6e70b5f35e7e67836497dbb408ac985a24084fe820-d
+packagefile crypto/rc4=/home/klets/.cache/go-build/ea/ea3e94d3dd47531436f3d9bdbaaba2896c61496a66ac420015ee7a505a93f4f7-d
+packagefile crypto/sha1=/home/klets/.cache/go-build/66/660a63df323d0db18cc6931bf047cf15943be3224bc771bf4253d90d88de3572-d
+packagefile crypto/tls/internal/fips140tls=/home/klets/.cache/go-build/46/463da85f07a8350fe72687045b80883b698950ec49db0b6a83ec7e49b28cc5f4-d
+packagefile vendor/golang.org/x/crypto/chacha20poly1305=/home/klets/.cache/go-build/54/54fd07ce2b294691ca666ae5cb2db129d83df0de3be7a8f74219abf4ecc0a58b-d
+packagefile weak=/home/klets/.cache/go-build/a9/a99f640cf8d8a3c0cd45faf06491c6a943f2dbb0869538bbd5396a61a9e747aa-d
+packagefile crypto/dsa=/home/klets/.cache/go-build/6b/6ba9fd051148c2957848e32096f4f3ce9ff61df18f2a72893d48f86aff6c18d7-d
+packagefile encoding/asn1=/home/klets/.cache/go-build/cd/cd3345a738fde411aeb3cb01613a181cdc5e2a93585b7e171dc0f339ac123322-d
+packagefile maps=/home/klets/.cache/go-build/1c/1cf83c100b41794dccb653f2fa40a9b3edfdaedd67e98dc43a87cb818d73c73c-d
+packagefile unicode/utf16=/home/klets/.cache/go-build/65/650620334c571c7ab2e60e41918b4b2d4efdc62df72d212d6ab13fb822c259e9-d
+packagefile github.com/quic-go/quic-go/internal/ackhandler=/home/klets/.cache/go-build/a0/a04dfcd91e201e82904e7f31fe4e21015f42d41e10c652c7505835d80e0e6ff9-d
+packagefile github.com/quic-go/quic-go/internal/flowcontrol=/home/klets/.cache/go-build/0f/0f612841e7249e1894cd8cc723017696aa398323cdd9e5114d5d60c1a98e6915-d
+packagefile github.com/quic-go/quic-go/internal/handshake=/home/klets/.cache/go-build/b7/b7f0ff46701af6120d624dffeb857e460f83f156adba48047fefdec3ebb9b5a6-d
+packagefile github.com/quic-go/quic-go/internal/monotime=/home/klets/.cache/go-build/a9/a9e252855a9d93a384906bcfff910f28311f1b48246357e89d06b6b3e45bc9cb-d
+packagefile github.com/quic-go/quic-go/internal/protocol=/home/klets/.cache/go-build/c7/c7a87bea6b60f250a8603964748cef9a864921e08cb58a74fdcb514c2a9fa3a3-d
+packagefile github.com/quic-go/quic-go/internal/qerr=/home/klets/.cache/go-build/43/43923b6702e61688927bc42ddf643fe320f0781c0fe1e71913059643e8cc12e1-d
+packagefile github.com/quic-go/quic-go/internal/utils=/home/klets/.cache/go-build/fe/fe143d27aa2560c38c83e92ba7262b2d35bf57c9ecfb54f2de1b5b72b42cb243-d
+packagefile github.com/quic-go/quic-go/internal/utils/linkedlist=/home/klets/.cache/go-build/38/382587fabdf7d1715c071cdfce0eb5b218484aedf01947bb4ec0327fedf02bca-d
+packagefile github.com/quic-go/quic-go/internal/utils/ringbuffer=/home/klets/.cache/go-build/13/139a5b9a322a37da35fc27e6bdb55b7b66c57f775e8e7e1a143f5da395bb3c62-d
+packagefile github.com/quic-go/quic-go/internal/wire=/home/klets/.cache/go-build/97/97a0610c2821e89a5cbc7a285e78e287a4315e5eab19cb51d7af7406fca11977-d
+packagefile github.com/quic-go/quic-go/qlog=/home/klets/.cache/go-build/15/159138b2bafc0a76bcca2933933ab1d4f81ab45b92a87913b08c46002f1ef949-d
+packagefile github.com/quic-go/quic-go/qlogwriter=/home/klets/.cache/go-build/13/1384064f76c65dd73799f85a10152a87c49b9b869510593a922e74d20fdb0e3c-d
+packagefile github.com/quic-go/quic-go/quicvarint=/home/klets/.cache/go-build/6a/6a8a410e6f527bf653f83e1ab3b2a6b19effac009ac70b50a39a540781d45837-d
+packagefile golang.org/x/net/ipv4=/home/klets/.cache/go-build/8d/8d71bfe6930c03a9fbe04b3c269c635f837c2dcf36a7c25481f9f2ea50147bfa-d
+packagefile golang.org/x/net/ipv6=/home/klets/.cache/go-build/dd/dd9f215c35b3fadd7b0661a6065a301ca7ce161334ab3ec36f9e6b6494845b6f-d
+packagefile golang.org/x/sys/unix=/home/klets/.cache/go-build/d7/d7659a35e2d0c14d1c9dc256f27f433d4c30fa2b61680eee91a81a0e1323ae3a-d
+packagefile log=/home/klets/.cache/go-build/af/af69ec8ada62f1ab0e09a76198dda8c5613acf2ef8363dad35f4fa4c4f7e48cf-d
+packagefile google.golang.org/protobuf/reflect/protoreflect=/home/klets/.cache/go-build/26/264d3fa5b3c5e34c8d2f25b51008e595e7ef46c5cda80000893ab470717b0cdb-d
+packagefile google.golang.org/protobuf/runtime/protoimpl=/home/klets/.cache/go-build/ba/ba51e9882d7639436e6b5d4db2b557f096052fe1a51088627c13a8ba9a96e0b4-d
+packagefile vendor/golang.org/x/net/dns/dnsmessage=/home/klets/.cache/go-build/cb/cb935ceac11c2ec7366292c44dcd1fb26c5a8d9e3a0f29b4393e572012e470f8-d
+packagefile internal/nettrace=/home/klets/.cache/go-build/58/58a864c3070a25bfa34b2e07b85c6560fb6272c46df8866021cca77e5fc690fc-d
+packagefile internal/singleflight=/home/klets/.cache/go-build/83/83ae418960524a0fbe9723b25db0ad972724c81b259e1c2744ff249746890b57-d
+packagefile runtime/cgo=/home/klets/.cache/go-build/0f/0f428e4f854ba9bff06ee3c2eb2faa4992c00ca9b9ab85171cb3ebe035958a06-d
+packagefile unique=/home/klets/.cache/go-build/3e/3ec4fe4f5681f02980bcd886f4baf76a1baf52ffee1d6f3e7d297132a7988182-d
+packagefile hash/crc32=/home/klets/.cache/go-build/39/398fa64a8c69cee9a5e610ed5b4657f684d61b0430b7c44c7d130165cdb29acb-d
+packagefile compress/flate=/home/klets/.cache/go-build/5b/5be0abc2d39ac2912e20f1f8dfeb3af1edb22ea66114db230ff8ba915cca4fc1-d
+packagefile io/ioutil=/home/klets/.cache/go-build/b3/b33fcd413ac8ea274874accc127c9dae10d2d09f92b097fb37bb8b57a008221b-d
+packagefile net/http/httptrace=/home/klets/.cache/go-build/62/625e793198a9b7ae3caea28def3e1c2f8ae9fd25e3e71d7250c9e5562b78351b-d
+packagefile database/sql/driver=/home/klets/.cache/go-build/c6/c63dc9b409bb5c0d45fde09b0dc11e06bd6c6f1f054a203500c09c5e96784361-d
+packagefile github.com/pion/logging=/home/klets/.cache/go-build/df/dfd2a449e85b2b6b58bf1d05c3d506ceac10964b2679d29d80053a96644b625a-d
+packagefile github.com/pion/sctp=/home/klets/.cache/go-build/45/457bbb85338309cf87959fdd685745ef50c65944d788fe9a94ee7ad16023efe9-d
+packagefile github.com/pion/dtls/v3=/home/klets/.cache/go-build/db/dbb5f7e3c141cbc08e618136ec9dba70a1680dfb8924896c3c3a5b01e6473213-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/elliptic=/home/klets/.cache/go-build/15/15ba75528beec3bf0e19fee25e509ab3d1189ee0c20e2a6b4e7cdc7addd9d401-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/fingerprint=/home/klets/.cache/go-build/fc/fc9db7d66ba408e545d54e6ab96cae4f8d0e715d5082efe22d64c160b96cdabf-d
+packagefile github.com/pion/dtls/v3/pkg/protocol/handshake=/home/klets/.cache/go-build/06/06bb76ef83a8f3e171227c989d2cbd3f6f7f9ffef738089e07d415b5933bb00d-d
+packagefile github.com/pion/ice/v4=/home/klets/.cache/go-build/32/32f68e30dbfc9d03d98cae3a463fdbe277284ba6f9b85fb58b1ebf33f2ad64d8-d
+packagefile github.com/pion/interceptor=/home/klets/.cache/go-build/c4/c4d48335f2862d1e7f9c9c9bd96ab5eabf38470b76b3b2842ae6305a8a2e80e2-d
+packagefile github.com/pion/interceptor/pkg/flexfec=/home/klets/.cache/go-build/82/8224286729936b5251462e1c917834bbf3a4414bd9c791c95c2eaa81c4355352-d
+packagefile github.com/pion/interceptor/pkg/nack=/home/klets/.cache/go-build/85/856a5cadb19db0cfa1e9cfa52b98a8a7dbc268deffcd90f0e7a04f967a8d2601-d
+packagefile github.com/pion/interceptor/pkg/report=/home/klets/.cache/go-build/f3/f3e63040df954a15e46c92cc6d0017be3ac90fdf260a14eb7762e9b2644a4497-d
+packagefile github.com/pion/interceptor/pkg/rfc8888=/home/klets/.cache/go-build/3a/3af053000102b7eefc50b2f4e01de2423c6e7554b2cb6511b86e8556695749f1-d
+packagefile github.com/pion/interceptor/pkg/stats=/home/klets/.cache/go-build/89/890038cc1448c42f7ed169a00404b815847d91a789b2c184cf020dda796863a6-d
+packagefile github.com/pion/interceptor/pkg/twcc=/home/klets/.cache/go-build/20/204360ab2511a046bc10674a9165005316bf8325881f56ccff4bb6d4c980ed73-d
+packagefile github.com/pion/randutil=/home/klets/.cache/go-build/f2/f2e7a55a3e76fc567ba12c5a07bce899ace2ad1fa82074bbfa1e660ac562c514-d
+packagefile github.com/pion/rtcp=/home/klets/.cache/go-build/59/59a07c948239a97f1e3fb9a3a8500d5affe6f78646f99ac30fdae172f79e1eb8-d
+packagefile github.com/pion/rtp=/home/klets/.cache/go-build/46/46023f418e605ed40b40b33a2f74eb55e7b3bb4f367ececd30fb287e716bd38d-d
+packagefile github.com/pion/rtp/codecs=/home/klets/.cache/go-build/ab/abc71d872c1c5a1d0cd07116338ce175788ccd21b37bac5b70b9fe404e09d6d0-d
+packagefile github.com/pion/sdp/v3=/home/klets/.cache/go-build/19/198e24ed674d1b207b1f6b44573e71b29ea2aaf078dd68b75af18f461ad361b4-d
+packagefile github.com/pion/srtp/v3=/home/klets/.cache/go-build/e3/e3d1dfe678a76035437a1a6a4393f70d35b60b4ac7fd3a6f05a0fb5bed754d39-d
+packagefile github.com/pion/stun/v3=/home/klets/.cache/go-build/53/530575ca3f90625bc9627b500928f3c53a996d6754f79755bf6e01c9a2baf4c8-d
+packagefile github.com/pion/transport/v4=/home/klets/.cache/go-build/73/731d85ebea961bbf043bb1035e94fefd36fbb113be35315ecdd3d69d634c3983-d
+packagefile github.com/pion/transport/v4/packetio=/home/klets/.cache/go-build/b8/b8599308283cb50189bff17e42d7d175adcb9acdd98b1ec4c9f37d2d05017007-d
+packagefile github.com/pion/webrtc/v4/internal/fmtp=/home/klets/.cache/go-build/54/54c40a1a8d68dae802d3615c065bd9b3b80a82301959bf1ad69572e25c4e52da-d
+packagefile github.com/pion/webrtc/v4/internal/mux=/home/klets/.cache/go-build/37/37052534f80085cc675533cf5e30b1d5e3e43396d49e57d375da522333de2a1b-d
+packagefile github.com/pion/webrtc/v4/internal/util=/home/klets/.cache/go-build/5d/5de03b0201a4145b78aa5fb8bc0ceeffd7c7aa481e85466c7e8409fb63a4aeab-d
+packagefile github.com/pion/webrtc/v4/pkg/media=/home/klets/.cache/go-build/7c/7c1f79e2a5bad1f44e92234b169c00bf3458e57de93e08398182be81c2ceda2b-d
+packagefile github.com/pion/webrtc/v4/pkg/rtcerr=/home/klets/.cache/go-build/75/75f9e56c0c2d4df98be6cf45e9729f2820b100cb2a7747c48637628fb7da4025-d
+packagefile github.com/urnetwork/glog/internal/logsink=/home/klets/.cache/go-build/3b/3bfea99827c57d69b4e6a43d30c585a89594c3998b0dfc7a0f9c3f3878d56079-d
+packagefile github.com/urnetwork/glog/internal/stackdump=/home/klets/.cache/go-build/53/536e7795e47ed36116eeaa3491a641da671516072555ab74b1ad6a7e710050e8-d
+packagefile os/user=/home/klets/.cache/go-build/3e/3e75a190248ee791e9ac8ca6181edd7cf8c02e7e0036f5bd3e1ea00e445a33ff-d
+packagefile golang.org/x/crypto/cryptobyte/asn1=/home/klets/.cache/go-build/db/db668da7feaaf989152162e3d6352eba7803ad647613eaa3d757cf0a57dc79d1-d
+packagefile crypto/sha3=/home/klets/.cache/go-build/51/513a6832e0fee67813e07e1b0f6fbf7d4985fce0a709d13730674badbb621796-d
+packagefile golang.org/x/sys/cpu=/home/klets/.cache/go-build/24/243332905473b6f9c6174110a572e333e832161c0eeea6fb7bb1db3360b35839-d
+packagefile golang.org/x/net/http/httpguts=/home/klets/.cache/go-build/d2/d22b273f82c4b08b85a59ac293477576a96855b75e917bb0df5456038c8c9348-d
+packagefile golang.org/x/net/http2/hpack=/home/klets/.cache/go-build/ca/cabf3670a303a5ddfd039e86217d492b4ca5ca2ee5561475ae35244e88dfcc5c-d
+packagefile golang.org/x/net/internal/httpcommon=/home/klets/.cache/go-build/33/3329f2afb902a96efb9178422f728b60cb0b9d970022f91fd1814d87dd303484-d
+packagefile golang.org/x/net/internal/httpsfv=/home/klets/.cache/go-build/04/0457cd0006cd7cb90b56b105918193389c8ca7c9d4cae9919ba16034c62955b0-d
+packagefile net/textproto=/home/klets/.cache/go-build/e9/e931fcc9190ab1413a2dcdc3a0a5a28b057a1d2a43964c5121c5b36464a71f25-d
+packagefile golang.org/x/text/secure/bidirule=/home/klets/.cache/go-build/72/72f65787517f688385540e3b5e7bcef52af42e764857ead6c032c41782733155-d
+packagefile golang.org/x/text/unicode/bidi=/home/klets/.cache/go-build/54/547953dc226fc80e6abc5e27fdb3eb65ca6ff543549a4fa31dd18e2f3f378631-d
+packagefile golang.org/x/text/unicode/norm=/home/klets/.cache/go-build/97/979aaf4a979c7c6f2df18319490d2b01cef2b0c962ece5db60a753ffb9d34d78-d
+packagefile golang.org/x/net/internal/socks=/home/klets/.cache/go-build/02/023fb8b4967b62e506b4bca9b9021ce4e5e2310e10f810adcd8e54b128c14baa-d
+packagefile google.golang.org/protobuf/encoding/protowire=/home/klets/.cache/go-build/36/36584f5157dd07fb3811799db004d35a526dffc9e32ac0864e3fea8b1e2d9676-d
+packagefile google.golang.org/protobuf/internal/encoding/messageset=/home/klets/.cache/go-build/46/46225c451470b76a430a540160447399bf9b7637310f48ce4664353479fbb0a4-d
+packagefile google.golang.org/protobuf/internal/errors=/home/klets/.cache/go-build/85/8515d2bd83f344d4909ee60d47c7270ca3d931e133550ea1e259fa6b18db9775-d
+packagefile google.golang.org/protobuf/internal/flags=/home/klets/.cache/go-build/57/57da10c56c08bd2ee8e5d9eddb068448941d92181f985684a31e567d0ea54596-d
+packagefile google.golang.org/protobuf/internal/genid=/home/klets/.cache/go-build/42/42abf126f6540ed8aa15a573a1a42ef6d53745ce67ef94299ab86bf807babcff-d
+packagefile google.golang.org/protobuf/internal/order=/home/klets/.cache/go-build/1c/1c2a8658dee37b985cfe6411d2ee6381e4c58c61f53a841fe210c8b9f3555192-d
+packagefile google.golang.org/protobuf/internal/pragma=/home/klets/.cache/go-build/e7/e7b645f740dceb072ae3324d209e7f180b91f2c705f3197a9453e3060ee1b857-d
+packagefile google.golang.org/protobuf/internal/strs=/home/klets/.cache/go-build/1e/1e8153823ede7b46fbf83c104181dac8bb7c43699852cfaf1d86a3bd57c642e3-d
+packagefile google.golang.org/protobuf/reflect/protoregistry=/home/klets/.cache/go-build/a3/a30cb5d2d56648d0c87e03c481b9a66638aa8ed78ec917b4b0699961eb7dad56-d
+packagefile google.golang.org/protobuf/runtime/protoiface=/home/klets/.cache/go-build/fe/febab22c1aa8d2f493148cad08403f71e604a83a24cac7bbebcf120418ebb651-d
+packagefile vendor/golang.org/x/net/http/httpguts=/home/klets/.cache/go-build/ea/ea5dd290c2b368d5effcfe9e5168924d40123b064a7353937f26de66852b38f4-d
+packagefile vendor/golang.org/x/net/http/httpproxy=/home/klets/.cache/go-build/ff/ff8415aedaeda3d08810e022fe51e5a6e912f445399db08987b2a40065cb5929-d
+packagefile vendor/golang.org/x/net/http2/hpack=/home/klets/.cache/go-build/a6/a6213380d1c120e485f820c5c25dc8a03b428e6aa415ce6eb4a55c596db7bcf9-d
+packagefile vendor/golang.org/x/net/idna=/home/klets/.cache/go-build/94/945ee91060b075f5de4f46df00ecb721bbde5b0d19ce773aec430a1ff3151916-d
+packagefile mime=/home/klets/.cache/go-build/d0/d07636e58037d3a6a16d8d66a3f020cc2b57ba94c3a9dac289ca50af104b099e-d
+packagefile mime/multipart=/home/klets/.cache/go-build/a1/a1155728a1e0490d2bd47fc7f2240edaa51de4a4f6bd9fe99c4a567158481edf-d
+packagefile net/http/internal=/home/klets/.cache/go-build/75/756d4d08bf54bb7bc29e07ebc640fc69d51d12af806f16b505187240758dd48f-d
+packagefile net/http/internal/ascii=/home/klets/.cache/go-build/ed/ed1f492cac57d922dd57419fca38073a314ab59a406cfdb62393dce2830db71d-d
+packagefile net/http/internal/httpcommon=/home/klets/.cache/go-build/41/41d6747818805abf63ea1684b42b6a91d77f7e380152581cd3a07c10e2c18d2d-d
+packagefile internal/bisect=/home/klets/.cache/go-build/0d/0db267bd89e97495a78b37a4dfb1689608566d359192d64d50616e8ea8aca758-d
+packagefile go/scanner=/home/klets/.cache/go-build/ac/acd3a3c9c53036303dd1b6743ce38945277cf143ee662e38049db6837c18d818-d
+packagefile go/build/constraint=/home/klets/.cache/go-build/8a/8adda88a4bb4a5aca5a2b220b65c4fd162ed869cedf28f555b16c4fd94000767-d
+packagefile go/internal/scannerhooks=/home/klets/.cache/go-build/b4/b405392e194ce1d64d8162511e9aed58c561b392adfa2487b93301e30da3d437-d
+packagefile crypto/internal/fips140/ecdh=/home/klets/.cache/go-build/74/74b3906836302aba36992d850a68b84fc24b644044fca225e674d7fb9fa26879-d
+packagefile crypto/internal/fips140/edwards25519/field=/home/klets/.cache/go-build/cb/cbf27ba575b8166b0b54b664e9e5f9b2514056bfd33f82ed09b6da04d7a61ca3-d
+packagefile crypto/internal/boring/sig=/home/klets/.cache/go-build/40/401492249ca831c40162b1e9fb8ef9e01b869a2ac7a815c18ec93eec68ecede3-d
+packagefile crypto/internal/fips140=/home/klets/.cache/go-build/0b/0ba972f03e243ca5002f48cc85b5a14caacb50d9741737e97d41bcc753afa766-d
+packagefile crypto/internal/fips140/check=/home/klets/.cache/go-build/40/40c4fde2062e8d125a1a5a62487aafa2bef7ff255ada5d7924a33ab7bf00fc6b-d
+packagefile crypto/internal/fips140/sha512=/home/klets/.cache/go-build/66/66cb262bb594b5a75f56bfa889f13c91784fcbd94ccb5d6af14e45a4c98a74a2-d
+packagefile crypto/internal/constanttime=/home/klets/.cache/go-build/01/0142e9aa54c15142e54020b7df8b6b4fdff2adad1574b3b7bfabb0f3bcba9603-d
+packagefile crypto/internal/fips140/nistec/fiat=/home/klets/.cache/go-build/34/34e8aae45b81d81a6e662f91a25af1c65c29277ad54f747defb2c8ca25a357cd-d
+packagefile crypto/internal/fips140deps/byteorder=/home/klets/.cache/go-build/f5/f546298885a5bac5bfdb6a25cdec927e70a5540289eb55dc2299a85a414e179a-d
+packagefile crypto/internal/fips140/sha3=/home/klets/.cache/go-build/ef/efb3f66a9a8b0793b604b894673a9e9543f3bcb42c63d72d97092371876eb541-d
+packagefile crypto/fips140=/home/klets/.cache/go-build/ca/ca8e0ef5a96f7f82df7d9a325ae4e76982b0394340e40a0b95964cf051fcebcc-d
+packagefile crypto/internal/randutil=/home/klets/.cache/go-build/ef/ef9a0909723c28141ea9ae8b93c3bdf4c3c79af8e3f4fa9a898f80f0c61cfff4-d
+packagefile crypto/internal/fips140/subtle=/home/klets/.cache/go-build/f1/f11c848123539f5f8b89bf399acb23485252ec854f13ff684c1c4380b44bf1ed-d
+packagefile crypto/internal/fips140/edwards25519=/home/klets/.cache/go-build/2f/2f196cdd32f2f4c01a4ece23a34205456a86e6db935a687833c4998961f9e29a-d
+packagefile crypto/internal/entropy/v1.0.0=/home/klets/.cache/go-build/d0/d0e19f71c9004ccfcb6e18e1e1b1de51aa0dd52be70287c9b6d5449c4e505ae0-d
+packagefile crypto/internal/sysrand=/home/klets/.cache/go-build/0b/0be953f64d0d88e64c79be2257a5c77002493ed109e385fc40ad7742c80d4a9d-d
+packagefile crypto/internal/fips140deps/cpu=/home/klets/.cache/go-build/c6/c698a8d6e5a01f2addbdc4ac793dc60129cf903bfc5d1e659be4061b0ed2f18a-d
+packagefile crypto/internal/impl=/home/klets/.cache/go-build/2c/2c3c8e83b9ac46dbd67f68f459542efa67af1f62c5a8e87ddc22f044c26965ef-d
+packagefile crypto/internal/fips140/alias=/home/klets/.cache/go-build/d7/d7abb5b9a83a9abf8e3858120db69441203e47729a14269df9e2c88a3551b1ce-d
+packagefile crypto/internal/fips140/hkdf=/home/klets/.cache/go-build/22/22bf722f1806c65ad5b8d927d62f29d735c081e6dfff4b616f63a7489637178c-d
+packagefile crypto/internal/fips140deps/godebug=/home/klets/.cache/go-build/0a/0a11a4ded911e5e6edef14b831cde02a5d7736df563ad7f8e91030ccc6f24fc6-d
+packagefile crypto/internal/fips140/mlkem=/home/klets/.cache/go-build/57/57e84da520462aa8c72e81e6dad172a91b697b492c8475a64896e16e167ff20f-d
+packagefile vendor/golang.org/x/crypto/chacha20=/home/klets/.cache/go-build/42/423005061e86cf0ec31a532f039b868ac28bc97cef3909f9838c54b4c3a868e8-d
+packagefile vendor/golang.org/x/crypto/internal/alias=/home/klets/.cache/go-build/61/617af580589da0d17e5753934002e74e0b31ac340c1393a6280884ee02f947f2-d
+packagefile vendor/golang.org/x/crypto/internal/poly1305=/home/klets/.cache/go-build/f4/f4ceb30a9b7d7b177ab18ec1f2ef30cdd9c118e428e043ec960de22ccb51f7df-d
+packagefile vendor/golang.org/x/sys/cpu=/home/klets/.cache/go-build/13/13f09f4db2d2c2c00bb293d529d407ea148e5aa75c38f5f9b75f3763b8820fd4-d
+packagefile internal/saferio=/home/klets/.cache/go-build/98/9858980dc1ccb661cb28251becbda8672536bfc9234bdb9aaeec3be318ff65ff-d
+packagefile github.com/quic-go/quic-go/internal/congestion=/home/klets/.cache/go-build/30/3051ab716abe594b512d61964e9de13a4166af64af67bd78b097e906e6e5dbee-d
+packagefile golang.org/x/crypto/chacha20=/home/klets/.cache/go-build/af/af7238a97982612d91de892b24fbb03a92ebf6e1830eb7faf6a7424aeefa7b51-d
+packagefile golang.org/x/crypto/chacha20poly1305=/home/klets/.cache/go-build/ea/ead235caf90f1502feeaffdd40e2ee01f2345a2ace83983443a4769935e2fb1f-d
+packagefile golang.org/x/crypto/hkdf=/home/klets/.cache/go-build/9d/9db904ac862931c3ecd787f2d73404bea41b2c96ada67a1546d5fee63c34426b-d
+packagefile github.com/quic-go/quic-go/qlogwriter/jsontext=/home/klets/.cache/go-build/17/17db4ac51be7e4e446326ba751c593dd12a251712a1fb99c8d0230f919e04c43-d
+packagefile golang.org/x/net/bpf=/home/klets/.cache/go-build/62/62e0aed9edc15458587be9fec37ef5637045df2d45ee61eceb144ed7eb70a4a4-d
+packagefile golang.org/x/net/internal/iana=/home/klets/.cache/go-build/6e/6ef9ce5485217de33d6d72cc5059b9cfdbe21ce7c492f9330a2e4653983102de-d
+packagefile golang.org/x/net/internal/socket=/home/klets/.cache/go-build/92/92a205e684fa5b3c5a5518eda8e82618db9a7014c20ed3bbcab9ff20771f7f9e-d
+packagefile log/internal=/home/klets/.cache/go-build/56/564f221f48154e41a32abd0ea3feb842b835e47f601550d199322729857a0ddc-d
+packagefile google.golang.org/protobuf/internal/filedesc=/home/klets/.cache/go-build/77/77a9897aee0d1ba7114ea284e0d39df8f0c524c6ab520995f83755c8090281c0-d
+packagefile google.golang.org/protobuf/internal/filetype=/home/klets/.cache/go-build/8a/8ae809eb2f3ed2620f19b71100f827b3ad941f1321807e7e73d5e398262dbafa-d
+packagefile google.golang.org/protobuf/internal/impl=/home/klets/.cache/go-build/94/9440fc2e5af2e063ebcf90d434686d5abbbd8518b3069d5a4ff6a1d745c3026a-d
+packagefile google.golang.org/protobuf/internal/protolazy=/home/klets/.cache/go-build/d1/d1eea661767229fe4f3e19e1daff2a998fd82863cfa998c8b21b805615139e3e-d
+packagefile google.golang.org/protobuf/internal/version=/home/klets/.cache/go-build/0e/0ed676f2bf8dd4c96234125611e405281fe27d7a9e43cd20bc529816f670b057-d
+packagefile github.com/pion/transport/v4/deadline=/home/klets/.cache/go-build/96/96e542ac7f77d5e08d9062ebc2164d406c91ac56836602204bdb57a6b1274d98-d
+packagefile encoding/gob=/home/klets/.cache/go-build/f7/f7387bf3a258457edaa6b1f8b0b46bbbe8b7701982dff041aeae4ba31c194802-d
+packagefile github.com/pion/dtls/v3/internal/ciphersuite=/home/klets/.cache/go-build/01/012cf50ce7f006591a0cfe97e1697b2471fdfe8e7545c568aa37661f00444d20-d
+packagefile github.com/pion/dtls/v3/internal/ciphersuite/types=/home/klets/.cache/go-build/2f/2f6a4645aae5dc0b570501d161de8b61577fb31cddfcd562060b32aa35267381-d
+packagefile github.com/pion/dtls/v3/internal/closer=/home/klets/.cache/go-build/a3/a359554f1ed4dcf54f9e5abbd652c083dc8837da311a8d446330762ac71a75a9-d
+packagefile github.com/pion/dtls/v3/internal/net/udp=/home/klets/.cache/go-build/95/952b3447a4ba54814970344b924ba26762858bf9ddaaf8a9d3f53b1d493cc18e-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/clientcertificate=/home/klets/.cache/go-build/29/2955dd153d2f820e2cb4294a5a2bfba33440e4bb5ea5153e0463bef9948c2c46-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/hash=/home/klets/.cache/go-build/7b/7bcc905d1685f36d3ae810fe2289e459f6fa0b5fdec170c3a363f74406582089-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/prf=/home/klets/.cache/go-build/58/58c6ec9c1e1d635ec6fae5083f7e52315c754806b7e6095ac2a8d7d67e0690c2-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/signature=/home/klets/.cache/go-build/e0/e0f37e0671fb8be9369b03cd192c95a7fc1c45cb3c65196457e341c15cbeb32e-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/signaturehash=/home/klets/.cache/go-build/fb/fbd5edad53f67cca66b44d0279eb846c9de89ab8ced5f215d82e61fb92e37c3c-d
+packagefile github.com/pion/dtls/v3/pkg/net=/home/klets/.cache/go-build/63/63c9052f7fc5799757989eaff84ab53e1ce5432808ff16ac45cd07a2c58b1a16-d
+packagefile github.com/pion/dtls/v3/pkg/protocol=/home/klets/.cache/go-build/61/617d863aecacd981f36685f37e5e6482dc15853dec202b83adc8a4b7b33e428e-d
+packagefile github.com/pion/dtls/v3/pkg/protocol/alert=/home/klets/.cache/go-build/0f/0f0833e98ae04a04fec2475a5794e66d4d900c46311f48d33af3e0546d183bf8-d
+packagefile github.com/pion/dtls/v3/pkg/protocol/extension=/home/klets/.cache/go-build/9a/9a7a742e72c311e711bb6348a08fde676b70880391e05ec1c314e9c0701f6a62-d
+packagefile github.com/pion/dtls/v3/pkg/protocol/recordlayer=/home/klets/.cache/go-build/6f/6fb85ffb114e91bf77b287256b33b7e519be020046564c586440890149a5272e-d
+packagefile github.com/pion/transport/v4/netctx=/home/klets/.cache/go-build/9f/9f10d41a0869c815daab83b227d1aabe31d973355fdd81b17173fe7802a7ec8e-d
+packagefile github.com/pion/transport/v4/replaydetector=/home/klets/.cache/go-build/e8/e820e593b562e9c140f66b906ebcf04bf8f5b098c369cb767d6027a434fc87c4-d
+packagefile github.com/pion/dtls/v3/internal/util=/home/klets/.cache/go-build/54/54783bbe517fd154d79be5d1d06f5a0e6b1b3276844f68f3487e7081b04c9b6c-d
+packagefile github.com/google/uuid=/home/klets/.cache/go-build/bc/bc52794d153369c9f842025d7ffa12e64cf0a05b9a3f4335bfb41a36a0ec7585-d
+packagefile github.com/pion/ice/v4/internal/fakenet=/home/klets/.cache/go-build/db/dbb95aa975575f5cf29734b2d003cb8acdb800a45a01b812a6bee8ac5209e080-d
+packagefile github.com/pion/ice/v4/internal/stun=/home/klets/.cache/go-build/8d/8d1789470c0d174076d3c8987da435e5364b295399a528a70547e5678ab259e3-d
+packagefile github.com/pion/ice/v4/internal/taskloop=/home/klets/.cache/go-build/62/62a7302bec68439a88795080c75f235c51096a7fa51f58d10513f300677610b7-d
+packagefile github.com/pion/mdns/v2=/home/klets/.cache/go-build/a7/a7456dadb79aed7225a6e6112e6abe2c1f68a030de228bace465dfaaeaa03921-d
+packagefile github.com/pion/transport/v4/stdnet=/home/klets/.cache/go-build/72/726b60aa384586a6f505d8322c2923f9372aa5a5050ab1e46528cc0ca63e7d48-d
+packagefile github.com/pion/transport/v4/vnet=/home/klets/.cache/go-build/8e/8ec02f978f2d19bb2a5e17dda30a6ef72a2a8e2c07bea95d8e6dfed3c6c73d15-d
+packagefile github.com/pion/turn/v4=/home/klets/.cache/go-build/00/00457088b8bbfd403b106a3c25f0a02e89d5a46426334ce47d7c5480244fa24f-d
+packagefile github.com/pion/interceptor/pkg/flexfec/util=/home/klets/.cache/go-build/84/84d4029656f55da95c913771d675c34bcfeeb884e5473629ce7c33a59c7c14df-d
+packagefile github.com/pion/interceptor/internal/rtpbuffer=/home/klets/.cache/go-build/69/69c238d399da8c354e1a702121ea823a52a1db8288083b908cca7baaa6238ff2-d
+packagefile github.com/pion/interceptor/internal/ntp=/home/klets/.cache/go-build/16/16942f8a31e2670447fa307e6084a99f071b6eb55c938987a57521c522ab0cb0-d
+packagefile github.com/pion/interceptor/internal/sequencenumber=/home/klets/.cache/go-build/8b/8b641f76bf18380ded3d5ae40c7fc6f4ba7f7957c1d7619658cf2cc9b502b51c-d
+packagefile github.com/pion/rtp/codecs/av1/obu=/home/klets/.cache/go-build/05/05761d38f7e0e598a7569e527ea5bb8c8adfc34ec8eabbba0e46d2cdfab2b46f-d
+packagefile github.com/pion/rtp/codecs/vp9=/home/klets/.cache/go-build/9a/9a459d0c61e94b96548665b7888a15a3a939e88083c77cbea295255e0f000a83-d
+packagefile github.com/pion/transport/v4/utils/xor=/home/klets/.cache/go-build/dc/dcd78ba25c0e1be2092babe9ac8b08907a8b72b8702858faf6a727282b4f1e35-d
+packagefile github.com/pion/stun/v3/internal/hmac=/home/klets/.cache/go-build/85/85448c006cf7710bd4d63fb736002479ef5a1687bad080c5f32b29eb2b8f73dd-d
+packagefile golang.org/x/text/transform=/home/klets/.cache/go-build/07/07bb68b599045bbf1828ae0a58defde8b79c3b0b54273d7d8faf0c6748196e9b-d
+packagefile google.golang.org/protobuf/internal/detrand=/home/klets/.cache/go-build/e8/e84badd04bbdbcd96754902ed87e4ff17e4b7ad1169eefe570cafb60ace333e1-d
+packagefile vendor/golang.org/x/text/secure/bidirule=/home/klets/.cache/go-build/06/06e30c8a6035505181da7ad7bc41ea7b34f0b3e0d799ea06dd872aff0faafb98-d
+packagefile vendor/golang.org/x/text/unicode/bidi=/home/klets/.cache/go-build/73/73b794969c6cd410ef3f940a0161daeaa38003ee14527380b6371c5fddaf6cc2-d
+packagefile vendor/golang.org/x/text/unicode/norm=/home/klets/.cache/go-build/b4/b4d3848fc88d3abecf99f1eeebdf5754cbbba90d3b2ab7066b5121a54a955a1d-d
+packagefile mime/quotedprintable=/home/klets/.cache/go-build/0e/0e8f5bfba5c33378ff06690ce20b5f8bb6f9629e010e59599a35e8de73a7f342-d
+packagefile crypto/internal/fips140deps/time=/home/klets/.cache/go-build/e0/e0cffc2db9f5d5cdbbca65ba47f2921acb491301dd8bfc319e24d4e117f476b0-d
+packagefile golang.org/x/crypto/internal/alias=/home/klets/.cache/go-build/b2/b2ddaa5f6ef630cc90de2e78dda92722346758c29ea9d1d226a49896ccab7feb-d
+packagefile golang.org/x/crypto/internal/poly1305=/home/klets/.cache/go-build/5b/5bbec29f577640e7efe1fdeccc1e79f2ca4c26b11b4d21cab5d6e828390fa16e-d
+packagefile google.golang.org/protobuf/internal/descfmt=/home/klets/.cache/go-build/ae/ae209c84b849cdcf7a2629b4542e12bb8e00629d243789b07dc1f075b1f96c60-d
+packagefile google.golang.org/protobuf/internal/descopts=/home/klets/.cache/go-build/5f/5fad46e4a10a6ae15b843368721105b6c0d7946391d8b85c64cc50a069f363f6-d
+packagefile google.golang.org/protobuf/internal/editiondefaults=/home/klets/.cache/go-build/9f/9f2a1995813d189e029015d4eca3c9c4d3fb155f233146866ea3fe60c78e780d-d
+packagefile google.golang.org/protobuf/internal/encoding/defval=/home/klets/.cache/go-build/d8/d8b484c7ee06e58b256293c710172092f728adbd669224e2b354fc332a574078-d
+packagefile google.golang.org/protobuf/encoding/prototext=/home/klets/.cache/go-build/23/23d40056221991449bba331bc32741904b540671ae1579ca2323337fdd678e6b-d
+packagefile google.golang.org/protobuf/internal/encoding/tag=/home/klets/.cache/go-build/83/8312c35a5e2992ab320cd72691ffb2b64f1e899d1a1bed8f50d2bdd00f497705-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/ciphersuite=/home/klets/.cache/go-build/09/0997e7c72f16a47de742acd5bdb40d809002d47e6da0ebd9cdaa4f427e1e1d47-d
+packagefile github.com/pion/dtls/v3/internal/net=/home/klets/.cache/go-build/ed/ed483aa9ca49d545920828b4768d782c930b772b9de1ac33b524884fb44af339-d
+packagefile github.com/pion/ice/v4/internal/atomic=/home/klets/.cache/go-build/12/129175326eae58e82a4a5df0ee17d84acdbba2df8ea2cafe765cce41c387ae0b-d
+packagefile github.com/wlynxg/anet=/home/klets/.cache/go-build/05/051bd196fb0ea6e62fb2333af5a0f56ffadc4f9cec852de8d216e695d05f3f8e-d
+packagefile golang.org/x/time/rate=/home/klets/.cache/go-build/c6/c6806ba7a0a96d44b327e9eb957d312895904912280c72990506fc4961855b9e-d
+packagefile github.com/pion/turn/v4/internal/allocation=/home/klets/.cache/go-build/b6/b612401a6117803c3b8d498fb6f69684e888711e34dfdb532205406ed04f20a3-d
+packagefile github.com/pion/turn/v4/internal/client=/home/klets/.cache/go-build/3f/3f6be0d99ea89cc9e6ba6dbd2fc8f904af9571b29611806f6dc2b9d3d5af459b-d
+packagefile github.com/pion/turn/v4/internal/proto=/home/klets/.cache/go-build/fc/fc828aae7c9a7dd1d297ab7d174f42f24cefc4adcd5f482c4aba1c295518b809-d
+packagefile github.com/pion/turn/v4/internal/server=/home/klets/.cache/go-build/43/4376a6400a1df259a032e351e53410bc9934cd4bb19f7c266f8fb36f9fb11025-d
+packagefile hash/fnv=/home/klets/.cache/go-build/d6/d66af82e276b9ce1241c23e29416f3873a0f3dac152746fecb2f9cb1713221d5-d
+packagefile vendor/golang.org/x/text/transform=/home/klets/.cache/go-build/4a/4a0c6860bd225b396a0e40bdbffc6a1887c16f06a3f17df6af1dfd3d81c192f8-d
+packagefile google.golang.org/protobuf/internal/encoding/text=/home/klets/.cache/go-build/f3/f3e66475e2b986a296484b2af415dbec793a566fa5a22bcf4e3f3e5d3df8f594-d
+packagefile google.golang.org/protobuf/internal/set=/home/klets/.cache/go-build/04/0437955732a3dda946936be33cf8c1398e69b447a0acac291e146d87d29f049d-d
+packagefile github.com/pion/dtls/v3/pkg/crypto/ccm=/home/klets/.cache/go-build/9f/9fe10540f1fa133ee5a7072820bd517c8c3f90811b5be89dac7abbd4f849a024-d
+packagefile github.com/pion/turn/v4/internal/ipnet=/home/klets/.cache/go-build/3b/3bb7cbd509f4d5756e1a0e74708e3a7b2ef2b5d74ed04fb04456ccf051964b9c-d
+modinfo "0w\xaf\f\x92t\b\x02A\xe1\xc1\a\xe6\xd6\x18\xe6path\tgithub.com/urnetwork/connect.test\nmod\tgithub.com/urnetwork/connect\t(devel)\t\nbuild\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\tDefaultGODEBUG=cryptocustomrand=1,tlssecpmlkem=0,urlstrictcolons=0\nbuild\tCGO_ENABLED=1\nbuild\tCGO_CFLAGS=\nbuild\tCGO_CPPFLAGS=\nbuild\tCGO_CXXFLAGS=\nbuild\tCGO_LDFLAGS=\nbuild\tGOARCH=amd64\nbuild\tGOEXPERIMENT=nodwarf5\nbuild\tGOOS=linux\nbuild\tGOAMD64=v1\n\xf92C1\x86\x18 r\x00\x82B\x10A\x16\xd8\xf2"
+EOF
+cd .
+GOROOT='/usr/lib/go' /usr/lib/go/pkg/tool/linux_amd64/link -o $WORK/b370/connect.test -importcfg $WORK/b370/importcfg.link -s -w -X=runtime.godebugDefault=cryptocustomrand=1,tlssecpmlkem=0,urlstrictcolons=0 -buildmode=exe -buildid=8t8DzTZpUOLxgSDReKuD/9OXeb6KMvj4-aDH7R5eJ/Qf-8ED0jgh7vuY6hd5Dr/8t8DzTZpUOLxgSDReKuD -X testing.testBinary=1 -extld=gcc /home/klets/.cache/go-build/3e/3eb673513723c938385b1a502397e0c3cd6bd13cbc669124f254aa55f15a1778-d
+go tool buildid -w $WORK/b370/connect.test # internal
+$WORK/b370/connect.test -test.testlogfile=$WORK/b370/testlog.txt -test.paniconexit0 -test.timeout=10m0s
+rm -rf $WORK/b378/
