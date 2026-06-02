@@ -228,7 +228,8 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
   - Per-event 5-minute cooldown on webhook POSTs to prevent spam at the recovery boundary
 - `fireWebhook(url, nodeName, event, message)` — HTTP POST helper; drains response body before closing to avoid leaving server sockets in CLOSE_WAIT
 - `runHealthHeartbeat(ctx, startTime, profile)` — background goroutine, always runs:
-  - Logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB` on a configurable interval (default 5 minutes)
+  - Logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB connections=N` on a configurable interval (default 5 minutes)
+  - Provides real-time visibility into active TCP/UDP proxy sessions (instrumented via `ip.go`)
   - Uses `runtime/metrics` (lock-free, no stop-the-world) rather than `runtime.ReadMemStats`
   - Interval set via `URNETWORK_HEALTH_INTERVAL` (Go duration string, min 1 minute)
 

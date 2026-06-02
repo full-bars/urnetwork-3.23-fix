@@ -143,6 +143,29 @@ A contract was allocated and is filling up. The provider tried to debit bytes fr
 
 ---
 
+## Health Heartbeat
+
+```
+[health] uptime=15m0s profile=auto heap=80MiB sys=255MiB connections=998
+```
+
+Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
+
+| Field | Meaning |
+|---|---|
+| `uptime` | How long the provider process has been running. |
+| `profile` | The active performance profile (e.g., `auto`, `turbo-v4`, `lowmem`). |
+| `heap` | RAM currently used by live Go objects. |
+| `sys` | Total RAM reserved from the OS (includes stack, heap, and unused reservations). |
+| `connections` | Total number of **active** TCP and UDP proxy sessions currently being handled by the provider. |
+
+**What to watch for:**
+- `connections` staying at 0 — the provider is running but no traffic is being routed (check auth/connectivity).
+- `heap` growing continuously over hours/days — potential memory leak.
+- `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
+
+---
+
 ## Connection Selection (3.23-fix variant)
 
 ```
