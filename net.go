@@ -133,6 +133,7 @@ func (self *ConnectSettings) NetDialer() *net.Dialer {
 }
 
 type ProxySettings struct {
+	Index   int
 	Network string
 	Address string
 	Auth    *proxy.Auth

@@ -5,6 +5,7 @@
 .direnv
 
 provider/provider
+provider_bin
 connectctl/connectctl
 tetherctl/*.conf
 api/redoc-static.html
