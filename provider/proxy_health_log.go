@@ -90,19 +90,22 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	fmt.Fprintf(&b, " URNETWORK PROXY TRAFFIC REPORT\n")
 	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "========================================================================\n")
-	fmt.Fprintf(&b, "+----------+-----------------------+---------+-------------------+-------------------+\n")
-	fmt.Fprintf(&b, "| PROXY ID | IP ADDRESS            | CLIENTS | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
-	fmt.Fprintf(&b, "+----------+-----------------------+---------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "+-------------+-----------------------+---------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "| PROXY ID    | IP ADDRESS            | CLIENTS | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
+	fmt.Fprintf(&b, "+-------------+-----------------------+---------+-------------------+-------------------+\n")
 
 	type proxyEntry struct {
 		Proxy string
+		Index int
 		IP    string
 		Bw    connect.ProxyBandwidth
 	}
 	var entries []proxyEntry
 	for k, bw := range r.Bandwidth {
 		p, ip := parseProxyString(k)
-		entries = append(entries, proxyEntry{Proxy: p, IP: ip, Bw: bw})
+		var index int
+		fmt.Sscanf(p, "proxy[%d]", &index)
+		entries = append(entries, proxyEntry{Proxy: p, Index: index, IP: ip, Bw: bw})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		sumI := entries[i].Bw.BillableTx.Load() + entries[i].Bw.BillableRx.Load()
@@ -110,13 +113,13 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 		if sumI != sumJ {
 			return sumI > sumJ // descending order
 		}
-		return entries[i].Proxy < entries[j].Proxy
+		return entries[i].Index < entries[j].Index
 	})
 
 	for _, e := range entries {
 		billableStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.BillableTx.Load()), formatBytes(e.Bw.BillableRx.Load()))
 		totalStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.TotalTx.Load()), formatBytes(e.Bw.TotalRx.Load()))
-		fmt.Fprintf(&b, "| %-8s | %-21s | %-7d | %-17s | %-17s |\n", e.Proxy, e.IP, e.Bw.Clients.Load(), billableStr, totalStr)
+		fmt.Fprintf(&b, "| %-11s | %-21s | %-7d | %-17s | %-17s |\n", e.Proxy, e.IP, e.Bw.Clients.Load(), billableStr, totalStr)
 	}
 
 	return b.String()
