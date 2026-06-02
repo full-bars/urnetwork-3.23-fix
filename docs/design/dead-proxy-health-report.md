@@ -83,6 +83,7 @@ type proxyHealth struct {
     everUp      bool
     downSince   time.Time  // when currentlyUp last went false (for recovery latency)
     lastSeenUp  bool       // currentlyUp as of the previous heartbeat (baseline)
+    deadLogged  bool       // a confirmed-dead event has been written for this proxy
 }
 
 type proxyEvent struct {
@@ -98,9 +99,11 @@ type ProxyHealthReport struct {
     Dead     []string  // formatted "proxy[idx] (addr)", index-sorted
     Degraded []string
 
-    Recovered     []proxyEvent  // down->up since last heartbeat
-    NewlyDead     []proxyEvent  // ->down this interval, everUp==false
-    NewlyDegraded []proxyEvent  // ->down this interval, everUp==true
+    Recovered     []proxyEvent  // down->up since last heartbeat (incl. first-ever connect)
+    NewlyDegraded []proxyEvent  // up->down since last heartbeat
+    NewlyDead     []proxyEvent  // never-up proxies newly confirmed dead, logged once
+                                // (gated behind a confirm delay so startup ramp is
+                                //  not logged as dead)
 
     LifetimeRecovered int
     LifetimeLost      int
@@ -129,14 +132,20 @@ Exported API:
   walk; returns the current up count plus the two formatted lists
   (`proxy[idx] (address)` strings, index-sorted). Does **not** advance the
   baseline, so it is safe to call from the pulse-fire marker.
-- `ProxyHealthHeartbeat() ProxyHealthReport` — the single per-heartbeat call. Walks
-  the registry once: builds the current `Dead`/`Degraded` lists, compares each
-  entry's `currentlyUp` against `lastSeenUp` to populate `Recovered` / `NewlyDead` /
-  `NewlyDegraded` (with recovery latency from `downSince`), folds the counts into the
-  lifetime counters, then advances the baseline (`lastSeenUp = currentlyUp` for all).
-  **Called exactly once per heartbeat** so interval deltas mean "since the last
-  heartbeat." On the first call it sets the baseline and returns empty transition
-  lists / zero counters, to avoid reporting the entire startup ramp as recoveries.
+- `ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport` — the single
+  per-heartbeat call. Walks the registry once: builds the current `Dead`/`Degraded`
+  lists; compares each entry's `currentlyUp` against `lastSeenUp` to populate
+  `Recovered` (down->up, with latency from `downSince` when known) and
+  `NewlyDegraded` (up->down), folding those into the lifetime counters; then advances
+  the baseline (`lastSeenUp = currentlyUp` for all). **Called exactly once per
+  heartbeat** so interval deltas mean "since the last heartbeat." On the first call
+  it sets the baseline and returns empty `Recovered`/`NewlyDegraded` lists / zero
+  counters, to avoid reporting the entire startup ramp as transitions.
+  `NewlyDead` is populated only when `confirmDead` is true (the caller passes
+  `uptime >= deadConfirmDelay`, ~65 min, just past one pulse cycle): each never-up
+  proxy not yet logged is emitted once and flagged, so the durable event log records
+  confirmed-dead endpoints without flagging the startup ramp. `lost` counts only
+  up->down transitions, not dead confirmations.
 
 Eager registration is required so that a proxy which **never connects at all**
 (never reaching `markProxyUp`) still shows up as `dead`. Lazy registration would
