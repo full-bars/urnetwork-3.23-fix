@@ -809,8 +809,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d\n",
-			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount())
+		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
+			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 	}
 }
 
@@ -1006,6 +1006,7 @@ func provide(opts docopt.Opts) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
 		for i, proxySettings := range allProxySettings {
+			proxySettings.Index = i
 			var user string
 			var password string
 			if proxySettings.Auth != nil {

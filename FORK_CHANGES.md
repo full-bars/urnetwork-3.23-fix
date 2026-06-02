@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.15.3
+**Current Version**: v3.23.0-fix.15.5-dev
 
 ---
 
@@ -36,18 +36,17 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Change**:
 ```
-InitialContractTransferByteCount: 16 KiB → 256 KiB
+InitialContractTransferByteCount: 16 KiB → 2 MiB
 ```
 - **Old**: 16384 bytes per contract
-- **New**: 262144 bytes per contract
-- **Ratio**: 16x increase
+- **New**: 2097152 bytes per contract (mib(2))
+- **Ratio**: 128x increase
 
 **Effect**: Reduces contract renegotiation overhead during traffic ramp-up; faster throughput scaling.
 
 **How to Identify in New Upstream**:
 - Search for `InitialContractTransferByteCount` in `transfer_contract_manager.go`
-- Look for constant or variable assignment (likely near contract initialization)
-- Current value is `256 * 1024` (in bytes)
+- Current value is `mib(2)` (in bytes)
 
 **Status**: ✅ Shipped in all releases; could be upstreamed if performance gains are universal
 
@@ -63,17 +62,16 @@ InitialContractTransferByteCount: 16 KiB → 256 KiB
 **Changes**:
 - `[t]auth error` — Rate-limited (suppressed repeated occurrences)
 - `[contract]oob error` — Rate-limited
+- `[r]drop` — Rate-limited (Added in v3.23.0-fix.15.3)
 
 **Example**: When auth fails repeatedly, logs show "X suppressed" instead of identical message spam.
 
 **How to Identify in New Upstream**:
-- Search for `[t]auth error` and `[contract]oob error` log patterns
+- Search for `[t]auth error`, `[contract]oob error`, and `[r]drop` log patterns
 - Look for "suppressed" or "rate" patterns in logging calls
 - Check if glog has rate-limiting wrappers (e.g., `Infof` vs `Infof_Limited`)
 
-**Status**: ⚠️ Partially shipped in v3.23.0-fix.8; upstream PR#180 covers some of this. Check upstream for completeness before re-applying.
-
-**Outstanding**: `[r]drop` error spam still unaddressed in this fork — may want to add rate-limiting to it.
+**Status**: ✅ Fully shipped in v3.23.0-fix.15.3.
 
 ---
 
@@ -374,7 +372,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
-**Last Updated**: 2026-05-29  
+**Last Updated**: 2026-06-02  
 **Maintained By**: @full-bars  
 **Contact**: Reference GitHub issues in urnetwork-3.23-fix repo
 

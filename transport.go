@@ -41,6 +41,17 @@ var lastBackendFailNano atomic.Int64
 // threshold so one or two stray failures are not mistaken for an outage.
 var consecutiveBackendFails atomic.Int64
 
+// activeProxyConnections counts proxy transports that are currently registered
+// with the route manager (i.e. authenticated and live on the platform). It is
+// incremented after UpdateTransport in runH1/runH3 and decremented when the
+// transport is torn down. ActiveProxyConnections() exposes it for the [health]
+// heartbeat as proxies=N.
+var activeProxyConnections int64
+
+func ActiveProxyConnections() int64 {
+	return atomic.LoadInt64(&activeProxyConnections)
+}
+
 // backendDegradedFailThreshold is the number of consecutive backend failures
 // (with no intervening success) required before the backend is considered
 // degraded. Set above the level of normal transient churn.
@@ -653,7 +664,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			self.routeManager.UpdateTransport(sendTransport, []Route{exportedSend})
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
+			atomic.AddInt64(&activeProxyConnections, 1)
+
 			defer func() {
+				atomic.AddInt64(&activeProxyConnections, -1)
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
 			}()
@@ -1165,7 +1179,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			self.routeManager.UpdateTransport(sendTransport, []Route{send})
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
+			atomic.AddInt64(&activeProxyConnections, 1)
+
 			defer func() {
+				atomic.AddInt64(&activeProxyConnections, -1)
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
 
