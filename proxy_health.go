@@ -102,3 +102,23 @@ func sortedIndicesLocked() []int {
 	sort.Ints(indices)
 	return indices
 }
+
+// ProxyHealthSnapshot returns the current state without advancing the transition
+// baseline, so it is safe to call from the pulse-fire marker. Lists are complete
+// (no display cap) and index-sorted.
+func ProxyHealthSnapshot() (up int, dead []string, degraded []string) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, idx := range sortedIndicesLocked() {
+		h := proxyHealthByIndex[idx]
+		switch {
+		case h.currentlyUp:
+			up++
+		case h.everUp:
+			degraded = append(degraded, formatProxyEntry(idx, h.address))
+		default:
+			dead = append(dead, formatProxyEntry(idx, h.address))
+		}
+	}
+	return up, dead, degraded
+}
