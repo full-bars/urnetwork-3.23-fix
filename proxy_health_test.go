@@ -50,3 +50,34 @@ func TestProxyHealthRegisterAndMark(t *testing.T) {
 	markProxyUp(999)
 	markProxyDown(999)
 }
+
+func TestProxyHealthSnapshot(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(2, "c:1") // dead (never up)
+	RegisterProxy(0, "a:1") // will be up
+	RegisterProxy(1, "b:1") // will be degraded
+
+	markProxyUp(0)
+	markProxyUp(1)
+	markProxyDown(1) // up then down -> degraded
+
+	up, dead, degraded := ProxyHealthSnapshot()
+	if up != 1 {
+		t.Fatalf("up = %d, want 1", up)
+	}
+	if len(dead) != 1 || dead[0] != "proxy[2] (c:1)" {
+		t.Fatalf("dead = %v, want [proxy[2] (c:1)]", dead)
+	}
+	if len(degraded) != 1 || degraded[0] != "proxy[1] (b:1)" {
+		t.Fatalf("degraded = %v, want [proxy[1] (b:1)]", degraded)
+	}
+
+	// snapshot must NOT advance the baseline: lastSeenUp stays false everywhere
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for idx, h := range proxyHealthByIndex {
+		if h.lastSeenUp {
+			t.Fatalf("snapshot advanced baseline for idx %d", idx)
+		}
+	}
+}
