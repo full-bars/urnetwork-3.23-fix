@@ -180,7 +180,7 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 ## Health Heartbeat
 
 ```
-[health] uptime=15m0s profile=auto heap=80MiB sys=255MiB connections=998
+[health] uptime=15m0s profile=auto heap=80MiB sys=255MiB connections=998 proxies=1150
 ```
 
 Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
@@ -191,10 +191,12 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 | `profile` | The active performance profile (e.g., `auto`, `turbo-v4`, `lowmem`). |
 | `heap` | RAM currently used by live Go objects. |
 | `sys` | Total RAM reserved from the OS (includes stack, heap, and unused reservations). |
-| `connections` | Total number of **active** TCP and UDP proxy sessions currently being handled by the provider. |
+| `connections` | Total number of **active end-user NAT sessions** (TCP/UDP) currently routing through the provider. |
+| `proxies` | Total number of **authenticated, working proxy links** to the platform (how many proxies from your list are online). |
 
 **What to watch for:**
-- `connections` staying at 0 — the provider is running but no traffic is being routed (check auth/connectivity).
+- `connections` staying at 0 — the provider is running but no traffic is being routed (normal if `proxies` is also 0, otherwise indicates lack of users).
+- `proxies` much lower than your `proxy.txt` count — indicates many proxies are failing auth or networking (check `[net][s]select` logs).
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
 
