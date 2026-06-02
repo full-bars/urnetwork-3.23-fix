@@ -81,7 +81,29 @@ type proxyHealth struct {
     address     string
     currentlyUp bool
     everUp      bool
-    lastSeenUp  bool  // currentlyUp as of the previous transitions call (baseline)
+    downSince   time.Time  // when currentlyUp last went false (for recovery latency)
+    lastSeenUp  bool       // currentlyUp as of the previous heartbeat (baseline)
+}
+
+type proxyEvent struct {
+    index   int
+    address string
+    after   time.Duration  // for recovered events: how long it was down
+}
+
+// ProxyHealthReport is the full per-heartbeat result: current state, the
+// transitions since the last heartbeat, and lifetime counters.
+type ProxyHealthReport struct {
+    Up       int
+    Dead     []string  // formatted "proxy[idx] (addr)", index-sorted
+    Degraded []string
+
+    Recovered     []proxyEvent  // down->up since last heartbeat
+    NewlyDead     []proxyEvent  // ->down this interval, everUp==false
+    NewlyDegraded []proxyEvent  // ->down this interval, everUp==true
+
+    LifetimeRecovered int
+    LifetimeLost      int
 }
 
 var (
@@ -91,7 +113,7 @@ var (
     // lifetime transition counters (since process start)
     lifetimeRecovered int  // down->up events
     lifetimeLost      int  // up->down events
-    deltaBaselineSet  bool
+    baselineSet       bool
 )
 ```
 
@@ -101,19 +123,20 @@ Exported API:
   `currentlyUp=false, everUp=false` if absent. Called eagerly at startup for every
   proxy in the list.
 - `markProxyUp(index int)` — sets `currentlyUp=true, everUp=true`.
-- `markProxyDown(index int)` — sets `currentlyUp=false`.
+- `markProxyDown(index int)` — sets `currentlyUp=false`; stamps `downSince=now` if
+  it was previously up.
 - `ProxyHealthSnapshot() (up int, dead []string, degraded []string)` — **read-only**
   walk; returns the current up count plus the two formatted lists
   (`proxy[idx] (address)` strings, index-sorted). Does **not** advance the
-  transitions baseline, so it is safe to call from both the heartbeat report and the
-  pulse-fire marker.
-- `ProxyHealthTransitions() (recovered, lost, lifetimeRecovered, lifetimeLost int)` —
-  compares each entry's `currentlyUp` against `lastSeenUp`, counts this-interval
-  `recovered` (down->up) and `lost` (up->down), folds them into the lifetime
-  counters, then advances the baseline (`lastSeenUp = currentlyUp` for all). **Called
-  exactly once per heartbeat** so interval deltas mean "since the last heartbeat."
-  On the first call it sets the baseline and returns all zeros, to avoid reporting
-  the entire startup ramp as recoveries.
+  baseline, so it is safe to call from the pulse-fire marker.
+- `ProxyHealthHeartbeat() ProxyHealthReport` — the single per-heartbeat call. Walks
+  the registry once: builds the current `Dead`/`Degraded` lists, compares each
+  entry's `currentlyUp` against `lastSeenUp` to populate `Recovered` / `NewlyDead` /
+  `NewlyDegraded` (with recovery latency from `downSince`), folds the counts into the
+  lifetime counters, then advances the baseline (`lastSeenUp = currentlyUp` for all).
+  **Called exactly once per heartbeat** so interval deltas mean "since the last
+  heartbeat." On the first call it sets the baseline and returns empty transition
+  lists / zero counters, to avoid reporting the entire startup ramp as recoveries.
 
 Eager registration is required so that a proxy which **never connects at all**
 (never reaching `markProxyUp`) still shows up as `dead`. Lazy registration would
@@ -160,8 +183,9 @@ Summary line fields:
   construction; `up + down == list size`).
 - `dead` / `degraded` — the two down labels (`dead + degraded == down`).
 - `recovered` / `lost` — down->up and up->down transitions **since the last
-  heartbeat** (from `ProxyHealthTransitions`). `recovered` spiking right after the
-  hourly pulse is the direct evidence the retry worked.
+  heartbeat** (`len(Recovered)` / `len(NewlyDead)+len(NewlyDegraded)` from
+  `ProxyHealthHeartbeat`). `recovered` spiking right after the hourly pulse is the
+  direct evidence the retry worked.
 - `lifetime_recovered` / `lifetime_lost` — cumulative transition counts since
   process start, for judging long-term retry effectiveness.
 
@@ -203,6 +227,96 @@ Implementation notes:
   climbing in the next heartbeat(s).
 - Emitted only in proxy mode (skip when there are no registered proxies).
 
+### Component 5: persistent records (`provider/main.go`, written from the heartbeat)
+
+RAMLOGS write to volatile `/dev/shm`, which rotates and is lost on restart, so the
+dead/degraded picture cannot be checked retroactively. This component mirrors the
+state to the host-backed config volume (`/root/.urnetwork` in Docker).
+
+Two files, both written from the heartbeat tick (so they inherit
+`URNETWORK_HEALTH_INTERVAL`):
+
+**(a) Current-state snapshot — `proxy_health.state`, rewritten atomically each
+heartbeat.** Answers "what is broken right now?" at any time without watching live.
+
+```
+# updated 2026-06-02T16:05:11Z  up=1193 down=7 dead=4 degraded=3
+# lifetime_recovered=51 lifetime_lost=39
+DEAD     proxy[112] (45.3.32.184:1081)
+DEAD     proxy[266] (104.207.45.110:1081)
+DEAD     proxy[497] (209.50.170.87:1081)
+DEAD     proxy[902] (12.34.56.78:1081)
+DEGRADED proxy[49] (209.50.167.49:1081)
+DEGRADED proxy[660] (98.76.54.32:1081)
+DEGRADED proxy[1037] (209.50.169.110:1081)
+```
+Written via temp-file + rename so a reader never sees a half-written file. **Not
+capped** (size is bounded by the proxy count). The snapshot lists are *not* subject
+to the 50-entry display cap — the file is the complete record.
+
+**(b) Durable event log — `proxy_health.log`, append-only.** Answers "which proxies
+have been problematic, and when?" One line per transition, sourced from
+`ProxyHealthHeartbeat`'s `NewlyDead` / `NewlyDegraded` / `Recovered` lists:
+
+```
+2026-06-02T15:10:03Z DEAD      proxy[112] (45.3.32.184:1081)
+2026-06-02T15:10:03Z DEGRADED  proxy[49] (209.50.167.49:1081)
+2026-06-02T16:05:11Z RECOVERED proxy[49] (209.50.167.49:1081) after=55m8s
+```
+Rotation: when the file exceeds **20 MB**, rename it to `proxy_health.log.1`
+(replacing any previous `.1`) and start fresh — one generation retained.
+
+Mechanics:
+
+- Location is `URNETWORK_PROXY_HEALTH_DIR`, defaulting to the provider config dir
+  (`/root/.urnetwork`). Both files live there.
+- If the directory is unwritable, log **one** warning to stdout and disable
+  persistence for the rest of the run. A log-file problem must never crash or stall
+  the provider.
+- All writes happen on the heartbeat goroutine, off the packet hot path.
+- `after=` on `RECOVERED` is `now - downSince`, accurate to heartbeat granularity on
+  the recovery side (the down side is stamped at the exact teardown moment).
+
+### Component 6: access commands (host + Docker)
+
+Operators need a one-step way to read the persistent record. There is no `follow`
+flag — `-f` already means *force* elsewhere in urnet-tools (`update -f`,
+`proxy add ... -f`), so overloading it would conflict. The single command both
+prints the current state and then tails the event log automatically.
+
+**Host / systemd install — `urnet-tools proxy health`**
+Add a `health` case to the existing `do_proxy()` dispatcher
+(`scripts/Provider_Install_Linux.sh`, alongside `add` / `clear`):
+
+1. print the current-state file (`proxy_health.state`),
+2. then `tail -f` the event log (`proxy_health.log`) so new
+   dead/degraded/recovered events stream live until the operator quits.
+
+Path resolution mirrors `URNETWORK_PROXY_HEALTH_DIR`, defaulting to the provider
+config dir. Update the `usage()` help text to list `proxy health`.
+
+**Docker — `proxy-health` helper baked into the image**
+`urnet-tools` is the host installer/manager and is not present in the container, so
+Docker needs its own entry point. Add a tiny `docker/scripts/proxy-health.sh`,
+installed to `/usr/local/bin/proxy-health` in the image, that does the same
+print-state-then-`tail -f`-log against `/root/.urnetwork/`. Operators run:
+
+```
+docker exec -it <container> proxy-health
+```
+
+A no-tooling fallback is also documented for anyone who prefers raw access:
+
+```
+docker exec -it <container> sh -c 'cat /root/.urnetwork/proxy_health.state; echo; tail -f /root/.urnetwork/proxy_health.log'
+```
+
+**RAMLOGS independence (the key property):** the `proxy_health.*` files live on disk
+unconditionally (config volume), so both `urnet-tools proxy health` and
+`proxy-health` work identically whether RAMLOGS is on or off. This is deliberate —
+it is exactly the retroactive-access gap RAMLOGS creates. Only *live-tailing the
+main combined log* differs by RAMLOGS, which the docs spell out (see Documentation).
+
 ## Data flow
 
 ```
@@ -213,10 +327,13 @@ runH1/runH3 transport up   --> markProxyUp(idx)   (currentlyUp=true, everUp=true
 runH1/runH3 teardown defer --> markProxyDown(idx) (currentlyUp=false)
                               [same points as activeProxyConnections inc/dec]
 
-heartbeat tick (~5m) --> ProxyHealthSnapshot()      (read-only: up/dead/degraded)
-                     --> ProxyHealthTransitions()   (recovered/lost + lifetime totals,
-                                                      advances baseline)
-                     --> format + cap --> stdout
+heartbeat tick (URNETWORK_HEALTH_INTERVAL, default 5m)
+    --> ProxyHealthHeartbeat()  (current lists + transitions + lifetime,
+                                 advances baseline; called exactly once)
+    --> stdout:  [health][proxies] summary + capped dead/degraded detail lines
+    --> file:    proxy_health.state  (rewrite, atomic, uncapped)
+    --> file:    proxy_health.log    (append NewlyDead/NewlyDegraded/Recovered;
+                                      rotate at 20 MB)
 
 pulse tick (~60m) --> ProxyHealthSnapshot() (read-only) --> log [pulse] line
                   --> connect.TriggerPulse()
@@ -268,7 +385,24 @@ pulse tick (~60m) --> ProxyHealthSnapshot() (read-only) --> log [pulse] line
 
 - `LOG_REFERENCE.md`: add the `[health][proxies]` lines (including the
   `recovered` / `lost` / `lifetime_recovered` / `lifetime_lost` fields), the
-  `[pulse]` marker, the `dead` / `degraded` label definitions, and the
-  pulse-cadence framing ("trustworthy after ~1h").
+  `[pulse]` marker, the `dead` / `degraded` label definitions, the persistent
+  files (`proxy_health.state` / `proxy_health.log`), and the pulse-cadence framing
+  ("trustworthy after ~1h").
+- **Viewing proxy health (new docs subsection, e.g. in `docs/Configuration.md` and
+  `docs/Docker-Deployment.md`):**
+  - Persistent record (RAMLOGS-independent, always works):
+    - Host: `urnet-tools proxy health`
+    - Docker: `docker exec -it <container> proxy-health`
+  - Live-tailing the combined log **does** depend on RAMLOGS:
+    - RAMLOGS on (logs in RAM at `/dev/shm/urnetwork.log`):
+      `docker exec -it <c> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
+    - RAMLOGS off (logs to container stdout / journald):
+      `docker logs -f <c> 2>&1 | grep -E '\[health\]\[proxies\]|\[pulse\]'`
+  - Spell out the distinction: the `proxy_health.*` files are the durable record and
+    are read the same way regardless of RAMLOGS; only the live combined-log stream
+    changes location when RAMLOGS is enabled.
 - `CHANGELOG.md`: `[Unreleased]` entry under Added.
-- `FORK_CHANGES.md`: note the new observability surface.
+- `FORK_CHANGES.md`: note the new observability surface and the access commands.
+- `Dockerfile`: install `docker/scripts/proxy-health.sh` to
+  `/usr/local/bin/proxy-health` (the existing `COPY docker/scripts/*.sh /app/` +
+  `chmod` step covers it; add a symlink or copy into `PATH`).
