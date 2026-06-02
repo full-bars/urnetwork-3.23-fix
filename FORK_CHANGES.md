@@ -352,6 +352,22 @@ These files are fully custom or unlikely to change:
 
 ---
 
+## 15. Dead-Proxy Health Report
+
+**Purpose**: Provide a pure-observability per-heartbeat report of which proxies are dead vs degraded, a record of how many the fix.11 retry pulse recovers, and durable on-disk files so the picture survives RAMLOGS.
+
+**Files Modified**: `connect/proxy_health.go`, `connect/transport.go`, `provider/main.go`, `provider/proxy_health_log.go`, `scripts/Provider_Install_Linux.sh`, `docker/scripts/proxy-health.sh`
+
+**Changes**:
+- `[health][proxies]` lines listing `dead` (never authenticated) and `degraded` (worked before, down now) proxies, plus transition counters.
+- A `[pulse]` marker logs each retry sweep.
+- Persistent state and event logs in `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
+- Access commands: host `urnet-tools proxy health` and Docker `proxy-health`.
+
+**Status**: ✅ Shipped in v3.23.0-fix.16.
+
+---
+
 ## Known Upstream Additions to Monitor
 
 These features from upstream should be reviewed before merging to ensure compatibility:

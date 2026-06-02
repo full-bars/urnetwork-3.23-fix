@@ -33,6 +33,7 @@ After installation:
 
 ```bash
 urnet-tools status
+urnet-tools proxy health
 urnet-tools logs
 urnet-tools auto on
 ```
