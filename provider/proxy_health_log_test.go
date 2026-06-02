@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +77,65 @@ func TestFormatEventLinesRecoveredWithoutLatency(t *testing.T) {
 	lines := formatEventLines(r, now)
 	if len(lines) != 1 || strings.Contains(lines[0], "after=") {
 		t.Fatalf("recovered without latency should omit after=, got %v", lines)
+	}
+}
+
+func TestRotateIfNeeded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy_health.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 100)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Under the cap: no rotation.
+	rotateIfNeeded(path, 1000)
+	if _, err := os.Stat(filepath.Join(dir, "proxy_health.log.1")); !os.IsNotExist(err) {
+		t.Fatalf("rotated under cap, want no .1 file")
+	}
+
+	// Over the cap: rotate to .1, original gone.
+	rotateIfNeeded(path, 50)
+	if _, err := os.Stat(filepath.Join(dir, "proxy_health.log.1")); err != nil {
+		t.Fatalf(".1 file missing after rotation: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("original log still present after rotation")
+	}
+}
+
+func TestWriteProxyHealthFiles(t *testing.T) {
+	dir := t.TempDir()
+	r := connect.ProxyHealthReport{
+		Up:        1,
+		Dead:      []string{"proxy[2] (c:1)"},
+		NewlyDead: []connect.ProxyEvent{{Index: 2, Address: "c:1"}},
+	}
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+
+	writeProxyHealthState(dir, r, now)
+	writeProxyHealthEvents(dir, r, now)
+
+	state, err := os.ReadFile(filepath.Join(dir, "proxy_health.state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(state), "DEAD     proxy[2] (c:1)") {
+		t.Fatalf("state file missing dead entry:\n%s", state)
+	}
+
+	events, err := os.ReadFile(filepath.Join(dir, "proxy_health.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), "DEAD      proxy[2] (c:1)") {
+		t.Fatalf("event log missing dead entry:\n%s", events)
+	}
+
+	// No events -> event log unchanged (no empty append).
+	before, _ := os.ReadFile(filepath.Join(dir, "proxy_health.log"))
+	writeProxyHealthEvents(dir, connect.ProxyHealthReport{}, now)
+	after, _ := os.ReadFile(filepath.Join(dir, "proxy_health.log"))
+	if string(before) != string(after) {
+		t.Fatalf("empty report should not append to event log")
 	}
 }
