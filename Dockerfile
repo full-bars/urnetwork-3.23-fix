@@ -50,6 +50,9 @@ COPY --from=builder /app/provider_bin /app/urnetwork_${TARGETARCH}_stable
 # Set permissions
 RUN dos2unix /app/*.sh /app/cgi-bin/stats && chmod +x /app/*.sh /app/cgi-bin/stats
 
+# Expose the proxy-health helper on PATH for `docker exec <c> proxy-health`
+RUN ln -sf /app/proxy-health.sh /usr/local/bin/proxy-health
+
 # Configure vnStat (TechRoy style)
 RUN sed -i \
   -e 's/^;*TimeSyncWait.*/TimeSyncWait 1/' \
