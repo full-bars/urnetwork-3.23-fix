@@ -81,5 +81,5 @@ jobs:
         with:
           files: urnetwork-provider-*.tar.gz
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           generate_release_notes: true
