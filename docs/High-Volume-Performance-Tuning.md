@@ -356,7 +356,7 @@ The `(N suppressed)` suffix ensures no errors are silently dropped — you see t
 This line is promoted to INFO level in the fork (upstream logs it at Debug level 2, hidden unless `-v` is passed). If it's missing, the provider is not successfully connecting any proxies — check auth and network connectivity.
 
 **High memory usage under load:**
-If RSS grows without bound, consider switching from turbo to the default profile or enabling eco mode. The Accordion window means idle connections are cheap, but connections that have ramped up to the ceiling will hold their window allocation until they go idle. Check `[health]` log lines to track heap trend over time.
+If RSS grows without bound, consider switching from turbo to the default profile or enabling eco mode. The Accordion window means idle connections are cheap, but connections that have ramped up to the ceiling will hold their window allocation until they go idle. Check `[health]` log lines to track heap trend over time and verify the `connections=N` count — if heap grows while connections stay flat, it may indicate a leak or oversized proxy list metadata.
 
 **Contract renegotiation noise (`could not create contract`, `oob err = Timeout`):**
 These appear when the OOB signaling layer is overloaded. Tuning `CreateContractTimeout` higher (already 60s in fork) and `ContractFillFraction` lower gives more headroom. If they persist, it's usually a backend API outage — the `[outage]` watcher will detect and log this.
