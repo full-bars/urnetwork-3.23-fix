@@ -90,9 +90,9 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	fmt.Fprintf(&b, " URNETWORK PROXY TRAFFIC REPORT\n")
 	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "========================================================================\n")
-	fmt.Fprintf(&b, "+----------+-----------------------+-------------------+-------------------+\n")
-	fmt.Fprintf(&b, "| PROXY ID | IP ADDRESS            | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
-	fmt.Fprintf(&b, "+----------+-----------------------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "+----------+-----------------------+---------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "| PROXY ID | IP ADDRESS            | CLIENTS | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
+	fmt.Fprintf(&b, "+----------+-----------------------+---------+-------------------+-------------------+\n")
 
 	type proxyEntry struct {
 		Proxy string
@@ -116,7 +116,7 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	for _, e := range entries {
 		billableStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.BillableTx.Load()), formatBytes(e.Bw.BillableRx.Load()))
 		totalStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.TotalTx.Load()), formatBytes(e.Bw.TotalRx.Load()))
-		fmt.Fprintf(&b, "| %-8s | %-21s | %-17s | %-17s |\n", e.Proxy, e.IP, billableStr, totalStr)
+		fmt.Fprintf(&b, "| %-8s | %-21s | %-7d | %-17s | %-17s |\n", e.Proxy, e.IP, e.Bw.Clients.Load(), billableStr, totalStr)
 	}
 
 	return b.String()

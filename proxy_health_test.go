@@ -61,7 +61,7 @@ func TestProxyHealthSnapshot(t *testing.T) {
 	markProxyUp(1)
 	markProxyDown(1) // up then down -> degraded
 
-	up, dead, degraded := ProxyHealthSnapshot()
+	up, dead, degraded, _ := ProxyHealthSnapshot()
 	if up != 1 {
 		t.Fatalf("up = %d, want 1", up)
 	}

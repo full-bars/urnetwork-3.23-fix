@@ -11,6 +11,7 @@ import (
 // ProxyBandwidth tracks the data usage of a proxy.
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
+	Clients atomic.Int64
 }
 
 // proxyHealth tracks one proxy's platform-transport liveness for the
