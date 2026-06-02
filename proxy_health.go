@@ -122,3 +122,56 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string) {
 	}
 	return up, dead, degraded
 }
+
+// ProxyHealthHeartbeat builds the per-heartbeat report and advances the transition
+// baseline. Call exactly once per heartbeat. On the first call it only establishes
+// the baseline (no transition events). NewlyDead is populated only when confirmDead
+// is true (caller passes uptime >= deadConfirmDelay), once per never-up proxy.
+func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+
+	now := time.Now()
+	first := !proxyBaselineSet
+	var r ProxyHealthReport
+
+	for _, idx := range sortedIndicesLocked() {
+		h := proxyHealthByIndex[idx]
+
+		switch {
+		case h.currentlyUp:
+			r.Up++
+		case h.everUp:
+			r.Degraded = append(r.Degraded, formatProxyEntry(idx, h.address))
+		default:
+			r.Dead = append(r.Dead, formatProxyEntry(idx, h.address))
+		}
+
+		if !first {
+			switch {
+			case h.currentlyUp && !h.lastSeenUp:
+				ev := ProxyEvent{Index: idx, Address: h.address}
+				if !h.downSince.IsZero() {
+					ev.After = now.Sub(h.downSince)
+				}
+				r.Recovered = append(r.Recovered, ev)
+				proxyLifetimeRecovered++
+			case !h.currentlyUp && h.lastSeenUp:
+				r.NewlyDegraded = append(r.NewlyDegraded, ProxyEvent{Index: idx, Address: h.address})
+				proxyLifetimeLost++
+			}
+		}
+
+		if confirmDead && !h.currentlyUp && !h.everUp && !h.deadLogged {
+			r.NewlyDead = append(r.NewlyDead, ProxyEvent{Index: idx, Address: h.address})
+			h.deadLogged = true
+		}
+
+		h.lastSeenUp = h.currentlyUp
+	}
+
+	proxyBaselineSet = true
+	r.LifetimeRecovered = proxyLifetimeRecovered
+	r.LifetimeLost = proxyLifetimeLost
+	return r
+}
