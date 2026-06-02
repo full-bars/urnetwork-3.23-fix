@@ -416,7 +416,7 @@ func NewRemoteUserNatMultiClient(
 	// no ulimit for local traffic
 	localUserNatSettings.UdpBufferSettings.UserLimit = 0
 	localUserNatSettings.TcpBufferSettings.UserLimit = 0
-	localUserNat := NewLocalUserNat(cancelCtx, "multi local", localUserNatSettings)
+	localUserNat := NewLocalUserNat(cancelCtx, "multi local", nil, localUserNatSettings)
 
 	multiClient := &RemoteUserNatMultiClient{
 		ctx:                   cancelCtx,
