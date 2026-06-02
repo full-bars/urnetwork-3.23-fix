@@ -34,6 +34,18 @@ worked) plus a record of how many the retry mechanism recovers.
   auto-removal of proxies.
 - Be safe at scale (1200+ proxies): bounded log output, no hot-path cost.
 
+## Future work
+
+- **Per-proxy bandwidth metrics** (tracked in issue #32). The per-proxy `proxyHealth`
+  registry introduced here is the natural home for per-proxy byte counters: add
+  `bytesSent` / `bytesRecv` atomics keyed by proxy index and surface them in the
+  same `[health][proxies]` lines and `proxy_health.*` files. Attribution is free
+  (each proxy already has its own `Client` / `RemoteUserNatProvider`); the
+  measurement point (platform-transport bytes vs true relayed bytes via a
+  `TransferStats(reset bool)` accessor mirroring `SecurityPolicyStats`) is the open
+  design question. Deferred to its own release because byte counting is on the packet
+  hot path and needs dedicated throughput validation, unlike this cold-path feature.
+
 ## Non-Goals (YAGNI)
 
 - Surfacing per-proxy backoff/retry state (couples to `ClientStrategy` internals).
