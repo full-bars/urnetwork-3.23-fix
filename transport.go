@@ -80,6 +80,21 @@ func shouldLogAuthErr() (bool, int64) {
 	return true, suppressed
 }
 
+func shouldLogSelectErr() (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastSelectErrLogNano.Load()
+	if now-last < int64(time.Minute) {
+		suppressedSelectErrCount.Add(1)
+		return false, 0
+	}
+	if !lastSelectErrLogNano.CompareAndSwap(last, now) {
+		suppressedSelectErrCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedSelectErrCount.Swap(0)
+	return true, suppressed
+}
+
 // isBackendDegraded returns true when backend failures have accumulated past
 // the threshold with no intervening success and the last failure is recent.
 // This distinguishes a sustained, broad outage (every attempt failing) from the
