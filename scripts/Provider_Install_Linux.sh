@@ -34,6 +34,7 @@ show_help ()
     echo "  proxy add <file>        🌐 ADD: bulk add proxies from a text file"
     echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
     echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
+    echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
@@ -81,6 +82,7 @@ get_arch ()
 operation=""
 arch="$(get_arch)"
 has_systemd=0
+no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
 api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
@@ -279,6 +281,8 @@ show_version ()
     fi
 }
 
+tag="latest"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
@@ -289,6 +293,21 @@ while [ $# -gt 0 ]; do
         -v|--version)
             show_version
             exit 0
+            ;;
+
+        -t|--tag)
+            if [ -z "$2" ]; then
+                opt_requires_arg "$1"
+                exit 1
+            fi
+
+            tag="$2"
+
+            if [ "$tag" != "latest" ] && [ "$(echo "$tag" | cut -c -1)" != "v" ]; then
+                tag="v$tag"
+            fi
+
+            shift 2
             ;;
 
         -i|--install)
@@ -303,6 +322,16 @@ while [ $# -gt 0 ]; do
 
         -f|--force)
             FORCE=1
+            shift
+            ;;
+
+        -4|--ipv4)
+            FORCE_IPV4=1
+            shift
+            ;;
+
+        -B|--no-modify-bashrc)
+            no_modify_bashrc=1
             shift
             ;;
 
@@ -575,8 +604,9 @@ func_root_guard ()
 
 do_install ()
 {
-    tag="latest"
-    no_modify_bashrc=0
+    : "${tag:=latest}"
+    : "${no_modify_bashrc:=0}"
+    original_operation="$operation"
 
     # Dependency Check
     if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
@@ -859,15 +889,27 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    if [ "$operation" = "update" ] || [ "$operation" = "reinstall" ] || [ -z "$(cat "$0" 2>/dev/null)" ]; then
+    if [ "$original_operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
+        # Explicit update with custom URL: fetch from GitHub
         pr_info "Fetching latest urnet-tools from GitHub..."
-
+        if ! script="$(network_fetch "$urnet_install_url")"; then
+            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
+            script="$(cat "$0" 2>/dev/null)"
+        fi
+    elif [ "$original_operation" = "reinstall" ]; then
+        # Reinstall: also fetch latest
+        pr_info "Fetching latest urnet-tools from GitHub..."
         if ! script="$(network_fetch "$urnet_install_url")"; then
             pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
             script="$(cat "$0" 2>/dev/null)"
         fi
     else
+        # Default (install/auth-provide): use current script if available
         script="$(cat "$0" 2>/dev/null)"
+        if [ -z "$script" ]; then
+            pr_info "Fetching urnet-tools from GitHub..."
+            script="$(network_fetch "$urnet_install_url")"
+        fi
     fi
 
     cd "$workdir" || exit 1
@@ -1597,6 +1639,16 @@ do_proxy () {
                 tail -n 20 -f "$log_file"
             else
                 pr_warn "No event log yet at %s." "$log_file"
+            fi
+            ;;
+        traffic)
+            health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
+            state_file="$health_dir/proxy_traffic.state"
+            if [ -f "$state_file" ]; then
+                pr_info "Current proxy traffic ($state_file):"
+                cat "$state_file"
+            else
+                pr_warn "No traffic snapshot yet at %s." "$state_file"
             fi
             ;;
         *)
