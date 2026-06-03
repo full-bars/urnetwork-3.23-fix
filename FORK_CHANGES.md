@@ -435,3 +435,38 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 **Status**: ✅ Shipped in v3.23.0-fix.15. Tests added: `TestApplyAutoTuningLogsOncePerProcess`, `TestApplyAutoTuningSkippedWhenProfileNotAuto`, `TestSelectTierThresholds`, `TestEcoMonitorStartsOnce`.
 
 ---
+
+## 16. Dialer Selection Error Suppression
+
+**Purpose**: Reduce log spam during backend outages. When the backend is unreachable, `[net][s]select:` error logs fire hundreds per second across dialer variants (fragment, normal, reorder, etc.), making log analysis impossible. Rate-limit these errors to one per minute with suppression counts.
+
+**Files Modified**: `transport.go`, `net_http.go`
+
+**Changes**:
+
+- **New atomic counters** (`transport.go`, lines 31-32):
+  - `var lastSelectErrLogNano atomic.Int64`
+  - `var suppressedSelectErrCount atomic.Int64`
+
+- **New rate-limiting function** (`transport.go`, lines 83-96):
+  - `func shouldLogSelectErr() (bool, int64)` — Exact mirror of existing `shouldLogAuthErr()` with only variable names changed. Same 1-minute window, same atomic CAS pattern for thread-safety, same suppression count swap.
+
+- **Error log wrapper** (`net_http.go`, lines 674-680):
+  - Original: `glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)`
+  - Now wrapped: `if ok, suppressed := shouldLogSelectErr(); ok { ... }`
+  - Format: `[net][s]select: {variant} = {error} (N suppressed)` when suppressed count > 0, otherwise `[net][s]select: {variant} = {error}` for first error in window
+  - Success logs at line 671 remain untouched (visible on every successful selection)
+
+**Impact**:
+- Normal operation: Success logs (`[net][s]select: {variant}`) appear regularly; error logs appear at normal rate
+- Backend unreachable: Error logs suppressed to one per minute with count of suppressed attempts shown
+- Log volume reduction: ~99% reduction during extended outages (hundreds/second → one/minute)
+
+**How to Identify in New Upstream**:
+- If upstream modifies the `[net][s]select` logging at `net_http.go:674`, ensure the error log line still exists
+- If upstream adds new error logging in the serial-select path, consider applying the same rate-limiting pattern
+- Verify `shouldLogAuthErr()` still exists and uses the same atomic-counter/CAS pattern (reference for this feature)
+
+**Status**: ✅ Shipped in v3.23.0-fix.17. Follows established rate-limiting pattern used for `[t]auth error`, `[contract]oob error`, and `[r]drop` errors.
+
+---
