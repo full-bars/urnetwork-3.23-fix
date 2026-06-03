@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.17] — 2026-06-02
+
+### Fixed
+- **[net][s]select Error Spam**: Implemented rate-limiting for `[net][s]select:` error logs during backend outages. Errors are now suppressed to one log line per minute with a suppression count (e.g., `[net][s]select: fragment = timeout (512 suppressed)`). Success logs remain unaffected, visible on every successful selection. Matches the pattern used for existing `[t]auth` error suppression.
+
+---
+
 ## [v3.23.0-fix.16] — 2026-06-02
 
 ### Added
