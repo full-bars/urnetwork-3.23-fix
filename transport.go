@@ -28,6 +28,8 @@ import (
 
 var lastAuthErrLogNano atomic.Int64
 var suppressedAuthErrCount atomic.Int64
+var lastSelectErrLogNano atomic.Int64
+var suppressedSelectErrCount atomic.Int64
 
 // lastBackendFailNano is updated on every backend failure (auth or OOB), not
 // rate-limited. Used by isBackendDegraded() as the recency guard.
