@@ -888,15 +888,27 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    if [ "$operation" = "update" ] || [ "$operation" = "reinstall" ] || [ -z "$(cat "$0" 2>/dev/null)" ]; then
+    if [ "$operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
+        # Explicit update with custom URL: fetch from GitHub
         pr_info "Fetching latest urnet-tools from GitHub..."
-
+        if ! script="$(network_fetch "$urnet_install_url")"; then
+            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
+            script="$(cat "$0" 2>/dev/null)"
+        fi
+    elif [ "$operation" = "reinstall" ]; then
+        # Reinstall: also fetch latest
+        pr_info "Fetching latest urnet-tools from GitHub..."
         if ! script="$(network_fetch "$urnet_install_url")"; then
             pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
             script="$(cat "$0" 2>/dev/null)"
         fi
     else
+        # Default: use current script if available
         script="$(cat "$0" 2>/dev/null)"
+        if [ -z "$script" ]; then
+            pr_info "Fetching urnet-tools from GitHub..."
+            script="$(network_fetch "$urnet_install_url")"
+        fi
     fi
 
     cd "$workdir" || exit 1
