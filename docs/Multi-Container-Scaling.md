@@ -37,8 +37,6 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.netfilter.nf_conntrack_max=2097152
-      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     environment:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
@@ -74,8 +72,6 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.netfilter.nf_conntrack_max=2097152
-      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     depends_on:
       node-1:
         condition: service_healthy
@@ -105,8 +101,6 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.netfilter.nf_conntrack_max=2097152
-      - net.netfilter.nf_conntrack_tcp_timeout_established=5400
     depends_on:
       node-1:
         condition: service_healthy
@@ -150,8 +144,6 @@ x-urnetwork-common: &urnetwork-common
   cap_add: [NET_ADMIN, NET_RAW]
   sysctls:
     - net.ipv4.ip_forward=1
-    - net.netfilter.nf_conntrack_max=2097152
-    - net.netfilter.nf_conntrack_tcp_timeout_established=5400
   logging:
     driver: json-file
     options:
@@ -266,8 +258,6 @@ x-urnetwork-common: &urnetwork-common
   cap_add: [NET_ADMIN, NET_RAW]
   sysctls:
     - net.ipv4.ip_forward=1
-    - net.netfilter.nf_conntrack_max=2097152
-    - net.netfilter.nf_conntrack_tcp_timeout_established=5400
   logging:
     driver: json-file
     options:
