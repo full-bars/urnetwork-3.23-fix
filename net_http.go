@@ -671,7 +671,13 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					glog.Infof("[net][s]select: %s\n", dialer.String())
 					return result
 				}
-				glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+				if ok, suppressed := shouldLogSelectErr(); ok {
+					if suppressed > 0 {
+						glog.Infof("[net][s]select: %s = %s (%d suppressed)\n", dialer.String(), result.err, suppressed)
+					} else {
+						glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+					}
+				}
 				result.Close()
 			}
 		}
