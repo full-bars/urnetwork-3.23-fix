@@ -862,7 +862,7 @@ do_install ()
     if [ "$operation" = "update" ] || [ "$operation" = "reinstall" ] || [ -z "$(cat "$0" 2>/dev/null)" ]; then
         pr_info "Fetching latest urnet-tools from GitHub..."
 
-        if ! script="$(network_fetch https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh)"; then
+        if ! script="$(network_fetch "$urnet_install_url")"; then
             pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
             script="$(cat "$0" 2>/dev/null)"
         fi
