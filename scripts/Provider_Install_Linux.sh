@@ -606,6 +606,7 @@ do_install ()
 {
     : "${tag:=latest}"
     : "${no_modify_bashrc:=0}"
+    original_operation="$operation"
 
     # Dependency Check
     if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
@@ -888,14 +889,14 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    if [ "$operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
+    if [ "$original_operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
         # Explicit update with custom URL: fetch from GitHub
         pr_info "Fetching latest urnet-tools from GitHub..."
         if ! script="$(network_fetch "$urnet_install_url")"; then
             pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
             script="$(cat "$0" 2>/dev/null)"
         fi
-    elif [ "$operation" = "reinstall" ]; then
+    elif [ "$original_operation" = "reinstall" ]; then
         # Reinstall: also fetch latest
         pr_info "Fetching latest urnet-tools from GitHub..."
         if ! script="$(network_fetch "$urnet_install_url")"; then
@@ -903,7 +904,7 @@ do_install ()
             script="$(cat "$0" 2>/dev/null)"
         fi
     else
-        # Default: use current script if available
+        # Default (install/auth-provide): use current script if available
         script="$(cat "$0" 2>/dev/null)"
         if [ -z "$script" ]; then
             pr_info "Fetching urnet-tools from GitHub..."
