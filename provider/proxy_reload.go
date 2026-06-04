@@ -95,7 +95,9 @@ func acquireProxyLockAt(path string) (func(), error) {
 // overlap.
 type ProxyReloader struct {
 	mu          sync.Mutex // serializes reloads
-	cancelMap   map[string]context.CancelFunc
+	cancelMap map[string]context.CancelFunc
+	// TODO: refactor cancelMap and cancelMapMu into a struct owned by ProxyReloader
+	// to avoid storing a *sync.Mutex pointer across function boundaries.
 	cancelMapMu *sync.Mutex
 	state       *ProxyState
 	sourcePath  string // "" = internal config (~/.urnetwork/proxy); else external file
@@ -164,6 +166,9 @@ func (r *ProxyReloader) reload() {
 		desiredSet[s.Address] = s
 	}
 
+	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
+	// provide()'s initial startup loop writes the cancel map before StartWatcher is called,
+	// so it is exempt from this ordering — no concurrent reload() can run at that point.
 	// Snapshot the currently running set from the cancel map.
 	r.cancelMapMu.Lock()
 	running := make(map[string]bool, len(r.cancelMap))
@@ -198,6 +203,10 @@ func (r *ProxyReloader) reload() {
 		}
 		delete(r.state.Proxies, addr)
 	}
+
+	// Note: if all running proxies are removed and none are added, the WaitGroup
+	// in provide() will reach zero and the process will exit via os.Exit(0).
+	// This is intentional — an empty proxy list means the provider has no work to do.
 
 	// Start added proxies. Each goroutine staggers its own startup by 100ms *
 	// position to avoid a burst of simultaneous connection attempts at the API.
