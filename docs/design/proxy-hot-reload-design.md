@@ -19,21 +19,28 @@ This design covers proxy list changes only. Settings changes (turbo, eco, lowmem
 
 ## Architecture
 
-### External Proxy File as Live Source
+### Two Workflows — Explicitly Separate
 
-The provider gains a `--proxy_file=<path>` startup flag designating an external file as the live proxy source. If omitted, falls back to `~/.urnetwork/proxy` (existing behavior fully preserved — no breaking change).
+There are two proxy list workflows. They are mutually exclusive and never interact.
 
-**Docker workflow:**
-```
--v /home/ubuntu/pshalf.txt:/app/proxy.txt
-```
-Startup script passes `--proxy_file=/app/proxy.txt`. User edits their host file, runs `urnet-tools proxy refresh`. No internal file management needed.
+**Workflow A — External file (recommended, Docker-native):**
+Provider started with `--proxy_file=<path>`. The external file is the authoritative source. `proxy add/remove` commands are irrelevant in this workflow — the user manages the file directly.
 
-**Binary workflow:**
 ```
-urnetwork provide --proxy_file=/home/ubuntu/pshalf.txt
+# Docker
+-v /home/user/proxy.txt:/app/proxy.txt
+# startup script passes --proxy_file=/app/proxy.txt
 ```
-User edits their file, runs `urnetwork proxy refresh`. The existing `proxy add/remove` commands continue to work for users who prefer them.
+
+```
+# Binary
+urnetwork provide --proxy_file=/home/user/proxy.txt
+```
+
+**Workflow B — Internal config (existing behavior, fully preserved):**
+No `--proxy_file` flag. Provider reads from `~/.urnetwork/proxy` as today. `proxy add/remove` write to this file. Hot-reload works against this file.
+
+**Rule:** `proxy add/remove` always write to `~/.urnetwork/proxy` regardless of which workflow is in use. If you start with `--proxy_file`, manage that file yourself — `proxy add/remove` do not touch it.
 
 ### New Files (all in `~/.urnetwork/`)
 
@@ -45,10 +52,18 @@ User edits their file, runs `urnetwork proxy refresh`. The existing `proxy add/r
 
 ### Provider Internal Changes
 
-- **Monotonic proxy ID counter** — proxies are assigned a never-reused integer ID at goroutine spawn. Health tracking, transport logs, and select logs all key off this ID, not list position. Decouples identity from list position so hot-reload never corrupts health history.
+- **Monotonic proxy ID counter — address-stable.** Proxies are assigned a never-reused integer ID keyed by address, not spawn order. On startup and reload, `proxy.state` is consulted first: if an address already has an ID it keeps it; new addresses get the next counter value. This means IDs survive restarts and reloads for unchanged proxies. Go map iteration is nondeterministic — IDs must never be assigned by loop position.
+
+- **Full subsystem re-keying required.** The current slice index `i` keys three subsystems: `proxyHealthByIndex` (proxy_health.go), bandwidth tracking (`RegisterProxyBandwidth`), and transport/select logs. All three must be re-keyed to the new stable ID. This is the largest implementation cost of the feature.
+
 - **Per-proxy cancel map** — `map[address]cancelFunc` tracks running goroutines. Reload cancels entries for removed proxies, adds new entries for added ones.
-- **`UnregisterProxy(id)`** — called after a proxy goroutine fully drains (not at cancel time). Prevents health registry from growing unbounded.
+
+- **`UnregisterProxy(id)`** — called after a proxy goroutine fully drains (not at cancel time). Clears the entry from `proxyHealthByIndex` and bandwidth registry so removed proxies do not linger in heartbeat output forever.
+
 - **Reload watcher goroutine** — polls `proxy.reload` content hash every 2 seconds. On change: acquires an internal reload mutex (rejects concurrent reloads), re-reads the source file, diffs vs the in-memory cancel map (authoritative), starts new goroutines, cancels removed ones, updates `proxy.state`.
+
+- **Staggered startup on reload** — new proxy goroutines added during a reload are staggered at 100ms intervals (same as initial startup) to avoid overwhelming the API with bulk connection attempts. Stagger order is by the order new proxies appear in the source file.
+
 - **Provider owns the diff** — the refresh subcommand only writes the trigger. The watcher does the authoritative diff against the live in-memory state and re-validates proxy health at reload time.
 
 ---
@@ -76,7 +91,9 @@ The provider technically accepts `ip:port` (falls through to a no-auth SOCKS5 co
 
 For IP-whitelisted proxies that don't check credentials, use dummy values: `ip:port:dummy:dummy`.
 
-**Validation** fires at `proxy add` time and when scanning new entries during `proxy refresh`. Invalid entries are rejected before any confirmation prompt:
+**Backward compatibility:** `proxy add` behavior is unchanged — it continues to accept all existing formats. The strict `ip:port:user:pass` validation applies only to new entries coming through `proxy refresh` on an external file (Workflow A). Existing proxies stored in `~/.urnetwork/proxy` via Workflow B are not affected.
+
+**Validation** fires when scanning new entries during `proxy refresh` (Workflow A external file only). Invalid entries are rejected before any confirmation prompt:
 
 ```
 ERROR: proxy "1.2.3.4:1080" — missing credentials.
@@ -119,7 +136,9 @@ Currently connected and moving traffic.
 
 Diffs the proxy source file (desired) against currently running proxies (live in-memory state via `proxy.state`), shows what will change, handles confirmation, writes the trigger.
 
-Also available as `urnet-tools proxy refresh` or `urnet-tools proxy reload` (alias) — cross-platform urnet-tools subcommands that run `docker exec <container> provider proxy refresh` against the managed container.
+**Binary (host):** `urnet-tools proxy refresh` or `urnet-tools proxy reload` (alias) — urnet-tools controls the local provider process directly.
+
+**Docker:** `docker exec <container_name> provider proxy refresh` — run directly inside the specific container. With multiple containers on one host, the container name makes targeting explicit and unambiguous.
 
 **Warmup block:** If provider uptime < 8 hours, refuses to remove any proxy:
 ```
@@ -135,11 +154,30 @@ Reload already in progress — try again in a moment.
 
 No queue. One reload at a time.
 
+### `provider help` / `provider --help`
+
+Shows all available commands and options. The provider binary is now exposed on PATH inside the container via a Dockerfile symlink (`provider -> /app/urnetwork_${TARGETARCH}_stable`), so the command is simply:
+
+```bash
+docker exec <container_name> provider --help
+# or
+docker exec <container_name> provider help
+```
+
+Previously users had to know the arch-specific binary name (`urnetwork_amd64_stable`, etc.) — an unnecessary and confusing detail. The symlink is the same pattern already used for `proxy-health`. The `provider help` alias (no dashes) is added for discoverability alongside the existing `--help` / `-h` flags.
+
+All new commands (`proxy refresh`, `proxy remove-dead`, `provide --proxy_file`) are added to the docopt usage string as part of implementation and appear automatically in help output.
+
+---
+
 ### `provider proxy remove-dead`
 
 Reads confirmed-dead proxies from live health state (respecting the 65-minute `deadConfirmDelay`), removes them from the source file, triggers refresh. Optionally includes `inactive` (7d+) proxies.
 
 Explicitly does NOT touch degraded or UP proxies.
+
+**Binary:** `urnet-tools proxy remove-dead`
+**Docker:** `docker exec <container_name> provider proxy remove-dead`
 
 ---
 
