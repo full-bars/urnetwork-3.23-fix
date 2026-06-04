@@ -449,6 +449,7 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
+    provider proxy refresh [--force]
     provider logs [-n <lines>]
 
 Options:
@@ -470,6 +471,7 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
 		DefaultConnectUrl,
@@ -505,6 +507,8 @@ Options:
 			proxyAdd(opts)
 		} else if remove, _ := opts.Bool("remove"); remove {
 			proxyRemove(opts)
+		} else if refresh, _ := opts.Bool("refresh"); refresh {
+			proxyRefresh(opts)
 		}
 	} else if auth_, _ := opts.Bool("auth"); auth_ {
 		auth(opts)
@@ -1694,6 +1698,167 @@ func obfuscatePassword(password string) string {
 	} else {
 		return fmt.Sprintf("%s***%s", password[:2], password[len(password)-2:])
 	}
+}
+
+func proxyRefresh(opts docopt.Opts) {
+	force, _ := opts.Bool("--force")
+
+	state, err := readProxyState()
+	if err != nil {
+		fmt.Printf("error: could not read proxy.state — is the provider running?\n")
+		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
+		os.Exit(1)
+	}
+
+	// Check if provider is running by seeing if state is fresh
+	if state.StartedAt.IsZero() {
+		fmt.Printf("error: provider does not appear to be running (no proxy.state found).\n")
+		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
+		os.Exit(1)
+	}
+
+	uptime := time.Since(state.StartedAt)
+
+	// Warmup protection
+	const warmupThreshold = 8 * time.Hour
+	if uptime < warmupThreshold && !force {
+		fmt.Printf("Provider has been running for %s. Proxies need 8-12h to warm up —\n", formatDuration(uptime))
+		fmt.Printf("a proxy that looks dead now may still be establishing contracts.\n")
+		fmt.Printf("Run again after 8h uptime, or use --force to override.\n")
+		os.Exit(1)
+	}
+
+	// Load desired (from source file or internal config)
+	var desired []*connect.ProxySettings
+	if state.Source != "" {
+		settings, err := readProxySettingsFromFile(state.Source)
+		if err != nil {
+			fmt.Printf("error: could not read proxy file %s: %v\n", state.Source, err)
+			os.Exit(1)
+		}
+		desired = settings
+	} else {
+		desired = readProxySettings()
+	}
+
+	// Diff
+	desiredSet := map[string]bool{}
+	for _, s := range desired {
+		desiredSet[s.Address] = true
+	}
+
+	currentSet := map[string]ProxyEntry{}
+	for addr, e := range state.Proxies {
+		currentSet[addr] = e
+	}
+
+	var added []string
+	for _, s := range desired {
+		if _, ok := currentSet[s.Address]; !ok {
+			added = append(added, s.Address)
+		}
+	}
+
+	var removed []ProxyEntry
+	for addr, e := range currentSet {
+		if !desiredSet[addr] {
+			e.Health = classifyHealth(e)
+			removed = append(removed, e)
+		}
+	}
+
+	if len(added) == 0 && len(removed) == 0 {
+		fmt.Println("proxy list is already up to date. Nothing to do.")
+		return
+	}
+
+	// Warn if all proxies would be removed
+	if len(removed) == len(currentSet) && len(added) == 0 {
+		fmt.Printf("WARNING: This will remove ALL proxies — unique IPs drive earning scale;\n")
+		fmt.Printf("removing all proxies significantly reduces capacity.\n\n")
+	}
+
+	// Print diff
+	fmt.Printf("proxy refresh: %d proxies will be removed, %d will be added.\n\n", len(removed), len(added))
+	if len(removed) > 0 {
+		fmt.Println("  Removing:")
+		for _, e := range removed {
+			fmt.Printf("    proxy[%d]  %s   — %s\n", e.ID, e.DownSince, e.Health)
+		}
+	}
+	if len(added) > 0 {
+		fmt.Println("\n  Adding:")
+		for _, addr := range added {
+			fmt.Printf("    %s\n", addr)
+		}
+	}
+
+	// Check for high-risk removals
+	highRisk := false
+	for _, e := range removed {
+		if e.Health == "up" || e.Health == "recently_offline" {
+			highRisk = true
+			break
+		}
+	}
+
+	if highRisk {
+		fmt.Printf("\nWARNING: One or more proxies being removed are currently online or recently online.\n")
+		if !confirm("Remove them anyway?") {
+			fmt.Println("Aborted.")
+			return
+		}
+		if !confirm("Are you sure? This may interrupt live traffic.") {
+			fmt.Println("Aborted.")
+			return
+		}
+	} else {
+		if !confirm("Proceed?") {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	// Acquire lock and write trigger
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("error: %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Printf("error: could not determine reload path: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Printf("error: could not write reload trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
+}
+
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N] ", prompt)
+	var resp string
+	fmt.Scanln(&resp)
+	return strings.ToLower(strings.TrimSpace(resp)) == "y"
+}
+
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh %dm", h, m)
+}
+
+func classifyHealth(e ProxyEntry) string {
+	if e.Health != "" {
+		return e.Health
+	}
+	return "unknown"
 }
 
 func readProxyConfig() *ProxyConfig {
