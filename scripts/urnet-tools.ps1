@@ -53,10 +53,13 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs")]
     [String]$Command,
     [Switch]$Help = $false,
-    [String]$InstalledPath = ""
+    [String]$InstalledPath = "",
+    [Switch]$NoConfirm = $false,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [String[]]$SubArgs
 );
 
 if ($Help) {
@@ -307,6 +310,53 @@ function Get-URnetworkProcess {
     return $Process
 }
 
+function Get-ProviderUptime {
+    $statePath = "$env:USERPROFILE\.urnetwork\proxy.state"
+    if (-not (Test-Path $statePath)) { return $null }
+    try {
+        $state = Get-Content $statePath | ConvertFrom-Json
+        if (-not $state.started_at) { return $null }
+        return (Get-Date) - [datetime]::Parse($state.started_at)
+    } catch { return $null }
+}
+
+function Get-WarmProxyCount {
+    $statePath = "$env:USERPROFILE\.urnetwork\proxy.state"
+    if (-not (Test-Path $statePath)) { return 0 }
+    try {
+        $state = Get-Content $statePath | ConvertFrom-Json
+        $up = ($state.proxies.PSObject.Properties.Value | Where-Object { $_.health -eq "up" }).Count
+        return $up
+    } catch { return 0 }
+}
+
+function Confirm-ColdRestart {
+    $uptime = Get-ProviderUptime
+    if ($null -eq $uptime -or $uptime.TotalHours -lt 8) {
+        $answer = Read-Host "Restart the provider? [y/N]"
+        return $answer -eq "y"
+    }
+    $h = [int]$uptime.TotalHours
+    $m = [int]($uptime.TotalMinutes % 60)
+    $up = Get-WarmProxyCount
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════════════════════╗"
+    Write-Host "║  WARNING: COLD RESTART — ALL WARMUP PROGRESS WILL BE LOST    ║"
+    Write-Host "╚══════════════════════════════════════════════════════════════╝"
+    Write-Host ""
+    Write-Host "Provider uptime:  ${h}h ${m}m"
+    Write-Host "Warmed proxies:   $up online"
+    Write-Host ""
+    Write-Host "Restarting will immediately disconnect all proxies and reset the"
+    Write-Host "8-12h warmup period from scratch. Earning capacity will be"
+    Write-Host "significantly reduced during recovery."
+    Write-Host ""
+    $a1 = Read-Host "Are you sure you want to discard ${h}h ${m}m of warmup progress? [y/N]"
+    if ($a1 -ne "y") { return $false }
+    $a2 = Read-Host "This will interrupt live traffic on $up proxies. Proceed? [y/N]"
+    return $a2 -eq "y"
+}
+
 switch ($Command) {
     "uninstall" {
         Do-Uninstall
@@ -435,6 +485,12 @@ switch ($Command) {
     }
 
     "stop" {
+        if (-not $NoConfirm) {
+            if (-not (Confirm-ColdRestart)) {
+                Write-Host "Aborted."
+                exit 0
+            }
+        }
         $Process = Get-URnetworkProcess
         
         if ($Process) {
@@ -442,6 +498,21 @@ switch ($Command) {
             Stop-Process -Id $URnetworkPID -ErrorAction SilentlyContinue
         }
 
+        break
+    }
+
+    "restart" {
+        if (-not $NoConfirm) {
+            if (-not (Confirm-ColdRestart)) {
+                Write-Host "Aborted."
+                exit 0
+            }
+        }
+        
+        # Stop then start
+        & $MyInvocation.MyCommand.Path stop -NoConfirm
+        Start-Sleep -Seconds 2
+        & $MyInvocation.MyCommand.Path start
         break
     }
 
@@ -455,6 +526,31 @@ switch ($Command) {
             Write-Host "Status: Stopped"
         }
 
+        break
+    }
+
+    "proxy" {
+        $proxySubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
+        switch ($proxySubCmd) {
+            "refresh" { docker exec urnetwork provider proxy refresh }
+            "reload"  { docker exec urnetwork provider proxy refresh }
+            "remove-dead" { docker exec urnetwork provider proxy remove-dead }
+            default {
+                Write-Host "Usage: proxy [refresh|reload|remove-dead]"
+            }
+        }
+        break
+    }
+
+    "logs" {
+        $n = "0"
+        if ($SubArgs -contains "-n") {
+            $nIndex = [array]::IndexOf($SubArgs, "-n")
+            if ($nIndex -ge 0 -and $nIndex -lt ($SubArgs.Length - 1)) {
+                $n = $SubArgs[$nIndex + 1]
+            }
+        }
+        docker exec urnetwork provider logs -n $n
         break
     }
 
