@@ -1155,9 +1155,18 @@ func provide(opts docopt.Opts) {
 		})
 	}
 
-	// TODO(reload-watcher): remove these once the reload watcher goroutine consumes them.
-	_ = proxyCancelMap
-	_ = &proxyCancelMu
+	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
+	// add/remove diffs to the running proxy set without restarting the provider.
+	reloader := &ProxyReloader{
+		cancelMap:   proxyCancelMap,
+		cancelMapMu: &proxyCancelMu,
+		state:       proxyState,
+		sourcePath:  proxyFile,
+		parentCtx:   ctx,
+		wg:          &wg,
+		spawnProxy:  provideWithProxy,
+	}
+	reloader.StartWatcher(ctx)
 
 	if 0 < port {
 		fmt.Printf(
