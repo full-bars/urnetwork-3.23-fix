@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -26,5 +27,51 @@ func TestEcoMonitorStartsOnce(t *testing.T) {
 
 	if starts != 1 {
 		t.Fatalf("expected eco monitor to start exactly once across %d calls, got %d", proxies, starts)
+	}
+}
+
+func TestReadSHMLog_NotExist(t *testing.T) {
+	out, err := readSHMLog("/tmp/does-not-exist-urnetwork.log", 0)
+	if err == nil {
+		t.Fatal("expected error for missing log file")
+	}
+	if out != "" {
+		t.Fatalf("expected empty output, got %q", out)
+	}
+}
+
+func TestReadSHMLog_AllLines(t *testing.T) {
+	f, err := os.CreateTemp("", "urnetwork-test-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("line1\nline2\nline3\n")
+	f.Close()
+
+	out, err := readSHMLog(f.Name(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "line1\nline2\nline3\n" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestReadSHMLog_LastN(t *testing.T) {
+	f, err := os.CreateTemp("", "urnetwork-test-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("line1\nline2\nline3\nline4\nline5\n")
+	f.Close()
+
+	out, err := readSHMLog(f.Name(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "line4\nline5\n" {
+		t.Fatalf("unexpected output: %q", out)
 	}
 }

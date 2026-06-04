@@ -448,7 +448,8 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
-    
+    provider logs [-n <lines>]
+
 Options:
     -h --help                        Show this help and exit.
     --version                        Show version.
@@ -467,7 +468,8 @@ Options:
     <proxy_user>                     SOCKS5 user
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
-    --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port`,
+    --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
 		DefaultConnectUrl,
 	)
@@ -505,6 +507,8 @@ Options:
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
 		auth(opts)
 		provide(opts)
+	} else if logs, _ := opts.Bool("logs"); logs {
+		providerLogs(opts)
 	}
 }
 
@@ -1489,6 +1493,52 @@ func readProxySettings() []*connect.ProxySettings {
 	}
 
 	return allProxySettings
+}
+
+// readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
+// Returns an error if the file does not exist.
+func readSHMLog(path string, n int) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if n <= 0 {
+		return string(b), nil
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if n > len(lines) {
+		n = len(lines)
+	}
+	return strings.Join(lines[len(lines)-n:], "\n") + "\n", nil
+}
+
+func providerLogs(opts docopt.Opts) {
+	n, _ := opts.Int("-n")
+	out, err := readSHMLog(shmLogPath, n)
+	if err != nil {
+		fmt.Printf("error: no ramlogs found at %s — is URNETWORK_RAMLOGS=1 set?\n", shmLogPath)
+		os.Exit(1)
+	}
+	fmt.Print(out)
+
+	// Tail: follow the file from current position
+	f, err := os.Open(shmLogPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Seek(0, io.SeekEnd)
+
+	buf := make([]byte, 4096)
+	for {
+		nr, err := f.Read(buf)
+		if nr > 0 {
+			os.Stdout.Write(buf[:nr])
+		}
+		if err != nil {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
 }
 
 func parseProxyAddress(proxyAddress string) (address string, user string, password string) {
