@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // The eco memory monitor is a single global watcher, but it was started from
@@ -86,6 +88,75 @@ func TestInitProxyIDCounter_NoopIfAlreadyHigher(t *testing.T) {
 	id := nextProxyID()
 	if id != 100 {
 		t.Fatalf("expected counter unchanged at 100, got %d", id)
+	}
+}
+
+func TestWriteReadProxyState_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.state")
+
+	s := &ProxyState{
+		Source:    "/app/proxy.txt",
+		StartedAt: time.Now().Truncate(time.Second),
+		NextID:    5,
+		Proxies: map[string]ProxyEntry{
+			"1.2.3.4:1080": {ID: 0, Health: "up"},
+			"5.6.7.8:1080": {ID: 1, Health: "dead"},
+		},
+	}
+
+	if err := writeProxyStateTo(path, s); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readProxyStateFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Source != s.Source {
+		t.Errorf("source: got %q want %q", got.Source, s.Source)
+	}
+	if got.NextID != s.NextID {
+		t.Errorf("nextID: got %d want %d", got.NextID, s.NextID)
+	}
+	if len(got.Proxies) != 2 {
+		t.Errorf("proxies: got %d want 2", len(got.Proxies))
+	}
+}
+
+func TestReadProxyState_NotExist(t *testing.T) {
+	s, err := readProxyStateFrom("/tmp/does-not-exist-proxy.state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Proxies == nil {
+		t.Fatal("expected non-nil Proxies map")
+	}
+}
+
+func TestResolveProxyID_ExistingAddressKeepsID(t *testing.T) {
+	s := &ProxyState{
+		Proxies: map[string]ProxyEntry{
+			"1.2.3.4:1080": {ID: 42},
+		},
+	}
+	atomic.StoreInt64(&proxyIDCounter, 100)
+	id := resolveProxyID(s, "1.2.3.4:1080")
+	if id != 42 {
+		t.Fatalf("expected existing ID 42, got %d", id)
+	}
+}
+
+func TestResolveProxyID_NewAddressGetsNextID(t *testing.T) {
+	s := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	atomic.StoreInt64(&proxyIDCounter, 7)
+	id := resolveProxyID(s, "9.9.9.9:1080")
+	if id != 7 {
+		t.Fatalf("expected ID 7, got %d", id)
+	}
+	if _, ok := s.Proxies["9.9.9.9:1080"]; !ok {
+		t.Fatal("expected address to be stored in state")
 	}
 }
 
