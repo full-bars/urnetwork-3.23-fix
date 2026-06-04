@@ -230,3 +230,43 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 	r.LifetimeLost = proxyLifetimeLost
 	return r
 }
+
+// ProxyHealthStatus represents the live health of a proxy
+type ProxyHealthStatus struct {
+	Health    string
+	DownSince time.Time
+}
+
+// ProxyHealthByAddress returns the current health classification for each
+// registered proxy, keyed by address. Used to update proxy.state snapshots.
+func ProxyHealthByAddress() map[string]ProxyHealthStatus {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	result := make(map[string]ProxyHealthStatus, len(proxyHealthByIndex))
+	for _, h := range proxyHealthByIndex {
+		health := "dead"
+		if h.currentlyUp {
+			health = "up"
+		} else if h.everUp {
+			health = degradedTierFromDuration(time.Since(h.downSince))
+		}
+		result[h.address] = ProxyHealthStatus{
+			Health:    health,
+			DownSince: h.downSince,
+		}
+	}
+	return result
+}
+
+func degradedTierFromDuration(d time.Duration) string {
+	switch {
+	case d < 24*time.Hour:
+		return "recently_offline"
+	case d < 72*time.Hour:
+		return "offline"
+	case d < 7*24*time.Hour:
+		return "long_offline"
+	default:
+		return "inactive"
+	}
+}
