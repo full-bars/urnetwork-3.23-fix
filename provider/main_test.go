@@ -177,3 +177,61 @@ func TestReadSHMLog_LastN(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out)
 	}
 }
+
+func TestProxyReloadTrigger_WriteAndRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.reload")
+
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+	seq1, err := readReloadSeq(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq1 != 1 {
+		t.Fatalf("expected seq 1, got %d", seq1)
+	}
+
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+	seq2, err := readReloadSeq(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq2 != 2 {
+		t.Fatalf("expected seq 2, got %d", seq2)
+	}
+}
+
+func TestReadReloadSeq_NotExist(t *testing.T) {
+	seq, err := readReloadSeq("/tmp/does-not-exist-proxy.reload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 0 {
+		t.Fatalf("expected seq 0 for missing file, got %d", seq)
+	}
+}
+
+func TestAcquireProxyLock_SecondFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.lock")
+
+	rel, err := acquireProxyLockAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Second acquisition must fail while the first is held
+	if _, err := acquireProxyLockAt(path); err == nil {
+		t.Fatal("expected second lock acquisition to fail")
+	}
+	rel()
+	// After release, acquisition should succeed again
+	rel2, err := acquireProxyLockAt(path)
+	if err != nil {
+		t.Fatalf("expected lock acquisition to succeed after release, got %v", err)
+	}
+	rel2()
+}
