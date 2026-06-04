@@ -58,6 +58,7 @@ param(
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
     [Switch]$NoConfirm = $false,
+    [String]$ContainerName = "urnetwork",
     [Parameter(ValueFromRemainingArguments = $true)]
     [String[]]$SubArgs
 );
@@ -532,9 +533,9 @@ switch ($Command) {
     "proxy" {
         $proxySubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
         switch ($proxySubCmd) {
-            "refresh" { docker exec urnetwork provider proxy refresh }
-            "reload"  { docker exec urnetwork provider proxy refresh }
-            "remove-dead" { docker exec urnetwork provider proxy remove-dead }
+            "refresh" { docker exec $ContainerName provider proxy refresh }
+            "reload"  { docker exec $ContainerName provider proxy refresh }
+            "remove-dead" { docker exec $ContainerName provider proxy remove-dead }
             default {
                 Write-Host "Usage: proxy [refresh|reload|remove-dead]"
             }
@@ -550,7 +551,7 @@ switch ($Command) {
                 $n = $SubArgs[$nIndex + 1]
             }
         }
-        docker exec urnetwork provider logs -n $n
+        docker exec $ContainerName provider logs -n $n
         break
     }
 
