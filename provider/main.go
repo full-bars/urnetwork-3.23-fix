@@ -852,6 +852,30 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
 
+		// Update proxy.state health snapshot for use by proxy refresh subcommand
+		go func() {
+			state, err := readProxyState()
+			if err != nil {
+				return
+			}
+			liveHealth := connect.ProxyHealthByAddress()
+			for addr, entry := range state.Proxies {
+				if h, ok := liveHealth[addr]; ok {
+					entry.Health = h.Health
+					if h.DownSince.IsZero() {
+						entry.DownSince = ""
+					} else {
+						entry.DownSince = h.DownSince.Format(time.RFC3339)
+					}
+				} else {
+					entry.Health = "dead"
+					entry.DownSince = ""
+				}
+				state.Proxies[addr] = entry
+			}
+			_ = writeProxyState(state)
+		}()
+
 		if dir, ok := proxyHealthDir(); ok {
 			writeProxyHealthState(dir, report, now)
 			writeProxyHealthEvents(dir, report, now)
