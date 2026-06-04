@@ -1505,7 +1505,8 @@ func readSHMLog(path string, n int) (string, error) {
 	if n <= 0 {
 		return string(b), nil
 	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	s := strings.TrimRight(string(b), "\n")
+	lines := strings.Split(s, "\n")
 	if n > len(lines) {
 		n = len(lines)
 	}
@@ -1524,10 +1525,14 @@ func providerLogs(opts docopt.Opts) {
 	// Tail: follow the file from current position
 	f, err := os.Open(shmLogPath)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not open log for tailing: %v\n", err)
 		return
 	}
 	defer f.Close()
-	f.Seek(0, io.SeekEnd)
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		fmt.Fprintf(os.Stderr, "error: seek failed: %v\n", err)
+		return
+	}
 
 	buf := make([]byte, 4096)
 	for {
@@ -1535,7 +1540,11 @@ func providerLogs(opts docopt.Opts) {
 		if nr > 0 {
 			os.Stdout.Write(buf[:nr])
 		}
-		if err != nil {
+		if err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "error: read failed: %v\n", err)
+			return
+		}
+		if err == io.EOF {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
