@@ -449,6 +449,7 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
+    provider proxy remove-dead [--include-inactive]
     provider proxy refresh [--force]
     provider logs [-n <lines>]
 
@@ -471,6 +472,7 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    --include-inactive               Also remove inactive (7d+ offline) proxies, not just confirmed dead.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
@@ -505,6 +507,8 @@ Options:
 			}
 		} else if add, _ := opts.Bool("add"); add {
 			proxyAdd(opts)
+		} else if removeDead, _ := opts.Bool("remove-dead"); removeDead {
+			proxyRemoveDead(opts)
 		} else if remove, _ := opts.Bool("remove"); remove {
 			proxyRemove(opts)
 		} else if refresh, _ := opts.Bool("refresh"); refresh {
@@ -1841,11 +1845,124 @@ func proxyRefresh(opts docopt.Opts) {
 	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
 }
 
+func proxyRemoveDead(opts docopt.Opts) {
+	includeInactive, _ := opts.Bool("--include-inactive")
+
+	state, err := readProxyState()
+	if err != nil || state.StartedAt.IsZero() {
+		fmt.Println("error: provider does not appear to be running.")
+		os.Exit(1)
+	}
+
+	uptime := time.Since(state.StartedAt)
+	const deadConfirmDelay = 65 * time.Minute
+	if uptime < deadConfirmDelay {
+		fmt.Printf("Provider has been running for only %s — proxies need %s before dead status is confirmed.\n",
+			formatDuration(uptime), formatDuration(deadConfirmDelay))
+		os.Exit(1)
+	}
+
+	type removedProxy struct {
+		addr  string
+		entry ProxyEntry
+	}
+	var toRemove []removedProxy
+	for addr, e := range state.Proxies {
+		remove := false
+		switch e.Health {
+		case "dead":
+			remove = true
+		case "inactive":
+			remove = includeInactive
+		}
+		if remove {
+			toRemove = append(toRemove, removedProxy{addr: addr, entry: e})
+		}
+	}
+
+	if len(toRemove) == 0 {
+		fmt.Println("No dead proxies found.")
+		return
+	}
+
+	fmt.Printf("proxy remove-dead: %d dead proxies found.\n\n", len(toRemove))
+	for _, rp := range toRemove {
+		fmt.Printf("  proxy[%d]  %s   — %s\n", rp.entry.ID, rp.addr, rp.entry.Health)
+	}
+
+	fmt.Println()
+	if !confirm("Remove these from your proxy list and reload?") {
+		fmt.Println("Aborted.")
+		return
+	}
+
+	// Remove from source file
+	if state.Source != "" {
+		var addrs []string
+		for _, rp := range toRemove {
+			addrs = append(addrs, rp.addr)
+		}
+		if err := removeAddressesFromFile(state.Source, addrs); err != nil {
+			fmt.Printf("error: could not update proxy file: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		proxyConfig := readProxyConfig()
+		for _, rp := range toRemove {
+			delete(proxyConfig.Servers, rp.addr)
+		}
+		writeProxyConfig(proxyConfig)
+	}
+
+	// Trigger reload
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("error: %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
+	reloadPath, _ := proxyReloadPath()
+	if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Printf("error: could not write reload trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Removed %d dead proxies. Reload triggered.\n", len(toRemove))
+}
+
+func removeAddressesFromFile(path string, addresses []string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	removeSet := map[string]bool{}
+	for _, a := range addresses {
+		removeSet[a] = true
+	}
+	var kept []string
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		addr, _, _ := parseProxyAddress(trimmed)
+		if !removeSet[addr] {
+			kept = append(kept, line)
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(kept, "\n")), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func confirm(prompt string) bool {
 	fmt.Printf("%s [y/N] ", prompt)
-	var resp string
-	fmt.Scanln(&resp)
-	return strings.ToLower(strings.TrimSpace(resp)) == "y"
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		resp := scanner.Text()
+		return strings.ToLower(strings.TrimSpace(resp)) == "y"
+	}
+	return false
 }
 
 func formatDuration(d time.Duration) string {
