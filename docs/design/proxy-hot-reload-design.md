@@ -26,6 +26,8 @@ There are two proxy list workflows. They are mutually exclusive and never intera
 **Workflow A — External file (recommended, Docker-native):**
 Provider started with `--proxy_file=<path>`. The external file is the authoritative source. `proxy add/remove` commands are irrelevant in this workflow — the user manages the file directly.
 
+**Note:** The `--proxy_file` flag on the `provide` command does not exist today — it must be added as part of this implementation. Currently `--proxy_file` only exists on `proxy add` as a one-shot import into `~/.urnetwork/proxy`. Adding it to `provide` is new work.
+
 ```
 # Docker
 -v /home/user/proxy.txt:/app/proxy.txt
@@ -54,7 +56,9 @@ No `--proxy_file` flag. Provider reads from `~/.urnetwork/proxy` as today. `prox
 
 - **Monotonic proxy ID counter — address-stable.** Proxies are assigned a never-reused integer ID keyed by address, not spawn order. On startup and reload, `proxy.state` is consulted first: if an address already has an ID it keeps it; new addresses get the next counter value. This means IDs survive restarts and reloads for unchanged proxies. Go map iteration is nondeterministic — IDs must never be assigned by loop position.
 
-- **Full subsystem re-keying required.** The current slice index `i` keys three subsystems: `proxyHealthByIndex` (proxy_health.go), bandwidth tracking (`RegisterProxyBandwidth`), and transport/select logs. All three must be re-keyed to the new stable ID. This is the largest implementation cost of the feature.
+- **ID ownership boundary — `main.go` allocates, connect library consumes.** The ID is threaded through the connect library via `proxySettings.Index`, which keys bandwidth tracking (`RegisterProxyBandwidth` in `net_http.go`) and select logs. The connect library interface is unchanged — it receives whatever integer it is given. `main.go` is the single point of ID allocation: the monotonic counter and `proxy.state` address-lookup live entirely in `main.go`. No ID allocation logic enters the connect package. This boundary ensures no two proxies can silently share counters during a reload.
+
+- **Full subsystem re-keying required.** The current slice index `i` (loop position) keys three subsystems: `proxyHealthByIndex` (proxy_health.go), bandwidth tracking (`RegisterProxyBandwidth` in net_http.go), and transport/select logs. All three must be re-keyed to the stable ID allocated by `main.go`. This is the largest implementation cost of the feature and must be completed as a single atomic change to avoid silent counter collisions under live traffic.
 
 - **Per-proxy cancel map** — `map[address]cancelFunc` tracks running goroutines. Reload cancels entries for removed proxies, adds new entries for added ones.
 
@@ -164,7 +168,9 @@ docker exec <container_name> provider --help
 docker exec <container_name> provider help
 ```
 
-Previously users had to know the arch-specific binary name (`urnetwork_amd64_stable`, etc.) — an unnecessary and confusing detail. The symlink is the same pattern already used for `proxy-health`. The `provider help` alias (no dashes) is added for discoverability alongside the existing `--help` / `-h` flags.
+Previously users had to know the arch-specific binary name (`urnetwork_amd64_stable`, etc.) — an unnecessary and confusing detail. The symlink is the same pattern already used for `proxy-health`.
+
+**Nightly caveat:** On nightly containers (`BUILD=nightly`), the baked binary is still `_stable` — `start_nightly.sh` downloads the nightly binary at runtime. So `docker exec <container> provider --help` on a nightly container runs the stable binary, not the live nightly one. Version output may mismatch. This is cosmetic — no crash, no incident — but documented here so it is not mistaken for a bug. The `provider help` alias (no dashes) is added for discoverability alongside the existing `--help` / `-h` flags.
 
 All new commands (`proxy refresh`, `proxy remove-dead`, `provide --proxy_file`) are added to the docopt usage string as part of implementation and appear automatically in help output.
 
