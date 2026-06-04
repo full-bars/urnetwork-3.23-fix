@@ -437,6 +437,7 @@ Usage:
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
         [--max-memory=<mem>]
+        [--proxy_file=<proxy_file>]
         [-v...]
     provider auth-provide ([<auth_code>] | --user_auth=<user_auth> [--password=<password>]) [-f]
     	[--port=<port>]
@@ -924,10 +925,7 @@ func provide(opts docopt.Opts) {
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 
-	provideWithProxy := func(proxySettings *connect.ProxySettings) {
-		proxyCtx, proxyCancel := context.WithCancel(ctx)
-		defer proxyCancel()
-
+	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
@@ -1050,12 +1048,47 @@ func provide(opts docopt.Opts) {
 		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
 	}
 
-	if allProxySettings := readProxySettings(); 0 < len(allProxySettings) {
+	// Load proxy.state to assign address-stable IDs. Known addresses keep their ID
+	// across restarts/reloads; new addresses get the next monotonic counter value.
+	proxyState, stateErr := readProxyState()
+	if stateErr != nil {
+		fmt.Printf("[proxy] warning: could not read proxy.state: %v\n", stateErr)
+		proxyState = &ProxyState{Proxies: map[string]ProxyEntry{}}
+	}
+	proxyState.StartedAt = provideStartTime
+
+	// Advance the ID counter above any IDs already in state so they are never reused.
+	highestID := -1
+	for _, e := range proxyState.Proxies {
+		if e.ID > highestID {
+			highestID = e.ID
+		}
+	}
+	initProxyIDCounter(highestID)
+
+	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
+	proxyFile, _ := opts.String("--proxy_file")
+	var allProxySettings []*connect.ProxySettings
+	if proxyFile != "" {
+		allProxySettings = readProxySettingsFromFile(proxyFile)
+		proxyState.Source = proxyFile
+	} else {
+		allProxySettings = readProxySettings()
+		proxyState.Source = ""
+	}
+
+	// Per-proxy cancellation map keyed by address, so hot-reload can cancel
+	// individual proxy goroutines without disturbing the others.
+	var proxyCancelMu sync.Mutex
+	proxyCancelMap := map[string]context.CancelFunc{}
+
+	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
-		for i, proxySettings := range allProxySettings {
-			proxySettings.Index = i
-			connect.RegisterProxy(i, proxySettings.Address)
+		for _, proxySettings := range allProxySettings {
+			stableID := resolveProxyID(proxyState, proxySettings.Address)
+			proxySettings.Index = stableID
+			connect.RegisterProxy(stableID, proxySettings.Address)
 			var user string
 			var password string
 			if proxySettings.Auth != nil {
@@ -1063,33 +1096,55 @@ func provide(opts docopt.Opts) {
 				password = proxySettings.Auth.Password
 			}
 			fmt.Printf("  proxy[%d] %s (%s/%s)\n",
-				i,
+				stableID,
 				proxySettings.Address,
 				obfuscateUser(user),
 				obfuscatePassword(password),
 			)
 		}
+
+		// Persist the initial state snapshot now that all IDs are resolved.
+		proxyState.NextID = currentProxyIDCounter()
+		if err := writeProxyState(proxyState); err != nil {
+			fmt.Printf("[proxy] warning: could not write proxy.state: %v\n", err)
+		}
+
 		for i, proxySettings := range allProxySettings {
+			proxyCtx, proxyCancel := context.WithCancel(ctx)
+			proxyCancelMu.Lock()
+			proxyCancelMap[proxySettings.Address] = proxyCancel
+			proxyCancelMu.Unlock()
+
+			stableID := proxySettings.Index
+			staggerPos := i
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
+				defer proxyCancel()
+				defer connect.UnregisterProxy(stableID)
 
-				initialDelay := time.Duration(i) * 100 * time.Millisecond
+				initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
 				select {
-				case <-ctx.Done():
+				case <-proxyCtx.Done():
 				case <-time.After(initialDelay):
 				}
 
-				provideWithProxy(proxySettings)
+				provideWithProxy(proxyCtx, proxySettings)
 			})
 		}
 	} else {
 		wg.Add(1)
+		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		go connect.HandleError(func() {
 			defer wg.Done()
-			provideWithProxy(nil)
+			defer proxyCancel()
+			provideWithProxy(proxyCtx, nil)
 		})
 	}
+
+	// proxyCancelMap/proxyCancelMu are consumed by the reload watcher (added in a later task).
+	_ = proxyCancelMap
+	_ = &proxyCancelMu
 
 	if 0 < port {
 		fmt.Printf(
@@ -1498,6 +1553,35 @@ func readProxySettings() []*connect.ProxySettings {
 	}
 
 	return allProxySettings
+}
+
+// readProxySettingsFromFile reads proxy settings directly from an external file
+// where each non-blank, non-comment line is ip:port:user:pass. Entries missing
+// credentials are rejected (Workflow A requires authenticated proxies).
+func readProxySettingsFromFile(path string) []*connect.ProxySettings {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Printf("[proxy] error: could not read proxy file %s: %v\n", path, err)
+		return nil
+	}
+	var all []*connect.ProxySettings
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		address, user, password := parseProxyAddress(line)
+		if user == "" || password == "" {
+			fmt.Printf("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
+			continue
+		}
+		all = append(all, &connect.ProxySettings{
+			Network: "tcp",
+			Address: address,
+			Auth:    &proxy.Auth{User: user, Password: password},
+		})
+	}
+	return all
 }
 
 // readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
