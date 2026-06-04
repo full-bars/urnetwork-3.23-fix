@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"testing"
 )
 
@@ -55,6 +56,36 @@ func TestReadSHMLog_AllLines(t *testing.T) {
 	}
 	if out != "line1\nline2\nline3\n" {
 		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestNextProxyID_MonotonicallyIncreasing(t *testing.T) {
+	atomic.StoreInt64(&proxyIDCounter, 0)
+
+	id0 := nextProxyID()
+	id1 := nextProxyID()
+	id2 := nextProxyID()
+
+	if id0 != 0 || id1 != 1 || id2 != 2 {
+		t.Fatalf("expected 0,1,2 got %d,%d,%d", id0, id1, id2)
+	}
+}
+
+func TestInitProxyIDCounter_StartsAboveExisting(t *testing.T) {
+	atomic.StoreInt64(&proxyIDCounter, 0)
+	initProxyIDCounter(10)
+	id := nextProxyID()
+	if id != 11 {
+		t.Fatalf("expected first ID after init to be 11, got %d", id)
+	}
+}
+
+func TestInitProxyIDCounter_NoopIfAlreadyHigher(t *testing.T) {
+	atomic.StoreInt64(&proxyIDCounter, 100)
+	initProxyIDCounter(5)
+	id := nextProxyID()
+	if id != 100 {
+		t.Fatalf("expected counter unchanged at 100, got %d", id)
 	}
 }
 
