@@ -146,6 +146,10 @@ func (r *ProxyReloader) reload() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if newState, err := readProxyState(); err == nil {
+		r.state = newState
+	}
+
 	// Load desired set from the source. On a read error in Workflow A, SKIP the
 	// reload entirely — proceeding would diff against zero proxies and cancel the
 	// entire running fleet over a transient file error.
