@@ -1070,7 +1070,19 @@ func provide(opts docopt.Opts) {
 	proxyFile, _ := opts.String("--proxy_file")
 	var allProxySettings []*connect.ProxySettings
 	if proxyFile != "" {
-		allProxySettings = readProxySettingsFromFile(proxyFile)
+		settings, err := readProxySettingsFromFile(proxyFile)
+		if err != nil {
+			// Fatal: the operator explicitly requested an external proxy file.
+			// Falling back to no-proxy mode would silently route traffic directly
+			// and leak the operator's real IP.
+			fmt.Printf("[proxy] fatal: %v\n", err)
+			os.Exit(1)
+		}
+		if len(settings) == 0 {
+			fmt.Printf("[proxy] fatal: proxy file %s contained no valid proxies (expected ip:port:user:pass per line)\n", proxyFile)
+			os.Exit(1)
+		}
+		allProxySettings = settings
 		proxyState.Source = proxyFile
 	} else {
 		allProxySettings = readProxySettings()
@@ -1120,8 +1132,8 @@ func provide(opts docopt.Opts) {
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
-				defer proxyCancel()
 				defer connect.UnregisterProxy(stableID)
+				defer proxyCancel()
 
 				initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
 				select {
@@ -1133,6 +1145,7 @@ func provide(opts docopt.Opts) {
 			})
 		}
 	} else {
+		// No entry in proxyCancelMap — hot-reload only applies in proxy mode.
 		wg.Add(1)
 		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		go connect.HandleError(func() {
@@ -1142,7 +1155,7 @@ func provide(opts docopt.Opts) {
 		})
 	}
 
-	// proxyCancelMap/proxyCancelMu are consumed by the reload watcher (added in a later task).
+	// TODO(reload-watcher): remove these once the reload watcher goroutine consumes them.
 	_ = proxyCancelMap
 	_ = &proxyCancelMu
 
@@ -1558,11 +1571,12 @@ func readProxySettings() []*connect.ProxySettings {
 // readProxySettingsFromFile reads proxy settings directly from an external file
 // where each non-blank, non-comment line is ip:port:user:pass. Entries missing
 // credentials are rejected (Workflow A requires authenticated proxies).
-func readProxySettingsFromFile(path string) []*connect.ProxySettings {
+// Returns an error only if the file itself cannot be read; malformed individual
+// lines are skipped with a warning.
+func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("[proxy] error: could not read proxy file %s: %v\n", path, err)
-		return nil
+		return nil, fmt.Errorf("could not read proxy file %s: %w", path, err)
 	}
 	var all []*connect.ProxySettings
 	for _, line := range strings.Split(string(b), "\n") {
@@ -1581,7 +1595,7 @@ func readProxySettingsFromFile(path string) []*connect.ProxySettings {
 			Auth:    &proxy.Auth{User: user, Password: password},
 		})
 	}
-	return all
+	return all, nil
 }
 
 // readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
