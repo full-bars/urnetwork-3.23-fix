@@ -25,3 +25,8 @@ func initProxyIDCounter(highestExistingID int) {
 		}
 	}
 }
+
+// currentProxyIDCounter returns the current counter value, for state snapshots.
+func currentProxyIDCounter() int {
+	return int(atomic.LoadInt64(&proxyIDCounter))
+}
