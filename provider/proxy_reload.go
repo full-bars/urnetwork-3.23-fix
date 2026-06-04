@@ -242,11 +242,14 @@ func (r *ProxyReloader) reload() {
 		})
 	}
 
-	// Persist the new state snapshot.
+	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
+	// goroutine from racing this write and resurrecting removed proxies.
+	proxyStateMu.Lock()
 	r.state.NextID = currentProxyIDCounter()
 	if err := writeProxyState(r.state); err != nil {
 		fmt.Printf("[proxy] warning: could not write proxy.state after reload: %v\n", err)
 	}
+	proxyStateMu.Unlock()
 
 	fmt.Printf("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
 }
