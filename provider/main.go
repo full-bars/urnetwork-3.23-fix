@@ -1787,11 +1787,15 @@ func proxyRefresh(opts docopt.Opts) {
 		}
 	}
 
-	var removed []ProxyEntry
+	type removedProxy struct {
+		addr  string
+		entry ProxyEntry
+	}
+	var removed []removedProxy
 	for addr, e := range currentSet {
 		if !desiredSet[addr] {
 			e.Health = classifyHealth(e)
-			removed = append(removed, e)
+			removed = append(removed, removedProxy{addr: addr, entry: e})
 		}
 	}
 
@@ -1810,8 +1814,8 @@ func proxyRefresh(opts docopt.Opts) {
 	fmt.Printf("proxy refresh: %d proxies will be removed, %d will be added.\n\n", len(removed), len(added))
 	if len(removed) > 0 {
 		fmt.Println("  Removing:")
-		for _, e := range removed {
-			fmt.Printf("    proxy[%d]  %s   — %s\n", e.ID, e.DownSince, e.Health)
+		for _, rp := range removed {
+			fmt.Printf("    proxy[%d]  %s   — %s\n", rp.entry.ID, rp.addr, rp.entry.Health)
 		}
 	}
 	if len(added) > 0 {
@@ -1823,8 +1827,8 @@ func proxyRefresh(opts docopt.Opts) {
 
 	// Check for high-risk removals
 	highRisk := false
-	for _, e := range removed {
-		if e.Health == "up" || e.Health == "recently_offline" {
+	for _, rp := range removed {
+		if rp.entry.Health == "up" || rp.entry.Health == "recently_offline" {
 			highRisk = true
 			break
 		}
