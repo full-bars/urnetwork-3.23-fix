@@ -852,8 +852,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
 
-		// Update proxy.state health snapshot for use by proxy refresh subcommand
+		// Update proxy.state health snapshot for use by proxy refresh subcommand.
+		// proxyStateMu serializes this with reload()'s state write to prevent
+		// resurrection of proxies that were removed between our read and write.
+		// Entries absent from liveHealth are removed (not marked dead) — they are
+		// either deregistered via hot-reload or stale from a prior run.
 		go func() {
+			proxyStateMu.Lock()
+			defer proxyStateMu.Unlock()
 			state, err := readProxyState()
 			if err != nil {
 				return
@@ -867,11 +873,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 					} else {
 						entry.DownSince = h.DownSince.Format(time.RFC3339)
 					}
+					state.Proxies[addr] = entry
 				} else {
-					entry.Health = "dead"
-					entry.DownSince = ""
+					delete(state.Proxies, addr)
 				}
-				state.Proxies[addr] = entry
 			}
 			_ = writeProxyState(state)
 		}()
@@ -1756,6 +1761,15 @@ func proxyRefresh(opts docopt.Opts) {
 		os.Exit(1)
 	}
 
+	// Acquire lock before computing the diff and prompting, so a second concurrent
+	// invocation fails immediately rather than after both prompts have fired.
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("error: %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
 	// Load desired (from source file or internal config)
 	var desired []*connect.ProxySettings
 	if state.Source != "" {
@@ -1804,10 +1818,10 @@ func proxyRefresh(opts docopt.Opts) {
 		return
 	}
 
-	// Warn if all proxies would be removed
+	// Warn if all proxies would be removed — the provider exits when the last proxy goroutine stops.
 	if len(removed) == len(currentSet) && len(added) == 0 {
-		fmt.Printf("WARNING: This will remove ALL proxies — unique IPs drive earning scale;\n")
-		fmt.Printf("removing all proxies significantly reduces capacity.\n\n")
+		fmt.Printf("WARNING: This will remove ALL proxies. The provider process will exit once the\n")
+		fmt.Printf("last proxy goroutine stops. Restart with a proxy list to resume providing.\n\n")
 	}
 
 	// Print diff
@@ -1825,17 +1839,21 @@ func proxyRefresh(opts docopt.Opts) {
 		}
 	}
 
-	// Check for high-risk removals
+	// Check for high-risk removals: up, recently_offline, offline, long_offline all have
+	// significant warm state. dead and inactive are low-risk (single confirmation).
 	highRisk := false
 	for _, rp := range removed {
-		if rp.entry.Health == "up" || rp.entry.Health == "recently_offline" {
+		switch rp.entry.Health {
+		case "up", "recently_offline", "offline", "long_offline":
 			highRisk = true
+		}
+		if highRisk {
 			break
 		}
 	}
 
 	if highRisk {
-		fmt.Printf("\nWARNING: One or more proxies being removed are currently online or recently online.\n")
+		fmt.Printf("\nWARNING: One or more proxies being removed are online or have recent warm state.\n")
 		if !confirm("Remove them anyway?") {
 			fmt.Println("Aborted.")
 			return
@@ -1850,14 +1868,6 @@ func proxyRefresh(opts docopt.Opts) {
 			return
 		}
 	}
-
-	// Acquire lock and write trigger
-	release, err := acquireProxyLock()
-	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		os.Exit(1)
-	}
-	defer release()
 
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
@@ -1936,8 +1946,15 @@ func proxyRemoveDead(opts docopt.Opts) {
 		}
 	} else {
 		proxyConfig := readProxyConfig()
+		removeSet := map[string]bool{}
 		for _, rp := range toRemove {
-			delete(proxyConfig.Servers, rp.addr)
+			removeSet[rp.addr] = true
+		}
+		for proxyAddress := range proxyConfig.Servers {
+			addr, _, _ := parseProxyAddress(proxyAddress)
+			if removeSet[addr] {
+				delete(proxyConfig.Servers, proxyAddress)
+			}
 		}
 		writeProxyConfig(proxyConfig)
 	}
@@ -2003,7 +2020,7 @@ func classifyHealth(e ProxyEntry) string {
 	if e.Health != "" {
 		return e.Health
 	}
-	return "unknown"
+	return "starting"
 }
 
 func readProxyConfig() *ProxyConfig {

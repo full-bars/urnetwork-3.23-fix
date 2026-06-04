@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
+
+// proxyStateMu serializes all proxy.state read-modify-write cycles.
+// Held during: heartbeat snapshot goroutine, reload() state write.
+// Not needed for startup writes (heartbeat not yet running).
+var proxyStateMu sync.Mutex
 
 // ProxyState is the on-disk record of what the provider is currently running.
 // Written atomically at startup and after each reload.
