@@ -158,6 +158,23 @@ Reload already in progress — try again in a moment.
 
 No queue. One reload at a time.
 
+### `provider logs`
+
+Reads the RAM log at `/dev/shm/urnetwork.log` and prints it to stdout. Since ramlogs caps at 1MB, printing the full file is always reasonable. A user reaching for `docker exec` to read logs has almost certainly enabled ramlogs — `docker logs` would be the alternative otherwise.
+
+```bash
+docker exec <container_name> provider logs          # dump full log then follow live
+docker exec <container_name> provider logs -n 100   # last N lines then follow live
+```
+
+Always tails after the initial dump — no `-f` flag needed. Ctrl+C to exit.
+
+If the log file doesn't exist: `error: no ramlogs found at /dev/shm/urnetwork.log — is URNETWORK_RAMLOGS=1 set?`
+
+**Binary:** `urnet-tools logs` (wrapper for the same command on the local provider process).
+
+---
+
 ### `provider help` / `provider --help`
 
 Shows all available commands and options. The provider binary is now exposed on PATH inside the container via a Dockerfile symlink (`provider -> /app/urnetwork_${TARGETARCH}_stable`), so the command is simply:
