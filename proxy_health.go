@@ -60,14 +60,15 @@ var (
 	proxyBaselineSet       bool
 )
 
-// RegisterProxy adds a proxy to the registry if absent. Idempotent so a list
-// re-read preserves everUp. Called eagerly at startup for every proxy.
 func RegisterProxy(index int, address string) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	if _, ok := proxyHealthByIndex[index]; !ok {
-		proxyHealthByIndex[index] = &proxyHealth{address: address}
+	h, ok := proxyHealthByIndex[index]
+	if !ok {
+		h = &proxyHealth{}
+		proxyHealthByIndex[index] = h
 	}
+	h.address = address
 }
 
 // RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
@@ -162,6 +163,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			pb.Clients.Store(h.bw.Clients.Load())
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
@@ -199,6 +201,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			pb.Clients.Store(h.bw.Clients.Load())
 			r.Bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 
