@@ -109,6 +109,14 @@ func markProxyDown(index int) {
 	}
 }
 
+// UnregisterProxy removes a proxy from the health registry after its goroutine
+// has fully drained. Must be called after the goroutine exits, not at cancel time.
+func UnregisterProxy(id int) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	delete(proxyHealthByIndex, id)
+}
+
 // ProxyHealthCount returns the number of registered proxies (0 = non-proxy mode).
 func ProxyHealthCount() int {
 	proxyHealthMu.Lock()
