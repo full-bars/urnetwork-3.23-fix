@@ -474,6 +474,11 @@ Options:
 		DefaultConnectUrl,
 	)
 
+	// Allow `provider help` as a friendlier alias for --help
+	if len(os.Args) == 2 && os.Args[1] == "help" {
+		os.Args[1] = "--help"
+	}
+
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], RequireVersion())
 
 	if err != nil {
