@@ -1,8 +1,8 @@
-# UrNetwork v3.23 Fix
+# 🚀 UrNetwork v3.23 Fix
 
 A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. This build is tuned for professional providers managing larger proxy lists, higher throughput, and more visible operations.
 
-## Start Here
+## 🏁 Start Here
 
 | If you want to... | Go here |
 | :--- | :--- |
@@ -13,9 +13,9 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
 
-## Quick Start
+## ⚡ Quick Start
 
-### Linux Service
+### 🐧 Linux Service
 
 Run this as your normal non-root user:
 
@@ -39,11 +39,11 @@ urnet-tools logs
 urnet-tools auto on
 ```
 
-### Docker
+### 🐳 Docker
 
 See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples covering `docker run`, Docker Compose, JWT auth, email/password auth, GHCR, Docker Hub, RAM logs, outage alerts, and Watchtower updates.
 
-## Key Improvements
+## ✨ Key Improvements
 
 - **Deep proxy telemetry:** Real-time NAT session multiplexing tracks exactly how many concurrent clients and bandwidth each individual proxy handles, exported live to `proxy_traffic.state`.
 - **High-signal monitoring:** successful serial connection selection logs are promoted to normal INFO output, while noisy parallel-selection logs stay quiet.
@@ -52,7 +52,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples 
 - **Performance profiles:** Auto, Turbo V4, Turbo V8, Eco, and Lowmem profiles cover hosts from small VPS instances to high-RAM dedicated servers.
 - **Docker-first operations:** JWT auth, email/password auth, vnStat integration, multi-arch images, Watchtower compatibility, and multi-container patterns are documented.
 
-## Recommended Defaults
+## 💡 Recommended Defaults
 
 For most providers:
 
@@ -62,7 +62,7 @@ For most providers:
 - Keep a persistent config volume mounted at `/root/.urnetwork` for Docker deployments.
 - Run `urnet-tools optimize` when deploying many proxies, or whenever the System Auditor reports suboptimal kernel limits.
 
-## Documentation
+## 📚 Documentation
 
 - [Installation Guide](docs/Installation.md)
 - [Docker Deployment](docs/Docker-Deployment.md)
@@ -73,7 +73,7 @@ For most providers:
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Changelog](CHANGELOG.md)
 
-## Architecture & Build
+## 🏗️ Architecture & Build
 
 This repository is designed to be **standalone**.
 
@@ -82,6 +82,7 @@ This repository is designed to be **standalone**.
 - **CI/CD:** GitHub Actions builds and pushes multi-arch images to GHCR
 - **Bridge-Friendly:** optimized for standard Docker bridge networks without requiring `--network host`
 
-## Disclaimer
+## ⚠️ Disclaimer
 
-This is a private, custom modification intended for testing and professional provider use. It is not affiliated with the official UrNetwork project.
+> [!WARNING]
+> This is a private, custom modification intended for testing and professional provider use. It is not affiliated with the official UrNetwork project.

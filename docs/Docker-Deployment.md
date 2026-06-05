@@ -1,8 +1,8 @@
-# Docker Deployment
+# 🐳 Docker Deployment
 
 This page keeps the copy-paste Docker examples from the README in one place. Use either `docker run` or Docker Compose, depending on how you prefer to manage containers.
 
-## Image Registries
+## 🗄️ Image Registries
 
 Primary image:
 
@@ -18,19 +18,19 @@ Docker Hub mirror:
 
 Use the Docker Hub mirror if GHCR returns `denied` errors or rate-limiting.
 
-## Persistent JWT
+## 🔑 Persistent JWT
 
 The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code, which is single-use and will fail on the second attempt.
 
 All examples below mount a config volume at `/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication on later starts. Auth codes are only consumed once: on first run or after manually removing the config volume.
 
-## Docker Run - GHCR
+## 🏃 Docker Run - GHCR
 
 The examples below use `urfix` as the container name.
 
 For additional containers, change the container name and volumes together.
 
-### JWT Auth
+### 🔐 JWT Auth
 
 ```bash
 docker run -d \
@@ -67,7 +67,7 @@ To label this server in webhook alerts and health logs, add:
 -e URNETWORK_NODE_NAME=your-server-name
 ```
 
-### Email/Password Auth
+### ✉️ Email/Password Auth
 
 ```bash
 docker run -d \
@@ -92,11 +92,11 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-## Docker Run - Docker Hub
+## 🏃 Docker Run - Docker Hub
 
 The commands are identical to GHCR except for the image name.
 
-### JWT Auth
+### 🔐 JWT Auth
 
 ```bash
 docker run -d \
@@ -125,7 +125,7 @@ Alternative method:
 -e URNETWORK_AUTH_CODE=YOUR_CODE
 ```
 
-### Email/Password Auth
+### ✉️ Email/Password Auth
 
 ```bash
 docker run -d \
@@ -150,13 +150,13 @@ docker run -d \
   3cape/urnetwork-3.23-fix:latest
 ```
 
-## Docker Compose
+## 🐙 Docker Compose
 
 For another single-container deployment on the same host, copy your `docker-compose.yml` to a new folder and replace the `urfix` prefix with a unique name in `container_name`, `volumes`, and the top-level `volumes:` section.
 
 For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Multi-Container-Scaling.md) guide.
 
-### JWT Auth
+### 🔐 JWT Auth
 
 ```yaml
 services:
@@ -202,7 +202,7 @@ After the JWT is saved to the volume, subsequent starts need no auth code:
 docker compose up -d
 ```
 
-### Email/Password Auth
+### ✉️ Email/Password Auth
 
 ```yaml
 services:
@@ -239,7 +239,7 @@ volumes:
   urfix_vnstat:
 ```
 
-## Outage Alerting
+## 🚨 Outage Alerting
 
 Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification when the provider loses contact with the URnetwork backend and when it recovers. The provider posts a JSON payload:
 
@@ -289,7 +289,7 @@ Startup log:
 [outage] watcher active node=my-server-name (docker) webhook=configured
 ```
 
-## RAM Logging
+## 💾 RAM Logging
 
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container, a RAM-backed filesystem, instead of stdout. This keeps log I/O entirely off disk.
 
@@ -326,7 +326,7 @@ docker exec -it urfix tail -f /dev/shm/urnetwork.log
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
 
-## Viewing Proxy Health
+## 🩺 Viewing Proxy Health
 
 You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
 
@@ -334,7 +334,7 @@ You can view the full list of dead and degraded proxies, as well as a live event
 - Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
 - Live-tail RAMLOGS off: `docker logs -f <container> 2>&1 | grep -E '\[health\]\[proxies\]|\[pulse\]'`
 
-## Auto-Tune Performance
+## 🏎️ Auto-Tune Performance
 
 The Auto-Tune feature (`URNETWORK_PROFILE=auto`) automatically optimizes the provider based on server hardware.
 
@@ -365,7 +365,7 @@ docker run -d \
 > [!NOTE]
 > Because Auto-Tune may enable RAM logging if it detects a slow disk, omit `--log-driver` and `--log-opt` from this command to avoid conflicts.
 
-## Automatic Updates
+## 🔄 Automatic Updates
 
 [Watchtower](https://containrrr.dev/watchtower/) can automatically pull new image versions and restart your container when an update is published. Add it to your `docker-compose.yml` alongside the `urnetwork` service:
 

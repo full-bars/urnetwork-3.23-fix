@@ -1,10 +1,10 @@
-# High-Volume Performance Tuning
+# 🚀 High-Volume Performance Tuning
 
 This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` fork, how to choose the right profile for your server, and how to use the operational features added for fleet management.
 
 ---
 
-## Profile Quick Reference
+## 📊 Profile Quick Reference
 
 | Profile | `URNETWORK_PROFILE` | RAM | Throughput | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -19,7 +19,7 @@ Turbo mode can also be set via the `TURBO=v4` / `TURBO=v8` Docker environment va
 
 ---
 
-## System Optimizer (`urnet-tools optimize`)
+## 🔧 System Optimizer (`urnet-tools optimize`)
 
 A provider deploying many proxies can easily saturate default OS limits, even before the deployment feels "high volume" in day-to-day language. The `optimize` command (run as root) applies full system-level tuning to the host for large proxy lists and high-volume network traffic:
 
@@ -42,11 +42,11 @@ The provider binary also includes a **System Auditor** that checks these limits 
 
 ---
 
-## Master Parameter Reference
+## 🎛️ Master Parameter Reference
 
 All values compared across upstream defaults and fork profiles. "Fork default" is what runs when no profile is set.
 
-### Contract & Transfer
+### 📜 Contract & Transfer
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -59,7 +59,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | `MaxResendCount` | unlimited | 16 | 16 | 16 | 16 | 16 |
 | Transfer `SequenceBufferSize` | 16 | 16 | reduced | 16 | 64 | 64 |
 
-### TCP / IP Layer
+### 🌐 TCP / IP Layer
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -69,13 +69,13 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | Accordion window start | fixed | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB |
 | Accordion idle shrink | none | 30 s | 30 s | 30 s | 30 s | 30 s |
 
-### WebRTC
+### 📡 WebRTC
 
 | Parameter | Upstream | Fork default | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- |
 | `ReceiveBufferSize` per peer | 4 MiB | 4 MiB | 8 MiB | 16 MiB |
 
-### Memory & GC
+### 🧠 Memory & GC
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -88,9 +88,9 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 ---
 
-## Profiles In Depth
+## 🔬 Profiles In Depth
 
-### Auto Profile (`auto`)
+### 🤖 Auto Profile (`auto`)
 
 The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. For RAM-constrained systems (Low and Balanced tiers), it **automatically enables the dynamic Eco Memory Monitor** to prevent OOMs.
 
@@ -106,7 +106,7 @@ The `auto` profile is the recommended setting for most users. It detects availab
 -e URNETWORK_PROFILE=auto
 ```
 
-### Turbo Mode (V4 / V8)
+### 🏎️ Turbo Mode (V4 / V8)
 
 The default 1 MiB TCP Accordion window creates a theoretical per-connection throughput ceiling based on latency: `ceiling = window / RTT`. At a typical 10ms RTT, the protocol is mathematically capped at ~100 Mbps regardless of available bandwidth. Turbo mode raises this mathematical ceiling by scaling the window and all dependent buffers.
 
@@ -146,7 +146,7 @@ urnet-tools turbo         # show current state
 
 ---
 
-### Eco Mode
+### 🍃 Eco Mode
 
 Eco mode is for providers on RAM-constrained systems who still want full throughput and earnings. It leaves all buffer and contract sizes untouched and only tunes the GC.
 
@@ -168,7 +168,7 @@ urnet-tools eco off
 
 ---
 
-### Lowmem Mode
+### 🪫 Lowmem Mode
 
 Lowmem mode is for the most RAM-constrained environments where the provider must share a host with other processes. It reduces buffer sizes, enables RAM logging, and applies a hard memory cap.
 
@@ -188,11 +188,12 @@ urnet-tools lowmode off
 -e URNETWORK_PROFILE=lowmem
 ```
 
-> **Note:** When lowmem is active, logs go to RAM (`/dev/shm`) rather than stdout. Remove `--log-driver` / `--log-opt` from your Docker run command. View logs with: `docker exec -it <container> tail -f /dev/shm/urnetwork.log`
+> [!NOTE]
+> When lowmem is active, logs go to RAM (`/dev/shm`) rather than stdout. Remove `--log-driver` / `--log-opt` from your Docker run command. View logs with: `docker exec -it <container> tail -f /dev/shm/urnetwork.log`
 
 ---
 
-## Accordion TCP Scaling
+## 🪗 Accordion TCP Scaling
 
 Connections start with a minimal **4 KiB** TCP window to conserve RAM on idle connections. As throughput increases, the window doubles on each successful delivery up to the profile ceiling (1 MiB default, 4/8 MiB turbo). If a connection goes idle, the window shrinks back to 4 KiB after 30 seconds.
 
@@ -200,7 +201,7 @@ This means the provider can hold many concurrent idle connections cheaply while 
 
 ---
 
-## Contract Management
+## 📝 Contract Management
 
 **`InitialContractTransferByteCount`** controls how many bytes are authorized per contract on the first request. The upstream default of 16 KiB means a new connection hits its quota almost immediately and must renegotiate — under heavy load this creates a signaling storm. The fork raises this to 2 MiB, so a new connection can transfer a meaningful amount before the first renegotiation.
 
@@ -212,7 +213,7 @@ This means the provider can hold many concurrent idle connections cheaply while 
 
 ---
 
-## Message Pool Auto-Sizing
+## 📦 Message Pool Auto-Sizing
 
 The message pool is a free-list of pre-allocated byte buffers (size classes: 2 KB, 4 KB, 16 KB, 32 KB, 64 KB). Packets are served from this pool on the hot path; a pool miss falls back to a heap allocation and GC pressure increases.
 
@@ -237,7 +238,7 @@ No configuration is required — auto-sizing runs on every startup.
 
 ---
 
-## Outage Detection and Alerting
+## 🚨 Outage Detection and Alerting
 
 The provider monitors backend connectivity in the background and logs state transitions. This runs on every startup regardless of configuration.
 
@@ -261,6 +262,7 @@ Two mechanisms work together:
 - Recovery (`outage_clear`) requires 2 consecutive healthy polls — prevents premature all-clears during brief mid-outage lulls.
 - State transitions are always logged to stdout, whether or not a webhook is configured.
 
+> [!TIP]
 > **Tuning the tradeoff:** the 5-minute confirmation window is deliberately conservative to avoid false positives. Detection of a true outage is therefore not instantaneous — expect the `outage_start` event roughly 5 minutes after connectivity is actually lost. Recovery is reported promptly (within ~1 minute).
 
 **Webhook alerts (optional):**
@@ -303,11 +305,12 @@ URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
 
 On bare-metal installs the suffix is `(binary)`, so alerts from containers and binaries on the same host are distinguishable without any configuration.
 
+> [!IMPORTANT]
 > When running multiple containers on one host, set a distinct `URNETWORK_NODE_NAME` per container so webhook alerts identify which one fired.
 
 ---
 
-## Health Heartbeat
+## 💓 Health Heartbeat
 
 The provider logs a periodic heartbeat line with uptime, active profile, and memory statistics. This provides passive liveness confirmation and heap trend visibility without external tooling.
 
@@ -328,7 +331,7 @@ The provider logs a periodic heartbeat line with uptime, active profile, and mem
 
 ---
 
-## Log Spam Reduction
+## 🔇 Log Spam Reduction
 
 During backend outages, certain log lines would historically fire thousands of times per minute. The fork applies rate limiting or once-per-process guards depending on the source:
 
@@ -350,7 +353,7 @@ The `(N suppressed)` suffix ensures no errors are silently dropped — you see t
 
 ---
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 
 **`[net][s]select` not appearing in logs:**
 This line is promoted to INFO level in the fork (upstream logs it at Debug level 2, hidden unless `-v` is passed). If it's missing, the provider is not successfully connecting any proxies — check auth and network connectivity.

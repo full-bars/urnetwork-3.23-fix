@@ -1,8 +1,8 @@
-# Installation Guide
+# 📦 Installation Guide
 
 This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools.
 
-## Quick Start
+## 🚀 Quick Start
 
 The provider is designed to run as a **non-privileged user service** for maximum security and reliability.
 
@@ -21,7 +21,7 @@ Uninstall:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
-## User-Level Systemd Service
+## 🔐 User-Level Systemd Service
 
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
 
@@ -30,7 +30,7 @@ Unlike traditional services that run as root, this build defaults to a **systemd
 - **Linger:** the installer enables `loginctl enable-linger`, so the provider starts automatically on boot and keeps running after logout.
 - **Root guard:** if installed as root, the script can create a restricted `urnet` user and add it to the appropriate admin group.
 
-## Post-Install Commands
+## 🛠️ Post-Install Commands
 
 The installation includes the `urnet-tools` suite for management:
 
@@ -46,7 +46,7 @@ The installation includes the `urnet-tools` suite for management:
 | `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
 | `urnet-tools update` | Upgrade to the latest version. |
 
-## System Auditor & Host Optimization
+## 📊 System Auditor & Host Optimization
 
 When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
 
@@ -55,7 +55,8 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 [audit] Hint: Container detected suboptimal host limits. Run 'urnet-tools optimize' on the HOST to fix.
 ```
 
-The provider cannot modify host-level kernel settings from inside a container. Run `urnet-tools optimize` on the host machine when deploying many proxies, or whenever you see `Suboptimal!` warnings.
+> [!WARNING]
+> The provider cannot modify host-level kernel settings from inside a container. Run `urnet-tools optimize` on the host machine when deploying many proxies, or whenever you see `Suboptimal!` warnings.
 
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 

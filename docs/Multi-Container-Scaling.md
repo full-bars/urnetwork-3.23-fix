@@ -1,10 +1,10 @@
-# Multi-Container Scaling
+# 🐳 Multi-Container Scaling
 
 You can run multiple independent nodes in a single `docker-compose.yml` file. This is the most efficient way to scale on a single host because all nodes can share a single authentication session.
 
 Use the 3-node example if you want to understand the pattern. Use the 5-node or 10-node templates if you want a larger stack ready to copy.
 
-## How It Works
+## ⚙️ How It Works
 
 By sharing a single config volume, `ur_config`, you only need one auth code to authenticate the whole stack.
 
@@ -14,7 +14,7 @@ By sharing a single config volume, `ur_config`, you only need one auth code to a
 
 The healthcheck avoids a cold-start race where dependent nodes would otherwise launch before the JWT is written and crash-loop until it appears.
 
-## Choose a Template
+## 📋 Choose a Template
 
 | Stack Size | Best For |
 | :--- | :--- |
@@ -24,7 +24,7 @@ The healthcheck avoids a cold-start race where dependent nodes would otherwise l
 
 Each service needs a unique service name, container name, host port, and vnStat volume. All nodes share `ur_config` for the JWT.
 
-## 3-Node Walkthrough
+## 🚶 3-Node Walkthrough
 
 ```yaml
 services:
@@ -128,13 +128,13 @@ volumes:
   urfix-3_vnstat:
 ```
 
-## Ready Templates
+## 🚀 Ready Templates
 
 For larger stacks, these templates use YAML anchors to keep the files shorter while still being ready to copy.
 
 Set `URNETWORK_AUTH_CODE` only on `node-1`. The other nodes wait for `node-1` to write the shared JWT, then reuse it.
 
-### 5 Nodes
+### 🖐️ 5 Nodes
 
 ```yaml
 x-urnetwork-common: &urnetwork-common
@@ -248,7 +248,7 @@ volumes:
   urfix-5_vnstat:
 ```
 
-### 10 Nodes
+### 🔟 10 Nodes
 
 ```yaml
 x-urnetwork-common: &urnetwork-common
@@ -442,7 +442,7 @@ volumes:
   urfix-10_vnstat:
 ```
 
-## Start the Stack
+## ▶️ Start the Stack
 
 From the folder containing your chosen `docker-compose.yml`:
 
@@ -450,7 +450,7 @@ From the folder containing your chosen `docker-compose.yml`:
 docker compose up -d
 ```
 
-## Verify
+## ✅ Verify
 
 Check Node 1 logs to confirm first-time authentication:
 
