@@ -2,6 +2,8 @@ package connect
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -62,11 +64,12 @@ func (self *grantingClientOob) SendControl(frames []*protocol.Frame, callback fu
 		if err != nil {
 			continue
 		}
-		hmac := SignStoredContract(self.settings, secretKey, storedContractBytes)
+		mac := hmac.New(sha256.New, secretKey)
+		macSum := mac.Sum(storedContractBytes)
 		result := &protocol.CreateContractResult{
 			Contract: &protocol.Contract{
 				StoredContractBytes: storedContractBytes,
-				StoredContractHmac:  hmac,
+				StoredContractHmac:  macSum,
 				ProvideMode:         protocol.ProvideMode_Network,
 			},
 		}
