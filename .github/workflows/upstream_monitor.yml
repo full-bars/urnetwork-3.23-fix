@@ -22,6 +22,8 @@ jobs:
             "transfer_contract_manager.go" 
             "net_http.go" 
             "transfer_encrypt.go"
+            "provider/main.go"
+            "proxy_health.go"
           )
           
           echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
