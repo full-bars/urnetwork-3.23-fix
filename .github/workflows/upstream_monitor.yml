@@ -1,0 +1,66 @@
+name: Upstream PR Monitor
+
+on:
+  schedule:
+    - cron: '0 0,12 * * *' # Run twice a day (midnight and noon UTC)
+  workflow_dispatch: # Allow manual triggering from the Actions tab
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream repo for critical changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+          
+          # The specific files in your fork that you want to protect/monitor
+          CRITICAL_FILES=(
+            "ip.go" 
+            "transfer_contract_manager.go" 
+            "net_http.go" 
+            "transfer_encrypt.go"
+          )
+          
+          echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
+          
+          # Fetch the 15 most recently updated open PRs
+          PRS=$(gh api repos/$UPSTREAM_REPO/pulls?state=open\&sort=updated\&direction=desc\&per_page=15)
+          
+          # Calculate timestamp for 12 hours ago (to avoid duplicate alerts on old PRs)
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+          
+          echo "$PRS" | jq -c '.[]' | while read -r pr; do
+            PR_NUMBER=$(echo "$pr" | jq -r '.number')
+            PR_TITLE=$(echo "$pr" | jq -r '.title')
+            PR_URL=$(echo "$pr" | jq -r '.html_url')
+            PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
+            
+            # Only process PRs updated within our 12-hour polling window
+            if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
+              # Fetch the list of files modified in this specific PR
+              FILES=$(gh api repos/$UPSTREAM_REPO/pulls/$PR_NUMBER/files | jq -r '.[].filename')
+              
+              MATCHED_FILES=""
+              for file in "${CRITICAL_FILES[@]}"; do
+                if echo "$FILES" | grep -q "$file"; then
+                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
+                fi
+              done
+              
+              # If any critical files were touched, trigger the alert
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🚨 Match found! PR #$PR_NUMBER touches:$MATCHED_FILES"
+                
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  curl -sf -H "Content-Type: application/json" -d "{
+                    \"content\": \"🚨 **Upstream Alert:** A new or updated PR in \`$UPSTREAM_REPO\` modifies your critical files!\\n\\n**PR:** [$PR_TITLE](<$PR_URL>)\\n**Modified:**$MATCHED_FILES\"
+                  }" "$DISCORD_WEBHOOK"
+                else
+                  echo "⚠️ Warning: DISCORD_WEBHOOK secret is not set in repository settings. Cannot send alert."
+                fi
+              fi
+            fi
+          done
