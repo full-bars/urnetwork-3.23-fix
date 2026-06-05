@@ -36,6 +36,8 @@ show_help ()
     echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
     echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
     echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
+    echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
+    echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
