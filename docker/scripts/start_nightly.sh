@@ -245,6 +245,23 @@ func_start_provider(){
             log " [INFO] UrNetwork exited cleanly."
             break
         fi
+        if [ "$code" -eq 78 ]; then
+            log "[WARN] Provider exited with auth error (code 78) — token expired or revoked."
+            rm -f "$JWT_FILE"
+            if [ -n "$USER_AUTH" ] && [ -n "$PASSWORD" ]; then
+                log "[INFO] Re-authenticating with USER_AUTH/PASSWORD..."
+                if "$PROVIDER_BIN" auth --user_auth="$USER_AUTH" --password="$PASSWORD" -f && [ -s "$JWT_FILE" ]; then
+                    log "[INFO] Re-authentication successful. Restarting provider..."
+                    sleep 5
+                    continue
+                else
+                    log "[ERROR] Re-authentication failed."
+                fi
+            fi
+            log "[CRITICAL] Token expired/revoked and credentials unavailable. Check USER_AUTH/PASSWORD and restart."
+            sleep 30
+            exit 78
+        fi
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
         if [ "$failures" -ge 3 ]; then
