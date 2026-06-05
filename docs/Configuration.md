@@ -1,6 +1,6 @@
-# Configuration Reference
+# ⚙️ Configuration Reference
 
-## Environment Variables
+## 🌍 Environment Variables
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
@@ -18,7 +18,7 @@
 | `HOST_HOSTNAME` | - | Pass the host server name into the container. Use `-e HOST_HOSTNAME=$(hostname)` with `docker run` or `HOST_HOSTNAME=${HOSTNAME}` in Compose. |
 | `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Includes uptime, RAM stats, and active connection count. Accepts Go duration strings such as `10m` or `1h`. Minimum `1m`. |
 
-## Profile Selection
+## 🎛️ Profile Selection
 
 | Profile | Docker Value | Best For | RAM |
 | :--- | :--- | :--- | :--- |
@@ -30,11 +30,13 @@
 | Lowmem | `URNETWORK_PROFILE=lowmem` | Minimum RAM, reduced throughput | < 1 GiB |
 
 See [High-Volume Performance Tuning](High-Volume-Performance-Tuning.md) for the detailed profile behavior and parameter tables.
-## Viewing proxy health
+
+## 🩺 Viewing proxy health
 
 You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions:
 
 *   **Host**: Run `urnet-tools proxy health`.
 *   **Docker**: See [Docker Deployment](Docker-Deployment.md) for the `proxy-health` command.
 
-The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).
+> [!NOTE]
+> The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).

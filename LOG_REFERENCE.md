@@ -1,10 +1,10 @@
-# URnetwork Provider — Log Message Reference
+# 📜 URnetwork Provider — Log Message Reference
 
 A plain-language guide to every log line you'll regularly see running urnetwork providers, whether binary or Docker. Examples are drawn from real production deployments.
 
 ---
 
-## System Auditor & Smart Auto
+## 📊 System Auditor & Smart Auto
 
 ```
 [audit] Running system checks...
@@ -26,7 +26,7 @@ Fires **once per process** at startup when `URNETWORK_PROFILE=auto` is set, rega
 
 ---
 
-## Eco Memory Monitor
+## 🍃 Eco Memory Monitor
 
 ```
 [eco] memory pressure detected (available=287MiB), GOGC=25
@@ -48,7 +48,7 @@ These only appear when memory actually changes tier — a stable system shows no
 
 ---
 
-## Buffer Pool Health
+## 🏊 Buffer Pool Health
 
 ```
 pool[2048] tag=0 [] r=1616413/t=1617695/c=20087 = 99.92% return / 98.76% reuse
@@ -78,7 +78,7 @@ Fires every 60 seconds. This is the provider's internal memory health check.
 
 ---
 
-## Transport Auth Error
+## 🚫 Transport Auth Error
 
 ```
 [t]auth error 019e2d83-3118-5186-995f-aabe3b2dcf0b = Timeout. (34 suppressed)
@@ -94,7 +94,7 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 
 ---
 
-## OOB Contract Backoff
+## ⏳ OOB Contract Backoff
 
 ```
 [contract]oob err = Timeout.; backing off create contract OOB requests for 1m0s
@@ -109,7 +109,7 @@ The provider tried to request a contract via the out-of-band (OOB) control chann
 
 ---
 
-## Session Exit — Could Not Create Contract
+## 🚪 Session Exit — Could Not Create Contract
 
 ```
 [s]019e0f4d-b48e-45e3-33e6-d7228666f41e->[]...019e2f50-4c42-571c-6adb-5c9a990d99e9 s(00000000-0000-0000-0000-000000000000) exit could not create contract.
@@ -128,7 +128,7 @@ A session between two clients failed because no contract could be allocated. The
 
 ---
 
-## Debit Contract Near Capacity
+## ⚠️ Debit Contract Near Capacity
 
 ```
 [s]debit contract 019e2c16-80c4-ef1d-edc7-47d788752706 failed +1420->13750 (12330/13107 total 94.1% full)
@@ -143,7 +143,7 @@ A contract was allocated and is filling up. The provider tried to debit bytes fr
 
 ---
 
-## Outage Watcher
+## 🚨 Outage Watcher
 
 ```
 [outage] watcher active node=my-server (docker) webhook=configured
@@ -159,11 +159,12 @@ Monitors backend connectivity. It is designed to be conservative to avoid false 
 | `backend degraded` | The provider has failed several consecutive connection attempts to the platform. New connections are likely to fail. |
 | `backend recovered` | Connectivity has been restored. The provider will resume normal operations. |
 
-**Note:** An outage is only declared after **5 minutes** of continuous failure. Alerts via webhook (if configured) fire on these transitions.
+> [!NOTE]
+> An outage is only declared after **5 minutes** of continuous failure. Alerts via webhook (if configured) fire on these transitions.
 
 ---
 
-## Packet Drop Rate-Limiting
+## 🗑️ Packet Drop Rate-Limiting
 
 ```
 [r]drop: write error: connection reset by peer (1,420 suppressed)
@@ -177,7 +178,7 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 
 ---
 
-## Health Heartbeat
+## 💓 Health Heartbeat
 
 ```
 [health] uptime=15m0s profile=auto heap=80MiB sys=255MiB connections=998 proxies=1150
@@ -200,7 +201,7 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
 
-### Dead-Proxy Health Report
+### 💀 Dead-Proxy Health Report
 
 In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
 
@@ -222,7 +223,7 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
 - A real-time bandwidth and concurrent session load tracker is mirrored to `proxy_traffic.state` (default `~/.urnetwork`).
 
-### Hourly Pulse Marker
+### ⏱️ Hourly Pulse Marker
 
 ```
 [pulse] waking stalled transports: down=12 dead=3 degraded=9
@@ -232,7 +233,7 @@ An hourly retry sweep is performed to wake stalled transports. This marker logs 
 
 ---
 
-## Connection Selection (3.23-fix variant)
+## 🔀 Connection Selection (3.23-fix variant)
 
 ```
 [net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192 clients=12
@@ -259,7 +260,7 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 
 ---
 
-## TCP Write Timeout (transport stream)
+## ⏱️ TCP Write Timeout (transport stream)
 
 ```
 [ts]019e28a3-76dd-1fd5-08a3-342775fdfa7b-> error = write tcp 172.17.0.2:58902->216.26.233.197:1081: i/o timeout
@@ -274,7 +275,7 @@ A TCP write to a proxy server timed out at the transport stream layer. This appe
 
 ---
 
-## Startup — Proxy Auth Panic (handled)
+## 😱 Startup — Proxy Auth Panic (handled)
 
 ```
 W0516 trace.go:47] Unexpected error: {"error":"*errors.errorString=Timeout.","stack":[...,"main.provideAuth",...]}
@@ -289,7 +290,7 @@ During startup with a large proxy pool, many proxies attempt to authenticate sim
 
 ---
 
-## Startup — Provider Info
+## ℹ️ Startup — Provider Info
 
 ```
 Provider e442be5 started
@@ -303,7 +304,7 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 
 ---
 
-## Startup — Proxy Loading
+## 🔄 Startup — Proxy Loading
 
 ```
 [INFO] proxy.txt found; adding proxy
@@ -320,7 +321,7 @@ Using 1000 proxy servers:
 
 ---
 
-## Reading Pool Stats Across Time
+## 📈 Reading Pool Stats Across Time
 
 The pool stat fires every minute, so you can derive buffer throughput by subtracting consecutive `r=` values:
 
