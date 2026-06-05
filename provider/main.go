@@ -1043,6 +1043,11 @@ func provide(opts docopt.Opts) {
 					return byClientJwt, clientId, nil
 				}
 
+				if errors.Is(err, ErrTokenInvalid) {
+					fmt.Fprintf(os.Stderr, "auth: token invalid or expired — exiting for shell to refresh (code 78)\n")
+					os.Exit(78)
+				}
+
 				if strings.Contains(err.Error(), "Jwt does not exist") {
 					authFailures = 0
 					fmt.Printf("Authentication missing. Please run 'urnetwork auth' to configure your provider.\n")
