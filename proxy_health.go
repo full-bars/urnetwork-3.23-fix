@@ -48,7 +48,7 @@ type ProxyHealthReport struct {
 	LifetimeRecovered int
 	LifetimeLost      int
 
-	Bandwidth map[string]ProxyBandwidth
+	Bandwidth map[string]*ProxyBandwidth
 }
 
 var (
@@ -142,10 +142,10 @@ func sortedIndicesLocked() []int {
 // ProxyHealthSnapshot returns the current state without advancing the transition
 // baseline, so it is safe to call from the pulse-fire marker. Lists are complete
 // (no display cap) and index-sorted.
-func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]ProxyBandwidth) {
+func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	bandwidth = make(map[string]ProxyBandwidth)
+	bandwidth = make(map[string]*ProxyBandwidth)
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
 		switch {
@@ -158,7 +158,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		}
 		
 		if h.bw != nil {
-			var pb ProxyBandwidth
+			pb := &ProxyBandwidth{}
 			pb.TotalRx.Store(h.bw.TotalRx.Load())
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
@@ -181,7 +181,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 	now := time.Now()
 	first := !proxyBaselineSet
 	var r ProxyHealthReport
-	r.Bandwidth = make(map[string]ProxyBandwidth)
+	r.Bandwidth = make(map[string]*ProxyBandwidth)
 
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
@@ -196,7 +196,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		}
 
 		if h.bw != nil {
-			var pb ProxyBandwidth
+			pb := &ProxyBandwidth{}
 			pb.TotalRx.Store(h.bw.TotalRx.Load())
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())

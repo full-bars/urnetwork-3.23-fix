@@ -449,7 +449,7 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
-    provider proxy remove-dead [--include-inactive]
+    provider proxy remove-dead
     provider proxy refresh [--force]
     provider logs [-n <lines>]
 
@@ -472,7 +472,6 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
-    --include-inactive               Also remove inactive (7d+ offline) proxies, not just confirmed dead.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
@@ -1671,29 +1670,42 @@ func providerLogs(opts docopt.Opts) {
 	}
 	fmt.Print(out)
 
-	// Tail: follow the file from current position
+	// Tail: follow the file from current position.
 	f, err := os.Open(shmLogPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: could not open log for tailing: %v\n", err)
 		return
 	}
-	defer f.Close()
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
 		fmt.Fprintf(os.Stderr, "error: seek failed: %v\n", err)
 		return
 	}
 
 	buf := make([]byte, 4096)
 	for {
-		nr, err := f.Read(buf)
+		nr, readErr := f.Read(buf)
 		if nr > 0 {
 			os.Stdout.Write(buf[:nr])
 		}
-		if err != nil && err != io.EOF {
-			fmt.Fprintf(os.Stderr, "error: read failed: %v\n", err)
+		if readErr != nil && readErr != io.EOF {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "error: read failed: %v\n", readErr)
 			return
 		}
-		if err == io.EOF {
+		if readErr == io.EOF {
+			// Detect ramlogs wrap: if the file shrunk behind our position, reopen from start.
+			if pos, _ := f.Seek(0, io.SeekCurrent); pos > 0 {
+				if fi, statErr := f.Stat(); statErr == nil && fi.Size() < pos {
+					f.Close()
+					newF, openErr := os.Open(shmLogPath)
+					if openErr != nil {
+						fmt.Fprintf(os.Stderr, "error: could not reopen log after wrap: %v\n", openErr)
+						return
+					}
+					f = newF
+				}
+			}
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
@@ -1883,9 +1895,7 @@ func proxyRefresh(opts docopt.Opts) {
 	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
 }
 
-func proxyRemoveDead(opts docopt.Opts) {
-	includeInactive, _ := opts.Bool("--include-inactive")
-
+func proxyRemoveDead(_ docopt.Opts) {
 	state, err := readProxyState()
 	if err != nil || state.StartedAt.IsZero() {
 		fmt.Println("error: provider does not appear to be running.")
@@ -1904,33 +1914,49 @@ func proxyRemoveDead(opts docopt.Opts) {
 		addr  string
 		entry ProxyEntry
 	}
-	var toRemove []removedProxy
+	var dead, inactive []removedProxy
 	for addr, e := range state.Proxies {
-		remove := false
 		switch e.Health {
 		case "dead":
-			remove = true
+			dead = append(dead, removedProxy{addr: addr, entry: e})
 		case "inactive":
-			remove = includeInactive
-		}
-		if remove {
-			toRemove = append(toRemove, removedProxy{addr: addr, entry: e})
+			inactive = append(inactive, removedProxy{addr: addr, entry: e})
 		}
 	}
 
-	if len(toRemove) == 0 {
-		fmt.Println("No dead proxies found.")
+	if len(dead) == 0 && len(inactive) == 0 {
+		fmt.Println("No dead or inactive proxies found.")
 		return
 	}
 
-	fmt.Printf("proxy remove-dead: %d dead proxies found.\n\n", len(toRemove))
-	for _, rp := range toRemove {
-		fmt.Printf("  proxy[%d]  %s   — %s\n", rp.entry.ID, rp.addr, rp.entry.Health)
+	var toRemove []removedProxy
+
+	if len(dead) > 0 {
+		fmt.Printf("  %d proxies never authenticated (dead):\n", len(dead))
+		for _, rp := range dead {
+			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
+		}
+		fmt.Println()
+		if confirm(fmt.Sprintf("Remove %d dead proxies?", len(dead))) {
+			toRemove = append(toRemove, dead...)
+		}
+		fmt.Println()
 	}
 
-	fmt.Println()
-	if !confirm("Remove these from your proxy list and reload?") {
-		fmt.Println("Aborted.")
+	if len(inactive) > 0 {
+		fmt.Printf("  %d proxies offline 7+ days (inactive):\n", len(inactive))
+		for _, rp := range inactive {
+			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
+		}
+		fmt.Println()
+		if confirm(fmt.Sprintf("Remove %d inactive proxies?", len(inactive))) {
+			toRemove = append(toRemove, inactive...)
+		}
+		fmt.Println()
+	}
+
+	if len(toRemove) == 0 {
+		fmt.Println("Nothing to remove.")
 		return
 	}
 
@@ -1973,7 +1999,7 @@ func proxyRemoveDead(opts docopt.Opts) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Removed %d dead proxies. Reload triggered.\n", len(toRemove))
+	fmt.Printf("Removed %d proxies. Reload triggered.\n", len(toRemove))
 }
 
 func removeAddressesFromFile(path string, addresses []string) error {
@@ -1993,8 +2019,12 @@ func removeAddressesFromFile(path string, addresses []string) error {
 			kept = append(kept, line)
 		}
 	}
+	content := strings.Join(kept, "\n")
+	if len(b) > 0 && b[len(b)-1] == '\n' && (len(content) == 0 || content[len(content)-1] != '\n') {
+		content += "\n"
+	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(kept, "\n")), 0600); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
