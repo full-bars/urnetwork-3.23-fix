@@ -34,6 +34,7 @@ After installation:
 ```bash
 urnet-tools status
 urnet-tools proxy health
+urnet-tools proxy traffic
 urnet-tools logs
 urnet-tools auto on
 ```
@@ -44,6 +45,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples 
 
 ## Key Improvements
 
+- **Deep proxy telemetry:** Real-time NAT session multiplexing tracks exactly how many concurrent clients and bandwidth each individual proxy handles, exported live to `proxy_traffic.state`.
 - **High-signal monitoring:** successful serial connection selection logs are promoted to normal INFO output, while noisy parallel-selection logs stay quiet.
 - **Outage noise reduction:** repeated backend auth and contract errors are rate-limited and summarized with suppressed counts.
 - **Higher throughput ceiling:** larger contract ramp-up, longer contract timeout, dynamic TCP accordion windows, deeper packet buffers, and expanded message pools.

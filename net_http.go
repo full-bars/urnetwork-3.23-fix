@@ -670,7 +670,13 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					glog.Infof("[net][s]select: %s\n", dialer.String())
 					return result
 				}
-				glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+				if ok, suppressed := shouldLogSelectErr(); ok {
+					if suppressed > 0 {
+						glog.Infof("[net][s]select: %s = %s (%d suppressed)\n", dialer.String(), result.err, suppressed)
+					} else {
+						glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+					}
+				}
 				result.Close()
 			}
 		}
@@ -1146,7 +1152,12 @@ func (self *clientDialer) String() string {
 	if self.extenderConfig != nil {
 		return fmt.Sprintf("extender (%v) success=%d error=%d", self.extenderConfig, self.successCount, self.errorCount)
 	} else if self.settings != nil && self.settings.ProxySettings != nil {
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount)
+		var clients int64
+		bw := RegisterProxyBandwidth(self.settings.ProxySettings.Index)
+		if bw != nil {
+			clients = bw.Clients.Load()
+		}
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d clients=%d", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, clients)
 	} else {
 		return fmt.Sprintf("%s success=%d error=%d", self.description, self.successCount, self.errorCount)
 	}

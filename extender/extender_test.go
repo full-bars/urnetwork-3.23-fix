@@ -51,7 +51,7 @@ func TestExtender(t *testing.T) {
 	os.WriteFile(keyFile, keyPemBytes, 0x777)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", 443),
+		Addr:    fmt.Sprintf(":%d", 8443),
 		Handler: &testExtenderServer{},
 	}
 	defer server.Close()
@@ -95,7 +95,7 @@ func TestExtender(t *testing.T) {
 		},
 	)
 
-	r, err := client.Get("https://localhost/hello")
+	r, err := client.Get("https://localhost:8443/hello")
 
 	assert.Equal(t, err, nil)
 	assert.Equal(t, r.StatusCode, 200)
