@@ -316,6 +316,8 @@ const (
 var (
 	ecoMonitorStarted atomic.Bool
 	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
+
+	ErrTokenInvalid = errors.New("auth: token is invalid or expired")
 )
 
 func startEcoMonitorOnce(ctx context.Context) {
@@ -1427,6 +1429,22 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		return
 	}
 	byJwt := strings.TrimSpace(string(byJwtBytes))
+
+	// Layer 1: local pre-validation — avoids a network round-trip for an already-expired token.
+	// ParseUnverified skips signature verification (we don't have the secret); we only need exp.
+	{
+		expParser := gojwt.NewParser()
+		if tok, _, parseErr := expParser.ParseUnverified(byJwt, gojwt.MapClaims{}); parseErr == nil {
+			if claims, ok := tok.Claims.(gojwt.MapClaims); ok {
+				if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp) {
+					returnErr = ErrTokenInvalid
+					return
+				}
+			}
+		}
+		// If parsing fails for any reason, fall through — the API will reject it and we'll
+		// catch it in Layer 2. Don't block a valid token due to a parse quirk.
+	}
 
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 
