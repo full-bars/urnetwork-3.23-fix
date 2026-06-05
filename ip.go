@@ -132,15 +132,17 @@ type LocalUserNat struct {
 
 	settings *LocalUserNatSettings
 
+	bw *ProxyBandwidth
+
 	// receive callback
 	receiveCallbacks *CallbackList[ReceivePacketFunction]
 }
 
-func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string) *LocalUserNat {
-	return NewLocalUserNat(ctx, clientTag, DefaultLocalUserNatSettings())
+func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string, bw *ProxyBandwidth) *LocalUserNat {
+	return NewLocalUserNat(ctx, clientTag, bw, DefaultLocalUserNatSettings())
 }
 
-func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserNatSettings) *LocalUserNat {
+func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, settings *LocalUserNatSettings) *LocalUserNat {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	localUserNat := &LocalUserNat{
@@ -149,6 +151,7 @@ func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserN
 		clientTag:        clientTag,
 		sendPackets:      make(chan *SendPacket, settings.SequenceBufferSize),
 		settings:         settings,
+		bw:               bw,
 		receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
 	}
 	go HandleError(localUserNat.Run)
@@ -231,10 +234,10 @@ func (self *LocalUserNat) receive(source TransferPath, provideMode protocol.Prov
 func (self *LocalUserNat) Run() {
 	defer self.cancel()
 
-	udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
-	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
-	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
-	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+	udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings, self.bw)
+	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings, self.bw)
+	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
+	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
 
 	for {
 		select {
@@ -425,9 +428,9 @@ type Udp4Buffer struct {
 }
 
 func NewUdp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
-	udpBufferSettings *UdpBufferSettings) *Udp4Buffer {
+	udpBufferSettings *UdpBufferSettings, bw *ProxyBandwidth) *Udp4Buffer {
 	return &Udp4Buffer{
-		UdpBuffer: *newUdpBuffer[BufferId4](ctx, receiveCallback, udpBufferSettings),
+		UdpBuffer: *newUdpBuffer[BufferId4](ctx, receiveCallback, udpBufferSettings, bw),
 	}
 }
 
@@ -457,9 +460,9 @@ type Udp6Buffer struct {
 }
 
 func NewUdp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
-	udpBufferSettings *UdpBufferSettings) *Udp6Buffer {
+	udpBufferSettings *UdpBufferSettings, bw *ProxyBandwidth) *Udp6Buffer {
 	return &Udp6Buffer{
-		UdpBuffer: *newUdpBuffer[BufferId6](ctx, receiveCallback, udpBufferSettings),
+		UdpBuffer: *newUdpBuffer[BufferId6](ctx, receiveCallback, udpBufferSettings, bw),
 	}
 }
 
@@ -488,6 +491,7 @@ type UdpBuffer[BufferId comparable] struct {
 	ctx               context.Context
 	receiveCallback   ReceivePacketFunction
 	udpBufferSettings *UdpBufferSettings
+	bw                *ProxyBandwidth
 
 	mutex sync.Mutex
 
@@ -499,11 +503,13 @@ func newUdpBuffer[BufferId comparable](
 	ctx context.Context,
 	receiveCallback ReceivePacketFunction,
 	udpBufferSettings *UdpBufferSettings,
+	bw *ProxyBandwidth,
 ) *UdpBuffer[BufferId] {
 	return &UdpBuffer[BufferId]{
 		ctx:               ctx,
 		receiveCallback:   receiveCallback,
 		udpBufferSettings: udpBufferSettings,
+		bw:                bw,
 		sequences:         map[BufferId]*UdpSequence{},
 		sourceSequences:   map[TransferPath]map[BufferId]*UdpSequence{},
 	}
@@ -579,6 +585,9 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			self.udpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
+		if self.bw != nil {
+			self.bw.Clients.Add(1)
+		}
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
@@ -592,6 +601,9 @@ func (self *UdpBuffer[BufferId]) udpSend(
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
 					}
+				}
+				if self.bw != nil {
+					self.bw.Clients.Add(-1)
 				}
 			}()
 			sequence.Run()
@@ -1120,9 +1132,9 @@ type Tcp4Buffer struct {
 }
 
 func NewTcp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
-	tcpBufferSettings *TcpBufferSettings) *Tcp4Buffer {
+	tcpBufferSettings *TcpBufferSettings, bw *ProxyBandwidth) *Tcp4Buffer {
 	return &Tcp4Buffer{
-		TcpBuffer: *newTcpBuffer[BufferId4](ctx, receiveCallback, tcpBufferSettings),
+		TcpBuffer: *newTcpBuffer[BufferId4](ctx, receiveCallback, tcpBufferSettings, bw),
 	}
 }
 
@@ -1152,9 +1164,9 @@ type Tcp6Buffer struct {
 }
 
 func NewTcp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
-	tcpBufferSettings *TcpBufferSettings) *Tcp6Buffer {
+	tcpBufferSettings *TcpBufferSettings, bw *ProxyBandwidth) *Tcp6Buffer {
 	return &Tcp6Buffer{
-		TcpBuffer: *newTcpBuffer[BufferId6](ctx, receiveCallback, tcpBufferSettings),
+		TcpBuffer: *newTcpBuffer[BufferId6](ctx, receiveCallback, tcpBufferSettings, bw),
 	}
 }
 
@@ -1183,6 +1195,7 @@ type TcpBuffer[BufferId comparable] struct {
 	ctx               context.Context
 	receiveCallback   ReceivePacketFunction
 	tcpBufferSettings *TcpBufferSettings
+	bw                *ProxyBandwidth
 
 	mutex sync.Mutex
 
@@ -1194,11 +1207,13 @@ func newTcpBuffer[BufferId comparable](
 	ctx context.Context,
 	receiveCallback ReceivePacketFunction,
 	tcpBufferSettings *TcpBufferSettings,
+	bw *ProxyBandwidth,
 ) *TcpBuffer[BufferId] {
 	return &TcpBuffer[BufferId]{
 		ctx:               ctx,
 		receiveCallback:   receiveCallback,
 		tcpBufferSettings: tcpBufferSettings,
+		bw:                bw,
 		sequences:         map[BufferId]*TcpSequence{},
 		sourceSequences:   map[TransferPath]map[BufferId]*TcpSequence{},
 	}
@@ -1291,6 +1306,9 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 			self.tcpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
+		if self.bw != nil {
+			self.bw.Clients.Add(1)
+		}
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
@@ -1304,6 +1322,9 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
 					}
+				}
+				if self.bw != nil {
+					self.bw.Clients.Add(-1)
 				}
 			}()
 			sequence.Run()
@@ -2501,6 +2522,7 @@ type RemoteUserNatProvider struct {
 	localUserNat      *LocalUserNat
 	securityPolicy    SecurityPolicy
 	settings          *RemoteUserNatProviderSettings
+	bw                *ProxyBandwidth
 	localUserNatUnsub func()
 	clientUnsub       func()
 }
@@ -2508,13 +2530,15 @@ type RemoteUserNatProvider struct {
 func NewRemoteUserNatProviderWithDefaults(
 	client *Client,
 	localUserNat *LocalUserNat,
+	bw *ProxyBandwidth,
 ) *RemoteUserNatProvider {
-	return NewRemoteUserNatProvider(client, localUserNat, DefaultRemoteUserNatProviderSettings())
+	return NewRemoteUserNatProvider(client, localUserNat, bw, DefaultRemoteUserNatProviderSettings())
 }
 
 func NewRemoteUserNatProvider(
 	client *Client,
 	localUserNat *LocalUserNat,
+	bw *ProxyBandwidth,
 	settings *RemoteUserNatProviderSettings,
 ) *RemoteUserNatProvider {
 	userNatProvider := &RemoteUserNatProvider{
@@ -2522,6 +2546,7 @@ func NewRemoteUserNatProvider(
 		localUserNat:   localUserNat,
 		securityPolicy: settings.EgressSecurityPolicyGenerator(DefaultSecurityPolicyStatsCollector()),
 		settings:       settings,
+		bw:             bw,
 	}
 
 	localUserNatUnsub := localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
@@ -2543,6 +2568,9 @@ func (self *RemoteUserNatProvider) Receive(
 	ipPath *IpPath,
 	packet []byte,
 ) {
+	if self.bw != nil {
+		self.bw.BillableRx.Add(uint64(len(packet)))
+	}
 	// glog.Infof("[trace]provider return packet for %s\n", source.SourceId)
 
 	if self.client.ClientId() == source.SourceId {
@@ -2613,6 +2641,9 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 				panic(err)
 			}
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
+			if self.bw != nil {
+				self.bw.BillableTx.Add(uint64(len(ipPacketToProvider.IpPacket.PacketBytes)))
+			}
 
 			ipPath, err := ParseIpPath(ipPacketToProvider.IpPacket.PacketBytes)
 			if err == nil {
@@ -2704,7 +2735,7 @@ func NewRemoteUserNatClientWithClose(
 	// no ulimit for local traffic
 	localUserNatSettings.UdpBufferSettings.UserLimit = 0
 	localUserNatSettings.TcpBufferSettings.UserLimit = 0
-	localUserNat := NewLocalUserNat(client.Ctx(), "remote local", localUserNatSettings)
+	localUserNat := NewLocalUserNat(client.Ctx(), "remote local", nil, localUserNatSettings)
 
 	userNatClient := &RemoteUserNatClient{
 		client:                client,

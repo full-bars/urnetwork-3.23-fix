@@ -838,6 +838,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if dir, ok := proxyHealthDir(); ok {
 			writeProxyHealthState(dir, report, now)
 			writeProxyHealthEvents(dir, report, now)
+			writeProxyTrafficState(dir, report, now)
 		}
 	}
 }
@@ -886,7 +887,7 @@ func provide(opts docopt.Opts) {
 				return
 			case <-time.After(1 * time.Hour):
 				if connect.ProxyHealthCount() > 0 {
-					up, dead, degraded := connect.ProxyHealthSnapshot()
+					up, dead, degraded, _ := connect.ProxyHealthSnapshot()
 					down := len(dead) + len(degraded)
 					_ = up
 					fmt.Printf("[pulse] waking stalled transports: down=%d dead=%d degraded=%d\n",
@@ -1072,10 +1073,14 @@ func provide(opts docopt.Opts) {
 		}
 		connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 		// go platformTransport.Run(connectClient.RouteManager())
+		var bw *connect.ProxyBandwidth
+		if proxySettings != nil {
+			bw = connect.RegisterProxyBandwidth(proxySettings.Index)
+		}
 
-		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), localUserNatSettings)
+		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), bw, localUserNatSettings)
 		defer localUserNat.Close()
-		remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat, remoteUserNatProviderSettings)
+		remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat, bw, remoteUserNatProviderSettings)
 		defer remoteUserNatProvider.Close()
 
 		provideModes := map[protocol.ProvideMode]bool{

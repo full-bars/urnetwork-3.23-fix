@@ -220,6 +220,7 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 
 - The detail lines are capped at 50 entries in stdout (shows `... (+N more)` when truncated).
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
+- A real-time bandwidth and concurrent session load tracker is mirrored to `proxy_traffic.state` (default `~/.urnetwork`).
 
 ### Hourly Pulse Marker
 
@@ -234,8 +235,8 @@ An hourly retry sweep is performed to wake stalled transports. This marker logs 
 ## Connection Selection (3.23-fix variant)
 
 ```
-[net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192
-[net][s]select: proxy[13] (5.6.7.8:1081) [normal] success=2221 error=223
+[net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192 clients=12
+[net][s]select: proxy[13] (5.6.7.8:1081) [normal] success=2221 error=223 clients=5
 ```
 
 Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each line represents the provider selecting a routing strategy for a client session. When running with a proxy list, it indicates exactly which proxy is handling the traffic, making it easy to spot failing IPs.
@@ -248,7 +249,8 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | `fragment+reorder` | Both applied |
 
 **What to watch for:**
-- A single proxy showing a high `error=` count relative to `success=` — indicates that specific proxy IP might be unreachable or banned by the platform. You can remove it from your `proxy.txt`.
+- `clients=N` shows the *exact* number of active multiplexed NAT sessions currently utilizing that specific proxy.
+- If a proxy has a high `error` count compared to `success`, it is dropping packets or failing. That specific proxy IP might be unreachable or banned by the platform. You can remove it from your `proxy.txt`.
 
 - `success=N` — cumulative successful connections using this strategy
 - `error=N` — cumulative failed attempts

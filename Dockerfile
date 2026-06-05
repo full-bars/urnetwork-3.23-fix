@@ -53,6 +53,9 @@ RUN dos2unix /app/*.sh /app/cgi-bin/stats && chmod +x /app/*.sh /app/cgi-bin/sta
 # Expose the proxy-health helper on PATH for `docker exec <c> proxy-health`
 RUN ln -sf /app/proxy-health.sh /usr/local/bin/proxy-health
 
+# Expose the provider binary on PATH as `provider` for `docker exec <c> provider <cmd>`
+RUN ln -sf /app/urnetwork_${TARGETARCH}_stable /usr/local/bin/provider
+
 # Configure vnStat (TechRoy style)
 RUN sed -i \
   -e 's/^;*TimeSyncWait.*/TimeSyncWait 1/' \
