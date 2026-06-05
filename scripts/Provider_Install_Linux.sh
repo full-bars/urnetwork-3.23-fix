@@ -383,6 +383,10 @@ stop_systemd_units ()
                 return
             fi
 
+            if systemctl --user is-active --quiet urnetwork.service; then
+                confirm_restart "Upgrading or reinstalling requires temporarily stopping the URNetwork provider to safely swap the core binary."
+            fi
+
             pr_err "warning: urnetwork.service is running, it will be stopped to perform a reinstall"
             pr_err "warning: It will be started again automatically, once the reinstall finishes"
             pr_err "warning: You will need to restart this service after this reinstall if auto start fails"
@@ -1204,20 +1208,20 @@ do_stop ()
 
 confirm_restart ()
 {
+    local action="${1:-Executing this command will trigger a full restart of the URNetwork provider.}"
     if [ "$force" = "1" ]; then
         return 0
     fi
     printf "\n\e[1;31m🛑 WARNING: This Command Triggers a Cold Restart 🛑\e[0m\n"
-    printf "\e[1mExecuting this command will trigger a full restart of the URNetwork provider.\n"
-    printf "This will instantly drop all active connections and completely reset your proxy warmup period (which takes 8-12 hours to fully recover).\n\n"
-    printf "If your provider has been running for more than 8 hours, it is highly recommended to NOT restart unless absolutely necessary.\e[0m\n\n"
+    printf "\e[1m%s\n" "$action"
+    printf "This will instantly drop all active connections and reset your proxy warmup state (which typically requires a minimum of 8-12 hours).\e[0m\n\n"
     
     while true; do
         printf "\e[1mAre you absolutely sure you want to proceed and restart the provider? (y/N): \e[0m"
         read -r yn < /dev/tty
         case $yn in
             [Yy]* ) return 0;;
-            [Nn]* | "" ) pr_info "Command aborted. Provider was NOT restarted and your warmup is safe."; exit 0;;
+            [Nn]* | "" ) pr_info "Command aborted. Provider was NOT restarted and your warmup is safe."; exit 1;;
             * ) echo "Please answer yes or no.";;
         esac
     done
@@ -1267,7 +1271,7 @@ toggle_ramlogs ()
 
     case "$mode" in
         on)
-            confirm_restart
+            confirm_restart "Enabling RAM logging requires restarting the URNetwork provider."
             pr_info "Enabling RAM logging..."
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1290,7 +1294,7 @@ EOF
             pr_info "RAM logging enabled and service restarted."
             ;;
         off)
-            confirm_restart
+            confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
@@ -1349,7 +1353,7 @@ toggle_lowmode ()
 
     case "$mode" in
         on)
-            confirm_restart
+            confirm_restart "Enabling lowmode requires restarting the URNetwork provider."
             pr_info "Enabling lowmode..."
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 85 / 100 ))
@@ -1367,7 +1371,7 @@ EOF
             pr_info "Lowmode enabled and service restarted."
             ;;
         off)
-            confirm_restart
+            confirm_restart "Disabling lowmode requires restarting the URNetwork provider."
             pr_info "Disabling lowmode..."
             rm -rf "$override_dir"
             systemctl --user daemon-reload
@@ -1389,7 +1393,7 @@ toggle_ecomode ()
 
     case "$mode" in
         on)
-            confirm_restart
+            confirm_restart "Enabling eco mode requires restarting the URNetwork provider."
             pr_info "Enabling eco mode..."
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 75 / 100 ))
@@ -1413,7 +1417,7 @@ toggle_ecomode ()
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
-            confirm_restart
+            confirm_restart "Disabling eco mode requires restarting the URNetwork provider."
             pr_info "Disabling eco mode..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
@@ -1441,7 +1445,7 @@ toggle_automode ()
 
     case "$mode" in
         on)
-            confirm_restart
+            confirm_restart "Enabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Enabling auto-tune profile..."
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1458,7 +1462,7 @@ toggle_automode ()
             pr_info "Auto-tune enabled and service restarted."
             ;;
         off)
-            confirm_restart
+            confirm_restart "Disabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Disabling auto-tune profile..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE=auto/d' "$override_file"
@@ -1492,7 +1496,7 @@ toggle_turbomode ()
 
     case "$mode" in
         v4|v8)
-            confirm_restart
+            confirm_restart "Enabling turbo mode requires restarting the URNetwork provider."
             pr_info "Enabling turbo %s..." "$mode"
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1509,7 +1513,7 @@ toggle_turbomode ()
             pr_info "Turbo %s enabled and service restarted." "$mode"
             ;;
         off)
-            confirm_restart
+            confirm_restart "Disabling turbo mode requires restarting the URNetwork provider."
             pr_info "Disabling turbo mode..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
@@ -1724,6 +1728,15 @@ do_optimize ()
     sysctl -w fs.inotify.max_user_instances=512 >/dev/null 2>&1 || true
     sysctl -w fs.file-max=2097152 >/dev/null 2>&1 || true
 
+    # When running via sudo, we need to find the original user's home
+    actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
+    actual_home=$(getent passwd "$actual_user" | cut -d: -f6)
+
+    # Check if service is active and warn about restart before doing any work
+    if sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
+        confirm_restart "Applying kernel limits and OS optimizations requires restarting the URNetwork provider to bind the new system ulimits."
+    fi
+
     pr_info "⚡ Starting System Optimizer..."
 
     if [ "$is_container" -eq 1 ]; then
@@ -1883,9 +1896,6 @@ EOF
     fi
 
     # 4. Apply Ulimits (Systemd)
-    # When running via sudo, we need to find the original user's home
-    actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
-    actual_home=$(getent passwd "$actual_user" | cut -d: -f6)
 
     # Ensure everything in the home folder touched by root is restored to user ownership
     if [ -d "$actual_home/.urnetwork" ]; then
