@@ -1202,8 +1202,30 @@ do_stop ()
     fi
 }
 
+confirm_restart ()
+{
+    if [ "$force" = "1" ]; then
+        return 0
+    fi
+    printf "\n\e[1;31m🛑 WARNING: This Command Triggers a Cold Restart 🛑\e[0m\n"
+    printf "\e[1mExecuting this command will trigger a full restart of the URNetwork provider.\n"
+    printf "This will instantly drop all active connections and completely reset your proxy warmup period (which takes 8-12 hours to fully recover).\n\n"
+    printf "If your provider has been running for more than 8 hours, it is highly recommended to NOT restart unless absolutely necessary.\e[0m\n\n"
+    
+    while true; do
+        printf "\e[1mAre you absolutely sure you want to proceed and restart the provider? (y/N): \e[0m"
+        read -r yn < /dev/tty
+        case $yn in
+            [Yy]* ) return 0;;
+            [Nn]* | "" ) pr_info "Command aborted. Provider was NOT restarted and your warmup is safe."; exit 0;;
+            * ) echo "Please answer yes or no.";;
+        esac
+    done
+}
+
 do_restart ()
 {
+    confirm_restart
     pr_info "Restarting urnetwork.service..."
     systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
     pr_info "Service successfully restarted."
@@ -1245,6 +1267,7 @@ toggle_ramlogs ()
 
     case "$mode" in
         on)
+            confirm_restart
             pr_info "Enabling RAM logging..."
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1267,6 +1290,7 @@ EOF
             pr_info "RAM logging enabled and service restarted."
             ;;
         off)
+            confirm_restart
             pr_info "Disabling RAM logging..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
@@ -1325,6 +1349,7 @@ toggle_lowmode ()
 
     case "$mode" in
         on)
+            confirm_restart
             pr_info "Enabling lowmode..."
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 85 / 100 ))
@@ -1342,6 +1367,7 @@ EOF
             pr_info "Lowmode enabled and service restarted."
             ;;
         off)
+            confirm_restart
             pr_info "Disabling lowmode..."
             rm -rf "$override_dir"
             systemctl --user daemon-reload
@@ -1363,6 +1389,7 @@ toggle_ecomode ()
 
     case "$mode" in
         on)
+            confirm_restart
             pr_info "Enabling eco mode..."
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 75 / 100 ))
@@ -1386,6 +1413,7 @@ toggle_ecomode ()
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
+            confirm_restart
             pr_info "Disabling eco mode..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
@@ -1413,6 +1441,7 @@ toggle_automode ()
 
     case "$mode" in
         on)
+            confirm_restart
             pr_info "Enabling auto-tune profile..."
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1429,6 +1458,7 @@ toggle_automode ()
             pr_info "Auto-tune enabled and service restarted."
             ;;
         off)
+            confirm_restart
             pr_info "Disabling auto-tune profile..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE=auto/d' "$override_file"
@@ -1462,6 +1492,7 @@ toggle_turbomode ()
 
     case "$mode" in
         v4|v8)
+            confirm_restart
             pr_info "Enabling turbo %s..." "$mode"
             mkdir -p "$override_dir"
             if [ -f "$override_file" ]; then
@@ -1478,6 +1509,7 @@ toggle_turbomode ()
             pr_info "Turbo %s enabled and service restarted." "$mode"
             ;;
         off)
+            confirm_restart
             pr_info "Disabling turbo mode..."
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
