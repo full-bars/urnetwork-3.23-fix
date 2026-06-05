@@ -83,8 +83,12 @@ jobs:
                     -d "$JSON_PAYLOAD" \
                     "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}")
                     
-                  # Extract response
-                  AI_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate AI summary."')
+                  # Extract response and strictly truncate to 3500 chars to respect Discord's 4096 char limit
+                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate AI summary."')
+                  AI_SUMMARY="${RAW_SUMMARY:0:3500}"
+                  if [ ${#RAW_SUMMARY} -gt 3500 ]; then
+                    AI_SUMMARY="${AI_SUMMARY}...\n*(Summary truncated to fit Discord limits)*"
+                  fi
                 fi
                 
                 if [ -n "$DISCORD_WEBHOOK" ]; then
