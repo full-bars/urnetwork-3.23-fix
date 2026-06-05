@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.15.5-dev
+**Current Version**: v3.23.0-fix.17
 
 ---
 
@@ -468,5 +468,35 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 - Verify `shouldLogAuthErr()` still exists and uses the same atomic-counter/CAS pattern (reference for this feature)
 
 **Status**: ✅ Shipped in v3.23.0-fix.17. Follows established rate-limiting pattern used for `[t]auth error`, `[contract]oob error`, and `[r]drop` errors.
+
+---
+
+## 17. Proxy Hot-Reload Engine
+
+**Purpose**: Allow adding and removing proxies from a running provider without incurring the massive 8-hour warmup penalty associated with a full process restart. Proxy slot assignments (`proxy[N]`) are address-stable across reloads.
+
+**Files Modified**: `provider/main.go`, `proxy_health.go`, `provider/proxy_reload.go`, `provider/proxy_id.go`
+
+**Changes**:
+- **Stable IDs**: `proxy_id.go` assigns monotonic stable IDs based on IP/Port, saving state to `proxy.state`.
+- **Watcher**: `proxy_reload.go` watches a `.reload` trigger file to stagger additions/deletions.
+- **Signal Map**: A per-proxy context map allows cancelling individual proxies without touching healthy connections on others.
+
+**Status**: ✅ Shipped in v3.23.0-fix.17.
+
+---
+
+## 18. Post-Quantum Encryption (ML-KEM)
+
+**Purpose**: Port upstream PR #183 adding ML-KEM/Kyber hybrid encryption in a TLS tunnel to defeat "Harvest Now, Decrypt Later" strategies.
+
+**Files Modified**: `transfer_encrypt.go`
+
+**Changes**:
+- Completely replaced standard crypto layer with `ML-KEM-768` hybrid encryption.
+- Implemented hardened `CloseContract` delivery.
+- Note: Feature is disabled by default in fix.17 to preserve baseline RAM efficiency.
+
+**Status**: ✅ Ported from upstream PR #183. Shipped in v3.23.0-fix.17.
 
 ---
