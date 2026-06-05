@@ -18,6 +18,7 @@ show_help ()
     echo "Core Commands:"
     echo "  start                   Start URnetwork provider"
     echo "  stop                    Stop URnetwork provider"
+    echo "  restart                 Restart URnetwork provider"
     echo "  status                  Show the status of URnetwork provider service"
     echo "  update                  Upgrade URnetwork to the latest version"
     echo "  logs                    Stream the provider logs (RAM or journald)"
@@ -1201,6 +1202,13 @@ do_stop ()
     fi
 }
 
+do_restart ()
+{
+    pr_info "Restarting urnetwork.service..."
+    systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+    pr_info "Service successfully restarted."
+}
+
 show_status ()
 {
 	systemctl --user status urnetwork.service
@@ -1932,6 +1940,11 @@ case "$operation" in
 
     stop)
 		do_stop
+		exit 0
+		;;
+
+    restart)
+		do_restart
 		exit 0
 		;;
 

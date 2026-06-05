@@ -34,7 +34,7 @@ urnet-tools proxy refresh
 
 > [!TIP]
 > **Path Formatting**  
-> When pointing to your proxy list, the `~/` prefix acts as an automatic shortcut to your home directory (e.g., `/home/user/`). **Do not type `~/home/user/proxies.txt`**, as the system will literally look inside `/home/user/home/user/proxies.txt` and throw an error! Use either the exact absolute path or just `~/proxies.txt`.
+> You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
 
 ## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.

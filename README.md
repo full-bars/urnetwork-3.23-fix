@@ -39,12 +39,16 @@ urnetwork auth
 Then you can add your proxy list and monitor the node:
 
 ```bash
-urnet-tools proxy add /path/to/your/proxies.txt
+urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh
 urnet-tools auto on
 urnet-tools proxy health
 urnet-tools logs
 ```
+
+> [!TIP]
+> **Path Formatting**  
+> You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
 
 ### 🐳 Docker
 
