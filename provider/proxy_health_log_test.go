@@ -139,3 +139,71 @@ func TestWriteProxyHealthFiles(t *testing.T) {
 		t.Fatalf("empty report should not append to event log")
 	}
 }
+
+func TestFormatTrafficStateFile(t *testing.T) {
+	bw1 := &connect.ProxyBandwidth{}
+	bw1.BillableTx.Store(1024)
+	bw1.BillableRx.Store(2048)
+	bw1.TotalTx.Store(4096)
+	bw1.TotalRx.Store(8192)
+	bw1.Clients.Store(42)
+
+	bw2 := &connect.ProxyBandwidth{}
+	bw2.BillableTx.Store(5000) // bw2 is higher than bw1 so it should be sorted first
+
+	r := connect.ProxyHealthReport{
+		Bandwidth: map[string]*connect.ProxyBandwidth{
+			"proxy[1] (1.1.1.1:1080)": bw1,
+			"proxy[2] (2.2.2.2:1080)": bw2,
+		},
+	}
+	now := time.Date(2026, 6, 2, 16, 5, 11, 0, time.UTC)
+	out := formatTrafficStateFile(r, now)
+
+	if !strings.Contains(out, "URNETWORK PROXY TRAFFIC REPORT") {
+		t.Fatalf("missing header in:\n%s", out)
+	}
+	if !strings.Contains(out, "Updated: 2026-06-02T16:05:11Z") {
+		t.Fatalf("missing time header in:\n%s", out)
+	}
+
+	lines := strings.Split(out, "\n")
+	var p1Idx, p2Idx int
+	for i, line := range lines {
+		if strings.Contains(line, "proxy[1]") {
+			p1Idx = i
+		} else if strings.Contains(line, "proxy[2]") {
+			p2Idx = i
+		}
+	}
+
+	if p2Idx == 0 || p1Idx == 0 {
+		t.Fatalf("missing proxy entries in:\n%s", out)
+	}
+	// proxy[2] has 5000 billable tx, so it should be listed BEFORE proxy[1]
+	if p2Idx > p1Idx {
+		t.Fatalf("expected proxy[2] to be sorted before proxy[1] due to higher bandwidth")
+	}
+
+	if !strings.Contains(lines[p1Idx], "42") { // Clients count
+		t.Fatalf("missing clients count for proxy[1]: %s", lines[p1Idx])
+	}
+}
+
+func TestWriteProxyTrafficState(t *testing.T) {
+	dir := t.TempDir()
+	r := connect.ProxyHealthReport{
+		Bandwidth: map[string]*connect.ProxyBandwidth{},
+	}
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+
+	writeProxyTrafficState(dir, r, now)
+	path := filepath.Join(dir, "proxy_traffic.state")
+	state, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(state), "URNETWORK PROXY TRAFFIC REPORT") {
+		t.Fatalf("state file invalid:\n%s", state)
+	}
+}
