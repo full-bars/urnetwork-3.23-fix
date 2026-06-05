@@ -77,9 +77,9 @@ func NewResilientDialTlsContext(
 		rconn := NewResilientTlsConn(conn, fragment, reorder)
 
 		// copy and extend
-		tlsConfig := *connectSettings.TlsConfig
+		tlsConfig := connectSettings.TlsConfig.Clone()
 		tlsConfig.ServerName = host
-		tlsConn := tls.Client(rconn, &tlsConfig)
+		tlsConn := tls.Client(rconn, tlsConfig)
 
 		func() {
 			tlsCtx, tlsCancel := context.WithTimeout(ctx, connectSettings.TlsTimeout)
