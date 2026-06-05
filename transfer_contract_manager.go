@@ -173,10 +173,6 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 	}
 	return &ContractManagerSettings{
 		SequenceBufferSize: bufferSize,
-		// PHASE2 DECISION (e2e-pqe merge): #183 reset this to kib(16) and added
-		// per-sequence buffers; a peer pair can now run up to 8 parallel contracts.
-		// Keeping our mib(2) preserves current ramp behavior as a placeholder;
-		// final value to be chosen after benchmarking the 8-contract model.
 		InitialContractTransferByteCount:  mib(2),
 		StandardContractTransferByteCount: mib(128),
 		ContractTransferByteSeqScale:      4,
