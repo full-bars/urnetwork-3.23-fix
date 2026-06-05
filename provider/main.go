@@ -1441,7 +1441,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		expParser := gojwt.NewParser()
 		if tok, _, parseErr := expParser.ParseUnverified(byJwt, gojwt.MapClaims{}); parseErr == nil {
 			if claims, ok := tok.Claims.(gojwt.MapClaims); ok {
-				if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp) {
+				if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp)-30 {
 					returnErr = ErrTokenInvalid
 					return
 				}
@@ -1518,7 +1518,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		returnErr = authClientResult.Error
 		return
 	}
-	if authClientResult.Result.Error != nil {
+	if authClientResult.Result != nil && authClientResult.Result.Error != nil {
+		if authClientResult.Result.Error.ClientLimitExceeded {
+			returnErr = fmt.Errorf("client limit exceeded: %s", authClientResult.Result.Error.Message)
+			return
+		}
 		returnErr = fmt.Errorf("%w: %s", ErrTokenInvalid, authClientResult.Result.Error.Message)
 		return
 	}
