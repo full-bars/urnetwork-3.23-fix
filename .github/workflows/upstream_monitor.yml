@@ -9,10 +9,11 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
-      - name: Check upstream repo for critical changes
+      - name: Check upstream repo and generate AI summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
           
@@ -39,6 +40,8 @@ jobs:
             PR_TITLE=$(echo "$pr" | jq -r '.title')
             PR_URL=$(echo "$pr" | jq -r '.html_url')
             PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
+            PR_AUTHOR=$(echo "$pr" | jq -r '.user.login')
+            PR_AVATAR=$(echo "$pr" | jq -r '.user.avatar_url')
             
             # Only process PRs updated within our 12-hour polling window
             if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
@@ -56,10 +59,60 @@ jobs:
               if [ -n "$MATCHED_FILES" ]; then
                 echo "🚨 Match found! PR #$PR_NUMBER touches:$MATCHED_FILES"
                 
+                AI_SUMMARY="*AI Summary unavailable.*"
+                
+                if [ -n "$GEMINI_API_KEY" ]; then
+                  echo "Downloading PR diff and requesting Gemini summary..."
+                  # Fetch raw diff
+                  PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
+                  
+                  # Safely construct the Gemini API JSON payload using jq
+                  # We truncate the diff to ~60,000 chars just to be safe with standard limits
+                  TRUNCATED_DIFF="${PR_DIFF:0:60000}"
+                  JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+                    "contents": [{
+                      "parts": [{
+                        "text": ("You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.\n\nDiff:\n" + $diff)
+                      }]
+                    }],
+                    "generationConfig": { "temperature": 0.2 }
+                  }')
+                  
+                  # Call Gemini 1.5 Pro
+                  GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    -d "$JSON_PAYLOAD" \
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}")
+                    
+                  # Extract response
+                  AI_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate AI summary."')
+                fi
+                
                 if [ -n "$DISCORD_WEBHOOK" ]; then
-                  curl -sf -H "Content-Type: application/json" -d "{
-                    \"content\": \"🚨 **Upstream Alert:** A new or updated PR in \`$UPSTREAM_REPO\` modifies your critical files!\\n\\n**PR:** [$PR_TITLE](<$PR_URL>)\\n**Modified:**$MATCHED_FILES\"
-                  }" "$DISCORD_WEBHOOK"
+                  echo "Sending Discord Rich Embed..."
+                  # Safely build the Discord JSON payload
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$PR_URL" \
+                    --arg prTitle "$PR_TITLE" \
+                    --arg author "$PR_AUTHOR" \
+                    --arg avatar "$PR_AVATAR" \
+                    --arg summary "$AI_SUMMARY" \
+                    --arg files "$MATCHED_FILES" \
+                  '{
+                    "embeds": [{
+                      "title": "🚨 Upstream PR Modifies Critical Files",
+                      "url": $url,
+                      "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author + "\n\n**Modified Files:**\n" + $files + "\n\n**🤖 AI Summary (Gemini 1.5 Pro):**\n>>> " + $summary),
+                      "color": 16711680,
+                      "thumbnail": {
+                        "url": $avatar
+                      },
+                      "footer": {
+                        "text": "URNetwork Upstream Monitor • Powered by Gemini 1.5 Pro"
+                      }
+                    }]
+                  }')
+                  
+                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
                 else
                   echo "⚠️ Warning: DISCORD_WEBHOOK secret is not set in repository settings. Cannot send alert."
                 fi
