@@ -21,8 +21,22 @@ Uninstall:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
-## 🔐 User-Level Systemd Service
+### 🔑 Post-Install Authentication
 
+After installation, you must source your terminal profile so the new commands are available, and authenticate the provider. Then you can load your proxy list:
+
+```bash
+source ~/.bashrc
+urnetwork auth
+urnet-tools proxy add ~/proxies.txt
+urnet-tools proxy refresh
+```
+
+> [!TIP]
+> **Path Formatting**  
+> When pointing to your proxy list, the `~/` prefix acts as an automatic shortcut to your home directory (e.g., `/home/user/`). **Do not type `~/home/user/proxies.txt`**, as the system will literally look inside `/home/user/home/user/proxies.txt` and throw an error! Use either the exact absolute path or just `~/proxies.txt`.
+
+## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
 
 - **Security:** the provider binary does not need root privileges.
