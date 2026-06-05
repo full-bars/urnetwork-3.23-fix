@@ -1651,8 +1651,14 @@ do_proxy () {
                 pr_warn "No traffic snapshot yet at %s." "$state_file"
             fi
             ;;
+        refresh)
+            "$provider_bin" proxy refresh "$@"
+            ;;
+        remove-dead)
+            "$provider_bin" proxy remove-dead "$@"
+            ;;
         *)
-            pr_err "Unknown proxy command: %s (Try 'add' or 'clear')" "$cmd"
+            pr_err "Unknown proxy command: %s (Try 'add', 'clear', 'health', 'traffic', 'refresh', or 'remove-dead')" "$cmd"
             exit 1
             ;;
     esac
