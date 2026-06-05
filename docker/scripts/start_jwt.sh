@@ -162,14 +162,32 @@ func_start_provider(){
             break
         fi
         code=$?
+
+        # Exit code 78 = token invalid/expired. Delete the stale JWT and re-authenticate
+        # if URNETWORK_AUTH_CODE is available. This is the only case where we delete the JWT.
+        if [ "$code" -eq 78 ]; then
+            log "[WARN] UrNetwork exited with auth error (code 78) — token expired or revoked."
+            rm -f "$JWT_FILE"
+            if [ -n "$URNETWORK_AUTH_CODE" ]; then
+                log "[INFO] Re-authenticating with URNETWORK_AUTH_CODE..."
+                if "$PROVIDER_BIN" auth "" -f; then
+                    log "[INFO] Re-authentication successful. Restarting provider..."
+                    failures=0
+                    continue
+                else
+                    log "[ERROR] Re-authentication failed (code $?)."
+                fi
+            fi
+            log "[CRITICAL] Token expired/revoked and re-auth unavailable. Set URNETWORK_AUTH_CODE and restart."
+            exit 78
+        fi
+
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
 
-        # Shared-volume safety: never delete the JWT here. In the 3-in-1 shared
-        # config model that would deauth the whole stack, and the single-use auth
-        # code is already consumed — the node could not recover on its own. After
-        # repeated crashes, exit non-zero and let Docker's restart policy cycle
-        # the container with the session intact.
+        # Shared-volume safety: never delete the JWT for generic crashes. In the 3-in-1
+        # shared config model that would deauth the whole stack, and the single-use auth
+        # code is already consumed. After repeated crashes, exit and let Docker restart.
         if [ "$failures" -ge 5 ]; then
             log "[ERROR] Too many consecutive crashes ($failures); exiting for Docker to restart. Session preserved."
             exit 1
