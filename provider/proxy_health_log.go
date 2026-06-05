@@ -98,7 +98,7 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 		Proxy string
 		Index int
 		IP    string
-		Bw    connect.ProxyBandwidth
+		Bw    *connect.ProxyBandwidth
 	}
 	var entries []proxyEntry
 	for k, bw := range r.Bandwidth {
