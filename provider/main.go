@@ -1510,10 +1510,12 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	}
 
 	if authClientResult.Error != nil {
-		panic(authClientResult.Error)
+		returnErr = authClientResult.Error
+		return
 	}
 	if authClientResult.Result.Error != nil {
-		panic(fmt.Errorf("%s", authClientResult.Result.Error.Message))
+		returnErr = fmt.Errorf("%w: %s", ErrTokenInvalid, authClientResult.Result.Error.Message)
+		return
 	}
 
 	byClientJwt = authClientResult.Result.ByClientJwt
@@ -1522,14 +1524,26 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	parser := gojwt.NewParser()
 	token, _, err := parser.ParseUnverified(byClientJwt, gojwt.MapClaims{})
 	if err != nil {
-		panic(err)
+		returnErr = fmt.Errorf("failed to parse client JWT from API response: %w", err)
+		return
 	}
 
-	claims := token.Claims.(gojwt.MapClaims)
+	claims, ok := token.Claims.(gojwt.MapClaims)
+	if !ok {
+		returnErr = fmt.Errorf("unexpected claims type in client JWT")
+		return
+	}
 
-	clientId, err = connect.ParseId(claims["client_id"].(string))
+	clientIdStr, ok := claims["client_id"].(string)
+	if !ok {
+		returnErr = fmt.Errorf("client_id claim missing or not a string in client JWT")
+		return
+	}
+
+	clientId, err = connect.ParseId(clientIdStr)
 	if err != nil {
-		panic(err)
+		returnErr = fmt.Errorf("invalid client_id in JWT claims: %w", err)
+		return
 	}
 
 	return
