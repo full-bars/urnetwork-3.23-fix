@@ -269,8 +269,17 @@ show_version ()
     echo "Current version: $version"
     
     api_url="$api_base/releases/latest"
-    release="$(network_fetch "$api_url")"
-    latest_version="$(get_version_from_api_response "$release")"
+    release="$(network_fetch "$api_url" 2>/dev/null || true)"
+    latest_version="$(get_version_from_api_response "$release" 2>/dev/null)"
+
+    if [ -z "$latest_version" ]; then
+        if command -v curl > /dev/null; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+                latest_version="${tag_url##*/}"
+            fi
+        fi
+    fi
 
     if [ -z "$latest_version" ]; then
         pr_err "Could not fetch any information about the latest release"
@@ -759,10 +768,7 @@ do_install ()
 
     pr_info "Fetching release information for tag: %s" "$tag"
 
-    if ! release="$(network_fetch "$api_url" 2>/dev/null)"; then
-        pr_err "Failed to fetch release information for tag: %s" "$tag"
-        exit 1
-    fi
+    release="$(network_fetch "$api_url" 2>/dev/null || true)"
 
     version_to_install="$(get_version_from_api_response "$release" 2>&1)"
     release_date="$(get_release_date_from_api_response "$release" 2>&1)"
@@ -777,7 +783,17 @@ do_install ()
         fi
     fi
 
-    # If tag was "latest", resolve it to the actual tag name from the API response
+    # If API failed and a specific tag was requested, just use the requested tag
+    if [ "$tag" != "latest" ] && [ -z "$version_to_install" ]; then
+        version_to_install="$tag"
+    fi
+
+    if [ -z "$version_to_install" ]; then
+        pr_err "Failed to fetch release information for tag: %s" "$tag"
+        exit 1
+    fi
+
+    # Resolve tag to the actual version for subsequent asset URL logic
     if [ "$tag" = "latest" ] && [ -n "$version_to_install" ]; then
         tag="$version_to_install"
     fi
