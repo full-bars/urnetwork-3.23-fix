@@ -438,6 +438,7 @@ Usage:
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
         [--max-memory=<mem>]
+        [--proxy_file=<proxy_file>]
         [-v...]
     provider auth-provide ([<auth_code>] | --user_auth=<user_auth> [--password=<password>]) [-f]
     	[--port=<port>]
@@ -449,7 +450,10 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
-    
+    provider proxy remove-dead
+    provider proxy refresh [--force]
+    provider logs [-n <lines>]
+
 Options:
     -h --help                        Show this help and exit.
     --version                        Show version.
@@ -468,10 +472,17 @@ Options:
     <proxy_user>                     SOCKS5 user
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
-    --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port`,
+    --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    --force                          Bypass the 8-hour warmup protection gate.
+    -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
 		DefaultConnectUrl,
 	)
+
+	// Allow `provider help` as a friendlier alias for --help
+	if len(os.Args) == 2 && os.Args[1] == "help" {
+		os.Args[1] = "--help"
+	}
 
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], RequireVersion())
 
@@ -496,8 +507,12 @@ Options:
 			}
 		} else if add, _ := opts.Bool("add"); add {
 			proxyAdd(opts)
+		} else if removeDead, _ := opts.Bool("remove-dead"); removeDead {
+			proxyRemoveDead(opts)
 		} else if remove, _ := opts.Bool("remove"); remove {
 			proxyRemove(opts)
+		} else if refresh, _ := opts.Bool("refresh"); refresh {
+			proxyRefresh(opts)
 		}
 	} else if auth_, _ := opts.Bool("auth"); auth_ {
 		auth(opts)
@@ -506,6 +521,8 @@ Options:
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
 		auth(opts)
 		provide(opts)
+	} else if logs, _ := opts.Bool("logs"); logs {
+		providerLogs(opts)
 	}
 }
 
@@ -835,6 +852,35 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
 
+		// Update proxy.state health snapshot for use by proxy refresh subcommand.
+		// proxyStateMu serializes this with reload()'s state write to prevent
+		// resurrection of proxies that were removed between our read and write.
+		// Entries absent from liveHealth are removed (not marked dead) — they are
+		// either deregistered via hot-reload or stale from a prior run.
+		go func() {
+			proxyStateMu.Lock()
+			defer proxyStateMu.Unlock()
+			state, err := readProxyState()
+			if err != nil {
+				return
+			}
+			liveHealth := connect.ProxyHealthByAddress()
+			for addr, entry := range state.Proxies {
+				if h, ok := liveHealth[addr]; ok {
+					entry.Health = h.Health
+					if h.DownSince.IsZero() {
+						entry.DownSince = ""
+					} else {
+						entry.DownSince = h.DownSince.Format(time.RFC3339)
+					}
+					state.Proxies[addr] = entry
+				} else {
+					delete(state.Proxies, addr)
+				}
+			}
+			_ = writeProxyState(state)
+		}()
+
 		if dir, ok := proxyHealthDir(); ok {
 			writeProxyHealthState(dir, report, now)
 			writeProxyHealthEvents(dir, report, now)
@@ -916,10 +962,7 @@ func provide(opts docopt.Opts) {
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 
-	provideWithProxy := func(proxySettings *connect.ProxySettings) {
-		proxyCtx, proxyCancel := context.WithCancel(ctx)
-		defer proxyCancel()
-
+	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
@@ -1107,12 +1150,59 @@ func provide(opts docopt.Opts) {
 		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
 	}
 
-	if allProxySettings := readProxySettings(); 0 < len(allProxySettings) {
+	// Load proxy.state to assign address-stable IDs. Known addresses keep their ID
+	// across restarts/reloads; new addresses get the next monotonic counter value.
+	proxyState, stateErr := readProxyState()
+	if stateErr != nil {
+		fmt.Printf("[proxy] warning: could not read proxy.state: %v\n", stateErr)
+		proxyState = &ProxyState{Proxies: map[string]ProxyEntry{}}
+	}
+	proxyState.StartedAt = provideStartTime
+
+	// Advance the ID counter above any IDs already in state so they are never reused.
+	highestID := -1
+	for _, e := range proxyState.Proxies {
+		if e.ID > highestID {
+			highestID = e.ID
+		}
+	}
+	initProxyIDCounter(highestID)
+
+	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
+	proxyFile, _ := opts.String("--proxy_file")
+	var allProxySettings []*connect.ProxySettings
+	if proxyFile != "" {
+		settings, err := readProxySettingsFromFile(proxyFile)
+		if err != nil {
+			// Fatal: the operator explicitly requested an external proxy file.
+			// Falling back to no-proxy mode would silently route traffic directly
+			// and leak the operator's real IP.
+			fmt.Printf("[proxy] fatal: %v\n", err)
+			os.Exit(1)
+		}
+		if len(settings) == 0 {
+			fmt.Printf("[proxy] fatal: proxy file %s contained no valid proxies (expected ip:port:user:pass per line)\n", proxyFile)
+			os.Exit(1)
+		}
+		allProxySettings = settings
+		proxyState.Source = proxyFile
+	} else {
+		allProxySettings = readProxySettings()
+		proxyState.Source = ""
+	}
+
+	// Per-proxy cancellation map keyed by address, so hot-reload can cancel
+	// individual proxy goroutines without disturbing the others.
+	var proxyCancelMu sync.Mutex
+	proxyCancelMap := map[string]context.CancelFunc{}
+
+	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
-		for i, proxySettings := range allProxySettings {
-			proxySettings.Index = i
-			connect.RegisterProxy(i, proxySettings.Address)
+		for _, proxySettings := range allProxySettings {
+			stableID := resolveProxyID(proxyState, proxySettings.Address)
+			proxySettings.Index = stableID
+			connect.RegisterProxy(stableID, proxySettings.Address)
 			var user string
 			var password string
 			if proxySettings.Auth != nil {
@@ -1120,33 +1210,65 @@ func provide(opts docopt.Opts) {
 				password = proxySettings.Auth.Password
 			}
 			fmt.Printf("  proxy[%d] %s (%s/%s)\n",
-				i,
+				stableID,
 				proxySettings.Address,
 				obfuscateUser(user),
 				obfuscatePassword(password),
 			)
 		}
+
+		// Persist the initial state snapshot now that all IDs are resolved.
+		proxyState.NextID = currentProxyIDCounter()
+		if err := writeProxyState(proxyState); err != nil {
+			fmt.Printf("[proxy] warning: could not write proxy.state: %v\n", err)
+		}
+
 		for i, proxySettings := range allProxySettings {
+			proxyCtx, proxyCancel := context.WithCancel(ctx)
+			proxyCancelMu.Lock()
+			proxyCancelMap[proxySettings.Address] = proxyCancel
+			proxyCancelMu.Unlock()
+
+			stableID := proxySettings.Index
+			staggerPos := i
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
+				defer connect.UnregisterProxy(stableID)
+				defer proxyCancel()
 
-				initialDelay := time.Duration(i) * 100 * time.Millisecond
+				initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
 				select {
-				case <-ctx.Done():
+				case <-proxyCtx.Done():
 				case <-time.After(initialDelay):
 				}
 
-				provideWithProxy(proxySettings)
+				provideWithProxy(proxyCtx, proxySettings)
 			})
 		}
 	} else {
+		// No entry in proxyCancelMap — hot-reload only applies in proxy mode.
 		wg.Add(1)
+		proxyCtx, proxyCancel := context.WithCancel(ctx)
 		go connect.HandleError(func() {
 			defer wg.Done()
-			provideWithProxy(nil)
+			defer proxyCancel()
+			provideWithProxy(proxyCtx, nil)
 		})
 	}
+
+	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
+	// add/remove diffs to the running proxy set without restarting the provider.
+	reloader := &ProxyReloader{
+		cancelMap:   proxyCancelMap,
+		cancelMapMu: &proxyCancelMu,
+		state:       proxyState,
+		sourcePath:  proxyFile,
+		parentCtx:   ctx,
+		wg:          &wg,
+		spawnProxy:  provideWithProxy,
+	}
+	reloader.StartWatcher(ctx)
 
 	if 0 < port {
 		fmt.Printf(
@@ -1659,6 +1781,104 @@ func readProxySettings() []*connect.ProxySettings {
 	return allProxySettings
 }
 
+// readProxySettingsFromFile reads proxy settings directly from an external file
+// where each non-blank, non-comment line is ip:port:user:pass. Entries missing
+// credentials are rejected (Workflow A requires authenticated proxies).
+// Returns an error only if the file itself cannot be read; malformed individual
+// lines are skipped with a warning.
+func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not read proxy file %s: %w", path, err)
+	}
+	var all []*connect.ProxySettings
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		address, user, password := parseProxyAddress(line)
+		if user == "" || password == "" {
+			fmt.Printf("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
+			continue
+		}
+		all = append(all, &connect.ProxySettings{
+			Network: "tcp",
+			Address: address,
+			Auth:    &proxy.Auth{User: user, Password: password},
+		})
+	}
+	return all, nil
+}
+
+// readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
+// Returns an error if the file does not exist.
+func readSHMLog(path string, n int) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if n <= 0 {
+		return string(b), nil
+	}
+	s := strings.TrimRight(string(b), "\n")
+	lines := strings.Split(s, "\n")
+	if n > len(lines) {
+		n = len(lines)
+	}
+	return strings.Join(lines[len(lines)-n:], "\n") + "\n", nil
+}
+
+func providerLogs(opts docopt.Opts) {
+	n, _ := opts.Int("-n")
+	out, err := readSHMLog(shmLogPath, n)
+	if err != nil {
+		fmt.Printf("error: no ramlogs found at %s — is URNETWORK_RAMLOGS=1 set?\n", shmLogPath)
+		os.Exit(1)
+	}
+	fmt.Print(out)
+
+	// Tail: follow the file from current position.
+	f, err := os.Open(shmLogPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not open log for tailing: %v\n", err)
+		return
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
+		fmt.Fprintf(os.Stderr, "error: seek failed: %v\n", err)
+		return
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		nr, readErr := f.Read(buf)
+		if nr > 0 {
+			os.Stdout.Write(buf[:nr])
+		}
+		if readErr != nil && readErr != io.EOF {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "error: read failed: %v\n", readErr)
+			return
+		}
+		if readErr == io.EOF {
+			// Detect ramlogs wrap: if the file shrunk behind our position, reopen from start.
+			if pos, _ := f.Seek(0, io.SeekCurrent); pos > 0 {
+				if fi, statErr := f.Stat(); statErr == nil && fi.Size() < pos {
+					f.Close()
+					newF, openErr := os.Open(shmLogPath)
+					if openErr != nil {
+						fmt.Fprintf(os.Stderr, "error: could not reopen log after wrap: %v\n", openErr)
+						return
+					}
+					f = newF
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+}
+
 func parseProxyAddress(proxyAddress string) (address string, user string, password string) {
 	r := regexp.MustCompile("^(.*:\\d*):([^:]*):([^:]*)$")
 	groups := r.FindStringSubmatch(proxyAddress)
@@ -1691,6 +1911,314 @@ func obfuscatePassword(password string) string {
 	} else {
 		return fmt.Sprintf("%s***%s", password[:2], password[len(password)-2:])
 	}
+}
+
+func proxyRefresh(opts docopt.Opts) {
+	force, _ := opts.Bool("--force")
+
+	state, err := readProxyState()
+	if err != nil {
+		fmt.Printf("error: could not read proxy.state — is the provider running?\n")
+		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
+		os.Exit(1)
+	}
+
+	// Check if provider is running by seeing if state is fresh
+	if state.StartedAt.IsZero() {
+		fmt.Printf("error: provider does not appear to be running (no proxy.state found).\n")
+		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
+		os.Exit(1)
+	}
+
+	uptime := time.Since(state.StartedAt)
+
+	// Warmup protection
+	const warmupThreshold = 8 * time.Hour
+	if uptime < warmupThreshold && !force {
+		fmt.Printf("Provider has been running for %s. Proxies need 8-12h to warm up —\n", formatDuration(uptime))
+		fmt.Printf("a proxy that looks dead now may still be establishing contracts.\n")
+		fmt.Printf("Run again after 8h uptime, or use --force to override.\n")
+		os.Exit(1)
+	}
+
+	// Acquire lock before computing the diff and prompting, so a second concurrent
+	// invocation fails immediately rather than after both prompts have fired.
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("error: %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
+	// Load desired (from source file or internal config)
+	var desired []*connect.ProxySettings
+	if state.Source != "" {
+		settings, err := readProxySettingsFromFile(state.Source)
+		if err != nil {
+			fmt.Printf("error: could not read proxy file %s: %v\n", state.Source, err)
+			os.Exit(1)
+		}
+		desired = settings
+	} else {
+		desired = readProxySettings()
+	}
+
+	// Diff
+	desiredSet := map[string]bool{}
+	for _, s := range desired {
+		desiredSet[s.Address] = true
+	}
+
+	currentSet := map[string]ProxyEntry{}
+	for addr, e := range state.Proxies {
+		currentSet[addr] = e
+	}
+
+	var added []string
+	for _, s := range desired {
+		if _, ok := currentSet[s.Address]; !ok {
+			added = append(added, s.Address)
+		}
+	}
+
+	type removedProxy struct {
+		addr  string
+		entry ProxyEntry
+	}
+	var removed []removedProxy
+	for addr, e := range currentSet {
+		if !desiredSet[addr] {
+			e.Health = classifyHealth(e)
+			removed = append(removed, removedProxy{addr: addr, entry: e})
+		}
+	}
+
+	if len(added) == 0 && len(removed) == 0 {
+		fmt.Println("proxy list is already up to date. Nothing to do.")
+		return
+	}
+
+	// Warn if all proxies would be removed — the provider exits when the last proxy goroutine stops.
+	if len(removed) == len(currentSet) && len(added) == 0 {
+		fmt.Printf("WARNING: This will remove ALL proxies. The provider process will exit once the\n")
+		fmt.Printf("last proxy goroutine stops. Restart with a proxy list to resume providing.\n\n")
+	}
+
+	// Print diff
+	fmt.Printf("proxy refresh: %d proxies will be removed, %d will be added.\n\n", len(removed), len(added))
+	if len(removed) > 0 {
+		fmt.Println("  Removing:")
+		for _, rp := range removed {
+			fmt.Printf("    proxy[%d]  %s   — %s\n", rp.entry.ID, rp.addr, rp.entry.Health)
+		}
+	}
+	if len(added) > 0 {
+		fmt.Println("\n  Adding:")
+		for _, addr := range added {
+			fmt.Printf("    %s\n", addr)
+		}
+	}
+
+	// Check for high-risk removals: up, recently_offline, offline, long_offline all have
+	// significant warm state. dead and inactive are low-risk (single confirmation).
+	highRisk := false
+	for _, rp := range removed {
+		switch rp.entry.Health {
+		case "up", "recently_offline", "offline", "long_offline":
+			highRisk = true
+		}
+		if highRisk {
+			break
+		}
+	}
+
+	if highRisk {
+		fmt.Printf("\nWARNING: One or more proxies being removed are online or have recent warm state.\n")
+		if !confirm("Remove them anyway?") {
+			fmt.Println("Aborted.")
+			return
+		}
+		if !confirm("Are you sure? This may interrupt live traffic.") {
+			fmt.Println("Aborted.")
+			return
+		}
+	} else {
+		if !confirm("Proceed?") {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Printf("error: could not determine reload path: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Printf("error: could not write reload trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
+}
+
+func proxyRemoveDead(_ docopt.Opts) {
+	state, err := readProxyState()
+	if err != nil || state.StartedAt.IsZero() {
+		fmt.Println("error: provider does not appear to be running.")
+		os.Exit(1)
+	}
+
+	uptime := time.Since(state.StartedAt)
+	const deadConfirmDelay = 65 * time.Minute
+	if uptime < deadConfirmDelay {
+		fmt.Printf("Provider has been running for only %s — proxies need %s before dead status is confirmed.\n",
+			formatDuration(uptime), formatDuration(deadConfirmDelay))
+		os.Exit(1)
+	}
+
+	type removedProxy struct {
+		addr  string
+		entry ProxyEntry
+	}
+	var dead, inactive []removedProxy
+	for addr, e := range state.Proxies {
+		switch e.Health {
+		case "dead":
+			dead = append(dead, removedProxy{addr: addr, entry: e})
+		case "inactive":
+			inactive = append(inactive, removedProxy{addr: addr, entry: e})
+		}
+	}
+
+	if len(dead) == 0 && len(inactive) == 0 {
+		fmt.Println("No dead or inactive proxies found.")
+		return
+	}
+
+	var toRemove []removedProxy
+
+	if len(dead) > 0 {
+		fmt.Printf("  %d proxies never authenticated (dead):\n", len(dead))
+		for _, rp := range dead {
+			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
+		}
+		fmt.Println()
+		if confirm(fmt.Sprintf("Remove %d dead proxies?", len(dead))) {
+			toRemove = append(toRemove, dead...)
+		}
+		fmt.Println()
+	}
+
+	if len(inactive) > 0 {
+		fmt.Printf("  %d proxies offline 7+ days (inactive):\n", len(inactive))
+		for _, rp := range inactive {
+			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
+		}
+		fmt.Println()
+		if confirm(fmt.Sprintf("Remove %d inactive proxies?", len(inactive))) {
+			toRemove = append(toRemove, inactive...)
+		}
+		fmt.Println()
+	}
+
+	if len(toRemove) == 0 {
+		fmt.Println("Nothing to remove.")
+		return
+	}
+
+	// Remove from source file
+	if state.Source != "" {
+		var addrs []string
+		for _, rp := range toRemove {
+			addrs = append(addrs, rp.addr)
+		}
+		if err := removeAddressesFromFile(state.Source, addrs); err != nil {
+			fmt.Printf("error: could not update proxy file: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		proxyConfig := readProxyConfig()
+		removeSet := map[string]bool{}
+		for _, rp := range toRemove {
+			removeSet[rp.addr] = true
+		}
+		for proxyAddress := range proxyConfig.Servers {
+			addr, _, _ := parseProxyAddress(proxyAddress)
+			if removeSet[addr] {
+				delete(proxyConfig.Servers, proxyAddress)
+			}
+		}
+		writeProxyConfig(proxyConfig)
+	}
+
+	// Trigger reload
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("error: %v\n", err)
+		os.Exit(1)
+	}
+	defer release()
+
+	reloadPath, _ := proxyReloadPath()
+	if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Printf("error: could not write reload trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Removed %d proxies. Reload triggered.\n", len(toRemove))
+}
+
+func removeAddressesFromFile(path string, addresses []string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	removeSet := map[string]bool{}
+	for _, a := range addresses {
+		removeSet[a] = true
+	}
+	var kept []string
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		addr, _, _ := parseProxyAddress(trimmed)
+		if !removeSet[addr] {
+			kept = append(kept, line)
+		}
+	}
+	content := strings.Join(kept, "\n")
+	if len(b) > 0 && b[len(b)-1] == '\n' && (len(content) == 0 || content[len(content)-1] != '\n') {
+		content += "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N] ", prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		resp := scanner.Text()
+		return strings.ToLower(strings.TrimSpace(resp)) == "y"
+	}
+	return false
+}
+
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh %dm", h, m)
+}
+
+func classifyHealth(e ProxyEntry) string {
+	if e.Health != "" {
+		return e.Health
+	}
+	return "starting"
 }
 
 func readProxyConfig() *ProxyConfig {

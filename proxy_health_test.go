@@ -128,6 +128,27 @@ func TestProxyHealthHeartbeatTransitions(t *testing.T) {
 	}
 }
 
+func TestUnregisterProxy_RemovesFromRegistry(t *testing.T) {
+	resetProxyHealthForTest()
+
+	RegisterProxy(99, "1.2.3.4:1080")
+	if ProxyHealthCount() != 1 {
+		t.Fatal("expected 1 proxy registered")
+	}
+
+	UnregisterProxy(99)
+	if got := ProxyHealthCount(); got != 0 {
+		t.Fatalf("expected 0 proxies after unregister, got %d", got)
+	}
+}
+
+func TestUnregisterProxy_NoopIfNotRegistered(t *testing.T) {
+	resetProxyHealthForTest()
+
+	// Must not panic
+	UnregisterProxy(42)
+}
+
 func TestProxyHealthHeartbeatFlappingCountsTwice(t *testing.T) {
 	resetProxyHealthForTest()
 	RegisterProxy(0, "a:1")
