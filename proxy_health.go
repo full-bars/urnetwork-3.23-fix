@@ -48,7 +48,7 @@ type ProxyHealthReport struct {
 	LifetimeRecovered int
 	LifetimeLost      int
 
-	Bandwidth map[string]ProxyBandwidth
+	Bandwidth map[string]*ProxyBandwidth
 }
 
 var (
@@ -60,14 +60,15 @@ var (
 	proxyBaselineSet       bool
 )
 
-// RegisterProxy adds a proxy to the registry if absent. Idempotent so a list
-// re-read preserves everUp. Called eagerly at startup for every proxy.
 func RegisterProxy(index int, address string) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	if _, ok := proxyHealthByIndex[index]; !ok {
-		proxyHealthByIndex[index] = &proxyHealth{address: address}
+	h, ok := proxyHealthByIndex[index]
+	if !ok {
+		h = &proxyHealth{}
+		proxyHealthByIndex[index] = h
 	}
+	h.address = address
 }
 
 // RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
@@ -109,6 +110,14 @@ func markProxyDown(index int) {
 	}
 }
 
+// UnregisterProxy removes a proxy from the health registry after its goroutine
+// has fully drained. Must be called after the goroutine exits, not at cancel time.
+func UnregisterProxy(id int) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	delete(proxyHealthByIndex, id)
+}
+
 // ProxyHealthCount returns the number of registered proxies (0 = non-proxy mode).
 func ProxyHealthCount() int {
 	proxyHealthMu.Lock()
@@ -133,10 +142,10 @@ func sortedIndicesLocked() []int {
 // ProxyHealthSnapshot returns the current state without advancing the transition
 // baseline, so it is safe to call from the pulse-fire marker. Lists are complete
 // (no display cap) and index-sorted.
-func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]ProxyBandwidth) {
+func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	bandwidth = make(map[string]ProxyBandwidth)
+	bandwidth = make(map[string]*ProxyBandwidth)
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
 		switch {
@@ -149,11 +158,12 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		}
 		
 		if h.bw != nil {
-			var pb ProxyBandwidth
+			pb := &ProxyBandwidth{}
 			pb.TotalRx.Store(h.bw.TotalRx.Load())
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			pb.Clients.Store(h.bw.Clients.Load())
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
@@ -171,7 +181,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 	now := time.Now()
 	first := !proxyBaselineSet
 	var r ProxyHealthReport
-	r.Bandwidth = make(map[string]ProxyBandwidth)
+	r.Bandwidth = make(map[string]*ProxyBandwidth)
 
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
@@ -186,11 +196,12 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		}
 
 		if h.bw != nil {
-			var pb ProxyBandwidth
+			pb := &ProxyBandwidth{}
 			pb.TotalRx.Store(h.bw.TotalRx.Load())
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
+			pb.Clients.Store(h.bw.Clients.Load())
 			r.Bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 
@@ -221,4 +232,44 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 	r.LifetimeRecovered = proxyLifetimeRecovered
 	r.LifetimeLost = proxyLifetimeLost
 	return r
+}
+
+// ProxyHealthStatus represents the live health of a proxy
+type ProxyHealthStatus struct {
+	Health    string
+	DownSince time.Time
+}
+
+// ProxyHealthByAddress returns the current health classification for each
+// registered proxy, keyed by address. Used to update proxy.state snapshots.
+func ProxyHealthByAddress() map[string]ProxyHealthStatus {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	result := make(map[string]ProxyHealthStatus, len(proxyHealthByIndex))
+	for _, h := range proxyHealthByIndex {
+		health := "dead"
+		if h.currentlyUp {
+			health = "up"
+		} else if h.everUp {
+			health = degradedTierFromDuration(time.Since(h.downSince))
+		}
+		result[h.address] = ProxyHealthStatus{
+			Health:    health,
+			DownSince: h.downSince,
+		}
+	}
+	return result
+}
+
+func degradedTierFromDuration(d time.Duration) string {
+	switch {
+	case d < 24*time.Hour:
+		return "recently_offline"
+	case d < 72*time.Hour:
+		return "offline"
+	case d < 7*24*time.Hour:
+		return "long_offline"
+	default:
+		return "inactive"
+	}
 }
