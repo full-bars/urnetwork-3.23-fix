@@ -99,6 +99,7 @@ type MultiClientGenerator interface {
 
 func DefaultMultiClientSettings() *MultiClientSettings {
 	return &MultiClientSettings{
+		SequenceBufferSize:  defaultTransferBufferSize,
 		SequenceIdleTimeout: 120 * time.Second,
 
 		WindowSizes: map[WindowType]WindowSizeSettings{
@@ -191,6 +192,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 }
 
 type MultiClientSettings struct {
+	SequenceBufferSize  int
 	SequenceIdleTimeout time.Duration
 	WindowSizes         map[WindowType]WindowSizeSettings
 	// ClientNackInitialLimit int
@@ -703,9 +705,12 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 						self.stateLock.Lock()
 						defer self.stateLock.Unlock()
 
-						if t := update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now()); 0 < t {
-							// updated since wait for idle
-							return false
+						updateDone := update.IsDone()
+						if !updateDone {
+							if t := update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now()); 0 < t {
+								// updated since wait for idle
+								return false
+							}
 						}
 
 						client = update.client
@@ -743,6 +748,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 
 				select {
 				case <-self.ctx.Done():
+				case <-update.ctx.Done():
 				default:
 					rst(client)
 				}
@@ -799,9 +805,12 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 						self.stateLock.Lock()
 						defer self.stateLock.Unlock()
 
-						if t := update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now()); 0 < t {
-							// updated since wait for idle
-							return false
+						updateDone := update.IsDone()
+						if !updateDone {
+							if t := update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now()); 0 < t {
+								// updated since wait for idle
+								return false
+							}
 						}
 
 						client = update.client
@@ -839,6 +848,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 
 				select {
 				case <-self.ctx.Done():
+				case <-update.ctx.Done():
 				default:
 					rst(client)
 				}
@@ -1701,7 +1711,7 @@ type multiClientWindow struct {
 
 	monitor *RemoteUserNatMultiClientMonitor
 
-	contractStatusCallbacks *CallbackList[ContractStatusFunction]
+	contractStatusCallbacks *CallbackList[*contractStatusCallbackWorker]
 
 	stateLock          sync.Mutex
 	clients            map[Id]*multiClientChannel
@@ -1732,7 +1742,7 @@ func newMultiClientWindow(
 		settings:                    settings,
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
 		monitor:                     NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
-		contractStatusCallbacks:     NewCallbackList[ContractStatusFunction](),
+		contractStatusCallbacks:     NewCallbackList[*contractStatusCallbackWorker](),
 		clients:                     map[Id]*multiClientChannel{},
 		generatorMonitor:            NewMonitor(),
 		resizeMonitor:               NewMonitor(),
@@ -1745,17 +1755,17 @@ func newMultiClientWindow(
 }
 
 func (self *multiClientWindow) AddContractStatusCallback(contractStatusCallback ContractStatusFunction) func() {
-	callbackId := self.contractStatusCallbacks.Add(contractStatusCallback)
+	worker := newContractStatusCallbackWorker(self.ctx, contractStatusCallback, self.settings.SequenceBufferSize)
+	callbackId := self.contractStatusCallbacks.Add(worker)
 	return func() {
 		self.contractStatusCallbacks.Remove(callbackId)
+		worker.Close()
 	}
 }
 
 func (self *multiClientWindow) contractStatus(contractStatus *ContractStatus) {
 	for _, contractStatusCallback := range self.contractStatusCallbacks.Get() {
-		HandleError(func() {
-			contractStatusCallback(contractStatus)
-		})
+		contractStatusCallback.Dispatch(contractStatus)
 	}
 }
 
@@ -2694,6 +2704,7 @@ func newMultiClientChannel(
 		clientSettings,
 	)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	contractStatusSub := client.ContractManager().AddContractStatusCallback(contractStatusCallback)
