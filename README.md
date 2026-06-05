@@ -29,14 +29,21 @@ Uninstall:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
-After installation:
+After installation, source your terminal profile so the new commands are available, and authenticate the provider:
 
 ```bash
-urnet-tools status
-urnet-tools proxy health
-urnet-tools proxy traffic
-urnet-tools logs
+source ~/.bashrc
+urnetwork auth
+```
+
+Then you can add your proxy list and monitor the node:
+
+```bash
+urnet-tools proxy add /path/to/your/proxies.txt
+urnet-tools proxy refresh
 urnet-tools auto on
+urnet-tools proxy health
+urnet-tools logs
 ```
 
 ### 🐳 Docker
@@ -50,7 +57,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples 
 - **Outage noise reduction:** repeated backend auth and contract errors are rate-limited and summarized with suppressed counts.
 - **Higher throughput ceiling:** larger contract ramp-up, longer contract timeout, dynamic TCP accordion windows, deeper packet buffers, and expanded message pools.
 - **Performance profiles:** Auto, Turbo V4, Turbo V8, Eco, and Lowmem profiles cover hosts from small VPS instances to high-RAM dedicated servers.
-- **Docker-first operations:** JWT auth, email/password auth, vnStat integration, multi-arch images, Watchtower compatibility, and multi-container patterns are documented.
+- **Lean native binary & extensive container support:** Built primarily for maximum efficiency as a native binary app, alongside comprehensive support for Docker deployments (JWT auth, Watchtower compatibility, multi-container patterns).
 
 ## 💡 Recommended Defaults
 
