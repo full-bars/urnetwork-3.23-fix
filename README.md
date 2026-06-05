@@ -68,6 +68,7 @@ For most providers:
 - [Docker Deployment](docs/Docker-Deployment.md)
 - [Multi-Container Scaling](docs/Multi-Container-Scaling.md)
 - [Configuration Reference](docs/Configuration.md)
+- [Proxy Management & Hot-Reloading](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Changelog](CHANGELOG.md)
