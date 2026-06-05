@@ -1518,7 +1518,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		returnErr = authClientResult.Error
 		return
 	}
-	if authClientResult.Result != nil && authClientResult.Result.Error != nil {
+	if authClientResult.Result == nil {
+		returnErr = fmt.Errorf("auth response missing result")
+		return
+	}
+	if authClientResult.Result.Error != nil {
 		if authClientResult.Result.Error.ClientLimitExceeded {
 			returnErr = fmt.Errorf("client limit exceeded: %s", authClientResult.Result.Error.Message)
 			return
