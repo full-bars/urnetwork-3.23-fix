@@ -1702,6 +1702,17 @@ func proxyRemove(opts docopt.Opts) {
 
 	if all, _ := opts.Bool("--all"); all {
 		clear(proxyConfig.Servers)
+		// Reset proxy.state so the next run starts ID assignment from 0.
+		// Without this, the monotonic counter resumes above whatever IDs were
+		// saved from previous runs, producing confusingly high and mixed IDs
+		// even when the same proxies are re-added.
+		if state, err := readProxyState(); err == nil {
+			state.Proxies = map[string]ProxyEntry{}
+			state.NextID = 0
+			if err := writeProxyState(state); err != nil {
+				fmt.Printf("[proxy] warning: could not reset proxy.state: %v\n", err)
+			}
+		}
 	} else {
 
 		allKeyAddress := []string{}
