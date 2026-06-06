@@ -37,12 +37,10 @@ jobs:
           chmod +x scripts/test_provider_install.sh
           ./scripts/test_provider_install.sh
 
-      - name: Run Targeted Go Unit Tests
+      - name: Run Go Unit Tests
         run: |
-          go test -v -run TestShouldLogSelectErr_RateLimit .
-          go test -v -run TestShouldLogSelectErr_Concurrency .
-          go test -v -run TestFormatTrafficStateFile ./provider
-          go test -v -run TestWriteProxyTrafficState ./provider
+          go test -v .
+          go test -v ./provider/...
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
