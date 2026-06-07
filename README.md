@@ -46,6 +46,17 @@ urnet-tools proxy health
 urnet-tools logs
 ```
 
+## 🛠️ Common Operations
+
+| Command | Use this when... |
+| :--- | :--- |
+| `urnetwork auth` | You need to log in or refresh your identity manually (Native). |
+| `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy. |
+| `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP`. |
+| `urnet-tools logs` | You want to stream the current RAMLOGS buffer (Native/Docker-Alias). |
+| `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` for them. |
+| `urnet-tools proxy refresh` | You updated your proxy list and want the node to load changes live. |
+
 > [!TIP]
 > **Path Formatting**  
 > You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
@@ -53,6 +64,13 @@ urnet-tools logs
 ### 🐳 Docker
 
 See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples covering `docker run`, Docker Compose, JWT auth, email/password auth, GHCR, Docker Hub, RAM logs, outage alerts, and Watchtower updates.
+
+> [!NOTE]
+> **Docker "Power User" Shortcuts**
+> Most `urnet-tools` commands have direct Docker aliases. Use `docker exec -it <container_name> <cmd>`:
+> *   **Health**: `docker exec -it urfix proxy-health`
+> *   **Traffic**: `docker exec -it urfix proxy-traffic`
+> *   **Live Logs**: `docker exec -it urfix logs`
 
 ## ✨ Key Improvements
 
