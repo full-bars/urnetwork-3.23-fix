@@ -61,7 +61,8 @@ See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples 
 - **Outage noise reduction:** repeated backend auth and contract errors are rate-limited and summarized with suppressed counts.
 - **Higher throughput ceiling:** larger contract ramp-up, longer contract timeout, dynamic TCP accordion windows, deeper packet buffers, and expanded message pools.
 - **Performance profiles:** Auto, Turbo V4, Turbo V8, Eco, and Lowmem profiles cover hosts from small VPS instances to high-RAM dedicated servers.
-- **Lean native binary & extensive container support:** Built primarily for maximum efficiency as a native binary app, alongside comprehensive support for Docker deployments (JWT auth, Watchtower compatibility, multi-container patterns).
+- **Lean native binary & extensive container support:** Built primarily for maximum efficiency as a native binary app, alongside comprehensive support for Docker deployments (**JWT Smart Refresh**, Watchtower compatibility, multi-container patterns).
+- **Self-healing auth:** Automatic detection and recovery from expired or revoked JWT tokens without manual intervention.
 
 ## 💡 Recommended Defaults
 

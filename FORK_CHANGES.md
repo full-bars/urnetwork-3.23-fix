@@ -486,17 +486,28 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
-## 18. Post-Quantum Encryption (ML-KEM)
+## 19. JWT Smart Refresh (Self-Healing Auth)
 
-**Purpose**: Port upstream PR #183 adding ML-KEM/Kyber hybrid encryption in a TLS tunnel to defeat "Harvest Now, Decrypt Later" strategies.
+**Purpose**: Reduce manual intervention and API load by validating JWT expiry locally and providing a "self-healing" mechanism for entrypoint scripts to refresh tokens automatically.
 
-**Files Modified**: `transfer_encrypt.go`
+**Files Modified**: `provider/main.go`, `docker/scripts/start_jwt.sh`, `docker/scripts/start_stable.sh`, `docker/scripts/start_nightly.sh`, `provider/jwt_test.go` (added)
 
 **Changes**:
-- Completely replaced standard crypto layer with `ML-KEM-768` hybrid encryption.
-- Implemented hardened `CloseContract` delivery.
-- Note: Feature is disabled by default in fix.17 to preserve baseline RAM efficiency.
 
-**Status**: ✅ Ported from upstream PR #183. Shipped in v3.23.0-fix.17.
+- **Local Expiry Validation**: `provider/main.go` now parses the JWT locally using `validateJWTExpiry(token)` before any network call. If the token's `exp` claim is in the past (with a 30s leeway for clock skew), it returns `ErrTokenInvalid` immediately.
+- **Exit Code 78**: The provider now exits with **exit code 78** specifically when an authentication token is invalid or expired. This distinguishes auth failures from transient network errors (exit 1) or clean shutdowns (exit 0).
+- **Self-Healing Shell Logic**: All startup scripts trap exit code 78. When detected:
+  - The stale `jwt` file is deleted.
+  - The script attempts to re-authenticate using available credentials (`USER_AUTH`/`PASSWORD` or positional tokens).
+  - Includes a re-auth attempt cap (3) and backoff logic to prevent API hammering if credentials themselves are invalid.
+- **Auth Panic Guard**: Replaced 4 `panic` calls in the `provideAuth` path with structured error returns and added nil-guards for API response fields.
+
+**How to Identify in New Upstream**:
+- Search for `provideAuth` in `provider/main.go`; ensure it doesn't panic on API errors.
+- Check if upstream adds its own JWT expiry check.
+- If upstream changes the `AuthNetworkClientResult` structure, verify the nil-guards in `provideAuth`.
+
+**Status**: ✅ Shipped in v3.23.0-fix.17.
 
 ---
+
