@@ -316,6 +316,8 @@ const (
 var (
 	ecoMonitorStarted atomic.Bool
 	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
+
+	ErrTokenInvalid = errors.New("auth: token is invalid or expired")
 )
 
 func startEcoMonitorOnce(ctx context.Context) {
@@ -1041,6 +1043,11 @@ func provide(opts docopt.Opts) {
 					return byClientJwt, clientId, nil
 				}
 
+				if errors.Is(err, ErrTokenInvalid) {
+					fmt.Fprintf(os.Stderr, "auth: token invalid or expired — exiting for shell to refresh (code 78)\n")
+					os.Exit(78)
+				}
+
 				if strings.Contains(err.Error(), "Jwt does not exist") {
 					authFailures = 0
 					fmt.Printf("Authentication missing. Please run 'urnetwork auth' to configure your provider.\n")
@@ -1428,6 +1435,22 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	}
 	byJwt := strings.TrimSpace(string(byJwtBytes))
 
+	// Layer 1: local pre-validation — avoids a network round-trip for an already-expired token.
+	// ParseUnverified skips signature verification (we don't have the secret); we only need exp.
+	{
+		expParser := gojwt.NewParser()
+		if tok, _, parseErr := expParser.ParseUnverified(byJwt, gojwt.MapClaims{}); parseErr == nil {
+			if claims, ok := tok.Claims.(gojwt.MapClaims); ok {
+				if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp)-30 {
+					returnErr = ErrTokenInvalid
+					return
+				}
+			}
+		}
+		// If parsing fails for any reason, fall through — the API will reject it and we'll
+		// catch it in Layer 2. Don't block a valid token due to a parse quirk.
+	}
+
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 
 	api.SetByJwt(byJwt)
@@ -1492,10 +1515,20 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	}
 
 	if authClientResult.Error != nil {
-		panic(authClientResult.Error)
+		returnErr = authClientResult.Error
+		return
+	}
+	if authClientResult.Result == nil {
+		returnErr = fmt.Errorf("auth response missing result")
+		return
 	}
 	if authClientResult.Result.Error != nil {
-		panic(fmt.Errorf("%s", authClientResult.Result.Error.Message))
+		if authClientResult.Result.Error.ClientLimitExceeded {
+			returnErr = fmt.Errorf("client limit exceeded: %s", authClientResult.Result.Error.Message)
+			return
+		}
+		returnErr = fmt.Errorf("%w: %s", ErrTokenInvalid, authClientResult.Result.Error.Message)
+		return
 	}
 
 	byClientJwt = authClientResult.Result.ByClientJwt
@@ -1504,14 +1537,26 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	parser := gojwt.NewParser()
 	token, _, err := parser.ParseUnverified(byClientJwt, gojwt.MapClaims{})
 	if err != nil {
-		panic(err)
+		returnErr = fmt.Errorf("failed to parse client JWT from API response: %w", err)
+		return
 	}
 
-	claims := token.Claims.(gojwt.MapClaims)
+	claims, ok := token.Claims.(gojwt.MapClaims)
+	if !ok {
+		returnErr = fmt.Errorf("unexpected claims type in client JWT")
+		return
+	}
 
-	clientId, err = connect.ParseId(claims["client_id"].(string))
+	clientIdStr, ok := claims["client_id"].(string)
+	if !ok {
+		returnErr = fmt.Errorf("client_id claim missing or not a string in client JWT")
+		return
+	}
+
+	clientId, err = connect.ParseId(clientIdStr)
 	if err != nil {
-		panic(err)
+		returnErr = fmt.Errorf("invalid client_id in JWT claims: %w", err)
+		return
 	}
 
 	return
