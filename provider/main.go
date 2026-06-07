@@ -326,6 +326,21 @@ func startEcoMonitorOnce(ctx context.Context) {
 	}
 }
 
+// validateJWTExpiry parses the JWT locally to check the 'exp' claim.
+// It returns ErrTokenInvalid if the token is definitely expired (with 30s leeway).
+func validateJWTExpiry(byJwt string) error {
+	expParser := gojwt.NewParser()
+	if tok, _, parseErr := expParser.ParseUnverified(byJwt, gojwt.MapClaims{}); parseErr == nil {
+		if claims, ok := tok.Claims.(gojwt.MapClaims); ok {
+			if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp)+30 {
+				return ErrTokenInvalid
+			}
+		}
+	}
+	// If parsing fails or exp is missing, return nil to allow the API to handle it.
+	return nil
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -1436,19 +1451,9 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	byJwt := strings.TrimSpace(string(byJwtBytes))
 
 	// Layer 1: local pre-validation — avoids a network round-trip for an already-expired token.
-	// ParseUnverified skips signature verification (we don't have the secret); we only need exp.
-	{
-		expParser := gojwt.NewParser()
-		if tok, _, parseErr := expParser.ParseUnverified(byJwt, gojwt.MapClaims{}); parseErr == nil {
-			if claims, ok := tok.Claims.(gojwt.MapClaims); ok {
-				if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp)-30 {
-					returnErr = ErrTokenInvalid
-					return
-				}
-			}
-		}
-		// If parsing fails for any reason, fall through — the API will reject it and we'll
-		// catch it in Layer 2. Don't block a valid token due to a parse quirk.
+	if err := validateJWTExpiry(byJwt); err != nil {
+		returnErr = err
+		return
 	}
 
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
