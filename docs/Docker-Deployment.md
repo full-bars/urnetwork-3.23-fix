@@ -293,6 +293,13 @@ Startup log:
 
 Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log` inside the container, a RAM-backed filesystem, instead of stdout. This keeps log I/O entirely off disk.
 
+> [!TIP]
+> **Live Monitoring (RAMLOGS)**
+> If you have `URNETWORK_RAMLOGS=1` enabled, your logs are stored in high-speed memory instead of standard output. Use this command to live-tail them:
+> ```bash
+> docker exec -it <container_name> tail -f /dev/shm/urnetwork.log
+> ```
+
 > [!NOTE]
 > `URNETWORK_RAMLOGS=1` and Docker `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout, so Docker's log driver has nothing to capture. Remove `--log-driver` and `--log-opt` if you enable this.
 
