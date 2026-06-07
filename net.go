@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -160,6 +161,45 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		if err != nil {
 			return nil, err
 		}
+
+		// Track active dialer connection
+		bw := RegisterProxyBandwidth(self.Index)
+		if bw != nil {
+			bw.Clients.Add(1)
+			return &trackedConn{Conn: conn, bw: bw}, nil
+		}
+
 		return conn, nil
 	}
+}
+
+type trackedConn struct {
+	net.Conn
+	bw   *ProxyBandwidth
+	once sync.Once
+}
+
+func (self *trackedConn) Read(b []byte) (n int, err error) {
+	n, err = self.Conn.Read(b)
+	if n > 0 && self.bw != nil {
+		self.bw.TotalRx.Add(uint64(n))
+	}
+	return
+}
+
+func (self *trackedConn) Write(b []byte) (n int, err error) {
+	n, err = self.Conn.Write(b)
+	if n > 0 && self.bw != nil {
+		self.bw.TotalTx.Add(uint64(n))
+	}
+	return
+}
+
+func (self *trackedConn) Close() error {
+	self.once.Do(func() {
+		if self.bw != nil {
+			self.bw.Clients.Add(-1)
+		}
+	})
+	return self.Conn.Close()
 }
