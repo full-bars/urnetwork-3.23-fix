@@ -1153,11 +1153,17 @@ func (self *clientDialer) String() string {
 		return fmt.Sprintf("extender (%v) success=%d error=%d", self.extenderConfig, self.successCount, self.errorCount)
 	} else if self.settings != nil && self.settings.ProxySettings != nil {
 		var clients int64
+		var maxAge time.Duration
 		bw := RegisterProxyBandwidth(self.settings.ProxySettings.Index)
 		if bw != nil {
 			clients = bw.Clients.Load()
+			maxAge = bw.MaxAge()
 		}
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d clients=%d", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, clients)
+		ageStr := ""
+		if clients > 0 {
+			ageStr = fmt.Sprintf(" age=%s", maxAge.Round(time.Second).String())
+		}
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d clients=%d%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, clients, ageStr)
 	} else {
 		return fmt.Sprintf("%s success=%d error=%d", self.description, self.successCount, self.errorCount)
 	}
