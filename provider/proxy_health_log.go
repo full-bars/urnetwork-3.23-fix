@@ -83,16 +83,33 @@ func formatBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/div, "KMGTPE"[exp])
 }
 
+func formatAgeDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return d.String()
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours()/24), int(d.Hours())%24)
+}
+
 // formatTrafficStateFile renders the complete traffic usage report.
 func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "========================================================================\n")
+	fmt.Fprintf(&b, "==================================================================================\n")
 	fmt.Fprintf(&b, " URNETWORK PROXY TRAFFIC REPORT\n")
 	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "========================================================================\n")
-	fmt.Fprintf(&b, "+-------------+-----------------------+---------+-------------------+-------------------+\n")
-	fmt.Fprintf(&b, "| PROXY ID    | IP ADDRESS            | CLIENTS | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
-	fmt.Fprintf(&b, "+-------------+-----------------------+---------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "==================================================================================\n")
+	fmt.Fprintf(&b, "+-------------+-----------------------+---------+---------+-------------------+-------------------+\n")
+	fmt.Fprintf(&b, "| PROXY ID    | IP ADDRESS            | CLIENTS | MAX AGE | BILLABLE (TX/RX)  | TOTAL (TX/RX)     |\n")
+	fmt.Fprintf(&b, "+-------------+-----------------------+---------+---------+-------------------+-------------------+\n")
 
 	type proxyEntry struct {
 		Proxy string
@@ -119,7 +136,7 @@ func formatTrafficStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	for _, e := range entries {
 		billableStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.BillableTx.Load()), formatBytes(e.Bw.BillableRx.Load()))
 		totalStr := fmt.Sprintf("%s / %s", formatBytes(e.Bw.TotalTx.Load()), formatBytes(e.Bw.TotalRx.Load()))
-		fmt.Fprintf(&b, "| %-11s | %-21s | %-7d | %-17s | %-17s |\n", e.Proxy, e.IP, e.Bw.Clients.Load(), billableStr, totalStr)
+		fmt.Fprintf(&b, "| %-11s | %-21s | %-7d | %-7s | %-17s | %-17s |\n", e.Proxy, e.IP, e.Bw.Clients.Load(), formatAgeDuration(e.Bw.MaxAge()), billableStr, totalStr)
 	}
 
 	return b.String()

@@ -8,10 +8,45 @@ import (
 	"time"
 )
 
-// ProxyBandwidth tracks the data usage of a proxy.
+// ProxyBandwidth tracks the data usage and session timing of a proxy.
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
-	Clients atomic.Int64
+	Clients                                  atomic.Int64
+
+	mu       sync.Mutex
+	sessions map[any]time.Time
+}
+
+func (self *ProxyBandwidth) AddSession(key any, start time.Time) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.sessions == nil {
+		self.sessions = make(map[any]time.Time)
+	}
+	self.sessions[key] = start
+}
+
+func (self *ProxyBandwidth) RemoveSession(key any) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.sessions != nil {
+		delete(self.sessions, key)
+	}
+}
+
+func (self *ProxyBandwidth) MaxAge() time.Duration {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if len(self.sessions) == 0 {
+		return 0
+	}
+	var oldest time.Time
+	for _, t := range self.sessions {
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return time.Since(oldest)
 }
 
 // proxyHealth tracks one proxy's platform-transport liveness for the
@@ -164,6 +199,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
 			pb.Clients.Store(h.bw.Clients.Load())
+			pb.AddSession("snapshot", time.Now().Add(-h.bw.MaxAge()))
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
@@ -202,6 +238,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 			pb.BillableRx.Store(h.bw.BillableRx.Load())
 			pb.BillableTx.Store(h.bw.BillableTx.Load())
 			pb.Clients.Store(h.bw.Clients.Load())
+			pb.AddSession("snapshot", time.Now().Add(-h.bw.MaxAge()))
 			r.Bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 

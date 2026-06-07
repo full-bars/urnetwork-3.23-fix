@@ -166,7 +166,10 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		bw := RegisterProxyBandwidth(self.Index)
 		if bw != nil {
 			bw.Clients.Add(1)
-			return &trackedConn{Conn: conn, bw: bw}, nil
+			now := time.Now()
+			tc := &trackedConn{Conn: conn, bw: bw, start: now}
+			bw.AddSession(tc, now)
+			return tc, nil
 		}
 
 		return conn, nil
@@ -175,8 +178,9 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 
 type trackedConn struct {
 	net.Conn
-	bw   *ProxyBandwidth
-	once sync.Once
+	bw    *ProxyBandwidth
+	start time.Time
+	once  sync.Once
 }
 
 func (self *trackedConn) Read(b []byte) (n int, err error) {
@@ -199,6 +203,7 @@ func (self *trackedConn) Close() error {
 	self.once.Do(func() {
 		if self.bw != nil {
 			self.bw.Clients.Add(-1)
+			self.bw.RemoveSession(self)
 		}
 	})
 	return self.Conn.Close()
