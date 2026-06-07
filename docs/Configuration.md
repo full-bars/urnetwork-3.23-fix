@@ -5,8 +5,8 @@
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `BUILD` | `stable` | Set to `jwt` for auth code login, or `stable` for email/password auth. |
-| `USER_AUTH` | - | Your email. Required if `BUILD=stable`. |
-| `PASSWORD` | - | Your password. Required if `BUILD=stable`. |
+| `USER_AUTH` | - | Your email. Required if `BUILD=stable`. Also used for **self-healing** in `BUILD=jwt` mode to refresh expired tokens. |
+| `PASSWORD` | - | Your password. Required if `BUILD=stable`. Also used for **self-healing** in `BUILD=jwt` mode to refresh expired tokens. |
 | `URNETWORK_AUTH_CODE` | - | First-run auth code for `BUILD=jwt`. Use this instead of passing the code as a trailing command argument. Ignored once a JWT exists in the volume. |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
 | `ENABLE_IP_CHECKER` | `false` | Diagnostic only. Prints your full public IP to container logs on startup via an external script. Distinct from dashboard identity reporting, which sends only a redacted IP. |
