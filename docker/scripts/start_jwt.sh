@@ -110,6 +110,7 @@ func_start_vnstat() {
 
 # === Provider Lifecycle Management ===
 func_start_provider(){
+    JWT_TOKEN="${1:-}"
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
     BIN_VER="$($PROVIDER_BIN --version 2>/dev/null || echo "dev")"
     log "[INFO] Running UrNetwork build v${BIN_VER}"
@@ -155,6 +156,7 @@ func_start_provider(){
 
     # Start loop: Provider is now authenticated, keep it running
     failures=0
+    reauth_attempts=0
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
         if "$PROVIDER_BIN" provide; then
@@ -162,14 +164,51 @@ func_start_provider(){
             break
         fi
         code=$?
+
+        # Exit code 78 = token invalid/expired. Delete the stale JWT and re-authenticate
+        # if URNETWORK_AUTH_CODE is available. This is the only case where we delete the JWT.
+        if [ "$code" -eq 78 ]; then
+            log "[WARN] UrNetwork exited with auth error (code 78) — token expired or revoked."
+            rm -f "$JWT_FILE"
+            reauth_attempts=$((reauth_attempts+1))
+            if [ "$reauth_attempts" -ge 3 ]; then
+                log "[CRITICAL] Re-auth attempted $reauth_attempts times without recovery. Exiting."
+                exit 78
+            fi
+            if [ -n "$URNETWORK_AUTH_CODE" ]; then
+                log "[INFO] Re-authenticating with URNETWORK_AUTH_CODE (attempt $reauth_attempts)..."
+                if "$PROVIDER_BIN" auth "" -f && [ -s "$JWT_FILE" ]; then
+                    log "[INFO] Re-authentication successful. Restarting provider..."
+                    failures=0
+                    reauth_attempts=0
+                    sleep 5
+                    continue
+                else
+                    log "[ERROR] Re-authentication failed."
+                fi
+            elif [ -n "$JWT_TOKEN" ]; then
+                log "[INFO] Re-authenticating with positional token (attempt $reauth_attempts)..."
+                if "$PROVIDER_BIN" auth "$JWT_TOKEN" -f && [ -s "$JWT_FILE" ]; then
+                    log "[INFO] Re-authentication successful. Restarting provider..."
+                    failures=0
+                    reauth_attempts=0
+                    sleep 5
+                    continue
+                else
+                    log "[ERROR] Re-authentication failed."
+                fi
+            fi
+            log "[CRITICAL] Token expired/revoked and re-auth unavailable. Set URNETWORK_AUTH_CODE and restart."
+            sleep 30
+            exit 78
+        fi
+
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
 
-        # Shared-volume safety: never delete the JWT here. In the 3-in-1 shared
-        # config model that would deauth the whole stack, and the single-use auth
-        # code is already consumed — the node could not recover on its own. After
-        # repeated crashes, exit non-zero and let Docker's restart policy cycle
-        # the container with the session intact.
+        # Shared-volume safety: never delete the JWT for generic crashes. In the 3-in-1
+        # shared config model that would deauth the whole stack, and the single-use auth
+        # code is already consumed. After repeated crashes, exit and let Docker restart.
         if [ "$failures" -ge 5 ]; then
             log "[ERROR] Too many consecutive crashes ($failures); exiting for Docker to restart. Session preserved."
             exit 1
