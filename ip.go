@@ -585,9 +585,6 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			self.udpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
-		if self.bw != nil {
-			self.bw.Clients.Add(1)
-		}
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
@@ -601,9 +598,6 @@ func (self *UdpBuffer[BufferId]) udpSend(
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
 					}
-				}
-				if self.bw != nil {
-					self.bw.Clients.Add(-1)
 				}
 			}()
 			sequence.Run()
@@ -1306,9 +1300,6 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 			self.tcpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
-		if self.bw != nil {
-			self.bw.Clients.Add(1)
-		}
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
@@ -1322,9 +1313,6 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
 					}
-				}
-				if self.bw != nil {
-					self.bw.Clients.Add(-1)
 				}
 			}()
 			sequence.Run()
