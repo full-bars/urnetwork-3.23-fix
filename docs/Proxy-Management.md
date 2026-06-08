@@ -87,6 +87,22 @@ urnet-tools proxy health                             # Binary
 docker exec -it urfix proxy-health                   # Docker
 ```
 
+> [!TIP]
+> **Understanding "Dead" Proxies in the First Hour**
+>
+> When you first deploy proxies or add new ones to your list, they appear as `dead` in the health report during an initial startup period. This is **not** a sign they're broken—it's how the system stages massive deployments.
+>
+> **Why:** The backend cannot handle thousands of proxies authenticating all at once, so the provider staggers them with a 100ms delay between each proxy. This means:
+> - A 1,000-proxy deployment takes ~100 seconds to fully initialize
+> - A 5,000-proxy deployment takes ~8 minutes
+> - A 10,000-proxy deployment takes ~17 minutes
+>
+> During this time, proxies show as `dead` simply because they haven't connected yet—not because they're broken.
+>
+> **When to investigate:** After the initial startup period (~1 hour), the system's hourly retry pulse has fired at least once for all proxies. If a proxy is *still* `dead` after multiple pulse cycles, it's a real problem (bad credentials, unreachable address). But in the first hour, `dead` labels are normal and expected.
+>
+> **Pro tip:** Once a proxy successfully connects even once, it's permanently marked as "ever connected." If it drops later, it shows as `degraded` (not `dead`), giving you a clear signal about which proxies worked before vs. which never worked at all.
+
 ### 📈 Proxy Traffic
 View a sorted report of cumulative bandwidth per proxy, broken down by billable vs. total traffic, along with the number of active NAT sessions currently multiplexed through each proxy.
 ```sh
