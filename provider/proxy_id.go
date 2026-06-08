@@ -11,9 +11,15 @@ func nextProxyID() int {
 	return int(atomic.AddInt64(&proxyIDCounter, 1) - 1)
 }
 
-// initProxyIDCounter advances the counter to start above highestExistingID,
+// initProxyIDCounter fast-forwards the monotonic counter above highestExistingID
 // so IDs from previous runs stored in proxy.state are never reused.
 func initProxyIDCounter(highestExistingID int) {
+	// ID 0 is reserved for the native [direct] connection.
+	// All external proxies must start at 1 or higher.
+	if highestExistingID < 0 {
+		highestExistingID = 0
+	}
+
 	target := int64(highestExistingID + 1)
 	for {
 		cur := atomic.LoadInt64(&proxyIDCounter)

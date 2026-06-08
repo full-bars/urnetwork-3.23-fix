@@ -979,7 +979,7 @@ func provide(opts docopt.Opts) {
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 
-	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings) {
+	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
@@ -1084,6 +1084,9 @@ func provide(opts docopt.Opts) {
 				if proxySettings != nil {
 					fmt.Printf("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
 						proxySettings.Index, proxySettings.Address, authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
+				} else if isNative {
+					fmt.Printf("[proxy][init] proxy[0] (direct) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
+						authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
 				} else {
 					fmt.Printf("[init] auth failed (attempt %d/%d): %v. Will retry in %.2fs\n", authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
 				}
@@ -1098,6 +1101,8 @@ func provide(opts docopt.Opts) {
 			if proxySettings != nil {
 				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n",
 					proxySettings.Index, proxySettings.Address, err)
+			} else if isNative {
+				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[0] (direct) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "[init] authentication failed after retries: %v\n", err)
 			}
@@ -1151,6 +1156,8 @@ func provide(opts docopt.Opts) {
 		var bw *connect.ProxyBandwidth
 		if proxySettings != nil {
 			bw = connect.RegisterProxyBandwidth(proxySettings.Index)
+		} else if isNative {
+			bw = connect.RegisterProxyBandwidth(0)
 		}
 
 		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), bw, localUserNatSettings)
@@ -1228,6 +1235,21 @@ func provide(opts docopt.Opts) {
 	var proxyCancelMu sync.Mutex
 	proxyCancelMap := map[string]context.CancelFunc{}
 
+	// ALWAYS start the native [direct] connection as proxy[0].
+	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
+	wg.Add(1)
+	nativeCtx, nativeCancel := context.WithCancel(ctx)
+	// We don't add nativeCancel to the proxyCancelMap so it is immune to hot-reload deletions.
+	go connect.HandleError(func() {
+		defer wg.Done()
+		defer nativeCancel()
+		defer connect.UnregisterProxy(0)
+		
+		// Register it early so it shows up in health reports immediately as [direct]
+		connect.RegisterProxy(0, "direct")
+		provideWithProxy(nativeCtx, nil, true)
+	})
+
 	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
@@ -1275,18 +1297,9 @@ func provide(opts docopt.Opts) {
 				case <-time.After(initialDelay):
 				}
 
-				provideWithProxy(proxyCtx, proxySettings)
+				provideWithProxy(proxyCtx, proxySettings, false)
 			})
 		}
-	} else {
-		// No entry in proxyCancelMap — hot-reload only applies in proxy mode.
-		wg.Add(1)
-		proxyCtx, proxyCancel := context.WithCancel(ctx)
-		go connect.HandleError(func() {
-			defer wg.Done()
-			defer proxyCancel()
-			provideWithProxy(proxyCtx, nil)
-		})
 	}
 
 	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
