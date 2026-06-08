@@ -105,7 +105,7 @@ type ProxyReloader struct {
 	wg          *sync.WaitGroup
 
 	// spawnProxy starts a proxy goroutine's work (the provideWithProxy closure).
-	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings)
+	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool)
 }
 
 // StartWatcher launches the background goroutine that polls the reload trigger
@@ -240,7 +240,7 @@ func (r *ProxyReloader) reload() {
 				return
 			case <-time.After(initialDelay):
 			}
-			r.spawnProxy(proxyCtx, settingsCopy)
+			r.spawnProxy(proxyCtx, settingsCopy, false)
 		})
 	}
 
