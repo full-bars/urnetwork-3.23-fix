@@ -1081,7 +1081,12 @@ func provide(opts docopt.Opts) {
 				}
 
 				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
-				fmt.Printf("init proxy auth failed: %v. Will retry in %.2fs\n", err, float64(retryDelay/time.Millisecond)/1000.0)
+				if proxySettings != nil {
+					fmt.Printf("[proxy][init] proxy[%d] (%s) auth failed: %v. Will retry in %.2fs\n",
+						proxySettings.Index, proxySettings.Address, err, float64(retryDelay/time.Millisecond)/1000.0)
+				} else {
+					fmt.Printf("[init] auth failed: %v. Will retry in %.2fs\n", err, float64(retryDelay/time.Millisecond)/1000.0)
+				}
 				select {
 				case <-proxyCtx.Done():
 					return "", connect.Id{}, proxyCtx.Err()
@@ -1090,8 +1095,13 @@ func provide(opts docopt.Opts) {
 			}
 		}()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			if proxySettings != nil {
+				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n",
+					proxySettings.Index, proxySettings.Address, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "[init] authentication failed after retries: %v\n", err)
+			}
+			return
 		}
 
 		instanceId := connect.NewId()
