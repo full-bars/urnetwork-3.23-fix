@@ -2190,7 +2190,7 @@ func (self *SendSequence) Run() {
 					}()
 					if done {
 						// close the sequence
-						glog.Errorf("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						glog.V(2).Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
 				}
@@ -2231,7 +2231,7 @@ func (self *SendSequence) Run() {
 					}()
 					if done {
 						// close the sequence
-						glog.Errorf("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						glog.V(2).Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
 				}
