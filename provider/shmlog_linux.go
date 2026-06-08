@@ -71,3 +71,18 @@ func initSHMLogger() {
 		}
 	}()
 }
+
+// shmLogFatal writes a message to both stderr and the ramlog file, then exits.
+// Writing directly to the ramlog file bypasses the pipe goroutine so the
+// message is guaranteed to be on disk even when os.Exit kills the process
+// before the pipe reader can flush.
+func shmLogFatal(code int, format string, args ...any) {
+	msg := fmt.Sprintf("FATAL [exit %d]: %s\n", code, fmt.Sprintf(format, args...))
+	if f, err := os.OpenFile(shmLogPath, os.O_WRONLY|os.O_APPEND, 0); err == nil {
+		f.Write([]byte(msg))
+		f.Sync()
+		f.Close()
+	}
+	os.Stderr.Write([]byte(msg))
+	os.Exit(code)
+}
