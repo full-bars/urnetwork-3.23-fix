@@ -235,3 +235,35 @@ func TestAcquireProxyLock_SecondFails(t *testing.T) {
 	}
 	rel2()
 }
+
+func TestWriteProxyConfig_AutoReloadTrigger(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	config := &ProxyConfig{
+		Servers: map[string]string{
+			"1.1.1.1:1080": "key1",
+		},
+	}
+
+	writeProxyConfig(config)
+
+	reloadPath := filepath.Join(dir, ".urnetwork", "proxy.reload")
+	seq, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatalf("failed to read reload sequence: %v", err)
+	}
+	if seq != 1 {
+		t.Fatalf("expected trigger sequence to be 1 after first write, got %d", seq)
+	}
+
+	writeProxyConfig(config)
+	seq, err = readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatalf("failed to read reload sequence: %v", err)
+	}
+	if seq != 2 {
+		t.Fatalf("expected trigger sequence to be 2 after second write, got %d", seq)
+	}
+}
