@@ -2344,4 +2344,9 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 	if err != nil {
 		panic(err)
 	}
+
+	// Automatically trigger a hot-reload so running providers pick up the changes
+	if reloadPath, err := proxyReloadPath(); err == nil {
+		_ = writeReloadTrigger(reloadPath)
+	}
 }
