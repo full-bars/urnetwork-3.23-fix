@@ -82,6 +82,29 @@ into the framing:
   once stays `degraded` through every pulse/backoff cycle and is never wrongly
   relabeled `dead`. The report and the retry machinery do not fight.
 
+### Startup Ramp & Staggered Deployment
+
+> [!WARNING]
+> **False "Dead" Labels During Startup — How Staggered Deployment Works**
+>
+> When you deploy a large proxy list, the backend API cannot accept all authentication requests simultaneously. To prevent overwhelming the API, proxies are started with a staggered delay:
+>
+> **Each proxy waits `(position_in_list × 100 milliseconds)` before attempting its first connection.**
+>
+> Examples:
+> - 1,000 proxies: startup completes in ~100 seconds
+> - 5,000 proxies: startup completes in ~500 seconds (~8 minutes)
+> - 10,000 proxies: startup completes in ~1000 seconds (~17 minutes)
+>
+> **Timeline after startup:**
+> 1. **0 to completion of stagger sequence**: Proxies are being deployed in sequence; early proxies may already be connected while later ones haven't started yet
+> 2. **Stagger completion to ~1 hour**: All proxies have attempted connection, but the hourly retry pulse has not yet fired. Never-connected proxies show as `dead`, but may not have received their first retry attempt yet
+> 3. **1+ hours**: The hourly pulse has fired at least once for all proxies. A proxy still labeled `dead` across multiple pulse cycles is a confirmed problem (bad credentials, unreachable address, etc.)
+>
+> **Key guarantee:** Once a proxy successfully authenticates (marked `everUp=true`), it is permanently marked and can only be `degraded` (not `dead`) if it drops later. This prevents false relabeling while the retry mechanism works.
+>
+> **Bottom line:** Do not remove or investigate `dead` proxies in the first ~1 hour of startup. Wait for the hourly pulse to give them a fair chance.
+
 ## Architecture
 
 ### Component 1: per-proxy registry (`proxy_health.go`, package `connect`)
