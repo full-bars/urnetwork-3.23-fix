@@ -511,3 +511,38 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
+## Exit Code Reference
+
+All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr (Docker logs) and the ramlog file (`/dev/shm/urnetwork.log`) via `shmLogFatal` before terminating.
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean shutdown |
+| 10 | `auth`: home directory not found |
+| 11 | `auth`: login request failed (network) |
+| 12 | `auth`: API rejected the login credentials |
+| 13 | `auth`: account requires additional verification via the app |
+| 14 | `auth`: auth code request failed (network) |
+| 15 | `auth`: auth code rejected (expired or single‑use code reused without persistent volume) |
+| 16 | `auth`: could not create `~/.urnetwork` directory for JWT storage |
+| 20 | `provide`: proxy file cannot be read |
+| 21 | `provide`: proxy file contains no valid entries |
+| 40 | `logs`: ramlog file not found (is `URNETWORK_RAMLOGS=1` set?) |
+| 50 | `proxy refresh`: proxy state file not found |
+| 51 | `proxy refresh`: provider is not currently running |
+| 52 | `proxy refresh`: provider has not reached the 8‑hour warmup threshold (use `--force` to override) |
+| 53 | `proxy refresh`: could not acquire the proxy lock (another operation in progress) |
+| 54 | `proxy refresh`: could not read the proxy source file |
+| 55 | `proxy refresh`: could not determine the reload trigger path |
+| 56 | `proxy refresh`: could not write the reload trigger |
+| 60 | `proxy remove-dead`: provider is not currently running |
+| 61 | `proxy remove-dead`: provider has not reached the 65‑minute dead‑confirmation threshold |
+| 62 | `proxy remove-dead`: could not update the proxy source file |
+| 63 | `proxy remove-dead`: could not acquire the proxy lock |
+| 64 | `proxy remove-dead`: could not write the reload trigger |
+| 78 | `provide`: JWT expired or invalid — startup scripts intercept this code to delete the stale JWT and re‑authenticate |
+
+**Status**: 🚧 New in v3.23.0-fix.18.4. Not yet released.
+
+---
+

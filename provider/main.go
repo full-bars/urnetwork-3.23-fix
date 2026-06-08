@@ -546,8 +546,7 @@ Options:
 func auth(opts docopt.Opts) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not determine home directory: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(10, "could not determine home directory: %v", err)
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	jwtPath := filepath.Join(urNetworkDir, "jwt")
@@ -628,16 +627,13 @@ func auth(opts docopt.Opts) {
 		}
 
 		if loginResult.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", loginResult.Error)
-			os.Exit(1)
+			shmLogFatal(11, "authentication request failed: %v", loginResult.Error)
 		}
 		if loginResult.Result.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", loginResult.Result.Error.Message)
-			os.Exit(1)
+			shmLogFatal(12, "authentication failed: %s", loginResult.Result.Error.Message)
 		}
 		if loginResult.Result.VerificationRequired != nil {
-			fmt.Fprintf(os.Stderr, "Error: verification required for %s — complete account setup via the app or web first.\n", loginResult.Result.VerificationRequired.UserAuth)
-			os.Exit(1)
+			shmLogFatal(13, "verification required for %s — complete account setup via the app or web first", loginResult.Result.VerificationRequired.UserAuth)
 		}
 
 		byJwt = loginResult.Result.Network.ByJwt
@@ -670,13 +666,10 @@ func auth(opts docopt.Opts) {
 		}
 
 		if authCodeLoginResult.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication request failed: %v\n", authCodeLoginResult.Error)
-			os.Exit(1)
+			shmLogFatal(14, "authentication code request failed: %v", authCodeLoginResult.Error)
 		}
 		if authCodeLoginResult.Result.Error != nil {
-			fmt.Fprintf(os.Stderr, "Error: authentication failed: %s\n", authCodeLoginResult.Result.Error.Message)
-			fmt.Fprintf(os.Stderr, "Hint: auth codes are single-use. If this container was restarted, mount a persistent volume at /root/.urnetwork so the JWT survives restarts.\n")
-			os.Exit(1)
+			shmLogFatal(15, "authentication code rejected: %s — auth codes are single-use; if restarting, mount /root/.urnetwork as a persistent volume", authCodeLoginResult.Result.Error.Message)
 		}
 
 		byJwt = authCodeLoginResult.Result.ByJwt
@@ -684,8 +677,7 @@ func auth(opts docopt.Opts) {
 
 	if byJwt != "" {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: could not create %s: %v\n", urNetworkDir, err)
-			os.Exit(1)
+			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
 		os.WriteFile(jwtPath, []byte(byJwt), 0700)
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -1060,8 +1052,7 @@ func provide(opts docopt.Opts) {
 				}
 
 				if errors.Is(err, ErrTokenInvalid) {
-					fmt.Fprintf(os.Stderr, "auth: token invalid or expired — exiting for shell to refresh (code 78)\n")
-					os.Exit(78)
+					shmLogFatal(78, "token invalid or expired — exiting so the startup script can refresh it")
 				}
 
 				if strings.Contains(err.Error(), "Jwt does not exist") {
@@ -1214,15 +1205,10 @@ func provide(opts docopt.Opts) {
 	if proxyFile != "" {
 		settings, err := readProxySettingsFromFile(proxyFile)
 		if err != nil {
-			// Fatal: the operator explicitly requested an external proxy file.
-			// Falling back to no-proxy mode would silently route traffic directly
-			// and leak the operator's real IP.
-			fmt.Printf("[proxy] fatal: %v\n", err)
-			os.Exit(1)
+			shmLogFatal(20, "[proxy] could not read proxy file: %v", err)
 		}
 		if len(settings) == 0 {
-			fmt.Printf("[proxy] fatal: proxy file %s contained no valid proxies (expected ip:port:user:pass per line)\n", proxyFile)
-			os.Exit(1)
+			shmLogFatal(21, "[proxy] proxy file %s contained no valid proxies (expected one ip:port:user:pass per line)", proxyFile)
 		}
 		allProxySettings = settings
 		proxyState.Source = proxyFile
@@ -1918,8 +1904,7 @@ func providerLogs(opts docopt.Opts) {
 	n, _ := opts.Int("-n")
 	out, err := readSHMLog(shmLogPath, n)
 	if err != nil {
-		fmt.Printf("error: no ramlogs found at %s — is URNETWORK_RAMLOGS=1 set?\n", shmLogPath)
-		os.Exit(1)
+		shmLogFatal(40, "no ramlogs found at %s — is URNETWORK_RAMLOGS=1 set?", shmLogPath)
 	}
 	fmt.Print(out)
 
@@ -2003,45 +1988,31 @@ func proxyRefresh(opts docopt.Opts) {
 
 	state, err := readProxyState()
 	if err != nil {
-		fmt.Printf("error: could not read proxy.state — is the provider running?\n")
-		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
-		os.Exit(1)
+		shmLogFatal(50, "could not read proxy.state (use 'provider proxy add/remove' to edit the proxy list for next startup)")
 	}
 
-	// Check if provider is running by seeing if state is fresh
 	if state.StartedAt.IsZero() {
-		fmt.Printf("error: provider does not appear to be running (no proxy.state found).\n")
-		fmt.Printf("  To edit the proxy list for next startup, use: provider proxy add/remove\n")
-		os.Exit(1)
+		shmLogFatal(51, "provider does not appear to be running (use 'provider proxy add/remove' to edit the proxy list for next startup)")
 	}
 
 	uptime := time.Since(state.StartedAt)
 
-	// Warmup protection
 	const warmupThreshold = 8 * time.Hour
 	if uptime < warmupThreshold && !force {
-		fmt.Printf("Provider has been running for %s. Proxies need 8-12h to warm up —\n", formatDuration(uptime))
-		fmt.Printf("a proxy that looks dead now may still be establishing contracts.\n")
-		fmt.Printf("Run again after 8h uptime, or use --force to override.\n")
-		os.Exit(1)
+		shmLogFatal(52, "provider has only been running %s — proxies need 8-12h to warm up; use --force to override", formatDuration(uptime))
 	}
 
-	// Acquire lock before computing the diff and prompting, so a second concurrent
-	// invocation fails immediately rather than after both prompts have fired.
 	release, err := acquireProxyLock()
 	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(53, "could not acquire proxy lock: %v", err)
 	}
 	defer release()
 
-	// Load desired (from source file or internal config)
 	var desired []*connect.ProxySettings
 	if state.Source != "" {
 		settings, err := readProxySettingsFromFile(state.Source)
 		if err != nil {
-			fmt.Printf("error: could not read proxy file %s: %v\n", state.Source, err)
-			os.Exit(1)
+			shmLogFatal(54, "could not read proxy file %s: %v", state.Source, err)
 		}
 		desired = settings
 	} else {
@@ -2136,13 +2107,11 @@ func proxyRefresh(opts docopt.Opts) {
 
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
-		fmt.Printf("error: could not determine reload path: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(55, "could not determine reload path: %v", err)
 	}
 
 	if err := writeReloadTrigger(reloadPath); err != nil {
-		fmt.Printf("error: could not write reload trigger: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(56, "could not write reload trigger: %v", err)
 	}
 
 	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
@@ -2151,16 +2120,13 @@ func proxyRefresh(opts docopt.Opts) {
 func proxyRemoveDead(_ docopt.Opts) {
 	state, err := readProxyState()
 	if err != nil || state.StartedAt.IsZero() {
-		fmt.Println("error: provider does not appear to be running.")
-		os.Exit(1)
+		shmLogFatal(60, "provider does not appear to be running")
 	}
 
 	uptime := time.Since(state.StartedAt)
 	const deadConfirmDelay = 65 * time.Minute
 	if uptime < deadConfirmDelay {
-		fmt.Printf("Provider has been running for only %s — proxies need %s before dead status is confirmed.\n",
-			formatDuration(uptime), formatDuration(deadConfirmDelay))
-		os.Exit(1)
+		shmLogFatal(61, "provider has only been running %s — need %s uptime before dead status is confirmed", formatDuration(uptime), formatDuration(deadConfirmDelay))
 	}
 
 	type removedProxy struct {
@@ -2213,15 +2179,13 @@ func proxyRemoveDead(_ docopt.Opts) {
 		return
 	}
 
-	// Remove from source file
 	if state.Source != "" {
 		var addrs []string
 		for _, rp := range toRemove {
 			addrs = append(addrs, rp.addr)
 		}
 		if err := removeAddressesFromFile(state.Source, addrs); err != nil {
-			fmt.Printf("error: could not update proxy file: %v\n", err)
-			os.Exit(1)
+			shmLogFatal(62, "could not update proxy file: %v", err)
 		}
 	} else {
 		proxyConfig := readProxyConfig()
@@ -2238,18 +2202,15 @@ func proxyRemoveDead(_ docopt.Opts) {
 		writeProxyConfig(proxyConfig)
 	}
 
-	// Trigger reload
 	release, err := acquireProxyLock()
 	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(63, "could not acquire proxy lock: %v", err)
 	}
 	defer release()
 
 	reloadPath, _ := proxyReloadPath()
 	if err := writeReloadTrigger(reloadPath); err != nil {
-		fmt.Printf("error: could not write reload trigger: %v\n", err)
-		os.Exit(1)
+		shmLogFatal(64, "could not write reload trigger: %v", err)
 	}
 
 	fmt.Printf("Removed %d proxies. Reload triggered.\n", len(toRemove))
