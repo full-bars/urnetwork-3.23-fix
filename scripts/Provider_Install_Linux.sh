@@ -239,24 +239,43 @@ FORCE=0
 
 network_fetch ()
 {
+    url="$1"
+    
+    # Try curl first
     if command -v curl > /dev/null; then
+        # --retry 3: retry on transient errors (500, 502, 503, 504, 408)
+        # --retry-connrefused: retry even if connection is refused
+        # --retry-delay 2: wait 2 seconds between retries
+        opts="--connect-timeout 10 --retry 3 --retry-delay 2 --retry-connrefused -fSsL"
         if [ "$FORCE_IPV4" -eq 1 ]; then
-            curl -4 --connect-timeout 10 -fSsL "$1"
-        else
-            curl --connect-timeout 10 -fSsL "$1"
+            opts="-4 $opts"
         fi
-        return $?
-    elif command -v wget > /dev/null; then
-        if [ "$FORCE_IPV4" -eq 1 ]; then
-            wget -4 --connect-timeout=10 -qO- "$1"
-        else
-            wget --connect-timeout=10 -qO- "$1"
+        
+        # We use a temporary file to capture output because $(...) can strip trailing newlines
+        # and we want to separate stdout from curl's exit code clearly.
+        if result=$(curl $opts "$url" 2>/dev/null); then
+            printf "%s" "$result"
+            return 0
         fi
-        return $?
-    else
-        pr_err "Neither curl nor wget is available"
-        exit 1
     fi
+
+    # Try wget fallback
+    if command -v wget > /dev/null; then
+        # --tries=3: retry up to 3 times
+        # --waitretry=2: wait 2 seconds between retries
+        # --retry-connrefused: retry even if connection is refused
+        opts="--connect-timeout=10 --tries=3 --waitretry=2 --retry-connrefused -qO-"
+        if [ "$FORCE_IPV4" -eq 1 ]; then
+            opts="-4 $opts"
+        fi
+        
+        if result=$(wget $opts "$url" 2>/dev/null); then
+            printf "%s" "$result"
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 show_version () 
@@ -618,6 +637,50 @@ func_root_guard ()
     esac
 }
 
+download_asset ()
+{
+    url="$1"
+    output="$2"
+    
+    # Try curl first
+    if command -v curl > /dev/null; then
+        # --retry 3: retry on transient errors (500, 502, 503, 504, 408)
+        # --retry-connrefused: retry even if connection is refused
+        # --retry-delay 2: wait 2 seconds between retries
+        opts="--progress-bar --connect-timeout 10 --retry 3 --retry-delay 2 --retry-connrefused -fL"
+        if [ "$FORCE_IPV4" -eq 1 ]; then
+            opts="-4 $opts"
+        fi
+        
+        if curl $opts "$url" -o "$output"; then
+            return 0
+        fi
+        pr_warn "curl failed to download asset, trying wget fallback..."
+    fi
+
+    # Try wget fallback
+    if command -v wget > /dev/null; then
+        # --tries=3: retry up to 3 times
+        # --waitretry=2: wait 2 seconds between retries
+        # --retry-connrefused: retry even if connection is refused on modern wget
+        opts="--connect-timeout=10 --tries=3 --waitretry=2"
+        if [ "$FORCE_IPV4" -eq 1 ]; then
+            opts="-4 $opts"
+        fi
+        
+        # Check if wget supports --retry-connrefused
+        if wget --help | grep -q "retry-connrefused"; then
+            opts="$opts --retry-connrefused"
+        fi
+
+        if wget $opts -O "$output" "$url"; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 do_install ()
 {
     : "${tag:=latest}"
@@ -854,18 +917,8 @@ do_install ()
     trap 'exit 1' INT TERM
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
-        if command -v curl > /dev/null; then
-            if ! curl --progress-bar -fL "$dl_url" -o "$tarball"; then
-                pr_err "Failed to download $dl_url"
-                exit 1
-            fi
-        elif command -v wget > /dev/null; then
-            if ! wget -O "$tarball" "$dl_url"; then 
-                pr_err "Failed to download $dl_url"
-                exit 1
-            fi
-        else
-            pr_err "Neither curl nor wget is available"
+        if ! download_asset "$dl_url" "$tarball"; then
+            pr_err "Failed to download $dl_url after multiple attempts and fallbacks"
             exit 1
         fi
 
