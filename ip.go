@@ -541,12 +541,15 @@ func (self *UdpBuffer[BufferId]) udpSend(
 				delete(sourceSequences, bufferId)
 				if 0 == len(sourceSequences) {
 					delete(self.sourceSequences, sequence.source)
+					if self.bw != nil {
+						self.bw.Clients.Add(-1)
+						self.bw.RemoveSession(sequence.source)
+					}
 				}
 			}
 		}
 
 		if 0 < self.udpBufferSettings.UserLimit {
-			// limit the total connections per source to avoid blowing up the ulimit
 			if sourceSequences := self.sourceSequences[source]; self.udpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.udpBufferSettings.UserLimit, func(sequence *UdpSequence) bool {
 					glog.V(1).Infof(
@@ -561,10 +564,6 @@ func (self *UdpBuffer[BufferId]) udpSend(
 				})
 			}
 		}
-
-		// TODO
-		// limit the number of new connections per second per source
-		// self.sourceLimiter[source].Limit()
 
 		sourceIpCopy := make(net.IP, len(sourceIp))
 		copy(sourceIpCopy, sourceIp)
@@ -585,18 +584,31 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			self.udpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
+		sourceEntries, ok := self.sourceSequences[source]
+		if !ok {
+			sourceEntries = map[BufferId]*UdpSequence{}
+			self.sourceSequences[source] = sourceEntries
+			if self.bw != nil {
+				self.bw.Clients.Add(1)
+				self.bw.AddSession(source, time.Now())
+			}
+		}
+		sourceEntries[bufferId] = sequence
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
 				sequence.Close()
-				// clean up
 				if sequence == self.sequences[bufferId] {
 					delete(self.sequences, bufferId)
 					sourceSequences := self.sourceSequences[sequence.source]
 					delete(sourceSequences, bufferId)
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
+						if self.bw != nil {
+							self.bw.Clients.Add(-1)
+							self.bw.RemoveSession(sequence.source)
+						}
 					}
 				}
 			}()
@@ -1230,13 +1242,16 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 
 		if sequence, ok := self.sequences[bufferId]; ok {
 			if tcp.RST {
-				// drop the packet
 				sequence.Cancel()
 				delete(self.sequences, bufferId)
 				sourceSequences := self.sourceSequences[sequence.source]
 				delete(sourceSequences, bufferId)
 				if 0 == len(sourceSequences) {
 					delete(self.sourceSequences, sequence.source)
+					if self.bw != nil {
+						self.bw.Clients.Add(-1)
+						self.bw.RemoveSession(sequence.source)
+					}
 				}
 				return nil
 			}
@@ -1244,24 +1259,12 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 		}
 
 		if !tcp.SYN {
-			// drop the packet; only create a new sequence on SYN
 			MessagePoolReturn(ipPacket)
 			glog.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
 			return nil
 		}
 
-		// else new sequence
-		// if sequence, ok := self.sequences[bufferId]; ok {
-		// 	sequence.Cancel()
-		// 	delete(self.sequences, bufferId)
-		// 	sourceSequences := self.sourceSequences[sequence.source]
-		// 	delete(sourceSequences, bufferId)
-		// 	if 0 == len(sourceSequences) {
-		// 		delete(self.sourceSequences, sequence.source)
-		// 	}
-		// }
 		if 0 < self.tcpBufferSettings.UserLimit {
-			// limit the total connections per source to avoid blowing up the ulimit
 			if sourceSequences := self.sourceSequences[source]; self.tcpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.tcpBufferSettings.UserLimit, func(sequence *TcpSequence) bool {
 					glog.V(1).Infof(
@@ -1276,10 +1279,6 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 				})
 			}
 		}
-
-		// TODO
-		// limit the number of new connections per second per source
-		// self.sourceLimiter[source].Limit()
 
 		sourceIpCopy := make(net.IP, len(sourceIp))
 		copy(sourceIpCopy, sourceIp)
@@ -1300,18 +1299,31 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 			self.tcpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
+		sourceEntries, ok := self.sourceSequences[source]
+		if !ok {
+			sourceEntries = map[BufferId]*TcpSequence{}
+			self.sourceSequences[source] = sourceEntries
+			if self.bw != nil {
+				self.bw.Clients.Add(1)
+				self.bw.AddSession(source, time.Now())
+			}
+		}
+		sourceEntries[bufferId] = sequence
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
 				sequence.Close()
-				// clean up
 				if sequence == self.sequences[bufferId] {
 					delete(self.sequences, bufferId)
 					sourceSequences := self.sourceSequences[sequence.source]
 					delete(sourceSequences, bufferId)
 					if 0 == len(sourceSequences) {
 						delete(self.sourceSequences, sequence.source)
+						if self.bw != nil {
+							self.bw.Clients.Add(-1)
+							self.bw.RemoveSession(sequence.source)
+						}
 					}
 				}
 			}()
