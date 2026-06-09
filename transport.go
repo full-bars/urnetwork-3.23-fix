@@ -587,6 +587,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		if err != nil {
 			lastBackendFailNano.Store(time.Now().UnixNano())
 			consecutiveBackendFails.Add(1)
+			if idx, ok := self.proxyIndex(); ok {
+				RecordProxyAuthFailure(idx)
+			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
@@ -705,6 +708,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				atomic.AddInt64(&activeProxyConnections, -1)
 				if idx, ok := self.proxyIndex(); ok {
 					markProxyDown(idx)
+					RecordProxyTransportDrop(idx)
 				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
@@ -1155,6 +1159,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		if err != nil {
 			lastBackendFailNano.Store(time.Now().UnixNano())
 			consecutiveBackendFails.Add(1)
+			if idx, ok := self.proxyIndex(); ok {
+				RecordProxyAuthFailure(idx)
+			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
@@ -1225,6 +1232,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				atomic.AddInt64(&activeProxyConnections, -1)
 				if idx, ok := self.proxyIndex(); ok {
 					markProxyDown(idx)
+					RecordProxyTransportDrop(idx)
 				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
