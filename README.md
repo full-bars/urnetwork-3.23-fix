@@ -66,6 +66,8 @@ urnet-tools logs
 
 Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all provider nodes and renders an HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
 
+![Hub Dashboard Preview](docs/hub-dashboard-preview.png)
+
 ```sh
 # Run the hub (standalone binary, built from hub/main.go)
 ./hub -addr :8080 -data /var/hub-data
