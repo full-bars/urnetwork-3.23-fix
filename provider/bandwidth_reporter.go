@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime/metrics"
 	"time"
@@ -54,7 +55,13 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 		}
 	}
 
-	fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", reportURL, interval, nodeID)
+	apiURL, err := url.JoinPath(reportURL, "/api/report")
+	if err != nil {
+		fmt.Printf("[report] invalid report URL %s: %v\n", reportURL, err)
+		return
+	}
+
+	fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -70,8 +77,10 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 
 		report := buildReport(nodeID, host, startTime)
 		if len(report.Proxies) == 0 {
+			fmt.Printf("[report] skipping (0 proxies in bandwidth map)\n")
 			continue
 		}
+		fmt.Printf("[report] sending %d proxies to %s\n", len(report.Proxies), apiURL)
 
 		body, err := json.Marshal(report)
 		if err != nil {
@@ -79,7 +88,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 			continue
 		}
 
-		resp, err := client.Post(reportURL, "application/json", bytes.NewReader(body))
+		resp, err := client.Post(apiURL, "application/json", bytes.NewReader(body))
 		if err != nil {
 			fmt.Printf("[report] post failed: %v\n", err)
 			continue
@@ -98,7 +107,7 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 	heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 	sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 
-	_, dead, degraded, bandwidth := connect.ProxyHealthSnapshot()
+	_, dead, degraded, bandwidth, connecting := connect.ProxyHealthSnapshot()
 
 	deadSet := make(map[string]bool, len(dead))
 	for _, d := range dead {
@@ -107,6 +116,10 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 	degradedSet := make(map[string]bool, len(degraded))
 	for _, d := range degraded {
 		degradedSet[d] = true
+	}
+	connectingSet := make(map[string]bool, len(connecting))
+	for _, c := range connecting {
+		connectingSet[c] = true
 	}
 
 	proxies := make([]proxyReport, 0, len(bandwidth))
@@ -118,6 +131,8 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			status = "dead"
 		} else if degradedSet[key] {
 			status = "degraded"
+		} else if connectingSet[key] {
+			status = "connecting"
 		}
 
 		proxies = append(proxies, proxyReport{

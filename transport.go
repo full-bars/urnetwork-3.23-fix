@@ -474,7 +474,8 @@ func (self *PlatformTransport) proxyIndex() (int, bool) {
 	}
 	ps := self.clientStrategy.settings.ProxySettings
 	if ps == nil {
-		return 0, false
+		// native [direct] proxy — always index 0
+		return 0, true
 	}
 	return ps.Index, true
 }
