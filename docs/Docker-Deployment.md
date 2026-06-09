@@ -28,6 +28,23 @@ All examples below mount a config volume at `/root/.urnetwork`. With this volume
 
 The examples below use `urfix` as the container name.
 
+#### With proxy benchmarking and bandwidth hub:
+
+```bash
+docker run -d --name urfix \
+  -v ~/.urnetwork:/root/.urnetwork \
+  -e URNETWORK_PROXY_BENCHMARK=true \
+  -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
+  -e URNETWORK_REPORT_URL=http://hub-server:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+| Env var | Purpose |
+|---|---|
+| `URNETWORK_PROXY_BENCHMARK=true` | Enables per-proxy latency probes (TCP connect every 5m, SOCKS5 every 15m) |
+| `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
+| `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting (see hub/README) |
+
 For additional containers, change the container name and volumes together.
 
 ### 🔐 JWT Auth
