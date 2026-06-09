@@ -46,6 +46,7 @@ jobs:
         run: |
           go test -v -timeout 60s -run "TestShouldLogSelectErr|TestProxyHealth|TestUnregisterProxy|TestByteCount|TestIdJson|TestIdOrder|TestMultiHopId|TestTransferPath|TestAddrGenerator|TestAddrsInPrefix|TestIpsInNet|TestClientKeyManager|TestCanonicalCert|TestVerifyClientKey|TestTransferQueue|TestRttWindow|TestBase64|TestMessagePool$|TestDnsRequest|TestDnsResponse|TestCombine|TestPump|TestWakeupTime|TestApplyAutoTuning|TestSelectTier" .
           go test -v -timeout 120s ./provider/...
+          go test -v -timeout 30s ./hub/...
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
