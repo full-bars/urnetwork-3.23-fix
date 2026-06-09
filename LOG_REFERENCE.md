@@ -350,3 +350,21 @@ Fires at most once per month per provider. The provider checks the JWT expiry ev
 | `refreshing token` | JWT is close to expiry; initiating a refresh call to the auth API. |
 | `refresh failed` | The API call or disk write failed. Will retry on the next hourly check. |
 | `token refreshed successfully` | A new JWT was obtained and written to `~/.urnetwork/jwt`. The old token remains valid until its original expiry, so there is no disruption. |
+
+---
+
+## 🐌 Proxy Startup Pace Monitor
+
+```
+[pace] ⚠ warmup: 47/200 up (24%), 150 connecting, 3 done
+[pace] warmup: 142/200 up (71%), 55 connecting
+[pace] ✓ warmup: 196/200 up (98%), 4 connecting — done
+```
+
+Fires every **30 seconds** during provider startup when the proxy fleet is warming up. Shows real-time progress of proxy authentication and connection. The pace monitor is a passive observer — it does not influence the stagger rate.
+
+| Message | Meaning |
+|---|---|
+| `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
+| `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
+| `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting — warmup complete. |
