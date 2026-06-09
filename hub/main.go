@@ -288,6 +288,35 @@ func handleNodes(s *store) http.HandlerFunc {
 	}
 }
 
+type removeRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+func handleNodeRemove(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var req removeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if req.NodeID == "" {
+			http.Error(w, "missing node_id", 400)
+			return
+		}
+		s.mu.Lock()
+		delete(s.Nodes, req.NodeID)
+		delete(s.rates, req.NodeID)
+		s.mu.Unlock()
+		s.save()
+		fmt.Printf("removed node %s\n", req.NodeID)
+		w.WriteHeader(204)
+	}
+}
+
 func handleDashboard(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
@@ -372,6 +401,7 @@ func main() {
 
 	mux.HandleFunc("/api/report", handleReport(s))
 	mux.HandleFunc("/api/nodes", handleNodes(s))
+	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
 	mux.HandleFunc("/", handleDashboard(s))
 
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, storePath)
@@ -409,6 +439,8 @@ th:hover { color: #94a3b8; }
 th.sorted { color: #60a5fa; }
 th .sort-arrow { display: inline-block; width: 10px; margin-left: 2px; color: #475569; }
 th.sorted .sort-arrow { color: #60a5fa; }
+.remove-btn { color: #475569; cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 3px; }
+.remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }
 td { font-variant-numeric: tabular-nums; }
 tr { transition: background 0.1s; }
 tr:hover td { background: #1a2332; }
@@ -480,6 +512,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <th data-col="rate-tx">Out Mbps<span class="sort-arrow"></span></th>
 <th data-col="heap">Heap<span class="sort-arrow"></span></th>
 <th data-col="conns">Conns<span class="sort-arrow"></span></th>
+<th></th>
 </tr>
 </thead>
 <tbody>
@@ -502,9 +535,10 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td class="num">{{fmtMbps .MbpsTX}}</td>
 <td class="num">{{.HeapMiB}} MiB</td>
 <td class="num">{{.Conns}}</td>
+<td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
 <tr class="detail-row" id="detail-{{.Index}}">
-<td colspan="12">
+<td colspan="13">
 <div class="detail-inner">
 <table class="detail-table">
 <thead>
@@ -558,6 +592,18 @@ auto-refresh
 <script>
 function toggleDetail(idx) {
   document.getElementById('detail-' + idx).classList.toggle('open');
+}
+
+function removeNode(nodeId) {
+  if (!confirm('Remove ' + nodeId + ' from dashboard?')) return;
+  fetch('/api/nodes/remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({node_id: nodeId})
+  }).then(function(r) {
+    if (r.ok) location.reload();
+    else alert('Failed to remove node');
+  });
 }
 
 // auto-refresh countdown
