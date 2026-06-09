@@ -66,6 +66,7 @@ type proxyHealth struct {
 	address     string
 	currentlyUp bool
 	everUp      bool
+	connecting  bool      // registered and still trying to establish first WebSocket
 	downSince   time.Time // when currentlyUp last went false (for recovery latency)
 	lastSeenUp  bool      // currentlyUp as of the previous heartbeat (baseline)
 	deadLogged  bool      // a confirmed-dead event has been emitted for this proxy
@@ -116,6 +117,7 @@ func RegisterProxy(index int, address string) {
 		proxyHealthByIndex[index] = h
 	}
 	h.address = address
+	h.connecting = true
 }
 
 // RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
@@ -125,7 +127,7 @@ func RegisterProxyBandwidth(index int) *ProxyBandwidth {
 	h, ok := proxyHealthByIndex[index]
 	if !ok {
 		// Initialize it if it doesn't exist
-		h = &proxyHealth{address: ""}
+		h = &proxyHealth{address: "", connecting: true}
 		proxyHealthByIndex[index] = h
 	}
 	if h.bw == nil {
@@ -141,6 +143,7 @@ func markProxyUp(index int) {
 	if h, ok := proxyHealthByIndex[index]; ok {
 		h.currentlyUp = true
 		h.everUp = true
+		h.connecting = false
 	}
 }
 
@@ -228,22 +231,28 @@ func sortedIndicesLocked() []int {
 // ProxyHealthSnapshot returns the current state without advancing the transition
 // baseline, so it is safe to call from the pulse-fire marker. Lists are complete
 // (no display cap) and index-sorted.
-func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth) {
+func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth, connecting []string) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	bandwidth = make(map[string]*ProxyBandwidth)
+	total := 0
+	bwCount := 0
 	for _, idx := range sortedIndicesLocked() {
+		total++
 		h := proxyHealthByIndex[idx]
 		switch {
 		case h.currentlyUp:
 			up++
 		case h.everUp:
 			degraded = append(degraded, formatProxyEntry(idx, h.address))
+		case h.connecting:
+			connecting = append(connecting, formatProxyEntry(idx, h.address))
 		default:
 			dead = append(dead, formatProxyEntry(idx, h.address))
 		}
 		
 		if h.bw != nil {
+			bwCount++
 			pb := &ProxyBandwidth{}
 			pb.TotalRx.Store(h.bw.TotalRx.Load())
 			pb.TotalTx.Store(h.bw.TotalTx.Load())
@@ -254,7 +263,8 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
-	return up, dead, degraded, bandwidth
+	fmt.Printf("[health] snapshot: total=%d up=%d connecting=%d dead=%d degraded=%d registered=%d\n", total, up, len(connecting), len(dead), len(degraded), len(bandwidth))
+	return up, dead, degraded, bandwidth, connecting
 }
 
 // ProxyHealthHeartbeat builds the per-heartbeat report and advances the transition
@@ -278,6 +288,8 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 			r.Up++
 		case h.everUp:
 			r.Degraded = append(r.Degraded, formatProxyEntry(idx, h.address))
+		case h.connecting:
+			// still trying to connect — not dead
 		default:
 			r.Dead = append(r.Dead, formatProxyEntry(idx, h.address))
 		}
@@ -308,7 +320,9 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 			}
 		}
 
-		if confirmDead && !h.currentlyUp && !h.everUp && !h.deadLogged {
+		// Only mark as "newly dead" if the proxy was NOT connecting
+		// (never got a chance = still trying = not dead)
+		if confirmDead && !h.currentlyUp && !h.everUp && !h.connecting && !h.deadLogged {
 			r.NewlyDead = append(r.NewlyDead, ProxyEvent{Index: idx, Address: h.address})
 			h.deadLogged = true
 		}
@@ -346,6 +360,8 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 			health = "up"
 		} else if h.everUp {
 			health = degradedTierFromDuration(time.Since(h.downSince))
+		} else if h.connecting {
+			health = "connecting"
 		}
 		latencyNs := int64(0)
 		socksLatencyNs := int64(0)

@@ -61,15 +61,18 @@ func TestProxyHealthSnapshot(t *testing.T) {
 	markProxyUp(1)
 	markProxyDown(1) // up then down -> degraded
 
-	up, dead, degraded, _ := ProxyHealthSnapshot()
+	up, dead, degraded, _, connecting := ProxyHealthSnapshot()
 	if up != 1 {
 		t.Fatalf("up = %d, want 1", up)
 	}
-	if len(dead) != 1 || dead[0] != "proxy[2] (c:1)" {
-		t.Fatalf("dead = %v, want [proxy[2] (c:1)]", dead)
+	if len(dead) != 0 {
+		t.Fatalf("dead = %v, want [] (RegisterProxy sets connecting=true)", dead)
 	}
 	if len(degraded) != 1 || degraded[0] != "proxy[1] (b:1)" {
 		t.Fatalf("degraded = %v, want [proxy[1] (b:1)]", degraded)
+	}
+	if len(connecting) != 1 || connecting[0] != "proxy[2] (c:1)" {
+		t.Fatalf("connecting = %v, want [proxy[2] (c:1)]", connecting)
 	}
 
 	// snapshot must NOT advance the baseline: lastSeenUp stays false everywhere
@@ -85,7 +88,8 @@ func TestProxyHealthSnapshot(t *testing.T) {
 func TestProxyHealthHeartbeatTransitions(t *testing.T) {
 	resetProxyHealthForTest()
 	RegisterProxy(0, "a:1")
-	RegisterProxy(1, "b:1") // stays dead
+	RegisterProxy(1, "b:1") // becomes dead after up→down
+	RegisterProxy(2, "c:1") // connecting (RegisterProxy sets connecting=true)
 
 	// First call establishes the baseline: no transitions, no dead (confirmDead=false).
 	r := ProxyHealthHeartbeat(false)
@@ -106,25 +110,27 @@ func TestProxyHealthHeartbeatTransitions(t *testing.T) {
 		t.Fatalf("LifetimeRecovered = %d, want 1", r.LifetimeRecovered)
 	}
 
-	// Proxy 0 drops -> NewlyDegraded=1, lifetime_lost=1, lifetime_recovered unchanged.
-	markProxyDown(0)
+	// Proxy 1 comes up then drops -> NewlyDegraded=1, lifetime_lost=1.
+	markProxyUp(1)
 	r = ProxyHealthHeartbeat(false)
-	if len(r.NewlyDegraded) != 1 || r.NewlyDegraded[0].Index != 0 {
-		t.Fatalf("NewlyDegraded = %+v, want [idx 0]", r.NewlyDegraded)
+	markProxyDown(1)
+	r = ProxyHealthHeartbeat(false)
+	if len(r.NewlyDegraded) != 1 || r.NewlyDegraded[0].Index != 1 {
+		t.Fatalf("NewlyDegraded = %+v, want [idx 1]", r.NewlyDegraded)
 	}
-	if r.LifetimeLost != 1 || r.LifetimeRecovered != 1 {
-		t.Fatalf("lifetime = (rec %d, lost %d), want (1,1)", r.LifetimeRecovered, r.LifetimeLost)
+	if r.LifetimeLost != 1 || r.LifetimeRecovered != 2 {
+		t.Fatalf("lifetime = (rec %d, lost %d), want (2,1)", r.LifetimeRecovered, r.LifetimeLost)
 	}
 
-	// confirmDead=true: proxy 1 (never up) is logged dead once.
-	r = ProxyHealthHeartbeat(true)
-	if len(r.NewlyDead) != 1 || r.NewlyDead[0].Index != 1 {
-		t.Fatalf("NewlyDead = %+v, want [idx 1]", r.NewlyDead)
-	}
-	// ...and not again on the next confirmDead call.
+	// confirmDead=true: proxy 1 (was up, now down, everUp=true) is degraded, not dead.
+	// proxy 2 (connecting, never up) is not dead either (still connecting).
+	// No proxy matches the dead criteria (everUp=false, connecting=false).
 	r = ProxyHealthHeartbeat(true)
 	if len(r.NewlyDead) != 0 {
-		t.Fatalf("NewlyDead repeated = %+v, want empty", r.NewlyDead)
+		t.Fatalf("NewlyDead = %+v, want [] (no dead proxies)", r.NewlyDead)
+	}
+	if len(r.Dead) != 0 {
+		t.Fatalf("Dead = %+v, want []", r.Dead)
 	}
 }
 

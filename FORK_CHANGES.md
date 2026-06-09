@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.17
+**Current Version**: v3.23.0-fix.19
 
 ---
 
@@ -574,6 +574,68 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
+## 23. Bandwidth Hub Dashboard
+
+**Purpose**: Live fleet monitoring dashboard that aggregates bandwidth reports from all provider nodes. Shows per-node traffic rates (Mbps), billable vs total traffic, per-proxy drilldown with status/age/bytes, sortable columns, and auto-refresh.
+
+**Files Modified**: `hub/main.go` (new), `provider/bandwidth_reporter.go`
+
+**Changes**:
+- New `hub/` directory with standalone dashboard server
+- **Rate tracking**: Delta between consecutive reports computes RX/TX Mbps per node
+- **Billable distinction**: `proxyReport` struct carries both `TotalRX/TX` and `BillRX/TX`; dashboard displays both
+- **Per-proxy drilldown**: Click any node row to expand its full proxy list with individual metrics
+- **Auto-refresh**: 30s countdown with toggle; full page reload on expiry
+- **Sortable columns**: 12 sortable columns with numeric-aware sorting and direction indicators
+- **Status badges**: Color-coded up/connecting/degraded proxy counts per node
+- **Heartbeat health**: Green/yellow/red dot based on report freshness
+- **JSON API**: `/api/nodes` returns full node state for external tooling
+- **Bandwidth reporter**: Posts to `/api/report` hub endpoint, skips empty reports, includes connecting count
+
+**Running the hub**:
+```sh
+./hub -addr :8080 -data /path/to/data
+```
+
+**Configuring provider reporting**:
+```sh
+URNETWORK_REPORT_URL=http://HUB_IP:8080
+```
+
+**Status**: ✅ Shipped in v3.23.0-fix.19.
+
+---
+
+## 24. Proxy Startup Pacing & Pace Monitor
+
+**Purpose**: Prevent thundering-herd WebSocket dials when starting a provider with large proxy lists (500+). A jittered stagger spreads initial connections across a configurable window, and a pace monitor logs warmup progress every 30s.
+
+**Files Modified**: `provider/main.go`, `proxy_health.go`, `proxy_health_test.go`
+
+**Changes**:
+- `backoffPacer(n)` — waits `n × stagger_ms ± 50% jitter` before dialing
+- `paceMonitor(ctx)` — background goroutine logs warmup progress at 30s intervals
+- Warns (⚠) when <50% up with >10 connecting; marks done (✓) when >90% up with <5 connecting
+- Pulse log now includes connecting count from health snapshot
+- `ProxyHealthSnapshot()` extended to return `connecting []string` (5th return value)
+- `proxyIndex()` for native direct transports now correctly returns `index=0, ok=true`
+
+**Configuration**:
+- `URNETWORK_PROXY_STAGGER_MS=1000` — base stagger per proxy (default 1000, min 10)
+
+**Log examples**:
+```
+[pace] ⚠ warmup: 47/200 up (24%), 150 connecting, 3 done
+[pace] warmup: 142/200 up (71%), 55 connecting
+[pace] ✓ warmup: 196/200 up (98%), 4 connecting — done
+```
+
+**Breaking**: `ProxyHealthSnapshot()` now returns 5 values. Update any custom callers.
+
+**Status**: ✅ Shipped in v3.23.0-fix.19.
+
+---
+
 ## Exit Code Reference
 
 All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr (Docker logs) and the ramlog file (`/dev/shm/urnetwork.log`) via `shmLogFatal` before terminating.
@@ -605,7 +667,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 | 64 | `proxy remove-dead`: could not write the reload trigger |
 | 78 | `provide`: JWT expired or invalid — startup scripts intercept this code to delete the stale JWT and re‑authenticate |
 
-**Status**: 🚧 New in v3.23.0-fix.18.4. Not yet released.
+**Status**: ✅ Shipped in v3.23.0-fix.19.
 
 ---
 

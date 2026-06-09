@@ -12,6 +12,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
+| Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
 
 ## ⚡ Quick Start
 
@@ -60,6 +61,20 @@ urnet-tools logs
 > [!TIP]
 > **Path Formatting**  
 > You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
+
+### 📊 Bandwidth Hub Dashboard
+
+Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all provider nodes and renders an HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
+
+```sh
+# Run the hub (standalone binary, built from hub/main.go)
+./hub -addr :8080 -data /var/hub-data
+
+# Each provider reports to the hub via env
+URNETWORK_REPORT_URL=http://HUB_IP:8080
+```
+
+See [Hub Dashboard](docs/Hub-Dashboard.md) for deployment and configuration details.
 
 ### 🐳 Docker
 

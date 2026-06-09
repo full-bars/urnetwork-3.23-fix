@@ -42,6 +42,70 @@ const DefaultConnectUrl = "wss://connect.bringyour.com"
 
 var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
+// proxyLaunchCount tracks how many proxy goroutines have passed the stagger
+// delay and entered provideWithProxy. Used by paceMonitor for progress logging.
+var proxyLaunchCount atomic.Int64
+
+// backoffPacer calculates the effective start delay for the n-th proxy goroutine.
+// Base stagger (default 1s, env URNETWORK_PROXY_STAGGER_MS) with ±50 % random
+// jitter to spread WebSocket dials across the window and avoid thundering-herd
+// bursts against the platform API.
+func backoffPacer(n int, now time.Time, proxyCtx context.Context) bool {
+	staggerMs := 1000
+	if s := os.Getenv("URNETWORK_PROXY_STAGGER_MS"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v >= 10 {
+			staggerMs = v
+		}
+	}
+
+	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
+	if mathrand.Intn(2) == 0 {              // coinflip — add or subtract
+		jitter = -jitter
+	}
+
+	wait := time.Duration(n)*time.Duration(staggerMs)*time.Millisecond + time.Duration(jitter)*time.Millisecond
+
+	select {
+	case <-proxyCtx.Done():
+		return false
+	case <-time.After(wait):
+	}
+	return true
+}
+
+// paceMonitor logs real-time warmup progress every 30s. It uses the health
+// snapshot to show the user how the proxy fleet is coming online. This is a
+// passive observer — the jittered stagger (backoffPacer) and per-transport
+// retry (transport.go) handle rate-limiting without global cooldowns.
+func paceMonitor(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		up, _, _, _, connecting := connect.ProxyHealthSnapshot()
+		total := connect.ProxyHealthCount()
+		if total < 5 {
+			continue
+		}
+		pct := float64(up) * 100 / float64(total)
+		connectingN := len(connecting)
+		if pct < 50 && connectingN > 10 {
+			fmt.Printf("[pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
+				up, total, pct, connectingN, total-up-connectingN)
+		} else if pct > 90 && connectingN < 5 {
+			fmt.Printf("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
+				up, total, pct, connectingN)
+		} else {
+			fmt.Printf("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
+				up, total, pct, connectingN)
+		}
+	}
+}
+
 // this value is set via the linker, e.g.
 // -ldflags "-X main.Version=$WARP_VERSION-$WARP_VERSION_CODE"
 var Version string
@@ -1039,11 +1103,10 @@ func provide(opts docopt.Opts) {
 				return
 			case <-time.After(1 * time.Hour):
 				if connect.ProxyHealthCount() > 0 {
-					up, dead, degraded, _ := connect.ProxyHealthSnapshot()
+					_, dead, degraded, _, connecting := connect.ProxyHealthSnapshot()
 					down := len(dead) + len(degraded)
-					_ = up
-					fmt.Printf("[pulse] waking stalled transports: down=%d dead=%d degraded=%d\n",
-						down, len(dead), len(degraded))
+					fmt.Printf("[pulse] waking stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
+						down, len(dead), len(degraded), len(connecting))
 				}
 				connect.TriggerPulse()
 			}
@@ -1069,6 +1132,7 @@ func provide(opts docopt.Opts) {
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
+	go paceMonitor(ctx)
 
 	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
@@ -1372,18 +1436,18 @@ func provide(opts docopt.Opts) {
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
-			staggerPos := i
+			proxyIdx := i
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
-				initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
-				select {
-				case <-proxyCtx.Done():
-				case <-time.After(initialDelay):
+				now := time.Now()
+				if !backoffPacer(proxyIdx, now, proxyCtx) {
+					return
 				}
+				proxyLaunchCount.Add(1)
 
 				provideWithProxy(proxyCtx, proxySettings, false)
 			})
