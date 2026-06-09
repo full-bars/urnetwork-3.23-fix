@@ -76,6 +76,65 @@ No configuration required. The feature is always enabled with zero overhead betw
 
 ---
 
+---
+
+### New: Per-Proxy Failure Reason Tracking
+
+Tracks the reason each proxy fails (auth errors, transport drops, contract failures, timeouts) via atomic counters on `proxyHealth`. Exposed via `ProxyHealthByAddress()` as `AuthFailures`, `TransportDrops`, `TimeoutFails`, `ContractFails`.
+
+- `proxy_health.go` — `ProxyFailureCounters` struct with four atomic.Int64 fields, record functions
+- `transport.go` — wired auth failures at H1/PT auth sites and transport drops at `markProxyDown` paths
+
+---
+
+### New: Graceful Draining on Proxy Removal
+
+When a proxy is removed via hot-reload, the provider no longer cancels the context immediately. Instead it marks the proxy as draining and waits for `ProxyBandwidth.Clients` to reach 0 before tearing down. Zero billable traffic is interrupted.
+
+- No timeout — drains wait indefinitely for active sessions to finish
+- Non-blocking — `reload()` returns immediately; drain runs in background
+- Re-add during drain is safely skipped
+- Process stays alive until all drains complete
+
+---
+
+### New: Proxy Benchmarking (Opt-in)
+
+Periodically measures per-proxy latency with staggered, opt-in probes:
+
+| Probe | Interval | Measures |
+|---|---|---|
+| TCP connect | 5 min | Raw network RTT to the proxy SOCKS5 port |
+| SOCKS5 CONNECT | 15 min | End-to-end latency through the proxy to configurable target |
+
+Random startup jitter prevents thundering herd at the endpoint. Both results exposed in `ProxyHealthStatus` as `LatencyMs` and `SocksLatencyMs`.
+
+**Configuration:**
+- `URNETWORK_PROXY_BENCHMARK=true` to enable (off by default)
+- `URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443` to change target
+
+#### Docker run with benchmarking enabled:
+
+```bash
+docker run -d --name urfix \
+  -v ~/.urnetwork:/root/.urnetwork \
+  -e URNETWORK_PROXY_BENCHMARK=true \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+With custom benchmark endpoint and bandwidth hub reporting:
+
+```bash
+docker run -d --name urfix \
+  -v ~/.urnetwork:/root/.urnetwork \
+  -e URNETWORK_PROXY_BENCHMARK=true \
+  -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=1.1.1.1:80 \
+  -e URNETWORK_REPORT_URL=http://hub-server:8080 \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+---
+
 ### New: shmLogFatal & Unique Exit Codes
 
 Every fatal error path now writes a `FATAL [exit <code>]: ...` line to both stderr and the ramlog file before terminating. The message is guaranteed to be on disk because `shmLogFatal` writes directly to `/dev/shm/urnetwork.log` (bypassing the pipe goroutine) before calling `os.Exit`.

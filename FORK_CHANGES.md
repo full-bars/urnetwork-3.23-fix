@@ -511,6 +511,69 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
+---
+
+## 20. Per-Proxy Failure Reason Tracking
+
+**Purpose**: Track the reason each proxy fails (auth errors, transport drops, contract failures) via atomic counters on `proxyHealth`, so operators can distinguish recurring auth errors from transient timeouts without grepping logs.
+
+**Files Modified**: `proxy_health.go`, `transport.go`, `provider/main.go`
+
+**Changes**:
+- New `ProxyFailureCounters` struct with atomic.Int64 fields: `AuthFailures`, `TransportDrops`, `ContractFailures`, `TimeoutFailures`
+- `RecordProxyAuthFailure(index)` at H1/PT auth failure sites in `transport.go`
+- `RecordProxyTransportDrop(index)` alongside `markProxyDown` in both transport defer blocks
+- Counters exposed via `ProxyHealthStatus` as `AuthFailures`, `TransportDrops`, `TimeoutFails`, `ContractFails`
+
+**Status**: ✅ Shipped in v3.23.0-fix.18.4.
+
+---
+
+## 21. Graceful Drain on Proxy Removal
+
+**Purpose**: When a proxy is removed via hot-reload, wait for all active sessions (`ProxyBandwidth.Clients`) to finish before tearing down, instead of cancelling the context immediately. Zero billable traffic is interrupted.
+
+**Files Modified**: `proxy_health.go`, `provider/proxy_reload.go`, `provider/main.go`
+
+**Changes**:
+- `ProxyBandwidthByAddress(addr)` lookup in `proxy_health.go`
+- `drainingProxies` tracking map on `ProxyReloader` with `isDraining()` guard
+- Removal loop in `reload()`: if clients > 0, spawns drain goroutine that polls until 0, then cancels context
+- Re-add of same address during drain is safely skipped with a log line
+- `reload()` returns immediately — drain runs in background, other adds/removes not blocked
+- No timeout — process stays alive until all drains complete
+
+**Status**: ✅ Shipped in v3.23.0-fix.18.4.
+
+---
+
+## 22. Proxy Benchmarking (Opt-In)
+
+**Purpose**: Periodically measure per-proxy latency with staggered, opt-in probes. Two probe types: TCP connect time (raw network RTT to proxy SOCKS5 port) and SOCKS5 CONNECT RTT (end-to-end latency through the proxy to a configurable target).
+
+**Files Added**: `provider/proxy_benchmark.go`
+**Files Modified**: `proxy_health.go`, `provider/main.go`
+
+**Changes**:
+- `LatencyNs` / `SocksLatencyNs` atomic.Int64 fields on `ProxyBandwidth`
+- TCP connect probe every 5 min (~400 B/probe) — measures raw network RTT
+- SOCKS5 CONNECT probe every 15 min (~800 B/probe) — measures end-to-end proxy latency
+- Random startup jitter (0–5 min) prevents thundering herd at the benchmark endpoint
+- Results exposed in `ProxyHealthStatus` as `LatencyMs` / `SocksLatencyMs`
+
+**Configuration**:
+- `URNETWORK_PROXY_BENCHMARK=true` — enables benchmarking (off by default)
+- `URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443` — SOCKS5 CONNECT target
+
+**Bandwidth estimate at scale (both probes, 10k proxies)**:
+- TCP connect only: ~35 GB/month
+- SOCKS5 CONNECT only: ~69 GB/month
+- Total: ~104 GB/month
+
+**Status**: ✅ Shipped in v3.23.0-fix.18.4.
+
+---
+
 ## Exit Code Reference
 
 All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr (Docker logs) and the ramlog file (`/dev/shm/urnetwork.log`) via `shmLogFatal` before terminating.
