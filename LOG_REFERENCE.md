@@ -332,3 +332,21 @@ r=5607261  (05:26)
 → 5,966 buffers returned in 1 minute = active traffic flowing
 
 A flat `r=` counter that doesn't grow means no sessions are active. A rapidly growing counter means heavy throughput.
+
+---
+
+## 🔑 JWT Auto-Refresh
+
+```
+[jwt] refreshing token — expires in 10h 0m (less than 48h 0m threshold)
+[jwt] refresh failed: api error: ... (will retry in 1h)
+[jwt] token refreshed successfully (next check in 1h)
+```
+
+Fires at most once per month per provider. The provider checks the JWT expiry every hour. When the token is within 48 hours of its `exp` claim (the API issues 30-day tokens), the provider proactively calls the auth API for a replacement and writes it to disk — no restart, no downtime.
+
+| Message | Meaning |
+|---|---|
+| `refreshing token` | JWT is close to expiry; initiating a refresh call to the auth API. |
+| `refresh failed` | The API call or disk write failed. Will retry on the next hourly check. |
+| `token refreshed successfully` | A new JWT was obtained and written to `~/.urnetwork/jwt`. The old token remains valid until its original expiry, so there is no disruption. |

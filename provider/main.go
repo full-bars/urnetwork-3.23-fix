@@ -337,8 +337,26 @@ func validateJWTExpiry(byJwt string) error {
 			}
 		}
 	}
-	// If parsing fails or exp is missing, return nil to allow the API to handle it.
 	return nil
+}
+
+// parseJWTExpiryTime extracts the exp claim from a JWT without signature verification.
+func parseJWTExpiryTime(byJwt string) *time.Time {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return nil
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return nil
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return nil
+	}
+	t := time.Unix(int64(exp), 0)
+	return &t
 }
 
 func runEcoMemoryMonitor(ctx context.Context) {
@@ -898,6 +916,85 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	}
 }
 
+// refreshJWT calls AuthNetworkClient with the current JWT and returns a fresh
+// ByClientJwt from the API response. This is the same endpoint used during
+// initial authentication — calling it early extends the token lifetime without
+// any service disruption.
+func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
+	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
+	api.SetByJwt(byJwt)
+
+	callback, channel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
+
+	api.AuthNetworkClient(&connect.AuthNetworkClientArgs{
+		Description: "jwt-refresh",
+		DeviceSpec:  "",
+	}, callback)
+
+	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result = <-channel:
+	}
+	if result.Error != nil {
+		return "", fmt.Errorf("api error: %w", result.Error)
+	}
+	if result.Result == nil {
+		return "", fmt.Errorf("empty result from auth API")
+	}
+	if result.Result.Error != nil {
+		return "", fmt.Errorf("auth rejected: %s", result.Result.Error.Message)
+	}
+	if result.Result.ByClientJwt == "" {
+		return "", fmt.Errorf("empty ByClientJwt in response")
+	}
+	return result.Result.ByClientJwt, nil
+}
+
+// runJWTRefresher checks the JWT expiry once per hour. When the token is
+// within 48 hours of its exp claim, it proactively calls the auth API for a
+// replacement and writes it to disk — avoiding the exit-78 cycle entirely.
+func runJWTRefresher(ctx context.Context, apiUrl string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
+
+	const renewalWindow = 48 * time.Hour
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		byJwtBytes, err := os.ReadFile(jwtPath)
+		if err == nil {
+			byJwt := strings.TrimSpace(string(byJwtBytes))
+			if exp := parseJWTExpiryTime(byJwt); exp != nil && time.Until(*exp) <= renewalWindow {
+				fmt.Printf("[jwt] refreshing token — expires in %s (less than %s threshold)\n",
+					formatDuration(time.Until(*exp)), formatDuration(renewalWindow))
+
+				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
+				if err != nil {
+					fmt.Printf("[jwt] refresh failed: %v (will retry in 1h)\n", err)
+				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+					fmt.Printf("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
+				} else {
+					fmt.Printf("[jwt] token refreshed successfully (next check in 1h)\n")
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func provide(opts docopt.Opts) {
 	port, _ := opts.Int("--port")
 
@@ -971,6 +1068,7 @@ func provide(opts docopt.Opts) {
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	go runJWTRefresher(ctx, apiUrl)
 
 	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
