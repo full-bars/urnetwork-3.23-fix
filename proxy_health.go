@@ -12,6 +12,8 @@ import (
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
 	Clients                                  atomic.Int64
+	LatencyNs                                atomic.Int64
+	SocksLatencyNs                           atomic.Int64
 
 	mu       sync.Mutex
 	sessions map[any]time.Time
@@ -328,6 +330,8 @@ type ProxyHealthStatus struct {
 	ContractFails  int64
 	TransportDrops int64
 	TimeoutFails   int64
+	LatencyMs      int64
+	SocksLatencyMs int64
 }
 
 // ProxyHealthByAddress returns the current health classification for each
@@ -343,6 +347,12 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 		} else if h.everUp {
 			health = degradedTierFromDuration(time.Since(h.downSince))
 		}
+		latencyNs := int64(0)
+		socksLatencyNs := int64(0)
+		if h.bw != nil {
+			latencyNs = h.bw.LatencyNs.Load()
+			socksLatencyNs = h.bw.SocksLatencyNs.Load()
+		}
 		result[h.address] = ProxyHealthStatus{
 			Health:         health,
 			DownSince:      h.downSince,
@@ -350,6 +360,8 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 			ContractFails:  h.failures.ContractFailures.Load(),
 			TransportDrops: h.failures.TransportDrops.Load(),
 			TimeoutFails:   h.failures.TimeoutFailures.Load(),
+			LatencyMs:      latencyNs / 1_000_000,
+			SocksLatencyMs: socksLatencyNs / 1_000_000,
 		}
 	}
 	return result
