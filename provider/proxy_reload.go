@@ -106,6 +106,16 @@ type ProxyReloader struct {
 
 	// spawnProxy starts a proxy goroutine's work (the provideWithProxy closure).
 	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool)
+
+	drainingProxies map[string]context.CancelFunc // proxies draining active sessions
+	drainMu         sync.Mutex
+}
+
+func (r *ProxyReloader) isDraining(addr string) bool {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	_, ok := r.drainingProxies[addr]
+	return ok
 }
 
 // StartWatcher launches the background goroutine that polls the reload trigger
@@ -196,27 +206,70 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 
-	// Cancel removed proxies and drop them from the cancel map and state.
+	// Remove proxies: cancel immediately if idle, or drain gracefully if active.
 	for _, addr := range removed {
+		if r.isDraining(addr) {
+			continue
+		}
 		r.cancelMapMu.Lock()
 		cancel, ok := r.cancelMap[addr]
 		if ok {
 			delete(r.cancelMap, addr)
 		}
 		r.cancelMapMu.Unlock()
-		if ok {
-			cancel()
+		if !ok {
+			continue
 		}
 		delete(r.state.Proxies, addr)
+
+		bw := connect.ProxyBandwidthByAddress(addr)
+		if bw == nil || bw.Clients.Load() == 0 {
+			cancel()
+			continue
+		}
+
+		r.drainMu.Lock()
+		r.drainingProxies[addr] = cancel
+		r.drainMu.Unlock()
+
+		fmt.Printf("[proxy] draining %s (%d active clients)\n", addr, bw.Clients.Load())
+
+		go func(cancelFn context.CancelFunc, proxyAddr string) {
+			defer func() {
+				r.drainMu.Lock()
+				delete(r.drainingProxies, proxyAddr)
+				r.drainMu.Unlock()
+			}()
+			for {
+				bw := connect.ProxyBandwidthByAddress(proxyAddr)
+				if bw == nil || bw.Clients.Load() == 0 {
+					break
+				}
+				select {
+				case <-r.parentCtx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+			}
+			fmt.Printf("[proxy] drain complete: %s\n", proxyAddr)
+			cancelFn()
+		}(cancel, addr)
 	}
 
-	// Note: if all running proxies are removed and none are added, the WaitGroup
-	// in provide() will reach zero and the process will exit via os.Exit(0).
-	// This is intentional — an empty proxy list means the provider has no work to do.
+	// Note: if all running proxies enter draining state and none are added, the
+	// WaitGroup in provide() stays non-zero until all drains complete and their
+	// goroutines exit. The process remains alive to avoid interrupting active
+	// sessions. This is intentional — draining proxies keep serving traffic
+	// until the last session finishes.
 
 	// Start added proxies. Each goroutine staggers its own startup by 100ms *
 	// position to avoid a burst of simultaneous connection attempts at the API.
+	// Skip any still draining from a previous removal.
 	for i, settings := range added {
+		if r.isDraining(settings.Address) {
+			fmt.Printf("[proxy] skip add %s: still draining\n", settings.Address)
+			continue
+		}
 		stableID := resolveProxyID(r.state, settings.Address)
 		settings.Index = stableID
 		connect.RegisterProxy(stableID, settings.Address)
