@@ -49,6 +49,15 @@ func (self *ProxyBandwidth) MaxAge() time.Duration {
 	return time.Since(oldest)
 }
 
+// ProxyFailureCounters tracks per-proxy failure counts by category, so
+// operators can distinguish recurring auth errors from transient timeouts.
+type ProxyFailureCounters struct {
+	AuthFailures     atomic.Int64
+	TimeoutFailures  atomic.Int64
+	ContractFailures atomic.Int64
+	TransportDrops   atomic.Int64
+}
+
 // proxyHealth tracks one proxy's platform-transport liveness for the
 // [health][proxies] report. See docs/design/dead-proxy-health-report.md.
 type proxyHealth struct {
@@ -59,6 +68,7 @@ type proxyHealth struct {
 	lastSeenUp  bool      // currentlyUp as of the previous heartbeat (baseline)
 	deadLogged  bool      // a confirmed-dead event has been emitted for this proxy
 	bw          *ProxyBandwidth
+	failures    ProxyFailureCounters
 }
 
 
@@ -142,6 +152,33 @@ func markProxyDown(index int) {
 			h.downSince = time.Now()
 		}
 		h.currentlyUp = false
+	}
+}
+
+// RecordProxyAuthFailure increments the auth-failure counter for a proxy.
+func RecordProxyAuthFailure(index int) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		h.failures.AuthFailures.Add(1)
+	}
+}
+
+// RecordProxyContractFailure increments the contract-failure counter for a proxy.
+func RecordProxyContractFailure(index int) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		h.failures.ContractFailures.Add(1)
+	}
+}
+
+// RecordProxyTransportDrop increments the transport-drop counter for a proxy.
+func RecordProxyTransportDrop(index int) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		h.failures.TransportDrops.Add(1)
 	}
 }
 
@@ -273,8 +310,12 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 
 // ProxyHealthStatus represents the live health of a proxy
 type ProxyHealthStatus struct {
-	Health    string
-	DownSince time.Time
+	Health         string
+	DownSince      time.Time
+	AuthFailures   int64
+	ContractFails  int64
+	TransportDrops int64
+	TimeoutFails   int64
 }
 
 // ProxyHealthByAddress returns the current health classification for each
@@ -291,8 +332,12 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 			health = degradedTierFromDuration(time.Since(h.downSince))
 		}
 		result[h.address] = ProxyHealthStatus{
-			Health:    health,
-			DownSince: h.downSince,
+			Health:         health,
+			DownSince:      h.downSince,
+			AuthFailures:   h.failures.AuthFailures.Load(),
+			ContractFails:  h.failures.ContractFailures.Load(),
+			TransportDrops: h.failures.TransportDrops.Load(),
+			TimeoutFails:   h.failures.TimeoutFailures.Load(),
 		}
 	}
 	return result
