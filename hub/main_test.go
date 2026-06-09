@@ -499,3 +499,55 @@ func TestDashboardEndpointEmpty(t *testing.T) {
 		t.Errorf("empty dashboard should show Nodes = 0")
 	}
 }
+
+func TestRemoveEndpoint(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	s.Nodes["n1"] = &nodeState{NodeID: "n1"}
+	s.Nodes["n2"] = &nodeState{NodeID: "n2"}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Valid remove
+	body, _ := json.Marshal(removeRequest{NodeID: "n1"})
+	resp, err := http.Post(ts.URL+"/api/nodes/remove", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if s.Nodes["n1"] != nil {
+		t.Errorf("n1 not removed")
+	}
+	if s.Nodes["n2"] == nil {
+		t.Errorf("n2 was incorrectly removed")
+	}
+
+	// Missing node_id
+	body, _ = json.Marshal(removeRequest{})
+	resp, err = http.Post(ts.URL+"/api/nodes/remove", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+
+	// GET should fail
+	resp, err = http.Get(ts.URL + "/api/nodes/remove")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 405 {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
