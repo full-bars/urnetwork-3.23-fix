@@ -501,25 +501,23 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <thead>
 <tr>
 <th data-col="node">Node<span class="sort-arrow"></span></th>
-<th data-col="host">Host<span class="sort-arrow"></span></th>
 <th data-col="heartbeat">Heartbeat<span class="sort-arrow"></span></th>
 <th data-col="uptime">Uptime<span class="sort-arrow"></span></th>
 <th data-col="proxies" class="sorted">Proxies<span class="sort-arrow">▼</span></th>
-<th data-col="clients">Clients<span class="sort-arrow"></span></th>
-<th data-col="rx">RX<span class="sort-arrow"></span></th>
-<th data-col="tx">TX<span class="sort-arrow"></span></th>
-<th data-col="rate-rx">In Mbps<span class="sort-arrow"></span></th>
-<th data-col="rate-tx">Out Mbps<span class="sort-arrow"></span></th>
-<th data-col="heap">Heap<span class="sort-arrow"></span></th>
-<th data-col="conns">Conns<span class="sort-arrow"></span></th>
+<th data-col="clients" class="num">Clients<span class="sort-arrow"></span></th>
+<th data-col="rx" class="num">RX<span class="sort-arrow"></span></th>
+<th data-col="tx" class="num">TX<span class="sort-arrow"></span></th>
+<th data-col="rate-rx" class="num">In Mbps<span class="sort-arrow"></span></th>
+<th data-col="rate-tx" class="num">Out Mbps<span class="sort-arrow"></span></th>
+<th data-col="heap" class="num">Heap<span class="sort-arrow"></span></th>
+<th data-col="conns" class="num">Conns<span class="sort-arrow"></span></th>
 <th></th>
 </tr>
 </thead>
 <tbody>
 {{range .Rows}}
 <tr class="expandable" onclick="toggleDetail({{.Index}})">
-<td class="node-id">{{.NodeID}}</td>
-<td>{{.Host}} <span class="version">{{.Version}}</span></td>
+<td class="node-id">{{.NodeID}} <span class="version">{{.Version}}</span></td>
 <td><span class="dot" style="background:{{.Color}}"></span>{{.Heartbeat}}</td>
 <td>{{.Uptime}}</td>
 <td>
@@ -538,7 +536,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
 <tr class="detail-row" id="detail-{{.Index}}">
-<td colspan="13">
+<td colspan="12">
 <div class="detail-inner">
 <table class="detail-table">
 <thead>
@@ -546,12 +544,12 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <th>ID</th>
 <th>Address</th>
 <th>Status</th>
-<th>Clients</th>
-<th>Max Age</th>
-<th>RX</th>
-<th>TX</th>
-<th>Bill RX</th>
-<th>Bill TX</th>
+<th class="num">Clients</th>
+<th class="num">Max Age</th>
+<th class="num">RX</th>
+<th class="num">TX</th>
+<th class="num">Bill RX</th>
+<th class="num">Bill TX</th>
 </tr>
 </thead>
 <tbody>
@@ -682,7 +680,7 @@ document.querySelectorAll('th[data-col]').forEach(function(th) {
 });
 
 function getColIndex(col) {
-  var map = {node:0, host:1, heartbeat:2, uptime:3, proxies:4, clients:5, rx:6, tx:7, 'rate-rx':8, 'rate-tx':9, heap:10, conns:11};
+  var map = {node:0, heartbeat:1, uptime:2, proxies:3, clients:4, rx:5, tx:6, 'rate-rx':7, 'rate-tx':8, heap:9, conns:10};
   return map[col] || 0;
 }
 
