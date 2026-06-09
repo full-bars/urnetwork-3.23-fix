@@ -1254,6 +1254,9 @@ func provide(opts docopt.Opts) {
 		defer localUserNat.Close()
 		remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat, bw, remoteUserNatProviderSettings)
 		defer remoteUserNatProvider.Close()
+		if proxySettings != nil {
+			startProxyBenchmarks(proxyCtx, bw, proxySettings)
+		}
 
 		provideModes := map[protocol.ProvideMode]bool{
 			protocol.ProvideMode_Public:  true,
