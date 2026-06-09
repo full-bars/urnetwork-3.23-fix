@@ -142,6 +142,18 @@ func markProxyUp(index int) {
 	}
 }
 
+// ProxyBandwidthByAddress returns the ProxyBandwidth for a given address, or nil.
+func ProxyBandwidthByAddress(addr string) *ProxyBandwidth {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.address == addr {
+			return h.bw
+		}
+	}
+	return nil
+}
+
 // markProxyDown records that the proxy's platform transport went down, stamping
 // downSince when it was previously up (for recovery-latency reporting).
 func markProxyDown(index int) {
