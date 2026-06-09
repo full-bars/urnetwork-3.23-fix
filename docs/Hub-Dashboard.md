@@ -1,5 +1,7 @@
 # 📊 Bandwidth Hub Dashboard
 
+![Hub Dashboard Preview](hub-dashboard-preview.png)
+
 A live fleet monitoring dashboard that aggregates bandwidth reports from all provider nodes. The hub runs as a standalone binary, accepts periodic POSTs to `/api/report`, and renders an HTML dashboard at the root path.
 
 ## Architecture
