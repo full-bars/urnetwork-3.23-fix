@@ -254,17 +254,8 @@ func nodeColor(ts time.Time) string {
 	return "#ef4444"
 }
 
-func main() {
-	addr := flag.String("addr", ":8080", "listen address")
-	dataDir := flag.String("data", ".", "data directory for hub.json")
-	flag.Parse()
-
-	storePath := filepath.Join(*dataDir, "hub.json")
-	s := loadStore(storePath)
-
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/api/report", func(w http.ResponseWriter, r *http.Request) {
+func handleReport(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", 405)
 			return
@@ -287,14 +278,18 @@ func main() {
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
 		w.WriteHeader(204)
-	})
+	}
+}
 
-	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, r *http.Request) {
+func handleNodes(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(s.list())
-	})
+	}
+}
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func handleDashboard(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
 
 		rows := make([]nodeRow, 0, len(nodes))
@@ -362,7 +357,22 @@ func main() {
 		})
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		buf.WriteTo(w)
-	})
+	}
+}
+
+func main() {
+	addr := flag.String("addr", ":8080", "listen address")
+	dataDir := flag.String("data", ".", "data directory for hub.json")
+	flag.Parse()
+
+	storePath := filepath.Join(*dataDir, "hub.json")
+	s := loadStore(storePath)
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/report", handleReport(s))
+	mux.HandleFunc("/api/nodes", handleNodes(s))
+	mux.HandleFunc("/", handleDashboard(s))
 
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, storePath)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
