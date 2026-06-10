@@ -1,0 +1,17 @@
+{
+  "nodes": {
+    "n2": {
+      "node_id": "n2",
+      "host": "",
+      "version": "",
+      "ts": "0001-01-01T00:00:00Z",
+      "uptime": 0,
+      "proxies": null,
+      "sys": {
+        "heap_mib": 0,
+        "sys_mib": 0,
+        "conns": 0
+      }
+    }
+  }
+}
