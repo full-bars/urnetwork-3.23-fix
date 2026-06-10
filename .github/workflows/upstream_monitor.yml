@@ -1,4 +1,4 @@
-name: Upstream PR Monitor
+name: Upstream Monitoring
 
 on:
   schedule:
@@ -6,35 +6,40 @@ on:
   workflow_dispatch: # Allow manual triggering from the Actions tab
 
 jobs:
-  monitor:
+  monitor-critical-files:
     runs-on: ubuntu-latest
     steps:
-      - name: Check upstream repo and generate AI summary
+      - name: Monitor critical file changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
-          
+
           # The specific files in your fork that you want to protect/monitor
           CRITICAL_FILES=(
-            "ip.go" 
-            "transfer_contract_manager.go" 
-            "net_http.go" 
+            "ip.go"
+            "transfer.go"
+            "transfer_contract_manager.go"
+            "transfer_route_manager.go"
+            "net_http.go"
+            "net_http_doh.go"
+            "transport.go"
             "transfer_encrypt.go"
             "provider/main.go"
             "proxy_health.go"
+            "message_pool.go"
           )
-          
+
           echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
-          
+
           # Fetch the 15 most recently updated open PRs
           PRS=$(gh api repos/$UPSTREAM_REPO/pulls?state=open\&sort=updated\&direction=desc\&per_page=15)
-          
-          # Calculate timestamp for 12 hours ago (to avoid duplicate alerts on old PRs)
+
+          # Calculate timestamp for 12 hours ago
           TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
-          
+
           echo "$PRS" | jq -c '.[]' | while read -r pr; do
             PR_NUMBER=$(echo "$pr" | jq -r '.number')
             PR_TITLE=$(echo "$pr" | jq -r '.title')
@@ -42,32 +47,23 @@ jobs:
             PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
             PR_AUTHOR=$(echo "$pr" | jq -r '.user.login')
             PR_AVATAR=$(echo "$pr" | jq -r '.user.avatar_url')
-            
-            # Only process PRs updated within our 12-hour polling window
+
             if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
-              # Fetch the list of files modified in this specific PR
               FILES=$(gh api repos/$UPSTREAM_REPO/pulls/$PR_NUMBER/files | jq -r '.[].filename')
-              
+
               MATCHED_FILES=""
               for file in "${CRITICAL_FILES[@]}"; do
                 if echo "$FILES" | grep -q "$file"; then
                   MATCHED_FILES="$MATCHED_FILES \`$file\`"
                 fi
               done
-              
-              # If any critical files were touched, trigger the alert
+
               if [ -n "$MATCHED_FILES" ]; then
-                echo "🚨 Match found! PR #$PR_NUMBER touches:$MATCHED_FILES"
-                
+                echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
+
                 AI_SUMMARY="*AI Summary unavailable.*"
-                
                 if [ -n "$GEMINI_API_KEY" ]; then
-                  echo "Downloading PR diff and requesting Gemini summary..."
-                  # Fetch raw diff
                   PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
-                  
-                  # Safely construct the Gemini API JSON payload using jq
-                  # We truncate the diff to ~60,000 chars just to be safe with standard limits
                   TRUNCATED_DIFF="${PR_DIFF:0:60000}"
                   JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
                     "contents": [{
@@ -77,23 +73,15 @@ jobs:
                     }],
                     "generationConfig": { "temperature": 0.2 }
                   }')
-                  
-                  # Call Gemini 1.5 Pro
+
                   GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
                     -d "$JSON_PAYLOAD" \
                     "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}")
-                    
-                  # Extract response and strictly truncate to 3800 chars to maximize depth while respecting Discord's 4096 limit
                   RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate AI summary."')
                   AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                  if [ ${#RAW_SUMMARY} -gt 3800 ]; then
-                    AI_SUMMARY="${AI_SUMMARY}...\n*(Summary truncated to fit Discord limits)*"
-                  fi
                 fi
-                
+
                 if [ -n "$DISCORD_WEBHOOK" ]; then
-                  echo "Sending Discord Rich Embed..."
-                  # Safely build the Discord JSON payload
                   DISCORD_JSON=$(jq -n \
                     --arg url "$PR_URL" \
                     --arg prTitle "$PR_TITLE" \
@@ -105,20 +93,134 @@ jobs:
                     "embeds": [{
                       "title": "🚨 Upstream PR Modifies Critical Files",
                       "url": $url,
-                      "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author + "\n\n**Modified Files:**\n" + $files + "\n\n**🤖 AI Summary (Gemini 1.5 Pro):**\n>>> " + $summary),
+                      "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author + "\n\n**Modified Files:**\n" + $files + "\n\n**🤖 AI Summary:**\n>>> " + $summary),
                       "color": 16711680,
-                      "thumbnail": {
-                        "url": $avatar
-                      },
-                      "footer": {
-                        "text": "URNetwork Upstream Monitor • Powered by Gemini 1.5 Pro"
-                      }
+                      "thumbnail": { "url": $avatar },
+                      "footer": { "text": "URNetwork Upstream Monitor • Critical Files" }
                     }]
                   }')
-                  
                   curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
-                else
-                  echo "⚠️ Warning: DISCORD_WEBHOOK secret is not set in repository settings. Cannot send alert."
+                fi
+              fi
+            fi
+          done
+
+  monitor-all-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Monitor all upstream PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+
+          echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
+          PRS=$(gh api repos/$UPSTREAM_REPO/pulls?state=open\&sort=updated\&direction=desc\&per_page=5)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$PRS" | jq -c '.[]' | while read -r pr; do
+            PR_NUMBER=$(echo "$pr" | jq -r '.number')
+            PR_TITLE=$(echo "$pr" | jq -r '.title')
+            PR_URL=$(echo "$pr" | jq -r '.html_url')
+            PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
+            PR_AUTHOR=$(echo "$pr" | jq -r '.user.login')
+            PR_AVATAR=$(echo "$pr" | jq -r '.user.avatar_url')
+
+            if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
+              echo "📢 New/Updated PR: #$PR_NUMBER by $PR_AUTHOR"
+
+              if [ -n "$DISCORD_WEBHOOK" ]; then
+                DISCORD_JSON=$(jq -n \
+                  --arg url "$PR_URL" \
+                  --arg prTitle "$PR_TITLE" \
+                  --arg author "$PR_AUTHOR" \
+                  --arg avatar "$PR_AVATAR" \
+                '{
+                  "embeds": [{
+                    "title": "📢 Upstream PR Activity",
+                    "url": $url,
+                    "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author),
+                    "color": 3447003,
+                    "thumbnail": { "url": $avatar },
+                    "footer": { "text": "URNetwork Upstream Monitor • All PRs" }
+                  }]
+                }')
+                curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+              fi
+            fi
+          done
+
+  monitor-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Monitor upstream commits to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+
+          # Critical files to watch in commits
+          CRITICAL_FILES=(
+            "ip.go"
+            "transfer.go"
+            "transfer_contract_manager.go"
+            "transfer_route_manager.go"
+            "net_http.go"
+            "net_http_doh.go"
+            "transport.go"
+            "transfer_encrypt.go"
+            "provider/main.go"
+            "proxy_health.go"
+            "message_pool.go"
+          )
+
+          echo "Fetching recent commits to $UPSTREAM_REPO/main..."
+
+          # Fetch last 20 commits to main
+          COMMITS=$(gh api repos/$UPSTREAM_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$UPSTREAM_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              for file in "${CRITICAL_FILES[@]}"; do
+                if echo "$COMMIT_FILES" | grep -q "^$file$"; then
+                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
+                fi
+              done
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                  '{
+                    "embeds": [{
+                      "title": "✅ Upstream Commit to Main (Critical Files)",
+                      "url": $url,
+                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files),
+                      "color": 65280,
+                      "footer": { "text": "URNetwork Upstream Monitor • Merged" }
+                    }]
+                  }')
+                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
                 fi
               fi
             fi
