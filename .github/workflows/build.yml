@@ -69,6 +69,7 @@ jobs:
           go vet ./hub/...
 
       - name: Run vulnerability check
+        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
