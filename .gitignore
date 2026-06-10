@@ -11,3 +11,4 @@ tetherctl/*.conf
 api/redoc-static.html
 security/ips.{go,txt}
 progress.md
+*.bak
