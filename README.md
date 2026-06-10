@@ -1,8 +1,22 @@
-# 🚀 UrNetwork v3.23 Fix
+# ⛓ UrNetwork v3.23 Fix
 
-A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. This build is tuned for professional providers managing larger proxy lists, higher throughput, and more visible operations.
+A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. Tuned for professional providers managing large proxy lists, high throughput, and production-grade operations.
 
-## 🏁 Start Here
+## 🆚 What this fork changes vs upstream
+
+| | Upstream | This fork |
+| :--- | :--- | :--- |
+| Connection log visibility | Debug level 2 (silent) | INFO — one line per successful connection |
+| Initial contract size | 16 KiB | 256 KiB — faster throughput ramp-up |
+| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup |
+| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime |
+| Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
+| Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
+| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
+
+---
+
+## 🗺 Start Here
 
 | If you want to... | Go here |
 | :--- | :--- |
@@ -11,14 +25,16 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Run multiple containers on one host | [Multi-Container Scaling](docs/Multi-Container-Scaling.md) |
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
-| Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
+| Interpret provider logs | [Log Message Reference](../../wiki/Log-Message-Reference) |
 | Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
+
+---
 
 ## ⚡ Quick Start
 
 ### 🐧 Linux Service
 
-Run this as your normal non-root user:
+Run as your normal non-root user:
 
 ```bash
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
@@ -30,14 +46,14 @@ Uninstall:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
-After installation, source your terminal profile so the new commands are available, and authenticate the provider:
+After installation, source your shell profile and authenticate:
 
 ```bash
 source ~/.bashrc
 urnetwork auth
 ```
 
-Then you can add your proxy list and monitor the node:
+Then load your proxy list and start providing:
 
 ```bash
 urnet-tools proxy add ~/proxies.txt
@@ -47,89 +63,105 @@ urnet-tools proxy health
 urnet-tools logs
 ```
 
-## 🛠️ Common Operations
+### 🐋 Docker
+
+```bash
+docker run -d \
+  --name=urnetwork \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD='jwt' \
+  -v /path/to/your/proxy.txt:/app/proxy.txt \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_JWT_HERE
+```
+
+See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and RAM log setups.
+
+> [!NOTE]
+> **Docker shortcuts** — most `urnet-tools` commands work via `docker exec`:
+> - `docker exec -it urfix proxy-health`
+> - `docker exec -it urfix proxy-traffic`
+> - `docker exec -it urfix logs`
+
+---
+
+## 🔧 Common Operations
 
 | Command | Use this when... |
 | :--- | :--- |
-| `urnetwork auth` | You need to log in or refresh your identity manually (Native). |
-| `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy. |
-| `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP`. |
-| `urnet-tools logs` | You want to stream the current RAMLOGS buffer (Native/Docker-Alias). |
-| `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` for them. |
-| `urnet-tools proxy refresh` | You updated your proxy list and want the node to load changes live. |
+| `urnetwork auth` | You need to log in or refresh your identity manually |
+| `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy |
+| `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP` |
+| `urnet-tools logs` | You want to stream the current RAMLOGS buffer |
+| `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
+| `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
 
 > [!TIP]
-> **Path Formatting**  
-> You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
+> `~/proxies.txt` and `/home/user/proxies.txt` are both valid path formats.
 
-### 📊 Bandwidth Hub Dashboard
+---
 
-Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all provider nodes and renders an HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
+## 📡 Fleet Dashboard
+
+Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all nodes and renders a live HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
 
 ![Hub Dashboard Preview](docs/hub-dashboard-preview.png)
 
-```sh
-# Run the hub (standalone binary, built from hub/main.go)
+```bash
+# Run the hub
 ./hub -addr :8080 -data /var/hub-data
 
-# Each provider reports to the hub via env
+# Point each provider at it
 URNETWORK_REPORT_URL=http://HUB_IP:8080
 ```
 
-See [Hub Dashboard](docs/Hub-Dashboard.md) for deployment and configuration details.
+See [Hub Dashboard](docs/Hub-Dashboard.md) for full deployment details.
 
-### 🐳 Docker
-
-See [Docker Deployment](docs/Docker-Deployment.md) for full copy-paste examples covering `docker run`, Docker Compose, JWT auth, email/password auth, GHCR, Docker Hub, RAM logs, outage alerts, and Watchtower updates.
-
-> [!NOTE]
-> **Docker "Power User" Shortcuts**
-> Most `urnet-tools` commands have direct Docker aliases. Use `docker exec -it <container_name> <cmd>`:
-> *   **Health**: `docker exec -it urfix proxy-health`
-> *   **Traffic**: `docker exec -it urfix proxy-traffic`
-> *   **Live Logs**: `docker exec -it urfix logs`
-
-## ✨ Key Improvements
-
-- **Deep proxy telemetry:** Real-time NAT session multiplexing tracks exactly how many concurrent clients and bandwidth each individual proxy handles, exported live to `proxy_traffic.state`.
-- **High-signal monitoring:** successful serial connection selection logs are promoted to normal INFO output, while noisy parallel-selection logs stay quiet.
-- **Outage noise reduction:** repeated backend auth and contract errors are rate-limited and summarized with suppressed counts.
-- **Higher throughput ceiling:** larger contract ramp-up, longer contract timeout, dynamic TCP accordion windows, deeper packet buffers, and expanded message pools.
-- **Performance profiles:** Auto, Turbo V4, Turbo V8, Eco, and Lowmem profiles cover hosts from small VPS instances to high-RAM dedicated servers.
-- **Lean native binary & extensive container support:** Built primarily for maximum efficiency as a native binary app, alongside comprehensive support for Docker deployments (**JWT Smart Refresh**, Watchtower compatibility, multi-container patterns).
-- **Self-healing auth:** Automatic detection and recovery from expired or revoked JWT tokens without manual intervention.
+---
 
 ## 💡 Recommended Defaults
 
-For most providers:
+- Use the **Linux installer** for a host-managed systemd service
+- Use **Docker** if you prefer containers — both are fully documented
+- Leave profile on **`auto`** unless you have a specific reason to override
+- Mount `/root/.urnetwork` as a persistent volume in Docker deployments
+- Run `urnet-tools optimize` after adding a large proxy list, or when the System Auditor flags kernel limits
 
-- Use the Linux installer if you want a host-managed service.
-- Use either `docker run` or Docker Compose if you prefer containers; both are fully documented.
-- Enable `auto` profile unless you already know you need a specific profile.
-- Keep a persistent config volume mounted at `/root/.urnetwork` for Docker deployments.
-- Run `urnet-tools optimize` when deploying many proxies, or whenever the System Auditor reports suboptimal kernel limits.
+---
 
 ## 📚 Documentation
 
-- [Installation Guide](docs/Installation.md)
+**In-repo:**
+
+- [Installation](docs/Installation.md)
 - [Docker Deployment](docs/Docker-Deployment.md)
 - [Multi-Container Scaling](docs/Multi-Container-Scaling.md)
 - [Configuration Reference](docs/Configuration.md)
-- [Proxy Management & Hot-Reloading](docs/Proxy-Management.md)
+- [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
-- [Log Message Reference](LOG_REFERENCE.md)
+- [Hub Dashboard](docs/Hub-Dashboard.md)
 - [Changelog](CHANGELOG.md)
 
-## 🏗️ Architecture & Build
+**Wiki:**
 
-This repository is designed to be **standalone**.
+- [Log Message Reference](../../wiki/Log-Message-Reference)
+- [Proxy Hot-Reload internals](../../wiki/Proxy-Hot-Reload)
+- [CI and Release Process](../../wiki/CI-and-Release-Process)
+- [Project Structure](../../wiki/Project-Structure)
 
-- **Base Engine:** UrNetwork v3.23
-- **Builder:** Go 1.25 on Alpine
-- **CI/CD:** GitHub Actions builds and pushes multi-arch images to GHCR
-- **Bridge-Friendly:** optimized for standard Docker bridge networks without requiring `--network host`
+---
 
-## ⚠️ Disclaimer
+## 🏗 Build Info
+
+- **Base engine:** UrNetwork v3.23
+- **Language:** Go 1.25, compiled on Alpine
+- **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR
+- **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
+
+---
 
 > [!WARNING]
-> This is a private, custom modification intended for testing and professional provider use. It is not affiliated with the official UrNetwork project.
+> This is a private, custom modification for professional provider use. Not affiliated with the official UrNetwork project.
