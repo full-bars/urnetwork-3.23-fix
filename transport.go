@@ -30,6 +30,8 @@ var lastAuthErrLogNano atomic.Int64
 var suppressedAuthErrCount atomic.Int64
 var lastSelectErrLogNano atomic.Int64
 var suppressedSelectErrCount atomic.Int64
+var lastWriteErrLogNano atomic.Int64
+var suppressedWriteErrCount atomic.Int64
 
 // lastBackendFailNano is updated on every backend failure (auth or OOB), not
 // rate-limited. Used by isBackendDegraded() as the recency guard.
@@ -92,6 +94,21 @@ func shouldLogSelectErr() (bool, int64) {
 		return false, 0
 	}
 	suppressed := suppressedSelectErrCount.Swap(0)
+	return true, suppressed
+}
+
+func shouldLogWriteErr() (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastWriteErrLogNano.Load()
+	if now-last < int64(time.Minute) {
+		suppressedWriteErrCount.Add(1)
+		return false, 0
+	}
+	if !lastWriteErrLogNano.CompareAndSwap(last, now) {
+		suppressedWriteErrCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedWriteErrCount.Swap(0)
 	return true, suppressed
 }
 
@@ -754,7 +771,13 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					MessagePoolReturn(message)
 					if err != nil {
 						// note that for websocket a dealine timeout cannot be recovered
-						glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+						if ok, suppressed := shouldLogWriteErr(); ok {
+							if suppressed > 0 {
+								glog.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+							} else {
+								glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+							}
+						}
 						return err
 					}
 					glog.V(2).Infof("[ts]%s->\n", clientId)
