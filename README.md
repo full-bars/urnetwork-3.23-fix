@@ -75,7 +75,7 @@ docker run -d \
   --sysctl net.ipv4.ip_forward=1 \
   -e BUILD='jwt' \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_JWT_HERE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE_HERE
 ```
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and RAM log setups.
