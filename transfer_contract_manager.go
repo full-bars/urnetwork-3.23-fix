@@ -767,8 +767,17 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 		return false
 	}
 
+	// Try legacy format first (pre-July 1, 2026): mac.Sum(data) appends HMAC to data
 	mac := hmac.New(sha256.New, provideSecretKey)
 	expectedHmac := mac.Sum(storedContractBytes)
+	if hmac.Equal(storedContractHmac, expectedHmac) {
+		return true
+	}
+
+	// Try standard format (post-July 1, 2026): mac.Write(data); mac.Sum(nil) returns pure HMAC
+	mac.Reset()
+	mac.Write(storedContractBytes)
+	expectedHmac = mac.Sum(nil)
 	return hmac.Equal(storedContractHmac, expectedHmac)
 }
 
