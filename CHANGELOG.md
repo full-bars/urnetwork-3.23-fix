@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.20] — 2026-06-12
+
+### Fixed
+- **HMAC Contract Verification Format Migration**: Implemented dual-format HMAC verification to support the upstream platform's contract signing format migration on July 1, 2026. Providers now verify both legacy (pre-July 1) and standard (post-July 1) HMAC formats seamlessly, ensuring continuous operation through the platform cutover with zero performance impact.
+- **Write Error Log Suppression (QUIC)**: Fixed write error log flooding in the QUIC (runH3) transport path. Both WebSocket (runH1) and QUIC (runH3) write errors are now rate-limited to one log message per minute globally, with suppression counts reported to reduce noise during backend outages.
+
+---
+
 ## [v3.23.0-fix.18.4] — unreleased
 
 ### Added
