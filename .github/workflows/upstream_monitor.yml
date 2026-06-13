@@ -76,9 +76,28 @@ jobs:
 
                   GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
                     -d "$JSON_PAYLOAD" \
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}")
-                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate AI summary."')
-                  AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                  # Debug: log first 200 chars of response
+                  echo "[DEBUG] Gemini response (first 200 chars): ${GEMINI_RESPONSE:0:200}"
+
+                  # Check for API errors first
+                  API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                  if [ -n "$API_ERROR" ]; then
+                    AI_SUMMARY="*API Error: $API_ERROR*"
+                    echo "[ERROR] Gemini API error: $API_ERROR"
+                  else
+                    RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                    if [ -n "$RAW_SUMMARY" ]; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
+                    else
+                      # Log raw response for debugging when jq extraction fails
+                      echo "[ERROR] Failed to extract summary from response. Full response:"
+                      echo "$GEMINI_RESPONSE" | jq . 2>/dev/null || echo "$GEMINI_RESPONSE"
+                      AI_SUMMARY="*Error: Unexpected API response format* (check workflow logs)"
+                    fi
+                  fi
                 fi
 
                 if [ -n "$DISCORD_WEBHOOK" ]; then
