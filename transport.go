@@ -1312,7 +1312,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						MessagePoolReturn(message)
 						if err != nil {
 							// note that for websocket a dealine timeout cannot be recovered
-							glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+							if ok, suppressed := shouldLogWriteErr(); ok {
+								if suppressed > 0 {
+									glog.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+								} else {
+									glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+								}
+							}
 							return
 						}
 						glog.V(2).Infof("[ts]%s->\n", clientId)
