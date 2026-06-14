@@ -867,27 +867,40 @@ do_install ()
         install_release_date="$(cat "$install_path/.date")"
         installed_version="$(cat "$install_path/.version")"
 
-        # If GitHub API parsing failed, skip update check and proceed
-        if [ -z "$release_date" ] || [ -z "$version_to_install" ]; then
-            pr_err "Failed to parse GitHub API response (missing jq or python3?). Install both: apt-get install -y jq python3"
-            pr_err "Aborting update to prevent silent failures. Please retry after fixing dependencies."
-            exit 1
-        fi
-
-        # Validate dates are numeric before comparison
-        if ! printf '%s' "$install_release_date" | grep -qE '^[0-9]+$' || ! printf '%s' "$release_date" | grep -qE '^[0-9]+$'; then
-            pr_err "Invalid date format from API. Aborting update to prevent errors."
-            exit 1
-        fi
-
-        if [ "$force_update" = "1" ]; then
-            pr_info "Force flag enabled, reinstalling version %s" "$version_to_install"
-        elif [ "$install_release_date" -lt "$release_date" ]; then
-            pr_info "Version %s is newer than the installed version %s" "$version_to_install" "$installed_version"
-            pr_info "Continuing upgrade"
+        # If release_date could not be parsed, fall back to version string comparison
+        if [ -z "$release_date" ]; then
+            pr_info "Unable to parse release date from API; using version string comparison"
+            if [ "$force_update" = "1" ]; then
+                pr_info "Force flag enabled, reinstalling version %s" "$version_to_install"
+            elif [ "$version_to_install" != "$installed_version" ]; then
+                pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
+            else
+                pr_info "Installed version %s is already up-to-date" "$installed_version"
+                exit 0
+            fi
         else
-            pr_info "Installed version is up-to-date"
-            exit 0
+            # Validate dates are numeric before comparison
+            if ! printf '%s' "$install_release_date" | grep -qE '^[0-9]+$' || ! printf '%s' "$release_date" | grep -qE '^[0-9]+$'; then
+                pr_info "Invalid date format from API; using version string comparison"
+                if [ "$force_update" = "1" ]; then
+                    pr_info "Force flag enabled, reinstalling version %s" "$version_to_install"
+                elif [ "$version_to_install" != "$installed_version" ]; then
+                    pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
+                else
+                    pr_info "Installed version %s is already up-to-date" "$installed_version"
+                    exit 0
+                fi
+            else
+                if [ "$force_update" = "1" ]; then
+                    pr_info "Force flag enabled, reinstalling version %s" "$version_to_install"
+                elif [ "$install_release_date" -lt "$release_date" ]; then
+                    pr_info "Version %s is newer than the installed version %s" "$version_to_install" "$installed_version"
+                    pr_info "Continuing upgrade"
+                else
+                    pr_info "Installed version is up-to-date"
+                    exit 0
+                fi
+            fi
         fi
     fi
 
