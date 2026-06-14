@@ -1200,11 +1200,11 @@ func provide(opts docopt.Opts) {
 		}
 
 		byClientJwt, clientId, err := func() (string, connect.Id, error) {
-			// Consecutive failures where the JWT file exists but the API rejects it
-			// (expired, revoked, or bad token). After maxAuthFailures the binary
-			// exits so the shell restart loop can delete the JWT and re-authenticate.
-			// "Jwt does not exist" is a configuration issue, not a bad token — it
-			// retries indefinitely until the user runs 'urnetwork auth'.
+			// Consecutive auth failures (network errors, API timeouts, or token
+			// rejection). After maxAuthFailures the proxy gives up and goes offline
+			// until the next hourly pulse.
+			// "Jwt does not exist" is a configuration issue, not a network/token
+			// error — it retries indefinitely until the user runs 'urnetwork auth'.
 			const maxAuthFailures = 10
 			authFailures := 0
 			for {
@@ -1231,7 +1231,24 @@ func provide(opts docopt.Opts) {
 
 				authFailures++
 				if authFailures >= maxAuthFailures {
-					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts, JWT may be expired or revoked: %w", maxAuthFailures, err)
+					// Classify the root cause so operators get an actionable message
+					// rather than a generic "JWT may be expired" that is wrong for
+					// the common case of API timeouts during startup.
+					var cause string
+					errMsg := err.Error()
+					switch {
+					case errors.Is(err, context.DeadlineExceeded),
+						errors.Is(err, context.Canceled),
+						strings.Contains(errMsg, "Timeout"),
+						strings.Contains(errMsg, "timeout"),
+						strings.Contains(errMsg, "deadline exceeded"),
+						strings.Contains(errMsg, "connection refused"),
+						strings.Contains(errMsg, "no such host"):
+						cause = "network error reaching API (check connectivity to api.bringyour.com)"
+					default:
+						cause = "API rejected token (check JWT validity)"
+					}
+					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 				}
 
 				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
