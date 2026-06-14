@@ -24,7 +24,41 @@ Each provider sends a bandwidth report containing per-proxy traffic counters, he
 
 ## Quick Start
 
-### Build & Run the Hub
+### Option A: urnet-tools (native Linux installs, recommended)
+
+If you installed via `urnet-tools`, the hub binary is bundled in the same release. One command installs and starts it as a systemd user service:
+
+```sh
+# Install hub as a systemd user service (downloads binary, enables on startup)
+urnet-tools hub install
+
+# Point the provider on this machine at the hub
+urnet-tools hub set http://localhost:8080
+
+# Point providers on other machines at this hub
+urnet-tools hub set http://192.0.2.10:8080
+# or with a domain name / HTTPS reverse proxy:
+urnet-tools hub set https://hub.yourdomain.com
+```
+
+To stop hub reporting without uninstalling anything:
+
+```sh
+urnet-tools hub off
+```
+
+Stream the hub's own logs:
+
+```sh
+journalctl --user -fu urnetwork-hub.service
+```
+
+> [!NOTE]
+> `hub install` writes a systemd drop-in that persists across reboots. The hub data file lives at `~/.local/share/urnetwork-hub/hub.json`.
+
+---
+
+### Option B: Build & Run Manually
 
 ```sh
 # Build from source
@@ -37,7 +71,7 @@ cd hub && go build -o hub .
 ./hub -addr :9090 -data /var/hub-data
 ```
 
-### Configure Providers to Report
+### Configure Providers to Report (Manual / Docker)
 
 Set the `URNETWORK_REPORT_URL` environment variable on each provider:
 
@@ -49,12 +83,37 @@ docker run -d \
   -e URNETWORK_REPORT_URL=http://HUB_IP:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 
-# Native binary
+# Native binary (without urnet-tools)
 URNETWORK_REPORT_URL=http://HUB_IP:8080 ./ur-provider
 ```
 
 > [!TIP]
 > Use a single hub instance for your entire fleet. All nodes report to the same URL.
+
+## Secure Deployment (Reverse Proxy)
+
+> [!TIP]
+> If your nodes are distributed across different networks, it is highly recommended to deploy the Hub behind a reverse proxy like [Caddy](https://caddyserver.com/). This provides automatic HTTPS (SSL/TLS) and allows you to use a clean Domain or DDNS URL.
+
+**1. Caddyfile Configuration**
+Create or update your `Caddyfile` to route your domain to the local Hub instance (running on port 8080 by default):
+
+```caddyfile
+hub.yourdomain.com {
+    reverse_proxy localhost:8080
+}
+```
+
+**2. Node Configuration**
+Configure your provider nodes to report to your new secure URL instead of the raw IP:
+
+```sh
+# Docker setup
+-e URNETWORK_REPORT_URL=https://hub.yourdomain.com \
+
+# Native binary setup
+URNETWORK_REPORT_URL=https://hub.yourdomain.com ./ur-provider
+```
 
 ## Dashboard Features
 
