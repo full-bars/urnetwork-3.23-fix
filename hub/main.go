@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var Version string
+
 var funcMap = template.FuncMap{
 	"fmtBytes": fmtBytes,
 	"fmtMbps":  fmtMbps,

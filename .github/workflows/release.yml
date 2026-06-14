@@ -23,7 +23,7 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Build
+      - name: Build provider
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
@@ -31,11 +31,25 @@ jobs:
           -ldflags "-s -w -X main.Version=${VERSION}" \
           -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/
 
-      - name: Upload Artifacts
+      - name: Build hub
+        run: |
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+          go build -trimpath \
+          -ldflags "-s -w -X main.Version=${VERSION}" \
+          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/
+
+      - name: Upload provider artifact
         uses: actions/upload-artifact@v4
         with:
           name: provider-${{ matrix.goarch }}
           path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider
+
+      - name: Upload hub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hub-${{ matrix.goarch }}
+          path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub
 
   create-release:
     name: Create Release
@@ -47,28 +61,46 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download amd64 Artifact
+      - name: Download provider amd64 artifact
         uses: actions/download-artifact@v4
         with:
           name: provider-amd64
           path: release_tmp/linux/amd64/
 
-      - name: Download arm64 Artifact
+      - name: Download provider arm64 artifact
         uses: actions/download-artifact@v4
         with:
           name: provider-arm64
           path: release_tmp/linux/arm64/
 
-      - name: Prepare Binaries
+      - name: Download hub amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-amd64
+          path: hub_tmp/amd64/
+
+      - name: Download hub arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-arm64
+          path: hub_tmp/arm64/
+
+      - name: Prepare binaries
         run: |
+          VERSION=${GITHUB_REF_NAME:-latest}
           # download-artifact@v4 might create subfolders or keep names depending on structure
-          # Ensuring they are named 'provider' in the correct structure
+          # Ensuring provider binaries are named 'provider' in the correct structure
           find release_tmp -name "provider*" -type f -exec chmod +x {} \;
-          # If they were renamed to 'provider-amd64' inside the folder, move them
           mv release_tmp/linux/amd64/provider-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
           mv release_tmp/linux/arm64/provider-arm64 release_tmp/linux/arm64/provider 2>/dev/null || true
+          # Stamp hub binaries with version and arch for individual asset upload
+          find hub_tmp -name "hub*" -type f -exec chmod +x {} \;
+          mv hub_tmp/amd64/hub-amd64 hub_tmp/amd64/hub 2>/dev/null || true
+          mv hub_tmp/arm64/hub-arm64 hub_tmp/arm64/hub 2>/dev/null || true
+          cp hub_tmp/amd64/hub urnetwork-hub-${VERSION}-linux-amd64
+          cp hub_tmp/arm64/hub urnetwork-hub-${VERSION}-linux-arm64
 
-      - name: Create Tarball
+      - name: Create provider tarball
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
           cd release_tmp
@@ -91,7 +123,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: urnetwork-provider-*.tar.gz
+          files: |
+            urnetwork-provider-*.tar.gz
+            urnetwork-hub-*-linux-amd64
+            urnetwork-hub-*-linux-arm64
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           body_path: ${{ steps.body_src.outputs.path }}
