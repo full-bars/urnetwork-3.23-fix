@@ -39,6 +39,11 @@ show_help ()
     echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
     echo ""
+    echo "Hub Dashboard:"
+    echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
+    echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
+    echo "  hub install             Download and install the hub binary as a systemd user service"
+    echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall URnetwork"
     echo "  uninstall               Uninstall URnetwork"
@@ -1723,6 +1728,192 @@ setup_zram_manual () {
     return 1
 }
 
+do_hub () {
+    cmd="$1"
+    shift || true
+
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    hub_conf="$override_dir/hub.conf"
+
+    hub_service_dir="$HOME/.config/systemd/user"
+    hub_service="$hub_service_dir/urnetwork-hub.service"
+    hub_bin="$install_path/bin/urnetwork-hub"
+
+    case "$cmd" in
+        set)
+            url="$1"
+            if [ -z "$url" ]; then
+                pr_err "Usage: urnet-tools hub set <http://host:port>"
+                pr_err "Example: urnet-tools hub set http://192.0.2.10:8080"
+                pr_err "Note: https:// also works when the hub is behind a reverse proxy like Caddy"
+                exit 1
+            fi
+
+            # Basic sanity check: must start with http:// or https://
+            case "$url" in
+                http://*|https://*) ;;
+                *)
+                    pr_err "Invalid URL '%s': must begin with http:// or https://" "$url"
+                    exit 1
+                    ;;
+            esac
+
+            if [ "$has_systemd" -eq 0 ]; then
+                pr_err "systemd is not available on this system"
+                exit 1
+            fi
+
+            pr_info "Configuring provider to report to hub: %s" "$url"
+            mkdir -p "$override_dir"
+
+            cat > "$hub_conf" <<EOF
+[Service]
+Environment="URNETWORK_REPORT_URL=$url"
+EOF
+            pr_info "Wrote %s" "$hub_conf"
+
+            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
+
+            if systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
+                pr_info "Restarting urnetwork.service to apply hub URL..."
+                systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+                pr_info "Provider restarted. It will now report to: %s" "$url"
+            else
+                pr_info "urnetwork.service is not running; hub URL will take effect on next start."
+            fi
+            ;;
+
+        off)
+            if [ "$has_systemd" -eq 0 ]; then
+                pr_err "systemd is not available on this system"
+                exit 1
+            fi
+
+            if [ ! -f "$hub_conf" ]; then
+                pr_info "Hub reporting is not configured (no override found at %s)." "$hub_conf"
+                exit 0
+            fi
+
+            pr_info "Removing hub override: %s" "$hub_conf"
+            rm -f "$hub_conf"
+
+            # Clean up empty drop-in dir if nothing else lives there
+            rmdir "$override_dir" 2>/dev/null || true
+
+            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
+
+            if systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
+                pr_info "Restarting urnetwork.service to remove hub URL..."
+                systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+                pr_info "Hub reporting disabled. Provider restarted."
+            else
+                pr_info "Hub reporting disabled. Change takes effect on next provider start."
+            fi
+            ;;
+
+        install)
+            if [ "$has_systemd" -eq 0 ]; then
+                pr_err "systemd is not available on this system"
+                exit 1
+            fi
+
+            # Resolve which tag to download the hub binary from
+            hub_tag="${URNETWORK_HUB_TAG:-}"
+            if [ -z "$hub_tag" ] && [ -f "$version_file" ]; then
+                hub_tag="$(cat "$version_file")"
+            fi
+            if [ -z "$hub_tag" ]; then
+                hub_tag=latest
+            fi
+
+            # Resolve 'latest' to a real tag
+            if [ "$hub_tag" = "latest" ]; then
+                pr_info "Resolving latest release tag..."
+                api_url="$api_base/releases/latest"
+                release="$(network_fetch "$api_url" 2>/dev/null || true)"
+                hub_tag="$(get_version_from_api_response "$release" 2>/dev/null)"
+
+                if [ -z "$hub_tag" ] && command -v curl > /dev/null; then
+                    tag_url=$(curl -Ls -o /dev/null -w %{url_effective} \
+                        "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+                    if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+                        hub_tag="${tag_url##*/}"
+                    fi
+                fi
+
+                if [ -z "$hub_tag" ]; then
+                    pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub install"
+                    exit 1
+                fi
+            fi
+
+            hub_dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+            pr_info "Downloading hub binary from: %s" "$hub_dl_url"
+
+            mkdir -p "$install_path/bin"
+            tmp_hub="$(mktemp)"
+            trap 'rm -f "$tmp_hub"' EXIT
+
+            if ! download_asset "$hub_dl_url" "$tmp_hub"; then
+                pr_err "Failed to download hub binary from: %s" "$hub_dl_url"
+                pr_err "Make sure this release includes a hub binary asset."
+                exit 1
+            fi
+
+            chmod 755 "$tmp_hub"
+            mv "$tmp_hub" "$hub_bin"
+            trap - EXIT
+            pr_info "Hub binary installed at: %s" "$hub_bin"
+
+            # Create the hub data directory
+            hub_data_dir="$HOME/.local/share/urnetwork-hub"
+            mkdir -p "$hub_data_dir"
+
+            pr_info "Installing urnetwork-hub.service..."
+            cat > "$hub_service" <<EOF
+[Unit]
+Description=URnetwork Hub Dashboard
+
+[Service]
+ExecStart=$hub_bin -addr :8080 -data $hub_data_dir
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+EOF
+
+            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
+
+            if systemctl --user enable --now urnetwork-hub.service; then
+                pr_info "Hub service enabled and started."
+                pr_info "Dashboard available at: http://localhost:8080"
+                pr_info ""
+                pr_info "Next steps:"
+                pr_info "  urnet-tools hub set http://<this-host>:8080   # point your providers at the hub"
+                pr_info "  journalctl --user -fu urnetwork-hub.service    # stream hub logs"
+                pr_info ""
+                pr_info "Tip: https:// also works when the hub is behind a reverse proxy like Caddy"
+                pr_info "     e.g. urnet-tools hub set https://hub.example.com"
+            else
+                pr_err "Failed to enable or start urnetwork-hub.service"
+                pr_err "Try: journalctl --user -xe | grep hub"
+                exit 1
+            fi
+            ;;
+
+        "")
+            pr_err "Usage: urnet-tools hub <set <http://host:port>|off|install>"
+            exit 1
+            ;;
+
+        *)
+            pr_err "Unknown hub command: %s (try 'set', 'off', or 'install')" "$cmd"
+            exit 1
+            ;;
+    esac
+}
+
 do_proxy () {
     cmd="$1"
     shift
@@ -2116,6 +2307,11 @@ case "$operation" in
 
     proxy)
         do_proxy "$@"
+        exit 0
+        ;;
+
+    hub)
+        do_hub "$@"
         exit 0
         ;;
 
