@@ -606,13 +606,7 @@ func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeou
 	default:
 	}
 
-	var filteredTransferFrame protocol.FilteredTransferFrame
-	if err := ProtoUnmarshal(transferFrameBytes, &filteredTransferFrame); err != nil {
-		// bad protobuf
-		return false, err
-	}
-
-	path, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
+	path, err := FilteredTransferPath(transferFrameBytes)
 	if err != nil {
 		// bad protobuf
 		return false, err
@@ -997,18 +991,7 @@ func (self *Client) run() {
 		// and applied basic validation and source/destination checks
 		// because of this, errors in parsing the `FilteredTransferFrame` are not expected
 		// decode a minimal subset of the full message needed to make a routing decision
-		filteredTransferFrame := &protocol.FilteredTransferFrame{}
-		if err := ProtoUnmarshal(transferFrameBytes, filteredTransferFrame); err != nil {
-			// bad protobuf (unexpected, see route note above)
-			MessagePoolReturn(transferFrameBytes)
-			continue
-		}
-		if filteredTransferFrame.TransferPath == nil {
-			// bad protobuf (unexpected, see route note above)
-			MessagePoolReturn(transferFrameBytes)
-			continue
-		}
-		path, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
+		path, err := FilteredTransferPath(transferFrameBytes)
 		if err != nil {
 			// bad protobuf (unexpected, see route note above)
 			MessagePoolReturn(transferFrameBytes)
