@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.21
+**Current Version**: v3.23.0-fix.21.2
 
 ---
 
@@ -636,6 +636,55 @@ URNETWORK_REPORT_URL=http://HUB_IP:8080
 **Breaking**: `ProxyHealthSnapshot()` now returns 5 values. Update any custom callers.
 
 **Status**: ✅ Shipped in v3.23.0-fix.19.
+
+---
+
+## 27. Message Pool Race Fix & Orphaned Buffer Leak
+
+**Purpose**: Close two silent correctness bugs in the memory recycling subsystem found during a scheduled code review.
+
+**Files Modified**: `message_pool.go`
+
+**Changes**:
+
+*Bug 1 — Share/Return race*: When `MessagePoolReturn` and `MessagePoolShare` ran concurrently on the same buffer, `Return` could reset the metadata (tag, flags, count to zero) and call `pool.Put()` while `Share` had already read count=1 and was about to increment it. The returning goroutine's `pool.Put()` would race a `pool.Get()` in a third goroutine, handing out the buffer before `Share` finished. Fixed by moving the metadata reset (`tag=0, flags=0, count=0`) inside the `stateLock` closure, so any concurrent `Share` that reads the count under the same lock sees count=0 and returns `false` before the buffer reaches the freelist.
+
+*Bug 2 — Orphaned buffer leak in `ProtoMarshalWithTag`*: The function called `proto.Size` to estimate serialized size, grabbed a pool buffer of that size, then passed it to `proto.MarshalAppend`. If the estimate was too small, `MarshalAppend` allocated a new backing slice and returned it — abandoning the pool buffer. The orphaned buffer was never returned, accumulating as a steady GC-allocation leak. Fixed by comparing `cap(out) != cap(buf)` after the marshal; a cap change indicates reallocation, and the original buffer is explicitly returned to the pool.
+
+**How to Identify in New Upstream**:
+- Look for `MessagePoolReturn` in `message_pool.go` — verify metadata reset happens inside `stateLock`
+- Look for `ProtoMarshalWithTag` — verify a cap-change guard returns the original buffer on reallocation
+
+**Status**: ✅ Shipped in v3.23.0-fix.21.2 (PR #78).
+
+---
+
+## 28. CI Full Test Suite
+
+**Purpose**: Replace a hand-picked test allowlist with auto-discovery so new tests are never silently skipped and Go's race detector catches concurrency bugs (like the one in §27) automatically.
+
+**Files Modified**: `.github/workflows/build.yml`, `message_pool_test.go`
+
+**Changes**:
+- CI test step replaced: `go test -run TestFoo|TestBar` → `go test -short -race -timeout 600s ./...`
+- `TestMessagePoolShare` fixed: assertion was checking against the old maximum bucket size (4 KiB) before the pool gained larger buckets (16 KiB, 32 KiB, 64 KiB). Updated to use `pools[len(pools)-1].size` dynamically.
+- Added daily drift monitor job (`monitor-sibling-drift`) in `.github/workflows/upstream_monitor.yml` that checks `full-bars/connect` for new commits to critical files and posts a Discord "port check" alert.
+
+**Status**: ✅ Shipped in v3.23.0-fix.21.2 (PR #79, #81).
+
+---
+
+## 29. Hub Report Visibility & Reporter Startup Jitter
+
+**Purpose**: Surface silent hub reporting failures in logs, and prevent thundering-herd on fleet restart.
+
+**Files Modified**: `provider/bandwidth_reporter.go`
+
+**Changes**:
+- `runBandwidthReporter`: non-2xx HTTP responses now log `[report] hub rejected report: <status>` instead of silently moving on.
+- Added random startup jitter (0 to one full interval) before the first report POST. Without this, all providers that restart together (e.g., after a fleet update) post on the same wall-clock boundary, spiking the hub. Mirrors the existing jitter pattern in `proxy_benchmark.go`.
+
+**Status**: ✅ Shipped in v3.23.0-fix.21.2 (PR #80, #82).
 
 ---
 
