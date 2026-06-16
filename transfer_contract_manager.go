@@ -20,7 +20,6 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 
@@ -39,6 +38,32 @@ func shouldLogOobErr() (bool, int64) {
 		return false, 0
 	}
 	suppressed := suppressedOobErrCount.Swap(0)
+	return true, suppressed
+}
+
+// Rate-limited logging for contract acquisition (win) and denial (loss).
+// This is the observability layer between [net][s]select (control-plane
+// connectivity) and [traffic] (relayed bytes): it surfaces whether the
+// platform is assigning contracts vs whether they are being denied.
+// Each event class has its own 1-minute global window so a steady stream
+// of acquisitions emits one summary line per minute with a suppressed count.
+var lastContractAcquiredLogNano atomic.Int64
+var suppressedContractAcquiredCount atomic.Int64
+var lastContractDeniedLogNano atomic.Int64
+var suppressedContractDeniedCount atomic.Int64
+
+func shouldLogContractEvent(lastLogNano *atomic.Int64, suppressedCount *atomic.Int64) (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastLogNano.Load()
+	if now-last < int64(time.Minute) {
+		suppressedCount.Add(1)
+		return false, 0
+	}
+	if !lastLogNano.CompareAndSwap(last, now) {
+		suppressedCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedCount.Swap(0)
 	return true, suppressed
 }
 
@@ -171,7 +196,7 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 		panic(err)
 	}
 	return &ContractManagerSettings{
-		SequenceBufferSize: bufferSize,
+		SequenceBufferSize:                bufferSize,
 		InitialContractTransferByteCount:  mib(2),
 		StandardContractTransferByteCount: mib(128),
 		ContractTransferByteSeqScale:      4,
@@ -546,6 +571,13 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						}
 
 						self.contractStatus(contractStatus)
+						if ok, suppressed := shouldLogContractEvent(&lastContractAcquiredLogNano, &suppressedContractAcquiredCount); ok {
+							if suppressed > 0 {
+								self.client.log.Infof("[contract] acquired size=%s (%d suppressed)\n", ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())), suppressed)
+							} else {
+								self.client.log.Infof("[contract] acquired size=%s\n", ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())))
+							}
+						}
 						return nil
 					}
 				}
@@ -561,6 +593,13 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 		}
 		for _, contractError := range contractErrors {
 			self.client.log.V(1).Infof("[contract]error = %s\n", contractError)
+			if ok, suppressed := shouldLogContractEvent(&lastContractDeniedLogNano, &suppressedContractDeniedCount); ok {
+				if suppressed > 0 {
+					self.client.log.Infof("[contract] denied = %s (%d suppressed)\n", contractError, suppressed)
+				} else {
+					self.client.log.Infof("[contract] denied = %s\n", contractError)
+				}
+			}
 			c := func() {
 				contractStatus := &ContractStatus{
 					Key:   contractKey,
@@ -1037,6 +1076,10 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil {
 				consecutiveBackendFails.Store(0)
+				// [contract] acquired is logged in HandleControlFrame on the
+				// actual contract-success branch, not here: err==nil only means
+				// the control request round-tripped; the result may still carry a
+				// ContractError (denial). Logging here would double-log denials.
 				for _, resultFrame := range resultFrames {
 					self.HandleControlFrame(contractKey, resultFrame)
 				}
