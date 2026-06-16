@@ -886,6 +886,45 @@ func metricBytesToMiB(name string, v metrics.Value) uint64 {
 	}
 }
 
+// trafficBytes holds per-proxy byte counters for one tick, used to compute deltas.
+type trafficBytes struct {
+	rx, tx uint64
+}
+
+// fmtRate formats a bytes-per-second rate as a human-readable string.
+func fmtRate(bytesPerSec float64) string {
+	switch {
+	case bytesPerSec >= 1e9:
+		return fmt.Sprintf("%.1f GB/s", bytesPerSec/1e9)
+	case bytesPerSec >= 1e6:
+		return fmt.Sprintf("%.1f MB/s", bytesPerSec/1e6)
+	case bytesPerSec >= 1e3:
+		return fmt.Sprintf("%.1f KB/s", bytesPerSec/1e3)
+	default:
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
+}
+
+// fmtBytes formats a byte count as a human-readable string.
+func fmtBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(b)/float64(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(b)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+// nextMidnight returns the next local midnight after t.
+func nextMidnight(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
+}
+
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
 // memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
 // (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
@@ -906,6 +945,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	// deadConfirmDelay gates confirmed-dead event logging until one pulse cycle has
 	// elapsed, so the startup ramp is not recorded as dead.
 	const deadConfirmDelay = 65 * time.Minute
+
+	// per-proxy byte counts from the previous tick, used to compute rates.
+	prevTick := map[string]trafficBytes{}
+	prevTickTime := time.Now()
+
+	// per-proxy billable byte checkpoint at midnight, to show "today" totals.
+	midnightCheckpoint := map[string]uint64{}
+	nextMidnightReset := nextMidnight(time.Now())
 
 	for {
 		select {
@@ -942,6 +989,60 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if len(report.Degraded) > 0 {
 			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
+
+		// Reset midnight checkpoints when the day rolls over.
+		if now.After(nextMidnightReset) {
+			for k, bw := range report.Bandwidth {
+				midnightCheckpoint[k] = bw.BillableRx.Load() + bw.BillableTx.Load()
+			}
+			nextMidnightReset = nextMidnight(now)
+		}
+
+		// Compute per-tick rates and emit [traffic] lines.
+		elapsed := now.Sub(prevTickTime).Seconds()
+		if elapsed < 1 {
+			elapsed = 1
+		}
+		var totalRxDelta, totalTxDelta uint64
+		var totalClients int64
+		activeProxies := 0
+		for key, bw := range report.Bandwidth {
+			rx := bw.TotalRx.Load()
+			tx := bw.TotalTx.Load()
+			clients := bw.Clients.Load()
+			totalClients += clients
+			prev := prevTick[key]
+			rxDelta := rx - prev.rx
+			txDelta := tx - prev.tx
+			totalRxDelta += rxDelta
+			totalTxDelta += txDelta
+			prevTick[key] = trafficBytes{rx: rx, tx: tx}
+
+			if rxDelta == 0 && txDelta == 0 {
+				continue
+			}
+			activeProxies++
+			billableToday := (bw.BillableRx.Load() + bw.BillableTx.Load()) - midnightCheckpoint[key]
+			ageStr := ""
+			if age := bw.MaxAge(); age > 0 {
+				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
+			}
+			fmt.Printf("[traffic] %s rx=%s/s tx=%s/s clients=%d%s billable_today=%s\n",
+				key,
+				fmtRate(float64(rxDelta)/elapsed),
+				fmtRate(float64(txDelta)/elapsed),
+				clients,
+				ageStr,
+				fmtBytes(billableToday),
+			)
+		}
+		prevTickTime = now
+		fmt.Printf("[traffic] total rx=%s/s tx=%s/s clients=%d active_proxies=%d\n",
+			fmtRate(float64(totalRxDelta)/elapsed),
+			fmtRate(float64(totalTxDelta)/elapsed),
+			totalClients,
+			activeProxies,
+		)
 
 		// Update proxy.state health snapshot for use by proxy refresh subcommand.
 		// proxyStateMu serializes this with reload()'s state write to prevent

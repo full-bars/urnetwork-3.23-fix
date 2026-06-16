@@ -233,30 +233,70 @@ An hourly retry sweep is performed to wake stalled transports. This marker logs 
 
 ---
 
-## 🔀 Connection Selection (3.23-fix variant)
+## 🔀 Outbound Connection Health (3.23-fix variant)
 
 ```
-[net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192 clients=12
-[net][s]select: proxy[13] (5.6.7.8:1081) [normal] success=2221 error=223 clients=5
+[net][s]select: proxy[42] (1.2.3.4:1081) [fragment] success=6086 error=192 clients=0
+[net][s]select: proxy[13] (5.6.7.8:1081) [direct] success=2221 error=223
+[net][s]select: direct success=171 error=3
 ```
 
-Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each line represents the provider selecting a routing strategy for a client session. When running with a proxy list, it indicates exactly which proxy is handling the traffic, making it easy to spot failing IPs.
+Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each line fires when the **provider itself** makes an outbound API call or WebSocket dial to the URnetwork platform (e.g. `api.bringyour.com/connect/control`) and records which route was used. This is the provider's own control-plane traffic, **not** end-user relay traffic.
+
+> [!IMPORTANT]
+> `success` and `clients` measure completely different things and do not correlate. A proxy with `success=5000 clients=0` is healthy and talking to the platform — it just has no users assigned to it right now. The platform decides which providers serve which clients.
+
+| Field | Meaning |
+|---|---|
+| `proxy[N] (ip:port)` | The SOCKS5 proxy used to reach the platform. Absent when using the direct path. |
+| `[fragment]` / `[reorder]` / `[fragment+reorder]` / `[direct]` | DPI bypass strategy used for this outbound call (see below). |
+| `success=N` | Cumulative provider API/WebSocket calls that succeeded through this route since last reset. |
+| `error=N` | Cumulative failures. A healthy error rate is under ~10% of successes. |
+| `clients=N` | **Independent metric.** Number of end-user relay sessions currently routing through this proxy via LocalUserNat. Zero is normal when no users are assigned. |
+| `age=Xs` | How long the oldest current user session has been continuously present on this proxy. Only shown when `clients > 0`. |
+
+### Connection strategies
+
+The provider tries multiple strategies for its outbound connections to avoid DPI and firewall interference. These are techniques applied to the TLS handshake, not to user traffic:
 
 | Mode | Meaning |
 |---|---|
-| `normal` | Standard direct routing |
-| `fragment` | Packet fragmentation applied to work around path MTU issues |
-| `reorder` | Packets reordered to improve delivery on lossy paths |
-| `fragment+reorder` | Both applied |
+| `direct` | Standard TLS with no modifications — the default path when no proxy is configured. |
+| `fragment` | Splits the TLS ClientHello across multiple TCP segments so stateful DPI cannot read the SNI hostname. Highest priority; no throughput cost. |
+| `reorder` | Sends TLS fragments out of order to confuse stateless DPI inspectors. |
+| `fragment+reorder` | Both techniques combined. |
+
+The selector tracks per-strategy success rates and prefers whichever is most reliable. When errors accumulate on one strategy, it rotates to the next.
 
 **What to watch for:**
-- `clients=N` shows the *exact* number of active multiplexed NAT sessions currently utilizing that specific proxy.
-- If a proxy has a high `error` count compared to `success`, it is dropping packets or failing. That specific proxy IP might be unreachable or banned by the platform. You can remove it from your `proxy.txt`.
+- `error` growing faster than `success` on a specific proxy — that proxy's outbound path to the platform is degraded. Consider removing it from `proxy.txt`.
+- Repeated strategy rotations on the same proxy (log shows `[fragment]` → `[fragment+reorder]` → `[direct]` in quick succession) — the proxy has inconsistent connectivity to the platform.
+- `clients=N` staying at 0 across all proxies for extended periods is normal when the platform hasn't assigned users to this provider. It is not related to `success` counts.
 
-- `success=N` — cumulative successful connections using this strategy
-- `error=N` — cumulative failed attempts
-- A healthy error rate is under ~10% of successes
-- High error counts on a specific mode suggest that strategy isn't working well on this server's network path
+---
+
+## 📡 Relay Traffic Rates
+
+```
+[traffic] total rx=2.3 MB/s tx=0.8 MB/s clients=1 active_proxies=2
+[traffic] proxy[124] (216.26.228.3:1081) rx=2.3 MB/s tx=0.8 MB/s clients=1 age=5m12s billable_today=1.2 GB
+[traffic] proxy[230] (45.3.48.195:1081) rx=0.4 MB/s tx=0.1 MB/s clients=0 billable_today=340 MB
+```
+
+Fires on every health heartbeat tick (same cadence as `[health]`). Measures **actual end-user relay traffic** — bytes flowing through the provider's IP relay stack (LocalUserNat) on behalf of connected clients. This is what earns you platform credit.
+
+| Field | Meaning |
+|---|---|
+| `rx` / `tx` | Bytes per second relayed since the previous heartbeat tick. |
+| `clients` | Number of end-user relay sessions active on this proxy right now. |
+| `age` | How long the current client session has been continuously present (shown when `clients > 0`). |
+| `billable_today` | Cumulative billable bytes relayed through this proxy since midnight (local time). Resets at midnight. |
+| `active_proxies` | How many proxies moved any bytes since the last tick (summary line only). |
+
+The per-proxy lines only appear for proxies that moved bytes since the last tick — proxies with zero traffic are omitted. The `total` summary line always appears so you have one line to grep even when nothing is flowing (`rx=0 B/s tx=0 B/s clients=0`).
+
+> [!NOTE]
+> `[traffic]` and `[net][s]select` measure different things. `[net][s]select success=N` is the provider's own API calls to the platform. `[traffic] rx=X` is actual bytes your provider relayed for end-users. Both can be high or low independently.
 
 ---
 
