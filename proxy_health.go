@@ -15,9 +15,16 @@ type ProxyBandwidth struct {
 	LatencyNs                                atomic.Int64
 	SocksLatencyNs                           atomic.Int64
 
-	mu       sync.Mutex
-	sessions map[any]time.Time
+	mu            sync.Mutex
+	sessions      map[any]time.Time
+	presenceSince time.Time // when clients first arrived in the current continuous window
+	lastActivity  time.Time // when the last session was added or removed
 }
+
+// clientPresenceGrace is how long after all sessions close before resetting
+// the presenceSince clock. Prevents age from resetting to 0s on every short
+// flow when a client makes many rapid requests (e.g. browser tabs).
+const clientPresenceGrace = 10 * time.Second
 
 func (self *ProxyBandwidth) AddSession(key any, start time.Time) {
 	self.mu.Lock()
@@ -25,7 +32,14 @@ func (self *ProxyBandwidth) AddSession(key any, start time.Time) {
 	if self.sessions == nil {
 		self.sessions = make(map[any]time.Time)
 	}
+	if len(self.sessions) == 0 {
+		gap := time.Since(self.lastActivity)
+		if self.presenceSince.IsZero() || gap >= clientPresenceGrace {
+			self.presenceSince = start
+		}
+	}
 	self.sessions[key] = start
+	self.lastActivity = time.Now()
 }
 
 func (self *ProxyBandwidth) RemoveSession(key any) {
@@ -33,22 +47,23 @@ func (self *ProxyBandwidth) RemoveSession(key any) {
 	defer self.mu.Unlock()
 	if self.sessions != nil {
 		delete(self.sessions, key)
+		if len(self.sessions) == 0 {
+			self.lastActivity = time.Now()
+		}
 	}
 }
 
 func (self *ProxyBandwidth) MaxAge() time.Duration {
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if len(self.sessions) == 0 {
+	if self.presenceSince.IsZero() {
 		return 0
 	}
-	var oldest time.Time
-	for _, t := range self.sessions {
-		if oldest.IsZero() || t.Before(oldest) {
-			oldest = t
-		}
+	if len(self.sessions) == 0 && time.Since(self.lastActivity) >= clientPresenceGrace {
+		self.presenceSince = time.Time{}
+		return 0
 	}
-	return time.Since(oldest)
+	return time.Since(self.presenceSince)
 }
 
 // ProxyFailureCounters tracks per-proxy failure counts by category, so
