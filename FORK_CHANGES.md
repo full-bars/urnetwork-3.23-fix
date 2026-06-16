@@ -4,20 +4,23 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.20
+**Current Version**: v3.23.0-fix.21
 
 ---
 
 ## 1. Enhanced Logging — `[net][s]select` Visibility
 
-**Purpose**: Make provider throughput observable in logs without `-v` (debug mode). Critical for real-time monitoring and testing.
+**Purpose**: Make the provider's control-plane connectivity observable in logs without `-v` (debug mode). Critical for warmup monitoring, proxy health checks, and outage detection.
 
 **Files Modified**: `net_http.go`
 
 **Change**:
 - Log level: `[net][s]select` serial-select messages promoted from `Debug(2)` → `Info()`
-- **Effect**: One log line per successful connection, visible in standard log output
-- **Impact**: Enables real-time traffic observation (critical for warmup testing, outage monitoring)
+- **Effect**: One log line per successful **backend (control-plane) dial** — i.e. the provider's own API/WebSocket connection to the URnetwork platform (e.g. `api.bringyour.com/connect/control`), visible in standard log output
+- **Impact**: Makes per-proxy control-plane connectivity observable (critical for warmup testing and outage monitoring)
+
+> [!IMPORTANT]
+> `[net][s]select` measures the **provider's own control-plane traffic**, NOT end-user relay throughput. `success=N` counts successful backend dials; it does not mean bytes are flowing for users. The `clients=N` field and the separate `[traffic]` log line are the actual data-plane / earnings signals — a proxy can show `success=5000 clients=0` and be relaying zero bytes. See `LOG_REFERENCE.md`.
 
 **How to Identify in New Upstream**:
 - Search for `[net][s]select` log statements in `net_http.go`
@@ -438,7 +441,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ## 16. Dialer Selection Error Suppression
 
-**Purpose**: Reduce log spam during backend outages. When the backend is unreachable, `[net][s]select:` error logs fire hundreds per second across dialer variants (fragment, normal, reorder, etc.), making log analysis impossible. Rate-limit these errors to one per minute with suppression counts.
+**Purpose**: Reduce log spam during backend outages. When the backend is unreachable, `[net][s]select:` error logs fire hundreds per second across dialer variants (fragment, direct, reorder, etc.), making log analysis impossible. Rate-limit these errors to one per minute with suppression counts.
 
 **Files Modified**: `transport.go`, `net_http.go`
 
@@ -451,11 +454,11 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 - **New rate-limiting function** (`transport.go`, lines 83-96):
   - `func shouldLogSelectErr() (bool, int64)` — Exact mirror of existing `shouldLogAuthErr()` with only variable names changed. Same 1-minute window, same atomic CAS pattern for thread-safety, same suppression count swap.
 
-- **Error log wrapper** (`net_http.go`, lines 674-680):
-  - Original: `glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)`
+- **Error log wrapper** (`net_http.go`, around lines 679-686):
+  - Original: `self.log.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)` (was `glog.Infof(...)` before the glog→Logger refactor — see Section on logger de-globalization)
   - Now wrapped: `if ok, suppressed := shouldLogSelectErr(); ok { ... }`
   - Format: `[net][s]select: {variant} = {error} (N suppressed)` when suppressed count > 0, otherwise `[net][s]select: {variant} = {error}` for first error in window
-  - Success logs at line 671 remain untouched (visible on every successful selection)
+  - The success log (the `success=N error=N` line) remains untouched (visible on every successful selection)
 
 **Impact**:
 - Normal operation: Success logs (`[net][s]select: {variant}`) appear regularly; error logs appear at normal rate
@@ -463,7 +466,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 - Log volume reduction: ~99% reduction during extended outages (hundreds/second → one/minute)
 
 **How to Identify in New Upstream**:
-- If upstream modifies the `[net][s]select` logging at `net_http.go:674`, ensure the error log line still exists
+- If upstream modifies the `[net][s]select` logging in `net_http.go` (the `self.log.Infof("[net][s]select: ...")` calls), ensure the error log line still exists
 - If upstream adds new error logging in the serial-select path, consider applying the same rate-limiting pattern
 - Verify `shouldLogAuthErr()` still exists and uses the same atomic-counter/CAS pattern (reference for this feature)
 
