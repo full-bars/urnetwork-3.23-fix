@@ -93,19 +93,19 @@ func NewGlogLogger() Logger {
 type glogLogger struct{}
 
 func (self glogLogger) Info(args ...any) {
-	glog.InfoDepth(1, args...)
+	glog.Info(args...)
 }
 
 func (self glogLogger) Infof(format string, args ...any) {
-	glog.InfoDepthf(1, format, args...)
+	glog.Infof(format, args...)
 }
 
 func (self glogLogger) Warningf(format string, args ...any) {
-	glog.WarningDepthf(1, format, args...)
+	glog.Warningf(format, args...)
 }
 
 func (self glogLogger) Errorf(format string, args ...any) {
-	glog.ErrorDepthf(1, format, args...)
+	glog.Errorf(format, args...)
 }
 
 func (self glogLogger) V(level int32) Verbose {

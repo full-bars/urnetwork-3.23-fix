@@ -1027,7 +1027,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if age := bw.MaxAge(); age > 0 {
 				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
 			}
-			fmt.Printf("[traffic] %s rx=%s/s tx=%s/s clients=%d%s billable_today=%s\n",
+			fmt.Printf("[traffic] %s rx=%s tx=%s clients=%d%s billable_today=%s\n",
 				key,
 				fmtRate(float64(rxDelta)/elapsed),
 				fmtRate(float64(txDelta)/elapsed),
@@ -1452,6 +1452,14 @@ func provide(opts docopt.Opts) {
 	}
 
 	var wg sync.WaitGroup
+
+	// Sentinel goroutine to prevent wg.Wait() from unblocking
+	// if the hot-reloader drops active proxies to zero.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+	}()
 
 	if profile := os.Getenv("URNETWORK_PROFILE"); profile == "turbo-v4" || profile == "turbo-v8" {
 		var windowMiB, queueMiB uint32

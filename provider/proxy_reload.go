@@ -177,6 +177,11 @@ func (r *ProxyReloader) reload() {
 		desired = readProxySettings()
 	}
 
+	if len(desired) == 0 {
+		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
+		return
+	}
+
 	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
 	for _, s := range desired {
 		desiredSet[s.Address] = s
