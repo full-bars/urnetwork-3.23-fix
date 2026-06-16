@@ -1165,7 +1165,7 @@ func (self *clientDialer) String() string {
 		}
 		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d clients=%d%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, clients, ageStr)
 	} else {
-		return fmt.Sprintf("%s success=%d error=%d", self.description, self.successCount, self.errorCount)
+		return fmt.Sprintf("[direct] %s success=%d error=%d", self.description, self.successCount, self.errorCount)
 	}
 }
 
