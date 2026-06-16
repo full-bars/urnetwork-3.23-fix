@@ -19,6 +19,16 @@ var benchmarkEndpoint = func() string {
 	return "connect.bringyour.com:443"
 }()
 
+// startProxyBenchmarks launches optional latency probes for one proxy, enabled
+// only when URNETWORK_PROXY_BENCHMARK=true. It starts two independent probes
+// whose results are stored on the proxy's ProxyBandwidth for the hub dashboard:
+//   - runTCPLatencyProbe: a raw TCP dial to the proxy's own address (LatencyNs).
+//   - runSocksLatencyProbe: a SOCKS5 CONNECT through the proxy to
+//     URNETWORK_PROXY_BENCHMARK_ENDPOINT (SocksLatencyNs), i.e. end-to-end
+//     egress latency via the proxy.
+//
+// Note this measures relayed-path latency and is distinct from the
+// [net][s]select dur= field, which times the provider's own control-plane dials.
 func startProxyBenchmarks(ctx context.Context, bw *connect.ProxyBandwidth, settings *connect.ProxySettings) {
 	if os.Getenv("URNETWORK_PROXY_BENCHMARK") != "true" {
 		return
