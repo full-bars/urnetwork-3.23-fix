@@ -93,6 +93,13 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 			fmt.Printf("[report] post failed: %v\n", err)
 			continue
 		}
+		// surface a rejecting hub instead of silently treating any response as
+		// success. without this a 401/404/5xx looks identical to a 200 and the
+		// fleet dashboard goes stale with no signal on the provider side. the
+		// 60s cadence already rate-limits this, so log every occurrence.
+		if resp.StatusCode/100 != 2 {
+			fmt.Printf("[report] hub rejected report: %s\n", resp.Status)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
