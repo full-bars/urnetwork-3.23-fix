@@ -104,7 +104,7 @@ func (s *store) upsert(nodeID string, state *nodeState) {
 	}
 	if prev, ok := s.rates[nodeID]; ok {
 		dt := state.Timestamp.Sub(prev.ts).Seconds()
-		if dt > 1 {
+		if dt > 1 && totalRX >= prev.rx && totalTX >= prev.tx {
 			s.rates[nodeID].mbpsRx = float64(totalRX-prev.rx) / dt * 8 / 1_000_000
 			s.rates[nodeID].mbpsTx = float64(totalTX-prev.tx) / dt * 8 / 1_000_000
 		}
@@ -145,7 +145,11 @@ func (s *store) summary() summaryRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var sr summaryRow
+	now := time.Now()
 	for _, n := range s.Nodes {
+		if now.Sub(n.Timestamp) > 5*time.Minute {
+			continue
+		}
 		sr.Nodes++
 		for _, p := range n.Proxies {
 			switch p.Status {
@@ -601,7 +605,7 @@ function removeNode(nodeId) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({node_id: nodeId})
   }).then(function(r) {
-    if (r.ok) location.reload();
+    if (r.ok) refreshDashboard();
     else alert('Failed to remove node');
   });
 }
@@ -619,7 +623,7 @@ function tick() {
   secondsLeft--;
   if (secondsLeft <= 0) {
     secondsLeft = 30;
-    location.reload();
+    refreshDashboard();
     return;
   }
   countdownEl.textContent = 'refreshing in ' + secondsLeft + 's';
@@ -631,6 +635,22 @@ function toggleRefresh() {
   if (autoRefresh.checked) {
     secondsLeft = 30;
   }
+}
+
+function closeAllDetails() {
+  document.querySelectorAll('.detail-row.open').forEach(function(r) { r.classList.remove('open'); });
+}
+
+function refreshDashboard() {
+  closeAllDetails();
+  fetch('/').then(function(r) { return r.text(); }).then(function(html) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(html, 'text/html');
+    var newBody = doc.querySelector('#node-table tbody');
+    var newSummary = doc.querySelector('.summary');
+    document.querySelector('#node-table tbody').replaceWith(newBody);
+    document.querySelector('.summary').replaceWith(newSummary);
+  });
 }
 
 // column sorting
@@ -669,9 +689,6 @@ document.querySelectorAll('th[data-col]').forEach(function(th) {
     });
     // reorder rows + their detail rows
     rows.forEach(function(r) {
-      var idx = parseInt(r.cells[0].textContent.match(/\d+/) || '0');
-      // Actually we need to identify the detail row. We'll look for the next sibling tr with class detail-row
-      // But the detail row is always the next sibling
       var detail = r.nextElementSibling;
       tbody.appendChild(r);
       if (detail && detail.classList.contains('detail-row')) {
