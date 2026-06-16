@@ -3,6 +3,7 @@ package connect
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,7 +72,6 @@ func (self *ProxyBandwidth) MaxAge() time.Duration {
 type ProxyFailureCounters struct {
 	AuthFailures     atomic.Int64
 	TimeoutFailures  atomic.Int64
-	ContractFailures atomic.Int64
 	TransportDrops   atomic.Int64
 }
 
@@ -87,6 +87,7 @@ type proxyHealth struct {
 	deadLogged  bool      // a confirmed-dead event has been emitted for this proxy
 	bw          *ProxyBandwidth
 	failures    ProxyFailureCounters
+	lastError   string
 }
 
 
@@ -188,29 +189,32 @@ func markProxyDown(index int) {
 }
 
 // RecordProxyAuthFailure increments the auth-failure counter for a proxy.
-func RecordProxyAuthFailure(index int) {
+func RecordProxyAuthFailure(index int, err error) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	if h, ok := proxyHealthByIndex[index]; ok {
-		h.failures.AuthFailures.Add(1)
-	}
-}
-
-// RecordProxyContractFailure increments the contract-failure counter for a proxy.
-func RecordProxyContractFailure(index int) {
-	proxyHealthMu.Lock()
-	defer proxyHealthMu.Unlock()
-	if h, ok := proxyHealthByIndex[index]; ok {
-		h.failures.ContractFailures.Add(1)
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		if strings.Contains(strings.ToLower(errStr), "timeout") {
+			h.failures.TimeoutFailures.Add(1)
+		} else {
+			h.failures.AuthFailures.Add(1)
+		}
+		h.lastError = errStr
 	}
 }
 
 // RecordProxyTransportDrop increments the transport-drop counter for a proxy.
-func RecordProxyTransportDrop(index int) {
+func RecordProxyTransportDrop(index int, err error) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	if h, ok := proxyHealthByIndex[index]; ok {
 		h.failures.TransportDrops.Add(1)
+		if err != nil {
+			h.lastError = err.Error()
+		}
 	}
 }
 
@@ -231,6 +235,27 @@ func ProxyHealthCount() int {
 
 func formatProxyEntry(index int, address string) string {
 	return fmt.Sprintf("proxy[%d] (%s)", index, address)
+}
+
+func formatProxyErrorEntry(index int, address string, failures ProxyFailureCounters, lastError string) string {
+	base := formatProxyEntry(index, address)
+	var parts []string
+	if auth := failures.AuthFailures.Load(); auth > 0 {
+		parts = append(parts, fmt.Sprintf("auth:%d", auth))
+	}
+	if timeout := failures.TimeoutFailures.Load(); timeout > 0 {
+		parts = append(parts, fmt.Sprintf("timeout:%d", timeout))
+	}
+	if drops := failures.TransportDrops.Load(); drops > 0 {
+		parts = append(parts, fmt.Sprintf("drops:%d", drops))
+	}
+	if lastError != "" {
+		parts = append(parts, fmt.Sprintf("last_err:%q", lastError))
+	}
+	if len(parts) > 0 {
+		return fmt.Sprintf("%s [%s]", base, strings.Join(parts, ", "))
+	}
+	return base
 }
 
 // sortedIndicesLocked returns registry indices in ascending order. Caller holds the lock.
@@ -302,11 +327,11 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		case h.currentlyUp:
 			r.Up++
 		case h.everUp:
-			r.Degraded = append(r.Degraded, formatProxyEntry(idx, h.address))
+			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, h.failures, h.lastError))
 		case h.connecting:
 			// still trying to connect — not dead
 		default:
-			r.Dead = append(r.Dead, formatProxyEntry(idx, h.address))
+			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, h.failures, h.lastError))
 		}
 
 		if h.bw != nil {
@@ -388,7 +413,6 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 			Health:         health,
 			DownSince:      h.downSince,
 			AuthFailures:   h.failures.AuthFailures.Load(),
-			ContractFails:  h.failures.ContractFailures.Load(),
 			TransportDrops: h.failures.TransportDrops.Load(),
 			TimeoutFails:   h.failures.TimeoutFailures.Load(),
 			LatencyMs:      latencyNs / 1_000_000,
