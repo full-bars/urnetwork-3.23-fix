@@ -25,7 +25,6 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-	"github.com/urnetwork/glog"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -118,6 +117,11 @@ type LocalUserNatSettings struct {
 	// BufferTimeout      time.Duration
 	UdpBufferSettings *UdpBufferSettings
 	TcpBufferSettings *TcpBufferSettings
+
+	// Log, when set, is used by the local user nat and its udp/tcp buffers
+	// and sequences (propagated to the buffer settings `Log` fields that are
+	// nil). nil resolves to `DefaultLogger()`.
+	Log Logger
 }
 
 // forwards packets using user space sockets
@@ -127,6 +131,7 @@ type LocalUserNat struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	clientTag string
+	log       Logger
 
 	sendPackets chan *SendPacket
 
@@ -145,10 +150,19 @@ func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string, bw *Prox
 func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, settings *LocalUserNatSettings) *LocalUserNat {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
+	log := loggerOrDefault(settings.Log)
+	// propagate so a nat-level logger covers the udp/tcp buffers and sequences
+	if settings.UdpBufferSettings != nil && settings.UdpBufferSettings.Log == nil {
+		settings.UdpBufferSettings.Log = log
+	}
+	if settings.TcpBufferSettings != nil && settings.TcpBufferSettings.Log == nil {
+		settings.TcpBufferSettings.Log = log
+	}
 	localUserNat := &LocalUserNat{
 		ctx:              cancelCtx,
 		cancel:           cancel,
 		clientTag:        clientTag,
+		log:              log,
 		sendPackets:      make(chan *SendPacket, settings.SequenceBufferSize),
 		settings:         settings,
 		bw:               bw,
@@ -266,7 +280,7 @@ func (self *LocalUserNat) Run() {
 						)
 						return success && err == nil
 					}
-					if glog.V(2) {
+					if self.log.V(2).Enabled() {
 						TraceWithReturn(
 							fmt.Sprintf("[lnr]send udp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
 							c,
@@ -289,7 +303,7 @@ func (self *LocalUserNat) Run() {
 						)
 						return success && err == nil
 					}
-					if glog.V(2) {
+					if self.log.V(2).Enabled() {
 						TraceWithReturn(
 							fmt.Sprintf("[lnr]send tcp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
 							c,
@@ -320,7 +334,7 @@ func (self *LocalUserNat) Run() {
 						)
 						return success && err == nil
 					}
-					if glog.V(2) {
+					if self.log.V(2).Enabled() {
 						TraceWithReturn(
 							fmt.Sprintf("[lnr]send udp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
 							c,
@@ -343,7 +357,7 @@ func (self *LocalUserNat) Run() {
 						)
 						return success && err == nil
 					}
-					if glog.V(2) {
+					if self.log.V(2).Enabled() {
 						TraceWithReturn(
 							fmt.Sprintf("[lnr]send tcp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
 							c,
@@ -409,6 +423,8 @@ func NewBufferId6(source TransferPath, sourceIp net.IP, sourcePort int, destinat
 }
 
 type UdpBufferSettings struct {
+	// nil resolves to the local user nat `Log`
+	Log                 Logger
 	ReadTimeout         time.Duration
 	WriteTimeout        time.Duration
 	IdleTimeout         time.Duration
@@ -489,6 +505,7 @@ func (self *Udp6Buffer) send(source TransferPath, provideMode protocol.ProvideMo
 
 type UdpBuffer[BufferId comparable] struct {
 	ctx               context.Context
+	log               Logger
 	receiveCallback   ReceivePacketFunction
 	udpBufferSettings *UdpBufferSettings
 	bw                *ProxyBandwidth
@@ -507,6 +524,7 @@ func newUdpBuffer[BufferId comparable](
 ) *UdpBuffer[BufferId] {
 	return &UdpBuffer[BufferId]{
 		ctx:               ctx,
+		log:               loggerOrDefault(udpBufferSettings.Log),
 		receiveCallback:   receiveCallback,
 		udpBufferSettings: udpBufferSettings,
 		bw:                bw,
@@ -552,7 +570,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
 		if 0 < self.udpBufferSettings.UserLimit {
 			if sourceSequences := self.sourceSequences[source]; self.udpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.udpBufferSettings.UserLimit, func(sequence *UdpSequence) bool {
-					glog.V(1).Infof(
+					self.log.V(1).Infof(
 						"[lnr]udp limit source %s->%s\n",
 						source,
 						net.JoinHostPort(
@@ -634,6 +652,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
 type UdpSequence struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
+	log               Logger
 	receiveCallback   ReceivePacketFunction
 	udpBufferSettings *UdpBufferSettings
 
@@ -659,6 +678,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	return &UdpSequence{
 		ctx:               cancelCtx,
 		cancel:            cancel,
+		log:               loggerOrDefault(udpBufferSettings.Log),
 		receiveCallback:   receiveCallback,
 		sendItems:         make(chan *UdpSendItem, udpBufferSettings.SequenceBufferSize),
 		udpBufferSettings: udpBufferSettings,
@@ -760,19 +780,19 @@ func (self *UdpSequence) Run() {
 		MessagePoolReturn(packet)
 	}
 
-	glog.V(2).Infof("[init]udp connect\n")
+	self.log.V(2).Infof("[init]udp connect\n")
 	socket, err := self.udpBufferSettings.DialContext(
 		self.ctx,
 		"udp",
 		self.IpPath().DestinationHostPort(),
 	)
 	if err != nil {
-		glog.V(1).Infof("[init]udp connect error = %s\n", err)
+		self.log.V(1).Infof("[init]udp connect error = %s\n", err)
 		return
 	}
 	defer socket.Close()
 	self.UpdateLastActivityTime()
-	glog.V(2).Infof("[init]connect success\n")
+	self.log.V(2).Infof("[init]connect success\n")
 
 	// if udpConn, ok := socket.(*net.UDPConn); ok {
 	// 	udpConn.SetReadBuffer(int(self.udpBufferSettings.MaxWindowSize))
@@ -819,9 +839,9 @@ func (self *UdpSequence) Run() {
 					n, err := socket.Write(payload[i:])
 
 					if err == nil {
-						glog.V(2).Infof("[f%d]udp forward %d\n", sendIter, n)
+						self.log.V(2).Infof("[f%d]udp forward %d\n", sendIter, n)
 					} else {
-						glog.V(1).Infof("[f%d]udp forward %d error = %s", sendIter, n, err)
+						self.log.V(1).Infof("[f%d]udp forward %d error = %s", sendIter, n, err)
 					}
 
 					if 0 < n {
@@ -829,7 +849,7 @@ func (self *UdpSequence) Run() {
 
 						j := i
 						i += n
-						glog.V(2).Infof("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						self.log.V(2).Infof("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
 					}
 
 					if err != nil {
@@ -897,7 +917,7 @@ func (self *UdpSequence) Run() {
 			n, err := socket.Read(buffer)
 
 			if err != nil {
-				glog.V(1).Infof("[f%d]udp receive err = %s\n", forwardIter, err)
+				self.log.V(1).Infof("[f%d]udp receive err = %s\n", forwardIter, err)
 			}
 
 			if 0 < n {
@@ -905,14 +925,14 @@ func (self *UdpSequence) Run() {
 
 				packets, packetsErr := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
 				if packetsErr != nil {
-					glog.Infof("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
+					self.log.Infof("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
 					return
 				}
 				if 1 < len(packets) {
-					glog.V(2).Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
+					self.log.V(2).Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
 				}
 				for _, packet := range packets {
-					glog.V(1).Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
+					self.log.V(1).Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
 					select {
 					case <-self.ctx.Done():
 						MessagePoolReturn(packet)
@@ -925,7 +945,7 @@ func (self *UdpSequence) Run() {
 				if err == io.EOF {
 					return
 				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					glog.V(1).Infof("[f%d]timeout\n", forwardIter)
+					self.log.V(1).Infof("[f%d]timeout\n", forwardIter)
 					return
 				} else {
 					// some other error
@@ -1107,6 +1127,8 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 }
 
 type TcpBufferSettings struct {
+	// nil resolves to the local user nat `Log`
+	Log Logger
 	// ConnectTimeout     time.Duration
 	ReadTimeout        time.Duration
 	WriteTimeout       time.Duration
@@ -1199,6 +1221,7 @@ func (self *Tcp6Buffer) send(source TransferPath, provideMode protocol.ProvideMo
 
 type TcpBuffer[BufferId comparable] struct {
 	ctx               context.Context
+	log               Logger
 	receiveCallback   ReceivePacketFunction
 	tcpBufferSettings *TcpBufferSettings
 	bw                *ProxyBandwidth
@@ -1217,6 +1240,7 @@ func newTcpBuffer[BufferId comparable](
 ) *TcpBuffer[BufferId] {
 	return &TcpBuffer[BufferId]{
 		ctx:               ctx,
+		log:               loggerOrDefault(tcpBufferSettings.Log),
 		receiveCallback:   receiveCallback,
 		tcpBufferSettings: tcpBufferSettings,
 		bw:                bw,
@@ -1260,14 +1284,14 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 
 		if !tcp.SYN {
 			MessagePoolReturn(ipPacket)
-			glog.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
+			self.log.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
 			return nil
 		}
 
 		if 0 < self.tcpBufferSettings.UserLimit {
 			if sourceSequences := self.sourceSequences[source]; self.tcpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.tcpBufferSettings.UserLimit, func(sequence *TcpSequence) bool {
-					glog.V(1).Infof(
+					self.log.V(1).Infof(
 						"[lnr]tcp limit source %s->%s\n",
 						source,
 						net.JoinHostPort(
@@ -1355,6 +1379,7 @@ to the UNAT via `transfer`, which is lossless and in-order.
 type TcpSequence struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	log    Logger
 
 	receiveCallback ReceivePacketFunction
 
@@ -1383,6 +1408,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	sequence := &TcpSequence{
 		ctx:               cancelCtx,
 		cancel:            cancel,
+		log:               loggerOrDefault(tcpBufferSettings.Log),
 		receiveCallback:   receiveCallback,
 		tcpBufferSettings: tcpBufferSettings,
 		sendItems:         make(chan *TcpSendItem, tcpBufferSettings.SequenceBufferSize),
@@ -1506,10 +1532,10 @@ func (self *TcpSequence) Run() {
 		case <-self.ctx.Done():
 			return
 		case sendItem := <-self.sendItems:
-			glog.V(2).Infof("[init]send(%d)\n", len(sendItem.tcp.Payload))
+			self.log.V(2).Infof("[init]send(%d)\n", len(sendItem.tcp.Payload))
 			// the first packet must be a syn
 			if sendItem.tcp.SYN {
-				glog.V(2).Infof("[init]SYN\n")
+				self.log.V(2).Infof("[init]SYN\n")
 
 				func() {
 					self.mutex.Lock()
@@ -1554,7 +1580,7 @@ func (self *TcpSequence) Run() {
 						// turn off window scale for send
 						self.windowScale = 0
 					}
-					glog.V(2).Infof("[init]window=%d/%d, receive=%d/%d\n", self.windowSize, self.windowScale, self.receiveWindowSize, self.receiveWindowScale)
+					self.log.V(2).Infof("[init]window=%d/%d, receive=%d/%d\n", self.windowSize, self.windowScale, self.receiveWindowSize, self.receiveWindowScale)
 
 					packet, packetErr = self.SynAck()
 					self.receiveSeq += 1
@@ -1563,13 +1589,13 @@ func (self *TcpSequence) Run() {
 				syn = true
 			} else {
 				// an ACK here could be for a previous FIN
-				glog.V(2).Infof("[init]waiting for SYN (%s)\n", tcpFlagsString(sendItem.tcp))
+				self.log.V(2).Infof("[init]waiting for SYN (%s)\n", tcpFlagsString(sendItem.tcp))
 			}
 			MessagePoolReturn(sendItem.ipPacket)
 		case <-time.After(self.tcpBufferSettings.ConnectTimeout):
 			if self.idleCondition.Close(checkpointId) {
 				// close the sequence
-				glog.V(2).Infof("[init]connect timeout\n")
+				self.log.V(2).Infof("[init]connect timeout\n")
 				return
 			}
 			// else there pending updates
@@ -1581,18 +1607,18 @@ func (self *TcpSequence) Run() {
 	}
 
 	// connect to upstream before sending the syn+ack
-	glog.V(2).Infof("[init]tcp connect\n")
+	self.log.V(2).Infof("[init]tcp connect\n")
 	socket, err := self.tcpBufferSettings.DialContext(
 		self.ctx,
 		"tcp",
 		self.IpPath().DestinationHostPort(),
 	)
 	if err != nil {
-		glog.V(1).Infof("[init]tcp connect error = %s\n", err)
+		self.log.V(1).Infof("[init]tcp connect error = %s\n", err)
 		return
 	}
 	self.UpdateLastActivityTime()
-	glog.V(2).Infof("[init]connect success\n")
+	self.log.V(2).Infof("[init]connect success\n")
 
 	defer socket.Close()
 	if tcpConn, ok := socket.(*net.TCPConn); ok {
@@ -1602,16 +1628,16 @@ func (self *TcpSequence) Run() {
 		// tcpConn.SetWriteBuffer(int(self.tcpBufferSettings.MaxWindowSize))
 	}
 
-	glog.V(2).Infof("[init]receive SYN+ACK\n")
+	self.log.V(2).Infof("[init]receive SYN+ACK\n")
 	receive(packet)
 
 	/*
 		if v, ok := socket.(*net.TCPConn); ok {
 			if err := v.SetWriteBuffer(int(self.windowSize)); err != nil {
-				glog.Infof("[init]could not set write buffer = %d\n", self.windowSize)
+				self.log.Infof("[init]could not set write buffer = %d\n", self.windowSize)
 			}
 			// if err := v.SetReadBuffer(int(self.receiveWindowSize)); err != nil {
-			// 	glog.Infof("[init]could not set read buffer = %d\n", self.receiveWindowSize)
+			// 	self.log.Infof("[init]could not set read buffer = %d\n", self.receiveWindowSize)
 			// }
 		}
 	*/
@@ -1669,9 +1695,9 @@ func (self *TcpSequence) Run() {
 					n, err := socket.Write(payload[i:])
 
 					if err == nil {
-						glog.V(2).Infof("[f%d]tcp forward %d\n", sendIter, n)
+						self.log.V(2).Infof("[f%d]tcp forward %d\n", sendIter, n)
 					} else {
-						glog.V(1).Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
+						self.log.V(1).Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
 					}
 
 					if 0 < n {
@@ -1687,7 +1713,7 @@ func (self *TcpSequence) Run() {
 
 						j := i
 						i += n
-						glog.V(2).Infof("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						self.log.V(2).Infof("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
 					}
 
 					if err != nil {
@@ -1775,7 +1801,7 @@ func (self *TcpSequence) Run() {
 			n, err := socket.Read(buffer)
 
 			if err != nil {
-				glog.V(1).Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
+				self.log.V(1).Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
 			}
 
 			if 0 < n {
@@ -1796,7 +1822,7 @@ func (self *TcpSequence) Run() {
 					}
 
 					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
-						glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
+						self.log.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
 						receiveAckCond.Wait()
 						select {
 						case <-self.ctx.Done():
@@ -1807,14 +1833,14 @@ func (self *TcpSequence) Run() {
 
 					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
 					if packetsErr != nil {
-						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+						self.log.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
 						return
 					}
 
 					if 1 < len(packets) {
-						glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
+						self.log.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
 					}
-					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+					self.log.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
 					self.receiveSeq += uint32(n)
 
@@ -1843,7 +1869,7 @@ func (self *TcpSequence) Run() {
 				if err == io.EOF {
 					// closed (FIN)
 					// propagate the FIN and close the sequence
-					glog.V(2).Infof("[final]FIN\n")
+					self.log.V(2).Infof("[final]FIN\n")
 					var finPacket []byte
 					var finErr error
 					func() {
@@ -1863,7 +1889,7 @@ func (self *TcpSequence) Run() {
 					}
 					return
 				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					glog.V(2).Infof("[f%d]timeout\n", forwardIter)
+					self.log.V(2).Infof("[f%d]timeout\n", forwardIter)
 					return
 				} else {
 					// some other error
@@ -1906,7 +1932,7 @@ func (self *TcpSequence) Run() {
 				var err error
 				packet, err = self.PureAck()
 				if err != nil {
-					glog.Infof("[r]ack err = %s\n", err)
+					self.log.Infof("[r]ack err = %s\n", err)
 				}
 				ackedSendSeq = self.sendSeq
 			}()
@@ -1944,15 +1970,15 @@ func (self *TcpSequence) Run() {
 			return
 		case sendItem := <-self.sendItems:
 			lastActivityTime = time.Now()
-			if glog.V(2) {
+			if self.log.V(2).Enabled() {
 				if "ACK" != tcpFlagsString(sendItem.tcp) {
-					glog.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
+					self.log.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
 				}
 			}
 
 			if sendItem.tcp.RST {
 				// a RST typically appears for a bad TCP segment
-				glog.V(2).Infof("[r%d]RST\n", sendIter)
+				self.log.V(2).Infof("[r%d]RST\n", sendIter)
 				MessagePoolReturn(sendItem.ipPacket)
 				return
 			}
@@ -1987,7 +2013,7 @@ func (self *TcpSequence) Run() {
 			}
 
 			if sendItem.tcp.FIN {
-				glog.V(2).Infof("[r%d]FIN\n", sendIter)
+				self.log.V(2).Infof("[r%d]FIN\n", sendIter)
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
@@ -2023,13 +2049,13 @@ func (self *TcpSequence) Run() {
 						if self.windowSize <= nonBlockingByteCount {
 							nextWindowSize := min(self.windowSize*2, self.tcpBufferSettings.MaxWindowSize)
 							if self.windowSize != nextWindowSize {
-								glog.V(1).Infof("[r%d]increase window size %d -> %d\n", sendIter, self.windowSize, nextWindowSize)
+								self.log.V(1).Infof("[r%d]increase window size %d -> %d\n", sendIter, self.windowSize, nextWindowSize)
 								self.windowSize = nextWindowSize
 							}
 						} else if self.windowSize/2 <= blockingByteCount {
 							nextWindowSize := max(self.windowSize/2, self.tcpBufferSettings.MinWindowSize)
 							if self.windowSize != nextWindowSize {
-								glog.V(1).Infof("[r%d]decrease window size %d -> %d\n", sendIter, self.windowSize, nextWindowSize)
+								self.log.V(1).Infof("[r%d]decrease window size %d -> %d\n", sendIter, self.windowSize, nextWindowSize)
 								self.windowSize = nextWindowSize
 							}
 						}
@@ -2056,7 +2082,7 @@ func (self *TcpSequence) Run() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
 				if self.windowSize != self.tcpBufferSettings.MinWindowSize {
-					glog.V(1).Infof("[r%d]idle scale down window size %d -> %d\n", sendIter, self.windowSize, self.tcpBufferSettings.MinWindowSize)
+					self.log.V(1).Infof("[r%d]idle scale down window size %d -> %d\n", sendIter, self.windowSize, self.tcpBufferSettings.MinWindowSize)
 					self.windowSize = self.tcpBufferSettings.MinWindowSize
 					nonBlockingByteCount = uint32(0)
 					blockingByteCount = uint32(0)
@@ -2076,7 +2102,7 @@ func (self *TcpSequence) Run() {
 				}()
 				if done {
 					// close the sequence
-					glog.V(2).Infof("[r%d]timeout\n", sendIter)
+					self.log.V(2).Infof("[r%d]timeout\n", sendIter)
 					return
 				}
 			}
@@ -2571,11 +2597,11 @@ func (self *RemoteUserNatProvider) Receive(
 	if self.bw != nil {
 		self.bw.BillableRx.Add(uint64(len(packet)))
 	}
-	// glog.Infof("[trace]provider return packet for %s\n", source.SourceId)
+	// self.client.log.Infof("[trace]provider return packet for %s\n", source.SourceId)
 
 	if self.client.ClientId() == source.SourceId {
 		// locally generated traffic should use a separate local user nat
-		glog.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.SourceId)
+		self.client.log.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.SourceId)
 		return
 	}
 
@@ -2586,7 +2612,7 @@ func (self *RemoteUserNatProvider) Receive(
 	}
 	frame, err := ToFrame(ipPacketFromProvider, self.settings.ProtocolVersion)
 	if err != nil {
-		glog.V(2).Infof("drop remote user nat provider s packet ->%s = %s\n", source.SourceId, err)
+		self.client.log.V(2).Infof("drop remote user nat provider s packet ->%s = %s\n", source.SourceId, err)
 		panic(err)
 	}
 	if !frame.Raw {
@@ -2607,11 +2633,11 @@ func (self *RemoteUserNatProvider) Receive(
 			opts...,
 		)
 		// if sent {
-		// 	glog.Infof("[trace]provider return packet sent for %s\n", source.SourceId)
+		// 	self.client.log.Infof("[trace]provider return packet sent for %s\n", source.SourceId)
 		// }
 		return sent
 	}
-	if glog.V(2) {
+	if self.client.log.V(2).Enabled() {
 		TraceWithReturn(
 			fmt.Sprintf("[unps]%s %s->%s s(%s)", ipPath.Protocol, self.client.ClientTag(), source.SourceId, source.StreamId),
 			c,
@@ -2627,7 +2653,7 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 	for _, frame := range frames {
 		switch frame.MessageType {
 		case protocol.MessageType_IpIpPing:
-			glog.V(1).Infof("[ip]provider ping <- %s(%d)\n", source, provideMode)
+			self.client.log.V(1).Infof("[ip]provider ping <- %s(%d)\n", source, provideMode)
 			// echo back over a companion contract, like the provider's other
 			// return traffic; the source only provides ProvideMode_Stream, so a
 			// forward contract here would be rejected (no permission).
@@ -2661,7 +2687,7 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 							} else {
 								packet = MessagePoolCopy(ipPacketToProvider.IpPacket.PacketBytes)
 							}
-							// glog.Infof("[trace]provider send packet from %s\n", source.SourceId)
+							// self.client.log.Infof("[trace]provider send packet from %s\n", source.SourceId)
 							success := self.localUserNat.SendPacketWithTimeout(
 								source,
 								provideMode,
@@ -2673,7 +2699,7 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 							}
 							return success
 						}
-						if glog.V(2) {
+						if self.client.log.V(2).Enabled() {
 							TraceWithReturn(
 								fmt.Sprintf("[unpr] %s<-%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
 								c,
@@ -2828,7 +2854,7 @@ func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*pr
 	// }
 
 	for _, frame := range frames {
-		// glog.Infof("[trace]receive frame %s\n", frame.MessageType)
+		// self.log.Infof("[trace]receive frame %s\n", frame.MessageType)
 		switch frame.MessageType {
 		case protocol.MessageType_IpIpPacketFromProvider:
 			ipPacketFromProvider_, err := FromFrame(frame)
