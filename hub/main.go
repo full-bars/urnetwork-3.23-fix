@@ -686,13 +686,7 @@ document.querySelectorAll('th[data-col]').forEach(function(th) {
     rows.sort(function(a, b) {
       var va = a.cells[getColIndex(col)].textContent.trim();
       var vb = b.cells[getColIndex(col)].textContent.trim();
-      // numeric-aware sort
-      var na = parseFloat(va.replace(/[^0-9.]/g, ''));
-      var nb = parseFloat(vb.replace(/[^0-9.]/g, ''));
-      if (!isNaN(na) && !isNaN(nb)) {
-        return dir * (na - nb);
-      }
-      return dir * va.localeCompare(vb);
+      return cmpNode(va, vb, dir);
     });
     // reorder rows + their detail rows
     rows.forEach(function(r) {
@@ -720,6 +714,39 @@ function fmtBytes(b) {
   return n.toFixed(1) + ' ' + units[i] + 'B';
 }
 
+function parseSortValue(s) {
+  s = s.trim();
+  if (s === '—') return -1;
+  var m = s.match(/^([\d.]+)\s*([KMGTPE]?B)$/i);
+  if (m) return parseFloat(m[1]) * ({'B':1,'KB':1024,'MB':1024*1024,'GB':1024*1024*1024,'TB':1024*1024*1024*1024}[m[2].toUpperCase()]||1);
+  m = s.match(/^([\d.]+)\s*([KMG]?bps)$/i);
+  if (m) return parseFloat(m[1]) * ({'BPS':1,'KBPS':1000,'MBPS':1000*1000,'GBPS':1000*1000*1000}[m[2].toUpperCase()]||1);
+  var ts = s.replace(/ ago$/, '');
+  if (/^(?:\d+d\s*)?(?:\d+h\s*)?(?:\d+m\s*)?(?:\d+s)?$/.test(ts) && ts.length > 0) {
+    var tot = 0;
+    ts.split(' ').forEach(function(p) {
+      var n = parseInt(p);
+      if (p.endsWith('d')) tot += n * 86400;
+      else if (p.endsWith('h')) tot += n * 3600;
+      else if (p.endsWith('m')) tot += n * 60;
+      else if (p.endsWith('s')) tot += n;
+    });
+    if (tot > 0 || ts === '0s') return tot;
+  }
+  if (/^\d+(\s+\d+)*$/.test(s)) return parseFloat(s.split(/\s+/)[0]);
+  m = s.match(/^([\d.]+)\s*MiB$/);
+  if (m) return parseFloat(m[1]);
+  if (/^-?[\d.]+$/.test(s)) return parseFloat(s);
+  return s;
+}
+
+function cmpNode(a, b, dir) {
+  var pa = parseSortValue(a);
+  var pb = parseSortValue(b);
+  if (typeof pa === 'number' && typeof pb === 'number') return dir * (pa - pb);
+  return dir * String(a).localeCompare(String(b), undefined, {numeric: true});
+}
+
 function attachInnerSort() {
   document.querySelectorAll('.detail-table').forEach(function(tbl) {
     if (tbl.dataset.sorted) return;
@@ -738,10 +765,7 @@ function attachInnerSort() {
         rows.sort(function(a, b) {
           var va = a.cells[idx].textContent.trim();
           var vb = b.cells[idx].textContent.trim();
-          var na = parseFloat(va.replace(/[^0-9.-]/g, ''));
-          var nb = parseFloat(vb.replace(/[^0-9.-]/g, ''));
-          if (!isNaN(na) && !isNaN(nb)) return dir * (na - nb);
-          return dir * va.localeCompare(vb);
+          return cmpNode(va, vb, dir);
         });
         rows.forEach(function(r) { tbody.appendChild(r); });
       });
