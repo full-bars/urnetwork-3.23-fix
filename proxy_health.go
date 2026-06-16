@@ -57,11 +57,20 @@ func (self *ProxyBandwidth) RemoveSession(key any) {
 func (self *ProxyBandwidth) MaxAge() time.Duration {
 	self.mu.Lock()
 	defer self.mu.Unlock()
+	return self.ageLocked()
+}
+
+// ageLocked returns the continuous-presence age WITHOUT mutating state. Caller
+// holds self.mu. Previously MaxAge() cleared presenceSince as a side effect,
+// which meant a read from the heartbeat/snapshot path silently expired the live
+// window — making age depend on read cadence. presenceSince is now reset only by
+// AddSession when a new presence window begins (gap >= clientPresenceGrace), so
+// this reader is safe to call from snapshots.
+func (self *ProxyBandwidth) ageLocked() time.Duration {
 	if self.presenceSince.IsZero() {
 		return 0
 	}
 	if len(self.sessions) == 0 && time.Since(self.lastActivity) >= clientPresenceGrace {
-		self.presenceSince = time.Time{}
 		return 0
 	}
 	return time.Since(self.presenceSince)
@@ -70,9 +79,9 @@ func (self *ProxyBandwidth) MaxAge() time.Duration {
 // ProxyFailureCounters tracks per-proxy failure counts by category, so
 // operators can distinguish recurring auth errors from transient timeouts.
 type ProxyFailureCounters struct {
-	AuthFailures     atomic.Int64
-	TimeoutFailures  atomic.Int64
-	TransportDrops   atomic.Int64
+	AuthFailures    atomic.Int64
+	TimeoutFailures atomic.Int64
+	TransportDrops  atomic.Int64
 }
 
 // proxyHealth tracks one proxy's platform-transport liveness for the
@@ -88,8 +97,8 @@ type proxyHealth struct {
 	bw          *ProxyBandwidth
 	failures    ProxyFailureCounters
 	lastError   string
+	lastErrorAt time.Time // when lastError was recorded (so a stale error reads as such)
 }
-
 
 // ProxyEvent identifies a proxy in a transition list. After is set for
 // recovered events (time the proxy was down before coming back).
@@ -203,6 +212,7 @@ func RecordProxyAuthFailure(index int, err error) {
 			h.failures.AuthFailures.Add(1)
 		}
 		h.lastError = errStr
+		h.lastErrorAt = time.Now()
 	}
 }
 
@@ -214,6 +224,7 @@ func RecordProxyTransportDrop(index int, err error) {
 		h.failures.TransportDrops.Add(1)
 		if err != nil {
 			h.lastError = err.Error()
+			h.lastErrorAt = time.Now()
 		}
 	}
 }
@@ -237,7 +248,7 @@ func formatProxyEntry(index int, address string) string {
 	return fmt.Sprintf("proxy[%d] (%s)", index, address)
 }
 
-func formatProxyErrorEntry(index int, address string, failures *ProxyFailureCounters, lastError string) string {
+func formatProxyErrorEntry(index int, address string, failures *ProxyFailureCounters, lastError string, lastErrorAt time.Time) string {
 	base := formatProxyEntry(index, address)
 	var parts []string
 	if auth := failures.AuthFailures.Load(); auth > 0 {
@@ -250,7 +261,11 @@ func formatProxyErrorEntry(index int, address string, failures *ProxyFailureCoun
 		parts = append(parts, fmt.Sprintf("drops:%d", drops))
 	}
 	if lastError != "" {
-		parts = append(parts, fmt.Sprintf("last_err:%q", lastError))
+		if !lastErrorAt.IsZero() {
+			parts = append(parts, fmt.Sprintf("last_err:%q (%s ago)", lastError, time.Since(lastErrorAt).Round(time.Second)))
+		} else {
+			parts = append(parts, fmt.Sprintf("last_err:%q", lastError))
+		}
 	}
 	if len(parts) > 0 {
 		return fmt.Sprintf("%s [%s]", base, strings.Join(parts, ", "))
@@ -290,7 +305,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		default:
 			dead = append(dead, formatProxyEntry(idx, h.address))
 		}
-		
+
 		if h.bw != nil {
 			bwCount++
 			pb := &ProxyBandwidth{}
@@ -326,11 +341,11 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		case h.currentlyUp:
 			r.Up++
 		case h.everUp:
-			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError))
+			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError, h.lastErrorAt))
 		case h.connecting:
 			// still trying to connect — not dead
 		default:
-			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError))
+			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError, h.lastErrorAt))
 		}
 
 		if h.bw != nil {

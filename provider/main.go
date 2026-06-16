@@ -9,9 +9,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
-	mathrand "math/rand"
 	"io"
+	mathrand "math/rand"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,7 +59,7 @@ func backoffPacer(n int, now time.Time, proxyCtx context.Context) bool {
 	}
 
 	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
-	if mathrand.Intn(2) == 0 {              // coinflip — add or subtract
+	if mathrand.Intn(2) == 0 {             // coinflip — add or subtract
 		jitter = -jitter
 	}
 
@@ -365,7 +365,7 @@ func readCgroupAvailableMiB() int64 {
 type ecoState int
 
 const (
-	ecoStateNormal   ecoState = iota
+	ecoStateNormal ecoState = iota
 	ecoStatePressure
 	ecoStateCritical
 )
@@ -1012,8 +1012,18 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			clients := bw.Clients.Load()
 			totalClients += clients
 			prev := prevTick[key]
-			rxDelta := rx - prev.rx
-			txDelta := tx - prev.tx
+			// Guard against counter resets: a proxy goroutine restart / hot-reload
+			// hands back a fresh zeroed ProxyBandwidth, so the current value can be
+			// below the persisted previous one. An unguarded uint64 subtraction would
+			// wrap to ~18 EB and print absurd Tbps rates. Treat a backwards counter as
+			// a fresh baseline with zero delta for this tick.
+			var rxDelta, txDelta uint64
+			if rx >= prev.rx {
+				rxDelta = rx - prev.rx
+			}
+			if tx >= prev.tx {
+				txDelta = tx - prev.tx
+			}
 			totalRxDelta += rxDelta
 			totalTxDelta += txDelta
 			prevTick[key] = trafficBytes{rx: rx, tx: tx}
@@ -1022,7 +1032,18 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				continue
 			}
 			activeProxies++
-			billableToday := (bw.BillableRx.Load() + bw.BillableTx.Load()) - midnightCheckpoint[key]
+			// Same reset guard for the midnight-anchored "today" total: if the live
+			// counter dropped below the checkpoint (proxy restart), rebase the
+			// checkpoint so billable_today starts from the current value instead of
+			// underflowing. A missing checkpoint defaults to 0 (lifetime == today
+			// until the first midnight rollover), preserving prior behavior.
+			billableTotal := bw.BillableRx.Load() + bw.BillableTx.Load()
+			cp := midnightCheckpoint[key]
+			if billableTotal < cp {
+				cp = billableTotal
+				midnightCheckpoint[key] = billableTotal
+			}
+			billableToday := billableTotal - cp
 			ageStr := ""
 			if age := bw.MaxAge(); age > 0 {
 				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
@@ -1219,7 +1240,7 @@ func provide(opts docopt.Opts) {
 	}
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
-	
+
 	// Determine a temporary display name for the outage watcher/heartbeat
 	watcherName := nodeName
 	if watcherName == "" {
@@ -1522,7 +1543,7 @@ func provide(opts docopt.Opts) {
 		defer wg.Done()
 		defer nativeCancel()
 		defer connect.UnregisterProxy(0)
-		
+
 		// Register it early so it shows up in health reports immediately as [direct]
 		connect.RegisterProxy(0, "direct")
 		provideWithProxy(nativeCtx, nil, true)
@@ -1783,7 +1804,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	// 4. Build Compact Dashboard Label
 	var dashboardLabel string
-	
+
 	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
 		parts := strings.Split(ip4.String(), ".")
 		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
