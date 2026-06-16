@@ -21,12 +21,11 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 
 var (
-	lastDropErrLogNano   atomic.Int64
+	lastDropErrLogNano     atomic.Int64
 	suppressedDropErrCount atomic.Int64
 )
 
@@ -79,6 +78,17 @@ Each transport should apply the forwarding ACL:
 // nacks are sent as ack until the contract is acked
 
 // use 0 for deadlock testing
+
+// DefaultTransferBufferSize is the depth (slot count, not byte size) of the
+// per-stream send/receive/forward sequence and ack ring buffers: how many
+// in-flight frames the transfer layer holds before applying backpressure.
+// Depth interacts with the path bandwidth-delay product - high-latency,
+// high-bandwidth links need more outstanding frames to stay saturated. This
+// fork uses 16 where upstream uses 32, as a conservative memory baseline for
+// nodes carrying many concurrent streams; the turbo profile widens the
+// transfer-layer buffers for RAM-rich, low-latency nodes. Whether 16-vs-32
+// meaningfully changes long-haul throughput here has not been measured - flag
+// for a before/after memory+throughput check before tuning this further.
 const DefaultTransferBufferSize = 16
 
 // e2e-pqe merge: upstream code refers to the unexported name in several places;
