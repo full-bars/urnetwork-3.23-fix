@@ -104,7 +104,7 @@ func (s *store) upsert(nodeID string, state *nodeState) {
 	}
 	if prev, ok := s.rates[nodeID]; ok {
 		dt := state.Timestamp.Sub(prev.ts).Seconds()
-		if dt > 1 {
+		if dt > 1 && totalRX >= prev.rx && totalTX >= prev.tx {
 			s.rates[nodeID].mbpsRx = float64(totalRX-prev.rx) / dt * 8 / 1_000_000
 			s.rates[nodeID].mbpsTx = float64(totalTX-prev.tx) / dt * 8 / 1_000_000
 		}
