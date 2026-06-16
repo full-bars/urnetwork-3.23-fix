@@ -244,3 +244,82 @@ jobs:
               fi
             fi
           done
+
+  monitor-sibling-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect sibling-fork commits to critical files not yet ported
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          # full-bars/connect is the upstream-tracking sibling fork: safety fixes
+          # (message-pool corrections, bandwidth-leak gating, etc.) land there
+          # first and must then be ported into this production fork. The two
+          # trees drift silently otherwise - FORK_CHANGES.md tracks what the fork
+          # ADDS, nothing tracks what it is MISSING. Surface recent sibling
+          # commits that touch shared critical files so a human can decide
+          # whether each needs porting.
+          SIBLING_REPO="full-bars/connect"
+
+          # Keep this list in sync with the monitor-critical-files job above.
+          CRITICAL_FILES=(
+            "ip.go"
+            "transfer.go"
+            "transfer_contract_manager.go"
+            "transfer_route_manager.go"
+            "net_http.go"
+            "net_http_doh.go"
+            "transport.go"
+            "transfer_encrypt.go"
+            "provider/main.go"
+            "proxy_health.go"
+            "message_pool.go"
+          )
+
+          echo "Fetching recent commits to $SIBLING_REPO/main..."
+          COMMITS=$(gh api repos/$SIBLING_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$SIBLING_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              for file in "${CRITICAL_FILES[@]}"; do
+                if echo "$COMMIT_FILES" | grep -q "^$file$"; then
+                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
+                fi
+              done
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🔀 SIBLING DRIFT: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                  '{
+                    "embeds": [{
+                      "title": "🔀 Sibling Fork Advanced on Critical Files (port check)",
+                      "url": $url,
+                      "description": ("full-bars/connect committed to a file shared with this production fork. Confirm whether the change needs porting here.\n\n**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files),
+                      "color": 16753920,
+                      "footer": { "text": "URNetwork Fork Drift Monitor • Port check" }
+                    }]
+                  }')
+                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                fi
+              fi
+            fi
+          done
