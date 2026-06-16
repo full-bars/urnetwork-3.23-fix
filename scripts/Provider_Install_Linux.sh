@@ -1298,7 +1298,7 @@ do_stop ()
 confirm_restart ()
 {
     local action="${1:-Executing this command will trigger a full restart of the URNetwork provider.}"
-    if [ "$force" = "1" ]; then
+    if [ "$FORCE" = "1" ]; then
         return 0
     fi
     printf "\n\e[1;31m🛑 WARNING: This Command Triggers a Cold Restart 🛑\e[0m\n"
