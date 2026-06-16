@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/exp/maps"
 
-	"github.com/urnetwork/glog"
 )
 
 // manage multiple routes to a destination, allowing weighted reads and writes to the routes
@@ -72,6 +71,7 @@ type RouteManager struct {
 	ctx context.Context
 
 	clientTag string
+	log       Logger
 
 	mutex            sync.Mutex
 	writerMatchState *MatchState
@@ -79,12 +79,18 @@ type RouteManager struct {
 }
 
 func NewRouteManager(ctx context.Context, clientTag string) *RouteManager {
+	return NewRouteManagerWithLogger(ctx, clientTag, nil)
+}
+
+func NewRouteManagerWithLogger(ctx context.Context, clientTag string, log Logger) *RouteManager {
+	log = loggerOrDefault(log)
 	return &RouteManager{
 		ctx:              ctx,
 		clientTag:        clientTag,
-		writerMatchState: NewMatchState(ctx, clientTag, true, Transport.MatchesSend),
+		log:              log,
+		writerMatchState: NewMatchState(ctx, clientTag, log, true, Transport.MatchesSend),
 		// `weightedRoutes=false` because unless there is a cpu limit this is not needed
-		readerMatchState: NewMatchState(ctx, clientTag, false, Transport.MatchesReceive),
+		readerMatchState: NewMatchState(ctx, clientTag, log, false, Transport.MatchesReceive),
 	}
 }
 
@@ -152,6 +158,7 @@ func (self *RouteManager) getTransportStats(transport Transport) (writerStats *R
 type MatchState struct {
 	ctx       context.Context
 	clientTag string
+	log       Logger
 
 	weightedRoutes bool
 	matches        func(Transport, TransferPath) bool
@@ -166,10 +173,11 @@ type MatchState struct {
 }
 
 // note weighted routes typically are used by the sender not receiver
-func NewMatchState(ctx context.Context, clientTag string, weightedRoutes bool, matches func(Transport, TransferPath) bool) *MatchState {
+func NewMatchState(ctx context.Context, clientTag string, log Logger, weightedRoutes bool, matches func(Transport, TransferPath) bool) *MatchState {
 	return &MatchState{
 		ctx:                            ctx,
 		clientTag:                      clientTag,
+		log:                            log,
 		weightedRoutes:                 weightedRoutes,
 		matches:                        matches,
 		transportRoutes:                map[Transport][]Route{},
@@ -200,7 +208,7 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 }
 
 func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiRouteSelector {
-	multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, destination, self.weightedRoutes)
+	multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, self.log, destination, self.weightedRoutes)
 
 	multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]
 	if !ok {
@@ -296,6 +304,7 @@ type MultiRouteSelector struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	clientTag string
+	log       Logger
 
 	destination    TransferPath
 	weightedRoutes bool
@@ -309,12 +318,13 @@ type MultiRouteSelector struct {
 	routeWeight     map[Route]float32
 }
 
-func NewMultiRouteSelector(ctx context.Context, clientTag string, destination TransferPath, weightedRoutes bool) *MultiRouteSelector {
+func NewMultiRouteSelector(ctx context.Context, clientTag string, log Logger, destination TransferPath, weightedRoutes bool) *MultiRouteSelector {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	return &MultiRouteSelector{
 		ctx:             cancelCtx,
 		cancel:          cancel,
 		clientTag:       clientTag,
+		log:             loggerOrDefault(log),
 		destination:     destination,
 		weightedRoutes:  weightedRoutes,
 		transportUpdate: NewMonitor(),
@@ -582,13 +592,13 @@ func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrame
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
 
-		glog.V(2).Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
+		self.log.V(2).Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
 		// non-blocking priority
 		for _, route := range activeRoutes {
 			select {
 			case route <- transferFrameBytes:
-				glog.V(2).Infof("[mrw]nb %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+				self.log.V(2).Infof("[mrw]nb %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
 				return true, nil
 			default:
@@ -656,7 +666,7 @@ func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrame
 		}
 
 		if chosenIndex, _, _ := reflect.Select(selectCases); 0 <= chosenIndex {
-			glog.V(2).Infof("[mrw]b %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.SourceId)
+			self.log.V(2).Infof("[mrw]b %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.SourceId)
 
 			switch chosenIndex {
 			case contextDoneIndex:
@@ -689,7 +699,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
 
-		glog.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
+		self.log.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
 		// non-blocking priority
 		retry := false
@@ -697,7 +707,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			select {
 			case transferFrameBytes, ok := <-route:
 				if ok {
-					glog.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+					self.log.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 					self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
 					return transferFrameBytes, nil
 				} else {
@@ -771,7 +781,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 		}
 
 		chosenIndex, value, ok := reflect.Select(selectCases)
-		glog.V(2).Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+		self.log.V(2).Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 
 		switch chosenIndex {
 		case contextDoneIndex:

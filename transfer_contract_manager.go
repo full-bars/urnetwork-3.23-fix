@@ -20,7 +20,6 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-	"github.com/urnetwork/glog"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -351,13 +350,13 @@ func (self *ContractManager) providePing() {
 			if provide {
 				if logWait {
 					logWait = false
-					glog.Infof("[contract]provide ping continue\n")
+					self.client.log.Infof("[contract]provide ping continue\n")
 				}
 				return true
 			}
 			if !logWait {
 				logWait = true
-				glog.Infof("[contract]provide ping wait\n")
+				self.client.log.Infof("[contract]provide ping wait\n")
 			}
 			select {
 			case <-self.ctx.Done():
@@ -393,7 +392,7 @@ func (self *ContractManager) providePing() {
 		providePing := &protocol.ProvidePing{}
 		frame, err := ToFrame(providePing, self.settings.ProtocolVersion)
 		if err != nil {
-			glog.Infof("[contract]could not create provide ping frame = %s", err)
+			self.client.log.Infof("[contract]could not create provide ping frame = %s", err)
 			return
 		}
 		self.client.SendControl(frame, func(err error) {
@@ -406,7 +405,7 @@ func (self *ContractManager) providePing() {
 		select {
 		case err := <-ack:
 			if err != nil {
-				glog.Infof("[contract]provide ping err = %s\n", err)
+				self.client.log.Infof("[contract]provide ping err = %s\n", err)
 			}
 		case <-self.ctx.Done():
 			return
@@ -436,7 +435,7 @@ func (self *ContractManager) expireQueuedContracts() {
 			}
 		}()
 		if 0 < len(pending) {
-			glog.V(1).Infof("[contract]closing %d pending contracts on close\n", len(pending))
+			self.client.log.V(1).Infof("[contract]closing %d pending contracts on close\n", len(pending))
 			self.closeContracts(pending)
 		}
 	}
@@ -473,7 +472,7 @@ func (self *ContractManager) expireQueuedContracts() {
 			}
 		}()
 		if 0 < len(expired) {
-			glog.V(1).Infof("[contract]expired %d queued contracts\n", len(expired))
+			self.client.log.V(1).Infof("[contract]expired %d queued contracts\n", len(expired))
 			self.closeContracts(expired)
 		}
 	}
@@ -551,7 +550,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 					}
 				}
 			}
-			if glog.V(2) {
+			if self.client.log.V(2).Enabled() {
 				TraceWithReturn(
 					"[contract]add",
 					c,
@@ -561,7 +560,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 			}
 		}
 		for _, contractError := range contractErrors {
-			glog.V(1).Infof("[contract]error = %s\n", contractError)
+			self.client.log.V(1).Infof("[contract]error = %s\n", contractError)
 			c := func() {
 				contractStatus := &ContractStatus{
 					Key:   contractKey,
@@ -570,7 +569,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 
 				self.contractStatus(contractStatus)
 			}
-			if glog.V(2) {
+			if self.client.log.V(2).Enabled() {
 				Trace(
 					fmt.Sprintf("[contract]error = %s", contractError),
 					c,
@@ -699,7 +698,7 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 						ProvideSecretKey: provideSecretKey,
 					})
 				} else {
-					glog.Infof("[contract]missing provide key for %d. Will omit.\n", provideMode)
+					self.client.log.Infof("[contract]missing provide key for %d. Will omit.\n", provideMode)
 				}
 			}
 		}
@@ -718,7 +717,7 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 						ProvideSecretKey: provideSecretKey,
 					})
 				} else {
-					glog.Infof("[contract]missing provide key for %d. Will omit.\n", provideMode)
+					self.client.log.Infof("[contract]missing provide key for %d. Will omit.\n", provideMode)
 				}
 			}
 		}
@@ -729,7 +728,7 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 	}
 	provideFrame, err := ToFrame(provide, self.settings.ProtocolVersion)
 	if err != nil {
-		glog.Infof("[contract]could not create provide frame = %s", err)
+		self.client.log.Infof("[contract]could not create provide frame = %s", err)
 		return nil, err
 	}
 	return provideFrame, nil
@@ -996,7 +995,7 @@ func (self *ContractManager) addContract(contractKey ContractKey, contract *prot
 		return fmt.Errorf("Contract source must be this client: %s<>%s", Id(storedContract.SourceId), self.client.ClientId())
 	}
 
-	glog.V(1).Infof("[contract]add %s %s\n", self.client.ClientId(), contractKey.Destination)
+	self.client.log.V(1).Infof("[contract]add %s %s\n", self.client.ClientId(), contractKey.Destination)
 
 	func() {
 		contractQueue := self.openContractQueue(contractKey)
@@ -1027,11 +1026,11 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 	}
 	frame, err := ToFrame(createContract, self.settings.ProtocolVersion)
 	if err != nil {
-		glog.Infof("[contract]could not create contract frame = %s", err)
+		self.client.log.Infof("[contract]could not create contract frame = %s", err)
 		return
 	}
 
-	glog.V(1).Infof("[contract]create %s %s\n", self.client.ClientId(), contractKey.Destination)
+	self.client.log.V(1).Infof("[contract]create %s %s\n", self.client.ClientId(), contractKey.Destination)
 
 	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{frame},
@@ -1050,9 +1049,9 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 					consecutiveBackendFails.Add(1)
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
-							glog.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
+							self.client.log.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
 						} else {
-							glog.Infof("[contract]oob err = %s\n", err)
+							self.client.log.Infof("[contract]oob err = %s\n", err)
 						}
 					}
 				}
@@ -1140,7 +1139,7 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		Checkpoint:       checkpoint,
 	}, self.settings.ProtocolVersion)
 	if err != nil {
-		glog.Infof("[contract]could not create close contract frame = %s\n", err)
+		self.client.log.Infof("[contract]could not create close contract frame = %s\n", err)
 		return
 	}
 	closeControlSync := NewControlSync(self.ctx, self.client, fmt.Sprintf("close-contract-%s", contractId))
@@ -1182,7 +1181,7 @@ func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
-		glog.V(1).Infof("[contract]flush %s %s\n", self.client.ClientId(), maps.Keys(self.destinationContracts))
+		self.client.log.V(1).Infof("[contract]flush %s %s\n", self.client.ClientId(), maps.Keys(self.destinationContracts))
 
 		contracts := []*protocol.Contract{}
 		for contractKey, contractQueue := range self.destinationContracts {
@@ -1232,7 +1231,7 @@ func (self *ContractManager) openContractQueue(contractKey ContractKey) *contrac
 
 	contractQueue, ok := self.destinationContracts[contractKey]
 	if !ok {
-		contractQueue = newContractQueue(self.settings.TrackUsedContracts)
+		contractQueue = newContractQueue(self.client.log, self.settings.TrackUsedContracts)
 		self.destinationContracts[contractKey] = contractQueue
 	}
 	contractQueue.Open()
@@ -1271,6 +1270,7 @@ type queuedContract struct {
 
 type contractQueue struct {
 	updateMonitor *Monitor
+	log           Logger
 
 	mutex     sync.Mutex
 	openCount int
@@ -1281,9 +1281,10 @@ type contractQueue struct {
 	usedContractIds    map[Id]bool
 }
 
-func newContractQueue(trackUsedContracts bool) *contractQueue {
+func newContractQueue(log Logger, trackUsedContracts bool) *contractQueue {
 	return &contractQueue{
 		updateMonitor:      NewMonitor(),
+		log:                loggerOrDefault(log),
 		openCount:          0,
 		contracts:          map[Id]*queuedContract{},
 		trackUsedContracts: trackUsedContracts,
@@ -1356,18 +1357,18 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 
 	// update contract if present
 	if _, ok := self.contracts[contractId]; ok {
-		glog.V(2).Infof("[contract]add update existing %s\n", contractId)
+		self.log.V(2).Infof("[contract]add update existing %s\n", contractId)
 		self.contracts[contractId] = &queuedContract{contract: contract, enqueueTime: time.Now()}
 		self.updateMonitor.NotifyAll()
 	} else if !self.trackUsedContracts || !self.usedContractIds[contractId] {
-		glog.V(2).Infof("[contract]add %s\n", contractId)
+		self.log.V(2).Infof("[contract]add %s\n", contractId)
 		if self.trackUsedContracts {
 			self.usedContractIds[contractId] = true
 		}
 		self.contracts[contractId] = &queuedContract{contract: contract, enqueueTime: time.Now()}
 		self.updateMonitor.NotifyAll()
 	} else {
-		glog.V(2).Infof("[contract]add already used %s\n", contractId)
+		self.log.V(2).Infof("[contract]add already used %s\n", contractId)
 		// drop this contract. it has already been used locally
 	}
 	return nil

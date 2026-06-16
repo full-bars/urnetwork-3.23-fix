@@ -20,7 +20,6 @@ import (
 	"golang.org/x/net/idna"
 
 	"golang.org/x/net/http2"
-	// "github.com/urnetwork/glog"
 )
 
 // FIXME DoH certs need to be included in the pinned certs

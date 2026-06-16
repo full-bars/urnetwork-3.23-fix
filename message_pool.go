@@ -16,7 +16,6 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/urnetwork/glog"
 )
 
 // new byte allocations in the connect package use pooled message buffers,
@@ -155,8 +154,7 @@ func poolStats(pools []*messagePool) {
 						defer debugStateLock.Unlock()
 						caller = strings.Join(maps.Keys(tagCallers[uint8(tag)]), "/")
 					}()
-
-					glog.Infof("pool[%d] tag=%d [%s] r=%d/t=%d/c=%d = %.2f%% return / %.2f%% reuse\n", pool.size, tag, caller, returned, taken, created, 100*ratio, 100*reuse)
+					DefaultLogger().Infof("pool[%d] tag=%d [%s] r=%d/t=%d/c=%d = %.2f%% return / %.2f%% reuse\n", pool.size, tag, caller, returned, taken, created, 100*ratio, 100*reuse)
 				}
 			}
 		}
@@ -361,7 +359,7 @@ func MessagePoolGetDetailedWithTag(n int, tag uint8) ([]byte, bool) {
 
 				if count != 0 {
 					err := fmt.Errorf("message[%d] already taken", id)
-					glog.Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
+					DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
 					panic(err)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], 1)
@@ -396,7 +394,7 @@ func MessagePoolReturn(message []byte) bool {
 				if count == 0 {
 					if debugTags {
 						err := fmt.Errorf("[mp]return message[%d] not taken", id)
-						glog.Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
+						DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
 					}
 				} else if count == 1 {
 					r = true
@@ -435,7 +433,7 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
-					glog.Warningf("[mp]share message[%d] not taken", id)
+					DefaultLogger().Warningf("[mp]share message[%d] not taken", id)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared

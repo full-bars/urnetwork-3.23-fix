@@ -12,7 +12,6 @@ import (
 	// "time"
 	// "errors"
 	// "strings"
-	// "github.com/urnetwork/glog"
 	"sync"
 )
 
