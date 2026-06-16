@@ -237,7 +237,7 @@ func formatProxyEntry(index int, address string) string {
 	return fmt.Sprintf("proxy[%d] (%s)", index, address)
 }
 
-func formatProxyErrorEntry(index int, address string, failures ProxyFailureCounters, lastError string) string {
+func formatProxyErrorEntry(index int, address string, failures *ProxyFailureCounters, lastError string) string {
 	base := formatProxyEntry(index, address)
 	var parts []string
 	if auth := failures.AuthFailures.Load(); auth > 0 {
@@ -327,11 +327,11 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		case h.currentlyUp:
 			r.Up++
 		case h.everUp:
-			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, h.failures, h.lastError))
+			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError))
 		case h.connecting:
 			// still trying to connect — not dead
 		default:
-			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, h.failures, h.lastError))
+			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError))
 		}
 
 		if h.bw != nil {
