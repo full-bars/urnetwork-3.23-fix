@@ -303,7 +303,6 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
-	fmt.Printf("[health] snapshot: total=%d up=%d connecting=%d dead=%d degraded=%d registered=%d\n", total, up, len(connecting), len(dead), len(degraded), len(bandwidth))
 	return up, dead, degraded, bandwidth, connecting
 }
 
@@ -381,7 +380,6 @@ type ProxyHealthStatus struct {
 	Health         string
 	DownSince      time.Time
 	AuthFailures   int64
-	ContractFails  int64
 	TransportDrops int64
 	TimeoutFails   int64
 	LatencyMs      int64
