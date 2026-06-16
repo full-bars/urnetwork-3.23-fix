@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,13 +17,13 @@ import (
 )
 
 type bandwidthReport struct {
-	NodeID    string         `json:"node_id"`
-	Host      string         `json:"host"`
-	Version   string         `json:"version"`
-	Timestamp time.Time      `json:"ts"`
-	Uptime    float64        `json:"uptime"`
-	Proxies   []proxyReport  `json:"proxies"`
-	System    systemMetrics  `json:"sys"`
+	NodeID    string        `json:"node_id"`
+	Host      string        `json:"host"`
+	Version   string        `json:"version"`
+	Timestamp time.Time     `json:"ts"`
+	Uptime    float64       `json:"uptime"`
+	Proxies   []proxyReport `json:"proxies"`
+	System    systemMetrics `json:"sys"`
 }
 
 type proxyReport struct {
@@ -43,6 +44,13 @@ type systemMetrics struct {
 	Connections int64  `json:"conns"`
 }
 
+// runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
+// system metrics to the fleet hub at reportURL (+"/api/report"). It is a
+// best-effort telemetry loop: failures are logged but never retried beyond the
+// next tick, and a missing reportURL disables it entirely. The cadence defaults
+// to 60s and is overridable via URNETWORK_REPORT_INTERVAL (min 10s). The
+// bandwidthReport / proxyReport JSON shape mirrors what the hub decodes, so keep
+// the json tags here in sync with hub/main.go.
 func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, startTime time.Time) {
 	if reportURL == "" {
 		return
@@ -64,6 +72,15 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 	fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
 
 	client := &http.Client{Timeout: 10 * time.Second}
+
+	// startup jitter so a fleet that restarts together doesn't post on the same
+	// wall-clock boundary and thundering-herd the hub. mirrors the proxy
+	// benchmark probes' jittered start.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Duration(rand.Int63n(int64(interval)))):
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
