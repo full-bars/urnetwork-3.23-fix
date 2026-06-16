@@ -992,6 +992,7 @@ do_install ()
     fi
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
+        rm -f "$install_path/bin/urnetwork"
         cp "$bin_program" "$install_path/bin/urnetwork" || { pr_err "Failed to install provider binary"; exit 1; }
         chmod 755 "$install_path/bin/urnetwork" || { pr_err "Failed to install provider binary"; exit 1; }
     fi
