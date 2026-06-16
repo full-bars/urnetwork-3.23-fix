@@ -184,7 +184,10 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	timeout := 10 * time.Second
+	timeout := 1 * time.Second
+	if testing.Short() {
+		timeout = 10 * time.Millisecond
+	}
 
 	m := 6
 	n := 6

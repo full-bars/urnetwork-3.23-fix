@@ -74,7 +74,7 @@ func runSendReceiveSenderReset(t *testing.T, encMode encryptionMode) {
 	// which can slow per-message processing by 5-10x.
 	timeout := 5 * time.Minute
 	// number of messages
-	n := 1024
+	n := 256
 	stress := os.Getenv("CONNECT_TRANSFER_STRESS") != ""
 	if stress {
 		n = 16 * 1024

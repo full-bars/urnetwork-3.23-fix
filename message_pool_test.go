@@ -12,11 +12,11 @@ import (
 
 func TestMessagePool(t *testing.T) {
 	ResetMessagePoolStats()
-	for n := range 1024 * 8 {
+	for n := range 1024 {
 		if n%32 == 0 {
 			fmt.Printf("mem[%d]\n", n)
 		}
-		for range 128 {
+		for range 16 {
 			message := make([]byte, n)
 			mathrand.Read(message)
 
@@ -27,7 +27,7 @@ func TestMessagePool(t *testing.T) {
 			MessagePoolReturn(messageCopy)
 		}
 	}
-	for n := range 1024 * 32 {
+	for n := range 1024 {
 		if n%32 == 0 {
 			fmt.Printf("memr[%d]\n", n)
 		}

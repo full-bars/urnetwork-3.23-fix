@@ -638,6 +638,9 @@ type peerEncryptionSession struct {
 	// (and any state the application's factory captured for this peer).
 	peerClientPublicKeyFetcher func(ctx context.Context) ([]byte, error)
 
+	clientTlsConfig *tls.Config
+	serverTlsConfig *tls.Config
+
 	// state (locked)
 	stateLock sync.Mutex
 	// epoch is the newest handshake epoch — in-flight (handshaking) or, once it
@@ -687,6 +690,20 @@ type peerEncryptionSession struct {
 	readyMonitor *Monitor
 }
 
+func cloneTlsConfig(c *tls.Config) *tls.Config {
+	if c == nil {
+		return nil
+	}
+	return c.Clone()
+}
+
+func (self *peerEncryptionSession) updateTlsConfig(clientCfg, serverCfg *tls.Config) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.clientTlsConfig = cloneTlsConfig(clientCfg)
+	self.serverTlsConfig = cloneTlsConfig(serverCfg)
+}
+
 func newPeerEncryptionSession(
 	parentCtx context.Context,
 	manager *EncryptionSessionManager,
@@ -715,6 +732,8 @@ func newPeerEncryptionSession(
 		carrierCompanion: carrierCompanion,
 		logTag:           fmt.Sprintf("%s %s c=%t %s", client.ClientTag(), role, companion, peerId),
 		settings:         settings,
+		clientTlsConfig:  cloneTlsConfig(manager.clientTlsConfig),
+		serverTlsConfig:  cloneTlsConfig(manager.serverTlsConfig),
 		readyMonitor:     NewMonitor(),
 		lastActivityTime: time.Now(),
 	}
@@ -854,13 +873,13 @@ func (self *peerEncryptionSession) buildAndStartEpochWithLock() {
 	var tlsCfg *tls.Config
 	switch self.role {
 	case sequenceTlsRoleClient:
-		tlsCfg = self.manager.ClientTlsConfig()
+		tlsCfg = cloneTlsConfig(self.clientTlsConfig)
 		if tlsCfg == nil {
 			tlsCfg = resolveSendTlsConfig(self.settings.ClientTlsConfig)
 		}
 		e.tlsConn = tls.Client(e.transport, tlsCfg)
 	case sequenceTlsRoleServer:
-		tlsCfg = self.manager.ServerTlsConfig()
+		tlsCfg = cloneTlsConfig(self.serverTlsConfig)
 		if tlsCfg == nil {
 			// Encryption misconfigured (no server cert): fail the epoch
 			// closed so the cipher stays nil and traffic flows in
@@ -2223,6 +2242,11 @@ func (self *EncryptionSessionManager) SetProvideTlsKeyMaterial(certPem []byte, k
 	self.clientTlsConfig = clientTlsConfig
 	self.selfCertPem = selfCertPem
 	self.selfPrivateKeyPem = bytes.Clone(selfPrivateKeyPem)
+
+	for _, s := range self.sessions {
+		s.updateTlsConfig(self.clientTlsConfig, self.serverTlsConfig)
+	}
+
 	self.stateLock.Unlock()
 
 	if 0 < len(selfCertPem) {
