@@ -674,3 +674,32 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 
 ---
 
+## 25. Zero-Contention Proxy Health Tracking (O(1) Lookup)
+
+**Purpose**: Eliminate CPU spikes and lock contention during mass proxy reconnects and hot-reloads. The provider used to perform an `O(N)` scan across all proxies under a global mutex lock for every bandwidth update or health query.
+
+**Files Modified**: `proxy_health.go`, `provider/proxy_reload.go`, `transport.go`
+
+**Changes**:
+- Replaced the global `O(N)` array scan with an address-based pointer index map (`map[string]*proxyHealth`) inside `proxyHealthRegistry`.
+- `ProxyBandwidthByAddress` and `ProxyHealthByAddress` now perform instant `O(1)` direct memory lookups.
+- Reduced the scope of `proxyHealthMu` to only protect structural changes (adds/removes) rather than read-only bandwidth queries.
+
+**Status**: ✅ Shipped in v3.23.0-fix.21.1.
+
+---
+
+## 26. TLS Session Lock-Ordering Deadlock Fix
+
+**Purpose**: Fix a chronic, silent deadlock that could permanently freeze live nodes and CI tests. The `EncryptionSessionManager` and `peerEncryptionSession` locks were occasionally acquired in inverted order between the idle-reaping background timer and active TLS handshakes.
+
+**Files Modified**: `transfer_encrypt.go`
+
+**Changes**:
+- Completely decoupled TLS configurations from the central manager during active handshakes.
+- Shifted from a "pull" architecture (where sessions reach up to lock the manager for config) to a "push" architecture (where `SetProvideTlsKeyMaterial` pushes configs down to independently-locked sessions).
+- Eliminated recursive lock boundaries, completely resolving the CI hangs in `TestAcquireForSendRestartPolicy`.
+
+**Status**: ✅ Shipped in v3.23.0-fix.21.1.
+
+---
