@@ -39,7 +39,6 @@ import (
 	// "google.golang.org/protobuf/proto"
 
 	"src.agwa.name/tlshacks"
-	// "github.com/urnetwork/glog"
 )
 
 // see https://upb-syssec.github.io/blog/2023/record-fragmentation/
