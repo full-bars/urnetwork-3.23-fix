@@ -616,7 +616,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			lastBackendFailNano.Store(time.Now().UnixNano())
 			consecutiveBackendFails.Add(1)
 			if idx, ok := self.proxyIndex(); ok {
-				RecordProxyAuthFailure(idx)
+				RecordProxyAuthFailure(idx, err)
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
@@ -736,7 +736,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				atomic.AddInt64(&activeProxyConnections, -1)
 				if idx, ok := self.proxyIndex(); ok {
 					markProxyDown(idx)
-					RecordProxyTransportDrop(idx)
+					RecordProxyTransportDrop(idx, nil)
 				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
@@ -1194,7 +1194,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			lastBackendFailNano.Store(time.Now().UnixNano())
 			consecutiveBackendFails.Add(1)
 			if idx, ok := self.proxyIndex(); ok {
-				RecordProxyAuthFailure(idx)
+				RecordProxyAuthFailure(idx, err)
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
@@ -1266,7 +1266,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				atomic.AddInt64(&activeProxyConnections, -1)
 				if idx, ok := self.proxyIndex(); ok {
 					markProxyDown(idx)
-					RecordProxyTransportDrop(idx)
+					RecordProxyTransportDrop(idx, nil)
 				}
 				self.routeManager.RemoveTransport(sendTransport)
 				self.routeManager.RemoveTransport(receiveTransport)
