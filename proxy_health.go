@@ -127,6 +127,10 @@ type ProxyHealthReport struct {
 var (
 	proxyHealthMu      sync.Mutex
 	proxyHealthByIndex = map[int]*proxyHealth{}
+	// addr -> health, kept in sync with proxyHealthByIndex so ProxyBandwidthByAddress
+	// is O(1). It is polled every 5s per draining proxy during hot-reload; a linear
+	// scan there was O(proxies) under the global lock for every poll.
+	proxyHealthByAddr = map[string]*proxyHealth{}
 
 	proxyLifetimeRecovered int
 	proxyLifetimeLost      int
@@ -141,8 +145,12 @@ func RegisterProxy(index int, address string) {
 		h = &proxyHealth{}
 		proxyHealthByIndex[index] = h
 	}
+	if h.address != "" && h.address != address {
+		delete(proxyHealthByAddr, h.address)
+	}
 	h.address = address
 	h.connecting = true
+	proxyHealthByAddr[address] = h
 }
 
 // RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
@@ -176,10 +184,8 @@ func markProxyUp(index int) {
 func ProxyBandwidthByAddress(addr string) *ProxyBandwidth {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
-	for _, h := range proxyHealthByIndex {
-		if h.address == addr {
-			return h.bw
-		}
+	if h, ok := proxyHealthByAddr[addr]; ok {
+		return h.bw
 	}
 	return nil
 }
@@ -234,6 +240,12 @@ func RecordProxyTransportDrop(index int, err error) {
 func UnregisterProxy(id int) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[id]; ok && h.address != "" {
+		// only drop the addr entry if it still points at this proxy
+		if proxyHealthByAddr[h.address] == h {
+			delete(proxyHealthByAddr, h.address)
+		}
+	}
 	delete(proxyHealthByIndex, id)
 }
 
