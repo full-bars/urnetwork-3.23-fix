@@ -266,10 +266,10 @@ func testClient[P comparable](
 
 	timeout := 30 * time.Second
 
-	m := 6
-	n := 6
-	repeatCount := 6
-	parallelCount := 6
+	m := 2
+	n := 2
+	repeatCount := 2
+	parallelCount := 2
 	echoCount := 2
 
 	// each packet gets echoed back

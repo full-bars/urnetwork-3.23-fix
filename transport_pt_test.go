@@ -312,8 +312,9 @@ func ptEncodeDecodeTest(t *testing.T, clientPtMode PacketTranslationMode, server
 					fmt.Printf("connection issue: %s\n", err)
 					return false
 				case <-writeCtx.Done():
-					// case <- time.After(60 * time.Second):
-					// 	t.FailNow()
+				case <-time.After(30 * time.Second):
+					reportErr(fmt.Errorf("timeout waiting for writeCtx"))
+					return false
 				}
 
 				select {
@@ -321,8 +322,9 @@ func ptEncodeDecodeTest(t *testing.T, clientPtMode PacketTranslationMode, server
 					fmt.Printf("connection issue: %s\n", err)
 					return false
 				case <-serverCtx.Done():
-					// case <- time.After(60 * time.Second):
-					// 	t.FailNow()
+				case <-time.After(30 * time.Second):
+					reportErr(fmt.Errorf("timeout waiting for serverCtx"))
+					return false
 				}
 				select {
 				case err := <-errCh:

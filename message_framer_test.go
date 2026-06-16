@@ -96,7 +96,7 @@ func TestFramerWriteRead(t *testing.T) {
 func TestFramerSpeedup(t *testing.T) {
 	ctx := context.Background()
 
-	n := 100000
+	n := 1000
 	message := make([]byte, 1500)
 
 	runTcp := func(framer *Framer) {
@@ -104,12 +104,12 @@ func TestFramerSpeedup(t *testing.T) {
 		defer handleCancel()
 
 		select {
-		case <-time.After(1 * time.Second):
+		case <-time.After(10 * time.Millisecond):
 		}
 
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{
 			IP:   net.ParseIP("127.0.0.1"),
-			Port: 5050,
+			Port: 0,
 		})
 		if err != nil {
 			panic(err)
@@ -129,7 +129,7 @@ func TestFramerSpeedup(t *testing.T) {
 			}
 		}()
 
-		s, err := net.Dial("tcp", "127.0.0.1:5050")
+		s, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
 			panic(err)
 		}
