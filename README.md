@@ -6,7 +6,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 | | Upstream | This fork |
 | :--- | :--- | :--- |
-| Connection log visibility | Debug level 2 (silent) | INFO — one line per successful connection |
+| Control-plane dial visibility | Debug level 2 (silent) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
 | Initial contract size | 16 KiB | Min 256 KiB (lowmem), 2 MiB (performance), tunable per profile |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime |
