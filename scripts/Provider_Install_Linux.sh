@@ -377,8 +377,8 @@ while [ $# -gt 0 ]; do
             ;;
 
         -*)
-            pr_err "Invalid option '%s'" "$1"
-            exit 1
+            pr_warn "Ignoring unknown option '%s'" "$1"
+            shift
             ;;
 
         *)
@@ -780,13 +780,13 @@ do_install ()
                         ;;
 
                     -*)
-                        pr_err "Invalid option '%s'" "$1"
-                        exit 1
+                        pr_warn "Ignoring unknown option '%s'" "$1"
+                        shift
                         ;;
 
                     *)
-                        pr_err "Invalid argument '%s'" "$1"
-                        exit 1
+                        pr_warn "Ignoring unknown argument '%s'" "$1"
+                        shift
                         ;;
                 esac
             done
@@ -992,9 +992,11 @@ do_install ()
     fi
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
-        rm -f "$install_path/bin/urnetwork"
+        # Bypass 'Text file busy' locks on running binaries by moving the active inode out of the way first
+        mv -f "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old" 2>/dev/null || true
         cp "$bin_program" "$install_path/bin/urnetwork" || { pr_err "Failed to install provider binary"; exit 1; }
         chmod 755 "$install_path/bin/urnetwork" || { pr_err "Failed to install provider binary"; exit 1; }
+        rm -f "$install_path/bin/urnetwork.old" 2>/dev/null || true
     fi
 
     cd "$script_rundir" || exit 1
