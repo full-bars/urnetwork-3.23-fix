@@ -670,20 +670,22 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			default:
 			}
 
+			startDial := time.Now()
 			result := eval(handleCtx, dialer)
+			dialDur := time.Since(startDial)
 			if result != nil {
 				if result.err == nil {
 					self.mutex.Lock()
 					self.failureCount = 0
 					self.mutex.Unlock()
-					self.log.Infof("[net][s]select: %s\n", dialer.String())
+					self.log.Infof("[net][s]select: %s dur=%dms\n", dialer.String(), dialDur.Milliseconds())
 					return result
 				}
 				if ok, suppressed := shouldLogSelectErr(); ok {
 					if suppressed > 0 {
-						self.log.Infof("[net][s]select: %s = %s (%d suppressed)\n", dialer.String(), result.err, suppressed)
+						self.log.Infof("[net][s]select: %s = %s dur=%dms (%d suppressed)\n", dialer.String(), result.err, dialDur.Milliseconds(), suppressed)
 					} else {
-						self.log.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
+						self.log.Infof("[net][s]select: %s = %s dur=%dms\n", dialer.String(), result.err, dialDur.Milliseconds())
 					}
 				}
 				result.Close()
