@@ -10,8 +10,9 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pion/datachannel v1.6.0
+	github.com/pion/logging v0.2.4
 	github.com/pion/webrtc/v4 v4.2.9
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.59.1
 	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd
 	github.com/wlynxg/anet v0.0.5
 	golang.org/x/crypto v0.48.0
@@ -27,7 +28,6 @@ require (
 	github.com/pion/dtls/v3 v3.1.2 // indirect
 	github.com/pion/ice/v4 v4.2.1 // indirect
 	github.com/pion/interceptor v0.1.44 // indirect
-	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.16 // indirect
