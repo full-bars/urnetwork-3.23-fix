@@ -764,6 +764,21 @@ do_install ()
                         shift
                         ;;
 
+                    -t|--tag)
+                        if [ -z "$2" ]; then
+                            opt_requires_arg "$1"
+                            exit 1
+                        fi
+
+                        tag="$2"
+
+                        if [ "$tag" != "latest" ] && [ "$(echo "$tag" | cut -c -1)" != "v" ]; then
+                            tag="v$tag"
+                        fi
+
+                        shift 2
+                        ;;
+
                     -*)
                         pr_err "Invalid option '%s'" "$1"
                         exit 1
