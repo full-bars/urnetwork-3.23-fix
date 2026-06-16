@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urnetwork/glog"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -368,7 +367,7 @@ func (self *StreamSequence) Run() {
 			)
 		} else {
 			// the stream must have one of source or destination
-			glog.V(1).Infof("[sm] s(%s) missing source or destination.\n", self.streamId)
+			self.streamManager.Client().log.V(1).Infof("[sm] s(%s) missing source or destination.\n", self.streamId)
 			return
 		}
 	} else {

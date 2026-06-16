@@ -5,7 +5,6 @@ import (
 	"runtime/debug"
 	"sync/atomic"
 
-	"github.com/urnetwork/glog"
 )
 
 // ApplyAutoTuning runs once per proxy server, but the auto-profile summary is a
@@ -13,7 +12,7 @@ import (
 // a large proxy list does not spam the log on startup. autoTuneLogf is a test seam.
 var (
 	autoTuneLogged atomic.Bool
-	autoTuneLogf   = glog.Infof
+	autoTuneLogf   = func(format string, args ...any) { DefaultLogger().Infof(format, args...) }
 )
 
 // Tier Definitions

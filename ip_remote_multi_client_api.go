@@ -11,8 +11,7 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-	// "github.com/urnetwork/glog"
-
+	//
 	"github.com/urnetwork/connect/protocol"
 )
 
@@ -281,6 +280,6 @@ func (self *ApiMultiClientGenerator) FixedDestinationSize() (int, bool) {
 			specClientIds = append(specClientIds, *spec.ClientId)
 		}
 	}
-	// glog.Infof("[multi]eval fixed %d/%d\n", len(specClientIds), len(self.specs))
+	// self.log.Infof("[multi]eval fixed %d/%d\n", len(specClientIds), len(self.specs))
 	return len(specClientIds), len(specClientIds) == len(self.specs)
 }

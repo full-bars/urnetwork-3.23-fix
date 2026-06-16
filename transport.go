@@ -21,7 +21,6 @@ import (
 	"github.com/gorilla/websocket"
 	quic "github.com/quic-go/quic-go"
 
-	"github.com/urnetwork/glog"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -230,6 +229,10 @@ type PlatformTransportSettings struct {
 	V2H1Auth       bool
 	FramerSettings *FramerSettings
 
+	// Log, when set, is used by the transport.
+	// nil resolves to DefaultLogger().
+	Log Logger
+
 	PtDnsSlowMultiple int
 }
 
@@ -271,6 +274,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 type PlatformTransport struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	log    Logger
 
 	clientStrategy *ClientStrategy
 	routeManager   *RouteManager
@@ -333,9 +337,15 @@ func NewPlatformTransportWithTargetMode(
 	settings *PlatformTransportSettings,
 ) *PlatformTransport {
 	cancelCtx, cancel := context.WithCancel(ctx)
+	log := loggerOrDefault(settings.Log)
+	// propagate so a transport-level logger covers the framer
+	if settings.FramerSettings != nil && settings.FramerSettings.Log == nil {
+		settings.FramerSettings.Log = log
+	}
 	transport := &PlatformTransport{
 		ctx:    cancelCtx,
 		cancel: cancel,
+		log:    log,
 		// cancel: func() {
 		// 	select {
 		// 	case <- ctx.Done():
@@ -597,7 +607,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 		var ws *websocket.Conn
 		var err error
-		if glog.V(2) {
+		if self.log.V(2).Enabled() {
 			ws, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), connect)
 		} else {
 			ws, err = connect()
@@ -610,9 +620,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
-					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
+					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
 				} else {
-					glog.Infof("[t]auth error %s = %s\n", clientId, err)
+					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
 			if authErrBackoff == 0 {
@@ -773,14 +783,14 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						// note that for websocket a dealine timeout cannot be recovered
 						if ok, suppressed := shouldLogWriteErr(); ok {
 							if suppressed > 0 {
-								glog.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+								self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
 							} else {
-								glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+								self.log.Infof("[ts]%s-> error = %s\n", clientId, err)
 							}
 						}
 						return err
 					}
-					glog.V(2).Infof("[ts]%s->\n", clientId)
+					self.log.V(2).Infof("[ts]%s->\n", clientId)
 
 					writeCounter.Add(1)
 					return nil
@@ -824,7 +834,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							// }
 
 							if len(message) <= 16 {
-								glog.Infof("[ts]send message must be >16 bytes (%s)\n", len(message))
+								self.log.Infof("[ts]send message must be >16 bytes (%s)\n", len(message))
 								MessagePoolReturn(message)
 							} else if write(message) != nil {
 								return
@@ -875,7 +885,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 					messageType, r, err := ws.NextReader()
 					if err != nil {
-						glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
+						self.log.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
 						return
 					}
 
@@ -884,7 +894,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 						message, err := MessagePoolReadAll(r)
 						if err != nil {
-							glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
+							self.log.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
 							return
 						}
 
@@ -893,7 +903,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						if len(message) <= 16 {
 							if len(message) == 0 {
 								// ping
-								glog.V(2).Infof("[tr]ping %s<-\n", clientId)
+								self.log.V(2).Infof("[tr]ping %s<-\n", clientId)
 								MessagePoolReturn(message)
 							} else if len(message) == 5 {
 								switch message[0] {
@@ -943,18 +953,18 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							MessagePoolReturn(message)
 							return
 						case receive <- message:
-							glog.V(2).Infof("[tr]%s<-\n", clientId)
+							self.log.V(2).Infof("[tr]%s<-\n", clientId)
 						case <-time.After(self.settings.ReadTimeout):
-							glog.Infof("[tr]drop %s<-\n", clientId)
+							self.log.Infof("[tr]drop %s<-\n", clientId)
 							MessagePoolReturn(message)
 						}
 					default:
-						glog.V(2).Infof("[tr]other=%s %s<-\n", messageType, clientId)
+						self.log.V(2).Infof("[tr]other=%s %s<-\n", messageType, clientId)
 					}
 
 					// messageType, message, err := ws.ReadMessage()
 					// if err != nil {
-					// 	glog.Infof("[tr]%s<- error = %s\n", clientId, err)
+					// 	self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
 					// 	return
 					// }
 
@@ -974,7 +984,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		}
 
 		reconnect = NewReconnect(self.settings.ReconnectTimeout)
-		if glog.V(2) {
+		if self.log.V(2).Enabled() {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
 			c()
@@ -1123,7 +1133,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				}
 			}()
 
-			glog.Infof("[c]h3 connect to %v (%s)\n", udpAddr, serverName)
+			self.log.Infof("[c]h3 connect to %v (%s)\n", udpAddr, serverName)
 
 			tlsConfig.ServerName = serverName
 			quicTransport := &quic.Transport{
@@ -1135,7 +1145,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 			// conn, err := quic.Dial(self.ctx, packetConn, packetConn.ConnectedAddr(), self.settings.QuicTlsConfig, quicConfig)
 			if err != nil {
-				glog.Infof("[c]h3 connect err = %s\n", err)
+				self.log.Infof("[c]h3 connect err = %s\n", err)
 				return nil, err
 			}
 			defer func() {
@@ -1146,7 +1156,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 			stream, err := conn.OpenStreamSync(self.ctx)
 			if err != nil {
-				glog.Infof("[c]h3 open stream err = %s\n", err)
+				self.log.Infof("[c]h3 open stream err = %s\n", err)
 				return nil, err
 			}
 
@@ -1175,7 +1185,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 		var connStream *ConnStream
 		var err error
-		if glog.V(2) {
+		if self.log.V(2).Enabled() {
 			connStream, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), connect)
 		} else {
 			connStream, err = connect()
@@ -1188,9 +1198,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
-					glog.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
+					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
 				} else {
-					glog.Infof("[t]auth error %s = %s\n", clientId, err)
+					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
 			if authErrBackoff == 0 {
@@ -1314,14 +1324,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							// note that for websocket a dealine timeout cannot be recovered
 							if ok, suppressed := shouldLogWriteErr(); ok {
 								if suppressed > 0 {
-									glog.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+									self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
 								} else {
-									glog.Infof("[ts]%s-> error = %s\n", clientId, err)
+									self.log.Infof("[ts]%s-> error = %s\n", clientId, err)
 								}
 							}
 							return
 						}
-						glog.V(2).Infof("[ts]%s->\n", clientId)
+						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
 						if err := framer.Write(stream, make([]byte, 0)); err != nil {
@@ -1348,13 +1358,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					stream.SetReadDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.ReadTimeout))
 					message, err := framer.Read(stream)
 					if err != nil {
-						glog.Infof("[tr]%s<- error = %s\n", clientId, err)
+						self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
 						return
 					}
 
 					if 0 == len(message) {
 						// ping
-						glog.V(2).Infof("[tr]ping %s<-\n", clientId)
+						self.log.V(2).Infof("[tr]ping %s<-\n", clientId)
 						MessagePoolReturn(message)
 						continue
 					}
@@ -1364,9 +1374,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						MessagePoolReturn(message)
 						return
 					case receive <- message:
-						glog.V(2).Infof("[tr]%s<-\n", clientId)
+						self.log.V(2).Infof("[tr]%s<-\n", clientId)
 					case <-time.After(time.Duration(slowMultiple) * self.settings.ReadTimeout):
-						glog.Infof("[tr]drop %s<-\n", clientId)
+						self.log.Infof("[tr]drop %s<-\n", clientId)
 						MessagePoolReturn(message)
 					}
 				}
@@ -1380,7 +1390,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		reconnect = NewReconnect(self.settings.ReconnectTimeout)
-		if glog.V(2) {
+		if self.log.V(2).Enabled() {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
 			c()

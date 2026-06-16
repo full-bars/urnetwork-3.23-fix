@@ -16,7 +16,6 @@ import (
 	"strings"
 	// mathrand "math/rand"
 
-	"github.com/urnetwork/glog"
 )
 
 func IsDoneError(r any) bool {
@@ -44,7 +43,7 @@ func HandleError(do func(), handlers ...any) (r any) {
 			if IsDoneError(r) {
 				// the context was canceled and raised. this is a standard pattern, do not log
 			} else {
-				glog.Warningf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
+				DefaultLogger().Warningf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
 			}
 			err, ok := r.(error)
 			if !ok {
@@ -158,11 +157,11 @@ func TraceWithReturnError[R any](tag string, do func() (R, error)) (result R, re
 
 func trace(tag string, do func() string) {
 	start := time.Now()
-	glog.Infof("[%-8s]%s (%d)\n", "start", tag, start.UnixMilli())
+	DefaultLogger().Infof("[%-8s]%s (%d)\n", "start", tag, start.UnixMilli())
 	doTag := do()
 	end := time.Now()
-	millis := float32(end.Sub(start)) / float32(time.Millisecond)
-	glog.Infof("[%-8s]%s (%.2fms) (%d)%s\n", "end", tag, millis, end.UnixMilli(), doTag)
+	millis := float64(end.Sub(start).Microseconds()) / 1000.0
+	DefaultLogger().Infof("[%-8s]%s (%.2fms) (%d)%s\n", "end", tag, millis, end.UnixMilli(), doTag)
 }
 
 func CallbackName(f any) string {

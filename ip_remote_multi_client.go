@@ -18,7 +18,6 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/urnetwork/glog"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -275,6 +274,10 @@ type MultiClientSettings struct {
 	IngressSecurityPolicyGenerator func(*SecurityPolicyStatsCollector) SecurityPolicy
 	EgressSecurityPolicyGenerator  func(*SecurityPolicyStatsCollector) SecurityPolicy
 
+	// Log, when set, is used by this multi client and nested components.
+	// nil resolves to DefaultLogger().
+	Log Logger
+
 	RemoteUserNatMultiClientMonitorSettings
 }
 
@@ -362,6 +365,7 @@ type RemoteUserNatMultiClient struct {
 	receivePacketCallback ReceivePacketFunction
 
 	settings *MultiClientSettings
+	log      Logger
 
 	windows map[WindowType]*multiClientWindow
 	monitor MultiClientMonitor
@@ -412,12 +416,15 @@ func NewRemoteUserNatMultiClient(
 ) *RemoteUserNatMultiClient {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
+	log := loggerOrDefault(settings.Log)
+
 	securityPolicyStats := DefaultSecurityPolicyStatsCollector()
 
 	localUserNatSettings := DefaultLocalUserNatSettings()
 	// no ulimit for local traffic
 	localUserNatSettings.UdpBufferSettings.UserLimit = 0
 	localUserNatSettings.TcpBufferSettings.UserLimit = 0
+	localUserNatSettings.Log = log
 	localUserNat := NewLocalUserNat(cancelCtx, "multi local", nil, localUserNatSettings)
 
 	multiClient := &RemoteUserNatMultiClient{
@@ -426,6 +433,7 @@ func NewRemoteUserNatMultiClient(
 		generator:             generator,
 		receivePacketCallback: receivePacketCallback,
 		settings:              settings,
+		log:                   log,
 		windows:               map[WindowType]*multiClientWindow{},
 		securityPolicyStats:   securityPolicyStats,
 		securityPolicy:        settings.EgressSecurityPolicyGenerator(securityPolicyStats),
@@ -926,7 +934,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 
 		// note client must be marked as done, otherwise it may be re-added by updates in flight
 		if !client.IsDone() {
-			glog.Errorf("[multi]removed client that is not marked as done. This might lead to memory leak.")
+			self.log.Errorf("[multi]removed client that is not marked as done. This might lead to memory leak.")
 		}
 
 		if updates, ok := self.clientUpdates[client]; ok {
@@ -945,7 +953,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 						rstPackets = append(rstPackets, rstPacket)
 					}
 				} else {
-					glog.Errorf("[multi]update associated with incorrect client")
+					self.log.Errorf("[multi]update associated with incorrect client")
 				}
 			}
 		}
@@ -971,12 +979,12 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 
 	ipPath, payload, err := ParseIpPathWithPayload(packet)
 	if err != nil {
-		glog.Infof("[multi]send bad packet = %s\n", err)
+		self.log.Infof("[multi]send bad packet = %s\n", err)
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath)
 	if err != nil {
-		glog.Infof("[multi]send bad packet = %s\n", err)
+		self.log.Infof("[multi]send bad packet = %s\n", err)
 		return false
 	}
 	switch r {
@@ -994,7 +1002,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 			return false
 		}
 	default:
-		glog.V(1).Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
+		self.log.V(1).Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
 		return false
 	}
 }
@@ -1071,7 +1079,7 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 			} else if err != nil {
 				// reset the path
 
-				glog.Infof("[multi]reset error = %s\n", err)
+				self.log.Infof("[multi]reset error = %s\n", err)
 
 				func() {
 					self.stateLock.Lock()
@@ -1376,10 +1384,10 @@ func (self *RemoteUserNatMultiClient) clientReceivePacket(
 			// another client already chosen, drop
 		} else if race := update.race; race == nil {
 			// no race, no client, drop
-			glog.Infof("[multi]receive no race and no client")
+			self.log.Infof("[multi]receive no race and no client")
 		} else if state, ok := race.clientStates[sourceClient]; !ok {
 			// this client is not part of the race, drop
-			glog.Infof("[multi]receive client not part of race")
+			self.log.Infof("[multi]receive client not part of race")
 		} else if len(state.packets) < self.settings.MultiRaceClientPacketMaxCount && race.packetCount < self.settings.MultiRacePacketMaxCount {
 			packetCopy, pooled := MessagePoolCopyDetailed(packet)
 			receivePacket := &receivePacket{
@@ -1410,7 +1418,7 @@ func (self *RemoteUserNatMultiClient) clientReceivePacket(
 			}
 		} else {
 			// race buffer limits exceeded, end the race immediately
-			glog.Infof("[multi]receive race buffer limit reached")
+			self.log.Infof("[multi]receive race buffer limit reached")
 
 			for abandonedClient, abandonedState := range race.clientStates {
 				if abandonedClient != client {
@@ -1698,6 +1706,7 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 type multiClientWindow struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	log    Logger
 
 	generator                   MultiClientGenerator
 	clientReceivePacketCallback clientReceivePacketFunction
@@ -1734,6 +1743,7 @@ func newMultiClientWindow(
 	window := &multiClientWindow{
 		ctx:                         ctx,
 		cancel:                      cancel,
+		log:                         loggerOrDefault(settings.Log),
 		generator:                   generator,
 		clientReceivePacketCallback: clientReceivePacketCallback,
 		ingressSecurityPolicy:       ingressSecurityPolicy,
@@ -1817,7 +1827,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			self.windowType.RankMode(),
 		)
 		if err != nil {
-			glog.Infof("[multi]window enumerate error timeout = %s\n", err)
+			self.log.Infof("[multi]window enumerate error timeout = %s\n", err)
 			select {
 			case <-self.ctx.Done():
 				return
@@ -1839,7 +1849,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 
 					clientArgs, err := self.generator.NewClientArgs()
 					if err != nil {
-						glog.Infof("[multi]create client args error = %s\n", err)
+						self.log.Infof("[multi]create client args error = %s\n", err)
 						select {
 						case <-self.ctx.Done():
 							return
@@ -1860,7 +1870,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 					case self.clientChannelArgs <- args:
 					case <-time.After(timeout):
 						// destination expired
-						glog.Infof("[multi]create client args expired\n")
+						self.log.Infof("[multi]create client args expired\n")
 						self.generator.RemoveClientArgs(clientArgs)
 						return
 					}
@@ -1929,7 +1939,7 @@ func (self *multiClientWindow) resize() {
 			if stats, err := client.WindowStats(); err == nil {
 				clientStats[client] = stats
 			} else {
-				glog.Infof("[multi]remove error client [%s] = %s\n", client.ClientId(), err)
+				self.log.Infof("[multi]remove error client [%s] = %s\n", client.ClientId(), err)
 				removeClient(client)
 			}
 		}
@@ -1971,7 +1981,7 @@ func (self *multiClientWindow) resize() {
 				effectiveByteCountPerSecond := stats.EffectiveByteCountPerSecond()
 				expectedByteCountPerSecond := stats.ExpectedByteCountPerSecond()
 
-				glog.V(1).Infof(
+				self.log.V(1).Infof(
 					"[multi]%s [%s]: h=%d+%dms/u=%d+%dms effective=%db/s expected=%db/s send=%db sendNack=%db receive=%db\n",
 					status,
 					client.ClientId(),
@@ -2128,7 +2138,7 @@ func (self *multiClientWindow) resize() {
 				windowSizeMin,
 				targetWindowSize-len(clients),
 			)
-			glog.V(1).Infof("[multi]window expand +%d %d->%d (+%d)\n", n, len(clients), targetWindowSize, addedCount)
+			self.log.V(1).Infof("[multi]window expand +%d %d->%d (+%d)\n", n, len(clients), targetWindowSize, addedCount)
 		}
 		if 0 < windowSize.WindowSizeHardMax && windowSize.WindowSizeHardMax < len(clients)+len(warnedClients)+addedCount {
 			self.monitor.AddWindowExpandEvent(
@@ -2136,7 +2146,7 @@ func (self *multiClientWindow) resize() {
 				windowSize.WindowSizeHardMax,
 			)
 			collapseLowestWeighted(max(0, windowSize.WindowSizeHardMax-addedCount))
-			glog.V(1).Infof("[multi]window collapse -%d ->%d\n", (len(clients)+len(warnedClients)+addedCount)-windowSize.WindowSizeHardMax, windowSize.WindowSizeHardMax)
+			self.log.V(1).Infof("[multi]window collapse -%d ->%d\n", (len(clients)+len(warnedClients)+addedCount)-windowSize.WindowSizeHardMax, windowSize.WindowSizeHardMax)
 		} else {
 			self.monitor.AddWindowExpandEvent(
 				windowSizeMin <= len(clients)+addedCount,
@@ -2188,7 +2198,7 @@ func (self *multiClientWindow) expand(
 	for i := 0; i < n; i += 1 {
 		timeout := endTime.Sub(time.Now())
 		if timeout < 0 {
-			glog.V(1).Infof("[multi]expand window timeout\n")
+			self.log.V(1).Infof("[multi]expand window timeout\n")
 			return
 		}
 
@@ -2299,7 +2309,7 @@ func (self *multiClientWindow) expand(
 							}
 
 							if err == nil {
-								glog.V(1).Infof("[multi]expand new client\n")
+								self.log.V(1).Infof("[multi]expand new client\n")
 
 								self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
 								var replacedClient *multiClientChannel
@@ -2317,13 +2327,13 @@ func (self *multiClientWindow) expand(
 								pingSuccess += 1
 								pingCancel()
 							} else {
-								glog.V(1).Infof("[multi]create ping error = %s\n", err)
+								self.log.V(1).Infof("[multi]create ping error = %s\n", err)
 								fail()
 							}
 						},
 					)
 					if err != nil {
-						glog.Infof("[multi]create client ping error = %s\n", err)
+						self.log.Infof("[multi]create client ping error = %s\n", err)
 						fail()
 					} else if !success {
 						fail()
@@ -2333,7 +2343,7 @@ func (self *multiClientWindow) expand(
 							select {
 							case <-pingDone.Done():
 							case <-time.After(self.settings.PingTimeout):
-								glog.V(2).Infof("[multi]expand window timeout waiting for ping\n")
+								self.log.V(2).Infof("[multi]expand window timeout waiting for ping\n")
 								func() {
 									mutex.Lock()
 									defer mutex.Unlock()
@@ -2345,7 +2355,7 @@ func (self *multiClientWindow) expand(
 				})
 			}
 		case <-time.After(timeout):
-			glog.V(2).Infof("[multi]expand window timeout waiting for args\n")
+			self.log.V(2).Infof("[multi]expand window timeout waiting for args\n")
 		}
 	}
 
@@ -2410,7 +2420,7 @@ func (self *multiClientWindow) OrderedClients() []*multiClientChannel {
 		return clients
 	}
 
-	if glog.V(1) {
+	if self.log.V(1).Enabled() {
 		self.statsSampleWeights(weights)
 	}
 
@@ -2450,7 +2460,7 @@ func (self *multiClientWindow) OrderedClients() []*multiClientChannel {
 		if client.Tier() == minTier {
 			minTierClients = append(minTierClients, client)
 		} else {
-			glog.V(1).Infof("[multi]exclude tier from window %d>%d\n", client.Tier(), minTier)
+			self.log.V(1).Infof("[multi]exclude tier from window %d>%d\n", client.Tier(), minTier)
 		}
 	}
 
@@ -2499,9 +2509,9 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
 				}
 			}
 
-			glog.Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights)-netCount, 100*(1-netThresh))
+			self.log.Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights)-netCount, 100*(1-netThresh))
 		} else {
-			glog.Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
+			self.log.Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
 		}
 	}
 }
@@ -2577,6 +2587,8 @@ func newMultiClientEventBucket() *multiClientEventBucket {
 }
 
 type clientWindowStats struct {
+	log Logger
+
 	sourceCount                 int
 	netSourceCount              int
 	sendAckCount                int
@@ -2632,7 +2644,7 @@ func (self *clientWindowStats) ExpectedByteCountPerSecond() ByteCount {
 		return self.estimatedByteCountPerSecond
 	}
 	netByteCount := int64(self.sendAckByteCount + self.sendNackByteCount + self.receiveAckByteCount)
-	glog.V(2).Infof("[multi]expected use estimated = %dbps (net = %db/%dms)\n", self.estimatedByteCountPerSecond, netByteCount, millis)
+	self.log.V(2).Infof("[multi]expected use estimated = %dbps (net = %db/%dms)\n", self.estimatedByteCountPerSecond, netByteCount, millis)
 	return max(
 		self.estimatedByteCountPerSecond-ByteCount((1000*netByteCount+millis/2)/millis),
 		0,
@@ -2642,6 +2654,7 @@ func (self *clientWindowStats) ExpectedByteCountPerSecond() ByteCount {
 type multiClientChannel struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	log    Logger
 
 	args *multiClientChannelArgs
 
@@ -2725,6 +2738,7 @@ func newMultiClientChannel(
 	clientChannel := &multiClientChannel{
 		ctx:                         cancelCtx,
 		cancel:                      cancel,
+		log:                         loggerOrDefault(settings.Log),
 		args:                        args,
 		clientReceivePacketCallback: clientReceivePacketCallback,
 		ingressSecurityPolicy:       ingressSecurityPolicy,
@@ -2736,7 +2750,7 @@ func newMultiClientChannel(
 		eventBuckets:              []*multiClientEventBucket{},
 		ip4DestinationSourceCount: map[Ip4Path]map[Ip4Path]int{},
 		ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
-		packetStats:               &clientWindowStats{},
+		packetStats:               &clientWindowStats{log: loggerOrDefault(settings.Log)},
 		// affinityCount:             0,
 		// affinityTime:              time.Time{},
 	}
@@ -2935,7 +2949,7 @@ func (self *multiClientChannel) detectBlackhole() {
 			if blackhole {
 				// the client has sent data but received nothing back
 				// this looks like a blackhole
-				glog.V(1).Infof("[multi]routing %s blackhole: %d %dB <> %d %dB (%d <> %d)\n",
+				self.log.V(1).Infof("[multi]routing %s blackhole: %d %dB <> %d %dB (%d <> %d)\n",
 					self.args.Destination,
 					windowStats.sendAckCount,
 					windowStats.sendAckByteCount,
@@ -2950,7 +2964,7 @@ func (self *multiClientChannel) detectBlackhole() {
 				))
 				return
 			} else {
-				glog.V(1).Infof(
+				self.log.V(1).Infof(
 					"[multi]routing ok %s: %d %dB <> %d %dB (%d <> %d)\n",
 					self.args.Destination,
 					windowStats.sendAckCount,
@@ -3321,18 +3335,18 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
 	for _, sourceCounts := range self.ip6DestinationSourceCount {
 		netSourceCount += len(sourceCounts)
 	}
-	if glog.V(2) {
+	if self.log.V(2).Enabled() {
 		for ip4Path, sourceCounts := range self.ip4DestinationSourceCount {
 			if isPublicPort(ip4Path.DestinationPort) {
 				if len(sourceCounts) == maxSourceCount {
-					glog.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip4Path)
+					self.log.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip4Path)
 				}
 			}
 		}
 		for ip6Path, sourceCounts := range self.ip6DestinationSourceCount {
 			if isPublicPort(ip6Path.DestinationPort) {
 				if len(sourceCounts) == maxSourceCount {
-					glog.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip6Path)
+					self.log.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip6Path)
 				}
 			}
 		}
@@ -3453,7 +3467,7 @@ func (self *multiClientChannel) clientReceive(source TransferPath, frames []*pro
 
 	// only process frames from the destinations
 	// if allow := self.sourceFilter[source]; !allow {
-	//     glog.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
+	//     self.log.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
 	//     return
 	// }
 
@@ -3475,7 +3489,7 @@ func (self *multiClientChannel) clientReceive(source TransferPath, frames []*pro
 				}
 				// else not an ip packet, drop
 			} else {
-				glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
+				self.log.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
 			}
 		default:
 			// unknown message, drop

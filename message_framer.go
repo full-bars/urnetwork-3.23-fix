@@ -7,7 +7,6 @@ import (
 	"math"
 	// "time"
 	// "github.com/urnetwork/connect"
-	"github.com/urnetwork/glog"
 )
 
 // a message framer that optimizes memory copies to reduce cpu+memory usage
@@ -23,8 +22,12 @@ import (
 // the framer read/write op is called billions of times in a typical user hour
 
 type FramerSettings struct {
+	// Log, when set, is used by the framer.
+	// nil resolves to DefaultLogger().
+	Log Logger
+
 	// MaxMessageLen is the maximum message (payload) length, in bytes, this
-	// framer will read or write. The on-wire frame is `MaxMessageLen + 4`:
+	// framer will read or write. The on-wire frame is MaxMessageLen + 4:
 	// the framer prepends a 4-byte length header and accounts for it
 	// internally (see NewFramer). There is intentionally no global default
 	// max -- every framer must declare the largest message its context can
@@ -32,8 +35,8 @@ type FramerSettings struct {
 	// silently inherit a cap too small for, e.g., the per-peer encryption
 	// handshake (ClientSettings.MinimumMessageLenLimit).
 	MaxMessageLen int
-	// SplitMinimumLen is the minimum message length above which `Write`
-	// splits the body into two `io.Writer.Write` calls to save a memcpy.
+	// SplitMinimumLen is the minimum message length above which Write
+	// splits the body into two io.Writer.Write calls to save a memcpy.
 	// This is a stream-transport optimization.
 	SplitMinimumLen int
 }
@@ -51,6 +54,7 @@ func DefaultFramerSettings(maxMessageLen int) *FramerSettings {
 
 // Read and Write must be called from a single goroutine each
 type Framer struct {
+	log Logger
 	// maxFrameLen is the maximum on-wire frame length the framer reads or
 	// writes: the configured max message (payload) length plus the 4-byte
 	// length header it prepends.
@@ -60,6 +64,7 @@ type Framer struct {
 
 func NewFramer(settings *FramerSettings) *Framer {
 	return &Framer{
+		log:         loggerOrDefault(settings.Log),
 		maxFrameLen: settings.MaxMessageLen + 4,
 		settings:    settings,
 	}
@@ -81,7 +86,7 @@ func (self *Framer) Read(r io.Reader) ([]byte, error) {
 		// Surface framer length rejection on the read path so an oversized frame
 		// (e.g. an encryption handshake flight too large for a hop's cap) shows
 		// up in logs rather than silently closing the transport.
-		glog.Infof(
+		self.log.Infof(
 			"[framer][reject]read messageLen=%d > MaxMessageLen=%d (maxFrameLen=%d)\n",
 			messageLen, self.settings.MaxMessageLen, self.maxFrameLen,
 		)
@@ -116,7 +121,7 @@ func (self *Framer) ReadPacket(r io.Reader) ([]byte, error) {
 	messageLen := int(binary.BigEndian.Uint16(h[0:2]))
 
 	if self.settings.MaxMessageLen < messageLen {
-		// glog.Infof("READ MAX\n")
+		// self.log.Infof("READ MAX\n")
 		MessagePoolReturn(h)
 		return nil, fmt.Errorf("Max message len exceeded (%d<%d)", self.settings.MaxMessageLen, messageLen)
 	}
@@ -147,7 +152,7 @@ func (self *Framer) Write(w io.Writer, message []byte) error {
 		// Surface framer length rejection on the write path so a component
 		// trying to send a frame larger than its framer cap (the classic
 		// encryption-handshake deadlock trigger) shows up in logs.
-		glog.Infof(
+		self.log.Infof(
 			"[framer][reject]write messageLen=%d > MaxMessageLen=%d (maxFrameLen=%d)\n",
 			messageLen, self.settings.MaxMessageLen, self.maxFrameLen,
 		)
