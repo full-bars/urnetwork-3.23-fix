@@ -23,8 +23,12 @@ import (
 // the framer read/write op is called billions of times in a typical user hour
 
 type FramerSettings struct {
+	// Log, when set, is used by the framer.
+	// nil resolves to DefaultLogger().
+	Log Logger
+
 	// MaxMessageLen is the maximum message (payload) length, in bytes, this
-	// framer will read or write. The on-wire frame is `MaxMessageLen + 4`:
+	// framer will read or write. The on-wire frame is MaxMessageLen + 4:
 	// the framer prepends a 4-byte length header and accounts for it
 	// internally (see NewFramer). There is intentionally no global default
 	// max -- every framer must declare the largest message its context can
@@ -32,8 +36,8 @@ type FramerSettings struct {
 	// silently inherit a cap too small for, e.g., the per-peer encryption
 	// handshake (ClientSettings.MinimumMessageLenLimit).
 	MaxMessageLen int
-	// SplitMinimumLen is the minimum message length above which `Write`
-	// splits the body into two `io.Writer.Write` calls to save a memcpy.
+	// SplitMinimumLen is the minimum message length above which Write
+	// splits the body into two io.Writer.Write calls to save a memcpy.
 	// This is a stream-transport optimization.
 	SplitMinimumLen int
 }
