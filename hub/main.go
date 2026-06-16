@@ -642,7 +642,9 @@ function closeAllDetails() {
 }
 
 function refreshDashboard() {
-  closeAllDetails();
+  var openIds = [];
+  document.querySelectorAll('.detail-row.open').forEach(function(r) { openIds.push(r.id); });
+  
   fetch('/').then(function(r) { return r.text(); }).then(function(html) {
     var parser = new DOMParser();
     var doc = parser.parseFromString(html, 'text/html');
@@ -650,6 +652,13 @@ function refreshDashboard() {
     var newSummary = doc.querySelector('.summary');
     document.querySelector('#node-table tbody').replaceWith(newBody);
     document.querySelector('.summary').replaceWith(newSummary);
+    
+    openIds.forEach(function(id) {
+      var r = document.getElementById(id);
+      if (r) r.classList.add('open');
+    });
+    
+    if (typeof attachInnerSort === 'function') attachInnerSort();
   });
 }
 
@@ -675,8 +684,6 @@ document.querySelectorAll('th[data-col]').forEach(function(th) {
     var tbody = document.querySelector('#node-table tbody');
     var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
     rows.sort(function(a, b) {
-      // close any open details first
-      document.querySelectorAll('.detail-row.open').forEach(function(r) { r.classList.remove('open'); });
       var va = a.cells[getColIndex(col)].textContent.trim();
       var vb = b.cells[getColIndex(col)].textContent.trim();
       // numeric-aware sort
@@ -712,6 +719,38 @@ function fmtBytes(b) {
   while (n >= 1024 && i < units.length-1) { n /= 1024; i++; }
   return n.toFixed(1) + ' ' + units[i] + 'B';
 }
+
+function attachInnerSort() {
+  document.querySelectorAll('.detail-table').forEach(function(tbl) {
+    if (tbl.dataset.sorted) return;
+    tbl.dataset.sorted = "true";
+    var ths = tbl.querySelectorAll('th');
+    ths.forEach(function(th, idx) {
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', function() {
+        var dir = th.dataset.dir === '1' ? -1 : 1;
+        ths.forEach(function(h) { h.dataset.dir = ''; h.textContent = h.textContent.replace(/ [▲▼]/g, '').trim(); });
+        th.dataset.dir = dir;
+        th.textContent = th.textContent + (dir === 1 ? ' ▲' : ' ▼');
+        
+        var tbody = tbl.querySelector('tbody');
+        var rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.sort(function(a, b) {
+          var va = a.cells[idx].textContent.trim();
+          var vb = b.cells[idx].textContent.trim();
+          var na = parseFloat(va.replace(/[^0-9.-]/g, ''));
+          var nb = parseFloat(vb.replace(/[^0-9.-]/g, ''));
+          if (!isNaN(na) && !isNaN(nb)) return dir * (na - nb);
+          return dir * va.localeCompare(vb);
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+      });
+    });
+  });
+}
+
+// Initial setup
+attachInnerSort();
 </script>
 </body>
 </html>`))
