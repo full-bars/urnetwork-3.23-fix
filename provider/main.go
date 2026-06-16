@@ -1006,11 +1006,15 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		var totalRxDelta, totalTxDelta uint64
 		var totalClients int64
 		activeProxies := 0
+		serving := 0
 		for key, bw := range report.Bandwidth {
 			rx := bw.TotalRx.Load()
 			tx := bw.TotalTx.Load()
 			clients := bw.Clients.Load()
 			totalClients += clients
+			if clients > 0 {
+				serving++
+			}
 			prev := prevTick[key]
 			// Guard against counter resets: a proxy goroutine restart / hot-reload
 			// hands back a fresh zeroed ProxyBandwidth, so the current value can be
@@ -1058,12 +1062,22 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			)
 		}
 		prevTickTime = now
-		fmt.Printf("[traffic] total rx=%s/s tx=%s/s clients=%d active_proxies=%d\n",
+		fmt.Printf("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d\n",
 			fmtRate(float64(totalRxDelta)/elapsed),
 			fmtRate(float64(totalTxDelta)/elapsed),
 			totalClients,
 			activeProxies,
 		)
+		// [earn] surfaces utilization: how many up proxies are actually carrying
+		// users (serving) vs sitting idle. Sustained high idle with up>0 means the
+		// platform is not assigning users to this node — an earning signal distinct
+		// from [traffic] (bytes) and [contract] (assignments).
+		idle := report.Up - serving
+		if idle < 0 {
+			idle = 0
+		}
+		fmt.Printf("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
+			report.Up, serving, idle, totalClients)
 
 		// Update proxy.state health snapshot for use by proxy refresh subcommand.
 		// proxyStateMu serializes this with reload()'s state write to prevent
