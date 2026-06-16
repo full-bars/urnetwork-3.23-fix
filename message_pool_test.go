@@ -66,24 +66,30 @@ func TestMessagePoolShare(t *testing.T) {
 		}
 	}
 
-	// add large messages that will not be shared
+	// add large messages, spanning both the pooled and non-pooled size ranges.
+	// messages larger than the largest pool bucket are not pooled. This fork
+	// added buckets above the original 4096 maximum, so derive the threshold
+	// from the live pool configuration rather than hardcoding it (otherwise the
+	// test goes stale whenever the bucket sizes change).
+	pools := orderedMessagePools()
+	maxPoolSize := pools[len(pools)-1].size
 	for range 1024 {
-		message := MessagePoolGet(mathrand.Intn(32 * 1024))
+		message := MessagePoolGet(mathrand.Intn(2 * maxPoolSize))
 		pooled, shared := MessagePoolCheck(message)
-		assert.Equal(t, pooled, len(message) <= 4096)
+		assert.Equal(t, pooled, len(message) <= maxPoolSize)
 		assert.Equal(t, shared, false)
 		k := mathrand.Intn(holdCount)
 		for i := 1; i < k; i += 1 {
 			MessagePoolShareReadOnly(message)
 			pooled, shared = MessagePoolCheck(message)
-			assert.Equal(t, pooled, len(message) <= 4096)
-			assert.Equal(t, shared, len(message) <= 4096)
+			assert.Equal(t, pooled, len(message) <= maxPoolSize)
+			assert.Equal(t, shared, len(message) <= maxPoolSize)
 		}
 		for i := 1; i < k; i += 1 {
 			MessagePoolReturn(message)
 			pooled, shared = MessagePoolCheck(message)
-			assert.Equal(t, pooled, len(message) <= 4096)
-			assert.Equal(t, shared, len(message) <= 4096)
+			assert.Equal(t, pooled, len(message) <= maxPoolSize)
+			assert.Equal(t, shared, len(message) <= maxPoolSize)
 		}
 		MessagePoolReturn(message)
 		pooled, shared = MessagePoolCheck(message)
