@@ -522,7 +522,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 </thead>
 <tbody>
 {{range .Rows}}
-<tr class="expandable" onclick="toggleDetail({{.Index}})">
+<tr class="expandable" onclick="toggleDetail('{{.NodeID}}')">
 <td class="node-id">{{.NodeID}} <span class="version">{{.Version}}</span></td>
 <td><span class="dot" style="background:{{.Color}}"></span>{{.Heartbeat}}</td>
 <td>{{.Uptime}}</td>
@@ -541,7 +541,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td class="num">{{.Conns}}</td>
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
-<tr class="detail-row" id="detail-{{.Index}}">
+<tr class="detail-row" id="detail-{{.NodeID}}">
 <td colspan="12">
 <div class="detail-inner">
 <table class="detail-table">
@@ -594,8 +594,8 @@ auto-refresh
 </div>
 </div>
 <script>
-function toggleDetail(idx) {
-  document.getElementById('detail-' + idx).classList.toggle('open');
+function toggleDetail(id) {
+  document.getElementById('detail-' + id).classList.toggle('open');
 }
 
 function removeNode(nodeId) {
@@ -659,6 +659,23 @@ function refreshDashboard() {
     });
     
     if (typeof attachInnerSort === 'function') attachInnerSort();
+    
+    if (currentCol) {
+      var tbody = document.querySelector('#node-table tbody');
+      var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
+      rows.sort(function(a, b) {
+        var va = a.cells[getColIndex(currentCol)].textContent.trim();
+        var vb = b.cells[getColIndex(currentCol)].textContent.trim();
+        return cmpNode(va, vb, currentDir);
+      });
+      rows.forEach(function(r) {
+        var detail = r.nextElementSibling;
+        tbody.appendChild(r);
+        if (detail && detail.classList.contains('detail-row')) {
+          tbody.appendChild(detail);
+        }
+      });
+    }
   });
 }
 
