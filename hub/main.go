@@ -498,8 +498,8 @@ tr.detail-row td { padding: 0; background: #0f172a; }
   {{if .Sum.Dead}}<span class="val dead">{{.Sum.Dead}} dead</span>{{end}}
 </span>
 <span class="summary-item"><strong>Clients</strong> <span class="val">{{.Sum.TotalClients}}</span></span>
-<span class="summary-item"><strong>RX</strong> <span class="val">{{fmtBytes .Sum.TotalRX}}</span> <span style="color:#64748b">· {{fmtBytes .Sum.BillRX}} billable</span></span>
-<span class="summary-item"><strong>TX</strong> <span class="val">{{fmtBytes .Sum.TotalTX}}</span> <span style="color:#64748b">· {{fmtBytes .Sum.BillTX}} billable</span></span>
+<span class="summary-item"><strong>RX</strong> <span class="val">{{fmtBytes .Sum.TotalRX}}</span> <span style="color:#ef4444;font-weight:bold">· {{fmtBytes .Sum.BillRX}} billable</span></span>
+<span class="summary-item"><strong>TX</strong> <span class="val">{{fmtBytes .Sum.TotalTX}}</span> <span style="color:#ef4444;font-weight:bold">· {{fmtBytes .Sum.BillTX}} billable</span></span>
 </div>
 </div>
 <div class="table-wrap">
@@ -533,8 +533,8 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 {{if .Proxies.Dead}}<span class="status-badge dead">{{.Proxies.Dead}}</span>{{end}}
 </td>
 <td class="num">{{.Proxies.Clients}}</td>
-<td class="num">{{fmtBytes .Proxies.TotalRX}}<br><span style="font-size:11px;color:#64748b">{{fmtBytes .Proxies.BillRX}} b</span></td>
-<td class="num">{{fmtBytes .Proxies.TotalTX}}<br><span style="font-size:11px;color:#64748b">{{fmtBytes .Proxies.BillTX}} b</span></td>
+<td class="num">{{fmtBytes .Proxies.TotalRX}}<br><span style="font-size:11px;color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillRX}} b</span></td>
+<td class="num">{{fmtBytes .Proxies.TotalTX}}<br><span style="font-size:11px;color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillTX}} b</span></td>
 <td class="num">{{fmtMbps .MbpsRX}}</td>
 <td class="num">{{fmtMbps .MbpsTX}}</td>
 <td class="num">{{.HeapMiB}} MiB</td>
