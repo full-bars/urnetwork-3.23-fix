@@ -744,11 +744,36 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 
 **Files Modified**: `transfer_encrypt.go`
 
-**Changes**:
-- Completely decoupled TLS configurations from the central manager during active handshakes.
-- Shifted from a "pull" architecture (where sessions reach up to lock the manager for config) to a "push" architecture (where `SetProvideTlsKeyMaterial` pushes configs down to independently-locked sessions).
-- Eliminated recursive lock boundaries, completely resolving the CI hangs in `TestAcquireForSendRestartPolicy`.
-
 **Status**: ✅ Shipped in v3.23.0-fix.21.1.
+
+---
+
+## 30. Expanded RAMLOGS & Enhanced Log Triage
+
+**Purpose**: Provide a larger diagnostic window for high-volume nodes and simplify log extraction for troubleshooting without requiring full journald access.
+
+**Files Modified**: `provider/shmlog_linux.go`, `scripts/Provider_Install_Linux.sh`
+
+**Changes**:
+- `shmLogMaxSize`: Increased the in-memory log buffer from 1 MiB to 5 MiB. This allows the provider to retain more history in RAM (critical for high-throughput nodes with frequent log events) while still avoiding disk I/O.
+- `urnet-tools logs`: Added subcommands to control output:
+    - `all` / `full`: Streams the entire buffer from the beginning (useful for capturing startup sequences after the buffer has rolled over in normal tail mode).
+    - `dump`: Copies the current RAM buffer to `~/urlogs.txt` and exits. Simplifies log gathering for operators on remote systems.
+
+**Status**: 🛠 [Unreleased]
+
+---
+
+## 31. Security: QUIC Handshake Memory Exhaustion Fix
+
+**Purpose**: Protect providers against a vulnerability where an unauthenticated remote attacker could cause the provider to allocate excessive memory during the QUIC handshake, potentially leading to an OOM crash.
+
+**Files Modified**: `go.mod`, `go.sum`
+
+**Changes**:
+- Bumped `github.com/quic-go/quic-go` from `v0.59.0` to `v0.59.1`.
+- This version includes protection against handshakes that attempt to stall or leak memory before authentication is complete.
+
+**Status**: 🛠 [Unreleased]
 
 ---

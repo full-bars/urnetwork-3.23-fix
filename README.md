@@ -111,10 +111,10 @@ docker run -d \
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
 > [!NOTE]
-> **Docker shortcuts** — most `urnet-tools` commands work via `docker exec`:
-> - `docker exec -it urfix proxy-health`
-> - `docker exec -it urfix proxy-traffic`
-> - `docker exec -it urfix logs`
+> **Docker shortcuts** — `urnet-tools` commands work via `docker exec` (same as bare-metal):
+> - `docker exec -it urfix urnet-tools proxy health`
+> - `docker exec -it urfix urnet-tools logs`
+> - `docker exec -it urfix urnet-tools status`
 
 ---
 
