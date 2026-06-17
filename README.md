@@ -63,7 +63,7 @@ urnet-tools proxy health
 urnet-tools logs
 ```
 
-### 🐋 Docker
+### 🐋 Docker (Quick Start)
 
 ```bash
 docker run -d \
@@ -78,7 +78,37 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE_HERE
 ```
 
-See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and RAM log setups.
+### 🐋 Docker (Production-Ready)
+
+Recommended for real deployments — includes auto-tuning, in-memory logs, persistent config, and bandwidth monitoring:
+
+```bash
+docker run -d \
+  --name=urnetwork-provider \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e URNETWORK_PROFILE=auto \
+  -e URNETWORK_RAMLOGS=1 \
+  -e ENABLE_VNSTAT=true \
+  -e HOST_HOSTNAME=$(hostname) \
+  -v urnetwork_config:/root/.urnetwork \
+  -v urnetwork_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  -p 8080:8080 \
+  -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+**Key env vars:**
+- `URNETWORK_PROFILE=auto` — Auto-tunes based on available RAM (balanced, lowmem, etc.)
+- `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
+- `URNETWORK_AUTH_CODE` — Your JWT token (single-use on first run; saved to volume)
+
+See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
 > [!NOTE]
 > **Docker shortcuts** — most `urnet-tools` commands work via `docker exec`:
