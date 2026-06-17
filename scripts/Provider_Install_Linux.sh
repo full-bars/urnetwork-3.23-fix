@@ -21,7 +21,7 @@ show_help ()
     echo "  restart                 Restart URnetwork provider"
     echo "  status                  Show the status of URnetwork provider service"
     echo "  update                  Upgrade URnetwork to the latest version"
-    echo "  logs                    Stream the provider logs (RAM or journald)"
+    echo "  logs [all|dump]         Stream provider logs ('all' for full RAM, 'dump' to save to ~/urlogs.txt)"
     echo ""
     echo "Performance & Tuning:"
     echo "  turbo <v4|v8|off>       🚀 RAISE throughput limits for RAM-rich boxes"
@@ -1349,6 +1349,7 @@ show_status ()
 
 show_logs ()
 {
+    mode="$1"
     override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
     is_ramlog=0
     if [ -d "$override_dir" ]; then
@@ -1363,8 +1364,21 @@ show_logs ()
             pr_err "Log file not found. Is the provider running?"
             exit 1
         fi
-        tail -n 250 -f /dev/shm/urnetwork.log
+        if [ "$mode" = "full" ] || [ "$mode" = "all" ]; then
+            tail -n +1 -f /dev/shm/urnetwork.log
+        elif [ "$mode" = "dump" ]; then
+            cp /dev/shm/urnetwork.log "$HOME/urlogs.txt"
+            pr_info "Logs successfully dumped to $HOME/urlogs.txt"
+            exit 0
+        else
+            tail -n 1000 -f /dev/shm/urnetwork.log
+        fi
     else
+        if [ "$mode" = "dump" ]; then
+            journalctl --user -u urnetwork.service > "$HOME/urlogs.txt"
+            pr_info "Logs successfully dumped to $HOME/urlogs.txt"
+            exit 0
+        fi
         pr_info "Streaming from journald"
         journalctl --user -fu urnetwork.service
     fi
@@ -2289,7 +2303,7 @@ case "$operation" in
 		;;
 
     logs)
-        show_logs
+        show_logs "$@"
         exit 0
         ;;
 

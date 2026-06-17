@@ -10,7 +10,7 @@ import (
 
 const (
 	shmLogPath    = "/dev/shm/urnetwork.log"
-	shmLogMaxSize = 1024 * 1024 // 1MB
+	shmLogMaxSize = 5 * 1024 * 1024 // 5MB
 )
 
 func initSHMLogger() {
