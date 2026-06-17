@@ -14,6 +14,9 @@ All notable changes to this project are documented here.
 - **Enhanced `logs` command**: `urnet-tools logs` now supports `all`/`full` (stream entire buffer) and `dump` (save current buffer to `~/urlogs.txt`).
 - **Docker CLI parity**: `urnet-tools` is now natively available inside the container, allowing operators to use the same management commands across all deployment types.
 
+### Fixed
+- **Proxy refresh status check failure**: Fixed a bug where `urnet-tools proxy refresh` failed with `FATAL [exit 51]: provider does not appear to be running` on first startup with 0 proxies. The provider now unconditionally writes the `proxy.state` file at startup and heals zero timestamps during heartbeat execution.
+
 ### Documentation
 - **Production-ready Docker guide**: Added recommended deployment patterns to README for persistent telemetry and auto-tuning.
 
