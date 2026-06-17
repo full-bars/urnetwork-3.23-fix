@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Security
+- **QUIC Memory Exhaustion vulnerability**: Bumped `quic-go` to `v0.59.1` to resolve a vulnerability where an unauthenticated remote attacker could cause excessive memory allocation during the handshake.
+
+### Telemetry
+- **Increased RAMLOGS size**: Capacity expanded from 1MB to 5MB for larger diagnostic windows on high-volume nodes.
+- **Enhanced `logs` command**: `urnet-tools logs` now supports `all`/`full` (stream entire buffer) and `dump` (save current buffer to `~/urlogs.txt`).
+- **Docker CLI parity**: `urnet-tools` is now natively available inside the container, allowing operators to use the same management commands across all deployment types.
+
+### Documentation
+- **Production-ready Docker guide**: Added recommended deployment patterns to README for persistent telemetry and auto-tuning.
+
+---
+
 ## [v3.23.0-fix.21.2] — 2026-06-16
 
 ### Fixed
