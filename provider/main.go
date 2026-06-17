@@ -1091,6 +1091,9 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if err != nil {
 				return
 			}
+			if state.StartedAt.IsZero() {
+				state.StartedAt = startTime
+			}
 			liveHealth := connect.ProxyHealthByAddress()
 			for addr, entry := range state.Proxies {
 				if h, ok := liveHealth[addr]; ok {
@@ -1563,6 +1566,12 @@ func provide(opts docopt.Opts) {
 		provideWithProxy(nativeCtx, nil, true)
 	})
 
+	// Persist the initial state snapshot now that all IDs are resolved.
+	proxyState.NextID = currentProxyIDCounter()
+	if err := writeProxyState(proxyState); err != nil {
+		fmt.Printf("[proxy] warning: could not write proxy.state: %v\n", err)
+	}
+
 	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
@@ -1582,12 +1591,6 @@ func provide(opts docopt.Opts) {
 				obfuscateUser(user),
 				obfuscatePassword(password),
 			)
-		}
-
-		// Persist the initial state snapshot now that all IDs are resolved.
-		proxyState.NextID = currentProxyIDCounter()
-		if err := writeProxyState(proxyState); err != nil {
-			fmt.Printf("[proxy] warning: could not write proxy.state: %v\n", err)
 		}
 
 		for i, proxySettings := range allProxySettings {
