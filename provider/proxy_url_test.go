@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/urnetwork/connect"
 )
 
 func TestWriteReadProxyURLState_RoundTrip(t *testing.T) {
@@ -145,5 +147,77 @@ func TestFetchProxyURLLines_BodyTruncatedAtLimit(t *testing.T) {
 	}
 	if total > maxProxyURLFetchBytes {
 		t.Fatalf("body not truncated: got %d bytes, want <= %d", total, maxProxyURLFetchBytes)
+	}
+}
+
+func TestMergeProxyURLEntries_AddsNewSkipsExisting(t *testing.T) {
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"1.2.3.4:1080": {},
+	}}
+	added := mergeProxyURLEntries(state, []string{
+		"1.2.3.4:1080", // already present, not re-added
+		"5.6.7.8:1080:user:pass",
+		"# comment, skipped",
+	}, 0)
+	if added != 1 {
+		t.Fatalf("added: got %d, want 1", added)
+	}
+	if len(state.Cache) != 2 {
+		t.Fatalf("cache size: got %d, want 2", len(state.Cache))
+	}
+	if state.Cache["5.6.7.8:1080"].User != "user" {
+		t.Errorf("expected creds preserved, got %+v", state.Cache["5.6.7.8:1080"])
+	}
+}
+
+func TestMergeProxyURLEntries_RespectsMaxTotal(t *testing.T) {
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"1.2.3.4:1080": {},
+	}}
+	added := mergeProxyURLEntries(state, []string{
+		"5.6.7.8:1080",
+		"9.9.9.9:1080",
+	}, 2)
+	if added != 1 {
+		t.Fatalf("added: got %d, want 1 (cap of 2 total, 1 already present)", added)
+	}
+	if len(state.Cache) != 2 {
+		t.Fatalf("cache size: got %d, want 2", len(state.Cache))
+	}
+}
+
+func TestMergeProxyURLCache_PrimarySourceWins(t *testing.T) {
+	desiredSet := map[string]*connect.ProxySettings{
+		"1.2.3.4:1080": {Network: "tcp", Address: "1.2.3.4:1080"},
+	}
+	sourceOf := map[string]string{"1.2.3.4:1080": "file"}
+	urlState := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"1.2.3.4:1080": {User: "should-be-ignored"},
+		"5.6.7.8:1080": {User: "u", Password: "p"},
+	}}
+
+	mergeProxyURLCache(desiredSet, sourceOf, urlState)
+
+	if sourceOf["1.2.3.4:1080"] != "file" {
+		t.Errorf("existing entry's source was overwritten: got %q", sourceOf["1.2.3.4:1080"])
+	}
+	if sourceOf["5.6.7.8:1080"] != "url" {
+		t.Errorf("new entry not tagged url: got %q", sourceOf["5.6.7.8:1080"])
+	}
+	settings, ok := desiredSet["5.6.7.8:1080"]
+	if !ok {
+		t.Fatal("expected new address merged into desiredSet")
+	}
+	if settings.Auth == nil || settings.Auth.User != "u" || settings.Auth.Password != "p" {
+		t.Errorf("expected auth u/p, got %+v", settings.Auth)
+	}
+}
+
+func TestMergeProxyURLCache_NilStateIsNoop(t *testing.T) {
+	desiredSet := map[string]*connect.ProxySettings{}
+	sourceOf := map[string]string{}
+	mergeProxyURLCache(desiredSet, sourceOf, nil)
+	if len(desiredSet) != 0 {
+		t.Fatalf("expected no-op, got %v", desiredSet)
 	}
 }
