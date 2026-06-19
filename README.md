@@ -27,7 +27,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](../../wiki/Log-Message-Reference) |
 | Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
-| Feed the provider a live proxy list URL *(planned)* | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
+| Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 
 ---
 
