@@ -29,7 +29,7 @@ type ProxyEntry struct {
 	ID        int    `json:"id"`
 	Health    string `json:"health"`               // "up", "dead", "recently_offline", "offline", "long_offline", "inactive"
 	DownSince string `json:"down_since,omitempty"` // RFC3339, set when not up
-	Source    string `json:"source,omitempty"`      // "file", "internal", or "url" — where this address was first added from
+	Source    string `json:"source,omitempty"`     // "file", "internal", or "url" — where this address was first added from
 }
 
 func proxyStatePath() (string, error) {
