@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // ProxyURLState is the on-disk record of configured live proxy URL sources
@@ -181,4 +184,54 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 		}
 	}
 	return result, nil
+}
+
+// mergeProxyURLEntries parses each line and adds genuinely new addresses to
+// state.Cache (mutating it in place). Already-cached addresses are left
+// untouched — this function only ever adds, never updates or removes.
+// maxTotal caps the total cache size; 0 means unlimited. Once the cap is
+// reached, remaining lines in this call are skipped without evicting any
+// existing entry.
+func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (added int) {
+	if state.Cache == nil {
+		state.Cache = map[string]ProxyURLEntry{}
+	}
+	for _, line := range lines {
+		address, user, password, ok := parseProxyURLLine(line)
+		if !ok {
+			continue
+		}
+		if _, exists := state.Cache[address]; exists {
+			continue
+		}
+		if maxTotal > 0 && len(state.Cache) >= maxTotal {
+			break
+		}
+		state.Cache[address] = ProxyURLEntry{User: user, Password: password}
+		added++
+	}
+	return added
+}
+
+// mergeProxyURLCache adds entries from urlState.Cache into desiredSet for any
+// address not already present, and records "url" provenance for those newly
+// added addresses in sourceOf. An address already in desiredSet (from the
+// primary --proxy_file / internal-config source) always wins — its entry and
+// its sourceOf tag are left untouched. urlState may be nil (e.g. read error
+// upstream), in which case this is a no-op.
+func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf map[string]string, urlState *ProxyURLState) {
+	if urlState == nil {
+		return
+	}
+	for addr, entry := range urlState.Cache {
+		if _, exists := desiredSet[addr]; exists {
+			continue
+		}
+		settings := &connect.ProxySettings{Network: "tcp", Address: addr}
+		if entry.User != "" || entry.Password != "" {
+			settings.Auth = &proxy.Auth{User: entry.User, Password: entry.Password}
+		}
+		desiredSet[addr] = settings
+		sourceOf[addr] = "url"
+	}
 }
