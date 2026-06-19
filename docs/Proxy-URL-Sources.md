@@ -1,8 +1,5 @@
 # 🌐 Proxy URL Sources
 
-> [!NOTE]
-> **Status: Planned.** This page documents an upcoming feature, not yet shipped. See [`docs/design/proxy-url-source-design.md`](design/proxy-url-source-design.md) for the approved design. This page will be finalized (flag names, defaults) when the feature lands — treat it as a preview, not a current capability.
-
 This guide covers feeding the provider a **live proxy list URL** instead of (or alongside) a static `proxy.txt` file — useful if you pull proxies from a service that publishes a rotating list of fresh entries.
 
 ## 🛑 The Problem

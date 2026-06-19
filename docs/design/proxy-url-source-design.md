@@ -82,7 +82,10 @@ Only `socks5://` is accepted (this fork is SOCKS5-only); any other scheme prefix
 | `PROXY_DEAD_CLEANUP_SCOPE` | `--proxy_dead_cleanup_scope=url\|all\|none` |
 | `PROXY_DEAD_CLEANUP_INTERVAL` | `--proxy_dead_cleanup_interval=<duration>` |
 
-Translated by the existing startup scripts (`start_jwt.sh` / `start_stable.sh` / `start_nightly.sh`) the same way today's env vars map to flags — no new Docker plumbing required.
+Read directly via `os.Getenv` inside `provide()` as a fallback whenever the
+corresponding `--proxy_*` flag isn't passed — the same pattern already used
+by `URNETWORK_PROFILE` and `URNETWORK_REPORT_URL`. No startup-script changes
+are needed; setting the env var in `docker run` is sufficient.
 
 ---
 
