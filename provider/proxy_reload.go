@@ -183,8 +183,20 @@ func (r *ProxyReloader) reload() {
 	}
 
 	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
+	sourceOf := make(map[string]string, len(desired))
+	primarySource := "internal"
+	if r.sourcePath != "" {
+		primarySource = "file"
+	}
 	for _, s := range desired {
 		desiredSet[s.Address] = s
+		sourceOf[s.Address] = primarySource
+	}
+
+	if urlState, err := readProxyURLState(); err != nil {
+		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+	} else {
+		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
 
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
@@ -277,6 +289,7 @@ func (r *ProxyReloader) reload() {
 		}
 		stableID := resolveProxyID(r.state, settings.Address)
 		settings.Index = stableID
+		tagProxySourceIfUnset(r.state, settings.Address, sourceOf[settings.Address])
 		connect.RegisterProxy(stableID, settings.Address)
 
 		proxyCtx, proxyCancel := context.WithCancel(r.parentCtx)
