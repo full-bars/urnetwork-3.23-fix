@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ProxyURLState is the on-disk record of configured live proxy URL sources
@@ -89,4 +90,45 @@ func writeProxyURLStateTo(path string, s *ProxyURLState) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// parseProxyURLLine parses one line from a remote proxy list. Unlike
+// parseProxyAddress (used by --proxy_file, which requires credentials),
+// entries without credentials are valid here — open/anonymous proxies are
+// the common case for public proxy lists. Accepted forms:
+//
+//	host:port
+//	host:port:user:pass
+//	socks5://host:port
+//	socks5://user:pass@host:port
+//
+// Returns ok=false if the line is blank, a comment, or uses an unsupported
+// protocol scheme (this fork is SOCKS5-only).
+func parseProxyURLLine(line string) (address, user, password string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] == '#' {
+		return "", "", "", false
+	}
+
+	if idx := strings.Index(line, "://"); idx != -1 {
+		scheme := line[:idx]
+		if !strings.EqualFold(scheme, "socks5") {
+			fmt.Printf("[proxy][url] unsupported scheme %q (only socks5 is supported); skipping %q\n", scheme, line)
+			return "", "", "", false
+		}
+		rest := line[idx+3:]
+		if at := strings.LastIndex(rest, "@"); at != -1 {
+			cred := rest[:at]
+			address = rest[at+1:]
+			if parts := strings.SplitN(cred, ":", 2); len(parts) == 2 {
+				user, password = parts[0], parts[1]
+			}
+			return address, user, password, true
+		}
+		address, user, password = parseProxyAddress(rest)
+		return address, user, password, true
+	}
+
+	address, user, password = parseProxyAddress(line)
+	return address, user, password, true
 }
