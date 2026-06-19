@@ -177,11 +177,6 @@ func (r *ProxyReloader) reload() {
 		desired = readProxySettings()
 	}
 
-	if len(desired) == 0 {
-		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
-		return
-	}
-
 	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
 	sourceOf := make(map[string]string, len(desired))
 	primarySource := "internal"
@@ -197,6 +192,14 @@ func (r *ProxyReloader) reload() {
 		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 	} else {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
+	}
+
+	// Check emptiness AFTER merging the URL cache — a URL-only deployment
+	// (no --proxy_file, no internal proxies) has desired == 0 but a
+	// non-empty desiredSet, and must not be treated as a source-read error.
+	if len(desiredSet) == 0 {
+		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
+		return
 	}
 
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
