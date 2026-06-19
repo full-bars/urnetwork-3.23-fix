@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +88,62 @@ func TestParseProxyURLLine(t *testing.T) {
 				t.Errorf("password: got %q, want %q", password, tt.wantPassword)
 			}
 		})
+	}
+}
+
+func TestFetchProxyURLLines_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.2.3.4:1080\n5.6.7.8:1080\n"))
+	}))
+	defer srv.Close()
+
+	lines, err := fetchProxyURLLines(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "1.2.3.4:1080" || lines[1] != "5.6.7.8:1080" {
+		t.Fatalf("got %v", lines)
+	}
+}
+
+func TestFetchProxyURLLines_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := fetchProxyURLLines(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+}
+
+func TestFetchProxyURLLines_EmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+
+	_, err := fetchProxyURLLines(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestFetchProxyURLLines_BodyTruncatedAtLimit(t *testing.T) {
+	huge := strings.Repeat("a", maxProxyURLFetchBytes+1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(huge))
+	}))
+	defer srv.Close()
+
+	lines, err := fetchProxyURLLines(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, l := range lines {
+		total += len(l)
+	}
+	if total > maxProxyURLFetchBytes {
+		t.Fatalf("body not truncated: got %d bytes, want <= %d", total, maxProxyURLFetchBytes)
 	}
 }
