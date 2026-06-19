@@ -777,3 +777,21 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 **Status**: 🛠 [Unreleased]
 
 ---
+
+## 32. Proactive Periodic JWT Refresh
+
+**Purpose**: Ensure JWT tokens never expire under normal operation by proactively refreshing every 7 days, with a 48-hour expiry fallback as safety net.
+
+**Files Modified**: `provider/main.go`
+
+**Changes**:
+- Tracks last successful refresh timestamp on disk (`~/.urnetwork/jwt_last_refresh`)
+- **Primary mechanism**: Refreshes every 7 days regardless of token expiry, ensuring continuous service
+- **Secondary fallback**: Also refreshes if token gets within 48h of expiry (catches failures in primary mechanism)
+- **Startup jitter**: 0-9 minute random delay before first check to desynchronize fleet
+
+**Benefit**: Eliminates the risk of tokens expiring unexpectedly. Multi-day outages don't cause exit-78 failures because the 48h expiry buffer provides recovery time even if weekly refresh is missed. All auth modes benefit equally via JWT-to-JWT mechanism.
+
+**Status**: 🛠 [Unreleased]
+
+---

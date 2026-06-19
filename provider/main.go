@@ -1156,17 +1156,56 @@ func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 	return result.Result.ByClientJwt, nil
 }
 
-// runJWTRefresher checks the JWT expiry once per hour. When the token is
-// within 48 hours of its exp claim, it proactively calls the auth API for a
-// replacement and writes it to disk — avoiding the exit-78 cycle entirely.
+// runJWTRefresher polls once per hour and refreshes the JWT under two
+// independent conditions (OR logic — either one triggers a refresh):
+//
+//  1. Periodic refresh: it has been >= 7 days since the last successful
+//     refresh, regardless of the token's actual expiry. This is the primary
+//     mechanism — it guarantees the token is rotated on a fixed cadence so
+//     it never gets anywhere near expiry under normal operation.
+//  2. Expiry fallback: the token's exp claim is within 48 hours of expiring.
+//     This is a safety net in case the periodic refresh above failed
+//     repeatedly (e.g. multi-day API outage) — it gives a last-resort window
+//     to recover before the provider would otherwise hit the exit-78 cycle.
+//
+// The last successful refresh time is persisted to disk (next to the JWT
+// file) so the 7-day cadence survives provider restarts.
 func runJWTRefresher(ctx context.Context, apiUrl string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
 	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
+	lastRefreshPath := filepath.Join(home, ".urnetwork", "jwt_last_refresh")
 
-	const renewalWindow = 48 * time.Hour
+	const periodicInterval = 7 * 24 * time.Hour
+	const expiryFallbackWindow = 48 * time.Hour
+
+	// Startup jitter (0-9 minutes) to desynchronize refresh checks across the fleet.
+	jitterMs := time.Duration(mathrand.Intn(10)) * time.Minute
+	select {
+	case <-time.After(jitterMs):
+	case <-ctx.Done():
+		return
+	}
+
+	readLastRefreshTime := func() time.Time {
+		data, err := os.ReadFile(lastRefreshPath)
+		if err != nil {
+			// No record on disk — treat as never refreshed so the periodic
+			// condition fires on the first check and establishes a baseline.
+			return time.Time{}
+		}
+		unixSec, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil {
+			return time.Time{}
+		}
+		return time.Unix(unixSec, 0)
+	}
+
+	writeLastRefreshTime := func(t time.Time) error {
+		return os.WriteFile(lastRefreshPath, []byte(strconv.FormatInt(t.Unix(), 10)), 0700)
+	}
 
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -1175,9 +1214,27 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 		byJwtBytes, err := os.ReadFile(jwtPath)
 		if err == nil {
 			byJwt := strings.TrimSpace(string(byJwtBytes))
-			if exp := parseJWTExpiryTime(byJwt); exp != nil && time.Until(*exp) <= renewalWindow {
-				fmt.Printf("[jwt] refreshing token — expires in %s (less than %s threshold)\n",
-					formatDuration(time.Until(*exp)), formatDuration(renewalWindow))
+
+			lastRefreshTime := readLastRefreshTime()
+			sinceLastRefresh := time.Since(lastRefreshTime)
+			periodicDue := sinceLastRefresh >= periodicInterval
+
+			exp := parseJWTExpiryTime(byJwt)
+			expiryDue := exp != nil && time.Until(*exp) <= expiryFallbackWindow
+
+			if periodicDue || expiryDue {
+				var reason string
+				switch {
+				case periodicDue && expiryDue:
+					reason = fmt.Sprintf("7-day periodic refresh due (last refresh %s ago) and within %s of expiry",
+						formatDuration(sinceLastRefresh), formatDuration(expiryFallbackWindow))
+				case periodicDue:
+					reason = fmt.Sprintf("7-day periodic refresh due (last refresh %s ago)", formatDuration(sinceLastRefresh))
+				default:
+					reason = fmt.Sprintf("expiry fallback triggered (expires in %s, within %s threshold)",
+						formatDuration(time.Until(*exp)), formatDuration(expiryFallbackWindow))
+				}
+				fmt.Printf("[jwt] refreshing token — %s\n", reason)
 
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
@@ -1185,7 +1242,12 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
 					fmt.Printf("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
 				} else {
-					fmt.Printf("[jwt] token refreshed successfully (next check in 1h)\n")
+					now := time.Now()
+					if err := writeLastRefreshTime(now); err != nil {
+						fmt.Printf("[jwt] token refreshed but failed to persist last-refresh timestamp: %v\n", err)
+					} else {
+						fmt.Printf("[jwt] token refreshed successfully (next periodic refresh in %s)\n", formatDuration(periodicInterval))
+					}
 				}
 			}
 		}
