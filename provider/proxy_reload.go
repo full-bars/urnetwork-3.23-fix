@@ -148,6 +148,46 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 	}()
 }
 
+// proxyURLGiveUpRetryAfter is the cooldown before a URL-sourced proxy that
+// exhausted its auth attempts is automatically reconsidered for restart.
+const proxyURLGiveUpRetryAfter = 15 * time.Minute
+
+// requeueURLProxyAfterGiveUp is called when a proxy goroutine has permanently
+// given up (exhausted maxAuthFailures) and is about to return for good. By
+// default this is terminal: the address stays in cancelMap, so reload() will
+// never see it as eligible to restart, even though nothing is running — the
+// proxy is dead until a manual 'proxy refresh' or process restart.
+//
+// For URL-sourced proxies that's too brittle: a large public list naturally
+// contains many flaky or dead entries, and requiring manual intervention for
+// each one defeats the purpose of pulling from a URL in the first place. For
+// those, remove the address from cancelMap now (so reload() will treat it as
+// "added" again) and schedule a delayed reload trigger after a cooldown —
+// staggered restart through the normal jittered backoffPacer path, not a
+// thundering herd. Returns true if the proxy was queued for automatic retry.
+func requeueURLProxyAfterGiveUp(ctx context.Context, addr string, cancelMapMu *sync.Mutex, cancelMap map[string]context.CancelFunc) bool {
+	state, err := readProxyState()
+	if err != nil || state.Proxies[addr].Source != "url" {
+		return false
+	}
+
+	cancelMapMu.Lock()
+	delete(cancelMap, addr)
+	cancelMapMu.Unlock()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(proxyURLGiveUpRetryAfter):
+		}
+		if reloadPath, err := proxyReloadPath(); err == nil {
+			_ = writeReloadTrigger(reloadPath)
+		}
+	}()
+	return true
+}
+
 // reload diffs the proxy source against the currently running set and applies
 // the difference: cancels goroutines for removed proxies, starts goroutines for
 // added proxies (staggered), and rewrites proxy.state. Untouched proxies are

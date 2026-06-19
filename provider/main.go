@@ -1298,6 +1298,14 @@ func provide(opts docopt.Opts) {
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 	go paceMonitor(ctx)
 
+	// Declared here (rather than next to the startup loop below) so
+	// provideWithProxy can close over them directly: on a permanent give-up,
+	// it needs to remove its own entry to make itself eligible for re-add by
+	// the next reload() reconciliation pass. Both the initial startup loop
+	// and ProxyReloader share this same map/mutex pair.
+	var proxyCancelMu sync.Mutex
+	proxyCancelMap := map[string]context.CancelFunc{}
+
 	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
@@ -1434,8 +1442,14 @@ func provide(opts docopt.Opts) {
 		}()
 		if err != nil {
 			if proxySettings != nil {
-				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n",
-					proxySettings.Index, proxySettings.Address, err)
+				retried := requeueURLProxyAfterGiveUp(ctx, proxySettings.Address, &proxyCancelMu, proxyCancelMap)
+				if retried {
+					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (url-sourced — will retry automatically in %s)\n",
+						proxySettings.Index, proxySettings.Address, err, formatDuration(proxyURLGiveUpRetryAfter))
+				} else {
+					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline; run 'urnet-tools proxy refresh' after fixing the underlying issue)\n",
+						proxySettings.Index, proxySettings.Address, err)
+				}
 			} else if isNative {
 				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[0] (direct) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n", err)
 			} else {
@@ -1593,11 +1607,6 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
-
-	// Per-proxy cancellation map keyed by address, so hot-reload can cancel
-	// individual proxy goroutines without disturbing the others.
-	var proxyCancelMu sync.Mutex
-	proxyCancelMap := map[string]context.CancelFunc{}
 
 	// ALWAYS start the native [direct] connection as proxy[0].
 	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
