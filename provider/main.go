@@ -538,6 +538,11 @@ Usage:
         [--connect_url=<connect_url>]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
+        [--proxy_url=<proxy_url>...]
+        [--proxy_url_refresh=<proxy_url_refresh>]
+        [--proxy_url_max=<proxy_url_max>]
+        [--proxy_dead_cleanup_scope=<proxy_dead_cleanup_scope>]
+        [--proxy_dead_cleanup_interval=<proxy_dead_cleanup_interval>]
         [-v...]
     provider auth-provide ([<auth_code>] | --user_auth=<user_auth> [--password=<password>]) [-f]
     	[--port=<port>]
@@ -551,6 +556,8 @@ Usage:
     provider proxy remove [<key_address>...] [--all]
     provider proxy remove-dead
     provider proxy refresh [--force]
+    provider proxy add-source <url>
+    provider proxy remove-source <url>
     provider logs [-n <lines>]
 
 Options:
@@ -572,6 +579,12 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
+    --proxy_url_refresh=<dur>        How often to re-fetch --proxy_url sources and add new entries. Also settable via PROXY_URL_REFRESH. [default: 15m if unset]
+    --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited. Also settable via PROXY_URL_MAX.
+    --proxy_dead_cleanup_scope=<s>   Automatic daily dead-proxy cleanup scope: none, url, or all. Also settable via PROXY_DEAD_CLEANUP_SCOPE. [default: none if unset]
+    --proxy_dead_cleanup_interval=<dur>  How often automatic cleanup runs, when scope isn't none. Also settable via PROXY_DEAD_CLEANUP_INTERVAL. [default: 24h if unset]
+    <url>                            A proxy list URL.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
@@ -604,6 +617,10 @@ Options:
 			} else if remove, _ := opts.Bool("remove"); remove {
 				proxyAuthRemove(opts)
 			}
+		} else if addSource, _ := opts.Bool("add-source"); addSource {
+			proxyAddSource(opts)
+		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
+			proxyRemoveSource(opts)
 		} else if add, _ := opts.Bool("add"); add {
 			proxyAdd(opts)
 		} else if removeDead, _ := opts.Bool("remove-dead"); removeDead {
@@ -1271,6 +1288,14 @@ func provide(opts docopt.Opts) {
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
+
+	proxyURLs := resolveProxyURLs(opts)
+	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 15*time.Minute)
+	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 0)
+	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "none")
+	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 24*time.Hour)
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax)
+	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 	go paceMonitor(ctx)
 
 	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
@@ -1546,6 +1571,29 @@ func provide(opts docopt.Opts) {
 		proxyState.Source = ""
 	}
 
+	// Merge in any already-cached URL-sourced proxies (Workflow A/B + URL
+	// source are additive, not mutually exclusive). proxySourceOf records
+	// each address's provenance for tagProxySourceIfUnset below.
+	primarySource := "internal"
+	if proxyFile != "" {
+		primarySource = "file"
+	}
+	proxyDesiredSet := make(map[string]*connect.ProxySettings, len(allProxySettings))
+	proxySourceOf := make(map[string]string, len(allProxySettings))
+	for _, s := range allProxySettings {
+		proxyDesiredSet[s.Address] = s
+		proxySourceOf[s.Address] = primarySource
+	}
+	if urlState, err := readProxyURLState(); err != nil {
+		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+	} else {
+		mergeProxyURLCache(proxyDesiredSet, proxySourceOf, urlState)
+	}
+	allProxySettings = allProxySettings[:0]
+	for _, s := range proxyDesiredSet {
+		allProxySettings = append(allProxySettings, s)
+	}
+
 	// Per-proxy cancellation map keyed by address, so hot-reload can cancel
 	// individual proxy goroutines without disturbing the others.
 	var proxyCancelMu sync.Mutex
@@ -1578,6 +1626,7 @@ func provide(opts docopt.Opts) {
 		for _, proxySettings := range allProxySettings {
 			stableID := resolveProxyID(proxyState, proxySettings.Address)
 			proxySettings.Index = stableID
+			tagProxySourceIfUnset(proxyState, proxySettings.Address, proxySourceOf[proxySettings.Address])
 			connect.RegisterProxy(stableID, proxySettings.Address)
 			var user string
 			var password string
@@ -2313,6 +2362,97 @@ func obfuscatePassword(password string) string {
 	}
 }
 
+// resolveDuration returns the --flag value if set and parseable, else the
+// env var if set and parseable, else def. Used for settings that must work
+// identically whether passed as a provide() flag or a Docker env var.
+func resolveDuration(opts docopt.Opts, flag, envVar string, def time.Duration) time.Duration {
+	if v, _ := opts.String(flag); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		fmt.Printf("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, flag, def)
+		return def
+	}
+	if v := os.Getenv(envVar); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		fmt.Printf("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, envVar, def)
+	}
+	return def
+}
+
+// resolveInt is resolveDuration's integer counterpart.
+func resolveInt(opts docopt.Opts, flag, envVar string, def int) int {
+	if v, _ := opts.String(flag); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		fmt.Printf("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, flag, def)
+		return def
+	}
+	if v := os.Getenv(envVar); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		fmt.Printf("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, envVar, def)
+	}
+	return def
+}
+
+// resolveString is resolveDuration's plain-string counterpart.
+func resolveString(opts docopt.Opts, flag, envVar, def string) string {
+	if v, _ := opts.String(flag); v != "" {
+		return v
+	}
+	if v := os.Getenv(envVar); v != "" {
+		return v
+	}
+	return def
+}
+
+// resolveProxyURLs collects --proxy_url flag values, PROXY_URL env var
+// values (comma-separated), and persisted sources from proxy_url.json
+// (added via `proxy add-source`), deduplicated, in that priority order.
+func resolveProxyURLs(opts docopt.Opts) []string {
+	var urls []string
+
+	if v, ok := opts["--proxy_url"]; ok && v != nil {
+		switch vv := v.(type) {
+		case []string:
+			urls = append(urls, vv...)
+		case string:
+			if vv != "" {
+				urls = append(urls, vv)
+			}
+		}
+	}
+
+	if envURLs := os.Getenv("PROXY_URL"); envURLs != "" {
+		for _, u := range strings.Split(envURLs, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				urls = append(urls, u)
+			}
+		}
+	}
+
+	if urlState, err := readProxyURLState(); err != nil {
+		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+	} else {
+		urls = append(urls, urlState.Sources...)
+	}
+
+	seen := map[string]bool{}
+	deduped := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if !seen[u] {
+			seen[u] = true
+			deduped = append(deduped, u)
+		}
+	}
+	return deduped
+}
+
 func proxyRefresh(opts docopt.Opts) {
 	force, _ := opts.Bool("--force")
 
@@ -2445,6 +2585,67 @@ func proxyRefresh(opts docopt.Opts) {
 	}
 
 	fmt.Println("Reload triggered. Provider will apply changes within 2 seconds.")
+}
+
+func proxyAddSource(opts docopt.Opts) {
+	url, _ := opts.String("<url>")
+	url = strings.TrimSpace(url)
+	if url == "" {
+		shmLogFatal(70, "no URL provided")
+	}
+
+	state, err := readProxyURLState()
+	if err != nil {
+		shmLogFatal(71, "could not read proxy_url.json: %v", err)
+	}
+	for _, existing := range state.Sources {
+		if existing == url {
+			fmt.Printf("source already added: %s\n", url)
+			return
+		}
+	}
+	state.Sources = append(state.Sources, url)
+	if err := writeProxyURLState(state); err != nil {
+		shmLogFatal(72, "could not write proxy_url.json: %v", err)
+	}
+
+	fmt.Printf("added source: %s\nfetching now...\n", url)
+	// maxTotal=0 here: the cap configured for the running provide() process
+	// (--proxy_url_max) applies to its own background fetcher, not to this
+	// one-shot CLI fetch. The next scheduled fetch will resume honoring it.
+	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0)
+	fmt.Println("done.")
+}
+
+func proxyRemoveSource(opts docopt.Opts) {
+	url, _ := opts.String("<url>")
+	url = strings.TrimSpace(url)
+
+	state, err := readProxyURLState()
+	if err != nil {
+		shmLogFatal(73, "could not read proxy_url.json: %v", err)
+	}
+
+	kept := make([]string, 0, len(state.Sources))
+	found := false
+	for _, existing := range state.Sources {
+		if existing == url {
+			found = true
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if !found {
+		fmt.Printf("source not found: %s\n", url)
+		return
+	}
+
+	state.Sources = kept
+	if err := writeProxyURLState(state); err != nil {
+		shmLogFatal(74, "could not write proxy_url.json: %v", err)
+	}
+	fmt.Printf("removed source: %s\n", url)
+	fmt.Println("note: previously fetched proxies from this source remain running; use 'proxy remove-dead' to prune any that go dead.")
 }
 
 func proxyRemoveDead(_ docopt.Opts) {
