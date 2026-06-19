@@ -11,6 +11,74 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+// TestRequeueURLProxyAfterGiveUp_URLSourceRemovedFromCancelMap is a
+// regression test for a bug found during live deployment testing: a proxy
+// that permanently gave up after exhausting its auth attempts stayed in
+// cancelMap forever, so reload() could never see it as eligible to restart —
+// contradicting the (inaccurate) "retry on next hourly pulse" log message.
+// For url-sourced proxies, requeueURLProxyAfterGiveUp must remove the address
+// from cancelMap immediately (making it eligible for reload() to re-add) and
+// report that it queued an automatic retry.
+func TestRequeueURLProxyAfterGiveUp_URLSourceRemovedFromCancelMap(t *testing.T) {
+	withTempHome(t)
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"5.5.5.5:1080": {ID: 1, Source: "url"},
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	cancelMap := map[string]context.CancelFunc{
+		"5.5.5.5:1080": func() {},
+	}
+
+	queued := requeueURLProxyAfterGiveUp(t.Context(), "5.5.5.5:1080", cancelMapMu, cancelMap)
+	if !queued {
+		t.Fatal("expected url-sourced proxy to be queued for automatic retry")
+	}
+
+	cancelMapMu.Lock()
+	_, stillPresent := cancelMap["5.5.5.5:1080"]
+	cancelMapMu.Unlock()
+	if stillPresent {
+		t.Fatal("expected address to be removed from cancelMap so reload() can re-add it")
+	}
+}
+
+// TestRequeueURLProxyAfterGiveUp_NonURLSourceLeftAlone confirms file/internal
+// sourced proxies are NOT automatically requeued — a permanent failure there
+// likely indicates a real configuration problem the operator configured
+// directly and should notice, not one that should retry silently forever.
+func TestRequeueURLProxyAfterGiveUp_NonURLSourceLeftAlone(t *testing.T) {
+	withTempHome(t)
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"6.6.6.6:1080": {ID: 1, Source: "file"},
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	cancelMap := map[string]context.CancelFunc{
+		"6.6.6.6:1080": func() {},
+	}
+
+	queued := requeueURLProxyAfterGiveUp(context.Background(), "6.6.6.6:1080", cancelMapMu, cancelMap)
+	if queued {
+		t.Fatal("expected file-sourced proxy to NOT be queued for automatic retry")
+	}
+
+	cancelMapMu.Lock()
+	_, stillPresent := cancelMap["6.6.6.6:1080"]
+	cancelMapMu.Unlock()
+	if !stillPresent {
+		t.Fatal("expected address to remain in cancelMap (no automatic retry for non-url sources)")
+	}
+}
+
 // TestReload_URLOnlySource_NoEarlyExit is a regression test for a bug found
 // during live deployment testing: when there is no --proxy_file and no
 // internal proxies (Workflow A/B empty), reload() used to bail out before
