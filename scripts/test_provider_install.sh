@@ -82,8 +82,10 @@ test_do_install_rate_limit() {
             if command -v curl > /dev/null; then
                 tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" 2>/dev/null || true)
                 # Extract version from URL: /tag/v3.23.0-fix.18.1 -> v3.23.0-fix.18.1
-                if [ -n "$tag_url" ] && [[ "$tag_url" == *"/tag/"* ]]; then
-                    version_to_install="${tag_url##*/tag/}"
+                if [ -n "$tag_url" ]; then
+                    case "$tag_url" in
+                        *"/tag/"*) version_to_install="${tag_url##*/tag/}" ;;
+                    esac
                 fi
             fi
         fi
@@ -92,12 +94,15 @@ test_do_install_rate_limit() {
     )
 
     # Check if fallback grabbed the latest release correctly
-    if [[ "$output" == v3.23.0-fix* ]]; then
-        assert_eq "$output" "$output" "Rate limit fallback successfully scraped web redirect ($output)"
-    else
-        # If test environment doesn't have reliable curl/network, skip this test gracefully
-        echo "⊘ SKIP: Rate limit fallback test (network may not be available in test environment)"
-    fi
+    case "$output" in
+        v3.23.0-fix*)
+            assert_eq "$output" "$output" "Rate limit fallback successfully scraped web redirect ($output)"
+            ;;
+        *)
+            # If test environment doesn't have reliable curl/network, skip this test gracefully
+            echo "⊘ SKIP: Rate limit fallback test (network may not be available in test environment)"
+            ;;
+    esac
 }
 test_do_install_rate_limit
 

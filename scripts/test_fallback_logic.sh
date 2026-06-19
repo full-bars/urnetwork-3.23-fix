@@ -46,7 +46,7 @@ if [ -z "$latest_version" ]; then
 fi
 
 echo "Final latest_version: '$latest_version'"
-if [[ "$latest_version" == v3.23.0-fix* ]]; then
+if case "$latest_version" in v3.23.0-fix*) true ;; *) false ;; esac; then
     echo "✅ TEST 1 PASSED: Resiliently extracted version!"
 else
     echo "❌ TEST 1 FAILED"
@@ -66,7 +66,7 @@ latest_version="$(get_version_from_api_response "$release" 2>/dev/null)"
 
 echo "Version extracted from API response: '$latest_version'"
 
-if [[ "$latest_version" == "v3.23.0-fix.17" ]]; then
+if [ "$latest_version" = "v3.23.0-fix.17" ]; then
     echo "✅ TEST 2 PASSED: Extracted cleanly without fallback."
 else
     echo "❌ TEST 2 FAILED"
