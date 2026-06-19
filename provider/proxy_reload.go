@@ -282,9 +282,12 @@ func (r *ProxyReloader) reload() {
 	// sessions. This is intentional — draining proxies keep serving traffic
 	// until the last session finishes.
 
-	// Start added proxies. Each goroutine staggers its own startup by 100ms *
-	// position to avoid a burst of simultaneous connection attempts at the API.
-	// Skip any still draining from a previous removal.
+	// Start added proxies. Each goroutine staggers its own startup using the
+	// same jittered backoffPacer as the initial startup path (main.go), so a
+	// large batch added at once (e.g. hundreds of proxies merged in from a
+	// URL source) ramps up exactly as slowly as it would on a fresh start,
+	// instead of bursting the auth API. Skip any still draining from a
+	// previous removal.
 	for i, settings := range added {
 		if r.isDraining(settings.Address) {
 			fmt.Printf("[proxy] skip add %s: still draining\n", settings.Address)
@@ -308,11 +311,8 @@ func (r *ProxyReloader) reload() {
 			defer connect.UnregisterProxy(stableID)
 			defer proxyCancel()
 
-			initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
-			select {
-			case <-proxyCtx.Done():
+			if !backoffPacer(staggerPos, time.Now(), proxyCtx) {
 				return
-			case <-time.After(initialDelay):
 			}
 			r.spawnProxy(proxyCtx, settingsCopy, false)
 		})
