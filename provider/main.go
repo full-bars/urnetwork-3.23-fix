@@ -2509,38 +2509,24 @@ func proxyRemoveDead(_ docopt.Opts) {
 		return
 	}
 
-	if state.Source != "" {
-		var addrs []string
-		for _, rp := range toRemove {
-			addrs = append(addrs, rp.addr)
-		}
-		if err := removeAddressesFromFile(state.Source, addrs); err != nil {
-			shmLogFatal(62, "could not update proxy file: %v", err)
-		}
-	} else {
-		proxyConfig := readProxyConfig()
-		removeSet := map[string]bool{}
-		for _, rp := range toRemove {
-			removeSet[rp.addr] = true
-		}
-		for proxyAddress := range proxyConfig.Servers {
-			addr, _, _ := parseProxyAddress(proxyAddress)
-			if removeSet[addr] {
-				delete(proxyConfig.Servers, proxyAddress)
+	addrsBySource := map[string][]string{}
+	for _, rp := range toRemove {
+		source := rp.entry.Source
+		if source == "" {
+			// Entries tagged before this feature shipped (or otherwise
+			// untagged) keep today's behavior: route by which workflow is
+			// active, exactly as proxyRemoveDead always did.
+			if state.Source != "" {
+				source = "file"
+			} else {
+				source = "internal"
 			}
 		}
-		writeProxyConfig(proxyConfig)
+		addrsBySource[source] = append(addrsBySource[source], rp.addr)
 	}
 
-	release, err := acquireProxyLock()
-	if err != nil {
-		shmLogFatal(63, "could not acquire proxy lock: %v", err)
-	}
-	defer release()
-
-	reloadPath, _ := proxyReloadPath()
-	if err := writeReloadTrigger(reloadPath); err != nil {
-		shmLogFatal(64, "could not write reload trigger: %v", err)
+	if err := removeDeadProxies(state, addrsBySource); err != nil {
+		shmLogFatal(62, "%v", err)
 	}
 
 	fmt.Printf("Removed %d proxies. Reload triggered.\n", len(toRemove))
