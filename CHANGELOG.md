@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Resilience
+- **Proactive JWT refresh**: JWT tokens now refresh automatically every 7 days (regardless of expiry), ensuring tokens never expire under normal operation. Includes 48-hour expiry fallback as safety net if periodic refresh fails. Startup jitter (0-9 minutes) desynchronizes fleet refresh attempts. Works across all auth modes (`BUILD=jwt`, `BUILD=stable`, `BUILD=nightly`) via JWT-to-JWT renewal. Last refresh timestamp persisted to disk to survive provider restarts.
+
 ### Security
 - **QUIC Memory Exhaustion vulnerability**: Bumped `quic-go` to `v0.59.1` to resolve a vulnerability where an unauthenticated remote attacker could cause excessive memory allocation during the handshake.
 
