@@ -267,3 +267,21 @@ func TestWriteProxyConfig_AutoReloadTrigger(t *testing.T) {
 		t.Fatalf("expected trigger sequence to be 2 after second write, got %d", seq)
 	}
 }
+
+func TestTagProxySourceIfUnset_SetsOnFirstCall(t *testing.T) {
+	s := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	tagProxySourceIfUnset(s, "1.2.3.4:1080", "url")
+	if got := s.Proxies["1.2.3.4:1080"].Source; got != "url" {
+		t.Fatalf("expected source %q, got %q", "url", got)
+	}
+}
+
+func TestTagProxySourceIfUnset_DoesNotOverwriteExisting(t *testing.T) {
+	s := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.2.3.4:1080": {ID: 1, Source: "file"},
+	}}
+	tagProxySourceIfUnset(s, "1.2.3.4:1080", "url")
+	if got := s.Proxies["1.2.3.4:1080"].Source; got != "file" {
+		t.Fatalf("expected source to remain %q, got %q", "file", got)
+	}
+}
