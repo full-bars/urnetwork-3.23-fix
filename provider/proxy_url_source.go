@@ -13,6 +13,12 @@ import (
 // are ignored. Used by both the interactive `proxy remove-dead` command and
 // the automatic scoped cleanup job, so removal logic only lives in one place.
 func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) error {
+	release, err := acquireProxyLock()
+	if err != nil {
+		return fmt.Errorf("could not acquire proxy lock: %w", err)
+	}
+	defer release()
+
 	if fileAddrs := addrsBySource["file"]; len(fileAddrs) > 0 {
 		if state.Source == "" {
 			fmt.Printf("[proxy] warning: %d proxies tagged source=file but no file source is configured; skipping\n", len(fileAddrs))
@@ -49,12 +55,6 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		}
 	}
 
-	release, err := acquireProxyLock()
-	if err != nil {
-		return fmt.Errorf("could not acquire proxy lock: %w", err)
-	}
-	defer release()
-
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		return fmt.Errorf("could not determine reload path: %w", err)
@@ -72,6 +72,26 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 		return
 	}
 
+	// Fetching from the network can be slow; do it before taking the lock so
+	// we don't hold it across HTTP requests. Only the read-modify-write of
+	// proxy_url.json below needs to be serialized against removeDeadProxies.
+	fetched := make([][]string, len(urls))
+	for i, url := range urls {
+		lines, err := fetchProxyURLLines(ctx, url)
+		if err != nil {
+			fmt.Printf("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
+			continue
+		}
+		fetched[i] = lines
+	}
+
+	release, err := acquireProxyLock()
+	if err != nil {
+		fmt.Printf("[proxy][url] warning: could not acquire proxy lock: %v\n", err)
+		return
+	}
+	defer release()
+
 	state, err := readProxyURLState()
 	if err != nil {
 		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
@@ -79,13 +99,11 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 	}
 
 	totalAdded := 0
-	for _, url := range urls {
-		lines, err := fetchProxyURLLines(ctx, url)
-		if err != nil {
-			fmt.Printf("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
+	for i, url := range urls {
+		if fetched[i] == nil {
 			continue
 		}
-		added := mergeProxyURLEntries(state, lines, maxTotal)
+		added := mergeProxyURLEntries(state, fetched[i], maxTotal)
 		totalAdded += added
 		fmt.Printf("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
