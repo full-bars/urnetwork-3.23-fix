@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ProxyURLState is the on-disk record of configured live proxy URL sources
@@ -131,4 +135,50 @@ func parseProxyURLLine(line string) (address, user, password string, ok bool) {
 
 	address, user, password = parseProxyAddress(line)
 	return address, user, password, true
+}
+
+// maxProxyURLFetchBytes caps how much of a proxy list response we read,
+// defending against a misbehaving or malicious endpoint returning an
+// unbounded body.
+const maxProxyURLFetchBytes = 10 * 1024 * 1024 // 10 MiB
+
+// fetchProxyURLLines fetches a proxy list from a URL and splits it into
+// lines. It does not parse the lines — callers parse each line with
+// parseProxyURLLine. Returns an error on network failure, non-200 status, or
+// an empty body; never blocks longer than 30s.
+func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxProxyURLFetchBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("empty response body")
+	}
+
+	lines := strings.Split(string(b), "\n")
+	// Filter out empty lines
+	var result []string
+	for _, line := range lines {
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	return result, nil
 }
