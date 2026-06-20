@@ -74,6 +74,33 @@ func resolveReportURL(envFallback string) string {
 	return envFallback
 }
 
+// alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
+// watcher's equivalent of reportURLOverridePath: a file an operator can
+// write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
+// the provider.
+func alertWebhookOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "alert_webhook"), nil
+}
+
+// resolveAlertWebhook mirrors resolveReportURL: the override file takes
+// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup)
+// when present and non-blank.
+func resolveAlertWebhook(envFallback string) string {
+	path, err := alertWebhookOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return envFallback
+}
+
 // runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
 // system metrics to the fleet hub. The target is re-resolved every tick via
 // resolveReportURL, so writing ~/.urnetwork/report_url (or emptying it) turns

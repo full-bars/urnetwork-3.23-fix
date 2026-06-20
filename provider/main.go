@@ -792,7 +792,7 @@ func auth(opts docopt.Opts) {
 // for the whole window. "Clear" requires two consecutive healthy polls to avoid
 // premature all-clears during brief lulls mid-outage. A 5-minute per-event
 // cooldown prevents webhook spam if the backend flickers at a boundary.
-func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
+func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 	const pollInterval = 30 * time.Second
 	const cooldown = 5 * time.Minute
 	const clearConfirm = 2
@@ -803,6 +803,7 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 	clearCount := 0
 	var lastStartFire, lastClearFire time.Time
 
+	webhookURL := resolveAlertWebhook(envWebhookURL)
 	if webhookURL != "" {
 		fmt.Printf("[outage] watcher active node=%s webhook=configured\n", nodeName)
 	} else {
@@ -817,6 +818,18 @@ func runOutageWatcher(ctx context.Context, nodeName, webhookURL string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+
+		// Re-resolve every tick so writing ~/.urnetwork/alert_webhook can
+		// turn outage alerting on, off, or repoint it without a restart —
+		// same reasoning as the hub report URL in bandwidth_reporter.go.
+		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
+			webhookURL = resolved
+			if webhookURL != "" {
+				fmt.Printf("[outage] webhook updated node=%s webhook=configured\n", nodeName)
+			} else {
+				fmt.Printf("[outage] webhook disabled node=%s\n", nodeName)
+			}
 		}
 
 		if connect.IsBackendDegraded() {
