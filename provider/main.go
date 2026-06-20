@@ -1452,7 +1452,19 @@ func provide(opts docopt.Opts) {
 			// until the next hourly pulse.
 			// "Jwt does not exist" is a configuration issue, not a network/token
 			// error — it retries indefinitely until the user runs 'urnetwork auth'.
-			const maxAuthFailures = 10
+			//
+			// A proxy that has never once succeeded gets a much shorter leash
+			// than one with a proven track record: on a free list that's mostly
+			// open-port-but-broken entries, ten retries against something that's
+			// never worked even once is ten auth-rate-limiter slots spent
+			// re-confirming what's already very likely true, instead of being
+			// spent discovering whether a fresh, untried candidate works.
+			const provenMaxAuthFailures = 10
+			const unprovenMaxAuthFailures = 3
+			maxAuthFailures := provenMaxAuthFailures
+			if proxySettings != nil && !globalProvenProxies.HasSucceeded(proxySettings.Address) {
+				maxAuthFailures = unprovenMaxAuthFailures
+			}
 			authFailures := 0
 			for {
 				var err error
@@ -1468,11 +1480,27 @@ func provide(opts docopt.Opts) {
 					// throttle every other proxy's auth rate for no reason.
 					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
 				} else {
-					if waitErr := globalAuthRateLimiter.Wait(proxyCtx); waitErr != nil {
+					// Weight this wait by the proxy's lifetime failure count
+					// (persists across the 15-minute URL-source requeue, unlike
+					// the local authFailures counter) so a chronically dead
+					// address doesn't keep re-entering the lottery at full
+					// "untried" priority every time it comes back.
+					admitFailureCount := authFailures
+					if proxySettings != nil {
+						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Address)
+					}
+					if waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount); waitErr != nil {
 						return "", connect.Id{}, waitErr
 					}
 					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
-					globalAuthRateLimiter.ReportResult(err)
+					if proxySettings != nil {
+						if err == nil {
+							globalProvenProxies.MarkSucceeded(proxySettings.Address)
+						}
+						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
+					} else {
+						globalAuthRateLimiter.ReportResult(err)
+					}
 					if err == nil {
 						return byClientJwt, clientId, nil
 					}
@@ -1495,6 +1523,9 @@ func provide(opts docopt.Opts) {
 				}
 
 				authFailures++
+				if proxySettings != nil {
+					globalProxyFailureHistory.RecordFailure(proxySettings.Address)
+				}
 				if authFailures >= maxAuthFailures {
 					// Classify the root cause so operators get an actionable message
 					// rather than a generic "JWT may be expired" that is wrong for

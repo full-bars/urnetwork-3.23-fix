@@ -27,11 +27,12 @@ import (
 type authRateLimiter struct {
 	limiter *rate.Limiter
 
-	mu             sync.Mutex
-	min            rate.Limit
-	max            rate.Limit
-	successStreak  int
-	lastAdjustedAt time.Time
+	mu                     sync.Mutex
+	min                    rate.Limit
+	max                    rate.Limit
+	successStreak          int
+	unprovenOverloadStreak int
+	lastAdjustedAt         time.Time
 }
 
 const (
@@ -46,6 +47,18 @@ const (
 	// adjustments, so a burst of 429s already in flight before a cut takes
 	// effect doesn't keep cutting the rate further on every one of them.
 	authRateAdjustCooldown = 2 * time.Second
+	// authUnprovenOverloadThreshold is how many consecutive overload-looking
+	// errors through never-proven proxies — with no success of any kind
+	// landing in between — are required before treating them as a real
+	// signal about the API rather than noise from individually broken
+	// proxies. One bad proxy in a list of hundreds shouldn't cut the rate;
+	// dozens of unrelated proxies all failing back-to-back with nothing
+	// succeeding is what an actual outage looks like, even before any of
+	// them has individually proven itself. This is what keeps a mass
+	// timeout-based outage at cold start from being entirely invisible to
+	// the limiter just because no proxy has had the chance to prove itself
+	// yet.
+	authUnprovenOverloadThreshold = 8
 )
 
 // globalAuthRateLimiter is shared by every proxy goroutine in the process —
@@ -74,23 +87,99 @@ func (a *authRateLimiter) ReportResult(err error) {
 		a.recordSuccessAndMaybeIncrease()
 		return
 	}
-	if isRateLimitedError(err) || isOverloadError(err) {
-		// Both an explicit 429 and a timeout/connection failure mean the API
-		// is struggling under the current load — back off either way. Other
-		// errors (e.g. a bad JWT) say nothing about request rate, so leave
-		// the limiter where it is rather than treating them as progress.
-		a.decrease()
+	if isRateLimitedError(err) {
+		a.decrease("429 received")
+		return
+	}
+	if isOverloadError(err) {
+		// A timeout/connection failure means the API is struggling under
+		// the current load just as much as an explicit 429 — back off
+		// either way. Other errors (e.g. a bad JWT) say nothing about
+		// request rate, so leave the limiter where it is rather than
+		// treating them as progress.
+		a.decrease("timeout/connection error")
 	}
 }
 
-func (a *authRateLimiter) decrease() {
+// ReportResultForProxy is like ReportResult, but for a result that came
+// through a specific proxy hop. A bare timeout/connection error through a
+// proxy that has never once succeeded is just as likely to be that proxy's
+// own broken SOCKS5 service — undetectable by the TCP-only reachability
+// probe in proxy_probe.go, which only confirms the port accepts a
+// connection — as it is real API backpressure. A single such error is
+// treated as no signal at all (same as the reachability-probe bypass)
+// instead of cutting the rate, so a list full of "port open, proxy broken"
+// entries can't throttle every other proxy the way a list full of dead
+// ports used to.
+//
+// But a long unbroken run of them (authUnprovenOverloadThreshold, with no
+// success of any kind landing in between) IS treated as real signal — a
+// mass outage doesn't wait for proxies to individually prove themselves
+// first, and without this, a timeout-based outage hitting entirely
+// never-proven proxies (the common case right at cold start or just after a
+// big batch of new proxies is added) would otherwise be completely invisible
+// to the limiter.
+//
+// An explicit 429 is unambiguous regardless of the proxy's track record —
+// the API said so itself — so it always counts immediately.
+func (a *authRateLimiter) ReportResultForProxy(err error, proxyHasSucceeded bool) {
+	if err == nil {
+		a.clearUnprovenOverloadStreak()
+		a.recordSuccessAndMaybeIncrease()
+		return
+	}
+	if isRateLimitedError(err) {
+		a.clearUnprovenOverloadStreak()
+		a.decrease("429 received")
+		return
+	}
+	if !isOverloadError(err) {
+		return
+	}
+	if proxyHasSucceeded {
+		a.clearUnprovenOverloadStreak()
+		a.decrease("timeout/connection error via a proven proxy")
+		return
+	}
+	if a.bumpUnprovenOverloadStreak() {
+		a.decrease(fmt.Sprintf("%d unproven timeouts in a row with no success in between", authUnprovenOverloadThreshold))
+	}
+}
+
+func (a *authRateLimiter) clearUnprovenOverloadStreak() {
+	a.mu.Lock()
+	a.unprovenOverloadStreak = 0
+	a.mu.Unlock()
+}
+
+// bumpUnprovenOverloadStreak increments the streak of overload-looking
+// errors from never-proven proxies, uninterrupted by any success or any
+// proven-proxy failure, and reports whether it just crossed
+// authUnprovenOverloadThreshold — the point where it stops looking like
+// scattered broken-proxy noise and starts looking like a real outage.
+func (a *authRateLimiter) bumpUnprovenOverloadStreak() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.unprovenOverloadStreak++
+	if a.unprovenOverloadStreak < authUnprovenOverloadThreshold {
+		return false
+	}
+	a.unprovenOverloadStreak = 0
+	return true
+}
+
+// decrease cuts the rate. reason is purely for the log line, so operators
+// can tell a genuine 429 apart from a proven-proxy timeout or a mass
+// unproven-timeout trip instead of every cut being misreported as "429
+// received" regardless of what actually triggered it.
+func (a *authRateLimiter) decrease(reason string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.successStreak = 0
 	if !a.lastAdjustedAt.IsZero() && time.Since(a.lastAdjustedAt) < authRateAdjustCooldown {
-		// Already cut very recently — this 429 was likely in flight before
-		// that cut took effect. Let it land before cutting again.
+		// Already cut very recently — this result was likely in flight
+		// before that cut took effect. Let it land before cutting again.
 		return
 	}
 
@@ -104,7 +193,7 @@ func (a *authRateLimiter) decrease() {
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
-	fmt.Printf("[proxy][authrate] 429 received — cutting auth rate %.2f -> %.2f req/s\n", float64(oldRate), float64(newRate))
+	fmt.Printf("[proxy][authrate] %s — cutting auth rate %.2f -> %.2f req/s\n", reason, float64(oldRate), float64(newRate))
 }
 
 func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
