@@ -1380,7 +1380,11 @@ func provide(opts docopt.Opts) {
 			const maxAuthFailures = 10
 			authFailures := 0
 			for {
+				if err := globalAuthRateLimiter.Wait(proxyCtx); err != nil {
+					return "", connect.Id{}, err
+				}
 				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+				globalAuthRateLimiter.ReportResult(err)
 				if err == nil {
 					return byClientJwt, clientId, nil
 				}
@@ -1834,7 +1838,7 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 // instead of using the same flat jitter as every other error — otherwise a
 // batch of proxies that all hit 429s keeps hammering the API at the same rate.
 func proxyAuthRetryDelay(err error, attempt int) time.Duration {
-	if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "Too Many Requests") {
+	if isRateLimitedError(err) {
 		delay := time.Duration(attempt)*5*time.Second + time.Duration(mathrand.Intn(5000))*time.Millisecond
 		if delay > 60*time.Second {
 			delay = 60 * time.Second
