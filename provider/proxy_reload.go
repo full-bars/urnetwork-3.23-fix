@@ -328,6 +328,9 @@ func (r *ProxyReloader) reload() {
 	// URL source) ramps up exactly as slowly as it would on a fresh start,
 	// instead of bursting the auth API. Skip any still draining from a
 	// previous removal.
+	if len(added) > 0 {
+		fmt.Printf("[proxy] reload: adding %d proxies:\n", len(added))
+	}
 	for i, settings := range added {
 		if r.isDraining(settings.Address) {
 			fmt.Printf("[proxy] skip add %s: still draining\n", settings.Address)
@@ -337,6 +340,13 @@ func (r *ProxyReloader) reload() {
 		settings.Index = stableID
 		tagProxySourceIfUnset(r.state, settings.Address, sourceOf[settings.Address])
 		connect.RegisterProxy(stableID, settings.Address)
+
+		var user, password string
+		if settings.Auth != nil {
+			user = settings.Auth.User
+			password = settings.Auth.Password
+		}
+		fmt.Printf("  proxy[%d] %s (%s/%s)\n", stableID, settings.Address, obfuscateUser(user), obfuscatePassword(password))
 
 		proxyCtx, proxyCancel := context.WithCancel(r.parentCtx)
 		r.cancelMapMu.Lock()
