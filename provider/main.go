@@ -1423,7 +1423,7 @@ func provide(opts docopt.Opts) {
 					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 				}
 
-				retryDelay := time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
+				retryDelay := proxyAuthRetryDelay(err, authFailures)
 				if proxySettings != nil {
 					fmt.Printf("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
 						proxySettings.Index, proxySettings.Address, authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
@@ -1826,6 +1826,22 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 	out = append(out, certPem...)
 	out = append(out, keyPem...)
 	return os.WriteFile(p, out, 0600)
+}
+
+// proxyAuthRetryDelay picks the wait before the next auth retry. A 429 means
+// the API is explicitly asking us to slow down, unlike a timeout (which is
+// just as likely transient on our end), so it scales with the attempt count
+// instead of using the same flat jitter as every other error — otherwise a
+// batch of proxies that all hit 429s keeps hammering the API at the same rate.
+func proxyAuthRetryDelay(err error, attempt int) time.Duration {
+	if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "Too Many Requests") {
+		delay := time.Duration(attempt)*5*time.Second + time.Duration(mathrand.Intn(5000))*time.Millisecond
+		if delay > 60*time.Second {
+			delay = 60 * time.Second
+		}
+		return delay
+	}
+	return time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
 }
 
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
@@ -2783,6 +2799,9 @@ func confirm(prompt string) bool {
 func formatDuration(d time.Duration) string {
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
+	if h == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
 	return fmt.Sprintf("%dh %dm", h, m)
 }
 

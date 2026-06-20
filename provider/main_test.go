@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -265,6 +266,45 @@ func TestWriteProxyConfig_AutoReloadTrigger(t *testing.T) {
 	}
 	if seq != 2 {
 		t.Fatalf("expected trigger sequence to be 2 after second write, got %d", seq)
+	}
+}
+
+// TestProxyAuthRetryDelay_429ScalesWithAttempt is a regression test for a
+// live deployment observation: 429 (rate-limited) auth failures were using
+// the same flat 0.5-10.5s jitter as ordinary timeouts, so a batch of proxies
+// hitting 429s together kept retrying at the same rate that triggered the
+// 429s in the first place. 429 delays must grow with the attempt count
+// instead.
+func TestProxyAuthRetryDelay_429ScalesWithAttempt(t *testing.T) {
+	err := errors.New("429 Too Many Requests: <html error page, 162 bytes>")
+
+	d1 := proxyAuthRetryDelay(err, 1)
+	if d1 < 5*time.Second || d1 > 10*time.Second {
+		t.Fatalf("attempt 1: expected delay in [5s,10s], got %v", d1)
+	}
+
+	d3 := proxyAuthRetryDelay(err, 3)
+	if d3 < 15*time.Second || d3 > 20*time.Second {
+		t.Fatalf("attempt 3: expected delay in [15s,20s], got %v", d3)
+	}
+
+	dCap := proxyAuthRetryDelay(err, 100)
+	if dCap != 60*time.Second {
+		t.Fatalf("expected delay to cap at 60s for a high attempt count, got %v", dCap)
+	}
+}
+
+// TestProxyAuthRetryDelay_NonRateLimitUsesFlatJitter ensures ordinary errors
+// (timeouts, connection refused, etc.) keep the existing flat jitter and are
+// not penalized with the 429 backoff schedule.
+func TestProxyAuthRetryDelay_NonRateLimitUsesFlatJitter(t *testing.T) {
+	err := errors.New("Timeout.")
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		d := proxyAuthRetryDelay(err, attempt)
+		if d < 500*time.Millisecond || d > 10500*time.Millisecond {
+			t.Fatalf("attempt %d: expected delay in [0.5s,10.5s], got %v", attempt, d)
+		}
 	}
 }
 
