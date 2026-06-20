@@ -1455,13 +1455,27 @@ func provide(opts docopt.Opts) {
 			const maxAuthFailures = 10
 			authFailures := 0
 			for {
-				if err := globalAuthRateLimiter.Wait(proxyCtx); err != nil {
-					return "", connect.Id{}, err
-				}
-				byClientJwt, clientId, err := provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
-				globalAuthRateLimiter.ReportResult(err)
-				if err == nil {
-					return byClientJwt, clientId, nil
+				var err error
+				var byClientJwt string
+				var clientId connect.Id
+
+				if proxySettings != nil && !probeProxyReachable(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
+					// The proxy itself isn't even accepting a TCP connection right
+					// now — that's a dead local hop, not a signal about the API's
+					// health. Skip the auth attempt (and the shared rate limiter)
+					// entirely rather than spending a slot and reporting a timeout
+					// that would falsely look like the API is overloaded and
+					// throttle every other proxy's auth rate for no reason.
+					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
+				} else {
+					if waitErr := globalAuthRateLimiter.Wait(proxyCtx); waitErr != nil {
+						return "", connect.Id{}, waitErr
+					}
+					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+					globalAuthRateLimiter.ReportResult(err)
+					if err == nil {
+						return byClientJwt, clientId, nil
+					}
 				}
 
 				if errors.Is(err, ErrTokenInvalid) {
@@ -1494,7 +1508,8 @@ func provide(opts docopt.Opts) {
 						strings.Contains(errMsg, "timeout"),
 						strings.Contains(errMsg, "deadline exceeded"),
 						strings.Contains(errMsg, "connection refused"),
-						strings.Contains(errMsg, "no such host"):
+						strings.Contains(errMsg, "no such host"),
+						strings.Contains(errMsg, "proxy unreachable"):
 						cause = "network error reaching API (check connectivity to api.bringyour.com)"
 					default:
 						cause = "API rejected token (check JWT validity)"
