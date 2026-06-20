@@ -195,3 +195,116 @@ func TestIsRateLimitedError(t *testing.T) {
 }
 
 var _ = rate.Limit(0) // keep golang.org/x/time/rate import path explicit for reviewers
+
+// TestAuthRateLimiter_ReportResultForProxy_UnprovenTimeoutIsNoSignal is a
+// regression test for the second-order version of the original misclassified-
+// timeout problem: a free proxy list often has entries with an open port
+// (passes the TCP-only reachability probe) but a non-functional SOCKS5
+// service behind it. Without a proven-success history, that proxy's auth
+// timeout looks identical to genuine API overload and would otherwise cut
+// the shared rate for every other proxy too. An unproven proxy's timeout
+// must be treated as no signal at all.
+func TestAuthRateLimiter_ReportResultForProxy_UnprovenTimeoutIsNoSignal(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	l.ReportResultForProxy(errors.New("Timeout."), false)
+
+	if got := l.CurrentRate(); got != 10 {
+		t.Fatalf("expected rate to stay at ceiling 10, got %v", got)
+	}
+}
+
+// TestAuthRateLimiter_ReportResultForProxy_ProvenTimeoutCutsRate confirms a
+// timeout through a proxy with a track record of at least one prior success
+// still counts as real signal about the API, since that proxy's own hop is
+// already known to work.
+func TestAuthRateLimiter_ReportResultForProxy_ProvenTimeoutCutsRate(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	l.ReportResultForProxy(errors.New("Timeout."), true)
+
+	if got := l.CurrentRate(); got != 5 {
+		t.Fatalf("expected rate to halve from 10 to 5, got %v", got)
+	}
+}
+
+// TestAuthRateLimiter_ReportResultForProxy_Explicit429AlwaysCounts confirms
+// an explicit 429 cuts the rate regardless of the proxy's track record — the
+// API said so itself, which is unambiguous no matter which hop it came
+// through.
+func TestAuthRateLimiter_ReportResultForProxy_Explicit429AlwaysCounts(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	l.ReportResultForProxy(errors.New("429 Too Many Requests"), false)
+
+	if got := l.CurrentRate(); got != 5 {
+		t.Fatalf("expected rate to halve from 10 to 5, got %v", got)
+	}
+}
+
+// TestAuthRateLimiter_ReportResultForProxy_UnprovenSuccessStillCounts
+// confirms a first-ever success still drives the recovery streak — only
+// failures need the proven-history gate, since a success is always good
+// evidence the API (and that hop) are healthy right now.
+func TestAuthRateLimiter_ReportResultForProxy_UnprovenSuccessStillCounts(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+	l.ReportResultForProxy(errors.New("429 Too Many Requests"), false)
+	if got := l.CurrentRate(); got != 5 {
+		t.Fatalf("expected rate to halve to 5, got %v", got)
+	}
+
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+	for i := 0; i < authRateIncreaseThreshold; i++ {
+		l.ReportResultForProxy(nil, false)
+	}
+
+	if got := l.CurrentRate(); got != 6 {
+		t.Fatalf("expected rate to rise from 5 to 6 after %d clean results, got %v", authRateIncreaseThreshold, got)
+	}
+}
+
+// TestAuthRateLimiter_ReportResultForProxy_MassUnprovenTimeoutsTripCut is a
+// regression test for the cold-start blind spot: if every proxy is
+// unproven (the common case right at startup or just after a big batch is
+// added) and the API genuinely goes down via timeouts rather than explicit
+// 429s, a long unbroken run of unproven timeouts must still cut the rate —
+// an outage doesn't wait for any proxy to individually prove itself first.
+func TestAuthRateLimiter_ReportResultForProxy_MassUnprovenTimeoutsTripCut(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	for i := 0; i < authUnprovenOverloadThreshold-1; i++ {
+		l.ReportResultForProxy(errors.New("Timeout."), false)
+	}
+	if got := l.CurrentRate(); got != 10 {
+		t.Fatalf("expected rate to stay at ceiling 10 before crossing the threshold, got %v", got)
+	}
+
+	l.ReportResultForProxy(errors.New("Timeout."), false)
+	if got := l.CurrentRate(); got != 5 {
+		t.Fatalf("expected rate to halve to 5 once %d unproven timeouts landed with no success in between, got %v", authUnprovenOverloadThreshold, got)
+	}
+}
+
+// TestAuthRateLimiter_ReportResultForProxy_ScatteredUnprovenTimeoutsDoNotTrip
+// confirms the threshold isn't tripped by ordinary noise: a list with a
+// handful of individually broken proxies scattered among many good ones
+// (success in between each timeout) must never accumulate toward the
+// mass-outage threshold, since each success resets the streak.
+func TestAuthRateLimiter_ReportResultForProxy_ScatteredUnprovenTimeoutsDoNotTrip(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	for i := 0; i < authUnprovenOverloadThreshold*3; i++ {
+		l.ReportResultForProxy(errors.New("Timeout."), false)
+		l.ReportResultForProxy(nil, false)
+	}
+
+	if got := l.CurrentRate(); got != 10 {
+		t.Fatalf("expected rate to stay at ceiling 10 when timeouts never run uninterrupted, got %v", got)
+	}
+}
