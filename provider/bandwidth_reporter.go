@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime/metrics"
+	"strings"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -44,32 +46,78 @@ type systemMetrics struct {
 	Connections int64  `json:"conns"`
 }
 
-// runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
-// system metrics to the fleet hub at reportURL (+"/api/report"). It is a
-// best-effort telemetry loop: failures are logged but never retried beyond the
-// next tick, and a missing reportURL disables it entirely. The cadence defaults
-// to 60s and is overridable via URNETWORK_REPORT_INTERVAL (min 10s). The
-// bandwidthReport / proxyReport JSON shape mirrors what the hub decodes, so keep
-// the json tags here in sync with hub/main.go.
-func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, startTime time.Time) {
-	if reportURL == "" {
-		return
+// reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
+// can write at any time to set or change the hub target without restarting
+// the provider. It takes precedence over URNETWORK_REPORT_URL, which is read
+// once at process start and otherwise can't be changed without a restart.
+func reportURLOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(home, ".urnetwork", "report_url"), nil
+}
 
+// resolveReportURL re-reads the override file on every call so a change
+// takes effect on the reporter's next tick. envFallback is the value
+// captured from URNETWORK_REPORT_URL at startup, used when no override file
+// exists or it's empty.
+func resolveReportURL(envFallback string) string {
+	path, err := reportURLOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return envFallback
+}
+
+// alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
+// watcher's equivalent of reportURLOverridePath: a file an operator can
+// write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
+// the provider.
+func alertWebhookOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "alert_webhook"), nil
+}
+
+// resolveAlertWebhook mirrors resolveReportURL: the override file takes
+// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup)
+// when present and non-blank.
+func resolveAlertWebhook(envFallback string) string {
+	path, err := alertWebhookOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return envFallback
+}
+
+// runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
+// system metrics to the fleet hub. The target is re-resolved every tick via
+// resolveReportURL, so writing ~/.urnetwork/report_url (or emptying it) turns
+// reporting on, off, or repoints it at a different hub without a restart;
+// envReportURL is only the startup-time fallback used when that file doesn't
+// exist. It is a best-effort telemetry loop: failures are logged but never
+// retried beyond the next tick. The cadence defaults to 60s and is
+// overridable via URNETWORK_REPORT_INTERVAL (min 10s). The bandwidthReport /
+// proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
+// here in sync with hub/main.go.
+func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
 	interval := 60 * time.Second
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 10*time.Second {
 			interval = d
 		}
 	}
-
-	apiURL, err := url.JoinPath(reportURL, "/api/report")
-	if err != nil {
-		fmt.Printf("[report] invalid report URL %s: %v\n", reportURL, err)
-		return
-	}
-
-	fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -85,11 +133,31 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, reportURL string, s
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	activeReportURL := ""
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+
+		reportURL := resolveReportURL(envReportURL)
+		if reportURL != activeReportURL {
+			if reportURL == "" {
+				fmt.Printf("[report] hub reporting disabled (node=%s)\n", nodeID)
+			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
+				fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
+			}
+			activeReportURL = reportURL
+		}
+		if reportURL == "" {
+			continue
+		}
+
+		apiURL, err := url.JoinPath(reportURL, "/api/report")
+		if err != nil {
+			fmt.Printf("[report] invalid report URL %s: %v\n", reportURL, err)
+			continue
 		}
 
 		report := buildReport(nodeID, host, startTime)
