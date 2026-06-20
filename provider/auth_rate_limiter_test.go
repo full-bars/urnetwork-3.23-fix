@@ -100,18 +100,53 @@ func TestAuthRateLimiter_IncreaseNeverExceedsMax(t *testing.T) {
 	}
 }
 
-// TestAuthRateLimiter_NonRateLimitErrorDoesNotCount ensures an ordinary
-// failure (timeout, etc.) counts toward the success streak the same as an
-// actual success — only 429s are the congestion signal this limiter reacts
-// to, not auth/network failures unrelated to request volume.
-func TestAuthRateLimiter_NonRateLimitErrorDoesNotTriggerDecrease(t *testing.T) {
+// TestAuthRateLimiter_TimeoutTriggersDecrease is a regression test for the
+// live deployment problem found 2026-06-20: under real load the API doesn't
+// always answer with an explicit 429, it can just stop responding in time.
+// That has to drive the same backoff as a 429, or the limiter sits at the
+// ceiling hammering an already-overloaded API indefinitely.
+func TestAuthRateLimiter_TimeoutTriggersDecrease(t *testing.T) {
 	l := newAuthRateLimiter(1, 10, 15)
-	before := l.CurrentRate()
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
 
 	l.ReportResult(errors.New("Timeout."))
 
+	if got := l.CurrentRate(); got != 5 {
+		t.Fatalf("expected timeout to halve the rate from 10 to 5, got %v", got)
+	}
+}
+
+// TestAuthRateLimiter_UnrelatedAuthErrorDoesNotChangeRate ensures an error
+// that says nothing about request volume (e.g. a rejected/invalid token)
+// neither counts as a clean success nor triggers backoff.
+func TestAuthRateLimiter_UnrelatedAuthErrorDoesNotChangeRate(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	before := l.CurrentRate()
+
+	l.ReportResult(errors.New("Jwt does not exist"))
+
 	if got := l.CurrentRate(); got != before {
-		t.Fatalf("expected non-429 error not to change the rate, got %v want %v", got, before)
+		t.Fatalf("expected unrelated auth error not to change the rate, got %v want %v", got, before)
+	}
+}
+
+func TestIsOverloadError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{errors.New("Timeout."), true},
+		{errors.New("context deadline exceeded"), true},
+		{context.DeadlineExceeded, true},
+		{errors.New("connection refused"), true},
+		{errors.New("no such host"), true},
+		{errors.New("Jwt does not exist"), false},
+		{errors.New("API rejected token"), false},
+	}
+	for _, c := range cases {
+		if got := isOverloadError(c.err); got != c.want {
+			t.Errorf("isOverloadError(%q) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -69,11 +70,17 @@ func (a *authRateLimiter) Wait(ctx context.Context) error {
 // ReportResult feeds the outcome of an auth attempt back into the limiter so
 // it can adapt. Call this after every attempt, success or failure.
 func (a *authRateLimiter) ReportResult(err error) {
-	if err != nil && isRateLimitedError(err) {
-		a.decrease()
+	if err == nil {
+		a.recordSuccessAndMaybeIncrease()
 		return
 	}
-	a.recordSuccessAndMaybeIncrease()
+	if isRateLimitedError(err) || isOverloadError(err) {
+		// Both an explicit 429 and a timeout/connection failure mean the API
+		// is struggling under the current load — back off either way. Other
+		// errors (e.g. a bad JWT) say nothing about request rate, so leave
+		// the limiter where it is rather than treating them as progress.
+		a.decrease()
+	}
 }
 
 func (a *authRateLimiter) decrease() {
@@ -134,4 +141,22 @@ func (a *authRateLimiter) CurrentRate() float64 {
 
 func isRateLimitedError(err error) bool {
 	return strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "Too Many Requests")
+}
+
+// isOverloadError reports whether err looks like a network/timeout failure
+// rather than a rejected token. The API doesn't always answer with an
+// explicit 429 under load — it can just stop responding in time — and that
+// looks identical to a rate-limit problem from the caller's perspective, so
+// it should drive the same backoff. Mirrors the cause classification in the
+// auth retry loop in main.go.
+func isOverloadError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "Timeout") ||
+		strings.Contains(errMsg, "timeout") ||
+		strings.Contains(errMsg, "deadline exceeded") ||
+		strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "no such host")
 }
