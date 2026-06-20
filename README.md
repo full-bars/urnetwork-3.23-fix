@@ -97,6 +97,7 @@ docker run -d \
   -e URNETWORK_RAMLOGS=1 \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
+  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urnetwork_config:/root/.urnetwork \
   -v urnetwork_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -109,6 +110,7 @@ docker run -d \
 - `URNETWORK_PROFILE=auto` — Auto-tunes based on available RAM (balanced, lowmem, etc.)
 - `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
 - `URNETWORK_AUTH_CODE` — Your JWT token (single-use on first run; saved to volume)
+- `PROXY_URL` — Optional live proxy list URL (comma-separated for multiple), additive with the mounted `proxy.txt`. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
