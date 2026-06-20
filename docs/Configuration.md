@@ -20,6 +20,11 @@
 | `URNETWORK_PROXY_BENCHMARK` | - | Set to `true` to enable per-proxy latency monitoring. Off by default. Probes: TCP connect every 5 min (raw RTT to proxy port), SOCKS5 CONNECT every 15 min (end-to-end through proxy). Staggered startup jitter prevents thundering herd. ~104 GB/month at 10k proxies. |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
 | `URNETWORK_REPORT_URL` | - | HTTP URL of a bandwidth hub server. When set, the provider POSTs a JSON report every 60s with per-proxy metrics (Clients, TotalRx/Tx, BillableRx/Tx). See `hub/main.go` for the server. |
+| `PROXY_URL` | - | Live proxy list URL, fetched and merged on an interval. Comma-separate for multiple sources. See [Proxy URL Sources](Proxy-URL-Sources.md). |
+| `PROXY_URL_REFRESH` | `15m` | How often `PROXY_URL` is re-fetched to add new entries. |
+| `PROXY_URL_MAX` | unlimited | Caps total proxies sourced from `PROXY_URL`. |
+| `PROXY_DEAD_CLEANUP_SCOPE` | `none` | `none`, `url`, or `all` — which sources the automatic daily dead-proxy cleanup may touch. |
+| `PROXY_DEAD_CLEANUP_INTERVAL` | `24h` | Cadence of the automatic cleanup job, when scope isn't `none`. |
 
 ## 🎛️ Profile Selection
 

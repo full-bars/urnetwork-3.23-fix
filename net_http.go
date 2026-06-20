@@ -1237,6 +1237,19 @@ func NewBlockingApiCallback[R any](ctx context.Context) (ApiCallback[R], chan Ap
 	return apiCallback, c
 }
 
+// httpErrorFromResponse builds an error from a non-200 response. Some
+// front-end proxies (nginx, Cloudflare) return an HTML error page as the
+// body instead of plain text or JSON; embedding that verbatim produces
+// multi-line, unreadable log spam at every call site that prints the error.
+// Collapse an HTML body down to a short descriptor instead.
+func httpErrorFromResponse(status string, bodyBytes []byte) error {
+	body := strings.TrimSpace(string(bodyBytes))
+	if strings.HasPrefix(body, "<") {
+		return fmt.Errorf("%s: <html error page, %d bytes>", status, len(bodyBytes))
+	}
+	return fmt.Errorf("%s: %s", status, body)
+}
+
 func HttpPostWithStrategyRaw(
 	ctx context.Context,
 	clientStrategy *ClientStrategy,
@@ -1273,7 +1286,7 @@ func HttpPostWithStrategyRaw(
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
+		err = httpErrorFromResponse(r.response.Status, r.bodyBytes)
 		return nil, err
 	}
 
@@ -1389,7 +1402,7 @@ func HttpGetWithStrategyRaw(
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
+		err = httpErrorFromResponse(r.response.Status, r.bodyBytes)
 		return nil, err
 	}
 
