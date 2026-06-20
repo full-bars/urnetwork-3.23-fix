@@ -152,6 +152,42 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 // exhausted its auth attempts is automatically reconsidered for restart.
 const proxyURLGiveUpRetryAfter = 15 * time.Minute
 
+// proxyGiveUpCooldown tracks, per url-sourced address, the time before which
+// reload() must not relaunch it. The address is removed from cancelMap
+// immediately on give-up (see requeueURLProxyAfterGiveUp) so reload() can
+// eventually re-add it — but "eventually" used to mean "as soon as anything
+// else triggers a reload," since reload()'s added/removed diff only looks at
+// cancelMap, not at how long ago this specific address gave up. With
+// hundreds of proxies independently giving up and the periodic URL refresh
+// triggering reloads on its own schedule, some other trigger almost always
+// fires well before this address's own 15-minute wait elapses, resurrecting
+// it immediately and making the "retry in 15m" log message cosmetic. This
+// map is the actual enforcement: reload() skips any address still inside its
+// cooldown window regardless of what woke it up.
+var (
+	proxyGiveUpCooldownMu sync.Mutex
+	proxyGiveUpCooldown   = map[string]time.Time{}
+)
+
+func setGiveUpCooldown(addr string, until time.Time) {
+	proxyGiveUpCooldownMu.Lock()
+	proxyGiveUpCooldown[addr] = until
+	proxyGiveUpCooldownMu.Unlock()
+}
+
+func clearGiveUpCooldown(addr string) {
+	proxyGiveUpCooldownMu.Lock()
+	delete(proxyGiveUpCooldown, addr)
+	proxyGiveUpCooldownMu.Unlock()
+}
+
+func isInGiveUpCooldown(addr string) bool {
+	proxyGiveUpCooldownMu.Lock()
+	until, ok := proxyGiveUpCooldown[addr]
+	proxyGiveUpCooldownMu.Unlock()
+	return ok && time.Now().Before(until)
+}
+
 // requeueURLProxyAfterGiveUp is called when a proxy goroutine has permanently
 // given up (exhausted maxAuthFailures) and is about to return for good. By
 // default this is terminal: the address stays in cancelMap, so reload() will
@@ -162,9 +198,10 @@ const proxyURLGiveUpRetryAfter = 15 * time.Minute
 // contains many flaky or dead entries, and requiring manual intervention for
 // each one defeats the purpose of pulling from a URL in the first place. For
 // those, remove the address from cancelMap now (so reload() will treat it as
-// "added" again) and schedule a delayed reload trigger after a cooldown —
-// staggered restart through the normal jittered backoffPacer path, not a
-// thundering herd. Returns true if the proxy was queued for automatic retry.
+// "added" again once its cooldown expires) and schedule a delayed reload
+// trigger — staggered restart through the normal jittered backoffPacer path,
+// not a thundering herd. Returns true if the proxy was queued for automatic
+// retry.
 func requeueURLProxyAfterGiveUp(ctx context.Context, addr string, cancelMapMu *sync.Mutex, cancelMap map[string]context.CancelFunc) bool {
 	state, err := readProxyState()
 	if err != nil || state.Proxies[addr].Source != "url" {
@@ -175,12 +212,15 @@ func requeueURLProxyAfterGiveUp(ctx context.Context, addr string, cancelMapMu *s
 	delete(cancelMap, addr)
 	cancelMapMu.Unlock()
 
+	setGiveUpCooldown(addr, time.Now().Add(proxyURLGiveUpRetryAfter))
+
 	go func() {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(proxyURLGiveUpRetryAfter):
 		}
+		clearGiveUpCooldown(addr)
 		if reloadPath, err := proxyReloadPath(); err == nil {
 			_ = writeReloadTrigger(reloadPath)
 		}
@@ -255,7 +295,7 @@ func (r *ProxyReloader) reload() {
 
 	var added []*connect.ProxySettings
 	for addr, s := range desiredSet {
-		if !running[addr] {
+		if !running[addr] && !isInGiveUpCooldown(addr) {
 			added = append(added, s)
 		}
 	}
