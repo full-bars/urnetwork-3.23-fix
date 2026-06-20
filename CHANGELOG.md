@@ -28,6 +28,7 @@ All notable changes to this project are documented here.
 - **429 auth retries used the same flat backoff as ordinary errors**: A rate-limited auth attempt now waits proportionally longer on each subsequent retry (capped at 60s) instead of the same flat 0.5–10.5s jitter used for transient network errors — so a batch of proxies hitting 429s together backs off instead of immediately re-hammering the API.
 - **Sub-hour retry durations logged as `0h Nm`**: Duration formatting now omits the redundant hours segment when there are none, e.g. `15m` instead of `0h 15m`.
 - **URL-sourced proxies stuck after exhausting auth retries**: A proxy whose addresses came from `--proxy_url` now automatically retries 15 minutes after giving up, instead of waiting for an hourly pulse that only file/manually-added proxies receive.
+- **Installer/update JSON parsing broke under `dash`**: `Provider_Install_Linux.sh` passed raw GitHub API responses to `jq`/`python3` via `echo`, which interprets backslashes natively under `dash` (Debian/Ubuntu default `/bin/sh`) and silently corrupted JSON containing escape sequences. Switched to `printf "%s"`, added a silent-failure fallback to the script's web-scraping path, and removed bashisms (`[[ ... ]]`) from the test suite so it runs cleanly under strict POSIX `sh`.
 
 ### Documentation
 - **Production-ready Docker guide**: Added recommended deployment patterns to README for persistent telemetry and auto-tuning.
