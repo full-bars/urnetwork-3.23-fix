@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,6 +122,60 @@ func TestReload_URLOnlySource_NoEarlyExit(t *testing.T) {
 	cancelMapMu.Unlock()
 	if !started {
 		t.Fatal("expected URL-sourced proxy to be started by reload() even with no file/internal proxies configured")
+	}
+}
+
+// TestReload_AddedProxies_PrintsAddedList is a regression test for a usability
+// gap found during live deployment testing: the initial startup path prints
+// "Using N proxy servers:" followed by one line per proxy, but reload() only
+// ever printed a terse "+N added, -N removed" summary with no per-proxy
+// detail, making it hard to confirm a hot-reload actually picked up the
+// proxies you expected (e.g. after editing a --proxy_file). reload() must
+// print the same per-proxy listing style for added proxies.
+func TestReload_AddedProxies_PrintsAddedList(t *testing.T) {
+	withTempHome(t)
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpFile := t.TempDir() + "/proxy.txt"
+	if err := os.WriteFile(tmpFile, []byte("5.5.5.5:1080:alice:secret\n6.6.6.6:1080:bob:hunter2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  tmpFile,
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = w
+	reloader.reload()
+	os.Stdout = origStdout
+	w.Close()
+	out, _ := io.ReadAll(r)
+
+	got := string(out)
+	if !strings.Contains(got, "[proxy] reload: adding 2 proxies:") {
+		t.Fatalf("expected reload to announce the added count, got: %q", got)
+	}
+	if !strings.Contains(got, "5.5.5.5:1080") || !strings.Contains(got, "6.6.6.6:1080") {
+		t.Fatalf("expected reload to list each added proxy address, got: %q", got)
 	}
 }
 
