@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Proxy URL Sources**: Point the provider at a live proxy list URL (`--proxy_url` / `PROXY_URL`, comma-separated for multiple sources) instead of, or alongside, a static `proxy.txt`. Fetches on an interval (default 15m), merges new entries into the existing hot-reload pipeline without disturbing already-warmed-up proxies, and supports scoped automatic dead-proxy cleanup (`--proxy_dead_cleanup_scope=url|all|none`) so a noisy public list can self-prune without touching hand-curated entries. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
+- **Hot-reload added-proxy visibility**: When a hot-reload adds proxies, the provider now prints the same `Using N proxy servers:` + per-proxy listing used at startup, instead of only logging removals. Makes it trivial to confirm a `--proxy_file` or `--proxy_url` reload actually picked up new entries.
+- **Global adaptive auth rate limiter**: All proxy auth attempts (first tries and retries alike) now funnel through a single shared, self-tuning rate limiter instead of relying on uncoordinated per-proxy backoff. The limiter starts at the believed safe ceiling, halves on a 429 from the auth API, and creeps back up after a sustained run of clean attempts — bounding aggregate load on a fragile upstream API without serializing startup of large proxy fleets.
+
 ### Resilience
 - **Proactive JWT refresh**: JWT tokens now refresh automatically every 7 days (regardless of expiry), ensuring tokens never expire under normal operation. Includes 48-hour expiry fallback as safety net if periodic refresh fails. Startup jitter (0-9 minutes) desynchronizes fleet refresh attempts. Works across all auth modes (`BUILD=jwt`, `BUILD=stable`, `BUILD=nightly`) via JWT-to-JWT renewal. Last refresh timestamp persisted to disk to survive provider restarts.
 
@@ -19,6 +24,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 - **Proxy refresh status check failure**: Fixed a bug where `urnet-tools proxy refresh` failed with `FATAL [exit 51]: provider does not appear to be running` on first startup with 0 proxies. The provider now unconditionally writes the `proxy.state` file at startup and heals zero timestamps during heartbeat execution.
+- **HTML error pages logged verbatim**: Auth failures that returned an HTML error body (e.g. a 429 from a rate-limiting proxy in front of the API) used to dump the entire page into the log. Now collapsed to `<html error page, N bytes>`.
+- **429 auth retries used the same flat backoff as ordinary errors**: A rate-limited auth attempt now waits proportionally longer on each subsequent retry (capped at 60s) instead of the same flat 0.5–10.5s jitter used for transient network errors — so a batch of proxies hitting 429s together backs off instead of immediately re-hammering the API.
+- **Sub-hour retry durations logged as `0h Nm`**: Duration formatting now omits the redundant hours segment when there are none, e.g. `15m` instead of `0h 15m`.
+- **URL-sourced proxies stuck after exhausting auth retries**: A proxy whose addresses came from `--proxy_url` now automatically retries 15 minutes after giving up, instead of waiting for an hourly pulse that only file/manually-added proxies receive.
 
 ### Documentation
 - **Production-ready Docker guide**: Added recommended deployment patterns to README for persistent telemetry and auto-tuning.

@@ -795,3 +795,74 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 **Status**: 🛠 [Unreleased]
 
 ---
+
+## 33. Proxy URL Sources
+
+**Purpose**: Let the provider track a live, rotating proxy list (e.g. a free SOCKS5 feed) without manual re-downloading, re-importing, or duplicate-checking. Previously the only input was a static `proxy.txt`/`proxy add`.
+
+**Files Modified**: `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/main.go`, `provider/proxy_reload.go`, `provider/proxy_state.go`
+
+**Changes**:
+- `--proxy_url=<url>` / `PROXY_URL` (comma-separated for multiple sources) — fetches on an interval (`--proxy_url_refresh`, default `15m`) and merges new entries into the same hot-reload desired-set pipeline used by `--proxy_file`. Already-running proxies (by address) are never disturbed.
+- `--proxy_url_max=<n>` / `PROXY_URL_MAX` — caps total URL-sourced proxies; once hit, new entries are skipped rather than evicting existing ones.
+- `--proxy_dead_cleanup_scope=url|all|none` (default `none`) / `--proxy_dead_cleanup_interval` (default `24h`) — automatic dead-proxy cleanup, scoped by where a proxy was added from (`url`, `file`, `internal`) so cleanup of a noisy public list never touches hand-curated entries unless explicitly widened to `all`.
+- `urnet-tools proxy add-source <url>` / `remove-source <url>` — manage sources at runtime; `add-source` triggers an immediate fetch and persists the URL across restarts.
+- v1 list format: plain text, one proxy per line, optional `socks5://` prefix; blank lines and `#` comments ignored; non-SOCKS5 prefixed lines skipped with a warning rather than failing the whole fetch.
+- Every proxy is tagged with its source (`url`, `file`, `internal`) in `proxy.state`, which is what cleanup scoping and dedup keys off of.
+
+**Fixed during live deployment hardening** (discovered running a 1600+ proxy free list against this feature in production):
+- `reload()` checked for an empty desired set *before* merging in the URL-sourced cache, so a URL-only configuration (no `--proxy_file`) was treated as "remove everything" on every reload cycle.
+- The added-proxy stagger used a fixed `100ms × i` delay instead of the existing jittered `backoffPacer`, so a large URL-sourced batch landed on the auth API in a near-simultaneous burst instead of spread out.
+- HTML error-page bodies from the auth API (e.g. a 429 from an upstream rate limiter) were logged verbatim instead of collapsed — see #35.
+- A proxy whose addresses came only from a URL source had no path to retry after exhausting `maxAuthFailures`, since the existing hourly-pulse retry only covered file/manually-added proxies; it now auto-retries 15 minutes after giving up.
+
+**Docs**: [Proxy URL Sources](docs/Proxy-URL-Sources.md), [design doc](docs/design/proxy-url-source-design.md).
+
+**Status**: ✅ Shipped, pending next tagged release.
+
+---
+
+## 34. Proxy State File Not Written Until First Reload
+
+**Purpose**: Fix `urnet-tools proxy refresh` failing with `FATAL [exit 51]: provider does not appear to be running` on a brand-new provider with 0 proxies — the status check read `proxy.state`, which previously wasn't written until the first hot-reload occurred.
+
+**Files Modified**: `provider/main.go`, `provider/proxy_state.go`
+
+**Changes**:
+- The provider now unconditionally writes `proxy.state` at startup, even with zero proxies configured.
+- A zero/missing `started_at` timestamp is healed during normal heartbeat execution instead of only at hot-reload time.
+
+**Status**: ✅ Shipped, pending next tagged release.
+
+---
+
+## 35. Hot-Reload Added-Proxy Visibility
+
+**Purpose**: A hot-reload that *adds* proxies (editing `--proxy_file`, or a URL source landing new entries) printed nothing beyond per-removal lines, making it hard to confirm the reload actually picked up new proxies without cross-checking `proxy.state` by hand.
+
+**Files Modified**: `provider/proxy_reload.go`
+
+**Changes**:
+- Hot-reload now prints `[proxy] reload: adding N proxies:` followed by the same per-proxy `proxy[%d] addr (user/pass)` line format used at startup, for every proxy the reload adds.
+
+**Status**: ✅ Shipped, pending next tagged release.
+
+---
+
+## 36. 429-Aware Auth Retry Backoff & Global Adaptive Rate Limiter
+
+**Purpose**: Two related problems surfaced testing the Proxy URL Sources feature against a large, low-quality free proxy list: (1) a rate-limited (429) auth attempt retried on the same flat jitter as an ordinary timeout, so a proxy that got 429'd kept re-hitting the API at the same rate that triggered the 429; (2) even with per-attempt backoff scaled to the 429, hundreds of proxies starting or retrying concurrently still hammer the API in aggregate, since no single proxy's backoff has visibility into how many siblings are doing the same thing at the same time.
+
+**Files Modified**: `provider/main.go`, `provider/auth_rate_limiter.go` (new)
+
+**Changes**:
+- `proxyAuthRetryDelay(err, attempt)`: a 429/"Too Many Requests" error now waits `attempt × 5s + jitter`, capped at 60s, instead of the flat `0.5–10.5s` jitter used for every other error.
+- `formatDuration`: omits the redundant hours segment when zero (`15m` instead of `0h 15m`) — surfaced by the above logging the new scaled delays.
+- `authRateLimiter` (`golang.org/x/time/rate`-backed): a single process-wide token bucket that every auth attempt — first try and retry alike — waits on (`Wait(ctx)`) before calling the API, instead of relying on uncoordinated per-proxy backoff to bound aggregate request rate.
+  - AIMD-adaptive: starts at the believed ceiling (10 req/s, burst 15, so an initial batch of proxies isn't artificially slow-ramped), halves on any 429 (floor 1 req/s), and creeps back up by 1 req/s after 20 consecutive non-429 results (ceiling 10 req/s).
+  - A 2-second cooldown between adjustments prevents a burst of already-in-flight 429s (issued before the first cut takes effect) from each triggering their own additional cut.
+  - Logs `[proxy][authrate] 429 received — cutting auth rate X -> Y req/s` and the equivalent on recovery, so the adaptation is visible in normal operation.
+
+**Status**: ✅ Shipped, pending next tagged release.
+
+---

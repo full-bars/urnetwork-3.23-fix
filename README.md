@@ -8,8 +8,9 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | :--- | :--- | :--- |
 | Control-plane dial visibility | Debug level 2 (silent) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
 | Initial contract size | 16 KiB | Min 256 KiB (lowmem), 2 MiB (performance), tunable per profile |
-| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup |
-| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime |
+| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
+| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
+| Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
 | Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
