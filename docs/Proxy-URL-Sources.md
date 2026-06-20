@@ -51,6 +51,9 @@ docker run -d \
 
 `PROXY_URL` and `-v .../proxy.txt` can be used together — the URL source adds on top of whatever's in the mounted file.
 
+> [!TIP]
+> **Multiple URLs in Docker:** there's no `PROXY_URL_2`/`PROXY_URL_3` — repeating `-e PROXY_URL=...` just overwrites itself, since Docker env vars aren't additive. Put all your sources in one comma-separated `PROXY_URL`. The repeatable `--proxy_url=<url> --proxy_url=<url>` form is only available on the binary/CLI side, where docopt flags can be passed more than once.
+
 ---
 
 ## 🎛️ Tuning Flags
