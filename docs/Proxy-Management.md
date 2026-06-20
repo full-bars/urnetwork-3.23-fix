@@ -17,6 +17,9 @@ You can now add and remove proxies from a running instance without a restart. Ch
 - 🪦 **Dead/removed proxies** are cancelled and their connections drained gracefully.
 - 🌱 **New proxies** are started with a staggered delay to prevent a burst of simultaneous authentication attempts at the API.
 
+> [!TIP]
+> When a reload adds proxies, the log prints `[proxy] reload: adding N proxies:` followed by the same per-proxy listing used at startup — so you can confirm a `proxy refresh` or `--proxy_url` pickup actually added what you expected, the same way you'd verify a fresh container start.
+
 > [!NOTE]
 > **Stable Proxy Slots**
 > 
