@@ -24,6 +24,7 @@ import (
 // report that it queued an automatic retry.
 func TestRequeueURLProxyAfterGiveUp_URLSourceRemovedFromCancelMap(t *testing.T) {
 	withTempHome(t)
+	t.Cleanup(func() { clearGiveUpCooldown("5.5.5.5:1080") })
 
 	state := &ProxyState{Proxies: map[string]ProxyEntry{
 		"5.5.5.5:1080": {ID: 1, Source: "url"},
@@ -231,5 +232,127 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 	time.Sleep(350 * time.Millisecond)
 	if got := spawnCount.Load(); got != 6 {
 		t.Fatalf("spawnProxy calls after 350ms: got %d, want 6 (all positions should have started under the jittered backoffPacer stagger)", got)
+	}
+}
+
+// TestGiveUpCooldown_SetAndClear is a unit test for the cooldown bookkeeping
+// itself, isolated from reload()'s diffing logic.
+func TestGiveUpCooldown_SetAndClear(t *testing.T) {
+	addr := "7.7.7.7:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+
+	if isInGiveUpCooldown(addr) {
+		t.Fatal("expected a fresh address to not be in cooldown")
+	}
+
+	setGiveUpCooldown(addr, time.Now().Add(time.Hour))
+	if !isInGiveUpCooldown(addr) {
+		t.Fatal("expected address to be in cooldown after setGiveUpCooldown")
+	}
+
+	clearGiveUpCooldown(addr)
+	if isInGiveUpCooldown(addr) {
+		t.Fatal("expected cooldown to be gone after clearGiveUpCooldown")
+	}
+}
+
+// TestGiveUpCooldown_ExpiresOnItsOwn confirms a cooldown set in the past (or
+// already elapsed) is reported as expired without an explicit clear — the
+// 15-minute goroutine clears it proactively, but reload() must also treat a
+// stale entry as expired on its own in case it's ever read first.
+func TestGiveUpCooldown_ExpiresOnItsOwn(t *testing.T) {
+	addr := "7.7.7.8:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+
+	setGiveUpCooldown(addr, time.Now().Add(-time.Second))
+	if isInGiveUpCooldown(addr) {
+		t.Fatal("expected an already-elapsed cooldown to report as not in cooldown")
+	}
+}
+
+// TestRequeueURLProxyAfterGiveUp_SetsCooldown is a regression test for a bug
+// found during live deployment testing: a url-sourced proxy that gave up was
+// removed from cancelMap immediately, but nothing actually enforced the
+// promised 15-minute wait before reload() was allowed to relaunch it. Any
+// unrelated reload trigger, like the periodic URL refresh or another
+// proxy's own give-up timer, would resurrect it right away, observed
+// retrying every 1-6 minutes instead of every 15.
+func TestRequeueURLProxyAfterGiveUp_SetsCooldown(t *testing.T) {
+	withTempHome(t)
+
+	addr := "10.0.0.50:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		addr: {ID: 1, Source: "url"},
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	cancelMap := map[string]context.CancelFunc{addr: func() {}}
+
+	if !requeueURLProxyAfterGiveUp(t.Context(), addr, cancelMapMu, cancelMap) {
+		t.Fatal("expected url-sourced proxy to be queued for automatic retry")
+	}
+
+	if !isInGiveUpCooldown(addr) {
+		t.Fatal("expected give-up to immediately start a 15-minute cooldown, not just removal from cancelMap")
+	}
+}
+
+// TestReload_SkipsAddressStillInGiveUpCooldown is the end-to-end regression
+// test: even when an address is in desiredSet and absent from cancelMap
+// (exactly the state right after a give-up), reload() must not relaunch it
+// while its cooldown is still active — no matter what triggered this reload.
+func TestReload_SkipsAddressStillInGiveUpCooldown(t *testing.T) {
+	withTempHome(t)
+
+	addr := "8.8.8.8:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+	setGiveUpCooldown(addr, time.Now().Add(proxyURLGiveUpRetryAfter))
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		addr: {ID: 1, Source: "url"},
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	var spawnCount atomic.Int32
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{}, // not running — looks "added" by the old logic
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  "",
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+			spawnCount.Add(1)
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	reloader.reload()
+	time.Sleep(50 * time.Millisecond)
+
+	if got := spawnCount.Load(); got != 0 {
+		t.Fatalf("expected reload() to skip an address still in its give-up cooldown, got %d spawns", got)
+	}
+
+	cancelMapMu.Lock()
+	_, started := reloader.cancelMap[addr]
+	cancelMapMu.Unlock()
+	if started {
+		t.Fatal("expected the cooled-down address to not be added to cancelMap")
 	}
 }
