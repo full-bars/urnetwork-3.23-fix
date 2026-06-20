@@ -29,6 +29,7 @@ type ProxyEntry struct {
 	ID        int    `json:"id"`
 	Health    string `json:"health"`               // "up", "dead", "recently_offline", "offline", "long_offline", "inactive"
 	DownSince string `json:"down_since,omitempty"` // RFC3339, set when not up
+	Source    string `json:"source,omitempty"`     // "file", "internal", or "url" — where this address was first added from
 }
 
 func proxyStatePath() (string, error) {
@@ -107,4 +108,17 @@ func resolveProxyID(state *ProxyState, address string) int {
 	id := nextProxyID()
 	state.Proxies[address] = ProxyEntry{ID: id}
 	return id
+}
+
+// tagProxySourceIfUnset records where a proxy address was first added from
+// ("file", "internal", or "url"). Once set, the tag is never overwritten —
+// an address keeps its original provenance across reloads and restarts, so
+// source-scoped dead-proxy cleanup stays accurate even if the same address
+// later also appears in a different source.
+func tagProxySourceIfUnset(state *ProxyState, address, source string) {
+	entry := state.Proxies[address]
+	if entry.Source == "" {
+		entry.Source = source
+	}
+	state.Proxies[address] = entry
 }

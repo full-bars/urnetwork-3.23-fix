@@ -148,6 +148,46 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 	}()
 }
 
+// proxyURLGiveUpRetryAfter is the cooldown before a URL-sourced proxy that
+// exhausted its auth attempts is automatically reconsidered for restart.
+const proxyURLGiveUpRetryAfter = 15 * time.Minute
+
+// requeueURLProxyAfterGiveUp is called when a proxy goroutine has permanently
+// given up (exhausted maxAuthFailures) and is about to return for good. By
+// default this is terminal: the address stays in cancelMap, so reload() will
+// never see it as eligible to restart, even though nothing is running — the
+// proxy is dead until a manual 'proxy refresh' or process restart.
+//
+// For URL-sourced proxies that's too brittle: a large public list naturally
+// contains many flaky or dead entries, and requiring manual intervention for
+// each one defeats the purpose of pulling from a URL in the first place. For
+// those, remove the address from cancelMap now (so reload() will treat it as
+// "added" again) and schedule a delayed reload trigger after a cooldown —
+// staggered restart through the normal jittered backoffPacer path, not a
+// thundering herd. Returns true if the proxy was queued for automatic retry.
+func requeueURLProxyAfterGiveUp(ctx context.Context, addr string, cancelMapMu *sync.Mutex, cancelMap map[string]context.CancelFunc) bool {
+	state, err := readProxyState()
+	if err != nil || state.Proxies[addr].Source != "url" {
+		return false
+	}
+
+	cancelMapMu.Lock()
+	delete(cancelMap, addr)
+	cancelMapMu.Unlock()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(proxyURLGiveUpRetryAfter):
+		}
+		if reloadPath, err := proxyReloadPath(); err == nil {
+			_ = writeReloadTrigger(reloadPath)
+		}
+	}()
+	return true
+}
+
 // reload diffs the proxy source against the currently running set and applies
 // the difference: cancels goroutines for removed proxies, starts goroutines for
 // added proxies (staggered), and rewrites proxy.state. Untouched proxies are
@@ -177,14 +217,29 @@ func (r *ProxyReloader) reload() {
 		desired = readProxySettings()
 	}
 
-	if len(desired) == 0 {
-		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
-		return
-	}
-
 	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
+	sourceOf := make(map[string]string, len(desired))
+	primarySource := "internal"
+	if r.sourcePath != "" {
+		primarySource = "file"
+	}
 	for _, s := range desired {
 		desiredSet[s.Address] = s
+		sourceOf[s.Address] = primarySource
+	}
+
+	if urlState, err := readProxyURLState(); err != nil {
+		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+	} else {
+		mergeProxyURLCache(desiredSet, sourceOf, urlState)
+	}
+
+	// Check emptiness AFTER merging the URL cache — a URL-only deployment
+	// (no --proxy_file, no internal proxies) has desired == 0 but a
+	// non-empty desiredSet, and must not be treated as a source-read error.
+	if len(desiredSet) == 0 {
+		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
+		return
 	}
 
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
@@ -267,9 +322,15 @@ func (r *ProxyReloader) reload() {
 	// sessions. This is intentional — draining proxies keep serving traffic
 	// until the last session finishes.
 
-	// Start added proxies. Each goroutine staggers its own startup by 100ms *
-	// position to avoid a burst of simultaneous connection attempts at the API.
-	// Skip any still draining from a previous removal.
+	// Start added proxies. Each goroutine staggers its own startup using the
+	// same jittered backoffPacer as the initial startup path (main.go), so a
+	// large batch added at once (e.g. hundreds of proxies merged in from a
+	// URL source) ramps up exactly as slowly as it would on a fresh start,
+	// instead of bursting the auth API. Skip any still draining from a
+	// previous removal.
+	if len(added) > 0 {
+		fmt.Printf("[proxy] reload: adding %d proxies:\n", len(added))
+	}
 	for i, settings := range added {
 		if r.isDraining(settings.Address) {
 			fmt.Printf("[proxy] skip add %s: still draining\n", settings.Address)
@@ -277,7 +338,15 @@ func (r *ProxyReloader) reload() {
 		}
 		stableID := resolveProxyID(r.state, settings.Address)
 		settings.Index = stableID
+		tagProxySourceIfUnset(r.state, settings.Address, sourceOf[settings.Address])
 		connect.RegisterProxy(stableID, settings.Address)
+
+		var user, password string
+		if settings.Auth != nil {
+			user = settings.Auth.User
+			password = settings.Auth.Password
+		}
+		fmt.Printf("  proxy[%d] %s (%s/%s)\n", stableID, settings.Address, obfuscateUser(user), obfuscatePassword(password))
 
 		proxyCtx, proxyCancel := context.WithCancel(r.parentCtx)
 		r.cancelMapMu.Lock()
@@ -292,11 +361,8 @@ func (r *ProxyReloader) reload() {
 			defer connect.UnregisterProxy(stableID)
 			defer proxyCancel()
 
-			initialDelay := time.Duration(staggerPos) * 100 * time.Millisecond
-			select {
-			case <-proxyCtx.Done():
+			if !backoffPacer(staggerPos, time.Now(), proxyCtx) {
 				return
-			case <-time.After(initialDelay):
 			}
 			r.spawnProxy(proxyCtx, settingsCopy, false)
 		})
