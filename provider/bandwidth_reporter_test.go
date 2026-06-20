@@ -70,3 +70,34 @@ func TestResolveReportURL_NoOverrideAndNoEnvIsEmpty(t *testing.T) {
 		t.Fatalf("expected empty result with no override and no env fallback, got %q", got)
 	}
 }
+
+// TestResolveAlertWebhook_OverrideFileTakesPrecedence mirrors
+// TestResolveReportURL_OverrideFileTakesPrecedence for the outage watcher's
+// webhook: an operator must be able to set/change/clear the alert webhook
+// for an already-running provider without a restart.
+func TestResolveAlertWebhook_OverrideFileTakesPrecedence(t *testing.T) {
+	home := withTempHome(t)
+
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "alert_webhook"), []byte("https://discord.com/api/webhooks/x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveAlertWebhook("https://fallback.example.com"); got != "https://discord.com/api/webhooks/x" {
+		t.Fatalf("expected override file to take precedence, got %q", got)
+	}
+}
+
+// TestResolveAlertWebhook_FallsBackToEnvWhenNoOverrideFile ensures existing
+// deployments configured purely via URNETWORK_ALERT_WEBHOOK keep working
+// unchanged.
+func TestResolveAlertWebhook_FallsBackToEnvWhenNoOverrideFile(t *testing.T) {
+	withTempHome(t)
+
+	if got := resolveAlertWebhook("https://fallback.example.com"); got != "https://fallback.example.com" {
+		t.Fatalf("expected fallback to env value, got %q", got)
+	}
+}
