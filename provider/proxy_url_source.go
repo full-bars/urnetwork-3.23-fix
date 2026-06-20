@@ -82,7 +82,14 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 			fmt.Printf("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
 			continue
 		}
-		fetched[i] = lines
+		// Free public proxy lists are mostly dead entries. Probing here, before
+		// anything is ever merged into the cache, means a dead entry never gets
+		// an auth attempt (or a slot from the shared auth rate limiter) in the
+		// first place — instead of relying on 10 auth retries per dead proxy to
+		// find that out the expensive way.
+		reachable := filterReachableProxyURLLines(ctx, lines)
+		fmt.Printf("[proxy][url] probed %s: %d/%d reachable\n", url, len(reachable), len(lines))
+		fetched[i] = reachable
 	}
 
 	release, err := acquireProxyLock()
