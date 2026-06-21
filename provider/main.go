@@ -1295,11 +1295,12 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 // generic "JWT may be expired" that is wrong for the common cases below.
 //
 // "proxy unreachable" gets its own bucket, separate from real network errors
-// reaching the API: it's synthesized by the local TCP reachability probe
-// (probeProxyReachable) before any auth attempt is made, so it says nothing
+// reaching the API: it's synthesized by the local SOCKS5 reachability probe
+// (probeProxySocks5) before any auth attempt is made, so it says nothing
 // about api.bringyour.com's health — it just means this proxy's port is
-// dead. Bundling it with genuine API-side timeouts made dead entries in a
-// public proxy list look identical to real API outages in the logs.
+// dead or not actually speaking SOCKS5. Bundling it with genuine API-side
+// timeouts made dead entries in a public proxy list look identical to real
+// API outages in the logs.
 func classifyAuthFailureCause(err error) string {
 	errMsg := err.Error()
 	switch {
@@ -1499,13 +1500,16 @@ func provide(opts docopt.Opts) {
 				var byClientJwt string
 				var clientId connect.Id
 
-				if proxySettings != nil && !probeProxyReachable(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
-					// The proxy itself isn't even accepting a TCP connection right
-					// now — that's a dead local hop, not a signal about the API's
-					// health. Skip the auth attempt (and the shared rate limiter)
-					// entirely rather than spending a slot and reporting a timeout
-					// that would falsely look like the API is overloaded and
-					// throttle every other proxy's auth rate for no reason.
+				if proxySettings != nil && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
+					// The proxy itself isn't even speaking SOCKS5 right now — either
+					// the port is dead, or something is listening but isn't a real
+					// SOCKS5 endpoint (open port with a broken/wrong service, a
+					// captive portal, etc). Either way that's a dead local hop, not a
+					// signal about the API's health. Skip the auth attempt (and the
+					// shared rate limiter) entirely rather than spending a slot and
+					// reporting a timeout that would falsely look like the API is
+					// overloaded and throttle every other proxy's auth rate for no
+					// reason.
 					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
