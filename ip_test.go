@@ -504,3 +504,101 @@ func testClient[P comparable](
 		}
 	}
 }
+
+func buildTestIPv4Packet(srcIP, dstIP net.IP, protocol byte, srcPort, dstPort uint16) []byte {
+	packet := make([]byte, 20+8)
+	// version + header length
+	packet[0] = 0x45
+	// protocol
+	packet[9] = protocol
+	// source IP
+	copy(packet[12:16], srcIP.To4())
+	// dest IP
+	copy(packet[16:20], dstIP.To4())
+	// L4 header
+	binary.BigEndian.PutUint16(packet[20:22], srcPort)
+	binary.BigEndian.PutUint16(packet[22:24], dstPort)
+	return packet
+}
+
+func buildTestIPv6Packet(srcIP, dstIP net.IP, protocol byte, srcPort, dstPort uint16) []byte {
+	packet := make([]byte, 40+8)
+	// version
+	packet[0] = 0x60
+	// next header (protocol)
+	packet[6] = protocol
+	// source IP
+	copy(packet[8:24], srcIP.To16())
+	// dest IP
+	copy(packet[24:40], dstIP.To16())
+	// L4 header
+	binary.BigEndian.PutUint16(packet[40:42], srcPort)
+	binary.BigEndian.PutUint16(packet[42:44], dstPort)
+	return packet
+}
+
+func TestFlowHashSameFlowSameHash(t *testing.T) {
+	src := net.ParseIP("10.0.0.1")
+	dst := net.ParseIP("192.168.1.1")
+	p1 := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+	p2 := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+	assert.Equal(t, flowHash(p1), flowHash(p2))
+}
+
+func TestFlowHashDifferentFlowDifferentHash(t *testing.T) {
+	src := net.ParseIP("10.0.0.1")
+	dst := net.ParseIP("192.168.1.1")
+	p1 := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+	p2 := buildTestIPv4Packet(src, dst, 6, 12346, 443)
+	if flowHash(p1) == flowHash(p2) {
+		t.Errorf("different flows should have different hashes")
+	}
+}
+
+func TestFlowHashIPv6(t *testing.T) {
+	src := net.ParseIP("2001:db8::1")
+	dst := net.ParseIP("2001:db8::2")
+	p1 := buildTestIPv6Packet(src, dst, 17, 8080, 53)
+	p2 := buildTestIPv6Packet(src, dst, 17, 8080, 53)
+	assert.Equal(t, flowHash(p1), flowHash(p2))
+
+	p3 := buildTestIPv6Packet(src, dst, 17, 8081, 53)
+	if flowHash(p1) == flowHash(p3) {
+		t.Errorf("different IPv6 flows should have different hashes")
+	}
+}
+
+func TestFlowHashTooShort(t *testing.T) {
+	assert.Equal(t, flowHash([]byte{0x45}), uint32(0))
+	assert.Equal(t, flowHash(nil), uint32(0))
+}
+
+func TestPickShard(t *testing.T) {
+	nat := &LocalUserNat{numShards: 4}
+
+	src := net.ParseIP("10.0.0.1")
+	dst := net.ParseIP("192.168.1.1")
+	packet := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+
+	shard := nat.pickShard(packet)
+	if shard < 0 || shard >= 4 {
+		t.Errorf("shard %d out of range [0, 4)", shard)
+	}
+}
+
+func TestPickShardSingleShard(t *testing.T) {
+	nat := &LocalUserNat{numShards: 1}
+	packet := make([]byte, 20)
+	assert.Equal(t, nat.pickShard(packet), 0)
+}
+
+func TestPickShardDeterministic(t *testing.T) {
+	nat := &LocalUserNat{numShards: 8}
+
+	src := net.ParseIP("10.0.0.1")
+	dst := net.ParseIP("192.168.1.1")
+	p1 := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+	p2 := buildTestIPv4Packet(src, dst, 6, 12345, 443)
+
+	assert.Equal(t, nat.pickShard(p1), nat.pickShard(p2))
+}
