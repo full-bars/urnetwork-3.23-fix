@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24
+**Current Version**: v3.23.0-fix.25
 
 ---
 
@@ -1024,5 +1024,33 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Added 7 unit tests for flowHash and pickShard
 
 **Status**: ✅ Shipped in v3.23.0-fix.24.
+
+---
+
+## 48. MultiRaceClientCount to 16 (Unconditional)
+
+**Purpose**: The CPU-based tier system (10-14-16) was unnecessarily conservative. All race goroutines are I/O-bound (block on network response), so single-core nodes benefit just as much as multicore ones. The runtime actually races `min(16, len(healthyProviders), packetBudget)`, so the value is just a ceiling — no downside to setting it high.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`
+
+**Change**: `MultiRaceClientCount` = 16 on all platforms, replacing the CPU-tier function.
+
+**Status**: ✅ Shipped in v3.23.0-fix.25.
+
+---
+
+## 49. CI Pipeline Improvements
+
+**Purpose**: Faster feedback and less wasted compute during PR checks.
+
+**Files Modified**: `.github/workflows/build.yml`, `.github/workflows/release.yml`
+
+**Changes**:
+- `build-and-push` now `needs: test-and-lint` — skips Docker build on failing PRs (~3 min saved)
+- Re-added Go module cache (`~/go/pkg/mod`) alongside existing build cache
+- Go tests (with `-race`) run before shell installer tests
+- Fixed release.yml `checkout@v4` → `v6`, added caching
+
+**Status**: ✅ Shipped in v3.23.0-fix.25.
 
 ---
