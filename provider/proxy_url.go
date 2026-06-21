@@ -130,20 +130,37 @@ func parseProxyURLLine(line string) (address, user, password string, ok bool) {
 			if parts := strings.SplitN(cred, ":", 2); len(parts) == 2 {
 				user, password = parts[0], parts[1]
 			}
-			return address, user, password, true
+			return address, user, password, address != ""
 		}
-		address, user, password = parseProxyAddress(rest)
-		return address, user, password, true
+	address, user, password = parseProxyAddress(rest)
+	return address, user, password, address != ""
 	}
 
 	address, user, password = parseProxyAddress(line)
-	return address, user, password, true
+	return address, user, password, address != ""
 }
 
 // maxProxyURLFetchBytes caps how much of a proxy list response we read,
 // defending against a misbehaving or malicious endpoint returning an
 // unbounded body.
 const maxProxyURLFetchBytes = 10 * 1024 * 1024 // 10 MiB
+
+// proxyURLHTTPClient is a custom HTTP client with redirect limits and
+// timeouts, instead of the global http.DefaultClient which has no guards.
+var proxyURLHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("stopped after 3 redirects")
+		}
+		return nil
+	},
+	Transport: &http.Transport{
+		MaxIdleConns:        1,
+		IdleConnTimeout:     30 * time.Second,
+		DisableCompression:  true,
+	},
+}
 
 // fetchProxyURLLines fetches a proxy list from a URL and splits it into
 // lines. It does not parse the lines — callers parse each line with
@@ -157,7 +174,7 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxyURLHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
