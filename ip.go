@@ -78,7 +78,7 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
 		ReadBufferByteCount: DefaultMtu,
 		SequenceBufferSize:  DefaultIpBufferSize,
 		UserLimit:           0,
-		MaxWindowSize:       uint32(mib(1)),
+		MaxWindowSize:       uint32(mib(4)),
 		ConnectSettings:     *DefaultConnectSettings(),
 	}
 }
@@ -96,7 +96,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
 		MinWindowSize:       uint32(kib(4)),
-		MaxWindowSize:       uint32(mib(1)),
+		MaxWindowSize:       uint32(mib(4)),
 		UserLimit:           0,
 		ConnectSettings:     *DefaultConnectSettings(),
 	}

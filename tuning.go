@@ -115,6 +115,16 @@ func applyTier2(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 }
 
 func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
-	// Performance tier uses current defaults (2MiB contracts, etc)
-	// We don't modify anything here to let the defaults or Turbo handle it.
+	cs.ContractManagerSettings.InitialContractTransferByteCount = mib(2)
+
+	ns.SequenceBufferSize = 256
+	ns.TcpBufferSettings.SequenceBufferSize = 256
+	ns.UdpBufferSettings.SequenceBufferSize = 256
+
+	ns.TcpBufferSettings.MaxWindowSize = uint32(mib(4))
+
+	cs.WebRtcSettings.ReceiveBufferSize = mib(4)
+
+	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(4)
+	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(4)
 }

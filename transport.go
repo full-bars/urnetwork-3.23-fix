@@ -252,7 +252,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		PingTimeout:          5 * time.Second,
 		WriteTimeout:         10 * time.Second,
 		ReadTimeout:          30 * time.Second,
-		TransportBufferSize:  1,
+		TransportBufferSize:  16,
 		InactiveDrainTimeout: 30 * time.Second,
 		ModeInitialDelay:     2 * time.Second,
 		// MinConnectDelay:      0,
