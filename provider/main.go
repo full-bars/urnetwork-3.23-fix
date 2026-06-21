@@ -1033,7 +1033,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if elapsed < 1 {
 			elapsed = 1
 		}
-		var totalRxDelta, totalTxDelta uint64
+		var totalRxDelta, totalTxDelta, totalBillable uint64
 		var totalClients int64
 		activeProxies := 0
 		serving := 0
@@ -1090,13 +1090,20 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				ageStr,
 				fmtBytes(billableToday),
 			)
+			totalBillable += billableToday
 		}
 		prevTickTime = now
-		fmt.Printf("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d\n",
+		earning := "no"
+		if totalBillable > 0 {
+			earning = "yes"
+		}
+		fmt.Printf("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
 			fmtRate(float64(totalRxDelta)/elapsed),
 			fmtRate(float64(totalTxDelta)/elapsed),
 			totalClients,
 			activeProxies,
+			fmtBytes(totalBillable),
+			earning,
 		)
 		// [earn] surfaces utilization: how many up proxies are actually carrying
 		// users (serving) vs sitting idle. Sustained high idle with up>0 means the
