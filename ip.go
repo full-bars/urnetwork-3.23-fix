@@ -213,36 +213,49 @@ func (self *LocalUserNat) pickShard(packet []byte) int {
 }
 
 func flowHash(packet []byte) uint32 {
+	const offset32 = 2166136261
+	const prime32 = 16777619
+
 	if len(packet) < 20 {
 		return 0
 	}
-	var h uint32
+
+	hash := func(data []byte) uint32 {
+		h := uint32(offset32)
+		for _, b := range data {
+			h ^= uint32(b)
+			h *= prime32
+		}
+		return h
+	}
+
 	ipVersion := packet[0] >> 4
 	switch ipVersion {
 	case 4:
 		if len(packet) >= 20 {
-			h = uint32(packet[12])<<24 | uint32(packet[13])<<16 | uint32(packet[14])<<8 | uint32(packet[15])
-			h ^= uint32(packet[16])<<24 | uint32(packet[17])<<16 | uint32(packet[18])<<8 | uint32(packet[19])
+			h := hash(packet[12:20])
 			protocol := packet[9]
 			if protocol == 6 || protocol == 17 {
 				headerLen := int(packet[0]&0x0F) * 4
 				if len(packet) >= headerLen+4 {
-					h ^= uint32(packet[headerLen])<<16 | uint32(packet[headerLen+1]) | uint32(packet[headerLen+2])<<8 | uint32(packet[headerLen+3])
+					h ^= hash(packet[headerLen : headerLen+4])
 				}
 			}
+			return h
 		}
 	case 6:
 		if len(packet) >= 40 {
-			h = uint32(packet[8]) | uint32(packet[17])<<8 | uint32(packet[26])<<16 | uint32(packet[35])<<24
+			h := hash(packet[8:40])
 			protocol := packet[6]
 			if protocol == 6 || protocol == 17 {
 				if len(packet) >= 44 {
-					h ^= uint32(packet[40])<<16 | uint32(packet[41]) | uint32(packet[42])<<8 | uint32(packet[43])
+					h ^= hash(packet[40:44])
 				}
 			}
+			return h
 		}
 	}
-	return h
+	return 0
 }
 
 // TODO provide mode of the destination determines filtering rules - e.g. local networks
