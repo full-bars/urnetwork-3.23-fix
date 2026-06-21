@@ -44,3 +44,15 @@ func (h *proxyFailureHistory) Reset(address string) {
 	delete(h.failures, address)
 	h.mu.Unlock()
 }
+
+// Prune removes entries for addresses not in keepAddrs, called periodically
+// to prevent unbounded growth from proxies that cycled out of the fleet.
+func (h *proxyFailureHistory) Prune(keepAddrs map[string]bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for addr := range h.failures {
+		if !keepAddrs[addr] {
+			delete(h.failures, addr)
+		}
+	}
+}

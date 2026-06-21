@@ -33,3 +33,15 @@ func (s *provenProxySet) HasSucceeded(address string) bool {
 	defer s.mu.Unlock()
 	return s.proven[address]
 }
+
+// Prune removes entries for addresses not in keepAddrs, called periodically
+// to prevent unbounded growth from proxies that cycled out of the fleet.
+func (s *provenProxySet) Prune(keepAddrs map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for addr := range s.proven {
+		if !keepAddrs[addr] {
+			delete(s.proven, addr)
+		}
+	}
+}
