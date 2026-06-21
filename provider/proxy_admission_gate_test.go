@@ -55,9 +55,11 @@ func TestProxyAdmissionGate_AdmitGrantsAccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := g.Admit(ctx, 0); err != nil {
+	release, err := g.Admit(ctx, 0)
+	if err != nil {
 		t.Fatalf("expected Admit to succeed, got %v", err)
 	}
+	release()
 }
 
 // TestProxyAdmissionGate_AdmitRespectsCancellation confirms a caller that
@@ -68,14 +70,16 @@ func TestProxyAdmissionGate_AdmitRespectsCancellation(t *testing.T) {
 	g := newProxyAdmissionGate(limiter)
 
 	// Consume the only burst token so the next Admit has to actually wait.
-	if err := g.Admit(context.Background(), 0); err != nil {
+	release, err := g.Admit(context.Background(), 0)
+	if err != nil {
 		t.Fatalf("expected first Admit (within burst) to succeed, got %v", err)
 	}
+	release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := g.Admit(ctx, 0); err == nil {
+	if _, err := g.Admit(ctx, 0); err == nil {
 		t.Fatal("expected the second Admit to be blocked by the near-zero rate and hit the context deadline")
 	}
 
@@ -84,5 +88,51 @@ func TestProxyAdmissionGate_AdmitRespectsCancellation(t *testing.T) {
 	g.mu.Unlock()
 	if leaked != 0 {
 		t.Fatalf("expected the canceled waiter to be removed from the queue, got %d still queued", leaked)
+	}
+}
+
+// TestProxyAdmissionGate_BoundsInFlightConcurrency is a regression test for
+// a bug found during fleet deployment analysis: the rate limiter only
+// throttled how fast new attempts were released, not how many were
+// simultaneously in flight. A slow caller that never calls its release()
+// func (simulating a proxy whose auth attempt is hanging) must block
+// admission of new callers past proxyAdmissionMaxConcurrency, even though
+// the rate limiter itself has plenty of budget to keep admitting more.
+func TestProxyAdmissionGate_BoundsInFlightConcurrency(t *testing.T) {
+	limiter := newAuthRateLimiter(1000, 1000, 1000) // effectively unthrottled
+	g := newProxyAdmissionGate(limiter)
+
+	var releases []func()
+	for i := 0; i < proxyAdmissionMaxConcurrency; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		release, err := g.Admit(ctx, 0)
+		if err != nil {
+			t.Fatalf("expected Admit %d (within concurrency cap) to succeed, got %v", i, err)
+		}
+		releases = append(releases, release)
+	}
+
+	// The cap is now fully held by callers that haven't released yet. One
+	// more Admit must block despite the rate limiter having unlimited
+	// budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := g.Admit(ctx, 0); err == nil {
+		t.Fatal("expected Admit beyond the concurrency cap to block until a slot is released")
+	}
+
+	// Releasing one slot must unblock a subsequent Admit.
+	releases[0]()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	release, err := g.Admit(ctx2, 0)
+	if err != nil {
+		t.Fatalf("expected Admit to succeed after a slot was released, got %v", err)
+	}
+	release()
+
+	for _, release := range releases[1:] {
+		release()
 	}
 }
