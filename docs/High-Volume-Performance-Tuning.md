@@ -51,8 +51,8 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB |
-| `ContractTransferByteSeqScale` | 4 | 4 | 4 | 4 | 2 | 2 |
-| `ContractFillFraction` | 0.8 | 0.7 | 0.7 | 0.7 | 0.7 | 0.7 |
+| `ContractTransferByteSeqScale` | 4 | 2 | 4 | 4 | 2 | 2 |
+| `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* |
 | `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s |
 | `ResendQueueMaxByteCount` | 2 MiB | 2 MiB | reduced | 2 MiB | 8 MiB | 16 MiB |
 | `ReceiveQueueMaxByteCount` | ~2.5 MiB | ~2.5 MiB | reduced | ~2.5 MiB | 8 MiB | 16 MiB |
@@ -63,8 +63,8 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| TCP `MaxWindowSize` | 1 MiB | 1 MiB (Accordion) | reduced | 1 MiB | 4 MiB | 8 MiB |
-| UDP `MaxWindowSize` | 1 MiB | 1 MiB | reduced | 1 MiB | 4 MiB | 8 MiB |
+| TCP `MaxWindowSize` | 1 MiB | 4 MiB (Accordion) | reduced | 4 MiB | 4 MiB | 8 MiB |
+| UDP `MaxWindowSize` | 1 MiB | 4 MiB | reduced | 4 MiB | 4 MiB | 8 MiB |
 | IP `SequenceBufferSize` | 64 | 256 | reduced | 256 | 512 | 512 |
 | Accordion window start | fixed | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB |
 | Accordion idle shrink | none | 30 s | 30 s | 30 s | 30 s | 30 s |
@@ -98,7 +98,7 @@ The `auto` profile is the recommended setting for most users. It detects availab
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Low** | < 1.2 GiB | 128 KiB | 32 | 128 KiB | 512 KiB | **Enabled** |
 | **Balanced**| 1.2 - 3 GiB | 256 KiB | 128 | 512 KiB | 1 MiB | **Enabled** |
-| **Perf** | > 3 GiB | 2 MiB | 256 | 1 MiB | 4 MiB | Disabled |
+| **Perf** | > 3 GiB | 2 MiB | 256 | 4 MiB | 4 MiB | Disabled |
 
 **Enabling:**
 ```bash
@@ -112,12 +112,12 @@ The default 1 MiB TCP Accordion window creates a theoretical per-connection thro
 
 **Theoretical Window Ceilings (Mathematical Maximums):**
 
-| RTT (Latency) | Upstream/Fork Default (1 MiB) | Turbo V4 (4 MiB) | Turbo V8 (8 MiB) |
+| RTT (Latency) | Fork Default (4 MiB) | Turbo V4 (4 MiB) | Turbo V8 (8 MiB) |
 | :--- | :--- | :--- | :--- |
-| 5 ms | ~1.6 Gbps (unlikely real-world) | ~6.4 Gbps | ~12.8 Gbps |
-| 10 ms | ~100 Mbps | ~400 Mbps | ~800 Mbps |
-| 20 ms | ~50 Mbps | ~200 Mbps | ~400 Mbps |
-| 50 ms | ~20 Mbps | ~80 Mbps | ~160 Mbps |
+| 5 ms | ~6.4 Gbps | ~6.4 Gbps | ~12.8 Gbps |
+| 10 ms | ~400 Mbps | ~400 Mbps | ~800 Mbps |
+| 20 ms | ~200 Mbps | ~200 Mbps | ~400 Mbps |
+| 50 ms | ~80 Mbps | ~80 Mbps | ~160 Mbps |
 
 *Actual throughput will always be lower due to packet loss, processing overhead, and network congestion.*
 
@@ -195,7 +195,7 @@ urnet-tools lowmode off
 
 ## 🪗 Accordion TCP Scaling
 
-Connections start with a minimal **4 KiB** TCP window to conserve RAM on idle connections. As throughput increases, the window doubles on each successful delivery up to the profile ceiling (1 MiB default, 4/8 MiB turbo). If a connection goes idle, the window shrinks back to 4 KiB after 30 seconds.
+Connections start with a minimal **4 KiB** TCP window to conserve RAM on idle connections. As throughput increases, the window doubles on each successful delivery up to the profile ceiling (4 MiB default, 8 MiB turbo). If a connection goes idle, the window shrinks back to 4 KiB after 30 seconds.
 
 This means the provider can hold many concurrent idle connections cheaply while still serving active ones at full speed. The overhead of an idle connection is the 4 KiB window allocation, not the profile ceiling.
 
@@ -205,11 +205,19 @@ This means the provider can hold many concurrent idle connections cheaply while 
 
 **`InitialContractTransferByteCount`** controls how many bytes are authorized per contract on the first request. The upstream default of 16 KiB means a new connection hits its quota almost immediately and must renegotiate — under heavy load this creates a signaling storm. The fork raises this to 2 MiB, so a new connection can transfer a meaningful amount before the first renegotiation.
 
-**`ContractTransferByteSeqScale`** controls how many contracts it takes to reach full (`StandardContractTransferByteCount`) speed. At the default of 4, the ramp takes 4 contracts. Turbo mode sets this to 2, halving the ramp time.
+**`ContractTransferByteSeqScale`** controls how many contracts it takes to reach full (`StandardContractTransferByteCount`) speed. The fork default is 2 (full speed in 2 contracts). Lowmem and eco use 4 to reduce signaling frequency on constrained nodes.
 
-**`ContractFillFraction`** (0.7 vs upstream 0.8) starts the contract refill request earlier — when 70% of the current quota is used instead of 80%. This gives more headroom before exhaustion, which matters when signaling latency is high.
+**`ContractFillFraction`** (`dynamic` starting v3.23.0-fix.24) adapts to the observed transfer RTT. At low RTT (≤100ms) it fills to 0.85 — refills arrive quickly so we can pack close to capacity. At high RTT (≥1000ms) it drops to 0.50 — bytes drain faster relative to API round-trip so more headroom is needed. Falls back to the static 0.7 when no RTT data is available (e.g. cold start). Lowmem and eco profiles still use the static 0.7 to avoid the per-sequence RTT window allocation.
 
 **`CreateContractTimeout`** (60s vs upstream 30s) gives the OOB signaling layer more time to respond during load spikes before dropping the connection.
+
+---
+
+## 🏇 Multi-Race Client Count
+
+The `MultiRaceClientCount` setting controls how many remote providers are raced simultaneously to deliver the first packet of a new flow. Only one needs to ack — the first responder wins and becomes the active provider for the flow's lifetime. Racing more providers improves the chance of a fast pick.
+
+**Fork default:** 16 on all platforms. The race count is double-bounded at runtime by the number of healthy providers in the window and by per-flow packet budgets, so a node with 3 healthy providers races 3 regardless of this ceiling. Each race goroutine is I/O-bound (blocks on network response), so single-core nodes benefit just as much as multicore ones.
 
 ---
 
