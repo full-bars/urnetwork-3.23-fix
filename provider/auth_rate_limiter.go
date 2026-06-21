@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +79,13 @@ const (
 // feed back into the AIMD logic — a guaranteed 429/timeout cascade on cold
 // start if the API can only handle a couple of concurrent auths, which
 // halved the rate before it ever had a chance to find a stable point.
-var globalAuthRateLimiter = newAuthRateLimiter(1, 10, 3)
+// The server-side ConnectionRateLimit already caps connections per
+// client IP hash (~200 conns/60s). A low client-side rate is therefore
+// unnecessary throttling on top of the server's own limits. Defaults
+// are now high enough to rarely engage, while still providing 429
+// backoff protection. Set URNETWORK_AUTH_UNLIMITED=true to bypass the
+// limiter entirely.
+var globalAuthRateLimiter = newAuthRateLimiter(20, 200, 50)
 
 func newAuthRateLimiter(min, max rate.Limit, burst int) *authRateLimiter {
 	return &authRateLimiter{
@@ -91,6 +98,9 @@ func newAuthRateLimiter(min, max rate.Limit, burst int) *authRateLimiter {
 // Wait blocks until the next auth attempt is allowed to proceed, or until ctx
 // is done.
 func (a *authRateLimiter) Wait(ctx context.Context) error {
+	if os.Getenv("URNETWORK_AUTH_UNLIMITED") == "true" {
+		return nil
+	}
 	return a.limiter.Wait(ctx)
 }
 

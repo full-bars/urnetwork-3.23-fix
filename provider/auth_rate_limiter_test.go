@@ -308,3 +308,16 @@ func TestAuthRateLimiter_ReportResultForProxy_ScatteredUnprovenTimeoutsDoNotTrip
 		t.Fatalf("expected rate to stay at ceiling 10 when timeouts never run uninterrupted, got %v", got)
 	}
 }
+
+func TestAuthRateLimiter_UnlimitedEnvVar(t *testing.T) {
+	t.Setenv("URNETWORK_AUTH_UNLIMITED", "true")
+	l := newAuthRateLimiter(1, 10, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := l.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait should return nil when URNETWORK_AUTH_UNLIMITED=true, got %v", err)
+	}
+}
