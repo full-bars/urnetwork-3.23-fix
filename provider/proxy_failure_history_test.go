@@ -38,3 +38,26 @@ func TestProxyFailureHistory_SurvivesAcrossLaunches(t *testing.T) {
 		t.Fatalf("sanity check failed: local counter should be reset")
 	}
 }
+
+// TestProxyFailureHistory_ResetClearsCount is a regression test for a bug
+// found during fleet log analysis: a proxy that failed several times before
+// finally succeeding (or one that drops and reconnects later) kept its
+// lifetime failure count forever, permanently biasing the admission gate's
+// weighted lottery against it even after it proved itself. Reset must wipe
+// the count so a proven proxy competes on equal footing with an untried one.
+func TestProxyFailureHistory_ResetClearsCount(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+
+	for i := 0; i < 5; i++ {
+		h.RecordFailure("1.2.3.4:1080")
+	}
+	if got := h.FailureCount("1.2.3.4:1080"); got != 5 {
+		t.Fatalf("expected 5 recorded failures before reset, got %d", got)
+	}
+
+	h.Reset("1.2.3.4:1080")
+
+	if got := h.FailureCount("1.2.3.4:1080"); got != 0 {
+		t.Fatalf("expected failure count to be cleared after Reset, got %d", got)
+	}
+}
