@@ -1290,6 +1290,34 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	}
 }
 
+// classifyAuthFailureCause derives a human-readable root cause for a proxy's
+// final auth failure, so operators get an actionable message instead of a
+// generic "JWT may be expired" that is wrong for the common cases below.
+//
+// "proxy unreachable" gets its own bucket, separate from real network errors
+// reaching the API: it's synthesized by the local TCP reachability probe
+// (probeProxyReachable) before any auth attempt is made, so it says nothing
+// about api.bringyour.com's health — it just means this proxy's port is
+// dead. Bundling it with genuine API-side timeouts made dead entries in a
+// public proxy list look identical to real API outages in the logs.
+func classifyAuthFailureCause(err error) string {
+	errMsg := err.Error()
+	switch {
+	case strings.Contains(errMsg, "proxy unreachable"):
+		return "proxy itself is unreachable (dead/offline SOCKS endpoint — not an API issue)"
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, context.Canceled),
+		strings.Contains(errMsg, "Timeout"),
+		strings.Contains(errMsg, "timeout"),
+		strings.Contains(errMsg, "deadline exceeded"),
+		strings.Contains(errMsg, "connection refused"),
+		strings.Contains(errMsg, "no such host"):
+		return "network error reaching API (check connectivity to api.bringyour.com)"
+	default:
+		return "API rejected token (check JWT validity)"
+	}
+}
+
 func provide(opts docopt.Opts) {
 	port, _ := opts.Int("--port")
 
@@ -1527,24 +1555,7 @@ func provide(opts docopt.Opts) {
 					globalProxyFailureHistory.RecordFailure(proxySettings.Address)
 				}
 				if authFailures >= maxAuthFailures {
-					// Classify the root cause so operators get an actionable message
-					// rather than a generic "JWT may be expired" that is wrong for
-					// the common case of API timeouts during startup.
-					var cause string
-					errMsg := err.Error()
-					switch {
-					case errors.Is(err, context.DeadlineExceeded),
-						errors.Is(err, context.Canceled),
-						strings.Contains(errMsg, "Timeout"),
-						strings.Contains(errMsg, "timeout"),
-						strings.Contains(errMsg, "deadline exceeded"),
-						strings.Contains(errMsg, "connection refused"),
-						strings.Contains(errMsg, "no such host"),
-						strings.Contains(errMsg, "proxy unreachable"):
-						cause = "network error reaching API (check connectivity to api.bringyour.com)"
-					default:
-						cause = "API rejected token (check JWT validity)"
-					}
+					cause := classifyAuthFailureCause(err)
 					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 				}
 
