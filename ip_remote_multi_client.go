@@ -2,7 +2,6 @@ package connect
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,15 +97,7 @@ type MultiClientGenerator interface {
 }
 
 func defaultMultiRaceClientCount() int {
-	cpus := runtime.NumCPU()
-	switch {
-	case cpus >= 5:
-		return 16
-	case cpus >= 3:
-		return 14
-	default:
-		return 10
-	}
+	return 16
 }
 
 func DefaultMultiClientSettings() *MultiClientSettings {
