@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.23
+**Current Version**: v3.23.0-fix.24
 
 ---
 
@@ -947,5 +947,82 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Previously, a subset of early-exit paths skipped the release, leaking one slot per occurrence until the gate capacity was exhausted.
 
 **Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 43. Raised Default Throughput Ceilings
+
+**Purpose**: Remove conservative defaults that artificially capped throughput on medium-to-large nodes. The fork's previous defaults were designed for memory-constrained environments, leaving significant bandwidth unused on production hardware.
+
+**Files Modified**: `transport.go`, `ip.go`, `tuning.go`, `transfer_contract_manager.go`
+
+**Changes**:
+- **TransportBufferSize**: 1 → 16. Only 1 message was buffered in-flight between the protocol framer and WebSocket writer. This serialized all upstream traffic regardless of available bandwidth. Now matches the transfer buffer depth.
+- **TCP/UDP MaxWindowSize**: 1 MiB → 4 MiB. Removes the ~160 Mbps per-connection throughput ceiling at 50ms RTT. UDP window raised to match.
+- **applyTier3 sets actual performance values**: Previously `URNETWORK_PROFILE=auto` on 4GiB+ boxes left all settings at defaults. Now applies 2 MiB initial contracts, 256-depth IP buffers, 4 MiB TCP window, and 4 MiB transfer queues.
+- **ContractTransferByteSeqScale**: 4 → 2. Reaches the 128 MiB standard contract in 2 sequences instead of 4, halving cold-start ramp time. Previously only turbo profiles got this.
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.
+
+---
+
+## 44. Relaxed Client-Side Auth Rate Limiter
+
+**Purpose**: The server-side ConnectionRateLimit already caps auth connections per client IP hash (~200 conns/60s). The client-side limiter at 1 req/s (burst 3) was unnecessarily serializing fleet warmup on top of the server's own limits.
+
+**Files Modified**: `provider/auth_rate_limiter.go`, `provider/auth_rate_limiter_test.go`
+
+**Changes**:
+- Default min: 1 → 20 req/s, max: 10 → 200 req/s, burst: 3 → 50
+- Added `URNETWORK_AUTH_UNLIMITED=true` env var to bypass the limiter entirely
+- The limiter is preserved (not removed) because it still provides adaptive 429 backoff protection
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.
+
+---
+
+## 45. CPU-Scaled MultiRaceClientCount
+
+**Purpose**: Replace the hardcoded MultiRaceClientCount (2) with a value that scales with available CPU cores. More parallel sends at connection-establishment time means higher chance of winning the first-packet race.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`
+
+**Changes**:
+- Added `defaultMultiRaceClientCount()` function: 1-2 cores → 4, 3-4 cores → 6, 5-8 cores → 8, 9+ cores → 12
+- The race cost is purely transient (parallel sends only at connection-establishment, not per-packet)
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.
+
+---
+
+## 46. Dynamic ContractFillFraction Based on RTT
+
+**Purpose**: Replace the static ContractFillFraction (0.7) with a value that adapts to observed round-trip time. On high-latency links, contract bytes drain faster relative to the API round-trip, so more headroom prevents pipeline stalls. On low-latency links, we can fill closer to capacity.
+
+**Files Modified**: `transfer.go`, `transfer_rtt.go`, `transfer_rtt_test.go`
+
+**Changes**:
+- Added `MeanRtt()` public method to `RttWindow`
+- Added `computeFillFraction(meanRtt, fallback)`: RTT ≤ 100ms → 0.85, ≥ 1000ms → 0.50, linear interpolation between
+- `SendSequence.contractFillFraction()` now delegates to `computeFillFraction`, falling back to the static settings value when no RTT data is available
+- Added 3 unit tests for MeanRtt and fill fraction computation
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.
+
+---
+
+## 47. Sharded Packet Dispatch
+
+**Purpose**: Replace the single-goroutine packet dispatch loop in LocalUserNat with N shard goroutines (one per CPU, capped at 16). Each shard has its own buffer instances and processes packets independently.
+
+**Files Modified**: `ip.go`, `ip_test.go`
+
+**Changes**:
+- Packets are routed to shards via a deterministic FNV-1a flow hash of the IP 4-tuple (source/dest IP + ports), ensuring per-flow affinity
+- Each shard runs its own `select` loop with independent UDP/TCP buffer instances
+- `CallbackList` is already mutex-protected, so concurrent receives across shards are safe
+- Added 7 unit tests for flowHash and pickShard
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.
 
 ---
