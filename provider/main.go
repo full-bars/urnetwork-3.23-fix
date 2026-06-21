@@ -1526,6 +1526,7 @@ func provide(opts docopt.Opts) {
 					if proxySettings != nil {
 						if err == nil {
 							globalProvenProxies.MarkSucceeded(proxySettings.Address)
+							globalProxyFailureHistory.Reset(proxySettings.Address)
 						}
 						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
 					} else {
@@ -1968,9 +1969,14 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 
 // proxyAuthRetryDelay picks the wait before the next auth retry. A 429 means
 // the API is explicitly asking us to slow down, unlike a timeout (which is
-// just as likely transient on our end), so it scales with the attempt count
-// instead of using the same flat jitter as every other error — otherwise a
-// batch of proxies that all hit 429s keeps hammering the API at the same rate.
+// just as likely transient on our end), so it scales more aggressively with
+// the attempt count than every other error — otherwise a batch of proxies
+// that all hit 429s keeps hammering the API at the same rate.
+//
+// Non-429 errors still scale with attempt, just gentler (1s/attempt instead
+// of 5s/attempt, capped at 15s instead of 60s): a proven proxy's 9th retry
+// got the exact same 0.5-10.5s jitter as its 1st, giving a chronically
+// flaky proxy no extra breathing room as its failure streak grew.
 func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	if isRateLimitedError(err) {
 		delay := time.Duration(attempt)*5*time.Second + time.Duration(mathrand.Intn(5000))*time.Millisecond
@@ -1979,7 +1985,14 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 		}
 		return delay
 	}
-	return time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
+	delay := time.Duration(500+mathrand.Intn(3000)) * time.Millisecond
+	if attempt > 1 {
+		delay += time.Duration(attempt-1) * time.Second
+	}
+	if delay > 15*time.Second {
+		delay = 15 * time.Second
+	}
+	return delay
 }
 
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
