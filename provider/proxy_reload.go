@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -78,15 +79,47 @@ func acquireProxyLockAt(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL, 0600)
+	if existing, err := os.ReadFile(path); err == nil {
+		if isLockStale(existing) {
+			os.Remove(path)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("reload already in progress — try again in a moment")
 		}
 		return nil, err
 	}
+	fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
 	f.Close()
 	return func() { os.Remove(path) }, nil
+}
+
+const proxyLockStaleAge = 5 * time.Minute
+
+func isLockStale(data []byte) bool {
+	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	if len(lines) < 2 {
+		return true
+	}
+	pid, err := strconv.Atoi(lines[0])
+	if err != nil {
+		return true
+	}
+	ts, err := strconv.ParseInt(lines[1], 10, 64)
+	if err != nil {
+		return true
+	}
+	if time.Since(time.Unix(ts, 0)) > proxyLockStaleAge {
+		return true
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return true
+	}
+	err = process.Signal(syscall.Signal(0))
+	return err != nil
 }
 
 // ProxyReloader manages hot-reload of proxy goroutines. It is driven by the
