@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.21.2
+**Current Version**: v3.23.0-fix.23
 
 ---
 
@@ -391,7 +391,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 
 ---
 
-**Last Updated**: 2026-06-02  
+**Last Updated**: 2026-06-20  
 **Maintained By**: @full-bars  
 **Contact**: Reference GitHub issues in urnetwork-3.23-fix repo
 
@@ -864,5 +864,88 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
   - Logs `[proxy][authrate] 429 received — cutting auth rate X -> Y req/s` and the equivalent on recovery, so the adaptation is visible in normal operation.
 
 **Status**: ✅ Shipped, pending next tagged release.
+
+---
+
+## 37. v3.23.0-fix.23 — Various Enhancements & Fixes
+
+### SOCKS5 Handshake Probe (Was TCP-Only)
+
+The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` greeting + response) instead of a bare TCP connect. This verifies the proxy actually speaks SOCKS5 before marking it as reachable, eliminating false positives from hosts that accept TCP connections but aren't functioning SOCKS5 proxies.
+
+**Files Modified**: `provider/proxy_benchmark.go`
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 38. Bounded Auth Concurrency
+
+**Purpose**: Prevent resource exhaustion when many proxies attempt authentication simultaneously.
+
+**Files Modified**: `provider/main.go`
+
+**Change**:
+- Introduced a concurrency semaphore limiting in-flight auth attempts to 5.
+- When the limit is reached, additional auth attempts block until a slot opens, ensuring auth API calls remain bounded regardless of proxy list size.
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 39. Contract Logging — No Longer Rate-Limited
+
+**Purpose**: Ensure every contract event is visible in logs for debugging and earnings verification.
+
+**Files Modified**: `transfer.go`
+
+**Change**:
+- Contract lifecycle events (`[contract] acquired`, `[contract] denied`, `[contract] oob`) are now logged unconditionally — no rate-limiting applied.
+- Previously, contract errors were suppressed during high-churn periods. Now every event is recorded for complete auditability.
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 40. ControlPingTimeout Enabled (30s Keepalive)
+
+**Purpose**: Detect silent connection drops to the control plane faster.
+
+**Files Modified**: `transport.go`
+
+**Change**:
+- `ControlPingTimeout` set to 30 seconds, enabling active keepalive pings on control-plane connections.
+- Previously disabled, this ensures the provider detects a dead control connection within 30 seconds rather than waiting for the next application-level message or TCP timeout.
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 41. Stale `proxy.lock` Detection After Crash
+
+**Purpose**: Automatically detect and clean up stale lock files left behind after a provider crash, preventing "another operation in progress" errors on restart.
+
+**Files Modified**: `provider/proxy_state.go`
+
+**Change**:
+- On startup, the provider checks if `proxy.lock` exists and whether the process that created it is still alive.
+- If the owning process is gone, the lock file is removed and a warning is logged (`[proxy] cleaned stale lock from PID <N>`).
+- Prevents manual intervention after a crash.
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
+
+---
+
+## 42. Admission Gate Slot Leak Fixed
+
+**Purpose**: Close a resource leak where admission gate slots were not released on certain error paths, causing the provider to gradually exhaust its admission budget and reject new connections.
+
+**Files Modified**: `admission.go`
+
+**Change**:
+- All error return paths in the admission gate now properly release the acquired slot via `defer` or explicit release calls.
+- Previously, a subset of early-exit paths skipped the release, leaking one slot per occurrence until the gate capacity was exhausted.
+
+**Status**: ✅ Shipped in v3.23.0-fix.23.
 
 ---
