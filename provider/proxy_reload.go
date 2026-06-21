@@ -213,19 +213,47 @@ func requeueURLProxyAfterGiveUp(ctx context.Context, addr string, cancelMapMu *s
 	cancelMapMu.Unlock()
 
 	setGiveUpCooldown(addr, time.Now().Add(proxyURLGiveUpRetryAfter))
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(proxyURLGiveUpRetryAfter):
-		}
-		clearGiveUpCooldown(addr)
-		if reloadPath, err := proxyReloadPath(); err == nil {
-			_ = writeReloadTrigger(reloadPath)
-		}
-	}()
+	go scheduleGiveUpRequeue(ctx, addr, cancelMapMu, cancelMap, proxyURLGiveUpRetryAfter, proxyURLGiveUpRecheckAfter)
 	return true
+}
+
+// proxyURLGiveUpRecheckAfter is how long after the requeue trigger fires that
+// scheduleGiveUpRequeue checks whether the address actually got picked back
+// up, retrying the trigger once if not.
+const proxyURLGiveUpRecheckAfter = 30 * time.Second
+
+// scheduleGiveUpRequeue waits cooldown, clears it, and fires a reload
+// trigger — then waits recheck and fires a second trigger if the address
+// still isn't running. Without the recheck, an address whose first trigger
+// landed during a transient reload() failure (e.g. the "reload skipped:
+// could not read source" path) would sit orphaned forever: its cooldown
+// already cleared, with nothing left to ever bring it back short of a
+// manual 'proxy refresh' or process restart. Durations are parameters
+// (rather than reading the package constants directly) so tests can run this
+// on a fast clock instead of waiting on the real 15-minute cooldown.
+func scheduleGiveUpRequeue(ctx context.Context, addr string, cancelMapMu *sync.Mutex, cancelMap map[string]context.CancelFunc, cooldown, recheckAfter time.Duration) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(cooldown):
+	}
+	clearGiveUpCooldown(addr)
+	reloadPath, pathErr := proxyReloadPath()
+	if pathErr == nil {
+		_ = writeReloadTrigger(reloadPath)
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(recheckAfter):
+	}
+	cancelMapMu.Lock()
+	_, running := cancelMap[addr]
+	cancelMapMu.Unlock()
+	if !running && pathErr == nil {
+		_ = writeReloadTrigger(reloadPath)
+	}
 }
 
 // reload diffs the proxy source against the currently running set and applies

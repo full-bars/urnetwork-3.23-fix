@@ -1295,11 +1295,12 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 // generic "JWT may be expired" that is wrong for the common cases below.
 //
 // "proxy unreachable" gets its own bucket, separate from real network errors
-// reaching the API: it's synthesized by the local TCP reachability probe
-// (probeProxyReachable) before any auth attempt is made, so it says nothing
+// reaching the API: it's synthesized by the local SOCKS5 reachability probe
+// (probeProxySocks5) before any auth attempt is made, so it says nothing
 // about api.bringyour.com's health — it just means this proxy's port is
-// dead. Bundling it with genuine API-side timeouts made dead entries in a
-// public proxy list look identical to real API outages in the logs.
+// dead or not actually speaking SOCKS5. Bundling it with genuine API-side
+// timeouts made dead entries in a public proxy list look identical to real
+// API outages in the logs.
 func classifyAuthFailureCause(err error) string {
 	errMsg := err.Error()
 	switch {
@@ -1499,13 +1500,16 @@ func provide(opts docopt.Opts) {
 				var byClientJwt string
 				var clientId connect.Id
 
-				if proxySettings != nil && !probeProxyReachable(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
-					// The proxy itself isn't even accepting a TCP connection right
-					// now — that's a dead local hop, not a signal about the API's
-					// health. Skip the auth attempt (and the shared rate limiter)
-					// entirely rather than spending a slot and reporting a timeout
-					// that would falsely look like the API is overloaded and
-					// throttle every other proxy's auth rate for no reason.
+				if proxySettings != nil && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
+					// The proxy itself isn't even speaking SOCKS5 right now — either
+					// the port is dead, or something is listening but isn't a real
+					// SOCKS5 endpoint (open port with a broken/wrong service, a
+					// captive portal, etc). Either way that's a dead local hop, not a
+					// signal about the API's health. Skip the auth attempt (and the
+					// shared rate limiter) entirely rather than spending a slot and
+					// reporting a timeout that would falsely look like the API is
+					// overloaded and throttle every other proxy's auth rate for no
+					// reason.
 					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
@@ -1517,13 +1521,16 @@ func provide(opts docopt.Opts) {
 					if proxySettings != nil {
 						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Address)
 					}
-					if waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount); waitErr != nil {
+					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
+					if waitErr != nil {
 						return "", connect.Id{}, waitErr
 					}
 					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+					release()
 					if proxySettings != nil {
 						if err == nil {
 							globalProvenProxies.MarkSucceeded(proxySettings.Address)
+							globalProxyFailureHistory.Reset(proxySettings.Address)
 						}
 						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
 					} else {
@@ -1966,9 +1973,14 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 
 // proxyAuthRetryDelay picks the wait before the next auth retry. A 429 means
 // the API is explicitly asking us to slow down, unlike a timeout (which is
-// just as likely transient on our end), so it scales with the attempt count
-// instead of using the same flat jitter as every other error — otherwise a
-// batch of proxies that all hit 429s keeps hammering the API at the same rate.
+// just as likely transient on our end), so it scales more aggressively with
+// the attempt count than every other error — otherwise a batch of proxies
+// that all hit 429s keeps hammering the API at the same rate.
+//
+// Non-429 errors still scale with attempt, just gentler (1s/attempt instead
+// of 5s/attempt, capped at 15s instead of 60s): a proven proxy's 9th retry
+// got the exact same 0.5-10.5s jitter as its 1st, giving a chronically
+// flaky proxy no extra breathing room as its failure streak grew.
 func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	if isRateLimitedError(err) {
 		delay := time.Duration(attempt)*5*time.Second + time.Duration(mathrand.Intn(5000))*time.Millisecond
@@ -1977,7 +1989,14 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 		}
 		return delay
 	}
-	return time.Duration(500+mathrand.Intn(10000)) * time.Millisecond
+	delay := time.Duration(500+mathrand.Intn(3000)) * time.Millisecond
+	if attempt > 1 {
+		delay += time.Duration(attempt-1) * time.Second
+	}
+	if delay > 15*time.Second {
+		delay = 15 * time.Second
+	}
+	return delay
 }
 
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {

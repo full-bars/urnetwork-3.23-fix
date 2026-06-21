@@ -294,17 +294,28 @@ func TestProxyAuthRetryDelay_429ScalesWithAttempt(t *testing.T) {
 	}
 }
 
-// TestProxyAuthRetryDelay_NonRateLimitUsesFlatJitter ensures ordinary errors
-// (timeouts, connection refused, etc.) keep the existing flat jitter and are
-// not penalized with the 429 backoff schedule.
-func TestProxyAuthRetryDelay_NonRateLimitUsesFlatJitter(t *testing.T) {
+// TestProxyAuthRetryDelay_NonRateLimitScalesGentlyWithAttempt is a regression
+// test for a live deployment observation: ordinary errors (timeouts,
+// connection refused, etc.) used the exact same flat 0.5-10.5s jitter
+// regardless of attempt count, so a proven proxy's 9th retry got no more
+// breathing room than its 1st. Delay must still grow with attempt, just
+// gentler and with a lower cap than the explicit-429 schedule.
+func TestProxyAuthRetryDelay_NonRateLimitScalesGentlyWithAttempt(t *testing.T) {
 	err := errors.New("Timeout.")
 
-	for attempt := 1; attempt <= 5; attempt++ {
-		d := proxyAuthRetryDelay(err, attempt)
-		if d < 500*time.Millisecond || d > 10500*time.Millisecond {
-			t.Fatalf("attempt %d: expected delay in [0.5s,10.5s], got %v", attempt, d)
-		}
+	d1 := proxyAuthRetryDelay(err, 1)
+	if d1 < 500*time.Millisecond || d1 > 3500*time.Millisecond {
+		t.Fatalf("attempt 1: expected delay in [0.5s,3.5s], got %v", d1)
+	}
+
+	d3 := proxyAuthRetryDelay(err, 3)
+	if d3 < 2500*time.Millisecond || d3 > 5500*time.Millisecond {
+		t.Fatalf("attempt 3: expected delay in [2.5s,5.5s], got %v", d3)
+	}
+
+	dCap := proxyAuthRetryDelay(err, 100)
+	if dCap != 15*time.Second {
+		t.Fatalf("expected delay to cap at 15s for a high attempt count, got %v", dCap)
 	}
 }
 
