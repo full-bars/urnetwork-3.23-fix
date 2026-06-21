@@ -77,6 +77,14 @@ func (g *proxyAdmissionGate) Admit(ctx context.Context, failureCount int) (relea
 		return func() { <-g.concurrency }, nil
 	case <-ctx.Done():
 		g.remove(w)
+		select {
+		case <-w.ready:
+			// ctx was cancelled after the dispatch loop selected this
+			// waiter and claimed a concurrency slot for it — release
+			// the slot now so it isn't permanently leaked.
+			<-g.concurrency
+		default:
+		}
 		return nil, ctx.Err()
 	}
 }
