@@ -7,6 +7,30 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+<!-- placeholder for next release -->
+
+---
+
+## [v3.23.0-fix.23] — 2026-06-20
+
+### Added
+- **SOCKS5 handshake probe**: The per-proxy TCP connect probe now performs a full SOCKS5 handshake (greeting + response) instead of a bare TCP connect, eliminating false positives from hosts that accept TCP but aren't functioning SOCKS5 proxies.
+- **Bounded auth concurrency**: In-flight auth attempts are now limited to 5 via a concurrency semaphore, preventing resource exhaustion on large proxy lists.
+- **Rate limiter heartbeat**: When the adaptive auth rate limiter is pinned at its floor (1 req/s), a `[proxy][authrate]` heartbeat line is logged every 60 seconds so operators can see the limiter is actively engaged.
+- **Contract logs no longer rate-limited**: Contract lifecycle events (`[contract] acquired`, `[contract] denied`, `[contract] oob`) are now logged unconditionally for complete auditability.
+- **`[traffic]` total with earning signal**: The `[traffic] total` line now includes `earning=yes|no` and `billable_today=X` fields for immediate visibility into whether a proxy is generating earnings.
+- **Failure count resets on successful auth**: Per-proxy failure counters are reset to zero when a proxy successfully authenticates, preventing historical failures from skewing health tracking.
+- **Non-429 retry delay scales with attempt**: Transient errors (non-429) now also scale their retry delay with attempt number (capped at 60s), instead of using a flat jitter.
+- **Unproven overload streak decays gracefully**: The overload streak counter for unproven proxies now decays over time rather than clearing fully, preventing rapid re-triggering of backoff.
+- **Give-up requeue on reload**: Proxies that gave up due to exhaustion of auth retries are re-queued for retry if a hot-reload cycle doesn't pick up their address (via file or URL source change).
+- **RAMLOG ring buffer**: The in-memory log buffer now uses a ring-buffer design that keeps the newest ~3.3 MB and discards the oldest ~1.7 MB when full, rather than a simple truncation.
+- **ControlPingTimeout enabled (30s keepalive)**: Active keepalive pings on control-plane connections detect silent drops within 30 seconds.
+- **Stale proxy.lock detection**: On startup, the provider detects and cleans up stale `proxy.lock` files left behind after a crash.
+- **Overlapping fetch cycles prevented**: Concurrent `PROXY_URL` fetch cycles for the same URL are now skipped with a log warning.
+- **CLI commands now lock properly**: All CLI management commands (`proxy refresh`, `proxy remove-dead`, etc.) acquire the proxy lock to prevent concurrent operations from corrupting state.
+- **Memory leak fix (failure history + proven set pruning)**: Internal failure history and proven-set data structures are periodically pruned of stale entries, preventing unbounded heap growth.
+- **Custom HTTP client for URL fetches**: URL fetch subsystem uses a dedicated HTTP client with 30s connect / 60s response timeouts, isolated from the provider's control-plane transport.
+- **Admission gate slot leak fixed**: All error return paths in the admission gate now properly release acquired slots, preventing gradual exhaustion of the admission budget.
 - **Proxy URL Sources**: Point the provider at a live proxy list URL (`--proxy_url` / `PROXY_URL`, comma-separated for multiple sources) instead of, or alongside, a static `proxy.txt`. Fetches on an interval (default 15m), merges new entries into the existing hot-reload pipeline without disturbing already-warmed-up proxies, and supports scoped automatic dead-proxy cleanup (`--proxy_dead_cleanup_scope=url|all|none`) so a noisy public list can self-prune without touching hand-curated entries. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
 - **Hot-reload added-proxy visibility**: When a hot-reload adds proxies, the provider now prints the same `Using N proxy servers:` + per-proxy listing used at startup, instead of only logging removals. Makes it trivial to confirm a `--proxy_file` or `--proxy_url` reload actually picked up new entries.
 - **Global adaptive auth rate limiter**: All proxy auth attempts (first tries and retries alike) now funnel through a single shared, self-tuning rate limiter instead of relying on uncoordinated per-proxy backoff. The limiter starts at the believed safe ceiling, halves on a 429 from the auth API, and creeps back up after a sustained run of clean attempts — bounding aggregate load on a fragile upstream API without serializing startup of large proxy fleets.

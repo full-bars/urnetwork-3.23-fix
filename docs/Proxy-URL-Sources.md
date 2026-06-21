@@ -100,6 +100,31 @@ Manual `urnet-tools proxy remove-dead` is unaffected by this setting in every ca
 
 ---
 
+## 🛡️ Overlapping Fetch Prevention
+
+Concurrent fetch cycles for the same URL are now prevented. If a fetch is already in progress when the refresh interval fires, the new cycle is skipped with a log line (`[proxy-url] fetch already in progress for <url>, skipping`). This prevents accidental thundering-herd when multiple triggers fire near-simultaneously (e.g., a `--proxy_url` interval coinciding with a `add-source` command).
+
+## 🧹 Memory Pruning
+
+The provider periodically prunes internal data structures to control memory growth over long runtimes with large proxy lists:
+
+- **Failure history**: Per-proxy failure counters and last-error timestamps for proxies that have been removed or replaced are freed after the cleanup cycle.
+- **Proven set**: The internal set of addresses that have been validated (proven working) is periodically pruned of entries that are no longer in the active proxy list, preventing unbounded growth.
+
+This ensures that a provider running for weeks with high proxy churn doesn't accumulate stale metadata that bloats heap usage.
+
+## 🌐 Custom HTTP Client for URL Fetches
+
+The URL fetch subsystem now uses a dedicated HTTP client with sensible timeouts, rather than relying on the provider's default transport:
+
+- **Connection timeout**: 30 seconds
+- **Response timeout**: 60 seconds
+- **User-Agent**: `urnetwork-proxy-url-fetcher/1.0`
+
+This prevents a slow or hanging proxy list URL from blocking the provider's control-plane transport. The dedicated client is used exclusively for `--proxy_url` / `PROXY_URL` fetches and is independent of the provider's WebSocket/QUIC transports.
+
+---
+
 ## ❓ FAQ
 
 **Will this duplicate proxies already in my file?**

@@ -33,6 +33,8 @@ The examples below use `urfix` as the container name.
 ```bash
 docker run -d --name urfix \
   -v ~/.urnetwork:/root/.urnetwork \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -e URNETWORK_PROXY_BENCHMARK=true \
   -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
   -e URNETWORK_REPORT_URL=http://hub-server:8080 \
@@ -41,6 +43,7 @@ docker run -d --name urfix \
 
 | Env var | Purpose |
 |---|---|
+| `PROXY_URL` | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](Proxy-URL-Sources.md)) |
 | `URNETWORK_PROXY_BENCHMARK=true` | Enables per-proxy latency probes (TCP connect every 5m, SOCKS5 every 15m) |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
 | `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting (see hub/README) |
@@ -295,7 +298,9 @@ docker run -d \
   -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
   -e URNETWORK_NODE_NAME=urfix \
   -e HOST_HOSTNAME=$(hostname) \
+  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
+  -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
@@ -335,6 +340,7 @@ docker run -d \
   -e BUILD=jwt \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
+  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -379,6 +385,7 @@ docker run -d \
   -e URNETWORK_NODE_NAME=urfix \
   -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
+  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
