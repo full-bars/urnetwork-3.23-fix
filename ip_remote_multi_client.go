@@ -103,9 +103,9 @@ func defaultMultiRaceClientCount() int {
 	case cpus >= 5:
 		return 16
 	case cpus >= 3:
-		return 12
+		return 14
 	default:
-		return 8
+		return 10
 	}
 }
 
