@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,20 @@ type MultiClientGenerator interface {
 	FixedDestinationSize() (int, bool)
 }
 
+func defaultMultiRaceClientCount() int {
+	cpus := runtime.NumCPU()
+	switch {
+	case cpus >= 9:
+		return 12
+	case cpus >= 5:
+		return 8
+	case cpus >= 3:
+		return 6
+	default:
+		return 4
+	}
+}
+
 func DefaultMultiClientSettings() *MultiClientSettings {
 	return &MultiClientSettings{
 		SequenceBufferSize:  defaultTransferBufferSize,
@@ -162,8 +177,8 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		MultiRaceClientPacketMaxCount:        8,
 		MultiRacePacketMaxCount:              32,
 		MultiRaceClientEarlyCompleteFraction: 0.25,
-		// TODO on platforms with more memory, increase this
-		MultiRaceClientCount: 2,
+		// races more providers on multicore servers to improve first-packet win rate
+		MultiRaceClientCount: defaultMultiRaceClientCount(),
 
 		StatsWindowMaxUnhealthyDuration:  15 * time.Second,
 		StatsWindowWarnUnhealthyDuration: 5 * time.Second,
