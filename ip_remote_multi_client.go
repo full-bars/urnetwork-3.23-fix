@@ -163,7 +163,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		MultiRacePacketMaxCount:              32,
 		MultiRaceClientEarlyCompleteFraction: 0.25,
 		// TODO on platforms with more memory, increase this
-		MultiRaceClientCount: 2,
+		MultiRaceClientCount: 4,
 
 		StatsWindowMaxUnhealthyDuration:  15 * time.Second,
 		StatsWindowWarnUnhealthyDuration: 5 * time.Second,
