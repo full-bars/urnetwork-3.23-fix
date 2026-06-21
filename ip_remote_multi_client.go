@@ -100,14 +100,12 @@ type MultiClientGenerator interface {
 func defaultMultiRaceClientCount() int {
 	cpus := runtime.NumCPU()
 	switch {
-	case cpus >= 9:
-		return 12
 	case cpus >= 5:
-		return 8
+		return 12
 	case cpus >= 3:
-		return 6
+		return 10
 	default:
-		return 4
+		return 8
 	}
 }
 
