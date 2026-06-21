@@ -303,12 +303,8 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 func TestDefaultMultiRaceClientCount(t *testing.T) {
 	n := defaultMultiRaceClientCount()
 
-	// should always be between 4 and 12
-	if n < 4 {
-		t.Errorf("expected at least 4, got %d", n)
-	}
-	if n > 12 {
-		t.Errorf("expected at most 12, got %d", n)
+	if n != 16 {
+		t.Errorf("expected 16, got %d", n)
 	}
 
 	// DefaultMultiClientSettings should use it
