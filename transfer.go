@@ -114,7 +114,7 @@ func DefaultClientSettings() *ClientSettings {
 		ForwardBufferSize:       DefaultTransferBufferSize,
 		ReadTimeout:             30 * time.Second,
 		BufferTimeout:           15 * time.Second,
-		ControlPingTimeout:      time.Duration(0),
+		ControlPingTimeout:      30 * time.Second,
 		SendBufferSettings:      DefaultSendBufferSettings(),
 		ReceiveBufferSettings:   DefaultReceiveBufferSettings(),
 		ForwardBufferSettings:   DefaultForwardBufferSettings(),
