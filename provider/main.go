@@ -1116,6 +1116,13 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		fmt.Printf("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
 
+		keepAddrs := make(map[string]bool, len(report.Bandwidth))
+		for k := range report.Bandwidth {
+			keepAddrs[k] = true
+		}
+		globalProxyFailureHistory.Prune(keepAddrs)
+		globalProvenProxies.Prune(keepAddrs)
+
 		// Update proxy.state health snapshot for use by proxy refresh subcommand.
 		// proxyStateMu serializes this with reload()'s state write to prevent
 		// resurrection of proxies that were removed between our read and write.
@@ -2781,9 +2788,15 @@ func proxyAddSource(opts docopt.Opts) {
 		shmLogFatal(70, "no URL provided")
 	}
 
+	release, err := acquireProxyLock()
+	if err != nil {
+		shmLogFatal(71, "could not acquire proxy lock: %v", err)
+	}
+	defer release()
+
 	state, err := readProxyURLState()
 	if err != nil {
-		shmLogFatal(71, "could not read proxy_url.json: %v", err)
+		shmLogFatal(72, "could not read proxy_url.json: %v", err)
 	}
 	for _, existing := range state.Sources {
 		if existing == url {
@@ -2793,7 +2806,7 @@ func proxyAddSource(opts docopt.Opts) {
 	}
 	state.Sources = append(state.Sources, url)
 	if err := writeProxyURLState(state); err != nil {
-		shmLogFatal(72, "could not write proxy_url.json: %v", err)
+		shmLogFatal(73, "could not write proxy_url.json: %v", err)
 	}
 
 	fmt.Printf("added source: %s\nfetching now...\n", url)
@@ -2808,9 +2821,15 @@ func proxyRemoveSource(opts docopt.Opts) {
 	url, _ := opts.String("<url>")
 	url = strings.TrimSpace(url)
 
+	release, err := acquireProxyLock()
+	if err != nil {
+		shmLogFatal(75, "could not acquire proxy lock: %v", err)
+	}
+	defer release()
+
 	state, err := readProxyURLState()
 	if err != nil {
-		shmLogFatal(73, "could not read proxy_url.json: %v", err)
+		shmLogFatal(76, "could not read proxy_url.json: %v", err)
 	}
 
 	kept := make([]string, 0, len(state.Sources))

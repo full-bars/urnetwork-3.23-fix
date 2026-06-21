@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -62,15 +63,26 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 	return writeReloadTrigger(reloadPath)
 }
 
+var fetchMu sync.Mutex
+
 // fetchAndMergeProxyURLs fetches every configured source, merges newly
 // discovered addresses into the persisted cache (add-only — existing entries
 // are never removed here), and triggers a hot-reload if anything new was
 // found. A fetch failure for one URL logs a warning and is skipped; it never
 // clears already-cached entries from that source.
+//
+// Only one fetch cycle may run at a time — if an earlier cycle's probing
+// phase outlasts the refresh interval, the next tick's call returns
+// immediately rather than racing on the same file.
 func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 	if len(urls) == 0 {
 		return
 	}
+
+	if !fetchMu.TryLock() {
+		return
+	}
+	defer fetchMu.Unlock()
 
 	// Fetching from the network can be slow; do it before taking the lock so
 	// we don't hold it across HTTP requests. Only the read-modify-write of
