@@ -33,6 +33,7 @@ type authRateLimiter struct {
 	successStreak          int
 	unprovenOverloadStreak int
 	lastAdjustedAt         time.Time
+	lastHeartbeatAt        time.Time
 }
 
 const (
@@ -59,12 +60,25 @@ const (
 	// the limiter just because no proxy has had the chance to prove itself
 	// yet.
 	authUnprovenOverloadThreshold = 8
+	// authRateHeartbeatInterval bounds how often decrease()/increase() will
+	// log while pinned at the floor or ceiling with no actual change to
+	// report. Without this, a long stretch at the floor produces zero
+	// "[authrate]" output at all (the early-return below the rate-equality
+	// check never logs), making it impossible to tell from logs alone
+	// whether the limiter is healthy-and-pinned or has stopped working.
+	authRateHeartbeatInterval = 60 * time.Second
 )
 
 // globalAuthRateLimiter is shared by every proxy goroutine in the process —
 // they're all authenticating against the same API, so the limit has to be
 // process-wide to mean anything.
-var globalAuthRateLimiter = newAuthRateLimiter(1, 10, 15)
+//
+// Burst is 3, not the old 15: with burst=15 the first 15 queued proxies were
+// released essentially simultaneously, before any of their results could
+// feed back into the AIMD logic — a guaranteed 429/timeout cascade on cold
+// start if the API can only handle a couple of concurrent auths, which
+// halved the rate before it ever had a chance to find a stable point.
+var globalAuthRateLimiter = newAuthRateLimiter(1, 10, 3)
 
 func newAuthRateLimiter(min, max rate.Limit, burst int) *authRateLimiter {
 	return &authRateLimiter{
@@ -124,7 +138,16 @@ func (a *authRateLimiter) ReportResult(err error) {
 // the API said so itself — so it always counts immediately.
 func (a *authRateLimiter) ReportResultForProxy(err error, proxyHasSucceeded bool) {
 	if err == nil {
-		a.clearUnprovenOverloadStreak()
+		// A single success only proves one proxy is fine — with a 3-13%
+		// success rate against a mostly-dead public list, a success lands
+		// every ~8-30 attempts on average, which would otherwise reset the
+		// streak back to 0 almost every time it's about to cross
+		// authUnprovenOverloadThreshold. That defeats the whole point of
+		// the streak (catching a mass timeout-based outage hitting
+		// never-proven proxies): decay it instead of wiping it, so a real
+		// outage's signal still accumulates even with occasional successes
+		// mixed in.
+		a.decayUnprovenOverloadStreak()
 		a.recordSuccessAndMaybeIncrease()
 		return
 	}
@@ -149,6 +172,17 @@ func (a *authRateLimiter) ReportResultForProxy(err error, proxyHasSucceeded bool
 func (a *authRateLimiter) clearUnprovenOverloadStreak() {
 	a.mu.Lock()
 	a.unprovenOverloadStreak = 0
+	a.mu.Unlock()
+}
+
+// decayUnprovenOverloadStreak reduces the streak by one instead of wiping
+// it, for a signal (a bare success) that's weaker than an explicit 429 or a
+// proven-proxy failure — see the call site in ReportResultForProxy.
+func (a *authRateLimiter) decayUnprovenOverloadStreak() {
+	a.mu.Lock()
+	if a.unprovenOverloadStreak > 0 {
+		a.unprovenOverloadStreak--
+	}
 	a.mu.Unlock()
 }
 
@@ -189,11 +223,23 @@ func (a *authRateLimiter) decrease(reason string) {
 		newRate = a.min
 	}
 	if newRate == oldRate {
+		a.maybeLogPinnedHeartbeat(reason)
 		return
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
 	fmt.Printf("[proxy][authrate] %s — cutting auth rate %.2f -> %.2f req/s\n", reason, float64(oldRate), float64(newRate))
+}
+
+// maybeLogPinnedHeartbeat logs that the rate is unchanged because it's
+// already at its floor or ceiling, at most once per
+// authRateHeartbeatInterval. Callers must hold a.mu.
+func (a *authRateLimiter) maybeLogPinnedHeartbeat(reason string) {
+	if !a.lastHeartbeatAt.IsZero() && time.Since(a.lastHeartbeatAt) < authRateHeartbeatInterval {
+		return
+	}
+	a.lastHeartbeatAt = time.Now()
+	fmt.Printf("[proxy][authrate] still pinned at %.2f req/s (latest trigger: %s)\n", float64(a.limiter.Limit()), reason)
 }
 
 func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
@@ -215,6 +261,7 @@ func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
 		newRate = a.max
 	}
 	if newRate == oldRate {
+		a.maybeLogPinnedHeartbeat(fmt.Sprintf("%d clean attempts", authRateIncreaseThreshold))
 		return
 	}
 	a.limiter.SetLimit(newRate)

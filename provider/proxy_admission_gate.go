@@ -21,8 +21,19 @@ import (
 // "untried first" rule would starve retries entirely once the candidate
 // pool is large enough to keep refilling itself — which it always is here,
 // via the 15-minute URL-source requeue constantly reintroducing candidates.
+// proxyAdmissionMaxConcurrency bounds how many admitted auth attempts can be
+// in flight at once, independent of the rate limiter's start rate. The rate
+// limiter only throttles how fast new attempts are *released* — it doesn't
+// know how long a released attempt takes to finish. A SOCKS5 proxy that
+// hangs for several seconds before timing out, released at even a modest
+// rate, can pile up far more simultaneous in-flight connections to the API
+// than the configured rate would suggest. This semaphore caps that
+// regardless of how slow individual attempts are.
+const proxyAdmissionMaxConcurrency = 5
+
 type proxyAdmissionGate struct {
-	limiter *authRateLimiter
+	limiter     *authRateLimiter
+	concurrency chan struct{}
 
 	mu      sync.Mutex
 	waiters []*admissionWaiter
@@ -36,8 +47,9 @@ type admissionWaiter struct {
 
 func newProxyAdmissionGate(limiter *authRateLimiter) *proxyAdmissionGate {
 	g := &proxyAdmissionGate{
-		limiter: limiter,
-		wake:    make(chan struct{}, 1),
+		limiter:     limiter,
+		wake:        make(chan struct{}, 1),
+		concurrency: make(chan struct{}, proxyAdmissionMaxConcurrency),
 	}
 	go g.dispatchLoop()
 	return g
@@ -48,7 +60,12 @@ var globalProxyAdmissionGate = newProxyAdmissionGate(globalAuthRateLimiter)
 // Admit blocks until the caller is granted the next auth-rate-limiter slot,
 // or ctx is done. failureCount is the calling proxy's lifetime failure count
 // (see proxyFailureHistory) — lower means higher priority in the lottery.
-func (g *proxyAdmissionGate) Admit(ctx context.Context, failureCount int) error {
+//
+// On success, Admit also returns a release func that the caller MUST call
+// (typically via defer) once its auth attempt finishes, success or failure.
+// This is what enforces proxyAdmissionMaxConcurrency: the in-flight slot
+// reserved by dispatchLoop for this waiter isn't freed until release() runs.
+func (g *proxyAdmissionGate) Admit(ctx context.Context, failureCount int) (release func(), err error) {
 	w := &admissionWaiter{
 		weight: 1.0 / float64(failureCount+1),
 		ready:  make(chan struct{}),
@@ -57,10 +74,10 @@ func (g *proxyAdmissionGate) Admit(ctx context.Context, failureCount int) error 
 
 	select {
 	case <-w.ready:
-		return nil
+		return func() { <-g.concurrency }, nil
 	case <-ctx.Done():
 		g.remove(w)
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 
@@ -92,10 +109,23 @@ func (g *proxyAdmissionGate) remove(w *admissionWaiter) {
 func (g *proxyAdmissionGate) dispatchLoop() {
 	for {
 		g.waitForWaiter()
+
+		// Block here until an in-flight slot is free, before even
+		// consulting the rate limiter, so the rate limiter's start rate is
+		// never used to release more concurrent attempts than this allows.
+		g.concurrency <- struct{}{}
+
 		if err := g.limiter.Wait(context.Background()); err != nil {
+			<-g.concurrency
 			return
 		}
-		g.releaseWeightedRandom()
+		if !g.releaseWeightedRandom() {
+			// The waiter that justified entering this iteration was
+			// removed out from under us (e.g. its ctx was canceled) before
+			// we got to release anyone. Nobody is holding this slot — give
+			// it back instead of leaking it forever.
+			<-g.concurrency
+		}
 	}
 }
 
@@ -115,12 +145,13 @@ func (g *proxyAdmissionGate) waitForWaiter() {
 // random selection (weighted by ticket value) and releases it. Random
 // rather than strict top-weight selection so a long-shot retry still has a
 // real, if small, chance to land instead of being deterministically starved
-// out by a steady stream of higher-weight untried proxies.
-func (g *proxyAdmissionGate) releaseWeightedRandom() {
+// out by a steady stream of higher-weight untried proxies. Returns false if
+// there was no waiter left to release.
+func (g *proxyAdmissionGate) releaseWeightedRandom() bool {
 	g.mu.Lock()
 	if len(g.waiters) == 0 {
 		g.mu.Unlock()
-		return
+		return false
 	}
 
 	total := 0.0
@@ -144,4 +175,5 @@ func (g *proxyAdmissionGate) releaseWeightedRandom() {
 	g.mu.Unlock()
 
 	close(w.ready)
+	return true
 }

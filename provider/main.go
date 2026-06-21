@@ -1517,10 +1517,12 @@ func provide(opts docopt.Opts) {
 					if proxySettings != nil {
 						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Address)
 					}
-					if waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount); waitErr != nil {
+					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
+					if waitErr != nil {
 						return "", connect.Id{}, waitErr
 					}
 					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+					release()
 					if proxySettings != nil {
 						if err == nil {
 							globalProvenProxies.MarkSucceeded(proxySettings.Address)
