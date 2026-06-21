@@ -6,8 +6,37 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+---
+
+## [v3.23.0-fix.24] — 2026-06-21
+
+### Performance
+- **Raised default throughput ceilings** (`transport.go`, `ip.go`, `tuning.go`, `transfer_contract_manager.go`):
+  - TransportBufferSize 1 → 16 (removes in-flight message bottleneck between framer and WebSocket writer)
+  - TCP/UDP MaxWindowSize 1 MiB → 4 MiB (removes ~160 Mbps per-connection throughput ceiling at 50ms RTT)
+  - applyTier3 now sets actual performance values for `URNETWORK_PROFILE=auto` on 4GiB+ nodes (4 MiB TCP window, 256-depth IP buffers, 4 MiB transfer queues)
+  - ContractTransferByteSeqScale 4 → 2 (reaches 128 MiB standard contract in 2 sequences instead of 4)
+- **Relaxed client-side auth rate limiter** (`provider/auth_rate_limiter.go`):
+  - Default min 1 → 20 req/s, max 10 → 200 req/s, burst 3 → 50
+  - Added `URNETWORK_AUTH_UNLIMITED=true` env var to bypass the limiter entirely
+  - Server-side ConnectionRateLimit already caps auth connections; the client limiter was serializing fleet warmup unnecessarily
+- **CPU-scaled MultiRaceClientCount** (`ip_remote_multi_client.go`):
+  - Races more providers per connection based on available CPU cores (4-12 instead of fixed 2)
+  - 1-2 cores → 4, 3-4 cores → 6, 5-8 cores → 8, 9+ cores → 12
+- **Dynamic ContractFillFraction based on RTT** (`transfer.go`, `transfer_rtt.go`):
+  - Fill fraction adapts to observed RTT: 0.85 at low RTT (≤100ms) → 0.50 at high RTT (≥1000ms)
+  - Prevents pipeline stalls on high-latency links while filling closer to capacity on fast links
+- **Sharded packet dispatch** (`ip.go`):
+  - Single-goroutine dispatch loop replaced with N shard goroutines (one per CPU, capped at 16)
+  - Packets routed via deterministic FNV-1a flow hash of IP 4-tuple for per-flow affinity
+  - Independent buffer instances per shard eliminate dispatch CPU bottleneck on multi-core nodes
+
 ### Added
-<!-- placeholder for next release -->
+- 11 new unit tests covering MeanRtt, computeFillFraction, flowHash, pickShard, auth unlimited mode, and CPU-scaled race count
+
+### Changed
+- Updated FORK_CHANGES.md with sections 43-47
+- Updated progress.md with comprehensive codebase analysis findings
 
 ---
 
