@@ -302,6 +302,68 @@ func TestRequeueURLProxyAfterGiveUp_SetsCooldown(t *testing.T) {
 	}
 }
 
+// TestScheduleGiveUpRequeue_RetriggersIfStillNotRunning is a regression test
+// for a bug found during fleet log analysis: the original requeue goroutine
+// fired its reload trigger exactly once. If that trigger landed during a
+// transient reload() failure (e.g. its "reload skipped: could not read
+// source" path), the address's cooldown was already cleared but nothing was
+// left to ever bring it back — it sat orphaned until a manual 'proxy
+// refresh' or process restart. scheduleGiveUpRequeue must check whether the
+// address actually ended up back in cancelMap after the first trigger, and
+// fire a second trigger if not.
+func TestScheduleGiveUpRequeue_RetriggersIfStillNotRunning(t *testing.T) {
+	withTempHome(t)
+
+	addr := "10.0.0.51:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	cancelMap := map[string]context.CancelFunc{} // addr never gets re-added, simulating a reload() that kept failing
+
+	scheduleGiveUpRequeue(t.Context(), addr, cancelMapMu, cancelMap, 10*time.Millisecond, 20*time.Millisecond)
+
+	seq, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 2 {
+		t.Fatalf("expected 2 reload triggers (initial + retry since addr never came back), got seq=%d", seq)
+	}
+}
+
+// TestScheduleGiveUpRequeue_NoRetriggerIfRunning confirms the recheck is
+// silent in the normal case: once the address is back in cancelMap after the
+// first trigger, no second trigger should fire.
+func TestScheduleGiveUpRequeue_NoRetriggerIfRunning(t *testing.T) {
+	withTempHome(t)
+
+	addr := "10.0.0.52:1080"
+	t.Cleanup(func() { clearGiveUpCooldown(addr) })
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelMapMu := &sync.Mutex{}
+	cancelMap := map[string]context.CancelFunc{addr: func() {}} // already running by the time of the recheck
+
+	scheduleGiveUpRequeue(t.Context(), addr, cancelMapMu, cancelMap, 10*time.Millisecond, 20*time.Millisecond)
+
+	seq, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("expected exactly 1 reload trigger since addr was already running, got seq=%d", seq)
+	}
+}
+
 // TestReload_SkipsAddressStillInGiveUpCooldown is the end-to-end regression
 // test: even when an address is in desiredSet and absent from cancelMap
 // (exactly the state right after a give-up), reload() must not relaunch it
