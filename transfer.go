@@ -2251,10 +2251,9 @@ func (self *SendSequence) Run() {
 	}
 }
 
-func (self *SendSequence) contractFillFraction() float32 {
-	meanRtt := self.rttWindow.MeanRtt()
+func computeFillFraction(meanRtt time.Duration, fallback float32) float32 {
 	if meanRtt == 0 {
-		return self.sendBufferSettings.ContractFillFraction
+		return fallback
 	}
 	ms := float64(meanRtt / time.Millisecond)
 	const high = 0.85
@@ -2266,6 +2265,11 @@ func (self *SendSequence) contractFillFraction() float32 {
 		return float32(low)
 	}
 	return float32(high - (high-low)*(ms-100)/900)
+}
+
+func (self *SendSequence) contractFillFraction() float32 {
+	meanRtt := self.rttWindow.MeanRtt()
+	return computeFillFraction(meanRtt, self.sendBufferSettings.ContractFillFraction)
 }
 
 func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
