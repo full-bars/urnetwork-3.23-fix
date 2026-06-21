@@ -325,3 +325,57 @@ func TestTagProxySourceIfUnset_DoesNotOverwriteExisting(t *testing.T) {
 		t.Fatalf("expected source to remain %q, got %q", "file", got)
 	}
 }
+
+// TestClassifyAuthFailureCause is a regression test for a bug found during
+// live fleet deployment testing: "proxy unreachable" (synthesized by the
+// local TCP reachability probe before any auth attempt is made, meaning the
+// API was never contacted) was bundled into the same cause string as real
+// network errors reaching the API. On a public proxy list that's mostly
+// dead entries, this made nearly all give-ups look like API outages in the
+// logs, when almost none of them were.
+func TestClassifyAuthFailureCause(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "proxy unreachable gets its own cause, not lumped with API errors",
+			err:  errors.New("proxy unreachable: 1.2.3.4:1080"),
+			want: "proxy itself is unreachable (dead/offline SOCKS endpoint — not an API issue)",
+		},
+		{
+			name: "context deadline exceeded is a real network error",
+			err:  context.DeadlineExceeded,
+			want: "network error reaching API (check connectivity to api.bringyour.com)",
+		},
+		{
+			name: "context canceled is a real network error",
+			err:  context.Canceled,
+			want: "network error reaching API (check connectivity to api.bringyour.com)",
+		},
+		{
+			name: "Timeout substring is a real network error",
+			err:  errors.New("request Timeout after 30s"),
+			want: "network error reaching API (check connectivity to api.bringyour.com)",
+		},
+		{
+			name: "connection refused is a real network error",
+			err:  errors.New("dial tcp: connection refused"),
+			want: "network error reaching API (check connectivity to api.bringyour.com)",
+		},
+		{
+			name: "anything else is treated as a rejected token",
+			err:  errors.New("401 unauthorized"),
+			want: "API rejected token (check JWT validity)",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := classifyAuthFailureCause(c.err); got != c.want {
+				t.Fatalf("classifyAuthFailureCause(%q) = %q, want %q", c.err, got, c.want)
+			}
+		})
+	}
+}
