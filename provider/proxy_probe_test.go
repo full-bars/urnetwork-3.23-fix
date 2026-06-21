@@ -7,10 +7,41 @@ import (
 	"time"
 )
 
-// listenOnce starts a TCP listener bound to an ephemeral port, accepting (and
-// immediately closing) connections in the background, and returns its
-// address. The caller is responsible for calling the returned cleanup.
-func listenOnce(t *testing.T) (addr string, cleanup func()) {
+// listenSocks5Once starts a TCP listener that responds to every connection
+// with a valid SOCKS5 greeting reply (version 5, "no auth" accepted),
+// simulating a real SOCKS5 proxy. The caller is responsible for calling the
+// returned cleanup.
+func listenSocks5Once(t *testing.T) (addr string, cleanup func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				if _, err := c.Read(buf); err != nil {
+					return
+				}
+				c.Write([]byte{0x05, 0x00})
+			}(conn)
+		}
+	}()
+	return ln.Addr().String(), func() { ln.Close() }
+}
+
+// listenAcceptOnlyOnce starts a TCP listener that accepts connections but
+// closes them immediately without writing anything — simulating an open
+// port whose service isn't actually SOCKS5 (a misconfigured proxy, a dead
+// stub, a captive portal). This is the class of false-positive that the
+// older bare-TCP probe couldn't catch.
+func listenAcceptOnlyOnce(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -41,41 +72,56 @@ func closedPortAddr(t *testing.T) string {
 	return addr
 }
 
-func TestProbeProxyReachable_OpenPort(t *testing.T) {
-	addr, cleanup := listenOnce(t)
+func TestProbeProxySocks5_RealSocks5Server(t *testing.T) {
+	addr, cleanup := listenSocks5Once(t)
 	defer cleanup()
 
-	if !probeProxyReachable(context.Background(), addr, time.Second) {
-		t.Errorf("expected reachable address %s to probe true", addr)
+	if !probeProxySocks5(context.Background(), addr, time.Second) {
+		t.Errorf("expected a real SOCKS5 server at %s to probe true", addr)
 	}
 }
 
-func TestProbeProxyReachable_ClosedPort(t *testing.T) {
+func TestProbeProxySocks5_ClosedPort(t *testing.T) {
 	addr := closedPortAddr(t)
 
-	if probeProxyReachable(context.Background(), addr, time.Second) {
+	if probeProxySocks5(context.Background(), addr, time.Second) {
 		t.Errorf("expected closed port %s to probe false", addr)
+	}
+}
+
+// TestProbeProxySocks5_OpenPortNotSocks5 is a regression test for the gap a
+// bare TCP probe leaves: a port that accepts a connection but isn't
+// actually running SOCKS5 must be rejected, not treated as reachable.
+func TestProbeProxySocks5_OpenPortNotSocks5(t *testing.T) {
+	addr, cleanup := listenAcceptOnlyOnce(t)
+	defer cleanup()
+
+	if probeProxySocks5(context.Background(), addr, time.Second) {
+		t.Errorf("expected open-but-non-SOCKS5 port %s to probe false", addr)
 	}
 }
 
 // TestFilterReachableProxyURLLines_KeepsOnlyReachable is the core of the
 // fix: free public proxy lists are mostly dead, so the merge step must drop
-// unreachable entries before they ever get an auth attempt (or a slot from
-// the shared auth rate limiter).
+// unreachable (or non-SOCKS5) entries before they ever get an auth attempt
+// (or a slot from the shared auth rate limiter).
 func TestFilterReachableProxyURLLines_KeepsOnlyReachable(t *testing.T) {
-	openAddr, cleanup := listenOnce(t)
+	socks5Addr, cleanup := listenSocks5Once(t)
 	defer cleanup()
 	deadAddr := closedPortAddr(t)
+	openNonSocks5Addr, cleanup2 := listenAcceptOnlyOnce(t)
+	defer cleanup2()
 
 	lines := []string{
-		openAddr,
+		socks5Addr,
 		deadAddr,
+		openNonSocks5Addr,
 		"not a valid line :::",
 	}
 
 	got := filterReachableProxyURLLines(context.Background(), lines)
-	if len(got) != 1 || got[0] != openAddr {
-		t.Fatalf("expected only %q to survive, got %v", openAddr, got)
+	if len(got) != 1 || got[0] != socks5Addr {
+		t.Fatalf("expected only %q to survive, got %v", socks5Addr, got)
 	}
 }
 
