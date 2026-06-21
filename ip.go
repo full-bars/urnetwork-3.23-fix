@@ -9,6 +9,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"runtime"
 	// "syscall"
 	// "runtime/debug"
 	"slices"
@@ -133,7 +134,8 @@ type LocalUserNat struct {
 	clientTag string
 	log       Logger
 
-	sendPackets chan *SendPacket
+	sendShards []chan *SendPacket
+	numShards  int
 
 	settings *LocalUserNatSettings
 
@@ -158,23 +160,89 @@ func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, 
 	if settings.TcpBufferSettings != nil && settings.TcpBufferSettings.Log == nil {
 		settings.TcpBufferSettings.Log = log
 	}
+
+	numShards := runtime.NumCPU()
+	if numShards < 1 {
+		numShards = 1
+	}
+	if numShards > 16 {
+		numShards = 16
+	}
+	shardBufSize := settings.SequenceBufferSize / numShards
+	if shardBufSize < 1 {
+		shardBufSize = 1
+	}
+	sendShards := make([]chan *SendPacket, numShards)
+	for i := 0; i < numShards; i++ {
+		sendShards[i] = make(chan *SendPacket, shardBufSize)
+	}
+
 	localUserNat := &LocalUserNat{
 		ctx:              cancelCtx,
 		cancel:           cancel,
 		clientTag:        clientTag,
 		log:              log,
-		sendPackets:      make(chan *SendPacket, settings.SequenceBufferSize),
+		sendShards:       sendShards,
+		numShards:        numShards,
 		settings:         settings,
 		bw:               bw,
 		receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
 	}
-	go HandleError(localUserNat.Run)
+
+	for i := 0; i < numShards; i++ {
+		go func(shard int) {
+			HandleError(func() {
+				localUserNat.runShard(shard)
+			})
+		}(i)
+	}
 
 	return localUserNat
 }
 
 func (self *LocalUserNat) SecurityPolicyStats(reset bool) SecurityPolicyStats {
 	return SecurityPolicyStats{}
+}
+
+func (self *LocalUserNat) pickShard(packet []byte) int {
+	if self.numShards <= 1 {
+		return 0
+	}
+	hash := flowHash(packet)
+	return int(hash % uint32(self.numShards))
+}
+
+func flowHash(packet []byte) uint32 {
+	if len(packet) < 20 {
+		return 0
+	}
+	var h uint32
+	ipVersion := packet[0] >> 4
+	switch ipVersion {
+	case 4:
+		if len(packet) >= 20 {
+			h = uint32(packet[12])<<24 | uint32(packet[13])<<16 | uint32(packet[14])<<8 | uint32(packet[15])
+			h ^= uint32(packet[16])<<24 | uint32(packet[17])<<16 | uint32(packet[18])<<8 | uint32(packet[19])
+			protocol := packet[9]
+			if protocol == 6 || protocol == 17 {
+				headerLen := int(packet[0]&0x0F) * 4
+				if len(packet) >= headerLen+4 {
+					h ^= uint32(packet[headerLen])<<16 | uint32(packet[headerLen+1]) | uint32(packet[headerLen+2])<<8 | uint32(packet[headerLen+3])
+				}
+			}
+		}
+	case 6:
+		if len(packet) >= 40 {
+			h = uint32(packet[8]) | uint32(packet[17])<<8 | uint32(packet[26])<<16 | uint32(packet[35])<<24
+			protocol := packet[6]
+			if protocol == 6 || protocol == 17 {
+				if len(packet) >= 44 {
+					h ^= uint32(packet[40])<<16 | uint32(packet[41]) | uint32(packet[42])<<8 | uint32(packet[43])
+				}
+			}
+		}
+	}
+	return h
 }
 
 // TODO provide mode of the destination determines filtering rules - e.g. local networks
@@ -186,18 +254,19 @@ func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode
 		provideMode: provideMode,
 		packet:      packet,
 	}
+	shard := self.pickShard(packet)
 	if timeout < 0 {
 		select {
 		case <-self.ctx.Done():
 			return false
-		case self.sendPackets <- sendPacket:
+		case self.sendShards[shard] <- sendPacket:
 			return true
 		}
 	} else if 0 == timeout {
 		select {
 		case <-self.ctx.Done():
 			return false
-		case self.sendPackets <- sendPacket:
+		case self.sendShards[shard] <- sendPacket:
 			return true
 		default:
 			// full
@@ -207,7 +276,7 @@ func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode
 		select {
 		case <-self.ctx.Done():
 			return false
-		case self.sendPackets <- sendPacket:
+		case self.sendShards[shard] <- sendPacket:
 			return true
 		case <-time.After(timeout):
 			// full
@@ -245,19 +314,20 @@ func (self *LocalUserNat) receive(source TransferPath, provideMode protocol.Prov
 	}
 }
 
-func (self *LocalUserNat) Run() {
+func (self *LocalUserNat) runShard(shard int) {
 	defer self.cancel()
 
 	udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings, self.bw)
 	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings, self.bw)
 	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
 	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
+	shardCh := self.sendShards[shard]
 
 	for {
 		select {
 		case <-self.ctx.Done():
 			return
-		case sendPacket := <-self.sendPackets:
+		case sendPacket := <-shardCh:
 			ipPacket := sendPacket.packet
 			ipVersion := uint8(ipPacket[0]) >> 4
 			switch ipVersion {
