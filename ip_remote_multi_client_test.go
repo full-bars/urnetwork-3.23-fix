@@ -299,3 +299,21 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	assert.Equal(t, true, 1 <= stats.bucketCount)
 	assert.Equal(t, true, stats.bucketCount <= maxBucketCount)
 }
+
+func TestDefaultMultiRaceClientCount(t *testing.T) {
+	n := defaultMultiRaceClientCount()
+
+	// should always be between 4 and 12
+	if n < 4 {
+		t.Errorf("expected at least 4, got %d", n)
+	}
+	if n > 12 {
+		t.Errorf("expected at most 12, got %d", n)
+	}
+
+	// DefaultMultiClientSettings should use it
+	settings := DefaultMultiClientSettings()
+	if settings.MultiRaceClientCount != n {
+		t.Errorf("settings.MultiRaceClientCount = %d, want %d (from defaultMultiRaceClientCount)", settings.MultiRaceClientCount, n)
+	}
+}
