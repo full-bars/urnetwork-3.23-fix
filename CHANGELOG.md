@@ -40,6 +40,18 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.25] — 2026-06-21
+
+### Fixed
+- **MultiRaceClientCount set to 16 unconditionally**: Replaces the CPU-based tier system with a simple constant — 16 racers on all platforms. The race is double-bounded at runtime by actual healthy provider count and per-flow packet budgets, so the value acts only as a ceiling. Higher values on single-core nodes were previously held back by a conservative CPU heuristic that had no basis in the actual resource cost (goroutines are I/O-bound, not CPU-bound).
+
+### CI
+- **Docker build depends on test success**: `build-and-push` now `needs: test-and-lint`, saving ~3 min of Docker build compute on every failing PR.
+- **Go module cache restored**: Re-added `~/go/pkg/mod` cache alongside existing build cache. Saves ~30s per run.
+- **Test order optimized**: Go tests (with `-race`) now run before shell installer tests for faster failure feedback.
+
+---
+
 ## [v3.23.0-fix.23] — 2026-06-20
 
 ### Added
