@@ -101,9 +101,9 @@ func defaultMultiRaceClientCount() int {
 	cpus := runtime.NumCPU()
 	switch {
 	case cpus >= 5:
-		return 12
+		return 16
 	case cpus >= 3:
-		return 10
+		return 12
 	default:
 		return 8
 	}
