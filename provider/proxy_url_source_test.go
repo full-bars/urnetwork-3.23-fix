@@ -71,13 +71,13 @@ func TestRemoveDeadProxies_RoutesBySource(t *testing.T) {
 func TestFetchAndMergeProxyURLs_PersistsAndTriggersReload(t *testing.T) {
 	withTempHome(t)
 
-	// The merge step now probes every fetched address for TCP reachability
-	// before adding it, so the fixture addresses need to actually accept a
-	// connection — unlike the old fake 1.2.3.4:1080-style addresses, which
+	// The merge step now probes every fetched address with a SOCKS5
+	// handshake before adding it, so the fixture addresses need to actually
+	// speak SOCKS5 — unlike the old fake 1.2.3.4:1080-style addresses, which
 	// the probe correctly filters out as dead.
-	addr1, cleanup1 := listenOnce(t)
+	addr1, cleanup1 := listenSocks5Once(t)
 	defer cleanup1()
-	addr2, cleanup2 := listenOnce(t)
+	addr2, cleanup2 := listenSocks5Once(t)
 	defer cleanup2()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

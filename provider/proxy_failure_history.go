@@ -31,3 +31,16 @@ func (h *proxyFailureHistory) FailureCount(address string) int {
 	defer h.mu.Unlock()
 	return h.failures[address]
 }
+
+// Reset clears address's failure count, called when it successfully
+// authenticates. Without this, a proxy that failed several times before
+// finally succeeding (or one that succeeds, drops, and reconnects later)
+// keeps the admission gate's weighted lottery permanently biased against it
+// based on failures that are no longer representative — a proven-working
+// proxy should compete on equal footing with an untried one, not carry a
+// scar from before it proved itself.
+func (h *proxyFailureHistory) Reset(address string) {
+	h.mu.Lock()
+	delete(h.failures, address)
+	h.mu.Unlock()
+}

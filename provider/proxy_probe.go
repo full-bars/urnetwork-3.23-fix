@@ -17,13 +17,24 @@ const proxyProbeTimeout = 3 * time.Second
 // scan to anything watching.
 const proxyProbeConcurrency = 50
 
-// probeProxyReachable does a bare TCP dial to address, returning true only
-// if a connection is established within timeout. This only confirms the
-// port accepts a connection — not that a SOCKS5 handshake or auth would
-// succeed — but that's enough to filter out the bulk of dead entries
-// cheaply, before they ever cost an auth attempt or a slot from the shared
-// auth rate limiter.
-func probeProxyReachable(ctx context.Context, address string, timeout time.Duration) bool {
+// socks5Greeting is the client's opening message in the SOCKS5 handshake
+// (RFC 1928 §3): version 5, offering exactly one auth method, "no
+// authentication required" (0x00). We don't care whether the proxy actually
+// requires credentials here — only whether something that speaks SOCKS5 is
+// listening at all — so this is the cheapest greeting that gets a
+// version-tagged response out of any real SOCKS5 server.
+var socks5Greeting = []byte{0x05, 0x01, 0x00}
+
+// probeProxySocks5 dials address and performs just the opening leg of the
+// SOCKS5 handshake, returning true only if the response actually looks like
+// a SOCKS5 server (version byte 0x05). A bare TCP probe alone can't tell a
+// live SOCKS5 proxy apart from any other service that happens to accept
+// connections on that port (an HTTP server, a dead stub that accepts but
+// never replies, a captive portal) — those pass a TCP-only check but still
+// waste a real auth attempt and a slot from the shared rate limiter once
+// provideAuth actually tries to use them. This catches that class before it
+// costs anything.
+func probeProxySocks5(ctx context.Context, address string, timeout time.Duration) bool {
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var d net.Dialer
@@ -31,8 +42,21 @@ func probeProxyReachable(ctx context.Context, address string, timeout time.Durat
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
+	defer conn.Close()
+
+	if deadline, ok := dialCtx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	if _, err := conn.Write(socks5Greeting); err != nil {
+		return false
+	}
+
+	resp := make([]byte, 2)
+	if _, err := conn.Read(resp); err != nil {
+		return false
+	}
+	return resp[0] == 0x05
 }
 
 // filterReachableProxyURLLines probes every line's address concurrently
@@ -54,7 +78,7 @@ func filterReachableProxyURLLines(ctx context.Context, lines []string) []string 
 		go func(i int, address string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			reachable[i] = probeProxyReachable(ctx, address, proxyProbeTimeout)
+			reachable[i] = probeProxySocks5(ctx, address, proxyProbeTimeout)
 		}(i, address)
 	}
 	wg.Wait()
