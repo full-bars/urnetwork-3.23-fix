@@ -2251,6 +2251,27 @@ func (self *SendSequence) Run() {
 	}
 }
 
+func computeFillFraction(meanRtt time.Duration, fallback float32) float32 {
+	if meanRtt == 0 {
+		return fallback
+	}
+	ms := float64(meanRtt / time.Millisecond)
+	const high = 0.85
+	const low = 0.5
+	if ms <= 100 {
+		return float32(high)
+	}
+	if ms >= 1000 {
+		return float32(low)
+	}
+	return float32(high - (high-low)*(ms-100)/900)
+}
+
+func (self *SendSequence) contractFillFraction() float32 {
+	meanRtt := self.rttWindow.MeanRtt()
+	return computeFillFraction(meanRtt, self.sendBufferSettings.ContractFillFraction)
+}
+
 func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// `sendNoContract` is a mutual configuration
 	// both sides must configure themselves to require no contract from each other
@@ -2266,7 +2287,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 		// this is needed because the size of the contract pack is counted against the contract
 		// maxContractMessageByteCount := ByteCount(256)
 
-		effectiveContractTransferByteCount := ByteCount(float32(self.client.ContractManager().StandardContractTransferByteCount()) * self.sendBufferSettings.ContractFillFraction)
+		effectiveContractTransferByteCount := ByteCount(float32(self.client.ContractManager().StandardContractTransferByteCount()) * self.contractFillFraction())
 		if effectiveContractTransferByteCount < messageByteCount+self.sendBufferSettings.MinMessageByteCount /*+ maxContractMessageByteCount*/ {
 			// this pack does not fit into a standard contract
 			// TODO allow requesting larger contracts
@@ -2279,7 +2300,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				"s",
 				contract,
 				self.sendBufferSettings.MinMessageByteCount,
-				self.sendBufferSettings.ContractFillFraction,
+				self.contractFillFraction(),
 			)
 			if err != nil {
 				// malformed
@@ -2331,7 +2352,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				self.client.ContractManager().CreateContract(
 					contractKey,
 					self.contractSeqIndex,
-					ByteCount(32+float32(messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.sendBufferSettings.ContractFillFraction),
+					ByteCount(32+float32(messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.contractFillFraction()),
 				)
 				return true
 			} else {
@@ -2392,7 +2413,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				self.client.ContractManager().CreateContract(
 					contractKey,
 					self.contractSeqIndex,
-					ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.sendBufferSettings.ContractFillFraction),
+					ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.contractFillFraction()),
 				)
 			}
 

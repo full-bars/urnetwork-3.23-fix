@@ -130,6 +130,13 @@ func (self *RttWindow) ScaledRtt() time.Duration {
 	return self.scaledRtt(time.Now())
 }
 
+func (self *RttWindow) MeanRtt() time.Duration {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.coalesce(time.Now())
+	return self.rtts.MeanRtt()
+}
+
 func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
