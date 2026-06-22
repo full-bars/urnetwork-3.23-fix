@@ -32,14 +32,13 @@ show_help ()
     echo "  optimize                ⚡ OPTIMIZE: apply Golden Fleet OS/kernel limits"
     echo ""
     echo "Proxy Management:"
+    echo "  auth [<code>]           🔑 Authenticate with an auth code (omit for interactive paste)"
     echo "  proxy add <file>        🌐 ADD: bulk add proxies from a text file"
     echo "  proxy clear             🗑️  CLEAR: remove all configured proxies"
     echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
     echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
     echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
-    echo ""
-    echo "Hub Dashboard:"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
@@ -2015,6 +2014,29 @@ do_proxy () {
     esac
 }
 
+do_auth ()
+{
+    provider_bin="$install_path/bin/urnetwork"
+    if [ ! -f "$provider_bin" ]; then
+        pr_err "URnetwork binary not found at %s. Is it installed?" "$provider_bin"
+        exit 1
+    fi
+
+    if [ "$#" -ge 1 ]; then
+        auth_code="$1"
+        "$provider_bin" auth "$auth_code" -f
+    else
+        "$provider_bin" auth -f
+    fi
+    exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        pr_info "Authentication successful."
+    else
+        pr_err "Authentication failed with code $exit_code."
+    fi
+    exit "$exit_code"
+}
+
 do_optimize ()
 {
     if [ "$(id -u)" -ne 0 ]; then
@@ -2334,6 +2356,11 @@ case "$operation" in
 
     optimize)
         do_optimize
+        exit 0
+        ;;
+
+    auth)
+        do_auth "$@"
         exit 0
         ;;
 
