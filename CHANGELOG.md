@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Rate-limited `[c]ping` log spam**: With ControlPingTimeout=30s and thousands of connections, `[c]ping` was producing ~33 lines/second. Now suppressed to one line per 5 minutes globally with suppressed count.
+
 ---
 
 ## [v3.23.0-fix.24] — 2026-06-21
