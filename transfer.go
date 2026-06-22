@@ -924,6 +924,8 @@ func (self *Client) run() {
 	}
 
 	// control ping
+	var lastPingLogNano atomic.Int64
+	var suppressedPingCount atomic.Int64
 	if self.clientId != ControlId && 0 < self.settings.ControlPingTimeout {
 		go HandleError(func() {
 			for {
@@ -952,7 +954,13 @@ func (self *Client) run() {
 				select {
 				case err := <-ack:
 					if err == nil {
-						self.log.Infof("[c]ping\n")
+						if ok, suppressed := suppressPingLog(&lastPingLogNano, &suppressedPingCount); ok {
+							if suppressed > 0 {
+								self.log.Infof("[c]ping (%d suppressed)\n", suppressed)
+							} else {
+								self.log.Infof("[c]ping\n")
+							}
+						}
 					} else {
 						self.log.Infof("[c]ping err = %s\n", err)
 					}
@@ -4960,3 +4968,21 @@ func MessageByteCount(frames []*protocol.Frame) ByteCount {
 // 	}
 // 	return messages
 // }
+
+// suppressPingLog rate-limits [c]ping log lines to at most one per 5 minutes,
+// with a suppressed count. Without this, thousands of concurrent connections
+// each pinging every 30s produces ~33 lines/second of [c]ping output.
+func suppressPingLog(lastLogNano *atomic.Int64, suppressedCount *atomic.Int64) (bool, int64) {
+	now := time.Now().UnixNano()
+	last := lastLogNano.Load()
+	if now-last < int64(5*time.Minute) {
+		suppressedCount.Add(1)
+		return false, 0
+	}
+	if !lastLogNano.CompareAndSwap(last, now) {
+		suppressedCount.Add(1)
+		return false, 0
+	}
+	suppressed := suppressedCount.Swap(0)
+	return true, suppressed
+}
