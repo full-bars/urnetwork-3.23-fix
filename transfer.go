@@ -27,6 +27,8 @@ import (
 var (
 	lastDropErrLogNano     atomic.Int64
 	suppressedDropErrCount atomic.Int64
+	lastPingLogNano        atomic.Int64
+	suppressedPingCount    atomic.Int64
 )
 
 func shouldLogDropErr() (bool, int64) {
@@ -924,8 +926,6 @@ func (self *Client) run() {
 	}
 
 	// control ping
-	var lastPingLogNano atomic.Int64
-	var suppressedPingCount atomic.Int64
 	if self.clientId != ControlId && 0 < self.settings.ControlPingTimeout {
 		go HandleError(func() {
 			for {
