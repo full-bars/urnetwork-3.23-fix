@@ -2792,22 +2792,25 @@ func proxyAddSource(opts docopt.Opts) {
 	if err != nil {
 		shmLogFatal(71, "could not acquire proxy lock: %v", err)
 	}
-	defer release()
 
 	state, err := readProxyURLState()
 	if err != nil {
+		release()
 		shmLogFatal(72, "could not read proxy_url.json: %v", err)
 	}
 	for _, existing := range state.Sources {
 		if existing == url {
+			release()
 			fmt.Printf("source already added: %s\n", url)
 			return
 		}
 	}
 	state.Sources = append(state.Sources, url)
 	if err := writeProxyURLState(state); err != nil {
+		release()
 		shmLogFatal(73, "could not write proxy_url.json: %v", err)
 	}
+	release()
 
 	fmt.Printf("added source: %s\nfetching now...\n", url)
 	// maxTotal=0 here: the cap configured for the running provide() process
