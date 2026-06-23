@@ -403,8 +403,10 @@ Fires at most once per month per provider. The provider checks the JWT expiry ev
 
 Fires every **30 seconds** during provider startup when the proxy fleet is warming up. Shows real-time progress of proxy authentication and connection. The pace monitor is a passive observer — it does not influence the stagger rate.
 
+Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No further `[pace]` output is produced — silence after that line is expected and correct.
+
 | Message | Meaning |
 |---|---|
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
-| `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting — warmup complete. |
+| `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
