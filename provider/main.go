@@ -960,6 +960,80 @@ func nextMidnight(t time.Time) time.Time {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
 }
 
+// runEarningWindows emits a per-minute [earn] line with rolling billable windows.
+// Tracks cumulative billable across all proxies and reports per-minute deltas for
+// the 1m, 5m, 15m, and 60m windows. Handles counter resets (proxy restart) by
+// treating a backwards counter as a zero-delta tick. Silent when no proxies are
+// registered (non-proxy mode).
+func runEarningWindows(ctx context.Context) {
+	const maxSamples = 60
+	deltas := make([]uint64, 0, maxSamples)
+	var prevCum uint64
+	var prevSet bool
+
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if connect.ProxyHealthCount() == 0 {
+			prevSet = false
+			continue
+		}
+
+		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+
+		var cum uint64
+		for _, p := range bw {
+			cum += p.BillableRx.Load() + p.BillableTx.Load()
+		}
+
+		if prevSet {
+			if cum >= prevCum {
+				deltas = append(deltas, cum-prevCum)
+			} else {
+				deltas = append(deltas, 0)
+			}
+			if len(deltas) > maxSamples {
+				deltas = deltas[len(deltas)-maxSamples:]
+			}
+
+			billable1m := sumLastN(deltas, 1)
+			billable5m := sumLastN(deltas, 5)
+			billable15m := sumLastN(deltas, 15)
+			billable60m := sumLastN(deltas, 60)
+
+			active := "no"
+			if billable1m > 0 {
+				active = "yes"
+			}
+
+			fmt.Printf("[earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
+				fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
+		}
+		prevCum = cum
+		prevSet = true
+	}
+}
+
+// sumLastN sums the last n entries from a slice of uint64. If fewer than n
+// entries exist, sums all available (partial window).
+func sumLastN(deltas []uint64, n int) uint64 {
+	if len(deltas) < n {
+		n = len(deltas)
+	}
+	var total uint64
+	for _, d := range deltas[len(deltas)-n:] {
+		total += d
+	}
+	return total
+}
+
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
 // memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
 // (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
@@ -1420,6 +1494,7 @@ func provide(opts docopt.Opts) {
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
+	go runEarningWindows(ctx)
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 15*time.Minute)
