@@ -1424,7 +1424,7 @@ func provide(opts docopt.Opts) {
 	var proxyCancelMu sync.Mutex
 	proxyCancelMap := map[string]context.CancelFunc{}
 
-	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool) {
+	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
@@ -1514,7 +1514,11 @@ func provide(opts docopt.Opts) {
 				var byClientJwt string
 				var clientId connect.Id
 
-				if proxySettings != nil && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
+				// Only URL-sourced proxies get the pre-auth SOCKS5 reachability probe.
+				// File/internal lists are operator-curated (paid) endpoints that should
+				// always attempt auth; the probe exists to cheaply skip dead entries in
+				// large free URL lists before spending a shared auth-rate-limiter slot.
+				if proxySettings != nil && isURLSourced && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
 					// The proxy itself isn't even speaking SOCKS5 right now — either
 					// the port is dead, or something is listening but isn't a real
 					// SOCKS5 endpoint (open port with a broken/wrong service, a
@@ -1777,7 +1781,7 @@ func provide(opts docopt.Opts) {
 
 		// Register it early so it shows up in health reports immediately as [direct]
 		connect.RegisterProxy(0, "direct")
-		provideWithProxy(nativeCtx, nil, true)
+		provideWithProxy(nativeCtx, nil, true, false)
 	})
 
 	// Persist the initial state snapshot now that all IDs are resolved.
@@ -1816,6 +1820,7 @@ func provide(opts docopt.Opts) {
 
 			stableID := proxySettings.Index
 			proxyIdx := i
+			isURLSourced := proxySourceOf[proxySettings.Address] == "url"
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
@@ -1828,7 +1833,7 @@ func provide(opts docopt.Opts) {
 				}
 				proxyLaunchCount.Add(1)
 
-				provideWithProxy(proxyCtx, proxySettings, false)
+				provideWithProxy(proxyCtx, proxySettings, false, isURLSourced)
 			})
 		}
 	}
