@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -107,12 +106,14 @@ func resolveAlertWebhook(envFallback string) string {
 // reporting on, off, or repoints it at a different hub without a restart;
 // envReportURL is only the startup-time fallback used when that file doesn't
 // exist. It is a best-effort telemetry loop: failures are logged but never
-// retried beyond the next tick. The cadence defaults to 60s and is
-// overridable via URNETWORK_REPORT_INTERVAL (min 10s). The bandwidthReport /
+// retried beyond the next tick. The cadence defaults to 5m and is
+// overridable via URNETWORK_REPORT_INTERVAL (min 10s). The 5m default keeps
+// the hub's historical SQLite write volume modest across a large fleet; set a
+// shorter interval where a more live dashboard matters. The bandwidthReport /
 // proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
 // here in sync with hub/main.go.
 func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
-	interval := 60 * time.Second
+	interval := 5 * time.Minute
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 10*time.Second {
 			interval = d
@@ -144,9 +145,9 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		reportURL := resolveReportURL(envReportURL)
 		if reportURL != activeReportURL {
 			if reportURL == "" {
-				fmt.Printf("[report] hub reporting disabled (node=%s)\n", nodeID)
+				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
-				fmt.Printf("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
+				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
 			}
 			activeReportURL = reportURL
 		}
@@ -156,34 +157,34 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 
 		apiURL, err := url.JoinPath(reportURL, "/api/report")
 		if err != nil {
-			fmt.Printf("[report] invalid report URL %s: %v\n", reportURL, err)
+			tlog("[report] invalid report URL %s: %v\n", reportURL, err)
 			continue
 		}
 
 		report := buildReport(nodeID, host, startTime)
 		if len(report.Proxies) == 0 {
-			fmt.Printf("[report] skipping (0 proxies in bandwidth map)\n")
+			tlog("[report] skipping (0 proxies in bandwidth map)\n")
 			continue
 		}
-		fmt.Printf("[report] sending %d proxies to %s\n", len(report.Proxies), apiURL)
+		tlog("[report] sending %d proxies to %s\n", len(report.Proxies), apiURL)
 
 		body, err := json.Marshal(report)
 		if err != nil {
-			fmt.Printf("[report] marshal error: %v\n", err)
+			tlog("[report] marshal error: %v\n", err)
 			continue
 		}
 
 		resp, err := client.Post(apiURL, "application/json", bytes.NewReader(body))
 		if err != nil {
-			fmt.Printf("[report] post failed: %v\n", err)
+			tlog("[report] post failed: %v\n", err)
 			continue
 		}
 		// surface a rejecting hub instead of silently treating any response as
 		// success. without this a 401/404/5xx looks identical to a 200 and the
 		// fleet dashboard goes stale with no signal on the provider side. the
-		// 60s cadence already rate-limits this, so log every occurrence.
+		// report cadence already rate-limits this, so log every occurrence.
 		if resp.StatusCode/100 != 2 {
-			fmt.Printf("[report] hub rejected report: %s\n", resp.Status)
+			tlog("[report] hub rejected report: %s\n", resp.Status)
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
