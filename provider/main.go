@@ -382,6 +382,11 @@ var (
 	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
 
 	ErrTokenInvalid = errors.New("auth: token is invalid or expired")
+
+	// proxyURLGiveUpRetryAfter is the delay before a URL-sourced proxy that
+	// exhausted its auth attempts is automatically retried via a delayed reload
+	// trigger — a lightweight time.AfterFunc, not a per-proxy goroutine.
+	proxyURLGiveUpRetryAfter = 15 * time.Minute
 )
 
 func startEcoMonitorOnce(ctx context.Context) {
@@ -1639,8 +1644,16 @@ func provide(opts docopt.Opts) {
 		}()
 		if err != nil {
 			if proxySettings != nil {
-				retried := requeueURLProxyAfterGiveUp(ctx, proxySettings.Address, &proxyCancelMu, proxyCancelMap)
-				if retried {
+				if isURLSourced {
+					proxyCancelMu.Lock()
+					delete(proxyCancelMap, proxySettings.Address)
+					proxyCancelMu.Unlock()
+
+					if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
+						time.AfterFunc(proxyURLGiveUpRetryAfter, func() {
+							_ = writeReloadTrigger(reloadPath)
+						})
+					}
 					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (url-sourced — will retry automatically in %s)\n",
 						proxySettings.Index, proxySettings.Address, err, formatDuration(proxyURLGiveUpRetryAfter))
 				} else {
