@@ -59,4 +59,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq devscripts >/dev/null
-          checkbashisms -f scripts/Provider_Install_Linux.sh
+          out=$(checkbashisms -f scripts/Provider_Install_Linux.sh 2>&1 || true)
+          printf '%s\n' "$out"
+          # 'ulimit' is a dash builtin and the installer's interpreter is dash,
+          # so it is allowed. Anything else flagged here is a real regression.
+          remaining=$(printf '%s\n' "$out" | grep -i 'possible bashism' | grep -v '(ulimit)' || true)
+          if [ -n "$remaining" ]; then
+            echo "::error::Non-dash-safe bashism found in installer (see log above)"
+            exit 1
+          fi
+          echo "OK: installer is dash-safe (ulimit allowed as a dash builtin)."

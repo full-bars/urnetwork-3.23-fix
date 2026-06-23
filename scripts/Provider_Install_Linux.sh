@@ -1426,7 +1426,7 @@ toggle_ramlogs ()
                     if grep -q "\[Service\]" "$override_file"; then
                         sed -i '/\[Service\]/a Environment="URNETWORK_RAMLOGS=1"' "$override_file"
                     else
-                        echo -e "\n[Service]\nEnvironment=\"URNETWORK_RAMLOGS=1\"" >> "$override_file"
+                        printf '\n[Service]\nEnvironment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
                     fi
                 fi
             else
@@ -1445,7 +1445,7 @@ EOF
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
                 # If file is empty or only has [Service], remove it
-                if [ ! -s "$override_file" ] || [ "$(grep -v "^\[" "$override_file" | grep -v "^$" | wc -l)" -eq 0 ]; then
+                if [ ! -s "$override_file" ] || [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
                     rm -f "$override_file"
                     # If directory is empty, remove it
                     rmdir "$override_dir" 2>/dev/null || true
