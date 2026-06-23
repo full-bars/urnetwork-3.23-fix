@@ -284,14 +284,40 @@ network_fetch ()
 
 show_version () 
 {
-    if [ ! -f "$version_file" ]; then
-        pr_err "version file '$version_file' could not be found"
-        exit 1
+    # The running binary is the source of truth: it reports its own
+    # compiled-in version via --version. The .version file is only written by
+    # installer-driven updates, so it silently goes stale on any out-of-band
+    # binary swap. Prefer the binary; fall back to the file only if needed.
+    provider_bin="$install_path/bin/urnetwork"
+    file_version=""
+    version=""
+
+    if [ -f "$version_file" ]; then
+        file_version="$(cat "$version_file" 2>/dev/null)"
     fi
 
-    version="$(cat "$version_file")"
+    if [ -x "$provider_bin" ]; then
+        version="$("$provider_bin" --version 2>/dev/null | head -n 1)"
+    fi
 
-    echo "Current version: $version"
+    if [ -n "$version" ]; then
+        echo "Current version: $version"
+        # Self-heal a stale version file and report exactly what changed, so
+        # the installer's own upgrade comparisons stay accurate too.
+        if [ -n "$file_version" ] && [ "$file_version" != "$version" ]; then
+            if echo "$version" > "$version_file" 2>/dev/null; then
+                pr_info "Corrected stale version file: %s -> %s" "$file_version" "$version"
+            else
+                pr_warn "Version file is stale (%s, should be %s) but could not be updated" "$file_version" "$version"
+            fi
+        fi
+    elif [ -n "$file_version" ]; then
+        version="$file_version"
+        echo "Current version: $version (from version file; binary not queryable, may be stale)"
+    else
+        pr_err "Could not determine installed version: binary '%s' is not runnable and no version file exists" "$provider_bin"
+        exit 1
+    fi
     
     api_url="$api_base/releases/latest"
     release="$(network_fetch "$api_url" 2>/dev/null || true)"
@@ -1314,7 +1340,7 @@ do_stop ()
 
 confirm_restart ()
 {
-    local action="${1:-Executing this command will trigger a full restart of the URNetwork provider.}"
+    action="${1:-Executing this command will trigger a full restart of the URNetwork provider.}"
     if [ "$FORCE" = "1" ]; then
         return 0
     fi
@@ -1400,7 +1426,7 @@ toggle_ramlogs ()
                     if grep -q "\[Service\]" "$override_file"; then
                         sed -i '/\[Service\]/a Environment="URNETWORK_RAMLOGS=1"' "$override_file"
                     else
-                        echo -e "\n[Service]\nEnvironment=\"URNETWORK_RAMLOGS=1\"" >> "$override_file"
+                        printf '\n[Service]\nEnvironment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
                     fi
                 fi
             else
@@ -1419,7 +1445,7 @@ EOF
             if [ -f "$override_file" ]; then
                 sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
                 # If file is empty or only has [Service], remove it
-                if [ ! -s "$override_file" ] || [ "$(grep -v "^\[" "$override_file" | grep -v "^$" | wc -l)" -eq 0 ]; then
+                if [ ! -s "$override_file" ] || [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
                     rm -f "$override_file"
                     # If directory is empty, remove it
                     rmdir "$override_dir" 2>/dev/null || true
