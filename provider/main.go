@@ -1590,7 +1590,34 @@ func provide(opts docopt.Opts) {
 				}
 				if authFailures >= maxAuthFailures {
 					cause := classifyAuthFailureCause(err)
-					return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
+					// URL-sourced (free lists) keep the short leash: give up and let
+					// the requeue path bring them back later, so a huge mostly-dead
+					// list does not pin a goroutine per entry. Operator-curated
+					// proxies (file/internal/direct) must never give up — a paid or
+					// direct endpoint that is briefly unreachable at boot, or a
+					// transient API error, should not cost the proxy until the next
+					// full restart (which wipes everyone's 8-12h warmup). Fall back to
+					// a slow, capped retry instead and keep trying.
+					if isURLSourced {
+						return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
+					}
+					slowDelay := proxyAuthSlowRetryDelay(authFailures - maxAuthFailures + 1)
+					if proxySettings != nil {
+						fmt.Printf("[proxy][init] proxy[%d] (%s) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+							proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(slowDelay))
+					} else if isNative {
+						fmt.Printf("[proxy][init] proxy[0] (direct) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+							authFailures, cause, formatDuration(slowDelay))
+					} else {
+						fmt.Printf("[init] auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+							authFailures, cause, formatDuration(slowDelay))
+					}
+					select {
+					case <-proxyCtx.Done():
+						return "", connect.Id{}, proxyCtx.Err()
+					case <-time.After(slowDelay):
+						continue
+					}
 				}
 
 				retryDelay := proxyAuthRetryDelay(err, authFailures)
@@ -2009,6 +2036,22 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 // of 5s/attempt, capped at 15s instead of 60s): a proven proxy's 9th retry
 // got the exact same 0.5-10.5s jitter as its 1st, giving a chronically
 // flaky proxy no extra breathing room as its failure streak grew.
+// proxyAuthSlowRetryDelay is the backoff for an operator-curated proxy
+// (file/internal/direct) that has exhausted its fast retries. Rather than give
+// up, it keeps trying on a slow, capped schedule: 5m, 10m, then 15m for every
+// attempt after that. Jitter (up to 30s) spreads a large batch so they do not
+// all re-hit the API on the same tick.
+func proxyAuthSlowRetryDelay(slowAttempt int) time.Duration {
+	if slowAttempt < 1 {
+		slowAttempt = 1
+	}
+	base := time.Duration(slowAttempt) * 5 * time.Minute
+	if base > 15*time.Minute {
+		base = 15 * time.Minute
+	}
+	return base + time.Duration(mathrand.Intn(30000))*time.Millisecond
+}
+
 func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	if isRateLimitedError(err) {
 		delay := time.Duration(attempt)*5*time.Second + time.Duration(mathrand.Intn(5000))*time.Millisecond
