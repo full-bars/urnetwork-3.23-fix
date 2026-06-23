@@ -127,7 +127,7 @@ func isLockStale(data []byte) bool {
 // number and calls reload(). reload() is serialized by mu so two reloads never
 // overlap.
 type ProxyReloader struct {
-	mu          sync.Mutex // serializes reloads
+	mu        sync.Mutex // serializes reloads
 	cancelMap map[string]context.CancelFunc
 	// TODO: refactor cancelMap and cancelMapMu into a struct owned by ProxyReloader
 	// to avoid storing a *sync.Mutex pointer across function boundaries.
@@ -138,7 +138,7 @@ type ProxyReloader struct {
 	wg          *sync.WaitGroup
 
 	// spawnProxy starts a proxy goroutine's work (the provideWithProxy closure).
-	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool)
+	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool)
 
 	drainingProxies map[string]context.CancelFunc // proxies draining active sessions
 	drainMu         sync.Mutex
@@ -456,6 +456,7 @@ func (r *ProxyReloader) reload() {
 
 		staggerPos := i
 		settingsCopy := settings
+		isURLSourced := sourceOf[settings.Address] == "url"
 		r.wg.Add(1)
 		go connect.HandleError(func() {
 			defer r.wg.Done()
@@ -465,7 +466,7 @@ func (r *ProxyReloader) reload() {
 			if !backoffPacer(staggerPos, time.Now(), proxyCtx) {
 				return
 			}
-			r.spawnProxy(proxyCtx, settingsCopy, false)
+			r.spawnProxy(proxyCtx, settingsCopy, false, isURLSourced)
 		})
 	}
 
