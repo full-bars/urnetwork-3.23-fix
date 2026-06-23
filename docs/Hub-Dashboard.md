@@ -7,20 +7,30 @@ A live fleet monitoring dashboard that aggregates bandwidth reports from all pro
 ## Architecture
 
 ```
-┌─────────┐   POST /api/report (every 15s)   ┌─────────┐
+┌─────────┐   POST /api/report (every 5m)    ┌─────────┐
 │ Provider│ ────────────────────────────────▶ │  Hub    │
 │  (node) │                                   │ :8080   │
 └─────────┘                                   └─────────┘
                                                     │
                                                     ▼
                                              ┌──────────────┐
-                                             │  hub.json     │
-                                             │  (persistent  │
-                                             │   state)      │
+                                             │  hub.db       │
+                                             │  (SQLite/WAL: │
+                                             │   live cache +│
+                                             │   history)    │
                                              └──────────────┘
 ```
 
-Each provider sends a bandwidth report containing per-proxy traffic counters, health status, and system metrics. The hub stores the latest state from each node in `hub.json` and computes delta-based traffic rates between consecutive reports.
+Each provider sends a bandwidth report containing per-proxy traffic counters, health status, and system metrics. The hub keeps the latest state from each node in an in-memory cache (used to render the dashboard and compute delta-based traffic rates between consecutive reports) and persists to a SQLite database, `hub.db`, in WAL mode.
+
+Persistence is two-tier:
+
+- **`proxy_snapshots`** — one gzip-compressed snapshot of each node's full proxy list per report, retained 7 days. Compression shrinks a large proxy list by roughly an order of magnitude.
+- **`node_hourly`** — a small per-node, per-hour rollup (cumulative RX/TX, billable, peak clients, sample count), retained 365 days for long-range history.
+
+On startup the hub rebuilds its in-memory cache from the latest stored snapshot of each node, so a restart doesn't blank the dashboard. A legacy `hub.json` from an older build is migrated into `hub.db` once on first boot, then retired to `hub.json.imported`.
+
+Historical rollups are queryable at `/api/history` (params: `node` for a single node, `hours` for the lookback window; defaults to all nodes over 24h).
 
 ## Quick Start
 
@@ -54,7 +64,7 @@ journalctl --user -fu urnetwork-hub.service
 ```
 
 > [!NOTE]
-> `hub install` writes a systemd drop-in that persists across reboots. The hub data file lives at `~/.local/share/urnetwork-hub/hub.json`.
+> `hub install` writes a systemd drop-in that persists across reboots. The hub database lives at `~/.local/share/urnetwork-hub/hub.db`.
 
 ---
 
@@ -238,12 +248,18 @@ This lets you see at a glance how much traffic is revenue-generating vs. total w
 
 ## Data Storage
 
-The hub persists node state to `hub.json` (in the configured `-data` directory). This file can be inspected or backed up.
+The hub persists to a SQLite database, `hub.db`, in the configured `-data` directory (WAL mode, so `hub.db-wal` and `hub.db-shm` sidecar files are normal). It can be inspected with any SQLite tool or backed up while the hub runs.
 
 ```sh
-# View the raw state
-cat /var/hub-data/hub.json
-
 # Count reporting nodes
-jq '.nodes | length' /var/hub-data/hub.json
+sqlite3 /var/hub-data/hub.db "SELECT COUNT(*) FROM nodes;"
+
+# Latest per-node rollup totals
+sqlite3 -header -column /var/hub-data/hub.db \
+  "SELECT node_id, total_rx, total_tx, peak_clients FROM node_hourly ORDER BY hour DESC LIMIT 20;"
+
+# Or fetch history over the API (last 7 days for one node)
+curl -s 'http://localhost:8080/api/history?node=la6&hours=168' | jq .
 ```
+
+Retention is automatic: `proxy_snapshots` are pruned after 7 days (hourly), `node_hourly` rollups after 365 days (daily).

@@ -266,35 +266,46 @@ func TestStoreRateForUnknownNode(t *testing.T) {
 
 func TestStoreLoadAndSave(t *testing.T) {
 	dir := t.TempDir()
-	path := dir + "/hub.json"
 
-	s := loadStore(path)
-	if s == nil {
-		t.Fatal("loadStore returned nil")
+	s, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
 	}
 	if len(s.Nodes) != 0 {
 		t.Errorf("nodes = %d, want 0", len(s.Nodes))
 	}
 
-	s.Nodes["test"] = &nodeState{NodeID: "test", Host: "h"}
-	if err := s.save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	s.upsert("test", &nodeState{
+		NodeID:    "test",
+		Host:      "h",
+		Timestamp: time.Now().UTC(),
+		Proxies:   []proxyReport{{ID: "p1", TotalRX: 100, TotalTX: 200, Clients: 1}},
+	})
+	s.db.Close()
 
-	s2 := loadStore(path)
+	// reopen: the node and its latest snapshot must come back from hub.db
+	s2, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("reopen openStore: %v", err)
+	}
+	defer s2.db.Close()
 	if s2.Nodes["test"] == nil {
-		t.Errorf("test node not loaded from disk")
+		t.Fatal("test node not loaded from db")
 	}
 	if s2.Nodes["test"].Host != "h" {
 		t.Errorf("host = %q, want %q", s2.Nodes["test"].Host, "h")
 	}
+	if len(s2.Nodes["test"].Proxies) != 1 || s2.Nodes["test"].Proxies[0].TotalRX != 100 {
+		t.Errorf("proxy snapshot not restored: %+v", s2.Nodes["test"].Proxies)
+	}
 }
 
 func TestStoreLoadNonexistent(t *testing.T) {
-	s := loadStore("/nonexistent/path/hub.json")
-	if s == nil {
-		t.Fatal("loadStore returned nil for nonexistent path")
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore on empty dir: %v", err)
 	}
+	defer s.db.Close()
 	if len(s.Nodes) != 0 {
 		t.Errorf("nodes = %d, want 0", len(s.Nodes))
 	}

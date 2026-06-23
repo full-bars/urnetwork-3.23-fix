@@ -94,14 +94,14 @@ func paceMonitor(ctx context.Context) {
 		pct := float64(up) * 100 / float64(total)
 		connectingN := len(connecting)
 		if pct < 50 && connectingN > 10 {
-			fmt.Printf("[pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
+			tlog("[pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
 				up, total, pct, connectingN, total-up-connectingN)
 		} else if pct > 90 && connectingN < 5 {
-			fmt.Printf("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
+			tlog("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
 				up, total, pct, connectingN)
 			return // warmup complete — stop repeating
 		} else {
-			fmt.Printf("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
+			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
 				up, total, pct, connectingN)
 		}
 	}
@@ -137,8 +137,8 @@ func initGlog() {
 
 func initSHMLoggerWithHandover() {
 	fmt.Printf("\n[audit] Slow disk detected. Moving all subsequent logs to RAM (/dev/shm) for performance.\n")
-	fmt.Printf("[audit] >>> To view live logs, run: urnet-tools logs <<<\n")
-	fmt.Printf("[audit] Redirecting in 3...")
+	tlog("[audit] >>> To view live logs, run: urnet-tools logs <<<\n")
+	tlog("[audit] Redirecting in 3...")
 	time.Sleep(1 * time.Second)
 	fmt.Printf(" 2...")
 	time.Sleep(1 * time.Second)
@@ -148,7 +148,7 @@ func initSHMLoggerWithHandover() {
 }
 
 func RunStartupAudit() (slowDisk bool, lowSpace bool) {
-	fmt.Printf("[audit] Running system checks...\n")
+	tlog("[audit] Running system checks...\n")
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
 
@@ -280,7 +280,7 @@ func applyPoolAutoSize(maxMemory connect.ByteCount) {
 		poolBytes = ceiling
 	}
 	connect.ResizeMessagePools(poolBytes)
-	fmt.Printf("[pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
+	tlog("[pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
 }
 
 func applyEcoSettings(maxMemory connect.ByteCount) {
@@ -487,14 +487,14 @@ func runEcoMemoryMonitor(ctx context.Context) {
 			switch state {
 			case ecoStateNormal:
 				debug.SetGCPercent(gcNormal)
-				fmt.Printf("[eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
+				tlog("[eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
 			case ecoStatePressure:
 				debug.SetGCPercent(gcPressure)
-				fmt.Printf("[eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
+				tlog("[eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
 			case ecoStateCritical:
 				debug.SetGCPercent(gcCritical)
 				runtime.GC()
-				fmt.Printf("[eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
+				tlog("[eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
 			}
 		}
 	}
@@ -511,7 +511,7 @@ func main() {
 		manualRamLogs := (ramlogs == "1")
 		slowDisk, _ := RunStartupAudit()
 		if slowDisk && !manualRamLogs {
-			fmt.Printf("[audit] Disk speed is suboptimal. Auto-enabling RAM logs for performance.\n")
+			tlog("[audit] Disk speed is suboptimal. Auto-enabling RAM logs for performance.\n")
 			os.Setenv("URNETWORK_RAMLOGS", "1")
 			autoRamLogTriggered = true
 		}
@@ -811,9 +811,9 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 
 	webhookURL := resolveAlertWebhook(envWebhookURL)
 	if webhookURL != "" {
-		fmt.Printf("[outage] watcher active node=%s webhook=configured\n", nodeName)
+		tlog("[outage] watcher active node=%s webhook=configured\n", nodeName)
 	} else {
-		fmt.Printf("[outage] watcher active node=%s\n", nodeName)
+		tlog("[outage] watcher active node=%s\n", nodeName)
 	}
 
 	ticker := time.NewTicker(pollInterval)
@@ -832,9 +832,9 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
 			webhookURL = resolved
 			if webhookURL != "" {
-				fmt.Printf("[outage] webhook updated node=%s webhook=configured\n", nodeName)
+				tlog("[outage] webhook updated node=%s webhook=configured\n", nodeName)
 			} else {
-				fmt.Printf("[outage] webhook disabled node=%s\n", nodeName)
+				tlog("[outage] webhook disabled node=%s\n", nodeName)
 			}
 		}
 
@@ -844,7 +844,7 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 				degradedCount++
 				if degradedCount >= startConfirm {
 					degraded = true
-					fmt.Printf("[outage] backend degraded — holding existing connections, not accepting new ones\n")
+					tlog("[outage] backend degraded — holding existing connections, not accepting new ones\n")
 					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
 						lastStartFire = time.Now()
 						go fireWebhook(webhookURL, nodeName, "outage_start",
@@ -859,7 +859,7 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 				if clearCount >= clearConfirm {
 					degraded = false
 					clearCount = 0
-					fmt.Printf("[outage] backend recovered\n")
+					tlog("[outage] backend recovered\n")
 					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
 						lastClearFire = time.Now()
 						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
@@ -892,18 +892,18 @@ func fireWebhook(url, nodeName, event, message string) {
 		})
 	}
 	if err != nil {
-		fmt.Printf("[webhook] marshal failed: %v\n", err)
+		tlog("[webhook] marshal failed: %v\n", err)
 		return
 	}
 	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
-		fmt.Printf("[webhook] delivery failed (%s): %v\n", event, err)
+		tlog("[webhook] delivery failed (%s): %v\n", event, err)
 		return
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		fmt.Printf("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
+		tlog("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
 	}
 }
 
@@ -917,7 +917,7 @@ func metricBytesToMiB(name string, v metrics.Value) uint64 {
 	case metrics.KindFloat64:
 		return uint64(v.Float64()) / 1024 / 1024
 	default:
-		fmt.Printf("[health] warning: metric %q has unreadable kind %v — check metric name\n", name, v.Kind())
+		tlog("[health] warning: metric %q has unreadable kind %v — check metric name\n", name, v.Kind())
 		return 0
 	}
 }
@@ -1014,7 +1014,7 @@ func runEarningWindows(ctx context.Context) {
 				active = "yes"
 			}
 
-			fmt.Printf("[earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
+			tlog("[earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
 				fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
 		}
 		prevCum = cum
@@ -1079,7 +1079,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		fmt.Printf("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
+		tlog("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
 			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1089,15 +1089,15 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		now := time.Now()
 		report := connect.ProxyHealthHeartbeat(uptime >= deadConfirmDelay)
 		down := len(report.Dead) + len(report.Degraded)
-		fmt.Printf("[health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
+		tlog("[health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
 		if len(report.Dead) > 0 {
-			fmt.Printf("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
+			tlog("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
 		}
 		if len(report.Degraded) > 0 {
-			fmt.Printf("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
+			tlog("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
 
 		// Reset midnight checkpoints when the day rolls over.
@@ -1172,7 +1172,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if age := bw.MaxAge(); age > 0 {
 				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
 			}
-			fmt.Printf("[traffic] %s rx=%s tx=%s clients=%d%s billable_today=%s\n",
+			tlog("[traffic] %s rx=%s tx=%s clients=%d%s billable_today=%s\n",
 				key,
 				fmtRate(float64(rxDelta)/elapsed),
 				fmtRate(float64(txDelta)/elapsed),
@@ -1186,7 +1186,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if totalBillable > 0 {
 			earning = "yes"
 		}
-		fmt.Printf("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
+		tlog("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
 			fmtRate(float64(totalRxDelta)/elapsed),
 			fmtRate(float64(totalTxDelta)/elapsed),
 			totalClients,
@@ -1202,7 +1202,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if idle < 0 {
 			idle = 0
 		}
-		fmt.Printf("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
+		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
 
 		keepAddrs := make(map[string]bool, len(report.Bandwidth))
@@ -1367,19 +1367,19 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 					reason = fmt.Sprintf("expiry fallback triggered (expires in %s, within %s threshold)",
 						formatDuration(time.Until(*exp)), formatDuration(expiryFallbackWindow))
 				}
-				fmt.Printf("[jwt] refreshing token — %s\n", reason)
+				tlog("[jwt] refreshing token — %s\n", reason)
 
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
-					fmt.Printf("[jwt] refresh failed: %v (will retry in 1h)\n", err)
+					tlog("[jwt] refresh failed: %v (will retry in 1h)\n", err)
 				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
-					fmt.Printf("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
+					tlog("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
 					if err := writeLastRefreshTime(now); err != nil {
-						fmt.Printf("[jwt] token refreshed but failed to persist last-refresh timestamp: %v\n", err)
+						tlog("[jwt] token refreshed but failed to persist last-refresh timestamp: %v\n", err)
 					} else {
-						fmt.Printf("[jwt] token refreshed successfully (next periodic refresh in %s)\n", formatDuration(periodicInterval))
+						tlog("[jwt] token refreshed successfully (next periodic refresh in %s)\n", formatDuration(periodicInterval))
 					}
 				}
 			}
@@ -1468,7 +1468,7 @@ func provide(opts docopt.Opts) {
 				if connect.ProxyHealthCount() > 0 {
 					_, dead, degraded, _, connecting := connect.ProxyHealthSnapshot()
 					down := len(dead) + len(degraded)
-					fmt.Printf("[pulse] waking stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
+					tlog("[pulse] waking stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
 						down, len(dead), len(degraded), len(connecting))
 				}
 				connect.TriggerPulse()
@@ -1684,13 +1684,13 @@ func provide(opts docopt.Opts) {
 					}
 					slowDelay := proxyAuthSlowRetryDelay(authFailures - maxAuthFailures + 1)
 					if proxySettings != nil {
-						fmt.Printf("[proxy][init] proxy[%d] (%s) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[proxy][init] proxy[%d] (%s) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
 							proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(slowDelay))
 					} else if isNative {
-						fmt.Printf("[proxy][init] proxy[0] (direct) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[proxy][init] proxy[0] (direct) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
 							authFailures, cause, formatDuration(slowDelay))
 					} else {
-						fmt.Printf("[init] auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[init] auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
 							authFailures, cause, formatDuration(slowDelay))
 					}
 					select {
@@ -1703,13 +1703,13 @@ func provide(opts docopt.Opts) {
 
 				retryDelay := proxyAuthRetryDelay(err, authFailures)
 				if proxySettings != nil {
-					fmt.Printf("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
+					tlog("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
 						proxySettings.Index, proxySettings.Address, authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
 				} else if isNative {
-					fmt.Printf("[proxy][init] proxy[0] (direct) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
+					tlog("[proxy][init] proxy[0] (direct) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
 						authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
 				} else {
-					fmt.Printf("[init] auth failed (attempt %d/%d): %v. Will retry in %.2fs\n", authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
+					tlog("[init] auth failed (attempt %d/%d): %v. Will retry in %.2fs\n", authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
 				}
 				select {
 				case <-proxyCtx.Done():
@@ -1832,14 +1832,14 @@ func provide(opts docopt.Opts) {
 		case "turbo-v8":
 			windowMiB, queueMiB = 8, 16
 		}
-		fmt.Printf("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
+		tlog("[turbo] profile=%s window=%dMiB resendQueue=%dMiB\n", profile, windowMiB, queueMiB)
 	}
 
 	// Load proxy.state to assign address-stable IDs. Known addresses keep their ID
 	// across restarts/reloads; new addresses get the next monotonic counter value.
 	proxyState, stateErr := readProxyState()
 	if stateErr != nil {
-		fmt.Printf("[proxy] warning: could not read proxy.state: %v\n", stateErr)
+		tlog("[proxy] warning: could not read proxy.state: %v\n", stateErr)
 		proxyState = &ProxyState{Proxies: map[string]ProxyEntry{}}
 	}
 	proxyState.StartedAt = provideStartTime
@@ -1885,7 +1885,7 @@ func provide(opts docopt.Opts) {
 		proxySourceOf[s.Address] = primarySource
 	}
 	if urlState, err := readProxyURLState(); err != nil {
-		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 	} else {
 		mergeProxyURLCache(proxyDesiredSet, proxySourceOf, urlState)
 	}
@@ -1912,7 +1912,7 @@ func provide(opts docopt.Opts) {
 	// Persist the initial state snapshot now that all IDs are resolved.
 	proxyState.NextID = currentProxyIDCounter()
 	if err := writeProxyState(proxyState); err != nil {
-		fmt.Printf("[proxy] warning: could not write proxy.state: %v\n", err)
+		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
 
 	if 0 < len(allProxySettings) {
@@ -2489,7 +2489,7 @@ func proxyRemove(opts docopt.Opts) {
 			state.Proxies = map[string]ProxyEntry{}
 			state.NextID = 0
 			if err := writeProxyState(state); err != nil {
-				fmt.Printf("[proxy] warning: could not reset proxy.state: %v\n", err)
+				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
 			}
 		}
 	} else {
@@ -2589,7 +2589,7 @@ func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
 		}
 		address, user, password := parseProxyAddress(line)
 		if user == "" || password == "" {
-			fmt.Printf("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
+			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
 			continue
 		}
 		all = append(all, &connect.ProxySettings{
@@ -2710,14 +2710,14 @@ func resolveDuration(opts docopt.Opts, flag, envVar string, def time.Duration) t
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
-		fmt.Printf("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, flag, def)
+		tlog("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, flag, def)
 		return def
 	}
 	if v := os.Getenv(envVar); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
-		fmt.Printf("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, envVar, def)
+		tlog("[proxy][url] warning: invalid duration %q for %s; using default %s\n", v, envVar, def)
 	}
 	return def
 }
@@ -2728,14 +2728,14 @@ func resolveInt(opts docopt.Opts, flag, envVar string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
-		fmt.Printf("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, flag, def)
+		tlog("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, flag, def)
 		return def
 	}
 	if v := os.Getenv(envVar); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
-		fmt.Printf("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, envVar, def)
+		tlog("[proxy][url] warning: invalid integer %q for %s; using default %d\n", v, envVar, def)
 	}
 	return def
 }
@@ -2777,7 +2777,7 @@ func resolveProxyURLs(opts docopt.Opts) []string {
 	}
 
 	if urlState, err := readProxyURLState(); err != nil {
-		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 	} else {
 		urls = append(urls, urlState.Sources...)
 	}
@@ -3145,7 +3145,7 @@ func classifyHealth(e ProxyEntry) string {
 func readProxyConfig() *ProxyConfig {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("[proxy] Error: could not find user home directory: %v\n", err)
+		tlog("[proxy] Error: could not find user home directory: %v\n", err)
 		return &ProxyConfig{}
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
@@ -3157,14 +3157,14 @@ func readProxyConfig() *ProxyConfig {
 
 	b, err := os.ReadFile(proxyPath)
 	if err != nil {
-		fmt.Printf("[proxy] Error: could not read proxy config at %s: %v\n", proxyPath, err)
+		tlog("[proxy] Error: could not read proxy config at %s: %v\n", proxyPath, err)
 		return &ProxyConfig{}
 	}
 
 	var proxyConfig ProxyConfig
 	err = json.Unmarshal(b, &proxyConfig)
 	if err != nil {
-		fmt.Printf("[proxy] Error: could not parse proxy config at %s: %v\n", proxyPath, err)
+		tlog("[proxy] Error: could not parse proxy config at %s: %v\n", proxyPath, err)
 		return &ProxyConfig{}
 	}
 	return &proxyConfig

@@ -156,7 +156,7 @@ func (r *ProxyReloader) isDraining(addr string) bool {
 func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
-		fmt.Printf("[proxy] warning: could not determine reload path: %v\n", err)
+		tlog("[proxy] warning: could not determine reload path: %v\n", err)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (r *ProxyReloader) reload() {
 
 	lockRelease, err := acquireProxyLock()
 	if err != nil {
-		fmt.Printf("[proxy] reload skipped: %v\n", err)
+		tlog("[proxy] reload skipped: %v\n", err)
 		return
 	}
 	defer lockRelease()
@@ -209,7 +209,7 @@ func (r *ProxyReloader) reload() {
 	if r.sourcePath != "" {
 		settings, err := readProxySettingsFromFile(r.sourcePath)
 		if err != nil {
-			fmt.Printf("[proxy] reload skipped: could not read source: %v\n", err)
+			tlog("[proxy] reload skipped: could not read source: %v\n", err)
 			return
 		}
 		desired = settings
@@ -229,7 +229,7 @@ func (r *ProxyReloader) reload() {
 	}
 
 	if urlState, err := readProxyURLState(); err != nil {
-		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 	} else {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
@@ -238,7 +238,7 @@ func (r *ProxyReloader) reload() {
 	// (no --proxy_file, no internal proxies) has desired == 0 but a
 	// non-empty desiredSet, and must not be treated as a source-read error.
 	if len(desiredSet) == 0 {
-		fmt.Printf("[proxy] reload skipped: 0 proxies found in source\n")
+		tlog("[proxy] reload skipped: 0 proxies found in source\n")
 		return
 	}
 
@@ -292,7 +292,7 @@ func (r *ProxyReloader) reload() {
 		r.drainingProxies[addr] = cancel
 		r.drainMu.Unlock()
 
-		fmt.Printf("[proxy] draining %s (%d active clients)\n", addr, bw.Clients.Load())
+		tlog("[proxy] draining %s (%d active clients)\n", addr, bw.Clients.Load())
 
 		go func(cancelFn context.CancelFunc, proxyAddr string) {
 			defer func() {
@@ -311,7 +311,7 @@ func (r *ProxyReloader) reload() {
 				case <-time.After(5 * time.Second):
 				}
 			}
-			fmt.Printf("[proxy] drain complete: %s\n", proxyAddr)
+			tlog("[proxy] drain complete: %s\n", proxyAddr)
 			cancelFn()
 		}(cancel, addr)
 	}
@@ -329,11 +329,11 @@ func (r *ProxyReloader) reload() {
 	// instead of bursting the auth API. Skip any still draining from a
 	// previous removal.
 	if len(added) > 0 {
-		fmt.Printf("[proxy] reload: adding %d proxies:\n", len(added))
+		tlog("[proxy] reload: adding %d proxies:\n", len(added))
 	}
 	for i, settings := range added {
 		if r.isDraining(settings.Address) {
-			fmt.Printf("[proxy] skip add %s: still draining\n", settings.Address)
+			tlog("[proxy] skip add %s: still draining\n", settings.Address)
 			continue
 		}
 		stableID := resolveProxyID(r.state, settings.Address)
@@ -374,9 +374,9 @@ func (r *ProxyReloader) reload() {
 	proxyStateMu.Lock()
 	r.state.NextID = currentProxyIDCounter()
 	if err := writeProxyState(r.state); err != nil {
-		fmt.Printf("[proxy] warning: could not write proxy.state after reload: %v\n", err)
+		tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)
 	}
 	proxyStateMu.Unlock()
 
-	fmt.Printf("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
+	tlog("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
 }
