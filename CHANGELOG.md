@@ -7,11 +7,16 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Fixed
-- **Rate-limited `[c]ping` log spam**: With ControlPingTimeout=30s and thousands of connections, `[c]ping` was producing ~33 lines/second. Now suppressed to one line per 5 minutes globally with suppressed count.
+- **Rate-limited `[c]ping err` log spam**: Error pings (`[c]ping err = Send sequence closed`) were not suppressed by the previous ping fix. Now rate-limited to one line per 5 minutes globally with suppressed count, same as success pings.
 
 ---
 
-## [v3.23.0-fix.24] — 2026-06-21
+## [v3.23.0-fix.24.5] — 2026-06-22
+
+### Fixed
+- **SOCKS5 probe no longer runs on file/internal proxy lists**: The pre-auth SOCKS5 probe was running on every proxy, including operator-curated paid lists from proxy files. File-based and internal proxies now skip the probe and go straight to auth. URL-sourced proxies added via hot-reload are still probed.
+
+---
 
 ### Performance
 - **Raised default throughput ceilings** (`transport.go`, `ip.go`, `tuning.go`, `transfer_contract_manager.go`):
