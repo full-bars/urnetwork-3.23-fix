@@ -6,8 +6,14 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+
+---
+
+## [v3.23.0-fix.24.7] — 2026-06-23
+
 ### Fixed
-- **Rate-limited `[c]ping err` log spam**: Error pings (`[c]ping err = Send sequence closed`) were not suppressed by the previous ping fix. Now rate-limited to one line per 5 minutes globally with suppressed count, same as success pings.
+- **Operator-curated proxies never give up on auth** (PR #119): File, internal, and direct proxies that exhaust `maxAuthFailures` now switch to a slow capped retry (5m → 10m → 15m with jitter) instead of going permanently offline. URL-sourced proxies retain the short leash — they give up and the `time.AfterFunc` requeue brings them back after 15 minutes.
+- **URL requeue decoupled from reload engine** (PR #120): Replaced the per-proxy `scheduleGiveUpRequeue` goroutine (15m sleep + cooldown map + trigger write + 30s recheck) with a single `time.AfterFunc` per proxy. Deleted the entire `proxyGiveUpCooldown` map/mutex/functions (~110 lines). `reload()` now acquires `proxy.lock` before proceeding, serializing hot-reloads with cross-process operations like `proxy remove-dead` and URL source fetches.
 
 ---
 
