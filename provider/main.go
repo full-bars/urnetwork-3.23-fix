@@ -99,6 +99,7 @@ func paceMonitor(ctx context.Context) {
 		} else if pct > 90 && connectingN < 5 {
 			fmt.Printf("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
 				up, total, pct, connectingN)
+			return // warmup complete — stop repeating
 		} else {
 			fmt.Printf("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
 				up, total, pct, connectingN)
