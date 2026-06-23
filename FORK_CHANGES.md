@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.7
+**Current Version**: v3.23.0-fix.24.8
 
 ---
 
@@ -611,14 +611,14 @@ URNETWORK_REPORT_URL=http://HUB_IP:8080
 
 ## 24. Proxy Startup Pacing & Pace Monitor
 
-**Purpose**: Prevent thundering-herd WebSocket dials when starting a provider with large proxy lists (500+). A jittered stagger spreads initial connections across a configurable window, and a pace monitor logs warmup progress every 30s.
+**Purpose**: Prevent thundering-herd WebSocket dials when starting a provider with large proxy lists (500+). A jittered stagger spreads initial connections across a configurable window, and a pace monitor logs warmup progress every 30s until the fleet is up.
 
 **Files Modified**: `provider/main.go`, `proxy_health.go`, `proxy_health_test.go`
 
 **Changes**:
 - `backoffPacer(n)` — waits `n × stagger_ms ± 50% jitter` before dialing
-- `paceMonitor(ctx)` — background goroutine logs warmup progress at 30s intervals
-- Warns (⚠) when <50% up with >10 connecting; marks done (✓) when >90% up with <5 connecting
+- `paceMonitor(ctx)` — background goroutine logs warmup progress at 30s intervals, then exits once warmup is complete
+- Warns (⚠) when <50% up with >10 connecting; marks done (✓) when >90% up with <5 connecting, then returns
 - Pulse log now includes connecting count from health snapshot
 - `ProxyHealthSnapshot()` extended to return `connecting []string` (5th return value)
 - `proxyIndex()` for native direct transports now correctly returns `index=0, ok=true`
@@ -632,10 +632,11 @@ URNETWORK_REPORT_URL=http://HUB_IP:8080
 [pace] warmup: 142/200 up (71%), 55 connecting
 [pace] ✓ warmup: 196/200 up (98%), 4 connecting — done
 ```
+Once the `✓ done` line is logged, `paceMonitor` exits. No further `[pace]` output is produced.
 
 **Breaking**: `ProxyHealthSnapshot()` now returns 5 values. Update any custom callers.
 
-**Status**: ✅ Shipped in v3.23.0-fix.19.
+**Status**: ✅ Initial pacing shipped in v3.23.0-fix.19. Goroutine exit fix shipped in PR #122.
 
 ---
 
@@ -1052,5 +1053,26 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Fixed release.yml `checkout@v4` → `v6`, added caching
 
 **Status**: ✅ Shipped in v3.23.0-fix.24.1.
+
+---
+
+## 50. Per-Minute Earning Windows (Independent Goroutine)
+
+**Purpose**: Give operators real-time earning visibility without waiting for the ~5-minute health heartbeat. A separate goroutine polls `ProxyHealthSnapshot()` for cumulative billable across all proxies every 60 seconds and emits rolling windows.
+
+**Files Modified**: `provider/main.go`
+
+**Change**:
+- Added `runEarningWindows(ctx)` — standalone goroutine with a 1-minute ticker
+- Tracks cumulative billable (BillableRx + BillableTx) across all proxies each tick
+- 60-sample ring buffer stores per-minute deltas with counter-reset guard
+- Computes rolling sums: 1m, 5m, 15m, 60m
+- Emits: `[earn] billable_1m=X billable_5m=Y billable_15m=Z billable_60m=W active=yes|no`
+- `active=yes` when billable_1m > 0, `active=no` when idle
+- Partial windows during warmup (no silent gaps before 60 minutes of data)
+- Silent when `ProxyHealthCount() == 0` (non-proxy mode)
+- Launched in `provide()` alongside other goroutines
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.8 (PR #121).
 
 ---
