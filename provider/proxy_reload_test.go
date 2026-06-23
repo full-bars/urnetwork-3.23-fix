@@ -110,7 +110,7 @@ func TestReload_URLOnlySource_NoEarlyExit(t *testing.T) {
 		sourcePath:  "",
 		parentCtx:   context.Background(),
 		wg:          &sync.WaitGroup{},
-		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 			<-proxyCtx.Done()
 		},
 		drainingProxies: map[string]context.CancelFunc{},
@@ -154,7 +154,7 @@ func TestReload_AddedProxies_PrintsAddedList(t *testing.T) {
 		sourcePath:  tmpFile,
 		parentCtx:   context.Background(),
 		wg:          &sync.WaitGroup{},
-		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 			<-proxyCtx.Done()
 		},
 		drainingProxies: map[string]context.CancelFunc{},
@@ -215,7 +215,7 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 		sourcePath:  "",
 		parentCtx:   context.Background(),
 		wg:          &sync.WaitGroup{},
-		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 			spawnCount.Add(1)
 			<-proxyCtx.Done()
 		},
@@ -397,7 +397,7 @@ func TestReload_SkipsAddressStillInGiveUpCooldown(t *testing.T) {
 		sourcePath:  "",
 		parentCtx:   context.Background(),
 		wg:          &sync.WaitGroup{},
-		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool) {
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 			spawnCount.Add(1)
 			<-proxyCtx.Done()
 		},
