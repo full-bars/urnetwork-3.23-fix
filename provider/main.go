@@ -1078,6 +1078,16 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				midnightCheckpoint[key] = billableTotal
 			}
 			billableToday := billableTotal - cp
+			totalBillable += billableToday
+
+			// Only emit a per-proxy line when the proxy is actually carrying client
+			// sessions. Connected-but-idle proxies still move a few bytes per tick
+			// (keepalive), so without this gate every proxy prints a line every tick
+			// (thousands of lines), burying other log output. The total rollup below
+			// still accounts for all proxies, active or idle.
+			if clients == 0 {
+				continue
+			}
 			ageStr := ""
 			if age := bw.MaxAge(); age > 0 {
 				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
@@ -1090,7 +1100,6 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				ageStr,
 				fmtBytes(billableToday),
 			)
-			totalBillable += billableToday
 		}
 		prevTickTime = now
 		earning := "no"
