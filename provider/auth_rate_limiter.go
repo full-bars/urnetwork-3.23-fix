@@ -238,7 +238,7 @@ func (a *authRateLimiter) decrease(reason string) {
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
-	fmt.Printf("[proxy][authrate] %s — cutting auth rate %.2f -> %.2f req/s\n", reason, float64(oldRate), float64(newRate))
+	tlog("[proxy][authrate] %s — cutting auth rate %.2f -> %.2f req/s\n", reason, float64(oldRate), float64(newRate))
 }
 
 // maybeLogPinnedHeartbeat logs that the rate is unchanged because it's
@@ -249,7 +249,7 @@ func (a *authRateLimiter) maybeLogPinnedHeartbeat(reason string) {
 		return
 	}
 	a.lastHeartbeatAt = time.Now()
-	fmt.Printf("[proxy][authrate] still pinned at %.2f req/s (latest trigger: %s)\n", float64(a.limiter.Limit()), reason)
+	tlog("[proxy][authrate] still pinned at %.2f req/s (latest trigger: %s)\n", float64(a.limiter.Limit()), reason)
 }
 
 func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
@@ -276,7 +276,7 @@ func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
-	fmt.Printf("[proxy][authrate] %d clean attempts — raising auth rate %.2f -> %.2f req/s\n", authRateIncreaseThreshold, float64(oldRate), float64(newRate))
+	tlog("[proxy][authrate] %d clean attempts — raising auth rate %.2f -> %.2f req/s\n", authRateIncreaseThreshold, float64(oldRate), float64(newRate))
 }
 
 // CurrentRate reports the limiter's current requests/sec, for logging and

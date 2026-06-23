@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -53,10 +56,10 @@ type nodeState struct {
 }
 
 type store struct {
-	mu       sync.RWMutex
-	path     string
-	Nodes    map[string]*nodeState   `json:"nodes"`
-	rates    map[string]*nodeRate    `json:"-"`
+	mu    sync.RWMutex
+	db    *sql.DB
+	Nodes map[string]*nodeState `json:"nodes"`
+	rates map[string]*nodeRate  `json:"-"`
 }
 
 type nodeRate struct {
@@ -67,29 +70,35 @@ type nodeRate struct {
 	mbpsTx float64
 }
 
-func loadStore(path string) *store {
-	s := &store{path: path, Nodes: make(map[string]*nodeState), rates: make(map[string]*nodeRate)}
-	data, err := os.ReadFile(path)
+// openStore opens the SQLite-backed hub store in dataDir. It creates/opens
+// hub.db, rebuilds the in-memory cache from the latest stored snapshots, and
+// performs a one-time migration of a legacy hub.json if one is present (after
+// which the JSON file is retired to hub.json.imported).
+func openStore(dataDir string) (*store, error) {
+	dbPath := filepath.Join(dataDir, "hub.db")
+	db, err := openDB(dbPath)
 	if err != nil {
-		return s
+		return nil, err
 	}
-	json.Unmarshal(data, s)
-	if s.Nodes == nil {
-		s.Nodes = make(map[string]*nodeState)
-	}
-	return s
-}
+	s := &store{db: db, Nodes: make(map[string]*nodeState), rates: make(map[string]*nodeRate)}
 
-func (s *store) save() error {
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
+	jsonPath := filepath.Join(dataDir, "hub.json")
+	if _, err := os.Stat(jsonPath); err == nil {
+		n, err := s.importJSON(jsonPath)
+		if err != nil {
+			fmt.Printf("hub.json import failed (continuing): %v\n", err)
+		} else {
+			fmt.Printf("migrated %d nodes from hub.json into hub.db\n", n)
+			if err := os.Rename(jsonPath, jsonPath+".imported"); err != nil {
+				fmt.Printf("could not retire hub.json: %v\n", err)
+			}
+		}
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
+
+	if err := s.loadLatestFromDB(); err != nil {
+		fmt.Printf("warning: could not load cached state from hub.db: %v\n", err)
 	}
-	return os.Rename(tmp, s.path)
+	return s, nil
 }
 
 func (s *store) upsert(nodeID string, state *nodeState) {
@@ -116,7 +125,9 @@ func (s *store) upsert(nodeID string, state *nodeState) {
 	}
 
 	s.Nodes[nodeID] = state
-	s.save()
+	if err := s.persist(state); err != nil {
+		fmt.Printf("persist %s: %v\n", nodeID, err)
+	}
 }
 
 func (s *store) list() []*nodeState {
@@ -147,7 +158,7 @@ func (s *store) summary() summaryRow {
 	var sr summaryRow
 	now := time.Now()
 	for _, n := range s.Nodes {
-		if now.Sub(n.Timestamp) > 5*time.Minute {
+		if now.Sub(n.Timestamp) > staleCutoff {
 			continue
 		}
 		sr.Nodes++
@@ -249,12 +260,21 @@ func fmtAge(seconds int64) string {
 	return fmt.Sprintf("%dh", seconds/3600)
 }
 
+// Freshness thresholds, sized for the provider's 5m default report interval
+// (one missed report still reads green; sustained silence goes yellow then
+// red). staleCutoff also gates which nodes count toward the fleet summary.
+const (
+	freshWindow = 7 * time.Minute
+	staleWindow = 15 * time.Minute
+	staleCutoff = staleWindow
+)
+
 func nodeColor(ts time.Time) string {
 	d := time.Since(ts)
-	if d < 2*time.Minute {
+	if d < freshWindow {
 		return "#22c55e"
 	}
-	if d < 5*time.Minute {
+	if d < staleWindow {
 		return "#eab308"
 	}
 	return "#ef4444"
@@ -294,6 +314,28 @@ func handleNodes(s *store) http.HandlerFunc {
 	}
 }
 
+// handleHistory serves the hourly rollups stored in SQLite as JSON. Query
+// params: node (optional node_id filter) and hours (lookback window, default
+// 24). Example: /api/history?node=la6&hours=168
+func handleHistory(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.URL.Query().Get("node")
+		hours := 24
+		if h := r.URL.Query().Get("hours"); h != "" {
+			if v, err := strconv.Atoi(h); err == nil && v > 0 {
+				hours = v
+			}
+		}
+		rows, err := s.history(nodeID, hours)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rows)
+	}
+}
+
 type removeRequest struct {
 	NodeID string `json:"node_id"`
 }
@@ -317,7 +359,9 @@ func handleNodeRemove(s *store) http.HandlerFunc {
 		delete(s.Nodes, req.NodeID)
 		delete(s.rates, req.NodeID)
 		s.mu.Unlock()
-		s.save()
+		if err := s.deleteFromDB(req.NodeID); err != nil {
+			fmt.Printf("delete %s from db: %v\n", req.NodeID, err)
+		}
 		fmt.Printf("removed node %s\n", req.NodeID)
 		w.WriteHeader(204)
 	}
@@ -400,17 +444,26 @@ func main() {
 	dataDir := flag.String("data", ".", "data directory for hub.json")
 	flag.Parse()
 
-	storePath := filepath.Join(*dataDir, "hub.json")
-	s := loadStore(storePath)
+	s, err := openStore(*dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hub: open store: %v\n", err)
+		os.Exit(1)
+	}
+	defer s.db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.startRetention(ctx)
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/report", handleReport(s))
 	mux.HandleFunc("/api/nodes", handleNodes(s))
 	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
+	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/", handleDashboard(s))
 
-	fmt.Printf("hub listening on %s (data: %s)\n", *addr, storePath)
+	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 		os.Exit(1)

@@ -22,7 +22,7 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 
 	if fileAddrs := addrsBySource["file"]; len(fileAddrs) > 0 {
 		if state.Source == "" {
-			fmt.Printf("[proxy] warning: %d proxies tagged source=file but no file source is configured; skipping\n", len(fileAddrs))
+			tlog("[proxy] warning: %d proxies tagged source=file but no file source is configured; skipping\n", len(fileAddrs))
 		} else if err := removeAddressesFromFile(state.Source, fileAddrs); err != nil {
 			return fmt.Errorf("could not update proxy file: %w", err)
 		}
@@ -91,7 +91,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
-			fmt.Printf("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
+			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
 			continue
 		}
 		// Free public proxy lists are mostly dead entries. Probing here, before
@@ -100,20 +100,20 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 		// first place — instead of relying on 10 auth retries per dead proxy to
 		// find that out the expensive way.
 		reachable := filterReachableProxyURLLines(ctx, lines)
-		fmt.Printf("[proxy][url] probed %s: %d/%d reachable\n", url, len(reachable), len(lines))
+		tlog("[proxy][url] probed %s: %d/%d reachable\n", url, len(reachable), len(lines))
 		fetched[i] = reachable
 	}
 
 	release, err := acquireProxyLock()
 	if err != nil {
-		fmt.Printf("[proxy][url] warning: could not acquire proxy lock: %v\n", err)
+		tlog("[proxy][url] warning: could not acquire proxy lock: %v\n", err)
 		return
 	}
 	defer release()
 
 	state, err := readProxyURLState()
 	if err != nil {
-		fmt.Printf("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 		state = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
 	}
 
@@ -124,14 +124,14 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 		}
 		added := mergeProxyURLEntries(state, fetched[i], maxTotal)
 		totalAdded += added
-		fmt.Printf("[proxy][url] fetched %s: +%d new proxies\n", url, added)
+		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
 
 	if totalAdded == 0 {
 		return
 	}
 	if err := writeProxyURLState(state); err != nil {
-		fmt.Printf("[proxy][url] warning: could not write proxy_url.json: %v\n", err)
+		tlog("[proxy][url] warning: could not write proxy_url.json: %v\n", err)
 		return
 	}
 	if reloadPath, err := proxyReloadPath(); err == nil {
@@ -174,7 +174,7 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 
 	state, err := readProxyState()
 	if err != nil {
-		fmt.Printf("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
+		tlog("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
 		return 0
 	}
 
@@ -198,10 +198,10 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	}
 
 	if err := removeDeadProxies(state, addrsBySource); err != nil {
-		fmt.Printf("[proxy][cleanup] warning: %v\n", err)
+		tlog("[proxy][cleanup] warning: %v\n", err)
 		return 0
 	}
-	fmt.Printf("[proxy][cleanup] automatically removed %d dead/inactive proxies (scope=%s)\n", removed, scope)
+	tlog("[proxy][cleanup] automatically removed %d dead/inactive proxies (scope=%s)\n", removed, scope)
 	return removed
 }
 
