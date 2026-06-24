@@ -1,7 +1,9 @@
 name: Test Discord Webhook
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - feat/release-discord-notifications
 
 jobs:
   test:
