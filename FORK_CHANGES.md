@@ -1107,3 +1107,20 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #124).
 
 ---
+
+## 53. `[profit]` Heartbeat and `[contract]` Close Utilization Logging
+
+**Purpose**: The 5-minute `[health]` heartbeat and 1-minute `[earn]` rolling windows are too coarse to answer "is billable traffic moving right now," and `[contract] acquired` only shows a contract was granted, never how much of it actually got used.
+
+**Files Modified**: `provider/main.go`, `transfer_contract_manager.go`
+
+**Change**:
+- Added `runProfitHeartbeat(ctx)` — standalone goroutine with a 15-second ticker, using `ProxyHealthSnapshot()` (safe — doesn't disturb the health heartbeat's dead/recovered baseline)
+- Sums billable bytes (`BillableRx+BillableTx`) and `Clients` across all proxies each tick; `earning=yes` when billable bytes grew since the last tick **and** clients > 0
+- Emits: `[profit] earning=yes|no clients=N rate=X` (rate via existing `fmtRate` helper, e.g. `4.5 MB/s`)
+- Log throttling to avoid flooding quiet/warmup periods: `earning=yes` logs every 15s tick; `earning=no` logs only on the first occurrence, on the immediate yes→no transition (so the exact stop time is visible), or after ≥5 minutes since the last log
+- Added a `[contract] closed acked=X allotted=Y util=Z% destination=W` line in `CloseContractWithCheckpoint`, pairing with the existing `[contract] acquired size=X destination=Y` line — shows how much of a granted contract actually got used before it closed
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #126).
+
+---
