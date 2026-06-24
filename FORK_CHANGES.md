@@ -1124,3 +1124,39 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #126).
 
 ---
+
+## 54. File Proxies Start Before URL-Sourced Proxies on Boot
+
+**Purpose**: Operator-curated paid proxy lists loaded via `--proxy_file` should start authenticating before URL-scraped free proxies. The URL fetcher was racing ahead during startup, causing file-based proxies to queue behind URL proxy probes.
+
+**Files Modified**: `provider/main.go`
+
+**Change**:
+- Moved `go runProxyURLFetcher(ctx)` and `go runProxyURLCleanup(ctx)` from line 1583 to line 2056 — after `reloader.StartWatcher(ctx)` ensures file proxies are fully loaded first
+- No new env vars or CLI flags (YAGNI) — file-before-URL is the correct default by design
+- No behavioral change after startup: URL refresh/cleanup tickers and hot-reload behavior are identical
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #127).
+
+---
+
+## 55. URL-Sourced Proxy Give-Up Backoff and Eviction
+
+**Purpose**: Replace the flat 15-minute give-up-to-retry cycle for URL-sourced proxies with an escalating per-address backoff, and permanently evict addresses that prove hopeless after enough cycles. Fix a discovered bug where lifetime failure/give-up counters were silently wiped during the wait window between cycles.
+
+**Files Modified**:
+- `provider/proxy_failure_history.go` — added `giveUps` map, `RecordGiveUp`/`GiveUpCount` methods, extended `Reset`/`Prune` to cover new counter
+- `provider/main.go` — added `proxyURLGiveUpRetryDelay` (15m→30m→1h→2h→4h→8h→16h→24h, +20% jitter), `proxyURLGiveUpEvictAfterCycles=10`; rewrote give-up site to use escalating delay and eviction; rewrote Prune call site to use `currentDesiredProxyAddresses` instead of live health registry
+- `provider/proxy_url.go` — added `Blacklist map[string]time.Time` to `ProxyURLState`; `mergeProxyURLEntries` now skips blacklisted addresses
+- `provider/proxy_url_source.go` — added `evictProxyURLAddress` (cache remove + blacklist + reload trigger) and `currentDesiredProxyAddresses` helper (file/internal + URL cache, independent of health registration)
+
+**Change**:
+- New `proxyURLGiveUpRetryDelay(giveUpCount)` computes escalating delay: cycle 1=15m, 2=30m, 3=1h, 4=2h, 5=4h, 6=8h, 7=16h, 8+=24h (capped), with up to 20% jitter
+- `proxyFailureHistory` gains `giveUps` map tracking lifetime give-up cycles per address (not per-attempt), with same `Reset`/`Prune` lifecycle as `failures`
+- `ProxyURLState.Blacklist` persisted to `proxy_url.json`; `mergeProxyURLEntries` skips any address present in the blacklist, enforcing permanent eviction at the only add path
+- `evictProxyURLAddress` removes from cache, writes to blacklist, triggers hot-reload — called at cycle 10+ instead of scheduling another retry
+- `currentDesiredProxyAddresses()` returns all addresses from file/internal + URL cache, used by both `globalProxyFailureHistory.Prune` and `globalProvenProxies.Prune` — fixes the bug where `keepAddrs` was built from live health registry `report.Bandwidth`, which drops give-up'd proxies during their wait window
+
+**11 new unit tests** covering: give-up counter, Reset/Prune for giveUps, delay schedule (monotonic increase + cap + jitter bounds), blacklist round-trip, blacklist enforcement on merge, eviction (removal + blacklist + reload trigger), blacklist surviving a fetch cycle, desired-address-set helper (file merge, internal config fallback, URL-cache-only address survives health absence).
+
+**Status**: ✅ Implemented (pending PR).

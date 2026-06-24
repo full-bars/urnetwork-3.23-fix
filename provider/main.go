@@ -383,11 +383,6 @@ var (
 	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
 
 	ErrTokenInvalid = errors.New("auth: token is invalid or expired")
-
-	// proxyURLGiveUpRetryAfter is the delay before a URL-sourced proxy that
-	// exhausted its auth attempts is automatically retried via a delayed reload
-	// trigger — a lightweight time.AfterFunc, not a per-proxy goroutine.
-	proxyURLGiveUpRetryAfter = 15 * time.Minute
 )
 
 func startEcoMonitorOnce(ctx context.Context) {
@@ -1282,9 +1277,20 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
 
-		keepAddrs := make(map[string]bool, len(report.Bandwidth))
-		for k := range report.Bandwidth {
-			keepAddrs[k] = true
+		// Pruning must use the full desired address set (file/internal + URL
+		// cache), not just currently-registered health entries: a proxy that
+		// has given up unregisters immediately on exit
+		// (defer connect.UnregisterProxy(...)), so it would otherwise look
+		// "gone" for its entire wait window before the next requeue, wiping
+		// its give-up/failure history every heartbeat tick and defeating the
+		// escalating backoff.
+		keepAddrs, pruneErr := currentDesiredProxyAddresses()
+		if pruneErr != nil {
+			tlog("[proxy] warning: could not determine desired proxy addresses for history pruning: %v\n", pruneErr)
+			keepAddrs = make(map[string]bool, len(report.Bandwidth))
+			for k := range report.Bandwidth {
+				keepAddrs[k] = true
+			}
 		}
 		globalProxyFailureHistory.Prune(keepAddrs)
 		globalProvenProxies.Prune(keepAddrs)
@@ -1801,13 +1807,25 @@ func provide(opts docopt.Opts) {
 					delete(proxyCancelMap, proxySettings.Address)
 					proxyCancelMu.Unlock()
 
-					if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
-						time.AfterFunc(proxyURLGiveUpRetryAfter, func() {
-							_ = writeReloadTrigger(reloadPath)
-						})
+					giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
+					if giveUpCount >= proxyURLGiveUpEvictAfterCycles {
+						if evictErr := evictProxyURLAddress(proxySettings.Address); evictErr != nil {
+							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) could not evict after %d give-ups: %v\n",
+								proxySettings.Index, proxySettings.Address, giveUpCount, evictErr)
+						} else {
+							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
+								proxySettings.Index, proxySettings.Address, err, giveUpCount)
+						}
+					} else {
+						delay := proxyURLGiveUpRetryDelay(giveUpCount)
+						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
+							time.AfterFunc(delay, func() {
+								_ = writeReloadTrigger(reloadPath)
+							})
+						}
+						fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
+							proxySettings.Index, proxySettings.Address, err, giveUpCount, proxyURLGiveUpEvictAfterCycles, formatDuration(delay))
 					}
-					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (url-sourced — will retry automatically in %s)\n",
-						proxySettings.Index, proxySettings.Address, err, formatDuration(proxyURLGiveUpRetryAfter))
 				} else {
 					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline; run 'urnet-tools proxy refresh' after fixing the underlying issue)\n",
 						proxySettings.Index, proxySettings.Address, err)
@@ -2204,6 +2222,47 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 // of 5s/attempt, capped at 15s instead of 60s): a proven proxy's 9th retry
 // got the exact same 0.5-10.5s jitter as its 1st, giving a chronically
 // flaky proxy no extra breathing room as its failure streak grew.
+// proxyURLGiveUpRetryBase is the starting delay before a URL-sourced proxy
+// that exhausted its auth attempts is automatically retried via a delayed
+// reload trigger — a lightweight time.AfterFunc, not a per-proxy goroutine.
+// proxyURLGiveUpRetryDelay doubles this on every subsequent give-up cycle
+// for the same address, up to proxyURLGiveUpRetryCap, so a chronically dead
+// address stops competing for an auth-rate-limiter slot as often as a fresh
+// one.
+const (
+	proxyURLGiveUpRetryBase = 15 * time.Minute
+	proxyURLGiveUpRetryCap  = 24 * time.Hour
+
+	// proxyURLGiveUpEvictAfterCycles is the lifetime give-up count at which a
+	// URL-sourced address is permanently evicted (see evictProxyURLAddress)
+	// instead of requeued again. proxyURLGiveUpRetryDelay first reaches the
+	// 24h cap at cycle 8, so this allows 3 more cycles at the cap (roughly 3
+	// more days) before giving up on the address for good.
+	proxyURLGiveUpEvictAfterCycles = 10
+)
+
+// proxyURLGiveUpRetryDelay computes the requeue delay for a URL-sourced
+// proxy's Nth give-up (giveUpCount is 1-indexed: this call is for the
+// giveUpCount'th give-up, so giveUpCount=1 is the very first time this
+// address gave up). Doubles proxyURLGiveUpRetryBase each cycle, capped at
+// proxyURLGiveUpRetryCap, with up to 20% jitter so many addresses that gave
+// up around the same time don't all retry in the same instant.
+func proxyURLGiveUpRetryDelay(giveUpCount int) time.Duration {
+	if giveUpCount < 1 {
+		giveUpCount = 1
+	}
+	delay := proxyURLGiveUpRetryBase
+	for i := 1; i < giveUpCount; i++ {
+		delay *= 2
+		if delay >= proxyURLGiveUpRetryCap {
+			delay = proxyURLGiveUpRetryCap
+			break
+		}
+	}
+	jitter := time.Duration(mathrand.Int63n(int64(delay)/5 + 1)) // up to 20%
+	return delay + jitter
+}
+
 // proxyAuthSlowRetryDelay is the backoff for an operator-curated proxy
 // (file/internal/direct) that has exhausted its fast retries. Rather than give
 // up, it keeps trying on a slow, capped schedule: 5m, 10m, then 15m for every

@@ -8,9 +8,11 @@ All notable changes to this project are documented here.
 
 ### Added
 - **Per-minute earning windows** (PR #121): New `runEarningWindows` goroutine emits `[earn] billable_1m=X billable_5m=Y billable_15m=Z billable_60m=W active=yes|no` every 60 seconds, decoupled from the ~5-minute health heartbeat. Operators see earning changes within 1 minute instead of waiting for the next heartbeat tick. Rolling 60-minute ring buffer with counter-reset guard for proxy restarts. Partial windows displayed during warmup.
+- **URL-sourced proxy give-up backoff and eviction** (PR #TBD): Replaces the flat 15-minute give-up-to-retry delay with an escalating per-address backoff (15m→30m→1h→2h→4h→8h→16h→24h, +20% jitter). Permanently evicts addresses after 10 give-up cycles via a persisted blacklist in `proxy_url.json`, so a hopeless proxy can never re-enter the auth-rate-limiter lottery across restarts. Fixes a concurrent bug where `Prune` silently wiped give-up/failure counters during the wait window by using the full desired address set (file/internal + URL cache) instead of the live health registry.
 
 ### Fixed
 - **`paceMonitor` goroutine now exits after warmup completes** (PR #122): The `✓ warmup … done` message was being re-emitted every 30 seconds indefinitely because the ticker loop had no terminal state. Added `return` after the done log line — the goroutine now exits as soon as `pct > 90 && connectingN < 5`, printing the completion line exactly once.
+- **File-based proxies now start before URL-sourced proxies on boot** (PR #127): `runProxyURLFetcher` and `runProxyURLCleanup` goroutines were launched at line 1583, before the proxy-file reloader was ready — URL proxies would race ahead of operator-curated file proxies. Moved both goroutine launches to line 2056, after `reloader.StartWatcher(ctx)` ensures file proxies are loaded first.
 
 ---
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // removeDeadProxies removes the given addresses from whichever source they
@@ -61,6 +63,81 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		return fmt.Errorf("could not determine reload path: %w", err)
 	}
 	return writeReloadTrigger(reloadPath)
+}
+
+// evictProxyURLAddress permanently removes address from the URL cache and
+// records it in the persisted blacklist in the same write, so a future
+// fetch (which is add-only by design) can never silently bring it back,
+// even across process restarts. Triggers a hot-reload so the live fleet
+// reflects the removal immediately. Used once a URL-sourced proxy has given
+// up enough times (proxyURLGiveUpEvictAfterCycles) that retrying it is no
+// longer worth an auth-rate-limiter slot.
+func evictProxyURLAddress(address string) error {
+	release, err := acquireProxyLock()
+	if err != nil {
+		return fmt.Errorf("could not acquire proxy lock: %w", err)
+	}
+	defer release()
+
+	state, err := readProxyURLState()
+	if err != nil {
+		return fmt.Errorf("could not read proxy_url.json: %w", err)
+	}
+
+	delete(state.Cache, address)
+	if state.Blacklist == nil {
+		state.Blacklist = map[string]time.Time{}
+	}
+	state.Blacklist[address] = time.Now().UTC()
+
+	if err := writeProxyURLState(state); err != nil {
+		return fmt.Errorf("could not write proxy_url.json: %w", err)
+	}
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		return fmt.Errorf("could not determine reload path: %w", err)
+	}
+	return writeReloadTrigger(reloadPath)
+}
+
+// currentDesiredProxyAddresses returns every address currently desired by
+// this provider: the primary source (file or internal config) merged with
+// the URL cache. Used wherever "is this address still part of the fleet"
+// needs to be independent of live health-registration state — a give-up'd
+// proxy's goroutine unregisters immediately on exit, so it would otherwise
+// look like it left the fleet for the entire wait window before its next
+// requeue, even though it's still desired and will be relaunched.
+func currentDesiredProxyAddresses() (map[string]bool, error) {
+	state, err := readProxyState()
+	if err != nil {
+		return nil, fmt.Errorf("could not read proxy.state: %w", err)
+	}
+
+	var desired []*connect.ProxySettings
+	if state.Source != "" {
+		desired, err = readProxySettingsFromFile(state.Source)
+		if err != nil {
+			return nil, fmt.Errorf("could not read proxy file %s: %w", state.Source, err)
+		}
+	} else {
+		desired = readProxySettings()
+	}
+
+	addrs := make(map[string]bool, len(desired))
+	for _, s := range desired {
+		addrs[s.Address] = true
+	}
+
+	urlState, err := readProxyURLState()
+	if err != nil {
+		return nil, fmt.Errorf("could not read proxy_url.json: %w", err)
+	}
+	for addr := range urlState.Cache {
+		addrs[addr] = true
+	}
+
+	return addrs, nil
 }
 
 var fetchMu sync.Mutex
