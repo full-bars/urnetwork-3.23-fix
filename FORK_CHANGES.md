@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.8
+**Current Version**: v3.23.0-fix.24.9
 
 ---
 
@@ -1074,5 +1074,36 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Launched in `provide()` alongside other goroutines
 
 **Status**: ✅ Shipped in v3.23.0-fix.24.8 (PR #121).
+
+---
+
+## 51. `urnet-tools update -f` Stops, Updates, and Restarts Automatically
+
+**Purpose**: `urnet-tools update -f`/`--force` previously only swapped the binary on disk and printed "Restart the service when convenient" — the running provider was never touched, so unattended/scripted updates left the old binary running until a human intervened.
+
+**Files Modified**: `urnet-tools` (or equivalent installer/update script)
+
+**Change**:
+- `stop_systemd_units()` now distinguishes a plain update from a force-update
+- With `-f`/`--force`: stop the running provider (no confirmation prompt) → replace binary → restart the service automatically
+- Plain `urnet-tools update` (no `-f`) is unchanged: swap binary in place, leave the service running, so auto-update timers are unaffected
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #125).
+
+---
+
+## 52. Hub Dashboard Per-Proxy Earning Column
+
+**Purpose**: Make it visible at a glance which proxies (and nodes) are actively carrying billable traffic versus sitting up but idle, without digging through provider logs node by node.
+
+**Files Modified**: `hub/main.go`
+
+**Change**:
+- New in-memory tracking on `store` (`prevBillable`, `earning` maps, nodeID → proxyID) computed in `upsert()` from the billable-bytes delta against the previous report
+- `earning=yes` when a proxy's billable bytes (`BillRX+BillTX`) grew since the previous report **and** it currently has active clients — same criteria as the provider's own `[traffic]` log line
+- Rendered in three places: per-proxy detail table (`Yes`/`No` badge), per-node summary row (`X/Y` earning count), and the top fleet summary bar (fleet-wide total)
+- No wire format or SQLite schema change — purely a hub-side computed/rendered signal
+
+**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #124).
 
 ---
