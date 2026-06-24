@@ -1580,8 +1580,6 @@ func provide(opts docopt.Opts) {
 	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 0)
 	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "none")
 	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 24*time.Hour)
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 	go paceMonitor(ctx)
 
 	// Declared here (rather than next to the startup loop below) so
@@ -2054,6 +2052,9 @@ func provide(opts docopt.Opts) {
 		drainingProxies: make(map[string]context.CancelFunc),
 	}
 	reloader.StartWatcher(ctx)
+
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax)
+	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 
 	if 0 < port {
 		fmt.Printf(
