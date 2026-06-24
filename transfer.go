@@ -29,6 +29,8 @@ var (
 	suppressedDropErrCount atomic.Int64
 	lastPingLogNano        atomic.Int64
 	suppressedPingCount    atomic.Int64
+	lastPingErrLogNano     atomic.Int64
+	suppressedPingErrCount atomic.Int64
 )
 
 func shouldLogDropErr() (bool, int64) {
@@ -962,7 +964,13 @@ func (self *Client) run() {
 							}
 						}
 					} else {
-						self.log.Infof("[c]ping err = %s\n", err)
+						if ok, suppressed := suppressPingLog(&lastPingErrLogNano, &suppressedPingErrCount); ok {
+							if suppressed > 0 {
+								self.log.Infof("[c]ping err = %s (%d suppressed)\n", err, suppressed)
+							} else {
+								self.log.Infof("[c]ping err = %s\n", err)
+							}
+						}
 					}
 				case <-self.ctx.Done():
 					return
