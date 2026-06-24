@@ -56,10 +56,12 @@ type nodeState struct {
 }
 
 type store struct {
-	mu    sync.RWMutex
-	db    *sql.DB
-	Nodes map[string]*nodeState `json:"nodes"`
-	rates map[string]*nodeRate  `json:"-"`
+	mu           sync.RWMutex
+	db           *sql.DB
+	Nodes        map[string]*nodeState        `json:"nodes"`
+	rates        map[string]*nodeRate         `json:"-"`
+	prevBillable map[string]map[string]uint64 `json:"-"` // nodeID -> proxyID -> last seen BillRX+BillTX
+	earning      map[string]map[string]bool   `json:"-"` // nodeID -> proxyID -> earning=yes/no
 }
 
 type nodeRate struct {
@@ -80,7 +82,13 @@ func openStore(dataDir string) (*store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &store{db: db, Nodes: make(map[string]*nodeState), rates: make(map[string]*nodeRate)}
+	s := &store{
+		db:           db,
+		Nodes:        make(map[string]*nodeState),
+		rates:        make(map[string]*nodeRate),
+		prevBillable: make(map[string]map[string]uint64),
+		earning:      make(map[string]map[string]bool),
+	}
 
 	jsonPath := filepath.Join(dataDir, "hub.json")
 	if _, err := os.Stat(jsonPath); err == nil {
@@ -124,6 +132,32 @@ func (s *store) upsert(nodeID string, state *nodeState) {
 		s.rates[nodeID] = &nodeRate{ts: state.Timestamp, rx: totalRX, tx: totalTX}
 	}
 
+	// earning=yes mirrors the provider's own [traffic] log line: billable bytes
+	// must have grown since the last report from this proxy (active within the
+	// report interval) and it must currently be carrying client sessions. A
+	// proxy with no prior snapshot can't have a known delta yet, so it reads no
+	// until the next report.
+	if s.prevBillable == nil {
+		s.prevBillable = make(map[string]map[string]uint64)
+	}
+	if s.earning == nil {
+		s.earning = make(map[string]map[string]bool)
+	}
+	prevBill := s.prevBillable[nodeID]
+	if prevBill == nil {
+		prevBill = make(map[string]uint64)
+	}
+	earning := make(map[string]bool, len(state.Proxies))
+	nextBill := make(map[string]uint64, len(state.Proxies))
+	for _, p := range state.Proxies {
+		billable := p.BillRX + p.BillTX
+		_, seen := prevBill[p.ID]
+		earning[p.ID] = seen && billable > prevBill[p.ID] && p.Clients > 0
+		nextBill[p.ID] = billable
+	}
+	s.prevBillable[nodeID] = nextBill
+	s.earning[nodeID] = earning
+
 	s.Nodes[nodeID] = state
 	if err := s.persist(state); err != nil {
 		fmt.Printf("persist %s: %v\n", nodeID, err)
@@ -152,6 +186,14 @@ func (s *store) getRate(nodeID string) (float64, float64) {
 	return 0, 0
 }
 
+// getEarning returns the per-proxy earning=yes/no map for a node, computed by
+// upsert from the billable-bytes delta against the previous report.
+func (s *store) getEarning(nodeID string) map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.earning[nodeID]
+}
+
 func (s *store) summary() summaryRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -162,6 +204,7 @@ func (s *store) summary() summaryRow {
 			continue
 		}
 		sr.Nodes++
+		nodeEarning := s.earning[n.NodeID]
 		for _, p := range n.Proxies {
 			switch p.Status {
 			case "up":
@@ -178,6 +221,10 @@ func (s *store) summary() summaryRow {
 			sr.TotalTX += p.TotalTX
 			sr.BillRX += p.BillRX
 			sr.BillTX += p.BillTX
+			sr.TotalProxies++
+			if nodeEarning[p.ID] {
+				sr.Earning++
+			}
 		}
 	}
 	return sr
@@ -188,6 +235,7 @@ type summaryRow struct {
 	TotalClients                           int64
 	TotalRX, TotalTX                       uint64
 	BillRX, BillTX                         uint64
+	Earning, TotalProxies                  int
 }
 
 type proxSummary struct {
@@ -195,6 +243,14 @@ type proxSummary struct {
 	Clients                        int64
 	TotalRX, TotalTX               uint64
 	BillRX, BillTX                 uint64
+	Earning                        int
+}
+
+// proxyRow pairs a reported proxy with its hub-computed earning state for
+// template rendering. proxyReport itself stays a plain decode/persist target.
+type proxyRow struct {
+	proxyReport
+	Earning bool
 }
 
 type nodeRow struct {
@@ -210,7 +266,7 @@ type nodeRow struct {
 	HeapMiB       uint64
 	SysMiB        uint64
 	Conns         int64
-	ProxyList     []proxyReport
+	ProxyList     []proxyRow
 	Index         int
 }
 
@@ -358,6 +414,8 @@ func handleNodeRemove(s *store) http.HandlerFunc {
 		s.mu.Lock()
 		delete(s.Nodes, req.NodeID)
 		delete(s.rates, req.NodeID)
+		delete(s.prevBillable, req.NodeID)
+		delete(s.earning, req.NodeID)
 		s.mu.Unlock()
 		if err := s.deleteFromDB(req.NodeID); err != nil {
 			fmt.Printf("delete %s from db: %v\n", req.NodeID, err)
@@ -373,7 +431,9 @@ func handleDashboard(s *store) http.HandlerFunc {
 
 		rows := make([]nodeRow, 0, len(nodes))
 		for i, n := range nodes {
+			nodeEarning := s.getEarning(n.NodeID)
 			var ps proxSummary
+			proxyList := make([]proxyRow, 0, len(n.Proxies))
 			for _, p := range n.Proxies {
 				ps.TotalRX += p.TotalRX
 				ps.TotalTX += p.TotalTX
@@ -390,6 +450,11 @@ func handleDashboard(s *store) http.HandlerFunc {
 				default:
 					ps.Dead++
 				}
+				isEarning := nodeEarning[p.ID]
+				if isEarning {
+					ps.Earning++
+				}
+				proxyList = append(proxyList, proxyRow{proxyReport: p, Earning: isEarning})
 			}
 			uptime := time.Duration(n.Uptime * float64(time.Second)).Round(time.Second)
 			uptimeStr := uptime.String()
@@ -422,7 +487,7 @@ func handleDashboard(s *store) http.HandlerFunc {
 				HeapMiB:   n.System.HeapMiB,
 				SysMiB:    n.System.SysMiB,
 				Conns:     n.System.Connections,
-				ProxyList: n.Proxies,
+				ProxyList: proxyList,
 				Index:     i,
 			})
 		}
@@ -550,6 +615,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
   {{if .Sum.Degraded}}<span class="val degraded">{{.Sum.Degraded}} deg</span>{{end}}
   {{if .Sum.Dead}}<span class="val dead">{{.Sum.Dead}} dead</span>{{end}}
 </span>
+<span class="summary-item"><strong>Earning</strong> <span class="val">{{.Sum.Earning}}/{{.Sum.TotalProxies}}</span></span>
 <span class="summary-item"><strong>Clients</strong> <span class="val">{{.Sum.TotalClients}}</span></span>
 <span class="summary-item"><strong>RX</strong> <span class="val">{{fmtBytes .Sum.TotalRX}}</span> <span style="color:#ef4444;font-weight:bold">· {{fmtBytes .Sum.BillRX}} billable</span></span>
 <span class="summary-item"><strong>TX</strong> <span class="val">{{fmtBytes .Sum.TotalTX}}</span> <span style="color:#ef4444;font-weight:bold">· {{fmtBytes .Sum.BillTX}} billable</span></span>
@@ -570,6 +636,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <th data-col="rate-tx" class="num">Out Mbps<span class="sort-arrow"></span></th>
 <th data-col="heap" class="num">Heap<span class="sort-arrow"></span></th>
 <th data-col="conns" class="num">Conns<span class="sort-arrow"></span></th>
+<th class="num">Earning</th>
 <th></th>
 </tr>
 </thead>
@@ -592,10 +659,11 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td class="num">{{fmtMbps .MbpsTX}}</td>
 <td class="num">{{.HeapMiB}} MiB</td>
 <td class="num">{{.Conns}}</td>
+<td class="num">{{.Proxies.Earning}}/{{len .ProxyList}}</td>
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
 <tr class="detail-row" id="detail-{{.NodeID}}">
-<td colspan="12">
+<td colspan="13">
 <div class="detail-inner">
 <table class="detail-table">
 <thead>
@@ -609,6 +677,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <th class="num">TX</th>
 <th class="num">Bill RX</th>
 <th class="num">Bill TX</th>
+<th>Earning</th>
 </tr>
 </thead>
 <tbody>
@@ -623,6 +692,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td class="num">{{fmtBytes .TotalTX}}</td>
 <td class="num">{{fmtBytes .BillRX}}</td>
 <td class="num">{{fmtBytes .BillTX}}</td>
+<td>{{if .Earning}}<span class="status-badge up">Yes</span>{{else}}<span class="status-badge dead">No</span>{{end}}</td>
 </tr>
 {{end}}
 </tbody>
