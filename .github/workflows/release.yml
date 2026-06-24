@@ -147,3 +147,26 @@ jobs:
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           body_path: ${{ steps.body_src.outputs.path }}
           generate_release_notes: ${{ steps.body_src.outputs.auto }}
+
+      - name: Notify Discord on tagged release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          BUILD_NOTIFY: ${{ secrets.BUILD_NOTIFY }}
+        run: |
+          if [ -z "$BUILD_NOTIFY" ]; then
+            echo "BUILD_NOTIFY secret is not set, skipping notification"
+            exit 0
+          fi
+          VERSION="${{ github.ref_name }}"
+          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          curl -sf -H "Content-Type: application/json" -d "$(jq -n \
+            --arg version "$VERSION" \
+            --arg releaseUrl "$RELEASE_URL" \
+          '{
+            "embeds": [{
+              "title": ("🎉 Release " + $version + " is Live"),
+              "description": ("**Binaries:** linux/amd64, linux/arm64\n\n**Update existing install:**\n```\nurnet-tools update\n```\n\n**Fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- install\n```\n\n[View GitHub Release](" + $releaseUrl + ")"),
+              "color": 3066993,
+              "footer": { "text": "URNetwork Release Monitor • Binaries" }
+            }]
+          }')" "$BUILD_NOTIFY"
