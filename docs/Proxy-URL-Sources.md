@@ -100,6 +100,32 @@ Manual `urnet-tools proxy remove-dead` is unaffected by this setting in every ca
 
 ---
 
+## ⏳ Auth Give-Up Backoff & Permanent Eviction
+
+URL-sourced lists are often noisy — an entry can be reachable on the wire but fail auth forever (e.g. a live SOCKS5 endpoint behind a stale password). Older builds retried these on a flat 15-minute cycle indefinitely, keeping the auth rate limiter busy and filling logs with give-up messages for hopeless addresses.
+
+Each URL-sourced address now gets an **escalating per-address backoff** after it gives up on auth:
+
+| Give-up cycle | Retry delay (±20% jitter) |
+| :--- | :--- |
+| 1st | 15m |
+| 2nd | 30m |
+| 3rd | 1h |
+| 4th | 2h |
+| 5th | 4h |
+| 6th | 8h |
+| 7th | 16h |
+| 8th+ | 24h (capped) |
+
+After **10 give-up cycles**, the address is **permanently evicted**: removed from the URL cache and written to a blacklist persisted in `proxy_url.json`. Blacklisted addresses are skipped at the only add path (`mergeProxyURLEntries`), so a hopeless proxy can never re-enter the auth lottery — even across provider restarts or if the source list keeps republishing it.
+
+> [!NOTE]
+> Eviction is permanent and survives restarts. If a previously-blacklisted address genuinely comes back to life (e.g. the upstream fixes the password), remove it from the `Blacklist` map in `proxy_url.json` and restart, or it will keep being skipped.
+
+This is independent of the daily dead-proxy cleanup (`--proxy_dead_cleanup_scope`): backoff/eviction is driven by repeated **auth give-ups**, while cleanup acts on proxies marked **dead** by the health tracker.
+
+---
+
 ## 🛡️ Overlapping Fetch Prevention
 
 Concurrent fetch cycles for the same URL are now prevented. If a fetch is already in progress when the refresh interval fires, the new cycle is skipped with a log line (`[proxy-url] fetch already in progress for <url>, skipping`). This prevents accidental thundering-herd when multiple triggers fire near-simultaneously (e.g., a `--proxy_url` interval coinciding with a `add-source` command).
@@ -134,4 +160,4 @@ No — new entries are deduplicated by address against everything currently runn
 The fetch cycle is skipped with a logged warning. Already-added proxies from that source keep running — a stale list is better than wiping working proxies because of a transient network blip. After several consecutive failures, the provider logs a louder warning suggesting the source may be dead, but it won't remove the source for you.
 
 **Does this validate proxies before adding them?**
-No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`.
+No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 10 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
