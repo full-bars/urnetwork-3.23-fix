@@ -432,7 +432,7 @@ stop_systemd_units ()
 {
     if [ -f "$systemd_service" ]; then
         if [ "$(systemctl --user is-active urnetwork.service)" = "active" ]; then
-            if [ "$operation" = "update" ]; then
+            if [ "$operation" = "update" ] && [ "$FORCE" != "1" ]; then
                 pr_info "urnetwork.service is running — binary will be updated on disk."
                 pr_info "Restart the service when convenient to apply the update: systemctl --user restart urnetwork.service"
                 systemd_units_stopped=0
@@ -443,22 +443,20 @@ stop_systemd_units ()
                 return
             fi
 
-            if systemctl --user is-active --quiet urnetwork.service; then
+            if [ "$FORCE" != "1" ]; then
                 confirm_restart "Upgrading or reinstalling requires temporarily stopping the URNetwork provider to safely swap the core binary."
             fi
 
-            pr_err "warning: urnetwork.service is running, it will be stopped to perform a reinstall"
-            pr_err "warning: It will be started again automatically, once the reinstall finishes"
-            pr_err "warning: You will need to restart this service after this reinstall if auto start fails"
+            pr_info "urnetwork.service is running — it will be stopped for the update and restarted automatically once finished."
             systemd_units_stopped=1
         fi
 
         systemctl --user disable --now urnetwork.service || {
-            pr_err "Failed to disable urnetwork.service early before reinstall; continuing anyway"
+            pr_err "Failed to disable urnetwork.service; continuing anyway"
         }
 
         systemctl --user disable --now urnetwork-update.timer || {
-            pr_err "Failed to disable urnetwork-update.timer before reinstall; continuing anyway"
+            pr_err "Failed to disable urnetwork-update.timer; continuing anyway"
         }
     fi
 }
