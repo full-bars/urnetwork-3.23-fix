@@ -12,6 +12,7 @@ import "sync"
 type proxyFailureHistory struct {
 	mu       sync.Mutex
 	failures map[string]int
+	giveUps  map[string]int
 }
 
 var globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
@@ -32,16 +33,41 @@ func (h *proxyFailureHistory) FailureCount(address string) int {
 	return h.failures[address]
 }
 
-// Reset clears address's failure count, called when it successfully
-// authenticates. Without this, a proxy that failed several times before
-// finally succeeding (or one that succeeds, drops, and reconnects later)
-// keeps the admission gate's weighted lottery permanently biased against it
-// based on failures that are no longer representative — a proven-working
-// proxy should compete on equal footing with an untried one, not carry a
-// scar from before it proved itself.
+// RecordGiveUp records another give-up cycle for address: the proxy
+// exhausted its per-launch auth attempts and is backing off before its next
+// requeue. Tracked separately from RecordFailure, which counts individual
+// auth attempts within a cycle — RecordGiveUp counts only the cycles
+// themselves, which is what drives the escalating requeue delay
+// (proxyURLGiveUpRetryDelay) and the eventual eviction threshold
+// (proxyURLGiveUpEvictAfterCycles). Returns the new lifetime total.
+func (h *proxyFailureHistory) RecordGiveUp(address string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.giveUps == nil {
+		h.giveUps = map[string]int{}
+	}
+	h.giveUps[address]++
+	return h.giveUps[address]
+}
+
+// GiveUpCount reports address's lifetime give-up count.
+func (h *proxyFailureHistory) GiveUpCount(address string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.giveUps[address]
+}
+
+// Reset clears address's failure and give-up counts, called when it
+// successfully authenticates. Without this, a proxy that failed several
+// times before finally succeeding (or one that succeeds, drops, and
+// reconnects later) keeps the admission gate's weighted lottery permanently
+// biased against it based on failures that are no longer representative —
+// a proven-working proxy should compete on equal footing with an untried
+// one, not carry a scar from before it proved itself.
 func (h *proxyFailureHistory) Reset(address string) {
 	h.mu.Lock()
 	delete(h.failures, address)
+	delete(h.giveUps, address)
 	h.mu.Unlock()
 }
 
@@ -53,6 +79,11 @@ func (h *proxyFailureHistory) Prune(keepAddrs map[string]bool) {
 	for addr := range h.failures {
 		if !keepAddrs[addr] {
 			delete(h.failures, addr)
+		}
+	}
+	for addr := range h.giveUps {
+		if !keepAddrs[addr] {
+			delete(h.giveUps, addr)
 		}
 	}
 }

@@ -19,10 +19,18 @@ import (
 // ProxyURLState is the on-disk record of configured live proxy URL sources
 // and the addresses fetched from them so far. Unlike proxy.state, this file
 // is additive-only by design: fetched addresses are only ever removed by
-// removeDeadProxies (manual or automatic cleanup), never by a fetch cycle.
+// removeDeadProxies/evictProxyURLAddress (manual or automatic cleanup),
+// never by a fetch cycle.
 type ProxyURLState struct {
 	Sources []string                 `json:"sources"`
 	Cache   map[string]ProxyURLEntry `json:"cache"`
+
+	// Blacklist records addresses that were permanently evicted (see
+	// evictProxyURLAddress) and the time they were blacklisted. Permanent,
+	// no expiry: mergeProxyURLEntries skips any address found here, so a
+	// fetch (which is otherwise add-only) can never silently bring a
+	// blacklisted address back, even across process restarts.
+	Blacklist map[string]time.Time `json:"blacklist,omitempty"`
 }
 
 // ProxyURLEntry records the auth (if any) for one address fetched from a URL
@@ -206,9 +214,11 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // mergeProxyURLEntries parses each line and adds genuinely new addresses to
 // state.Cache (mutating it in place). Already-cached addresses are left
 // untouched — this function only ever adds, never updates or removes.
-// maxTotal caps the total cache size; 0 means unlimited. Once the cap is
-// reached, remaining lines in this call are skipped without evicting any
-// existing entry.
+// Addresses present in state.Blacklist are always skipped, even if not yet
+// cached, so a permanently-evicted address can never come back. maxTotal
+// caps the total cache size; 0 means unlimited. Once the cap is reached,
+// remaining lines in this call are skipped without evicting any existing
+// entry.
 func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
@@ -219,6 +229,9 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (a
 			continue
 		}
 		if _, exists := state.Cache[address]; exists {
+			continue
+		}
+		if _, blacklisted := state.Blacklist[address]; blacklisted {
 			continue
 		}
 		if maxTotal > 0 && len(state.Cache) >= maxTotal {
