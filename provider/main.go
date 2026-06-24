@@ -1035,6 +1035,83 @@ func sumLastN(deltas []uint64, n int) uint64 {
 	return total
 }
 
+// profitIdleLogInterval caps how often a non-earning [profit] line is
+// printed, so quiet periods (warmup, no assigned clients) don't flood the
+// log at the 15s tick rate.
+const profitIdleLogInterval = 5 * time.Minute
+
+// runProfitHeartbeat logs a [profit] line focused on whether billable traffic
+// is moving right now, distinct from runEarningWindows' longer rolling
+// trend. It ticks every 15s but only prints every tick while earning=yes;
+// once earning drops to no it prints immediately (so the exact stop time is
+// visible) and then throttles to profitIdleLogInterval until traffic resumes.
+func runProfitHeartbeat(ctx context.Context) {
+	const interval = 15 * time.Second
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var prevBillable uint64
+	var prevSet bool
+	prevTickTime := time.Now()
+	var lastLogTime time.Time
+	wasEarning := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if connect.ProxyHealthCount() == 0 {
+			prevSet = false
+			continue
+		}
+
+		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+
+		var billable uint64
+		var clients int64
+		for _, p := range bw {
+			billable += p.BillableRx.Load() + p.BillableTx.Load()
+			clients += p.Clients.Load()
+		}
+
+		now := time.Now()
+		if !prevSet {
+			prevBillable = billable
+			prevTickTime = now
+			prevSet = true
+			continue
+		}
+
+		elapsed := now.Sub(prevTickTime).Seconds()
+		if elapsed < 1 {
+			elapsed = 1
+		}
+		var delta uint64
+		if billable >= prevBillable {
+			delta = billable - prevBillable
+		}
+		prevBillable = billable
+		prevTickTime = now
+
+		earning := delta > 0 && clients > 0
+		justStopped := wasEarning && !earning
+		wasEarning = earning
+
+		if earning || justStopped || lastLogTime.IsZero() || now.Sub(lastLogTime) >= profitIdleLogInterval {
+			status := "no"
+			if earning {
+				status = "yes"
+			}
+			tlog("[profit] earning=%s clients=%d rate=%s\n", status, clients, fmtRate(float64(delta)/elapsed))
+			lastLogTime = now
+		}
+	}
+}
+
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
 // memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
 // (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
@@ -1496,6 +1573,7 @@ func provide(opts docopt.Opts) {
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
+	go runProfitHeartbeat(ctx)
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 15*time.Minute)
