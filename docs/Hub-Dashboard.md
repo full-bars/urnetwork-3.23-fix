@@ -133,6 +133,7 @@ URNETWORK_REPORT_URL=https://hub.yourdomain.com ./ur-provider
 - **Proxies** — aggregate up / connecting / degraded / dead counts
 - **Clients** — total active client sessions
 - **RX / TX** — total traffic with billable breakdown (`1.3 GB · 1.2 GB billable`)
+- **Earning** — fleet-wide count of proxies currently earning over total proxies (`N/Total`)
 
 ### Node Table
 
@@ -144,6 +145,7 @@ URNETWORK_REPORT_URL=https://hub.yourdomain.com ./ur-provider
 | Uptime | Provider uptime |
 | Proxies | Color-coded status badges (up/connecting/degraded) |
 | Clients | Active client sessions on this node |
+| Earning | Count of this node's proxies currently earning over its total (`N/Total`) |
 | RX | Total received bytes / billable received (smaller text) |
 | TX | Total transmitted bytes / billable transmitted |
 | In Mbps | Inbound traffic rate (delta-based) |
@@ -162,6 +164,7 @@ Click any node row to expand its full proxy list:
 - **ID** — proxy identifier and address
 - **Address** — IP:port
 - **Status** — up / connecting / degraded
+- **Earning** — `Yes`/`No` badge; `Yes` when this proxy's billable bytes grew since the previous report **and** it currently has active clients (mirrors the provider's `[traffic]`/`[profit]` earning signal)
 - **Clients** — active sessions on this proxy
 - **Max Age** — longest-running connection
 - **RX** — total received bytes

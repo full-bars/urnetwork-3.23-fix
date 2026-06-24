@@ -58,7 +58,8 @@ The installation includes the `urnet-tools` suite for management:
 | `urnet-tools turbo v8` | Enable Turbo V8 mode. |
 | `urnet-tools eco on/off` | Toggle Eco mode. |
 | `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
-| `urnet-tools update` | Upgrade to the latest version. |
+| `urnet-tools update` | Upgrade to the latest version (prompts before restarting the provider). |
+| `urnet-tools update -f` | Non-interactive upgrade: stop, update, and restart the provider with no prompts. Use in scripts/automation. |
 
 ## 📊 System Auditor & Host Optimization
 

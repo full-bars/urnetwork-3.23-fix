@@ -278,7 +278,7 @@ The selector tracks per-strategy success rates and prefers whichever is most rel
 ## 📡 Relay Traffic Rates
 
 ```
-[traffic] total rx=2.3 MB/s tx=0.8 MB/s clients=1 active_proxies=2
+[traffic] total rx=2.3 MB/s tx=0.8 MB/s clients=1 active_proxies=2 billable_today=1.5 GB earning=yes
 [traffic] proxy[124] (216.26.228.3:1081) rx=2.3 MB/s tx=0.8 MB/s clients=1 age=5m12s billable_today=1.2 GB
 [traffic] proxy[230] (45.3.48.195:1081) rx=0.4 MB/s tx=0.1 MB/s clients=0 billable_today=340 MB
 ```
@@ -290,13 +290,69 @@ Fires on every health heartbeat tick (same cadence as `[health]`). Measures **ac
 | `rx` / `tx` | Bytes per second relayed since the previous heartbeat tick. |
 | `clients` | Number of end-user relay sessions active on this proxy right now. |
 | `age` | How long the current client session has been continuously present (shown when `clients > 0`). |
-| `billable_today` | Cumulative billable bytes relayed through this proxy since midnight (local time). Resets at midnight. |
+| `billable_today` | Cumulative billable bytes relayed through this proxy since midnight (local time). Resets at midnight. On the `total` line it is the fleet-wide sum. |
 | `active_proxies` | How many proxies moved any bytes since the last tick (summary line only). |
+| `earning` | `yes` if any billable bytes moved this tick, else `no` (summary line only) — a quick grep for "is this node earning at all". |
 
 The per-proxy lines only appear for proxies that moved bytes since the last tick — proxies with zero traffic are omitted. The `total` summary line always appears so you have one line to grep even when nothing is flowing (`rx=0 B/s tx=0 B/s clients=0`).
 
 > [!NOTE]
 > `[traffic]` and `[net][s]select` measure different things. `[net][s]select success=N` is the provider's own API calls to the platform. `[traffic] rx=X` is actual bytes your provider relayed for end-users. Both can be high or low independently.
+
+---
+
+## 💰 Profit Heartbeat (3.23-fix)
+
+```
+[profit] earning=yes clients=1 rate=2.1 MB/s
+[profit] earning=no clients=0 rate=0 B/s
+```
+
+A fast, focused answer to **"are we earning right now?"**, emitted by `runProfitHeartbeat` every **15 seconds** — independent of the 5-minute `[health]`/`[traffic]` heartbeat. It uses `ProxyHealthSnapshot`, so it never disturbs the health heartbeat's dead/recovered baseline.
+
+| Field | Meaning |
+|---|---|
+| `earning` | `yes` if billable bytes moved in the last interval, else `no`. |
+| `clients` | End-user relay sessions active across all proxies right now. |
+| `rate` | Aggregate billable throughput since the previous tick. |
+
+To keep quiet periods from flooding the log, `earning=no` lines throttle to **once every 5 minutes** — except an `earning=no` line always fires **immediately on the `yes -> no` transition**, so the exact moment traffic stopped is visible. `earning=yes` lines print every tick.
+
+---
+
+## 📈 Earning Windows & Utilization (3.23-fix)
+
+```
+[earn] billable_1m=4.2 MB billable_5m=31 MB billable_15m=88 MB billable_60m=402 MB active=yes
+[earn] proxies_up=12 serving=3 idle=9 clients=4
+```
+
+Two distinct `[earn]` lines surface **how much** and **how well** the node is earning:
+
+**Rolling windows** (`billable_1m`/`5m`/`15m`/`60m`) — emitted per minute by `runEarningWindows`. Cumulative billable bytes over the trailing 1/5/15/60-minute windows, so you can see the trend at a glance. `active=yes` when any billable bytes moved in the last minute.
+
+**Proxy utilization** (`proxies_up`/`serving`/`idle`/`clients`) — emitted on the 5-minute health tick. Shows how many up proxies are actually carrying users (`serving`) versus sitting `idle`. Sustained high `idle` with `proxies_up > 0` means the platform is **not assigning users** to this node — an earning signal distinct from `[traffic]` (bytes) and `[contract]` (assignments).
+
+---
+
+## 📑 Contract Lifecycle (3.23-fix)
+
+```
+[contract] acquired size=256 KiB destination=0142...c3a9
+[contract] closed acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
+```
+
+A contract is the platform's bandwidth grant for relaying a client's traffic. These two lines bracket a contract's life:
+
+| Field | Meaning |
+|---|---|
+| `size` (acquired) | Bytes granted by this contract. |
+| `acked` (closed) | Bytes actually acknowledged/relayed before the contract closed. |
+| `allotted` (closed) | Bytes the contract granted (same basis as `size`). |
+| `util` (closed) | `acked / allotted` as a percentage — actual revenue-generating usage, not just the grant. |
+| `destination` | The client/destination the contract served. |
+
+Low `util` across many `[contract] closed` lines means contracts are being acquired but barely used (clients connecting then leaving, or short transfers) — distinct from not acquiring contracts at all.
 
 ---
 
