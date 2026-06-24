@@ -1104,14 +1104,16 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 ) {
 	opened := false
 	var contractKey ContractKey
+	var allottedByteCount ByteCount
 
 	func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
-		if _, ok := self.localStats.ContractOpenByteCounts[contractId]; ok {
+		if allotted, ok := self.localStats.ContractOpenByteCounts[contractId]; ok {
 			// opened via the contract manager
 			opened = true
+			allottedByteCount = allotted
 			contractKey = self.localStats.ContractOpenKeys[contractId]
 			self.localStats.ContractCloseCount += 1
 			delete(self.localStats.ContractOpenByteCounts, contractId)
@@ -1121,6 +1123,18 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 			self.localStats.ReceiveContractCloseByteCount += ackedByteCount
 		}
 	}()
+
+	if opened {
+		util := 0.0
+		if allottedByteCount > 0 {
+			util = float64(ackedByteCount) / float64(allottedByteCount) * 100
+		}
+		self.client.log.Infof("[contract] closed acked=%s allotted=%s util=%.0f%% destination=%s\n",
+			ByteCountHumanReadable(ackedByteCount),
+			ByteCountHumanReadable(allottedByteCount),
+			util,
+			contractKey.Destination.DestinationId)
+	}
 
 	// Reliable delivery via a per-contract `ControlSync`. The
 	// previous implementation called `ClientOob().SendControl(...)`
