@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect"
 )
@@ -210,6 +211,52 @@ func TestMergeProxyURLCache_PrimarySourceWins(t *testing.T) {
 	}
 	if settings.Auth == nil || settings.Auth.User != "u" || settings.Auth.Password != "p" {
 		t.Errorf("expected auth u/p, got %+v", settings.Auth)
+	}
+}
+
+func TestWriteReadProxyURLState_RoundTrip_Blacklist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy_url.json")
+
+	ts := time.Now().UTC().Truncate(time.Second)
+	s := &ProxyURLState{
+		Cache:     map[string]ProxyURLEntry{},
+		Blacklist: map[string]time.Time{"1.2.3.4:1080": ts},
+	}
+	if err := writeProxyURLStateTo(path, s); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readProxyURLStateFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotTs, ok := got.Blacklist["1.2.3.4:1080"]
+	if !ok {
+		t.Fatal("expected blacklist entry to round-trip")
+	}
+	if !gotTs.Equal(ts) {
+		t.Errorf("blacklist timestamp: got %v, want %v", gotTs, ts)
+	}
+}
+
+func TestMergeProxyURLEntries_SkipsBlacklisted(t *testing.T) {
+	state := &ProxyURLState{
+		Cache:     map[string]ProxyURLEntry{},
+		Blacklist: map[string]time.Time{"1.2.3.4:1080": time.Now()},
+	}
+	added := mergeProxyURLEntries(state, []string{
+		"1.2.3.4:1080", // blacklisted, must be skipped even though not yet cached
+		"5.6.7.8:1080",
+	}, 0)
+	if added != 1 {
+		t.Fatalf("added: got %d, want 1", added)
+	}
+	if _, ok := state.Cache["1.2.3.4:1080"]; ok {
+		t.Error("blacklisted address must not be added to cache")
+	}
+	if _, ok := state.Cache["5.6.7.8:1080"]; !ok {
+		t.Error("non-blacklisted address should still be added")
 	}
 }
 

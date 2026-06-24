@@ -176,6 +176,139 @@ func TestRunProxyURLCleanupOnce_ScopeNone_RemovesNothing(t *testing.T) {
 	}
 }
 
+func TestEvictProxyURLAddress_RemovesFromCacheAddsToBlacklist(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"4.4.4.4:1080": {},
+		"5.5.5.5:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := evictProxyURLAddress("4.4.4.4:1080"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Cache["4.4.4.4:1080"]; ok {
+		t.Error("evicted address should be removed from cache")
+	}
+	if _, ok := got.Cache["5.5.5.5:1080"]; !ok {
+		t.Error("other cached address should be untouched")
+	}
+	if _, ok := got.Blacklist["4.4.4.4:1080"]; !ok {
+		t.Error("evicted address should be recorded in blacklist")
+	}
+
+	reloadPath, _ := proxyReloadPath()
+	seq, _ := readReloadSeq(reloadPath)
+	if seq != 1 {
+		t.Errorf("reload trigger: got seq %d, want 1", seq)
+	}
+}
+
+func TestEvictProxyURLAddress_ThenFetchNeverReadsItBack(t *testing.T) {
+	withTempHome(t)
+
+	addr, cleanup := listenSocks5Once(t)
+	defer cleanup()
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := evictProxyURLAddress(addr); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(addr + "\n"))
+	}))
+	defer srv.Close()
+
+	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Cache[addr]; ok {
+		t.Error("evicted/blacklisted address must not be re-added by a later fetch, even though reachable")
+	}
+}
+
+func TestCurrentDesiredProxyAddresses_MergesFileAndURLCache(t *testing.T) {
+	home := withTempHome(t)
+
+	fileSourcePath := filepath.Join(home, "proxy.txt")
+	if err := os.WriteFile(fileSourcePath, []byte("1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{Source: fileSourcePath, Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"3.3.3.3:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentDesiredProxyAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"1.1.1.1:1080", "2.2.2.2:1080", "3.3.3.3:1080"} {
+		if !got[want] {
+			t.Errorf("expected %s in desired set, got %v", want, got)
+		}
+	}
+}
+
+func TestCurrentDesiredProxyAddresses_InternalConfigWhenNoFileSource(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyState(&ProxyState{Source: "", Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	writeProxyConfig(&ProxyConfig{Servers: map[string]string{
+		"9.9.9.9:1080": "",
+	}})
+
+	got, err := currentDesiredProxyAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["9.9.9.9:1080"] {
+		t.Errorf("expected internal-config address in desired set, got %v", got)
+	}
+}
+
+func TestCurrentDesiredProxyAddresses_SurvivesGiveUpWaitWindow(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"4.4.4.4:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentDesiredProxyAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["4.4.4.4:1080"] {
+		t.Error("expected url-cached address to count as desired even though it has no live health registration")
+	}
+}
+
 func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	withTempHome(t)
 
