@@ -12,10 +12,18 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+## [v3.23.0-fix.24.13] — 2026-06-25
+
+### Fixed
+- **`urnet-tools update` bootstrap self-update fix**: The self-update code previously had a chicken-and-egg problem — the fix for fetching the latest script was in the script determination code, but the old script (which runs the update) never reached that code path because it just did `cat "$0"` (read itself from disk). Now, **even the old script** will pick up the bundled `urnet-tools` from the freshly-extracted tarball immediately before writing, because the check lives in the common script-writing section after `cd "$workdir"`. This means: (1) the script self-update works on the very first update from any previous version, (2) `-f` restart-logic propagates correctly because the new script gets installed, and (3) future updates from v24.13+ work without any bootstrap issues.
+- **`urnet-tools update -f` now reliably restarts the provider**: The `stop_systemd_units` function correctly checks `$FORCE` (set by `-f`) and stops the service, and `install_systemd_units` starts it back. This was already correct in the script logic but was blocked by the same chicken-and-egg — the old script's behavior was running, not the fixed one.
+
 ## [v3.23.0-fix.24.12] — 2026-06-25
 
 ### Fixed
 - **`urnet-tools update` now fetches latest script from GitHub** (PR #136): Removed the `[ -n "$URNET_INSTALL_URL" ]` guard that blocked the GitHub fetch during normal `urnet-tools update` — that env var was only set for dev/testing overrides, so updates silently reinstalled the old script from disk. Added tarball-bundled script as highest-priority source. The script is now bundled in the provider tarball (`release.yml`), enabling offline-capable update.
+
+**Note**: v3.23.0-fix.24.12 has a chicken-and-egg bootstrap issue — the fix can't propagate to existing installs because the old script running the update never reaches the new code paths. Use v3.23.0-fix.24.13+ which fixes the bootstrap by checking `$workdir/urnet-tools` in the common script-writing section.
 
 ## [v3.23.0-fix.24.11] — 2026-06-25
 
