@@ -8,8 +8,8 @@ import (
 
 func TestShouldLogSelectErr_RateLimit(t *testing.T) {
 	// Reset state
-	lastSelectErrLogNano.Store(0)
-	suppressedSelectErrCount.Store(0)
+	selectErrThrottle.lastNanos.Store(0)
+	selectErrThrottle.suppressed.Store(0)
 
 	// First call should succeed and log
 	ok, suppressed := shouldLogSelectErr()
@@ -27,13 +27,13 @@ func TestShouldLogSelectErr_RateLimit(t *testing.T) {
 	}
 
 	// Verify suppression count incremented
-	if count := suppressedSelectErrCount.Load(); count != 1 {
+	if count := selectErrThrottle.suppressed.Load(); count != 1 {
 		t.Errorf("Expected suppressed count 1, got %d", count)
 	}
 
 	// Simulate 61 seconds passing
 	past := time.Now().Add(-61 * time.Second).UnixNano()
-	lastSelectErrLogNano.Store(past)
+	selectErrThrottle.lastNanos.Store(past)
 
 	// Call after 1 min should succeed and return suppressed count
 	ok, suppressed = shouldLogSelectErr()
@@ -45,15 +45,15 @@ func TestShouldLogSelectErr_RateLimit(t *testing.T) {
 	}
 
 	// Suppressed count should be reset
-	if count := suppressedSelectErrCount.Load(); count != 0 {
+	if count := selectErrThrottle.suppressed.Load(); count != 0 {
 		t.Errorf("Expected suppressed count to reset to 0, got %d", count)
 	}
 }
 
 func TestShouldLogSelectErr_Concurrency(t *testing.T) {
 	// Reset state
-	lastSelectErrLogNano.Store(0)
-	suppressedSelectErrCount.Store(0)
+	selectErrThrottle.lastNanos.Store(0)
+	selectErrThrottle.suppressed.Store(0)
 
 	// First call allows one through
 	shouldLogSelectErr()
@@ -72,7 +72,7 @@ func TestShouldLogSelectErr_Concurrency(t *testing.T) {
 	}
 	wg.Wait()
 
-	if count := suppressedSelectErrCount.Load(); count != 100 {
+	if count := selectErrThrottle.suppressed.Load(); count != 100 {
 		t.Errorf("Expected exactly 100 suppressed calls, got %d", count)
 	}
 }
