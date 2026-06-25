@@ -254,10 +254,24 @@ func (r *ProxyReloader) reload() {
 	r.cancelMapMu.Unlock()
 
 	var added []*connect.ProxySettings
+	deferredBackoff := 0
+	now := time.Now()
 	for addr, s := range desiredSet {
-		if !running[addr] {
-			added = append(added, s)
+		if running[addr] {
+			continue
 		}
+		// Enforce the URL give-up backoff at launch time: an address whose
+		// next-eligible time has not yet arrived is skipped, not relaunched.
+		// Only URL-sourced proxies ever carry a backoff window, so file and
+		// internal proxies (which never call SetBackoffUntil) are always
+		// eligible here. Without this, the escalating backoff was defeated
+		// because any reload would relaunch every desired-but-not-running
+		// proxy immediately.
+		if !globalProxyFailureHistory.Eligible(addr, now) {
+			deferredBackoff++
+			continue
+		}
+		added = append(added, s)
 	}
 	var removed []string
 	for addr := range running {
@@ -378,5 +392,9 @@ func (r *ProxyReloader) reload() {
 	}
 	proxyStateMu.Unlock()
 
-	tlog("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
+	if deferredBackoff > 0 {
+		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff)\n", len(added), len(removed), deferredBackoff)
+	} else {
+		tlog("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
+	}
 }

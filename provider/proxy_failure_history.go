@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // proxyFailureHistory tracks, for the lifetime of this process, how many
 // auth attempts have failed for a given proxy address — across every
@@ -13,6 +16,15 @@ type proxyFailureHistory struct {
 	mu       sync.Mutex
 	failures map[string]int
 	giveUps  map[string]int
+
+	// backoffUntil records, per URL-sourced address, the earliest time it may
+	// be relaunched. It is set on each give-up to now+proxyURLGiveUpRetryDelay.
+	// The reload path consults Eligible() and skips re-adding an address whose
+	// window has not elapsed, so the escalating backoff is actually enforced:
+	// without this, the give-up only scheduled a one-shot time.AfterFunc reload
+	// nudge, and any *other* reload (another proxy's give-up, a URL refresh)
+	// relaunched the dead proxy immediately, defeating the backoff entirely.
+	backoffUntil map[string]time.Time
 }
 
 var globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
@@ -57,6 +69,31 @@ func (h *proxyFailureHistory) GiveUpCount(address string) int {
 	return h.giveUps[address]
 }
 
+// SetBackoffUntil records the earliest time address may be relaunched. Called
+// at each give-up with now+proxyURLGiveUpRetryDelay(giveUpCount) so the reload
+// path can enforce the escalating backoff instead of merely scheduling it.
+func (h *proxyFailureHistory) SetBackoffUntil(address string, until time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.backoffUntil == nil {
+		h.backoffUntil = map[string]time.Time{}
+	}
+	h.backoffUntil[address] = until
+}
+
+// Eligible reports whether address may be (re)launched as of now: true if it
+// has no recorded backoff window, or that window has elapsed. An address with
+// no entry (never gave up, or freshly reset/pruned) is always eligible.
+func (h *proxyFailureHistory) Eligible(address string, now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	until, ok := h.backoffUntil[address]
+	if !ok {
+		return true
+	}
+	return !now.Before(until)
+}
+
 // Reset clears address's failure and give-up counts, called when it
 // successfully authenticates. Without this, a proxy that failed several
 // times before finally succeeding (or one that succeeds, drops, and
@@ -68,6 +105,7 @@ func (h *proxyFailureHistory) Reset(address string) {
 	h.mu.Lock()
 	delete(h.failures, address)
 	delete(h.giveUps, address)
+	delete(h.backoffUntil, address)
 	h.mu.Unlock()
 }
 
@@ -84,6 +122,11 @@ func (h *proxyFailureHistory) Prune(keepAddrs map[string]bool) {
 	for addr := range h.giveUps {
 		if !keepAddrs[addr] {
 			delete(h.giveUps, addr)
+		}
+	}
+	for addr := range h.backoffUntil {
+		if !keepAddrs[addr] {
+			delete(h.backoffUntil, addr)
 		}
 	}
 }
