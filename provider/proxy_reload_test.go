@@ -57,14 +57,17 @@ func TestReload_URLOnlySource_NoEarlyExit(t *testing.T) {
 	}
 }
 
-// TestReload_AddedProxies_PrintsAddedList is a regression test for a usability
-// gap found during live deployment testing: the initial startup path prints
-// "Using N proxy servers:" followed by one line per proxy, but reload() only
-// ever printed a terse "+N added, -N removed" summary with no per-proxy
-// detail, making it hard to confirm a hot-reload actually picked up the
-// proxies you expected (e.g. after editing a --proxy_file). reload() must
-// print the same per-proxy listing style for added proxies.
-func TestReload_AddedProxies_PrintsAddedList(t *testing.T) {
+// TestReload_AddedProxies_NoPerProxyEnumeration verifies reload() does NOT
+// print one line per added proxy. The per-proxy enumeration was found in fleet
+// log analysis to be a dominant ramlog flooder: a reload of hundreds/thousands
+// of (mostly dead, churning) proxies dumped that many lines per reload via raw
+// fmt.Printf, flushing high-value lines ([profit]/[earn]/[contract]) out of the
+// small in-RAM buffer within seconds. The terse "[proxy] reloaded: +N -M"
+// summary carries the operator-relevant signal; the per-proxy roster on every
+// reload is noise. (The cold-start "Using N proxy servers:" roster is kept; it
+// prints once, before any earning, and documents what the provider started
+// with.)
+func TestReload_AddedProxies_NoPerProxyEnumeration(t *testing.T) {
 	withTempHome(t)
 
 	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
@@ -103,11 +106,11 @@ func TestReload_AddedProxies_PrintsAddedList(t *testing.T) {
 	out, _ := io.ReadAll(r)
 
 	got := string(out)
-	if !strings.Contains(got, "[proxy] reload: adding 2 proxies:") {
-		t.Fatalf("expected reload to announce the added count, got: %q", got)
+	if !strings.Contains(got, "reloaded: +2 added") {
+		t.Fatalf("expected reload to print the summary count, got: %q", got)
 	}
-	if !strings.Contains(got, "5.5.5.5:1080") || !strings.Contains(got, "6.6.6.6:1080") {
-		t.Fatalf("expected reload to list each added proxy address, got: %q", got)
+	if strings.Contains(got, "5.5.5.5:1080") || strings.Contains(got, "6.6.6.6:1080") {
+		t.Fatalf("reload must NOT enumerate each added proxy address (ramlog flood), got: %q", got)
 	}
 }
 
@@ -165,5 +168,3 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 		t.Fatalf("spawnProxy calls after 350ms: got %d, want 6 (all positions should have started under the jittered backoffPacer stagger)", got)
 	}
 }
-
-
