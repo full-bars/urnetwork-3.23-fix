@@ -1102,7 +1102,14 @@ do_install ()
     fi
 
     cd "$workdir" || exit 1
-    
+
+    if [ -f "urnet-tools" ]; then
+        script_override="$(cat "urnet-tools" 2>/dev/null)"
+        if [ -n "$script_override" ]; then
+            script="$script_override"
+        fi
+    fi
+
     if [ -z "$script" ]; then
         pr_err "Invalid script contents"
         exit 1

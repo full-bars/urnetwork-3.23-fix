@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.12
+**Current Version**: v3.23.0-fix.24.13
 
 ---
 
@@ -1179,4 +1179,4 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 
 **1 dash-compatible test** (`test_fallback_logic.sh`) passing.
 
-**Status**: ✅ Merged (PR #136, v3.23.0-fix.24.12)
+**Status**: ✅ Merged (PR #136, v3.23.0-fix.24.12). **Note**: v24.12 has chicken-and-egg bootstrap issue — the fix can't propagate from old scripts. v24.13 fixes the bootstrap by checking `$workdir/urnet-tools` in the common script-writing section.
