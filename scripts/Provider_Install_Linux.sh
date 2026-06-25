@@ -838,6 +838,7 @@ do_install ()
                 case "$1" in
                     -f|--force)
                         force_update=1
+                        FORCE=1
                         shift
                         ;;
 

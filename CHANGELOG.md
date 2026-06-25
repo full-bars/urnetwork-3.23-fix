@@ -12,6 +12,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+## [v3.23.0-fix.24.14] — 2026-06-25
+
+### Fixed
+- **`urnet-tools update -f` now reliably restarts the provider** (bootstrap + FORCE fix): Two bugs fixed: (1) The `-f` flag after a positional arg (`urnet-tools update -f`) was parsed by the subcommand handler which set `force_update=1` (lowercase) for version comparison bypass, but never set `FORCE=1` (uppercase) — so `stop_systemd_units` always took the non-force path and never stopped/restarted the service. (2) The bootstrap chicken-and-egg fix ensures the tarball-bundled `urnet-tools` is picked up even by old scripts via a check in the common script-writing section.
+
 ## [v3.23.0-fix.24.13] — 2026-06-25
 
 ### Fixed
