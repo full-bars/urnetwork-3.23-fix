@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **`urnet-tools -v` reports running vs on-disk version** (PR #132): `show_version` ran the on-disk binary's `--version`, so right after a plain (non-forced) `update` it reported the freshly-installed binary while the old image kept serving traffic, with no hint a restart was pending. It now resolves the running version through `/proc/<pid>/exe` (accurate even after the file is renamed to `.old` or deleted), prints separate **Running version** and **Installed on disk** lines, and warns with the restart command when they drift, including when the running binary predates the `--version` flag (detected via a `(deleted)`/`.old` exe link).
+
 ---
 
 ## [v3.23.0-fix.24.10] — 2026-06-24
