@@ -1078,15 +1078,8 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    if [ "$original_operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
-        # Explicit update with custom URL: fetch from GitHub
-        pr_info "Fetching latest urnet-tools from GitHub..."
-        if ! script="$(network_fetch "$urnet_install_url")"; then
-            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
-            script="$(cat "$0" 2>/dev/null)"
-        fi
-    elif [ "$original_operation" = "reinstall" ]; then
-        # Reinstall: also fetch latest
+    if [ "$original_operation" = "update" ] || [ "$original_operation" = "reinstall" ]; then
+        # Fetch latest script from GitHub so the tools bundle stays current
         pr_info "Fetching latest urnet-tools from GitHub..."
         if ! script="$(network_fetch "$urnet_install_url")"; then
             pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
