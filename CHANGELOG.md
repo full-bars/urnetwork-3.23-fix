@@ -6,11 +6,26 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
 ### Fixed
-- **Consolidated `[profit]` line + reduced reload noise** (PR #134): the `[profit]` heartbeat now folds the earnings headline into one greppable line that survives a tiny in-RAM log window, adding `reason=` (`warmup`/`no_proxies`/`idle`/`no_traffic`, `-` while earning) and `proxies_up`/`serving`/`idle`. Separately, `reload()` no longer enumerates each added proxy (one raw line per proxy on every reload was a dominant ramlog flooder); the `+N added, -M removed` summary is kept, as is the one-time cold-start roster. `[earn]`/`[traffic]` formats unchanged (additive only).
-- **Suppress `[c]ping err` log spam** (PR #131): Rate-limit repeated `[c]ping err = Send sequence closed` messages to at most one line per 5 minutes with a `(N suppressed)` count, matching the existing suppression used for successful `[c]ping` and other high-volume error paths.
-- **URL-sourced proxy give-up backoff is now enforced at launch** (PR #133): the escalating backoff (PR #129) computed a 15m→24h retry delay and scheduled a one-shot `time.AfterFunc` reload, but nothing gated relaunch, `reload()` re-added every desired-but-not-running proxy immediately (checking only `isDraining`). Since every give-up and URL refresh triggers a reload, dead proxies were relaunched every few minutes regardless of their schedule (live data: proxies reaching give-up 9 within 44 minutes of uptime, 70% of log volume). `proxyFailureHistory` now records a per-address next-eligible time on each give-up, `reload()` skips addresses whose window has not elapsed and reports `N deferred (backoff)`, and `Reset`/`Prune` clear the window alongside the failure/give-up counters. Frees auth-rate-limiter slots for live proxies in addition to cutting churn.
-- **`urnet-tools -v` reports running vs on-disk version** (PR #132): `show_version` ran the on-disk binary's `--version`, so right after a plain (non-forced) `update` it reported the freshly-installed binary while the old image kept serving traffic, with no hint a restart was pending. It now resolves the running version through `/proc/<pid>/exe` (accurate even after the file is renamed to `.old` or deleted), prints separate **Running version** and **Installed on disk** lines, and warns with the restart command when they drift, including when the running binary predates the `--version` flag (detected via a `(deleted)`/`.old` exe link).
+
+## [v3.23.0-fix.24.11] — 2026-06-25
+
+### Added
+- **Important log buffer** (PR #135): New 1 MB `/dev/shm/urnetwork-important.log` secondary RAM buffer holding only high-value lines (`[profit]`, `[earn]`, `[health]`, `[outage]`, `client_id`, `instance_id`, `Permanently removed`, `[proxy][authrate]`) so the earnings/health status survives for hours even when the main 5 MB ramlog floods in ~84s. High-volume lines (per-proxy enumeration, per-attempt auth, `give-up`, `[net][s]select`) are deliberately excluded. `urnet-tools logs -i` / `--important` streams it. `isImportantLogLine` is a tested pure function.
+- **Consolidated `[profit]` line** (PR #134): Single greppable line printed on each health heartbeat: `[profit] earning=yes|no reason=-|warmup|no_proxies|idle|no_traffic clients=N rate=X MB/s proxies_up=N serving=M idle=K`. Reason tells operators *why* when not earning without cross-referencing other lines. `[earn]` and `[traffic]` line formats left unchanged.
+
+### Changed
+- **Unified `logThrottle`** (PR #135): Four byte-identical `shouldLogX` rate-limiters (auth/select/write in `transport.go`, oob in `transfer_contract_manager.go`) collapsed into one reusable `logThrottle` type (one-line-per-interval + suppressed counter). `shouldLogX` stay as thin wrappers; call sites are unchanged.
+- **Dropped per-proxy enumeration on reload** (PR #134): `reload()` no longer prints one line per added proxy address. The `+N added, -M removed` summary and the cold-start `Using N proxy servers:` roster are kept.
+
+### Fixed
+- **URL-sourced proxy give-up backoff is now enforced at launch** (PR #133): The escalating backoff (PR #129) computed a 15m→24h retry delay and scheduled a one-shot `time.AfterFunc` reload, but nothing gated relaunch — `reload()` re-added every desired-but-not-running proxy immediately (checking only `isDraining`), so dead proxies were relaunched every few minutes regardless of their schedule (proxies reached give-up 9 within 44 minutes of uptime; 70% of log volume was churn). `proxyFailureHistory` now records a per-address next-eligible time on each give-up, `reload()` skips addresses whose window has not elapsed and reports `N deferred (backoff)`, and `Reset`/`Prune` clear the window alongside existing counters. Frees auth-rate-limiter slots for live proxies in addition to cutting churn.
+- **`urnet-tools -v` reports running vs on-disk version separately** (PR #132): `show_version` ran the on-disk binary's `--version`, so right after a plain (non-forced) `update` it reported the freshly-installed binary while the old image kept serving traffic, with no hint a restart was pending. It now resolves the running version through `/proc/<pid>/exe` (accurate even after the file is renamed to `.old` or deleted), prints separate **Running version** and **Installed on disk** lines, and warns with the restart command when they drift. Also catches pre-`--version` binaries via `(deleted)`/`.old` exe link detection.
+- **`[c]ping err` log spam suppressed** (PR #131): Repeated identical `[c]ping err = Send sequence closed` messages during network outages now aggregate into one line per 5 minutes with `(N suppressed)` count. During the Detroit Hostodo transit outage this was producing 1,992+ identical lines over 2 days.
 
 ---
 
