@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"runtime/debug"
 	"runtime/metrics"
 	"strconv"
@@ -2030,6 +2031,21 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
+	// Sort so file-sourced (or internal-config) proxies launch before
+	// URL-sourced ones. backoffPacer uses the index in this slice to
+	// determine initial delay, so file proxies get a head start of
+	// ~len(file_proxies) * staggerMs before URL proxies begin connecting.
+	sort.SliceStable(allProxySettings, func(i, j int) bool {
+		si := proxySourceOf[allProxySettings[i].Address]
+		sj := proxySourceOf[allProxySettings[j].Address]
+		if si == "url" && sj != "url" {
+			return false
+		}
+		if si != "url" && sj == "url" {
+			return true
+		}
+		return false
+	})
 
 	// ALWAYS start the native [direct] connection as proxy[0].
 	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
@@ -2671,6 +2687,15 @@ func proxyRemove(opts docopt.Opts) {
 			state.NextID = 0
 			if err := writeProxyState(state); err != nil {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
+			}
+		}
+		// Also clear the URL cache so previously-fetched free proxies don't
+		// reappear after a restart. The source URLs are preserved so the
+		// fetcher can repopulate from scratch on the next cycle.
+		if urlState, err := readProxyURLState(); err == nil {
+			urlState.Cache = map[string]ProxyURLEntry{}
+			if err := writeProxyURLState(urlState); err != nil {
+				tlog("[proxy] warning: could not clear proxy_url.json cache: %v\n", err)
 			}
 		}
 	} else {
