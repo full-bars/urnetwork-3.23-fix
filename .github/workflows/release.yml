@@ -119,8 +119,9 @@ jobs:
       - name: Create provider tarball
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
+          cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp
-          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/
+          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ urnet-tools
           cd ..
 
       - name: Set release body source

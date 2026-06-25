@@ -1078,22 +1078,22 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    if [ "$original_operation" = "update" ] && [ -n "$URNET_INSTALL_URL" ]; then
-        # Explicit update with custom URL: fetch from GitHub
-        pr_info "Fetching latest urnet-tools from GitHub..."
-        if ! script="$(network_fetch "$urnet_install_url")"; then
-            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
-            script="$(cat "$0" 2>/dev/null)"
+    # Priority: tarball-bundled script > GitHub fetch > running script
+    if [ -f "$workdir/urnet-tools" ]; then
+        script="$(cat "$workdir/urnet-tools" 2>/dev/null)"
+    fi
+
+    if [ -z "$script" ]; then
+        if [ "$original_operation" = "update" ] || [ "$original_operation" = "reinstall" ]; then
+            pr_info "Fetching latest urnet-tools from GitHub..."
+            if ! script="$(network_fetch "$urnet_install_url")"; then
+                pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
+                script="$(cat "$0" 2>/dev/null)"
+            fi
         fi
-    elif [ "$original_operation" = "reinstall" ]; then
-        # Reinstall: also fetch latest
-        pr_info "Fetching latest urnet-tools from GitHub..."
-        if ! script="$(network_fetch "$urnet_install_url")"; then
-            pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
-            script="$(cat "$0" 2>/dev/null)"
-        fi
-    else
-        # Default (install/auth-provide): use current script if available
+    fi
+
+    if [ -z "$script" ]; then
         script="$(cat "$0" 2>/dev/null)"
         if [ -z "$script" ]; then
             pr_info "Fetching urnet-tools from GitHub..."
