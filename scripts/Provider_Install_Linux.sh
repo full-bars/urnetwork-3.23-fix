@@ -51,7 +51,7 @@ show_help ()
     echo ""
     echo "Global Options:"
     echo "  -h, --help              Show this help and exit"
-    echo "  -v, --version           Show installed version"
+    echo "  -v, --version           Show running and installed versions"
     echo "  -t, --tag=TAG           Use a specific version for (re)install"
     echo "  -i, --install=[PATH]    Specify custom installation path"
     echo "  -4, --ipv4              Force IPv4 for network requests"
@@ -282,43 +282,97 @@ network_fetch ()
     return 1
 }
 
-show_version () 
+show_version ()
 {
-    # The running binary is the source of truth: it reports its own
-    # compiled-in version via --version. The .version file is only written by
-    # installer-driven updates, so it silently goes stale on any out-of-band
-    # binary swap. Prefer the binary; fall back to the file only if needed.
+    # Report two facts that can legitimately differ, and used to be conflated:
+    #   1. the version installed on disk ($install_path/bin/urnetwork), and
+    #   2. the version of the provider process actually running right now.
+    # A plain (non-forced) `update` swaps the on-disk binary but deliberately
+    # leaves the running provider untouched (the restart is left to the
+    # operator), so the two drift until the service is restarted. Reading only
+    # the on-disk binary — as this used to — reports the *replacement*, never
+    # what is serving traffic, which is actively misleading right after an
+    # update. The running version is resolved through /proc/<pid>/exe, the
+    # kernel's record of the exact image a process is executing, which stays
+    # accurate even after the on-disk file is renamed (to .old) or deleted.
     provider_bin="$install_path/bin/urnetwork"
     file_version=""
-    version=""
+    disk_version=""
 
     if [ -f "$version_file" ]; then
         file_version="$(cat "$version_file" 2>/dev/null)"
     fi
 
     if [ -x "$provider_bin" ]; then
-        version="$("$provider_bin" --version 2>/dev/null | head -n 1)"
+        disk_version="$("$provider_bin" --version 2>/dev/null | head -n 1)"
     fi
 
-    if [ -n "$version" ]; then
-        echo "Current version: $version"
-        # Self-heal a stale version file and report exactly what changed, so
-        # the installer's own upgrade comparisons stay accurate too.
-        if [ -n "$file_version" ] && [ "$file_version" != "$version" ]; then
-            if echo "$version" > "$version_file" 2>/dev/null; then
-                pr_info "Corrected stale version file: %s -> %s" "$file_version" "$version"
-            else
-                pr_warn "Version file is stale (%s, should be %s) but could not be updated" "$file_version" "$version"
-            fi
+    # Resolve the running provider's PID: prefer the systemd unit (user, then
+    # system), and fall back to matching the launch path — argv keeps the
+    # original "$provider_bin provide" string even after the file is renamed.
+    running_pid="$(systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)"
+    if [ -z "$running_pid" ] || [ "$running_pid" = "0" ]; then
+        running_pid="$(systemctl show -p MainPID --value urnetwork.service 2>/dev/null)"
+    fi
+    if [ -z "$running_pid" ] || [ "$running_pid" = "0" ]; then
+        running_pid="$(pgrep -f "$provider_bin provide" 2>/dev/null | head -n 1)"
+    fi
+
+    run_version=""
+    run_exe=""
+    if [ -n "$running_pid" ] && [ "$running_pid" != "0" ] && [ -e "/proc/$running_pid/exe" ]; then
+        run_exe="$(readlink "/proc/$running_pid/exe" 2>/dev/null)"
+        run_version="$("/proc/$running_pid/exe" --version 2>/dev/null | head -n 1)"
+    fi
+
+    # Self-heal a stale .version file from whatever the on-disk binary reports,
+    # so the installer's own upgrade comparisons (which read .version) stay
+    # accurate. This tracks the on-disk binary, not the running one.
+    if [ -n "$disk_version" ] && [ -n "$file_version" ] && [ "$file_version" != "$disk_version" ]; then
+        if echo "$disk_version" > "$version_file" 2>/dev/null; then
+            pr_info "Corrected stale version file: %s -> %s" "$file_version" "$disk_version"
+        else
+            pr_warn "Version file is stale (%s, should be %s) but could not be updated" "$file_version" "$disk_version"
         fi
-    elif [ -n "$file_version" ]; then
+    fi
+
+    # On-disk version for display + the latest-release comparison below, with a
+    # version-file fallback if the binary itself is not runnable.
+    version="$disk_version"
+    disk_note=""
+    if [ -z "$version" ] && [ -n "$file_version" ]; then
         version="$file_version"
-        echo "Current version: $version (from version file; binary not queryable, may be stale)"
-    else
+        disk_note=" (from version file; binary not queryable, may be stale)"
+    fi
+    if [ -z "$version" ] && [ -z "$run_version" ]; then
         pr_err "Could not determine installed version: binary '%s' is not runnable and no version file exists" "$provider_bin"
         exit 1
     fi
-    
+
+    # Flag drift: the running image was replaced on disk (renamed/deleted), or
+    # the two reported versions simply disagree.
+    stale=0
+    case "$run_exe" in
+        *"(deleted)"*|*.old) stale=1 ;;
+    esac
+    if [ -n "$run_version" ] && [ -n "$version" ] && [ "$run_version" != "$version" ]; then
+        stale=1
+    fi
+
+    if [ -n "$run_version" ]; then
+        echo "Running version:   $run_version (PID $running_pid)"
+    elif [ -n "$running_pid" ] && [ "$running_pid" != "0" ]; then
+        echo "Running version:   unknown (PID $running_pid; binary not queryable)"
+    else
+        echo "Running version:   provider is not running"
+    fi
+    echo "Installed on disk: $version$disk_note"
+
+    if [ "$stale" -eq 1 ]; then
+        pr_warn "A newer/different binary is installed on disk than the one currently running."
+        pr_warn "Restart the service to apply it: systemctl --user restart urnetwork.service"
+    fi
+
     api_url="$api_base/releases/latest"
     release="$(network_fetch "$api_url" 2>/dev/null || true)"
     latest_version="$(get_version_from_api_response "$release" 2>/dev/null)"
