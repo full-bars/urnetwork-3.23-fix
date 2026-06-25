@@ -1030,6 +1030,27 @@ func sumLastN(deltas []uint64, n int) uint64 {
 	return total
 }
 
+// earningReason returns a short, greppable token for the [profit] line's
+// reason= field explaining why billable traffic is or isn't moving, so an
+// operator can distinguish "no demand" from "no proxies" from "still warming
+// up" without cross-referencing other lines. Returns "-" while earning. The
+// checks are ordered most-fundamental first: a healthy earning provider needs
+// proxies up, clients matched to them, and bytes actually moving.
+func earningReason(earning bool, proxiesUp int, clients int64, warmup bool) string {
+	switch {
+	case earning:
+		return "-"
+	case warmup:
+		return "warmup"
+	case proxiesUp == 0:
+		return "no_proxies"
+	case clients == 0:
+		return "idle"
+	default:
+		return "no_traffic"
+	}
+}
+
 // profitIdleLogInterval caps how often a non-earning [profit] line is
 // printed, so quiet periods (warmup, no assigned clients) don't flood the
 // log at the 15s tick rate.
@@ -1064,13 +1085,18 @@ func runProfitHeartbeat(ctx context.Context) {
 			continue
 		}
 
-		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+		proxiesUp, _, _, bw, connecting := connect.ProxyHealthSnapshot()
 
 		var billable uint64
 		var clients int64
+		var serving int
 		for _, p := range bw {
 			billable += p.BillableRx.Load() + p.BillableTx.Load()
-			clients += p.Clients.Load()
+			pc := p.Clients.Load()
+			clients += pc
+			if pc > 0 {
+				serving++
+			}
 		}
 
 		now := time.Now()
@@ -1101,7 +1127,17 @@ func runProfitHeartbeat(ctx context.Context) {
 			if earning {
 				status = "yes"
 			}
-			tlog("[profit] earning=%s clients=%d rate=%s\n", status, clients, fmtRate(float64(delta)/elapsed))
+			idle := proxiesUp - serving
+			if idle < 0 {
+				idle = 0
+			}
+			// Still actively connecting a meaningful batch == warmup, so a
+			// quiet provider mid-ramp reports reason=warmup rather than a
+			// false "idle"/"no_traffic". Mirrors paceMonitor's done threshold.
+			warmup := len(connecting) >= 5
+			reason := earningReason(earning, proxiesUp, clients, warmup)
+			tlog("[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d\n",
+				status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle)
 			lastLogTime = now
 		}
 	}
