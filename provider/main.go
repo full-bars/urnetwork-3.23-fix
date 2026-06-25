@@ -1818,6 +1818,13 @@ func provide(opts docopt.Opts) {
 						}
 					} else {
 						delay := proxyURLGiveUpRetryDelay(giveUpCount)
+						// Enforce the backoff at launch time, not just by
+						// scheduling a one-shot reload: record the earliest
+						// time this address may be relaunched so the reload
+						// path skips it until the window elapses. Otherwise any
+						// other reload (another proxy's give-up, a URL refresh)
+						// would relaunch it immediately and defeat the backoff.
+						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
 						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
 							time.AfterFunc(delay, func() {
 								_ = writeReloadTrigger(reloadPath)
