@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.9
+**Current Version**: v3.23.0-fix.24.12
 
 ---
 
@@ -1160,3 +1160,23 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **11 new unit tests** covering: give-up counter, Reset/Prune for giveUps, delay schedule (monotonic increase + cap + jitter bounds), blacklist round-trip, blacklist enforcement on merge, eviction (removal + blacklist + reload trigger), blacklist surviving a fetch cycle, desired-address-set helper (file merge, internal config fallback, URL-cache-only address survives health absence).
 
 **Status**: ✅ Implemented (pending PR).
+
+---
+
+## 52. `urnet-tools update` Self-Update Fix
+
+**Purpose**: Fix `urnet-tools update` to actually fetch the latest `urnet-tools` script from GitHub when updating, and bundle the script in the provider release tarball for offline-capable installation.
+
+**Files Modified**:
+- `scripts/Provider_Install_Linux.sh` — priority: tarball-bundled `urnet-tools` > GitHub fetch > `cat "$0"`; removed `[ -n "$URNET_INSTALL_URL" ]` guard that blocked GitHub fetch during normal `update` because the env var is only set for dev/testing overrides
+- `.github/workflows/release.yml` — copies `scripts/Provider_Install_Linux.sh` into release tarball as `urnet-tools`
+
+**Change**:
+- New three-tier priority for script source: bundled tarball (highest) → GitHub raw fetch → current script on disk (fallback)
+- Removed the `&& [ -n "$URNET_INSTALL_URL" ]` condition from the update path — this was the bug causing `urnet-tools update` to never fetch the latest script
+- Bundling script in tarball ensures `urnet-tools update` works even when GitHub is unreachable (the tarball contains the matching script for the release)
+- Nested `if` structure (instead of `{ }` grouping) for POSIX sh / dash compatibility
+
+**1 dash-compatible test** (`test_fallback_logic.sh`) passing.
+
+**Status**: ✅ Merged (PR #136, v3.23.0-fix.24.12)
