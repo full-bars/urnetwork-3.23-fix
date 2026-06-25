@@ -21,16 +21,16 @@ import (
 	"github.com/gorilla/websocket"
 	quic "github.com/quic-go/quic-go"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 
-var lastAuthErrLogNano atomic.Int64
-var suppressedAuthErrCount atomic.Int64
-var lastSelectErrLogNano atomic.Int64
-var suppressedSelectErrCount atomic.Int64
-var lastWriteErrLogNano atomic.Int64
-var suppressedWriteErrCount atomic.Int64
+// One throttle per high-volume error class. Each emits at most one line per
+// minute and counts suppressions in between (see logThrottle).
+var (
+	authErrThrottle   = newLogThrottle(time.Minute)
+	selectErrThrottle = newLogThrottle(time.Minute)
+	writeErrThrottle  = newLogThrottle(time.Minute)
+)
 
 // lastBackendFailNano is updated on every backend failure (auth or OOB), not
 // rate-limited. Used by isBackendDegraded() as the recency guard.
@@ -66,49 +66,11 @@ const backendDegradedFailThreshold = 3
 // old blip on an idle provider does not.
 const backendDegradedWindow = 2 * time.Minute
 
-func shouldLogAuthErr() (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastAuthErrLogNano.Load()
-	if now-last < int64(time.Minute) {
-		suppressedAuthErrCount.Add(1)
-		return false, 0
-	}
-	if !lastAuthErrLogNano.CompareAndSwap(last, now) {
-		suppressedAuthErrCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedAuthErrCount.Swap(0)
-	return true, suppressed
-}
-
-func shouldLogSelectErr() (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastSelectErrLogNano.Load()
-	if now-last < int64(time.Minute) {
-		suppressedSelectErrCount.Add(1)
-		return false, 0
-	}
-	if !lastSelectErrLogNano.CompareAndSwap(last, now) {
-		suppressedSelectErrCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedSelectErrCount.Swap(0)
-	return true, suppressed
-}
+func shouldLogAuthErr() (bool, int64)   { return authErrThrottle.Allow(time.Now()) }
+func shouldLogSelectErr() (bool, int64) { return selectErrThrottle.Allow(time.Now()) }
 
 func shouldLogWriteErr() (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastWriteErrLogNano.Load()
-	if now-last < int64(time.Minute) {
-		suppressedWriteErrCount.Add(1)
-		return false, 0
-	}
-	if !lastWriteErrLogNano.CompareAndSwap(last, now) {
-		suppressedWriteErrCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedWriteErrCount.Swap(0)
-	return true, suppressed
+	return writeErrThrottle.Allow(time.Now())
 }
 
 // isBackendDegraded returns true when backend failures have accumulated past

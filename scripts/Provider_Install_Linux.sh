@@ -21,7 +21,7 @@ show_help ()
     echo "  restart                 Restart URnetwork provider"
     echo "  status                  Show the status of URnetwork provider service"
     echo "  update                  Upgrade URnetwork to the latest version"
-    echo "  logs [all|dump]         Stream provider logs ('all' for full RAM, 'dump' to save to ~/urlogs.txt)"
+    echo "  logs [all|dump|-i]      Stream provider logs ('all' full RAM, 'dump' to ~/urlogs.txt, '-i'/'--important' high-value lines only)"
     echo ""
     echo "Performance & Tuning:"
     echo "  turbo <v4|v8|off>       🚀 RAISE throughput limits for RAM-rich boxes"
@@ -1427,6 +1427,20 @@ show_status ()
 show_logs ()
 {
     mode="$1"
+
+    # The "important" buffer is a separate small /dev/shm file holding only
+    # high-value lines (profit/earn/health/outage/evictions), so the earnings
+    # signal survives for hours even when the main ramlog floods.
+    if [ "$mode" = "important" ] || [ "$mode" = "--important" ] || [ "$mode" = "-i" ]; then
+        if [ ! -f "/dev/shm/urnetwork-important.log" ]; then
+            pr_err "Important log not found. Is the provider running with RAM logs (urnet-tools ramlogs on)?"
+            exit 1
+        fi
+        pr_info "Streaming high-value lines (/dev/shm/urnetwork-important.log)"
+        tail -n 1000 -f /dev/shm/urnetwork-important.log
+        return
+    fi
+
     override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
     is_ramlog=0
     if [ -d "$override_dir" ]; then

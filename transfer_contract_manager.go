@@ -3,7 +3,6 @@ package connect
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	// "errors"
@@ -23,23 +22,9 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-var lastOobErrLogNano atomic.Int64
-var suppressedOobErrCount atomic.Int64
+var oobErrThrottle = newLogThrottle(time.Minute)
 
-func shouldLogOobErr() (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastOobErrLogNano.Load()
-	if now-last < int64(time.Minute) {
-		suppressedOobErrCount.Add(1)
-		return false, 0
-	}
-	if !lastOobErrLogNano.CompareAndSwap(last, now) {
-		suppressedOobErrCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedOobErrCount.Swap(0)
-	return true, suppressed
-}
+func shouldLogOobErr() (bool, int64) { return oobErrThrottle.Allow(time.Now()) }
 
 // manage contracts which are embedded into each transfer sequence
 
