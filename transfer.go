@@ -1050,7 +1050,7 @@ func (self *Client) run() {
 			// the transports have typically not parsed the full `TransferFrame`
 			// on error, discard the message and report the peer
 			transferFrame := &protocol.TransferFrame{}
-			if err := ProtoUnmarshal(transferFrameBytes, transferFrame); err != nil {
+			if !unmarshalTransferFrame(transferFrameBytes, transferFrame, false) {
 				// bad protobuf
 				updatePeerAudit(source, func(a *PeerAudit) {
 					a.badMessage(ByteCount(len(transferFrameBytes)))
@@ -1103,7 +1103,7 @@ func (self *Client) run() {
 				receiveRole = decryptRole
 				receiveCompanion = decryptCompanion
 				unwrappedTransferFrame := &protocol.TransferFrame{}
-				if err := ProtoUnmarshal(unwrappedTransferFrameBytes, unwrappedTransferFrame); err != nil {
+				if !unmarshalTransferFrame(unwrappedTransferFrameBytes, unwrappedTransferFrame, true) {
 					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
@@ -2557,20 +2557,6 @@ func (self *SendSequence) sendWithSetContract(
 		}
 	}()
 
-	pack := &protocol.Pack{
-		MessageId:      messageId.Bytes(),
-		SequenceId:     self.sequenceId.Bytes(),
-		SequenceNumber: sequenceNumber,
-		Head:           head,
-		Frames:         frames,
-		ContractFrame:  contractFrame,
-		Nack:           !ack,
-		Tag:            self.rttWindow.OpenTag(),
-	}
-	if !ack && contractId != nil {
-		pack.ContractId = contractId.Bytes()
-	}
-
 	// var path TransferPath
 	// if self.sendContract == nil {
 	// 	path = self.destination.AddSource(self.client.ClientId())
@@ -2578,9 +2564,9 @@ func (self *SendSequence) sendWithSetContract(
 	// 	path = self.sendContract.path.LocalMask()
 	// }
 	path := self.destination.AddSource(self.client.ClientId())
-	transferFrame := &protocol.TransferFrame{
-		TransferPath: path.ToProtobuf(),
-	}
+	messageByteCount := MessageByteCount(frames)
+
+	// Session role/companion stamping (applies to both encodings below):
 	// A server-role sequence is the peer's EncryptedControl carrier. Stamp its
 	// role on every pack — including the non-EC open/contract packs that carry no
 	// EC frame to derive it from — so the receiver maps the whole sequence to one
@@ -2588,35 +2574,71 @@ func (self *SendSequence) sendWithSetContract(
 	// sequence and the handshake bytes (ServerHello, identity proof) gap forever.
 	// Only the server role is marked: a client-role stream is the unencrypted
 	// default, already the receiver's complement, so it stays off the wire.
-	if self.encryptionRole == sequenceTlsRoleServer {
-		sessionRole := self.encryptionRole.toProtobuf()
-		transferFrame.SessionRole = &sessionRole
-	}
-	// Stamp the companion on every pack (mirroring the role stamp, but for
-	// either role) so the receiver maps the whole sequence — EC carriers and
-	// non-EC open/contract packs — to the matching companion session. Only when
-	// true; false is the receiver's default and stays off the wire.
-	if self.encryptionCompanion {
-		sessionCompanion := true
-		transferFrame.SessionCompanion = &sessionCompanion
-	}
+	// Companion mirrors the role stamp (for either role): stamped only when true,
+	// since false is the receiver's default and stays off the wire.
 
+	var transferFrameBytes []byte
 	if 2 <= self.sendBufferSettings.ProtocolVersion {
-		messageType := protocol.MessageType_TransferPack
-		transferFrame.MessageType = &messageType
-		transferFrame.Pack = pack
+		// hand-rolled marshal of the hot TransferFrame{Pack}: wire-identical to
+		// the proto structs in the legacy branch below (verified byte-for-byte in
+		// frame_protobuf_test.go), without the intermediate Pack/TransferFrame/Tag/
+		// TransferPath structs, the Id.Bytes() escapes, or reflection.
+		spf := sendPackFrame{
+			path:           path,
+			messageId:      messageId,
+			sequenceId:     self.sequenceId,
+			sequenceNumber: sequenceNumber,
+			head:           head,
+			nack:           !ack,
+			frames:         frames,
+			contractFrame:  contractFrame,
+			tagSendTime:    uint64(sendTime.UnixMilli()),
+		}
+		if !ack && contractId != nil {
+			spf.contractId = contractId
+		}
+		if self.encryptionRole == sequenceTlsRoleServer {
+			spf.sessionRole = self.encryptionRole.toProtobuf()
+			spf.sessionRoleSet = true
+		}
+		if self.encryptionCompanion {
+			spf.companion = true
+		}
+		transferFrameBytes = marshalSendPackTransferFrame(&spf)
 	} else {
+		// legacy (<v2) path: build and marshal via the proto structs.
+		pack := &protocol.Pack{
+			MessageId:      messageId.Bytes(),
+			SequenceId:     self.sequenceId.Bytes(),
+			SequenceNumber: sequenceNumber,
+			Head:           head,
+			Frames:         frames,
+			ContractFrame:  contractFrame,
+			Nack:           !ack,
+			Tag:            self.rttWindow.OpenTag(),
+		}
+		if !ack && contractId != nil {
+			pack.ContractId = contractId.Bytes()
+		}
 		packBytes, _ := ProtoMarshal(pack)
 		defer MessagePoolReturn(packBytes)
-		transferFrame.Frame = &protocol.Frame{
-			MessageType:  protocol.MessageType_TransferPack,
-			MessageBytes: packBytes,
+		transferFrame := &protocol.TransferFrame{
+			TransferPath: path.ToProtobuf(),
+			Frame: &protocol.Frame{
+				MessageType:  protocol.MessageType_TransferPack,
+				MessageBytes: packBytes,
+			},
 		}
+		if self.encryptionRole == sequenceTlsRoleServer {
+			sessionRole := self.encryptionRole.toProtobuf()
+			transferFrame.SessionRole = &sessionRole
+		}
+		if self.encryptionCompanion {
+			sessionCompanion := true
+			transferFrame.SessionCompanion = &sessionCompanion
+		}
+		transferFrameBytes, _ = ProtoMarshal(transferFrame)
 	}
-
-	transferFrameBytes, _ := ProtoMarshal(transferFrame)
-
-	messageByteCount := MessageByteCount(pack.Frames)
 
 	item := &sendItem{
 		transferItem: transferItem{
@@ -3542,33 +3564,38 @@ func (self *ReceiveSequence) Run() {
 		defer self.client.RouteManager().CloseMultiRouteWriter(multiRouteWriter)
 
 		writeAck := func(sendAck *sequenceAck) {
-			ack := &protocol.Ack{
-				MessageId:  sendAck.messageId.Bytes(),
-				SequenceId: self.sequenceId.Bytes(),
-				Selective:  sendAck.selective,
-				Tag:        sendAck.tag,
-			}
-
 			path := self.source.Reverse().AddSource(self.client.ClientId())
-			transferFrame := &protocol.TransferFrame{
-				TransferPath: path.ToProtobuf(),
-			}
 
+			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
-				messageType := protocol.MessageType_TransferAck
-				transferFrame.MessageType = &messageType
-				transferFrame.Ack = ack
+				// hand-rolled marshal of the hot Ack TransferFrame; wire-identical
+				// to the proto structs in the legacy branch (see frame_protobuf_test.go).
+				saf := sendAckFrame{
+					path:       path,
+					messageId:  sendAck.messageId,
+					sequenceId: self.sequenceId,
+					selective:  sendAck.selective,
+					tag:        sendAck.tag,
+				}
+				transferFrameBytes = marshalSendAckTransferFrame(&saf)
 			} else {
+				ack := &protocol.Ack{
+					MessageId:  sendAck.messageId.Bytes(),
+					SequenceId: self.sequenceId.Bytes(),
+					Selective:  sendAck.selective,
+					Tag:        sendAck.tag,
+				}
 				ackBytes, _ := ProtoMarshal(ack)
 				defer MessagePoolReturn(ackBytes)
-
-				transferFrame.Frame = &protocol.Frame{
-					MessageType:  protocol.MessageType_TransferAck,
-					MessageBytes: ackBytes,
+				transferFrame := &protocol.TransferFrame{
+					TransferPath: path.ToProtobuf(),
+					Frame: &protocol.Frame{
+						MessageType:  protocol.MessageType_TransferAck,
+						MessageBytes: ackBytes,
+					},
 				}
+				transferFrameBytes, _ = ProtoMarshal(transferFrame)
 			}
-
-			transferFrameBytes, _ := ProtoMarshal(transferFrame)
 			defer MessagePoolReturn(transferFrameBytes)
 			c := func() error {
 				// outer-wrap the ack TransferFrame with the per-peer
