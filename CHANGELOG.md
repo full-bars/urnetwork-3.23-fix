@@ -12,6 +12,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+## [v3.23.0-fix.24.12] — 2026-06-25
+
+### Fixed
+- **`urnet-tools update` now fetches latest script from GitHub** (PR #136): Removed the `[ -n "$URNET_INSTALL_URL" ]` guard that blocked the GitHub fetch during normal `urnet-tools update` — that env var was only set for dev/testing overrides, so updates silently reinstalled the old script from disk. Added tarball-bundled script as highest-priority source. The script is now bundled in the provider tarball (`release.yml`), enabling offline-capable update.
+
 ## [v3.23.0-fix.24.11] — 2026-06-25
 
 ### Added
