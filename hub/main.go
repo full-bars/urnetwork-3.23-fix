@@ -631,7 +631,9 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <th data-col="proxies" class="sorted">Proxies<span class="sort-arrow">▼</span></th>
 <th data-col="clients" class="num">Clients<span class="sort-arrow"></span></th>
 <th data-col="rx" class="num">RX<span class="sort-arrow"></span></th>
+<th data-col="billrx" class="num">Bill RX<span class="sort-arrow"></span></th>
 <th data-col="tx" class="num">TX<span class="sort-arrow"></span></th>
+<th data-col="billtx" class="num">Bill TX<span class="sort-arrow"></span></th>
 <th data-col="rate-rx" class="num">In Mbps<span class="sort-arrow"></span></th>
 <th data-col="rate-tx" class="num">Out Mbps<span class="sort-arrow"></span></th>
 <th data-col="heap" class="num">Heap<span class="sort-arrow"></span></th>
@@ -653,8 +655,10 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 {{if .Proxies.Dead}}<span class="status-badge dead">{{.Proxies.Dead}}</span>{{end}}
 </td>
 <td class="num">{{.Proxies.Clients}}</td>
-<td class="num">{{fmtBytes .Proxies.TotalRX}}<br><span style="font-size:11px;color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillRX}} b</span></td>
-<td class="num">{{fmtBytes .Proxies.TotalTX}}<br><span style="font-size:11px;color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillTX}} b</span></td>
+<td class="num">{{fmtBytes .Proxies.TotalRX}}</td>
+<td class="num" style="color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillRX}}</td>
+<td class="num">{{fmtBytes .Proxies.TotalTX}}</td>
+<td class="num" style="color:#ef4444;font-weight:bold">{{fmtBytes .Proxies.BillTX}}</td>
 <td class="num">{{fmtMbps .MbpsRX}}</td>
 <td class="num">{{fmtMbps .MbpsTX}}</td>
 <td class="num">{{.HeapMiB}} MiB</td>
@@ -663,7 +667,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
 <tr class="detail-row" id="detail-{{.NodeID}}">
-<td colspan="13">
+<td colspan="15">
 <div class="detail-inner">
 <table class="detail-table">
 <thead>
@@ -840,7 +844,7 @@ document.querySelectorAll('th[data-col]').forEach(function(th) {
 });
 
 function getColIndex(col) {
-  var map = {node:0, heartbeat:1, uptime:2, proxies:3, clients:4, rx:5, tx:6, 'rate-rx':7, 'rate-tx':8, heap:9, conns:10};
+  var map = {node:0, heartbeat:1, uptime:2, proxies:3, clients:4, rx:5, billrx:6, tx:7, billtx:8, 'rate-rx':9, 'rate-tx':10, heap:11, conns:12};
   return map[col] || 0;
 }
 
