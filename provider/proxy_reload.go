@@ -347,9 +347,16 @@ func (r *ProxyReloader) reload() {
 	// dominant ramlog flooder, flushing high-value lines out of the small
 	// in-RAM buffer within seconds. The "[proxy] reloaded: +N -M" summary
 	// below carries the operator-relevant signal.
+	warmupDeferred := 0
 	for i, settings := range added {
 		if r.isDraining(settings.Address) {
 			tlog("[proxy] skip add %s: still draining\n", settings.Address)
+			continue
+		}
+		// Defer URL-sourced proxy launches until file-proxy warmup
+		// completes, so operator-curated proxies get an uncontested ramp.
+		if sourceOf[settings.Address] == "url" && !proxyWarmupDone.Load() {
+			warmupDeferred++
 			continue
 		}
 		stableID := resolveProxyID(r.state, settings.Address)
@@ -387,8 +394,10 @@ func (r *ProxyReloader) reload() {
 	}
 	proxyStateMu.Unlock()
 
-	if deferredBackoff > 0 {
-		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff)\n", len(added), len(removed), deferredBackoff)
+	deferredTotal := deferredBackoff + warmupDeferred
+	if deferredTotal > 0 {
+		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d)\n",
+			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred)
 	} else {
 		tlog("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
 	}
