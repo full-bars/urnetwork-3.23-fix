@@ -170,3 +170,63 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 		t.Fatalf("spawnProxy calls after 3000ms: got %d, want 6 (URL stagger is 500ms, position 5 starts at ~2500ms)", got)
 	}
 }
+
+// TestReload_WarmupGate_DefersThenLaunchesURLProxies verifies that URL-
+// sourced proxies are deferred during warmup and launched once warmup
+// completes, confirming the warmup gate + reload trigger work together.
+func TestReload_WarmupGate_DefersThenLaunchesURLProxies(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"9.9.9.9:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start with warmup NOT done — URL proxies should be deferred
+	proxyWarmupDone.Store(false)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  "",
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	// First reload — warmup not done, URL proxy should be deferred
+	reloader.reload()
+
+	cancelMapMu.Lock()
+	_, deferred := reloader.cancelMap["9.9.9.9:1080"]
+	cancelMapMu.Unlock()
+	if deferred {
+		t.Fatal("URL proxy must NOT be launched during warmup")
+	}
+
+	// Mark warmup done and trigger a reload
+	proxyWarmupDone.Store(true)
+	if reloadPath, err := proxyReloadPath(); err == nil {
+		_ = writeReloadTrigger(reloadPath)
+	}
+	reloader.reload()
+
+	cancelMapMu.Lock()
+	_, launched := reloader.cancelMap["9.9.9.9:1080"]
+	cancelMapMu.Unlock()
+	if !launched {
+		t.Fatal("URL proxy must be launched after warmup completes")
+	}
+}
