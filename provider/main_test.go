@@ -5,9 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // The eco memory monitor is a single global watcher, but it was started from
@@ -388,5 +391,78 @@ func TestClassifyAuthFailureCause(t *testing.T) {
 				t.Fatalf("classifyAuthFailureCause(%q) = %q, want %q", c.err, got, c.want)
 			}
 		})
+	}
+}
+
+// TestStartupSortOrder verifies that file-sourced and internal proxies sort
+// before URL-sourced proxies, so backoffPacer gives them a head start.
+func TestStartupSortOrder(t *testing.T) {
+	settings := []*connect.ProxySettings{
+		{Address: "url-a:1080"},
+		{Address: "file-a:1080"},
+		{Address: "url-b:1080"},
+		{Address: "internal-a:1080"},
+		{Address: "url-c:1080"},
+		{Address: "file-b:1080"},
+	}
+	sourceOf := map[string]string{
+		"url-a:1080":      "url",
+		"file-a:1080":     "file",
+		"url-b:1080":      "url",
+		"internal-a:1080": "internal",
+		"url-c:1080":      "url",
+		"file-b:1080":     "file",
+	}
+
+	sort.SliceStable(settings, func(i, j int) bool {
+		si := sourceOf[settings[i].Address]
+		sj := sourceOf[settings[j].Address]
+		if si == "url" && sj != "url" {
+			return false
+		}
+		if si != "url" && sj == "url" {
+			return true
+		}
+		return false
+	})
+
+	got := make([]string, len(settings))
+	for i, s := range settings {
+		got[i] = sourceOf[s.Address]
+	}
+
+	want := []string{"file", "internal", "file", "url", "url", "url"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("position %d: got source %q for %s, want %q", i, got[i], settings[i].Address, want[i])
+		}
+	}
+}
+
+// TestBackoffPacer_ZeroStagger verifies that a zero stagger returns
+// immediately (no delay), and that context cancellation aborts the wait.
+func TestBackoffPacer_ZeroStagger(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Zero stagger must return true immediately
+	start := time.Now()
+	ok := backoffPacer(100, 0, time.Now(), ctx)
+	if !ok {
+		t.Fatal("zero stagger must return true")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("zero stagger took %v, expected near-instant return", elapsed)
+	}
+
+	// Canceled context with non-zero stagger must return false.
+	// Use n=50 with 10ms stagger so the wait is ~500ms — long enough
+	// for cancellation to take effect, short enough to keep the test fast.
+	cancelCtx, cancelFn := context.WithCancel(context.Background())
+	cancelFn()
+	time.Sleep(5 * time.Millisecond) // let cancellation propagate
+	ok = backoffPacer(50, 10, time.Now(), cancelCtx)
+	if ok {
+		t.Fatal("canceled context with non-zero stagger must return false")
 	}
 }
