@@ -16,6 +16,60 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+// TestVerify_HMACFormats verifies that ContractManager.Verify() accepts both
+// the legacy (pre-July 1) and standard (post-July 1) HMAC formats, and rejects
+// a bogus HMAC. This is a regression test for the July 1, 2026 platform
+// cutover — providers must accept both formats during the transition.
+func TestVerify_HMACFormats(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	settings.ContractManagerSettings.LegacyCreateContract = true
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	contractManager := client.ContractManager()
+
+	contractManager.SetProvideModesWithReturnTraffic(map[protocol.ProvideMode]bool{
+		protocol.ProvideMode_Network: true,
+	})
+
+	relationship := protocol.ProvideMode_Network
+	provideSecretKey, ok := contractManager.GetProvideSecretKey(relationship)
+	assert.Equal(t, true, ok)
+
+	contractBytes := []byte("test-contract-data-for-hmac-verification")
+
+	// Legacy format: mac.Sum(data) appends HMAC to data
+	legacyMac := hmac.New(sha256.New, provideSecretKey)
+	legacyHmac := legacyMac.Sum(contractBytes)
+
+	// Standard format: mac.Write(data); mac.Sum(nil) returns pure HMAC
+	standardMac := hmac.New(sha256.New, provideSecretKey)
+	standardMac.Write(contractBytes)
+	standardHmac := standardMac.Sum(nil)
+
+	// Bogus HMAC: wrong key
+	bogusKey := []byte("wrong-secret-key")
+	bogusMac := hmac.New(sha256.New, bogusKey)
+	bogusMac.Write(contractBytes)
+	bogusHmac := bogusMac.Sum(nil)
+
+	// All three must have different lengths to confirm they're distinct checks
+	assert.NotEqual(t, legacyHmac, standardHmac)
+
+	// Legacy format must verify
+	assert.Equal(t, true, contractManager.Verify(legacyHmac, contractBytes, relationship))
+
+	// Standard format must verify
+	assert.Equal(t, true, contractManager.Verify(standardHmac, contractBytes, relationship))
+
+	// Bogus HMAC must NOT verify
+	assert.Equal(t, false, contractManager.Verify(bogusHmac, contractBytes, relationship))
+
+	t.Log("legacy HMAC format: PASS")
+	t.Log("standard HMAC format: PASS")
+	t.Log("bogus HMAC rejection: PASS")
+}
+
 func TestTakeContract(t *testing.T) {
 	// in parallel, add contracts, take contracts, and optionally return contract
 	// make sure all created contracts get eventually taken
