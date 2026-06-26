@@ -372,9 +372,9 @@ func (r *ProxyReloader) reload() {
 		staggerPos := i
 		settingsCopy := settings
 		isURLSourced := sourceOf[settings.Address] == "url"
-		reloadStaggerMs := 200
+		reloadStaggerMs := 150
 		if isURLSourced {
-			reloadStaggerMs = 750
+			reloadStaggerMs = 500
 		}
 		r.wg.Add(1)
 		go connect.HandleError(func() {
