@@ -576,6 +576,8 @@ Usage:
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
     provider proxy remove-dead [--degraded[=<duration>]] [--source=<source>] [--yes] [--preview]
+    provider proxy activity
+    provider proxy set-degraded-cleanup [<duration>]
     provider proxy refresh [--force]
     provider proxy add-source <url>
     provider proxy remove-source <url>
@@ -650,6 +652,8 @@ Options:
 			proxyRemove(opts)
 		} else if refresh, _ := opts.Bool("refresh"); refresh {
 			proxyRefresh(opts)
+		} else if setCleanup, _ := opts.Bool("set-degraded-cleanup"); setCleanup {
+			proxySetDegradedCleanup(opts)
 		}
 	} else if auth_, _ := opts.Bool("auth"); auth_ {
 		auth(opts)
@@ -3236,6 +3240,33 @@ func proxyRemoveSource(opts docopt.Opts) {
 	}
 	fmt.Printf("removed source: %s\n", url)
 	fmt.Println("note: previously fetched proxies from this source remain running; use 'proxy remove-dead' to prune any that go dead.")
+}
+
+func proxySetDegradedCleanup(opts docopt.Opts) {
+	val, _ := opts.String("<duration>")
+	urlState, err := readProxyURLState()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not read proxy_url.json: %v\n", err)
+		return
+	}
+
+	if val == "" || val == "off" || val == "0" {
+		urlState.DegradedCleanupThreshold = ""
+		fmt.Println("Degraded auto-cleanup disabled.")
+	} else {
+		if _, err := time.ParseDuration(val); err != nil {
+			fmt.Fprintf(os.Stderr, "invalid duration %q (e.g. 1h, 24h)\n", val)
+			return
+		}
+		urlState.DegradedCleanupThreshold = val
+		fmt.Printf("Degraded auto-cleanup threshold set to %s.\n", val)
+	}
+
+	if err := writeProxyURLState(urlState); err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not write proxy_url.json: %v\n", err)
+		return
+	}
+	fmt.Println("Updated proxy_url.json. Changes take effect on next cleanup cycle.")
 }
 
 func proxyRemoveDead(opts docopt.Opts) {
