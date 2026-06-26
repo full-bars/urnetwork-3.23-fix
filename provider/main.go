@@ -106,6 +106,9 @@ func paceMonitor(ctx context.Context) {
 			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 60m\n",
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
+			if reloadPath, err := proxyReloadPath(); err == nil {
+				_ = writeReloadTrigger(reloadPath)
+			}
 			return
 		}
 		if pct < 50 && connectingN > 10 {
@@ -115,6 +118,9 @@ func paceMonitor(ctx context.Context) {
 			tlog("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
+			if reloadPath, err := proxyReloadPath(); err == nil {
+				_ = writeReloadTrigger(reloadPath)
+			}
 			return // warmup complete — stop repeating
 		} else {
 			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
