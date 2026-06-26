@@ -102,8 +102,8 @@ func paceMonitor(ctx context.Context) {
 		pct := float64(up) * 100 / float64(total)
 		connectingN := len(connecting)
 		elapsed := time.Since(provideStartTime)
-		if elapsed > 30*time.Minute {
-			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 30m\n",
+		if elapsed > 60*time.Minute {
+			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 60m\n",
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
 			return
