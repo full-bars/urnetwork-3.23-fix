@@ -101,7 +101,7 @@ func paceMonitor(ctx context.Context) {
 		connectingN := len(connecting)
 		elapsed := time.Since(provideStartTime)
 		if elapsed > 60*time.Minute {
-			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 60m\n",
+			tlog("🔥 [pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 60m\n",
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
@@ -110,10 +110,10 @@ func paceMonitor(ctx context.Context) {
 			return
 		}
 		if pct < 50 && connectingN > 10 {
-			tlog("[pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
+			tlog("🔥 [pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
 				up, total, pct, connectingN, total-up-connectingN)
 		} else if pct > 90 && connectingN < 5 {
-			tlog("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
+			tlog("🔥 [pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
@@ -121,7 +121,7 @@ func paceMonitor(ctx context.Context) {
 			}
 			return // warmup complete — stop repeating
 		} else {
-			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
+			tlog("🔥 [pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
 				up, total, pct, connectingN)
 		}
 	}
@@ -1029,7 +1029,7 @@ func runEarningWindows(ctx context.Context) {
 				active = "yes"
 			}
 
-			tlog("[earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
+			tlog("💰 [earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
 				fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
 		}
 		prevCum = cum
@@ -1156,8 +1156,12 @@ func runProfitHeartbeat(ctx context.Context) {
 			// false "idle"/"no_traffic". Mirrors paceMonitor's done threshold.
 			warmup := len(connecting) >= 5
 			reason := earningReason(earning, proxiesUp, clients, warmup)
-			tlog("[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d\n",
-				status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle)
+			profitEmoji := ""
+			if status == "yes" {
+				profitEmoji = "💰 "
+			}
+			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d\n",
+				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle)
 			lastLogTime = now
 		}
 	}
@@ -1207,7 +1211,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		tlog("[health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
+		tlog("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
 			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1217,7 +1221,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		now := time.Now()
 		report := connect.ProxyHealthHeartbeat(uptime >= deadConfirmDelay)
 		down := len(report.Dead) + len(report.Degraded)
-		tlog("[health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
+		tlog("❤️ [health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
@@ -1314,7 +1318,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if totalBillable > 0 {
 			earning = "yes"
 		}
-		tlog("[traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
+		tlog("📈 [traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
 			fmtRate(float64(totalRxDelta)/elapsed),
 			fmtRate(float64(totalTxDelta)/elapsed),
 			totalClients,
