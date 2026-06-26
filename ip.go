@@ -1038,8 +1038,15 @@ func (self *UdpSequence) Run() {
 		}
 	}, self.cancel)
 
+	// reusable idle timer: this send loop wakes per datagram, so a per-iteration
+	// time.After allocated a timer per packet (a dominant alloc in the udp
+	// egress profile). reuse one timer across iterations instead.
+	idleTimer := time.NewTimer(0)
+	defer idleTimer.Stop()
+
 	for sendIter := uint64(0); ; sendIter += 1 {
 		checkpointId := self.idleCondition.Checkpoint()
+		idleTimer.Reset(self.udpBufferSettings.IdleTimeout)
 		select {
 		case <-self.ctx.Done():
 			return
@@ -1064,7 +1071,7 @@ func (self *UdpSequence) Run() {
 			} else {
 				MessagePoolReturn(sendItem.ipPacket)
 			}
-		case <-time.After(self.udpBufferSettings.IdleTimeout):
+		case <-idleTimer.C:
 			done := false
 			func() {
 				self.sendMutex.Lock()
@@ -1108,17 +1115,33 @@ type StreamState struct {
 	destinationPort layers.UDPPort
 	buffer          gopacket.SerializeBuffer
 	userLimited
+
+	// cached immutable ip path for this stream (see IpPath). The stream
+	// identity (version, ips, ports) never changes, so it is built once and
+	// then read-only.
+	ipPath *IpPath
+
+	// reusable backing for the common single-datagram DataPackets result.
+	// DataPackets is called from one goroutine and its result is consumed
+	// before the next call, so the backing can be reused; fragmented payloads
+	// allocate a fresh slice.
+	singleDataPacket [1][]byte
 }
 
+// IpPath returns the immutable ip path for this stream. The path is built once
+// and cached; the stream identity (version, ips, ports) never changes.
 func (self *StreamState) IpPath() *IpPath {
-	return &IpPath{
-		Version:         self.ipVersion,
-		Protocol:        IpProtocolUdp,
-		SourceIp:        self.sourceIp,
-		SourcePort:      int(self.sourcePort),
-		DestinationIp:   self.destinationIp,
-		DestinationPort: int(self.destinationPort),
+	if self.ipPath == nil {
+		self.ipPath = &IpPath{
+			Version:         self.ipVersion,
+			Protocol:        IpProtocolUdp,
+			SourceIp:        self.sourceIp,
+			SourcePort:      int(self.sourcePort),
+			DestinationIp:   self.destinationIp,
+			DestinationPort: int(self.destinationPort),
+		}
 	}
+	return self.ipPath
 }
 
 // this must only be called from one goroutine
@@ -1185,7 +1208,10 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 			return nil, err
 		}
 		packet := MessagePoolCopy(self.buffer.Bytes())
-		return [][]byte{packet}, nil
+		// reuse the single-packet backing for the common unfragmented case
+		// (see singleDataPacket); the result is consumed before the next call.
+		self.singleDataPacket[0] = packet
+		return self.singleDataPacket[:], nil
 	} else {
 		// fragment
 		packetSize := mtu - headerSize
@@ -3111,11 +3137,14 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 		ipv4 := layers.IPv4{}
 		ipv4.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
 
-		sourceIpCopy := make(net.IP, len(ipv4.SrcIP))
-		copy(sourceIpCopy, ipv4.SrcIP)
-
-		destinationIpCopy := make(net.IP, len(ipv4.DstIP))
-		copy(destinationIpCopy, ipv4.DstIP)
+		// copy the ips so the ip path can be retained independently of the
+		// shared packet buffer (which is recycled after the handoff call). both
+		// copies share one backing allocation instead of one per address.
+		ipBacking := make(net.IP, len(ipv4.SrcIP)+len(ipv4.DstIP))
+		sn := copy(ipBacking, ipv4.SrcIP)
+		copy(ipBacking[sn:], ipv4.DstIP)
+		sourceIpCopy := ipBacking[:sn:sn]
+		destinationIpCopy := ipBacking[sn:]
 
 		switch ipv4.Protocol {
 		case layers.IPProtocolUDP:
@@ -3154,11 +3183,14 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 		ipv6 := layers.IPv6{}
 		ipv6.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
 
-		sourceIpCopy := make(net.IP, len(ipv6.SrcIP))
-		copy(sourceIpCopy, ipv6.SrcIP)
-
-		destinationIpCopy := make(net.IP, len(ipv6.DstIP))
-		copy(destinationIpCopy, ipv6.DstIP)
+		// copy the ips so the ip path can be retained independently of the
+		// shared packet buffer (which is recycled after the handoff call). both
+		// copies share one backing allocation instead of one per address.
+		ipBacking := make(net.IP, len(ipv6.SrcIP)+len(ipv6.DstIP))
+		sn := copy(ipBacking, ipv6.SrcIP)
+		copy(ipBacking[sn:], ipv6.DstIP)
+		sourceIpCopy := ipBacking[:sn:sn]
+		destinationIpCopy := ipBacking[sn:]
 
 		switch ipv6.NextHeader {
 		case layers.IPProtocolUDP:
