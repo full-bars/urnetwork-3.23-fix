@@ -7,8 +7,9 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.24.16] — 2026-06-25
 
 ### Fixed
-- **`proxy clear` now wipes URL cache and source URLs** (PR #139): `proxy remove --all` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` untouched. The cached URL proxies and configured source URLs survived, so the background URL fetcher would re-add free proxies within minutes of a restart — defeating the purpose of clearing the list. Now both the cache and the sources list are wiped. URL sources must be re-added if desired.
+- **`proxy clear` now wipes URL cache, source URLs, and systemd PROXY_URL** (PR #139, #140): `proxy remove --all` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` and systemd `Environment=PROXY_URL` untouched. The cached URL proxies and env var would re-populate sources on restart — the clear had no lasting effect. Now `proxy_url.json` is wiped entirely (cache, blacklist, source URLs) and `PROXY_URL` is stripped from any systemd override drop-in in `~/.config/systemd/user/urnetwork.service.d/`, with a systemd daemon-reload.
 - **File-sourced proxies launch before URL-sourced ones** (PR #139): The proxy launch order at startup was non-deterministic (Go random map iteration), so file-based and URL-sourced proxies were interleaved — no priority for paid proxies. The proxy list is now sorted so file-sourced proxies get lower indices in the launch sequence, giving them a head start via `backoffPacer` before any URL-sourced proxies begin connecting.
+- **URL fetcher waits for file-proxy warmup before first fetch** (PR #140): The URL fetcher was triggering 5-15 minutes after startup, before file proxy warmup completed (~17 min for 1000 proxies at 1s stagger). URL-sourced proxies started authing mid-warmup, competing with file proxies for auth rate-limiter slots. The URL fetcher now waits for warmup to reach `>90% up with <5 connecting`, with a 60-minute timeout fallback so a few slow file proxies don't block URL proxies forever.
 
 ## [Unreleased]
 
