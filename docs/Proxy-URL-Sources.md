@@ -159,5 +159,8 @@ No — new entries are deduplicated by address against everything currently runn
 **What happens if the URL is unreachable?**
 The fetch cycle is skipped with a logged warning. Already-added proxies from that source keep running — a stale list is better than wiping working proxies because of a transient network blip. After several consecutive failures, the provider logs a louder warning suggesting the source may be dead, but it won't remove the source for you.
 
+**What happens when I run `proxy clear`?**
+`proxy clear` (which calls `proxy remove --all`) now wipes the entire `proxy_url.json` — cache, blacklist, and source URLs — alongside the internal config and `proxy.state`. After a clear, no URL-sourced proxies will be fetched unless a source is re-added via `urnet-tools proxy add-source <url>`. This ensures a clean slate when you want only the proxies you explicitly add.
+
 **Does this validate proxies before adding them?**
 No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 10 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
