@@ -250,11 +250,13 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	}
 }
 
-// runProxyURLCleanupOnce removes dead/inactive proxies whose source matches
-// scope ("url" removes only url-sourced proxies; "all" removes any source;
-// any other value, including "none", removes nothing and returns 0).
-// Untagged entries (Source == "", from before this feature shipped) are
-// never touched automatically. Returns the number of proxies removed.
+// runProxyURLCleanupOnce removes dead/inactive/degraded proxies whose source
+// matches scope ("url" removes only url-sourced proxies; "all" removes any
+// source; any other value, including "none", removes nothing and returns 0).
+// When ProxyURLState.DegradedCleanupThreshold is set, URL-sourced proxies
+// offline longer than that threshold are also removed. The threshold is
+// read from proxy_url.json every cycle, so changes take effect without a
+// restart. Returns the number of proxies removed.
 func runProxyURLCleanupOnce(scope string) (removed int) {
 	if scope != "url" && scope != "all" {
 		return 0
@@ -266,19 +268,55 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		return 0
 	}
 
+	// For degraded cleanup, require the provider to have been running
+	// long enough to avoid killing proxies that just haven't authed yet
+	// during this startup cycle.
+	uptime := time.Since(state.StartedAt)
+	const minUptime = 65 * time.Minute
+
+	// Read degraded threshold from proxy_url.json (may be empty = disabled).
+	var degradedThreshold time.Duration
+	if urlState, err := readProxyURLState(); err == nil && urlState.DegradedCleanupThreshold != "" {
+		if d, err := time.ParseDuration(urlState.DegradedCleanupThreshold); err == nil && d > 0 {
+			degradedThreshold = d
+		}
+	}
+
 	addrsBySource := map[string][]string{}
 	for addr, e := range state.Proxies {
-		if e.Health != "dead" && e.Health != "inactive" {
-			continue
-		}
+		// Skip untagged entries (pre-source-tagging)
 		if e.Source == "" {
 			continue
 		}
 		if scope == "url" && e.Source != "url" {
 			continue
 		}
-		addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
-		removed++
+
+		// Dead/inactive: always remove (existing behavior).
+		// These never authed (dead) or haven't been seen in 7+ days
+		// (inactive) — no uptime guard needed.
+		if e.Health == "dead" || e.Health == "inactive" {
+			addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
+			removed++
+			continue
+		}
+
+		// Degraded: only remove if:
+		//   1. A threshold is configured
+		//   2. The provider has been running long enough (>65 min)
+		//   3. DownSince is set AND the proxy has been down past the threshold
+		// This prevents killing proxies that are still warming up or whose
+		// DownSince is stale from a prior provider session.
+		if degradedThreshold > 0 && uptime > minUptime &&
+			(e.Health == "recently_offline" || e.Health == "offline" || e.Health == "long_offline") {
+			if e.DownSince != "" {
+				if ds, err := time.Parse(time.RFC3339, e.DownSince); err == nil && time.Since(ds) >= degradedThreshold {
+					addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
+					removed++
+					continue
+				}
+			}
+		}
 	}
 
 	if removed == 0 {
@@ -289,7 +327,7 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		tlog("[proxy][cleanup] warning: %v\n", err)
 		return 0
 	}
-	tlog("[proxy][cleanup] automatically removed %d dead/inactive proxies (scope=%s)\n", removed, scope)
+	tlog("[proxy][cleanup] automatically removed %d dead/inactive/degraded proxies (scope=%s, degraded_threshold=%s)\n", removed, scope, degradedThreshold)
 	return removed
 }
 
