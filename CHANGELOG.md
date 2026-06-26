@@ -4,13 +4,13 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased]
-
-### Added
-
-### Changed
+## [v3.23.0-fix.24.16] — 2026-06-25
 
 ### Fixed
+- **`proxy clear` now wipes URL cache and source URLs** (PR #139): `proxy remove --all` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` untouched. The cached URL proxies and configured source URLs survived, so the background URL fetcher would re-add free proxies within minutes of a restart — defeating the purpose of clearing the list. Now both the cache and the sources list are wiped. URL sources must be re-added if desired.
+- **File-sourced proxies launch before URL-sourced ones** (PR #139): The proxy launch order at startup was non-deterministic (Go random map iteration), so file-based and URL-sourced proxies were interleaved — no priority for paid proxies. The proxy list is now sorted so file-sourced proxies get lower indices in the launch sequence, giving them a head start via `backoffPacer` before any URL-sourced proxies begin connecting.
+
+## [Unreleased]
 
 ## [v3.23.0-fix.24.14] — 2026-06-25
 

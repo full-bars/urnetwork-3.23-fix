@@ -1180,3 +1180,35 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **1 dash-compatible test** (`test_fallback_logic.sh`) passing.
 
 **Status**: ✅ Merged (PR #136, v3.23.0-fix.24.12). **Note**: v24.12 has chicken-and-egg bootstrap issue — the fix can't propagate from old scripts. v24.13 fixes the bootstrap by checking `$workdir/urnet-tools` in the common script-writing section.
+
+---
+
+## 56. `proxy remove --all` Clears URL Cache and Source URLs
+
+**Purpose**: `proxy clear` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` untouched. The cached URL proxies (previously fetched from `--proxy_url` sources) survived the clear and were re-loaded on restart, and the configured source URLs caused the background fetcher to re-add free proxies within minutes — defeating the clear entirely.
+
+**Files Modified**:
+- `provider/main.go` — `proxyRemove()` now also wipes `urlState.Cache` and resets `urlState.Sources` to nil in `proxy_url.json`, alongside the existing proxy.state reset
+
+**Change**:
+- `proxy remove --all` now reads `proxy_url.json`, clears both `Cache` and `Sources`, and writes back
+- Source URLs must be re-added via `urnet-tools proxy add-source` if URL fetches are desired again
+- Comment updated to reflect that both cache and sources are cleared
+
+**Status**: ✅ Merged (PR #139, v3.23.0-fix.24.16).
+
+---
+
+## 57. Proxy Launch Order Sorted for File-Before-URL Priority
+
+**Purpose**: The proxy launch order at startup was non-deterministic (Go random map iteration over `proxyDesiredSet`), so file-based and URL-sourced proxies were interleaved in the launch sequence. File proxies (paid, operator-curated) should start connecting before URL proxies (free, scraped).
+
+**Files Modified**:
+- `provider/main.go` — `provide()` now sorts `allProxySettings` by source after building the slice
+
+**Change**:
+- Added `sort.SliceStable` call after building `allProxySettings` from the desired set, ordering by source: `file`/`internal` before `url`
+- `backoffPacer` uses the slice index for startup delay (`n * staggerMs`), so file proxies get a head start of ~len(file proxies) × 1s before URL proxies begin
+- Added `"sort"` import
+
+**Status**: ✅ Merged (PR #139, v3.23.0-fix.24.16).
