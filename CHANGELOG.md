@@ -13,6 +13,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added (next release will carry these)
+- **HMAC dual-format verification test** — regression test confirming `ContractManager.Verify()` accepts both legacy (pre-July 1) and standard (post-July 1) HMAC formats, ensuring the platform cutover doesn't break provider contract verification.
+- **Startup sort order test** — verifies file/internal proxies sort before URL-sourced ones.
+- **backoffPacer edge case tests** — zero stagger returns immediately, context cancellation aborts non-zero stagger waits.
+- **Warmup gate lifecycle test** — URL proxies deferred during warmup are launched once warmup completes.
+
 ## [v3.23.0-fix.24.14] — 2026-06-25
 
 ### Fixed
