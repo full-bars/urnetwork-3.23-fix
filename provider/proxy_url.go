@@ -31,6 +31,14 @@ type ProxyURLState struct {
 	// fetch (which is otherwise add-only) can never silently bring a
 	// blacklisted address back, even across process restarts.
 	Blacklist map[string]time.Time `json:"blacklist,omitempty"`
+
+	// DegradedCleanupThreshold sets how long a URL-sourced proxy can be
+	// degraded before the automatic cleanup cycle evicts it. A zero value
+	// (default) disables degraded auto-cleanup — only dead/inactive proxies
+	// are removed, matching the pre-v24.18 behavior.
+	// Set at runtime via:  urnetwork proxy set degraded-cleanup 24h
+	// Read every cleanup cycle, so changes take effect without restart.
+	DegradedCleanupThreshold string `json:"degraded_cleanup_threshold,omitempty"`
 }
 
 // ProxyURLEntry records the auth (if any) for one address fetched from a URL
