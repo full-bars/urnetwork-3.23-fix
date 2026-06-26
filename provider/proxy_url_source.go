@@ -225,6 +225,17 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		return
 	}
 
+	// Wait for file-proxy warmup to finish before the first fetch, so URL-
+	// sourced proxies never compete for auth rate-limiter slots with the
+	// operator-curated file proxies during the initial ramp.
+	for !proxyWarmupDone.Load() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+
 	fetchAndMergeProxyURLs(ctx, urls, maxTotal)
 
 	ticker := time.NewTicker(refreshInterval)
