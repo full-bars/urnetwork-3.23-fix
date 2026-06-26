@@ -13,7 +13,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
-### Added (next release will carry these)
+### Added
+- **Multi-tier degraded proxy removal** (PR #145): `proxy remove-dead` now supports `--degraded[=<duration>]` to remove degraded proxies offline past a threshold, `--source=<url|file|internal>` to filter by source, `--yes` for non-interactive use, and `--preview` for dry-run. Previously only `dead` (never authed) and `inactive` (7+ days) were removable — the `degraded` category (authed once, now offline) was a blind spot that let zombie proxies clog the pool indefinitely.
+
+### Tests added (pending next release)
 - **HMAC dual-format verification test** — regression test confirming `ContractManager.Verify()` accepts both legacy (pre-July 1) and standard (post-July 1) HMAC formats, ensuring the platform cutover doesn't break provider contract verification.
 - **Startup sort order test** — verifies file/internal proxies sort before URL-sourced ones.
 - **backoffPacer edge case tests** — zero stagger returns immediately, context cancellation aborts non-zero stagger waits.
