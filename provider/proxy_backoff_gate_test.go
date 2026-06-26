@@ -104,6 +104,9 @@ func TestReload_SkipsURLProxyStillInBackoff(t *testing.T) {
 	globalProxyFailureHistory.SetBackoffUntil("7.7.7.7:1080", time.Now().Add(time.Hour))
 	defer globalProxyFailureHistory.Reset("7.7.7.7:1080")
 
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap:   map[string]context.CancelFunc{},
