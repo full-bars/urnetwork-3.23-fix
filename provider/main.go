@@ -2689,11 +2689,13 @@ func proxyRemove(opts docopt.Opts) {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
 			}
 		}
-		// Also clear the URL cache so previously-fetched free proxies don't
-		// reappear after a restart. The source URLs are preserved so the
-		// fetcher can repopulate from scratch on the next cycle.
+		// Also clear the URL cache and source URLs so previously-fetched free
+		// proxies don't reappear after a restart. The user wants only the
+		// proxies they explicitly added; URL sources must be re-added if
+		// desired.
 		if urlState, err := readProxyURLState(); err == nil {
 			urlState.Cache = map[string]ProxyURLEntry{}
+			urlState.Sources = nil
 			if err := writeProxyURLState(urlState); err != nil {
 				tlog("[proxy] warning: could not clear proxy_url.json cache: %v\n", err)
 			}
