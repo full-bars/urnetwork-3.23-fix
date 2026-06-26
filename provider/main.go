@@ -2124,9 +2124,9 @@ func provide(opts docopt.Opts) {
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
-				staggerMs := 200
+				staggerMs := 150
 				if isURLSourced {
-					staggerMs = 750
+					staggerMs = 500
 				}
 				now := time.Now()
 				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
