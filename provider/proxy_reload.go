@@ -372,13 +372,17 @@ func (r *ProxyReloader) reload() {
 		staggerPos := i
 		settingsCopy := settings
 		isURLSourced := sourceOf[settings.Address] == "url"
+		reloadStaggerMs := 200
+		if isURLSourced {
+			reloadStaggerMs = 750
+		}
 		r.wg.Add(1)
 		go connect.HandleError(func() {
 			defer r.wg.Done()
 			defer connect.UnregisterProxy(stableID)
 			defer proxyCancel()
 
-			if !backoffPacer(staggerPos, time.Now(), proxyCtx) {
+			if !backoffPacer(staggerPos, reloadStaggerMs, time.Now(), proxyCtx) {
 				return
 			}
 			r.spawnProxy(proxyCtx, settingsCopy, false, isURLSourced)

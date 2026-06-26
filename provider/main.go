@@ -55,15 +55,13 @@ var provideStartTime time.Time
 var proxyWarmupDone atomic.Bool
 
 // backoffPacer calculates the effective start delay for the n-th proxy goroutine.
-// Base stagger (default 1s, env URNETWORK_PROXY_STAGGER_MS) with ±50 % random
-// jitter to spread WebSocket dials across the window and avoid thundering-herd
-// bursts against the platform API.
-func backoffPacer(n int, now time.Time, proxyCtx context.Context) bool {
-	staggerMs := 1000
-	if s := os.Getenv("URNETWORK_PROXY_STAGGER_MS"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v >= 10 {
-			staggerMs = v
-		}
+// staggerMs is the base gap between consecutive proxy starts; ±50% random
+// jitter spreads dials within each slot. File proxies typically pass 0 for
+// immediate launch (the backend's own rate limiter handles bursts), while
+// URL-sourced proxies use a non-zero stagger to avoid thundering-herd.
+func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context) bool {
+	if staggerMs <= 0 {
+		return true
 	}
 
 	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
@@ -2126,8 +2124,12 @@ func provide(opts docopt.Opts) {
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
+				staggerMs := 200
+				if isURLSourced {
+					staggerMs = 750
+				}
 				now := time.Now()
-				if !backoffPacer(proxyIdx, now, proxyCtx) {
+				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
 					return
 				}
 				proxyLaunchCount.Add(1)
