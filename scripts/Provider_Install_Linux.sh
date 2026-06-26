@@ -1126,6 +1126,12 @@ do_install ()
     printf "%s\n" "$script" | tail -n +2 >> "$install_path/bin/urnet-tools"
     chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
 
+    # Overwrite with the tarball-bundled script if available, so even an old
+    # script that just wrote itself via cat "$0" gets replaced by the latest.
+    if [ -f "$workdir/urnet-tools" ]; then
+        cp "$workdir/urnet-tools" "$install_path/bin/urnet-tools" 2>/dev/null
+    fi
+
     echo "$version_to_install" > "$install_path/.version"
     echo "$release_date" > "$install_path/.date"
 
