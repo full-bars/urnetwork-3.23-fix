@@ -15,6 +15,7 @@ All notable changes to this project are documented here.
 
 ### Added
 - **Multi-tier degraded proxy removal** (PR #145): `proxy remove-dead` now supports `--degraded[=<duration>]` to remove degraded proxies offline past a threshold, `--source=<url|file|internal>` to filter by source, `--yes` for non-interactive use, and `--preview` for dry-run. Previously only `dead` (never authed) and `inactive` (7+ days) were removable — the `degraded` category (authed once, now offline) was a blind spot that let zombie proxies clog the pool indefinitely.
+- **Proxy activity dashboard** (PR #145): `proxy activity` opens a real-time terminal dashboard showing active proxies carrying client traffic, per-proxy bandwidth rates, client counts, and recent contract acquisition events. Auto-refreshes every second. Press `q` or Ctrl+C to exit.
 
 ### Tests added (pending next release)
 - **HMAC dual-format verification test** — regression test confirming `ContractManager.Verify()` accepts both legacy (pre-July 1) and standard (post-July 1) HMAC formats, ensuring the platform cutover doesn't break provider contract verification.
