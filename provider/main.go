@@ -47,6 +47,13 @@ var webhookClient = &http.Client{Timeout: 5 * time.Second}
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
 var proxyLaunchCount atomic.Int64
 
+var provideStartTime time.Time
+
+// proxyWarmupDone is set true once the initial file-proxy warmup phase
+// completes. Hot-reloaded URL-sourced proxies and the URL fetcher wait
+// for this before launching, so file proxies get an uncontested ramp.
+var proxyWarmupDone atomic.Bool
+
 // backoffPacer calculates the effective start delay for the n-th proxy goroutine.
 // Base stagger (default 1s, env URNETWORK_PROXY_STAGGER_MS) with ±50 % random
 // jitter to spread WebSocket dials across the window and avoid thundering-herd
@@ -94,12 +101,20 @@ func paceMonitor(ctx context.Context) {
 		}
 		pct := float64(up) * 100 / float64(total)
 		connectingN := len(connecting)
+		elapsed := time.Since(provideStartTime)
+		if elapsed > 60*time.Minute {
+			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting — forced done after 60m\n",
+				up, total, pct, connectingN)
+			proxyWarmupDone.Store(true)
+			return
+		}
 		if pct < 50 && connectingN > 10 {
 			tlog("[pace] ⚠ warmup: %d/%d up (%.0f%%), %d connecting, %d done\n",
 				up, total, pct, connectingN, total-up-connectingN)
 		} else if pct > 90 && connectingN < 5 {
 			tlog("[pace] ✓ warmup: %d/%d up (%.0f%%), %d connecting — done\n",
 				up, total, pct, connectingN)
+			proxyWarmupDone.Store(true)
 			return // warmup complete — stop repeating
 		} else {
 			tlog("[pace] warmup: %d/%d up (%.0f%%), %d connecting\n",
@@ -1569,7 +1584,7 @@ func provide(opts docopt.Opts) {
 	}
 	applyPoolAutoSize(maxMemory)
 
-	provideStartTime := time.Now()
+	provideStartTime = time.Now()
 
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)

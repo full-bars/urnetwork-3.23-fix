@@ -2072,6 +2072,19 @@ do_proxy () {
         clear)
             pr_info "Clearing all proxies..."
             "$provider_bin" proxy remove --all
+            # Also strip PROXY_URL from systemd override drop-ins so the env var
+            # doesn't re-populate URL sources on next restart.
+            sd_override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+            if [ -d "$sd_override_dir" ]; then
+                for conf in "$sd_override_dir"/*.conf; do
+                    [ -f "$conf" ] || continue
+                    if grep -q '^Environment="PROXY_URL=' "$conf" 2>/dev/null; then
+                        grep -v '^Environment="PROXY_URL=' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf"
+                        pr_info "Removed PROXY_URL from $(basename "$conf")"
+                    fi
+                done
+                systemctl --user daemon-reload 2>/dev/null || true
+            fi
             ;;
         health)
             health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
