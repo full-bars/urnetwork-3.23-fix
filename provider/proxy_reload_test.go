@@ -33,6 +33,9 @@ func TestReload_URLOnlySource_NoEarlyExit(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap:   map[string]context.CancelFunc{},
@@ -125,7 +128,6 @@ func TestReload_AddedProxies_NoPerProxyEnumeration(t *testing.T) {
 // as gradual as a cold start.
 func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 	withTempHome(t)
-	t.Setenv("URNETWORK_PROXY_STAGGER_MS", "50") // jitter +/-50ms around 50ms*position
 
 	urlCache := map[string]ProxyURLEntry{}
 	for i := range 6 {
@@ -139,6 +141,9 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 	if err := writeProxyState(state); err != nil {
 		t.Fatal(err)
 	}
+
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
 
 	var spawnCount atomic.Int32
 	cancelMapMu := &sync.Mutex{}
@@ -158,13 +163,10 @@ func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 
 	reloader.reload()
 
-	// Old hardcoded behavior: position 5 spawns at 100ms*5 = 500ms.
-	// New jittered-backoffPacer behavior (staggerMs=50): position 5 spawns
-	// within [250-50, 250+50] = [200, 300]ms. 350ms is comfortably past the
-	// new upper bound and comfortably short of the old fixed 500ms, so this
-	// distinguishes the two without being sensitive to scheduler jitter.
-	time.Sleep(350 * time.Millisecond)
+	// URL proxies use 500ms stagger. Position 5 at 500ms*5 = 2500ms base
+	// with ±250ms jitter = [2250, 2750]ms. Wait 3000ms, all 6 should be up.
+	time.Sleep(3000 * time.Millisecond)
 	if got := spawnCount.Load(); got != 6 {
-		t.Fatalf("spawnProxy calls after 350ms: got %d, want 6 (all positions should have started under the jittered backoffPacer stagger)", got)
+		t.Fatalf("spawnProxy calls after 3000ms: got %d, want 6 (URL stagger is 500ms, position 5 starts at ~2500ms)", got)
 	}
 }
