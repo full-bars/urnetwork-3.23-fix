@@ -575,7 +575,7 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
-    provider proxy remove-dead
+    provider proxy remove-dead [--degraded[=<duration>]] [--source=<source>] [--yes] [--preview]
     provider proxy refresh [--force]
     provider proxy add-source <url>
     provider proxy remove-source <url>
@@ -3238,7 +3238,7 @@ func proxyRemoveSource(opts docopt.Opts) {
 	fmt.Println("note: previously fetched proxies from this source remain running; use 'proxy remove-dead' to prune any that go dead.")
 }
 
-func proxyRemoveDead(_ docopt.Opts) {
+func proxyRemoveDead(opts docopt.Opts) {
 	state, err := readProxyState()
 	if err != nil || state.StartedAt.IsZero() {
 		shmLogFatal(60, "provider does not appear to be running")
@@ -3250,49 +3250,129 @@ func proxyRemoveDead(_ docopt.Opts) {
 		shmLogFatal(61, "provider has only been running %s — need %s uptime before dead status is confirmed", formatDuration(uptime), formatDuration(deadConfirmDelay))
 	}
 
+	// Parse options
+	autoYes, _ := opts.Bool("--yes")
+	preview, _ := opts.Bool("--preview")
+
+	degradedDur := time.Duration(0)
+	degradedFlag, _ := opts.Bool("--degraded")
+	degVal, _ := opts.String("--degraded")
+	if degradedFlag || degVal != "" {
+		if degVal == "" || degVal == "true" {
+			degradedDur = 24 * time.Hour // default: remove degraded > 24h
+		} else {
+			if d, err := time.ParseDuration(degVal); err == nil {
+				degradedDur = d
+			} else {
+				fmt.Printf("invalid duration %q for --degraded (e.g. --degraded=24h)\n", degVal)
+				return
+			}
+		}
+	}
+
+	var sourceFilter string
+	if s, _ := opts.String("--source"); s != "" {
+		if s != "url" && s != "file" && s != "internal" {
+			fmt.Printf("invalid source %q (use 'url', 'file', or 'internal')\n", s)
+			return
+		}
+		sourceFilter = s
+	}
+
 	type removedProxy struct {
 		addr  string
 		entry ProxyEntry
 	}
-	var dead, inactive []removedProxy
+
+	// Collect candidates by category
+	var dead, inactive, degraded []removedProxy
 	for addr, e := range state.Proxies {
+		// Apply source filter
+		effectiveSource := e.Source
+		if effectiveSource == "" {
+			if state.Source != "" {
+				effectiveSource = "file"
+			} else {
+				effectiveSource = "internal"
+			}
+		}
+		if sourceFilter != "" && effectiveSource != sourceFilter {
+			continue
+		}
+
 		switch e.Health {
 		case "dead":
 			dead = append(dead, removedProxy{addr: addr, entry: e})
 		case "inactive":
 			inactive = append(inactive, removedProxy{addr: addr, entry: e})
+		case "recently_offline", "offline", "long_offline":
+			if degradedDur > 0 {
+				ds, err := time.Parse(time.RFC3339, e.DownSince)
+				if err != nil || time.Since(ds) < degradedDur {
+					continue
+				}
+			}
+			degraded = append(degraded, removedProxy{addr: addr, entry: e})
 		}
 	}
 
-	if len(dead) == 0 && len(inactive) == 0 {
-		fmt.Println("No dead or inactive proxies found.")
+	if len(dead) == 0 && len(inactive) == 0 && len(degraded) == 0 {
+		fmt.Println("Nothing to remove.")
+		return
+	}
+
+	printCategory := func(label string, items []removedProxy) {
+		if len(items) == 0 {
+			return
+		}
+		sourceStr := ""
+		if sourceFilter != "" {
+			sourceStr = fmt.Sprintf(" [source=%s]", sourceFilter)
+		}
+		fmt.Printf("  %d %s%s:\n", len(items), label, sourceStr)
+		for _, rp := range items {
+			ts := ""
+			if rp.entry.DownSince != "" {
+				if t, err := time.Parse(time.RFC3339, rp.entry.DownSince); err == nil {
+					ts = fmt.Sprintf(" down_since=%s", formatDuration(time.Since(t).Truncate(time.Second)))
+				}
+			}
+			fmt.Printf("    proxy[%d]  %s%s\n", rp.entry.ID, rp.addr, ts)
+		}
+		fmt.Println()
+	}
+
+	if preview {
+		fmt.Println("=== PREVIEW (no changes will be made) ===")
+		printCategory("dead", dead)
+		printCategory("inactive", inactive)
+		printCategory(fmt.Sprintf("degraded (offline > %s)", formatDuration(degradedDur)), degraded)
+		total := len(dead) + len(inactive) + len(degraded)
+		fmt.Printf("Would remove %d proxies total.\n", total)
 		return
 	}
 
 	var toRemove []removedProxy
 
 	if len(dead) > 0 {
-		fmt.Printf("  %d proxies never authenticated (dead):\n", len(dead))
-		for _, rp := range dead {
-			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
-		}
-		fmt.Println()
-		if confirm(fmt.Sprintf("Remove %d dead proxies?", len(dead))) {
+		printCategory("dead", dead)
+		if autoYes || confirm(fmt.Sprintf("Remove %d dead proxies?", len(dead))) {
 			toRemove = append(toRemove, dead...)
 		}
-		fmt.Println()
 	}
 
 	if len(inactive) > 0 {
-		fmt.Printf("  %d proxies offline 7+ days (inactive):\n", len(inactive))
-		for _, rp := range inactive {
-			fmt.Printf("    proxy[%d]  %s\n", rp.entry.ID, rp.addr)
-		}
-		fmt.Println()
-		if confirm(fmt.Sprintf("Remove %d inactive proxies?", len(inactive))) {
+		printCategory("inactive", inactive)
+		if autoYes || confirm(fmt.Sprintf("Remove %d inactive proxies?", len(inactive))) {
 			toRemove = append(toRemove, inactive...)
 		}
-		fmt.Println()
+	}
+
+	if len(degraded) > 0 {
+		printCategory(fmt.Sprintf("degraded (offline > %s)", formatDuration(degradedDur)), degraded)
+		if autoYes || confirm(fmt.Sprintf("Remove %d degraded proxies?", len(degraded))) {
+			toRemove = append(toRemove, degraded...)
+		}
 	}
 
 	if len(toRemove) == 0 {
@@ -3304,9 +3384,6 @@ func proxyRemoveDead(_ docopt.Opts) {
 	for _, rp := range toRemove {
 		source := rp.entry.Source
 		if source == "" {
-			// Entries tagged before this feature shipped (or otherwise
-			// untagged) keep today's behavior: route by which workflow is
-			// active, exactly as proxyRemoveDead always did.
 			if state.Source != "" {
 				source = "file"
 			} else {
