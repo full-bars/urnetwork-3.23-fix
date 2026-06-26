@@ -642,6 +642,56 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
 	}()
 }
 
+// waitForIdleUpdate blocks until the flow update has been idle for
+// SequenceIdleTimeout, or the update ctx is done. it runs only inside the
+// per-flow teardown goroutine; hoisted out of reserveUpdate (rather than an
+// inline closure) so the per-packet steady-state path does not allocate it.
+func (self *RemoteUserNatMultiClient) waitForIdleUpdate(update *multiClientChannelUpdate) {
+	for {
+		select {
+		case <-update.ctx.Done():
+			return
+		default:
+		}
+
+		var idleTimeout time.Duration
+		func() {
+			self.stateLock.Lock()
+			defer self.stateLock.Unlock()
+
+			idleTimeout = update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now())
+		}()
+		if idleTimeout <= 0 {
+			return
+		} else {
+			select {
+			case <-update.ctx.Done():
+				return
+			case <-time.After(idleTimeout):
+			}
+		}
+	}
+}
+
+// rstFlow sends a reset to both ends of a flow being torn down. like
+// waitForIdleUpdate it runs only in the teardown goroutine and is a method, not
+// an inline closure, to avoid a per-packet allocation in reserveUpdate.
+func (self *RemoteUserNatMultiClient) rstFlow(ipPath *IpPath, client *multiClientChannel) {
+	if client != nil {
+		// rst to destination
+		if packet, ok := ipOosRst(ipPath); ok {
+			client.Send(&parsedPacket{
+				packet: packet,
+				ipPath: ipPath,
+			}, 0)
+		}
+	}
+	// rst to source
+	if packet, ok := ipOosRst(ipPath.Reverse()); ok {
+		self.receivePacketCallback(TransferPath{}, protocol.ProvideMode_Network, ipPath, packet)
+	}
+}
+
 func (self *RemoteUserNatMultiClient) reserveUpdate(
 	ipPath *IpPath,
 ) (
@@ -650,49 +700,6 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 ) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-
-	waitForIdle := func(update *multiClientChannelUpdate) {
-		for {
-			select {
-			case <-update.ctx.Done():
-				return
-			default:
-			}
-
-			var idleTimeout time.Duration
-			func() {
-				self.stateLock.Lock()
-				defer self.stateLock.Unlock()
-
-				idleTimeout = update.activityTime.Add(self.settings.SequenceIdleTimeout).Sub(time.Now())
-			}()
-			if idleTimeout <= 0 {
-				return
-			} else {
-				select {
-				case <-update.ctx.Done():
-					return
-				case <-time.After(idleTimeout):
-				}
-			}
-		}
-	}
-
-	rst := func(client *multiClientChannel) {
-		if client != nil {
-			// rst to destination
-			if packet, ok := ipOosRst(ipPath); ok {
-				client.Send(&parsedPacket{
-					packet: packet,
-					ipPath: ipPath,
-				}, 0)
-			}
-		}
-		// rst to source
-		if packet, ok := ipOosRst(ipPath.Reverse()); ok {
-			self.receivePacketCallback(TransferPath{}, protocol.ProvideMode_Network, ipPath, packet)
-		}
-	}
 
 	switch ipPath.Version {
 	case 4:
@@ -711,7 +718,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 
 				var client *multiClientChannel
 				for {
-					waitForIdle(update)
+					self.waitForIdleUpdate(update)
 
 					success := func() bool {
 						self.stateLock.Lock()
@@ -762,7 +769,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 				case <-self.ctx.Done():
 				case <-update.ctx.Done():
 				default:
-					rst(client)
+					self.rstFlow(ipPath, client)
 				}
 			}, update.cancel)
 			self.ip4PathUpdates[ip4Path] = update
@@ -811,7 +818,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 
 				var client *multiClientChannel
 				for {
-					waitForIdle(update)
+					self.waitForIdleUpdate(update)
 
 					success := func() bool {
 						self.stateLock.Lock()
@@ -862,7 +869,7 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 				case <-self.ctx.Done():
 				case <-update.ctx.Done():
 				default:
-					rst(client)
+					self.rstFlow(ipPath, client)
 				}
 			}, update.cancel)
 			self.ip6PathUpdates[ip6Path] = update
@@ -2843,13 +2850,28 @@ func (self *multiClientChannel) SendWithAck(parsedPacket *parsedPacket, timeout 
 	return success && err == nil
 }
 
-func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, timeout time.Duration, ack bool) (bool, error) {
-	ipPacketToProvider := &protocol.IpPacketToProvider{
-		IpPacket: &protocol.IpPacket{
-			PacketBytes: parsedPacket.packet,
-		},
+// ipPacketToProviderFrame builds the egress send frame for a raw IP packet.
+// on the v2+ raw path (the default) the packet bytes are carried directly on
+// the Frame, so this avoids allocating the protocol.IpPacketToProvider and
+// protocol.IpPacket wrappers that ToFrame would build and immediately discard
+// on every packet. the legacy (<v2) path falls back to the wrapped encoding.
+func ipPacketToProviderFrame(packet []byte, protocolVersion int) (*protocol.Frame, error) {
+	if 2 <= protocolVersion {
+		return &protocol.Frame{
+			MessageType:  protocol.MessageType_IpIpPacketToProvider,
+			MessageBytes: packet,
+			Raw:          true,
+		}, nil
 	}
-	if frame, err := ToFrame(ipPacketToProvider, self.settings.ProtocolVersion); err != nil {
+	return ToFrame(&protocol.IpPacketToProvider{
+		IpPacket: &protocol.IpPacket{
+			PacketBytes: packet,
+		},
+	}, protocolVersion)
+}
+
+func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, timeout time.Duration, ack bool) (bool, error) {
+	if frame, err := ipPacketToProviderFrame(parsedPacket.packet, self.settings.ProtocolVersion); err != nil {
 		self.addError(err)
 		return false, err
 	} else {
