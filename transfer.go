@@ -103,6 +103,17 @@ var DebugTransferCopyOnWrite = false
 
 type AckFunction = func(err error)
 
+// safeAck invokes an ack callback with panic isolation, without allocating a
+// per-send wrapper closure. The raw caller AckFunction is stored in SendPack and
+// passed here at ack time.
+func safeAck(cb func(error), err error) {
+	if cb != nil {
+		HandleError(func() {
+			cb(err)
+		})
+	}
+}
+
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
 type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode)
@@ -757,14 +768,6 @@ func (self *Client) sendWithTimeoutDetailed(
 	default:
 	}
 
-	safeAckCallback := func(err error) {
-		if ackCallback != nil {
-			HandleError(func() {
-				ackCallback(err)
-			})
-		}
-	}
-
 	ctx := self.ctx
 	var transferOpts TransferOptions
 	transferOpts = self.settings.DefaultTransferOpts
@@ -789,7 +792,7 @@ func (self *Client) sendWithTimeoutDetailed(
 		Frame:            frame,
 		Destination:      destination,
 		IntermediaryIds:  intermediaryIds,
-		AckCallback:      safeAckCallback,
+		AckCallback:      ackCallback,
 		MessageByteCount: messageByteCount,
 		Ctx:              ctx,
 		// Ordinary application data: the session identity companion is the
@@ -992,10 +995,10 @@ func (self *Client) run() {
 						[]*protocol.Frame{sendPack.Frame},
 						protocol.ProvideMode_Network,
 					)
-					sendPack.AckCallback(nil)
+					safeAck(sendPack.AckCallback, nil)
 					MessagePoolReturn(sendPack.Frame.MessageBytes)
 				}, func(err error) {
-					sendPack.AckCallback(err)
+					safeAck(sendPack.AckCallback, err)
 				})
 			}
 		}
@@ -2014,7 +2017,7 @@ func (self *SendSequence) Run() {
 
 		// drain the buffer
 		for _, item := range self.resendQueue.orderedItems {
-			item.ackCallback(errors.New("Send sequence closed."))
+			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
 
@@ -2069,6 +2072,12 @@ func (self *SendSequence) Run() {
 			}
 		}
 	}, self.cancel)
+
+	// reusable idle/resend timer: a per-iteration time.After would allocate a
+	// timer per packet on this hot loop. created already-fired; the Reset before
+	// each blocking select arms it (go1.23+ delivers no stale fire after Reset).
+	idleTimer := time.NewTimer(0)
+	defer idleTimer.Stop()
 
 	for {
 		// apply the acks
@@ -2199,11 +2208,12 @@ func (self *SendSequence) Run() {
 		}
 		if !canQueue() {
 			// wait for acks
+			idleTimer.Reset(timeout)
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-ackSnapshot.ackNotify:
-			case <-time.After(timeout):
+			case <-idleTimer.C:
 				if 0 == self.resendQueue.Len() {
 					done := false
 					func() {
@@ -2223,6 +2233,7 @@ func (self *SendSequence) Run() {
 				}
 			}
 		} else {
+			idleTimer.Reset(timeout)
 			select {
 			case <-self.ctx.Done():
 				return
@@ -2240,11 +2251,11 @@ func (self *SendSequence) Run() {
 					// no contract
 					// close the sequence
 					self.log.Errorf("[s]%s->%s...%s s(%s) exit could not create contract.\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
-					sendPack.AckCallback(errors.New("No contract"))
+					safeAck(sendPack.AckCallback, errors.New("No contract"))
 					MessagePoolReturn(sendPack.Frame.MessageBytes)
 					return
 				}
-			case <-time.After(timeout):
+			case <-idleTimer.C:
 				if 0 == self.resendQueue.Len() {
 					done := false
 					func() {
@@ -2682,7 +2693,7 @@ func (self *SendSequence) sendWithSetContract(
 		if err == nil {
 			self.ackItem(item)
 		} else {
-			item.ackCallback(err)
+			safeAck(item.ackCallback, err)
 			item.messagePoolReturn()
 		}
 	}
@@ -2850,7 +2861,7 @@ func (self *SendSequence) ackItem(item *sendItem) {
 			}
 		}
 	}
-	item.ackCallback(nil)
+	safeAck(item.ackCallback, nil)
 	// MessagePoolReturn(item.transferFrameBytes)
 	// for _, frame := range item.frames {
 	// 	MessagePoolReturn(frame.MessageBytes)
@@ -3047,7 +3058,7 @@ func (self *SendSequence) Close() {
 				if !ok {
 					return
 				}
-				sendPack.AckCallback(errors.New("Send sequence closed."))
+				safeAck(sendPack.AckCallback, errors.New("Send sequence closed."))
 				MessagePoolReturn(sendPack.Frame.MessageBytes)
 			default:
 				return
@@ -3659,6 +3670,12 @@ func (self *ReceiveSequence) Run() {
 			}
 		}
 
+		// reusable ack-compress timer (avoids a per-iteration time.After alloc on
+		// the ack hot path). created already-fired; Reset before the blocking
+		// select arms it (go1.23+ delivers no stale fire after Reset).
+		ackCompressTimer := time.NewTimer(0)
+		defer ackCompressTimer.Stop()
+
 		for {
 			select {
 			case <-self.ctx.Done():
@@ -3677,10 +3694,11 @@ func (self *ReceiveSequence) Run() {
 			}
 
 			if 0 < self.receiveBufferSettings.AckCompressTimeout {
+				ackCompressTimer.Reset(self.receiveBufferSettings.AckCompressTimeout)
 				select {
 				case <-self.ctx.Done():
 					return
-				case <-time.After(self.receiveBufferSettings.AckCompressTimeout):
+				case <-ackCompressTimer.C:
 				}
 			}
 
@@ -3699,6 +3717,12 @@ func (self *ReceiveSequence) Run() {
 			}
 		}
 	}, self.cancel)
+
+	// reusable idle/gap timer (avoids a per-iteration time.After alloc on the
+	// receive hot path). created already-fired; Reset before the blocking select
+	// arms it (go1.23+ delivers no stale fire after Reset).
+	idleTimer := time.NewTimer(0)
+	defer idleTimer.Stop()
 
 	for {
 		receiveTime := time.Now()
@@ -3756,6 +3780,7 @@ func (self *ReceiveSequence) Run() {
 		}
 
 		checkpointId := self.idleCondition.Checkpoint()
+		idleTimer.Reset(timeout)
 		select {
 		case <-self.ctx.Done():
 			return
@@ -3805,7 +3830,7 @@ func (self *ReceiveSequence) Run() {
 					MessagePoolReturn(receivePack.TransferFrameBytes)
 				}
 			}
-		case <-time.After(timeout):
+		case <-idleTimer.C:
 			if 0 == self.receiveQueue.Len() {
 				done := false
 				func() {
@@ -4393,23 +4418,27 @@ func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 	self.ackMonitor.NotifyAll()
 }
 
-func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
+func (self *sequenceAckWindow) Snapshot(reset bool) sequenceAckWindowSnapshot {
 	self.ackLock.Lock()
 	defer self.ackLock.Unlock()
 
+	// build the selective-ack copy lazily so the common in-order case (a
+	// cumulative head ack with no selective acks) allocates no map.
 	var selectiveAcksAfterHead map[Id]*sequenceAck
 	if 0 < self.ackUpdateCount {
-		selectiveAcksAfterHead = map[Id]*sequenceAck{}
 		for messageId, ack := range self.selectiveAcks {
 			if self.headAck.sequenceNumber < ack.sequenceNumber {
+				if selectiveAcksAfterHead == nil {
+					selectiveAcksAfterHead = map[Id]*sequenceAck{}
+				}
 				selectiveAcksAfterHead[messageId] = ack
 			}
 		}
-	} else {
+	} else if 0 < len(self.selectiveAcks) {
 		selectiveAcksAfterHead = maps.Clone(self.selectiveAcks)
 	}
 
-	snapshot := &sequenceAckWindowSnapshot{
+	snapshot := sequenceAckWindowSnapshot{
 		ackNotify:      self.ackMonitor.NotifyChannel(),
 		headAck:        self.headAck,
 		ackUpdateCount: self.ackUpdateCount,
@@ -4417,9 +4446,10 @@ func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
 	}
 
 	if reset {
-		// keep the head ack in place
+		// keep the head ack in place. clear() reuses the live map's storage
+		// instead of allocating a fresh map; the caller holds only a copy.
 		self.ackUpdateCount = 0
-		self.selectiveAcks = map[Id]*sequenceAck{}
+		clear(self.selectiveAcks)
 	}
 
 	return snapshot
@@ -4790,8 +4820,15 @@ func (self *ForwardSequence) Run() {
 	self.multiRouteWriter = self.client.RouteManager().OpenMultiRouteWriter(self.destination)
 	defer self.client.RouteManager().CloseMultiRouteWriter(self.multiRouteWriter)
 
+	// reusable idle timer (avoids a per-iteration time.After alloc on the
+	// forward hot path). created already-fired; Reset before the blocking select
+	// arms it (go1.23+ delivers no stale fire after Reset).
+	idleTimer := time.NewTimer(0)
+	defer idleTimer.Stop()
+
 	for {
 		checkpointId := self.idleCondition.Checkpoint()
+		idleTimer.Reset(self.forwardBufferSettings.IdleTimeout)
 		select {
 		case <-self.ctx.Done():
 			return
@@ -4822,7 +4859,7 @@ func (self *ForwardSequence) Run() {
 					self.log.V(2).Infof("[f]drop = %s", err)
 				}
 			}
-		case <-time.After(self.forwardBufferSettings.IdleTimeout):
+		case <-idleTimer.C:
 			done := false
 			func() {
 				self.packMutex.Lock()
