@@ -40,6 +40,7 @@ show_help ()
     echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
     echo "  proxy summary           📊 Show proxy fleet summary (sources, health, counts)"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
+    echo "  report [<url>]          📡 Show or set hub report URL (use 'off' to disable)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
@@ -1827,6 +1828,43 @@ setup_zram_manual () {
     return 1
 }
 
+do_report ()
+{
+    mode="$1"
+    override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
+    if [ -z "$mode" ]; then
+        # Show current setting
+        if [ -f "$override_file" ]; then
+            url=$(grep '^Environment="URNETWORK_REPORT_URL=' "$override_file" | sed 's/.*="\(.*\)"/\1/')
+            if [ -n "$url" ]; then
+                pr_info "Report URL: %s" "$url"
+            else
+                pr_info "Report URL: not configured"
+            fi
+        else
+            pr_info "Report URL: not configured"
+        fi
+        return
+    fi
+
+    case "$mode" in
+        off)
+            pr_info "Removing report URL (takes effect on next provider restart)..."
+            override_rm_env "URNETWORK_REPORT_URL"
+            systemctl --user daemon-reload
+            pr_info "Report URL removed. Restart provider to apply: systemctl --user restart urnetwork.service"
+            ;;
+        *)
+            pr_info "Setting report URL to %s (takes effect on next provider restart)..." "$mode"
+            override_set_env "URNETWORK_REPORT_URL" "$mode"
+            systemctl --user daemon-reload
+            pr_info "Report URL set to %s. Restart provider to apply: systemctl --user restart urnetwork.service" "$mode"
+            ;;
+    esac
+}
+
 do_hub () {
     cmd="$1"
     shift || true
@@ -2451,6 +2489,11 @@ case "$operation" in
 
     hub)
         do_hub "$@"
+        exit 0
+        ;;
+
+    report)
+        do_report "$@"
         exit 0
         ;;
 

@@ -46,7 +46,7 @@ docker run -d --name urfix \
 | `PROXY_URL` | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](Proxy-URL-Sources.md)) |
 | `URNETWORK_PROXY_BENCHMARK=true` | Enables per-proxy latency probes (TCP connect every 5m, SOCKS5 every 15m) |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
-| `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting (see hub/README) |
+| `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting. Can be changed at runtime via `urnet-tools report <url>` (writes `~/.urnetwork/report_url` via docker exec). |
 
 For additional containers, change the container name and volumes together.
 
