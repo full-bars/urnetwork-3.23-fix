@@ -401,6 +401,7 @@ func handleNodes(s *store) http.HandlerFunc {
 			Connecting  int           `json:"connecting"`
 			Degraded    int           `json:"degraded"`
 			Dead        int           `json:"dead"`
+			Earning     int           `json:"earning"`
 			MbpsRX      float64       `json:"mbps_rx"`
 			MbpsTX      float64       `json:"mbps_tx"`
 			System      systemMetrics `json:"sys"`
@@ -418,6 +419,13 @@ func handleNodes(s *store) http.HandlerFunc {
 				}
 			}
 			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			earning := 0
+			nodeEarning := s.getEarning(n.NodeID)
+			for _, p := range n.Proxies {
+				if nodeEarning[p.ID] {
+					earning++
+				}
+			}
 			out = append(out, nodeSummary{
 				NodeID:    n.NodeID,
 				Host:      n.Host,
@@ -429,6 +437,7 @@ func handleNodes(s *store) http.HandlerFunc {
 				Connecting: connecting,
 				Degraded:  degraded,
 				Dead:      dead,
+				Earning:   earning,
 				MbpsRX:    mbpsRX,
 				MbpsTX:    mbpsTX,
 				System:    n.System,
@@ -725,7 +734,7 @@ tr.expandable:hover { background: #1a2332; }
 <div class="card card-proxies"><div class="label">Total Proxies</div><div class="value">{{.Sum.TotalProxies}}</div><div class="sub">across {{.Sum.Nodes}} nodes</div></div>
 <div class="card card-up"><div class="label">Healthy</div><div class="value">{{.Sum.Up}}</div><div class="sub">{{printf "%.1f" (pct .Sum.Up .Sum.TotalProxies)}}% of fleet</div></div>
 <div class="card card-degraded"><div class="label">Degraded</div><div class="value">{{.Sum.Degraded}}</div><div class="sub">{{.Sum.Dead}} dead</div></div>
-<div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.TotalProxies)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
+<div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.Up)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
 <div class="card card-clients"><div class="label">Active Clients</div><div class="value">{{.Sum.TotalClients}}</div><div class="sub">{{printf "%s" (fmtBytes .Sum.TotalRX)}} RX / {{printf "%s" (fmtBytes .Sum.TotalTX)}} TX</div></div>
 <div class="card card-up"><div class="label">Throughput</div><div class="value">{{printf "%.0f" (add .Sum.MbpsRX .Sum.MbpsTX)}} Mbps</div><div class="sub">{{printf "%.1f" .Sum.MbpsRX}} in / {{printf "%.1f" .Sum.MbpsTX}} out</div></div>
 </div>
@@ -739,28 +748,28 @@ tr.expandable:hover { background: #1a2332; }
 <div class="chart-box compact">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
 <span style="font-size:11px;color:#64748b">Total Traffic</span>
-<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+<button onclick="resetFleetChart('fleet-traffic')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
 </div>
 <div id="fleet-traffic" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
 <span style="font-size:11px;color:#64748b">Billable Traffic</span>
-<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+<button onclick="resetFleetChart('fleet-billable')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
 </div>
 <div id="fleet-billable" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
 <span style="font-size:11px;color:#64748b">Peak Clients</span>
-<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+<button onclick="resetFleetChart('fleet-clients')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
 </div>
 <div id="fleet-clients" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
 <span style="font-size:11px;color:#64748b">Fleet Nodes</span>
-<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+<button onclick="resetFleetChart('fleet-nodes')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
 </div>
 <div id="fleet-nodes" style="height:160px"></div>
 </div>
@@ -883,10 +892,13 @@ function makeChart(el, opts, data) {
   fleetCharts.push(chart);
 }
 
-function resetFleetChart() {
-  fleetCharts.forEach(function(c) { c.destroy(); });
-  fleetCharts = [];
-  fleetChartData = null;
+function resetFleetChart(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  // uPlot stores a reference on the element
+  if (el._uplot) { el._uplot.destroy(); }
+  fleetCharts = fleetCharts.filter(function(c) { return c !== el._uplot; });
+  // Re-fetch data and re-render this chart
   loadFleetChart();
 }
 
@@ -1252,6 +1264,7 @@ function removeNode(nodeId) {
   fetch('/api/nodes/remove', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId})}).then(function(r){if(r.ok)refreshDashboard();});
 }
 loadFleetChart();
+sortBy('clients');
 </script>
 </body>
 </html>
