@@ -429,15 +429,16 @@ func TestNodesEndpoint(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 
-	var nodes []*nodeState
+	var nodes []map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(nodes) != 2 {
 		t.Fatalf("nodes = %d, want 2", len(nodes))
 	}
-	if nodes[0].NodeID != "n1" && nodes[0].NodeID != "n2" {
-		t.Errorf("unexpected node ID: %q", nodes[0].NodeID)
+	id1, _ := nodes[0]["node_id"].(string)
+	if id1 != "n1" && id1 != "n2" {
+		t.Errorf("unexpected node ID: %q", id1)
 	}
 }
 
