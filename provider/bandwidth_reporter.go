@@ -73,6 +73,37 @@ func resolveReportURL(envFallback string) string {
 	return envFallback
 }
 
+// reportIntervalOverridePath returns ~/.urnetwork/report_interval, a file an
+// operator can write at any time to change the hub report cadence without
+// restarting the provider. It takes precedence over URNETWORK_REPORT_INTERVAL,
+// which is read once at process start.
+func reportIntervalOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "report_interval"), nil
+}
+
+// resolveReportInterval re-reads the override file on every call so a change
+// takes effect on the reporter's next tick. startupInterval is the value
+// captured from URNETWORK_REPORT_INTERVAL at startup, used when no override
+// file exists or it's empty. A zero duration (or unparseable content) falls
+// back to startupInterval.
+func resolveReportInterval(startupInterval time.Duration) time.Duration {
+	path, err := reportIntervalOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				if d, err := time.ParseDuration(v); err == nil && d >= 10*time.Second {
+					return d
+				}
+			}
+		}
+	}
+	return startupInterval
+}
+
 // alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
 // watcher's equivalent of reportURLOverridePath: a file an operator can
 // write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
@@ -134,6 +165,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	activeInterval := interval
 	activeReportURL := ""
 	for {
 		select {
@@ -142,12 +174,21 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		case <-ticker.C:
 		}
 
+		// Re-check the interval on every tick so a write to
+		// ~/.urnetwork/report_interval takes effect without restart.
+		if newInterval := resolveReportInterval(interval); newInterval != activeInterval {
+			ticker.Stop()
+			ticker = time.NewTicker(newInterval)
+			activeInterval = newInterval
+			tlog("[report] report interval changed to %s (node=%s)\n", newInterval, nodeID)
+		}
+
 		reportURL := resolveReportURL(envReportURL)
 		if reportURL != activeReportURL {
 			if reportURL == "" {
 				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
-				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
+				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, activeInterval, nodeID)
 			}
 			activeReportURL = reportURL
 		}
