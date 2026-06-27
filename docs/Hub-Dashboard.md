@@ -163,25 +163,52 @@ URNETWORK_REPORT_URL=https://hub.yourdomain.com ./ur-provider
 
 ## Dashboard Features
 
-### Summary Bar
+### Summary Cards
 
-- **Nodes** — total reporting nodes
-- **Proxies** — aggregate up / connecting / degraded / dead counts
-- **Clients** — total active client sessions
-- **RX / TX** — total traffic with billable breakdown (`1.3 GB · 1.2 GB billable`)
-- **Earning** — fleet-wide count of proxies currently earning over total proxies (`N/Total`)
+Five visual cards at the top of the dashboard:
+
+- **Total Proxies** — fleet-wide proxy count across all nodes
+- **Healthy** — proxies currently in "up" status with percentage of fleet
+- **Degraded** — proxies that were up but are now offline, plus dead count
+- **Earning** — percentage of up proxies currently generating billable traffic
+- **Active Clients** — total active sessions with aggregate RX/TX
+
+### Fleet Chart
+
+A compact sparkline chart at the top of the Nodes tab shows aggregate RX/TX across the entire fleet for the last 24 hours. Loaded once on page load.
+
+### Filter Bar
+
+Filter nodes by name (text search) and status (All / Healthy / Degraded / Dead) with real-time DOM filtering.
 
 ### Node Table
 
 | Column | Description |
 |--------|-------------|
-| Node | Node ID (name) |
-| Host | Hostname and version |
+| Node | Node ID (name) with version, colored heartbeat dot (pulses when live) |
 | Heartbeat | Time since last report, with green/yellow/red health dot |
 | Uptime | Provider uptime |
-| Proxies | Color-coded status badges (up/connecting/degraded) |
+| Proxies | Color-coded status badges (up/degraded/dead) |
 | Clients | Active client sessions on this node |
-| Earning | Count of this node's proxies currently earning over its total (`N/Total`) |
+| Earning | Count of this node's proxies currently earning over up proxies |
+| RX/TX/Bill RX/Bill TX | Traffic volume with billable breakdown |
+| In/Out Mbps | Current bandwidth rate |
+
+Click any node row to open a slide-out drawer showing the full per-proxy detail list (ID, address, status, clients, age, traffic).
+
+### History Tab
+
+Time series chart showing RX/TX over the last 24 hours, 3 days, or 7 days. Filter by individual node or view fleet aggregate. Reset zoom button restores the default range.
+
+### Performance
+
+The hub dashboard is optimized to handle large fleets efficiently:
+- **Gzip compression** — all HTTP responses are gzip-compressed (HTML, JSON)
+- **Lazy proxy loading** — proxy details are fetched on demand via `/api/nodes/<id>/proxies` rather than embedded inline
+- **JSON-only auto-refresh** — the 30-second auto-refresh fetches lightweight node metadata via `/api/nodes` and updates the DOM in place
+- **Rate limiting** — per-IP rate limiter (60 req/min) protects against accidental or malicious request floods; `/api/report` is exempt so provider reports are never blocked
+- **Stale node eviction** — nodes that haven't reported in 15 minutes are automatically removed from the in-memory dashboard; they reappear when they report again
+- **History query safety** — history queries are capped at 7 days (168 hours) and 10,000 rows |
 | RX | Total received bytes / billable received (smaller text) |
 | TX | Total transmitted bytes / billable transmitted |
 | In Mbps | Inbound traffic rate (delta-based) |
