@@ -27,6 +27,7 @@ var funcMap = template.FuncMap{
 	"title":    title,
 	"fmtAge":   fmtAge,
 	"pct":      func(a, b int) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
+	"add":      func(a, b float64) float64 { return a + b },
 }
 
 type proxyReport struct {
@@ -238,6 +239,7 @@ type summaryRow struct {
 	TotalRX, TotalTX                       uint64
 	BillRX, BillTX                         uint64
 	Earning, TotalProxies                  int
+	MbpsRX, MbpsTX                         float64
 }
 
 type proxSummary struct {
@@ -450,11 +452,11 @@ func handleDashboard(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
 
+			var sm summaryRow
 		rows := make([]nodeRow, 0, len(nodes))
 		for i, n := range nodes {
 			nodeEarning := s.getEarning(n.NodeID)
 			var ps proxSummary
-			proxyList := make([]proxyRow, 0, len(n.Proxies))
 			for _, p := range n.Proxies {
 				ps.TotalRX += p.TotalRX
 				ps.TotalTX += p.TotalTX
@@ -462,20 +464,31 @@ func handleDashboard(s *store) http.HandlerFunc {
 				ps.BillTX += p.BillTX
 				ps.Clients += p.Clients
 				switch p.Status {
-				case "up":
-					ps.Up++
-				case "connecting":
-					ps.Connecting++
-				case "degraded":
-					ps.Degraded++
-				default:
-					ps.Dead++
+				case "up": ps.Up++
+				case "connecting": ps.Connecting++
+				case "degraded": ps.Degraded++
+				default: ps.Dead++
 				}
-				isEarning := nodeEarning[p.ID]
-				if isEarning {
+			}
+			// Accumulate fleet totals
+			sm.Nodes++
+			sm.Up += ps.Up
+			sm.Connecting += ps.Connecting
+			sm.Degraded += ps.Degraded
+			sm.Dead += ps.Dead
+			sm.TotalClients += ps.Clients
+			sm.TotalRX += ps.TotalRX
+			sm.TotalTX += ps.TotalTX
+			sm.BillRX += ps.BillRX
+			sm.BillTX += ps.BillTX
+			sm.TotalProxies += len(n.Proxies)
+			// Compute per-node earning
+			ps.Earning = 0
+			for _, p := range n.Proxies {
+				if nodeEarning[p.ID] {
+					sm.Earning++
 					ps.Earning++
 				}
-				proxyList = append(proxyList, proxyRow{proxyReport: p, Earning: isEarning})
 			}
 			uptime := time.Duration(n.Uptime * float64(time.Second)).Round(time.Second)
 			uptimeStr := uptime.String()
@@ -494,6 +507,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 			}
 
 			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			sm.MbpsRX += mbpsRX
+			sm.MbpsTX += mbpsTX
 
 			rows = append(rows, nodeRow{
 				NodeID:    n.NodeID,
@@ -508,12 +523,9 @@ func handleDashboard(s *store) http.HandlerFunc {
 				HeapMiB:   n.System.HeapMiB,
 				SysMiB:    n.System.SysMiB,
 				Conns:     n.System.Connections,
-				ProxyList: proxyList,
 				Index:     i,
 			})
 		}
-
-		sm := s.summary()
 
 		var buf bytes.Buffer
 		tmpl.Execute(&buf, map[string]interface{}{
@@ -670,6 +682,7 @@ tr.expandable:hover { background: #1a2332; }
 <div class="card card-degraded"><div class="label">Degraded</div><div class="value">{{.Sum.Degraded}}</div><div class="sub">{{.Sum.Dead}} dead</div></div>
 <div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.TotalProxies)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
 <div class="card card-clients"><div class="label">Active Clients</div><div class="value">{{.Sum.TotalClients}}</div><div class="sub">{{printf "%s" (fmtBytes .Sum.TotalRX)}} RX / {{printf "%s" (fmtBytes .Sum.TotalTX)}} TX</div></div>
+<div class="card card-up"><div class="label">Throughput</div><div class="value">{{printf "%.0f" (add .Sum.MbpsRX .Sum.MbpsTX)}} Mbps</div><div class="sub">{{printf "%.1f" .Sum.MbpsRX}} in / {{printf "%.1f" .Sum.MbpsTX}} out</div></div>
 </div>
 </div>
 <div class="tabs">
