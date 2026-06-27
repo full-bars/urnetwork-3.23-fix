@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.21] — 2026-06-27
+
+### Added
+- **Runtime override files for live provider tuning** (PR #159): Seven `~/.urnetwork/` files let you change key behaviors on the fly — re-read on every tick or cycle, no restart needed. Remove the file to revert to the startup value:
+
+  | File | Effect | Format |
+  |------|---------|--------|
+  | `node_name` | Hub-reported node identity | plain string |
+  | `report_interval` | Bandwidth report cadence | Go duration (`60s`, `2m`) — min 10s |
+  | `proxy_url_max` | Cap on URL-sourced proxies per fetch | integer |
+  | `proxy_url_refresh` | URL fetch cadence | Go duration — min 10s |
+  | `proxy_dead_cleanup_scope` | Dead-proxy cleanup scope | `all`, `degraded`, etc. |
+  | `proxy_dead_cleanup_interval` | Dead-proxy cleanup cadence | Go duration — min 1m |
+  | `fast_auth` | Bypass auth rate limiter | touch file to enable, delete to disable |
+
+  These follow the same pattern as the `report_url` override introduced in v3.23.0-fix.24.19.
+
+### Fixed
+- **Hub fleet charts rewritten** (PR #158): The sparkline was plotting cumulative totals (monotonically increasing, unreadable). Now shows 4 charts in a 2×2 flex grid: healthy proxies + active clients over time; hourly traffic deltas (RX/TX per hour window); billable traffic per hour; peak clients + reporting nodes.
+- **History chart aggregates correctly in multi-node view** (PR #158): Was interleaving every node's data as separate line segments at the same X positions. Now aggregates by hour and sums RX/TX across all nodes. Negative deltas from reporting gaps clamped to zero.
+- **Earning metric seeds correctly on restart** (PR #158): `prevBillable` was initialized to zero on restart, so the first report cycle always showed 0 earnings. Now seeded from per-proxy IDs stored in the DB — earning is accurate from the first report after a restart.
+- **Proxy drawer routing fixed** (PR #158): `/api/nodes/<id>/proxies` was unreachable due to a routing conflict — the drawer silently failed to load per-node proxy lists. Drawer now defaults to sort by active clients descending (then billable RX descending), with sortable columns and 90vw width.
+- **`/api/nodes` response includes earning field** (PR #158): Summary cards now reflect live earning state without a separate request.
+
+---
+
 ## [v3.23.0-fix.24.19] — 2026-06-26
 
 ### Performance
