@@ -73,6 +73,63 @@ func resolveReportURL(envFallback string) string {
 	return envFallback
 }
 
+// nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
+// write at any time to change the node identity reported to the hub without
+// restarting. An empty file or missing file falls back to the startup hostname.
+func nodeNameOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "node_name"), nil
+}
+
+// resolveNodeName re-reads the override file on every call so a change takes
+// effect on the reporter's next tick. startupName is the hostname captured at
+// startup, used when no override file exists or it's empty.
+func resolveNodeName(startupName string) string {
+	path, err := nodeNameOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return startupName
+}
+
+// reportIntervalOverridePath returns ~/.urnetwork/report_interval, a file an
+// operator can write at any time to change the hub report cadence without
+// restarting the provider. It takes precedence over URNETWORK_REPORT_INTERVAL,
+// which is read once at process start.
+func reportIntervalOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "report_interval"), nil
+}
+
+// resolveReportInterval re-reads the override file on every call so a change
+// takes effect on the reporter's next tick. startupInterval is the value
+// captured from URNETWORK_REPORT_INTERVAL at startup, used when no override
+// file exists or it's empty. A zero duration (or unparseable content) falls
+// back to startupInterval.
+func resolveReportInterval(startupInterval time.Duration) time.Duration {
+	path, err := reportIntervalOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				if d, err := time.ParseDuration(v); err == nil && d >= 10*time.Second {
+					return d
+				}
+			}
+		}
+	}
+	return startupInterval
+}
+
 // alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
 // watcher's equivalent of reportURLOverridePath: a file an operator can
 // write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
@@ -134,6 +191,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	activeInterval := interval
 	activeReportURL := ""
 	for {
 		select {
@@ -142,12 +200,25 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		case <-ticker.C:
 		}
 
+		// Re-check the interval on every tick so a write to
+		// ~/.urnetwork/report_interval takes effect without restart.
+		if newInterval := resolveReportInterval(interval); newInterval != activeInterval {
+			ticker.Stop()
+			ticker = time.NewTicker(newInterval)
+			activeInterval = newInterval
+			tlog("[report] report interval changed to %s (node=%s)\n", newInterval, nodeID)
+		}
+
+		// Re-check the node name on every tick so ~/.urnetwork/node_name
+		// takes effect without restart.
+		activeHost := resolveNodeName(host)
+
 		reportURL := resolveReportURL(envReportURL)
 		if reportURL != activeReportURL {
 			if reportURL == "" {
 				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
-				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, interval, nodeID)
+				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, activeInterval, nodeID)
 			}
 			activeReportURL = reportURL
 		}
@@ -161,7 +232,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			continue
 		}
 
-		report := buildReport(nodeID, host, startTime)
+		report := buildReport(nodeID, activeHost, startTime)
 		if len(report.Proxies) == 0 {
 			tlog("[report] skipping (0 proxies in bandwidth map)\n")
 			continue
