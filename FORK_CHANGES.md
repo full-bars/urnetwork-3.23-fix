@@ -1212,3 +1212,65 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Added `"sort"` import
 
 **Status**: ✅ Merged (PR #139, v3.23.0-fix.24.16).
+
+---
+
+## 58. Hot-Path Allocation Optimizations (Upstream d474f36b Port)
+
+**Purpose**: Eliminate per-packet heap allocations on hot send/receive/ack/forward/teardown paths. Ported from upstream d474f36b.
+
+**Files Modified**: `transfer.go`, `ip.go`, `ip_remote_multi_client.go`
+
+**`transfer.go`** (PR #150):
+- `safeAck()` standalone function — eliminates per-send closure alloc on every ack callback.
+- `Snapshot()` returns by value + `clear()` map reuse — eliminates pointer alloc per ack window read.
+- `time.After()` → `time.NewTimer().Reset()` in 6 hot loops — eliminates per-iteration timer+channel alloc.
+
+**`ip.go`** (PR #149):
+- `StreamState.IpPath()` lazy-cached — eliminates IpPath struct alloc per UDP datagram.
+- `singleDataPacket [1][]byte` reuse — eliminates slice-header alloc for unfragmented case.
+- `ParseIpPathWithPayload` shared `ipBacking` slice — eliminates 2× `make(net.IP)` per packet.
+
+**`ip_remote_multi_client.go`** (PR #148):
+- `waitForIdle`/`rst` closures hoisted to methods — eliminates per-packet closure alloc in teardown.
+- `ipPacketToProviderFrame` helper — avoids per-packet proto wrapper struct allocs on v2+ path.
+
+**Status**: ✅ Merged `main` (2026-06-26). PRs #148–#150.
+
+---
+
+## 59. Dual-Stage SOCKS5 + API Reachability Probe for URL Proxies
+
+**Purpose**: Free public proxy lists are mostly dead entries that waste auth-rate-limiter slots and generate log noise. The existing SOCKS5 greeting probe filtered out non-SOCKS5 endpoints, but proxies that passed the greeting could still fail to route traffic to `api.bringyour.com` through the tunnel — resulting in infinite retry loops (51+ attempts observed in production).
+
+**Files Modified**: `proxy_probe.go`, `proxy_url.go`, `proxy_url_source.go`, `provider/main.go`, `proxy_probe_test.go`, `proxy_url_source_test.go`
+
+### Changes
+
+**Unified dual-stage probe** (`proxy_probe.go`):
+- `probeProxy()` performs both the SOCKS5 greeting AND a SOCKS5 CONNECT to `api.bringyour.com:443` on a single TCP connection
+- Returns one of three results: `probeDead` (not SOCKS5), `probeSocks5Only` (SOCKS5 but can't reach API), `probeAPIReachable` (fully verified)
+- API destination IP resolved once via `resolveAPIProbeAddr()` and cached across all probes — no DNS storm from 50 parallel CONNECTs
+- 100ms random stagger before each probe dial spreads the concurrent burst across ~5s
+- `probeAndFilterProxyURLLines()` replaces `filterReachableProxyURLLines()`, returning API-reachable and socks5-only addresses in separate buckets
+- SOCKS5-only addresses are cached with `ProbeOK=false` for background retry by the reaper; API-reachable addresses are cached with `ProbeOK=true` and enter the auth queue immediately
+
+**Proxy URL entry tracking** (`proxy_url.go`):
+- `ProxyURLEntry` gains three new fields: `ProbeOK` (passed API probe), `ProbeFails` (consecutive failure count), `LastProbe` (last probe timestamp)
+- Existing `proxy_url.json` files without these fields work correctly — zero values default to `false`/`0`/zero time, triggering re-probe on the next reaper cycle
+
+**Background reaper** (`proxy_url_source.go`):
+- `runURLProxyReaper()` scans the URL cache every 5 minutes for entries with `ProbeOK=false`
+- Re-probes each entry with the dual-stage check
+- After 3 consecutive `probeSocks5Only` or `probeDead` results, the address is moved to the persistent `Blacklist`
+- Launched at provider startup alongside the URL fetcher
+
+**Blacklist pruner** (`proxy_url_source.go`):
+- `pruneURLProxyBlacklist()` removes blacklist entries older than 24 hours every 30 minutes
+- Gives previously-dead addresses a second chance: on the next fetch cycle, `mergeProxyURLEntries` no longer skips them, and they're re-probed from scratch
+
+**Auth-time probe** (`provider/main.go`):
+- `probeProxySocks5()` preserved as a thin wrapper for the pre-auth SOCKS5 gate on URL-sourced proxies (doesn't test API reachability — that's handled by the fetch pipeline and reaper)
+
+### Status
+✅ Merged `main` (2026-06-27). PR #152.
