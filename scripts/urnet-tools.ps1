@@ -536,8 +536,9 @@ switch ($Command) {
             "refresh" { docker exec $ContainerName provider proxy refresh }
             "reload"  { docker exec $ContainerName provider proxy refresh }
             "remove-dead" { docker exec $ContainerName provider proxy remove-dead }
+            "summary" { docker exec $ContainerName provider proxy summary }
             default {
-                Write-Host "Usage: proxy [refresh|reload|remove-dead]"
+                Write-Host "Usage: proxy [refresh|reload|remove-dead|summary]"
             }
         }
         break

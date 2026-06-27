@@ -38,6 +38,7 @@ show_help ()
     echo "  proxy health            ❤️  HEALTH: show dead/degraded proxies + live event log"
     echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
     echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
+    echo "  proxy summary           📊 Show proxy fleet summary (sources, health, counts)"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
@@ -2126,8 +2127,11 @@ do_proxy () {
         remove-dead)
             "$provider_bin" proxy remove-dead "$@"
             ;;
+        summary)
+            "$provider_bin" proxy summary
+            ;;
         *)
-            pr_err "Unknown proxy command: %s (Try 'add', 'clear', 'health', 'traffic', 'refresh', or 'remove-dead')" "$cmd"
+            pr_err "Unknown proxy command: %s (Try 'add', 'clear', 'health', 'traffic', 'refresh', 'remove-dead', or 'summary')" "$cmd"
             exit 1
             ;;
     esac
