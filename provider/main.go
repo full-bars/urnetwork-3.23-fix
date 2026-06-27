@@ -580,6 +580,7 @@ Usage:
     provider proxy refresh [--force]
     provider proxy add-source <url>
     provider proxy remove-source <url>
+    provider proxy summary
     provider logs [-n <lines>]
 
 Options:
@@ -653,6 +654,8 @@ Options:
 			proxyRefresh(opts)
 		} else if activity, _ := opts.Bool("activity"); activity {
 			proxyActivity()
+		} else if summary, _ := opts.Bool("summary"); summary {
+			proxySummary()
 		}
 	} else if auth_, _ := opts.Bool("auth"); auth_ {
 		auth(opts)
@@ -3463,6 +3466,98 @@ func activitySnapshot(shmLog string) {
 	if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_traffic.state")); err == nil {
 		fmt.Println(string(data))
 	}
+}
+
+func proxySummary() {
+	state, _ := readProxyState()
+
+	up, dead, degraded, connecting := 0, 0, 0, 0
+	if healthDir, ok := proxyHealthDir(); ok {
+		if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, " Up:") {
+					fmt.Sscanf(line, " Up: %d | Down: %*d | Dead: %d | Degraded: %d", &up, &dead, &degraded)
+				}
+			}
+		}
+	}
+	total := up + dead + degraded + connecting
+	fileCount := 0
+	urlCount := 0
+	internalCount := 0
+	if state != nil {
+		for _, e := range state.Proxies {
+			switch e.Source {
+			case "url":
+				urlCount++
+			case "file":
+				fileCount++
+			case "internal":
+				internalCount++
+			default:
+				if state.Source != "" {
+					fileCount++
+				} else {
+					internalCount++
+				}
+			}
+		}
+	}
+
+	urlState, _ := readProxyURLState()
+	urlSources := 0
+	urlCached := 0
+	urlBlacklisted := 0
+	if urlState != nil {
+		urlSources = len(urlState.Sources)
+		urlCached = len(urlState.Cache)
+		urlBlacklisted = len(urlState.Blacklist)
+	}
+
+	healthDir, _ := proxyHealthDir()
+
+	fmt.Println("=========================================================================")
+	fmt.Println(" PROXY SUMMARY")
+	fmt.Printf(" Updated: %s\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Println("=========================================================================")
+	fmt.Println()
+	fmt.Printf("  Total proxies:      %d\n", total)
+	fmt.Printf("  Up:                 %d\n", up)
+	fmt.Printf("  Connecting:         %d\n", connecting)
+	fmt.Printf("  Degraded:           %d\n", degraded)
+	fmt.Printf("  Dead:               %d\n", dead)
+	fmt.Println()
+	fmt.Println(" --- Sources ---")
+	fileSource := "(internal)"
+	if state != nil && state.Source != "" {
+		fileSource = state.Source
+	}
+	fmt.Printf("  File proxies:       %d  (%s)\n", fileCount, fileSource)
+	fmt.Printf("  URL proxies:        %d\n", urlCount)
+	fmt.Printf("  Internal proxies:   %d\n", internalCount)
+	fmt.Println()
+	fmt.Println(" --- URL Sources ---")
+	fmt.Printf("  Source URLs:        %d\n", urlSources)
+	fmt.Printf("  Cached addresses:   %d\n", urlCached)
+	fmt.Printf("  Blacklisted:        %d\n", urlBlacklisted)
+	if urlSources > 0 {
+		fmt.Println()
+		for _, s := range urlState.Sources {
+			fmt.Printf("    %s\n", s)
+		}
+	}
+	fmt.Println()
+	fmt.Printf("  Provider started:   %s\n", state.StartedAt.Format(time.RFC3339))
+	if state != nil {
+		if p, err := proxyStatePath(); err == nil {
+			fmt.Printf("  Proxy state file:   %s\n", p)
+		}
+	}
+	fmt.Printf("  Health state:       %s/proxy_health.state\n", healthDir)
+	if p, err := proxyURLStatePath(); err == nil {
+		fmt.Printf("  URL state:          %s\n", p)
+	}
+	fmt.Println("=========================================================================")
 }
 
 func proxyRemoveDead(opts docopt.Opts) {
