@@ -658,8 +658,34 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div id="tab-nodes" class="tab-content active">
 <div class="charts-row">
-<div class="chart-box compact"><div id="fleet-proxies" style="height:120px"></div></div>
-<div class="chart-box compact"><div id="fleet-traffic" style="height:120px"></div></div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Total Traffic</span>
+<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-traffic" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Billable Traffic</span>
+<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-billable" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Peak Clients</span>
+<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-clients" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Fleet Nodes</span>
+<button onclick="resetFleetChart()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-nodes" style="height:160px"></div>
+</div>
 </div>
 <div class="filter-bar">
 <input type="text" id="filter-input" placeholder="Filter nodes..." oninput="applyFilter()">
@@ -763,9 +789,13 @@ function switchTab(name) {
 
 var fleetCharts = [];
 
+var fleetChartData = null;
+
 function makeChart(el, opts, data) {
+  if (!el) return;
   el.innerHTML = '';
   var w = el.clientWidth || 400;
+  if (w < 50) w = 400;
   opts.width = w;
   opts.height = 120;
   opts.cursor = { show: true };
@@ -775,53 +805,47 @@ function makeChart(el, opts, data) {
   fleetCharts.push(chart);
 }
 
+function resetFleetChart() {
+  fleetCharts.forEach(function(c) { c.destroy(); });
+  fleetCharts = [];
+  fleetChartData = null;
+  loadFleetChart();
+}
+
 function loadFleetChart() {
   if (fleetCharts.length > 0) return;
   
-  // Chart 1: Healthy proxies + Active clients over time
-  fetch('/api/nodes').then(function(r) { return r.json(); }).then(function(nodes) {
-    var byTime = {};
-    nodes.forEach(function(n) {
-      if (!n.ts) return;
-      var hour = Math.floor(new Date(n.ts).getTime() / 3600000) * 3600;
-      if (!byTime[hour]) byTime[hour] = { up: 0, clients: 0 };
-      byTime[hour].up += n.up;
-      byTime[hour].clients += n.clients;
-    });
-    var hours = Object.keys(byTime).sort();
-    var labels = [], up = [], clients = [];
-    hours.forEach(function(h) {
-      labels.push(parseInt(h));
-      up.push(byTime[h].up);
-      clients.push(byTime[h].clients);
-    });
-    makeChart(document.getElementById('fleet-proxies'), {
-      series: [{}, { label: 'Healthy', stroke: '#4ade80', width: 1.5 }, { label: 'Clients', stroke: '#60a5fa', width: 1.5 }]
-    }, [labels, up, clients]);
-  }).catch(function() {});
-
-  // Chart 2: Hourly traffic (RX/TX deltas)
   fetch('/api/history?hours=24').then(function(r) { return r.json(); }).then(function(data) {
     if (!data || data.length === 0) return;
+    
+    // Aggregate by hour across all nodes
     var byHour = {};
     for (var i = 0; i < data.length; i++) {
       var h = data[i];
-      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0 };
+      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0, clients: 0, count: 0 };
       byHour[h.hour].rx += h.total_rx;
       byHour[h.hour].tx += h.total_tx;
+      byHour[h.hour].bill_rx += h.bill_rx;
+      byHour[h.hour].bill_tx += h.bill_tx;
+      byHour[h.hour].clients += h.peak_clients;
+      byHour[h.hour].count++;
     }
+    
     var hours = Object.keys(byHour).sort();
-    var labels = [], rx = [], tx = [];
-    var prevRx = 0, prevTx = 0;
+    var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [];
+    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
+    
     hours.forEach(function(h) {
       labels.push(parseInt(h));
-      var drx = byHour[h].rx - prevRx;
-      var dtx = byHour[h].tx - prevTx;
-      rx.push(drx >= 0 ? drx : 0);
-      tx.push(dtx >= 0 ? dtx : 0);
-      prevRx = byHour[h].rx;
-      prevTx = byHour[h].tx;
+      var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
+      var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
+      var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
+      var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
+      clients.push(byHour[h].clients);
+      nodes.push(byHour[h].count);
     });
+    
+    // Total traffic chart
     makeChart(document.getElementById('fleet-traffic'), {
       series: [
         {},
@@ -829,6 +853,31 @@ function loadFleetChart() {
         { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
       ]
     }, [labels, rx, tx]);
+    
+    // Billable traffic chart
+    makeChart(document.getElementById('fleet-billable'), {
+      series: [
+        {},
+        { label: 'Bill RX/hr', stroke: '#f59e0b', fill: 'rgba(245,158,11,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
+        { label: 'Bill TX/hr', stroke: '#a78bfa', fill: 'rgba(167,139,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
+      ]
+    }, [labels, brx, btx]);
+    
+    // Peak clients chart
+    makeChart(document.getElementById('fleet-clients'), {
+      series: [
+        {},
+        { label: 'Peak clients', stroke: '#f472b6', fill: 'rgba(244,114,182,0.1)', width: 1.5 },
+      ]
+    }, [labels, clients]);
+    
+    // Fleet nodes chart
+    makeChart(document.getElementById('fleet-nodes'), {
+      series: [
+        {},
+        { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 },
+      ]
+    }, [labels, nodes]);
   }).catch(function() {});
 }
 function applyFilter() {
@@ -950,25 +999,41 @@ function loadHistory() {
       return;
     }
     // When viewing all nodes, aggregate by hour
-    var byHour = {};
-    for (var i = 0; i < data.length; i++) {
-      var h = data[i];
-      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0 };
-      byHour[h.hour].rx += h.total_rx;
-      byHour[h.hour].tx += h.total_tx;
+    if (!nodeId) {
+      // All nodes: aggregate by hour
+      var byHour = {};
+      for (var i = 0; i < data.length; i++) {
+        var h = data[i];
+        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
+        byHour[h.hour].rx += h.total_rx;
+        byHour[h.hour].tx += h.total_tx;
+        byHour[h.hour].bill_rx += h.bill_rx;
+        byHour[h.hour].bill_tx += h.bill_tx;
+      }
+      hours = Object.keys(byHour).sort();
+    } else {
+      // Single node: use raw data
+      var byHour = {};
+      for (var i = 0; i < data.length; i++) {
+        var h = data[i];
+        if (h.node_id !== nodeId) continue;
+        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
+        byHour[h.hour].rx += h.total_rx;
+        byHour[h.hour].tx += h.total_tx;
+        byHour[h.hour].bill_rx += h.bill_rx;
+        byHour[h.hour].bill_tx += h.bill_tx;
+      }
+      hours = Object.keys(byHour).sort();
     }
-    var hours = Object.keys(byHour).sort();
-    var rx = [], tx = [], labels = [];
+    var rx = [], tx = [], brx = [], btx = [], labels = [];
     // Compute hourly deltas (bytes transferred in each hour window)
-    var prevRx = 0, prevTx = 0;
+    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
     hours.forEach(function(h) {
       labels.push(parseInt(h));
-      var drx = byHour[h].rx - prevRx;
-      var dtx = byHour[h].tx - prevTx;
-      rx.push(drx >= 0 ? drx : 0);
-      tx.push(dtx >= 0 ? dtx : 0);
-      prevRx = byHour[h].rx;
-      prevTx = byHour[h].tx;
+      var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
+      var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
+      var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
+      var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
     });
     var opts = {
       width: Math.min(document.getElementById('history-chart').clientWidth || 800, 1200),
@@ -982,11 +1047,13 @@ function loadHistory() {
       series: [
         { label: 'Time', value: '{HH}:{mm}' },
         { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
-        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } }
+        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'Bill RX/hr', stroke: '#f59e0b', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'Bill TX/hr', stroke: '#a78bfa', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } }
       ]
     };
     if (historyChart) { historyChart.destroy(); historyChart = null; }
-    historyChart = new uPlot(opts, [labels, rx, tx], document.getElementById('history-chart'));
+    historyChart = new uPlot(opts, [labels, rx, tx, brx, btx], document.getElementById('history-chart'));
   }).catch(function() {});
 }
 function fmtAgo(ts) {
