@@ -544,7 +544,24 @@ switch ($Command) {
         break
     }
 
-    "logs" {
+    "report") {
+        $reportArg = if ($SubArgs) { $SubArgs[0] } else { "" }
+        if ($reportArg -eq "off") {
+            docker exec $ContainerName sh -c 'rm -f "$HOME/.urnetwork/report_url"'
+            Write-Host "Report URL removed (takes effect on next reporter tick)"
+        }
+        elseif ($reportArg -ne "") {
+            docker exec $ContainerName sh -c "echo '$reportArg' > \"`$HOME/.urnetwork/report_url\""
+            Write-Host "Report URL set to $reportArg (takes effect on next reporter tick)"
+        }
+        else {
+            $current = docker exec $ContainerName sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "(not set)"'
+            Write-Host "Report URL: $current"
+        }
+        break
+    }
+
+    "logs") {
         $n = "0"
         if ($SubArgs -contains "-n") {
             $nIndex = [array]::IndexOf($SubArgs, "-n")
