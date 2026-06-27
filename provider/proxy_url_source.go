@@ -3,11 +3,134 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/urnetwork/connect"
 )
+
+// proxyURLMaxOverridePath returns ~/.urnetwork/proxy_url_max, a file an
+// operator can write to cap the number of URL-sourced proxies at runtime.
+func proxyURLMaxOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_url_max"), nil
+}
+
+// resolveProxyURLMax re-reads the cap on every call. startupMax is the value
+// from --proxy_url_max at process start. Returns startupMax if the file
+// doesn't exist, is empty, or holds an unparseable value.
+func resolveProxyURLMax(startupMax int) int {
+	path, err := proxyURLMaxOverridePath()
+	if err != nil {
+		return startupMax
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupMax
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupMax
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return startupMax
+	}
+	return n
+}
+
+// proxyURLRefreshOverridePath returns ~/.urnetwork/proxy_url_refresh.
+func proxyURLRefreshOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_url_refresh"), nil
+}
+
+// resolveProxyURLRefresh re-reads the interval on every call.
+func resolveProxyURLRefresh(startupInterval time.Duration) time.Duration {
+	path, err := proxyURLRefreshOverridePath()
+	if err != nil {
+		return startupInterval
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupInterval
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 10*time.Second {
+		return startupInterval
+	}
+	return d
+}
+
+// proxyCleanupScopeOverridePath returns ~/.urnetwork/proxy_dead_cleanup_scope.
+func proxyCleanupScopeOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_dead_cleanup_scope"), nil
+}
+
+// resolveProxyCleanupScope re-reads the scope on every call.
+func resolveProxyCleanupScope(startupScope string) string {
+	path, err := proxyCleanupScopeOverridePath()
+	if err != nil {
+		return startupScope
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupScope
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupScope
+	}
+	return v
+}
+
+// proxyCleanupIntervalOverridePath returns ~/.urnetwork/proxy_dead_cleanup_interval.
+func proxyCleanupIntervalOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_dead_cleanup_interval"), nil
+}
+
+// resolveProxyCleanupInterval re-reads the interval on every call.
+func resolveProxyCleanupInterval(startupInterval time.Duration) time.Duration {
+	path, err := proxyCleanupIntervalOverridePath()
+	if err != nil {
+		return startupInterval
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupInterval
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Minute {
+		return startupInterval
+	}
+	return d
+}
 
 // defaultAPIHost is the default target for the API reachability probe.
 const defaultAPIHost = "api.bringyour.com"
@@ -394,16 +517,24 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		}
 	}
 
-	fetchAndMergeProxyURLs(ctx, urls, maxTotal, apiHost, apiPort)
+	fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
 
-	ticker := time.NewTicker(refreshInterval)
+	activeInterval := resolveProxyURLRefresh(refreshInterval)
+	ticker := time.NewTicker(activeInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fetchAndMergeProxyURLs(ctx, urls, maxTotal, apiHost, apiPort)
+			// Re-check runtime overrides on every tick
+			if ni := resolveProxyURLRefresh(refreshInterval); ni != activeInterval {
+				ticker.Stop()
+				ticker = time.NewTicker(ni)
+				activeInterval = ni
+				tlog("[proxy][url] refresh interval changed to %s\n", ni)
+			}
+			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
 }
@@ -494,18 +625,37 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 // when scope is "none" or any other disabling value — automatic cleanup is
 // opt-in.
 func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration) {
-	if scope != "url" && scope != "all" {
+	activeScope := resolveProxyCleanupScope(scope)
+	activeInterval := resolveProxyCleanupInterval(interval)
+	if activeScope != "url" && activeScope != "all" {
 		return
 	}
 
-	ticker := time.NewTicker(interval)
+	runProxyURLCleanupOnce(activeScope)
+
+	ticker := time.NewTicker(activeInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runProxyURLCleanupOnce(scope)
+			// Re-check runtime overrides on every tick
+			if ns := resolveProxyCleanupScope(scope); ns != activeScope {
+				activeScope = ns
+				if activeScope != "url" && activeScope != "all" {
+					tlog("[proxy][url] cleanup disabled (scope=%s)\n", ns)
+					return
+				}
+				tlog("[proxy][url] cleanup scope changed to %s\n", ns)
+			}
+			if ni := resolveProxyCleanupInterval(interval); ni != activeInterval {
+				ticker.Stop()
+				ticker = time.NewTicker(ni)
+				activeInterval = ni
+				tlog("[proxy][url] cleanup interval changed to %s\n", ni)
+			}
+			runProxyURLCleanupOnce(activeScope)
 		}
 	}
 }
