@@ -1652,6 +1652,24 @@ func provide(opts docopt.Opts) {
 	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 0)
 	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "none")
 	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 24*time.Hour)
+
+	// Extract API host:port for the reachability probe
+	apiProbeHost := defaultAPIHost
+	apiProbePort := uint16(defaultAPIPort)
+	if apiUrl != "" {
+		if h, p, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")); err == nil {
+			apiProbeHost = h
+			if port, err := strconv.Atoi(p); err == nil {
+				apiProbePort = uint16(port)
+			}
+		} else {
+			// No port in URL, just a hostname
+			cleaned := strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")
+			if cleaned != "" {
+				apiProbeHost = cleaned
+			}
+		}
+	}
 	go paceMonitor(ctx)
 
 	// Declared here (rather than next to the startup loop below) so
@@ -2163,7 +2181,9 @@ func provide(opts docopt.Opts) {
 	}
 	reloader.StartWatcher(ctx)
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax)
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort)
+	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
+	go pruneURLProxyBlacklist(ctx)
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 
 	if 0 < port {
@@ -3203,7 +3223,7 @@ func proxyAddSource(opts docopt.Opts) {
 	// maxTotal=0 here: the cap configured for the running provide() process
 	// (--proxy_url_max) applies to its own background fetcher, not to this
 	// one-shot CLI fetch. The next scheduled fetch will resume honoring it.
-	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0)
+	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0, defaultAPIHost, defaultAPIPort)
 	fmt.Println("done.")
 }
 

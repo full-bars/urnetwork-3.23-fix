@@ -44,8 +44,11 @@ type ProxyURLState struct {
 // ProxyURLEntry records the auth (if any) for one address fetched from a URL
 // source. Most public proxy lists provide unauthenticated entries.
 type ProxyURLEntry struct {
-	User     string `json:"user,omitempty"`
-	Password string `json:"password,omitempty"`
+	User       string    `json:"user,omitempty"`
+	Password   string    `json:"password,omitempty"`
+	ProbeOK    bool      `json:"probe_ok"`              // passed API reachability probe
+	ProbeFails int       `json:"probe_fails,omitempty"` // consecutive API probe failures
+	LastProbe  time.Time `json:"last_probe,omitempty"`  // last API probe time
 }
 
 func proxyURLStatePath() (string, error) {

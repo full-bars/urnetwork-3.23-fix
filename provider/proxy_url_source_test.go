@@ -85,7 +85,7 @@ func TestFetchAndMergeProxyURLs_PersistsAndTriggersReload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0)
+	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0, "", 0)
 
 	got, err := readProxyURLState()
 	if err != nil {
@@ -110,7 +110,7 @@ func TestFetchAndMergeProxyURLs_NoOpOnFetchFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0)
+	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0, "", 0)
 
 	got, err := readProxyURLState()
 	if err != nil {
@@ -231,7 +231,7 @@ func TestEvictProxyURLAddress_ThenFetchNeverReadsItBack(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0)
+	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 0, "", 0)
 
 	got, err := readProxyURLState()
 	if err != nil {
@@ -320,7 +320,7 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0)
+		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0)
 		close(done)
 	}()
 
