@@ -649,9 +649,11 @@ func handleDashboard(s *store) http.HandlerFunc {
 			sm.BillRX += ps.BillRX
 			sm.BillTX += ps.BillTX
 			sm.TotalProxies += len(n.Proxies)
+			ps.Earning = 0
 			for _, p := range n.Proxies {
 				if nodeEarning[p.ID] {
 					sm.Earning++
+					ps.Earning++
 				}
 			}
 
