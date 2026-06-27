@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -367,6 +368,25 @@ func handleReport(s *store) http.HandlerFunc {
 func handleNodes(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// Support /api/nodes/<id>/proxies for lazy-loaded proxy detail rows
+		path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+		if path != "" && path != r.URL.Path {
+			if strings.HasSuffix(path, "/proxies") {
+				nodeID := strings.TrimSuffix(path, "/proxies")
+				s.mu.RLock()
+				n, ok := s.Nodes[nodeID]
+				s.mu.RUnlock()
+				if !ok {
+					http.Error(w, "node not found", 404)
+					return
+				}
+				json.NewEncoder(w).Encode(n.Proxies)
+				return
+			}
+			// Unknown subpath
+			http.NotFound(w, r)
+			return
+		}
 		json.NewEncoder(w).Encode(s.list())
 	}
 }
@@ -524,7 +544,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/report", handleReport(s))
-	mux.HandleFunc("/api/nodes", handleNodes(s))
+	mux.HandleFunc("/api/nodes/", handleNodes(s))
 	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/", handleDashboard(s))
