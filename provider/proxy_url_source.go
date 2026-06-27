@@ -225,7 +225,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			}
 			tlog("[proxy][url] %s: %d socks5-only entries marked for reaper\n", url, marked)
 		}
-		totalAdded += added
 		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
 
@@ -317,8 +316,6 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 			}
 		}
 
-		release()
-
 		if changed {
 			if err := writeProxyURLState(state); err != nil {
 				tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
@@ -327,6 +324,8 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 				_ = writeReloadTrigger(reloadPath)
 			}
 		}
+
+		release()
 	}
 }
 
@@ -364,14 +363,14 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 			}
 		}
 
-		release()
-
 		if pruned > 0 {
 			tlog("[proxy][url] pruned %d blacklist entries older than %s\n", pruned, proxyBlacklistCooldown)
 			if err := writeProxyURLState(state); err != nil {
 				tlog("[proxy][url] pruner: could not write proxy_url.json: %v\n", err)
 			}
 		}
+
+		release()
 	}
 }
 

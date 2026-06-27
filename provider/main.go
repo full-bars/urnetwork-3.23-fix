@@ -3374,7 +3374,8 @@ func proxyActivity() {
 			if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
 				for _, line := range strings.Split(string(data), "\n") {
 					if strings.HasPrefix(line, " Up:") {
-						fmt.Sscanf(line, " Up: %d | Down: %*d | Dead: %*d | Degraded: %d", &up, &degraded)
+						var down, dead int
+						fmt.Sscanf(line, " Up: %d | Down: %d | Dead: %d | Degraded: %d", &up, &down, &dead, &degraded)
 					}
 					if strings.Contains(line, " RECOVERED ") || strings.Contains(line, " DEGRADED ") {
 						activeProxies = append(activeProxies, line)
@@ -3475,9 +3476,10 @@ func activitySnapshot(shmLog string) {
 
 	up, degraded := 0, 0
 	if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
+		var down, dead int
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.HasPrefix(line, " Up:") {
-				fmt.Sscanf(line, " Up: %d | Down: %*d | Dead: %*d | Degraded: %d", &up, &degraded)
+				fmt.Sscanf(line, " Up: %d | Down: %d | Dead: %d | Degraded: %d", &up, &down, &dead, &degraded)
 			}
 		}
 	}
@@ -3496,16 +3498,18 @@ func proxySummary() {
 		if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, " Up:") {
-					fmt.Sscanf(line, " Up: %d | Down: %*d | Dead: %d | Degraded: %d", &up, &dead, &degraded)
+						var down int
+					fmt.Sscanf(line, " Up: %d | Down: %d | Dead: %d | Degraded: %d", &up, &down, &dead, &degraded)
 				}
 			}
 		}
 	}
-	total := up + dead + degraded + connecting
 	fileCount := 0
 	urlCount := 0
 	internalCount := 0
+	total := 0
 	if state != nil {
+		total = len(state.Proxies)
 		for _, e := range state.Proxies {
 			switch e.Source {
 			case "url":
@@ -3521,6 +3525,10 @@ func proxySummary() {
 					internalCount++
 				}
 			}
+		}
+		connecting = total - up - dead - degraded
+		if connecting < 0 {
+			connecting = 0
 		}
 	}
 
@@ -3567,7 +3575,9 @@ func proxySummary() {
 		}
 	}
 	fmt.Println()
-	fmt.Printf("  Provider started:   %s\n", state.StartedAt.Format(time.RFC3339))
+	if state != nil {
+		fmt.Printf("  Provider started:   %s\n", state.StartedAt.Format(time.RFC3339))
+	}
 	if state != nil {
 		if p, err := proxyStatePath(); err == nil {
 			fmt.Printf("  Proxy state file:   %s\n", p)

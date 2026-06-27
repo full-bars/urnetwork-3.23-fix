@@ -1544,10 +1544,8 @@ toggle_ramlogs ()
             confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
             override_rm_env "URNETWORK_RAMLOGS"
-            if [ -f "$override_file" ]; then
-                systemctl --user daemon-reload
-                systemctl --user restart urnetwork.service
-            fi
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
             pr_info "RAM logging disabled and service restarted."
             ;;
         *)
@@ -2371,8 +2369,7 @@ EOF
             pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
             
-            sed -i '/^Environment="URNETWORK_RAMLOGS=/d' "$override_file"
-            printf 'Environment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
+            override_set_env "URNETWORK_RAMLOGS" "1"
         fi
     fi
 
