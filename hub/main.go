@@ -971,6 +971,8 @@ function applyFilter() {
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
 var drawerNodeId = null;
+var proxyDrawer = {};
+
 function openDrawer(id) {
   drawerNodeId = id;
   document.getElementById('drawer-overlay').classList.add('open');
@@ -982,17 +984,51 @@ function openDrawer(id) {
       document.getElementById('drawer-body').innerHTML = '<div class="loading">No proxy data</div>';
       return;
     }
-    var html = '<table><thead><tr><th>ID</th><th>Address</th><th>Status</th><th class="num">Clients</th><th class="num">Age</th><th class="num">RX</th><th class="num">TX</th><th class="num">Bill RX</th><th class="num">Bill TX</th></tr></thead><tbody>';
-    var sortOrder = {up: 0, connecting: 1, degraded: 2, dead: 3};
-    proxies.sort(function(a, b) { return (sortOrder[a.status]||9) - (sortOrder[b.status]||9); });
-    proxies.forEach(function(p) {
-      html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
-    });
-    html += '</tbody></table>';
-    document.getElementById('drawer-body').innerHTML = html;
+    proxyDrawer = { data: proxies, col: 'status', dir: -1 };
+    renderProxyDrawer();
   }).catch(function() {
     document.getElementById('drawer-body').innerHTML = '<div class="loading">Failed to load proxies</div>';
   });
+}
+
+function renderProxyDrawer() {
+  var d = proxyDrawer;
+  var sortOrder = {up: 0, connecting: 1, degraded: 2, dead: 3};
+  var cols = [
+    { key: 'id', label: 'ID', num: false },
+    { key: 'addr', label: 'Address', num: false },
+    { key: 'status', label: 'Status', num: false, fn: function(p) { return sortOrder[p.status]||9; } },
+    { key: 'clients', label: 'Clients', num: true },
+    { key: 'max_age_s', label: 'Age', num: true },
+    { key: 'rx', label: 'RX', num: true },
+    { key: 'tx', label: 'TX', num: true },
+    { key: 'bill_rx', label: 'Bill RX', num: true },
+    { key: 'bill_tx', label: 'Bill TX', num: true }
+  ];
+  d.data.sort(function(a, b) {
+    var col = cols.find(function(c) { return c.key === d.col; });
+    var va = col && col.fn ? col.fn(a) : a[d.col];
+    var vb = col && col.fn ? col.fn(b) : b[d.col];
+    if (typeof va === 'number') return d.dir * (va - vb);
+    return d.dir * String(va).localeCompare(String(vb));
+  });
+  var html = '<table id="drawer-table"><thead><tr>';
+  cols.forEach(function(col) {
+    var arrow = col.key === d.col ? (d.dir === -1 ? ' &#9660;' : ' &#9650;') : '';
+    html += '<th' + (col.num ? ' class="num"' : '') + ' onclick="sortDrawer(\'' + col.key + '\')">' + col.label + arrow + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+  d.data.forEach(function(p) {
+    html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('drawer-body').innerHTML = html;
+}
+
+function sortDrawer(col) {
+  if (proxyDrawer.col === col) proxyDrawer.dir *= -1;
+  else { proxyDrawer.col = col; proxyDrawer.dir = -1; }
+  renderProxyDrawer();
 }
 function closeDrawer() {
   document.getElementById('drawer-overlay').classList.remove('open');
