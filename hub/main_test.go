@@ -480,8 +480,8 @@ func TestDashboardEndpoint(t *testing.T) {
 	if !bytes.Contains(body, []byte("URnetwork Hub")) {
 		t.Errorf("dashboard body does not contain title")
 	}
-	if !bytes.Contains(body, []byte("billable")) {
-		t.Errorf("dashboard body does not contain billable labels")
+	if !bytes.Contains(body, []byte("Total Proxies")) {
+		t.Errorf("dashboard body does not contain summary cards")
 	}
 }
 
