@@ -9,6 +9,10 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+// defaultAPIHost is the default target for the API reachability probe.
+const defaultAPIHost = "api.bringyour.com"
+const defaultAPIPort = 443
+
 // removeDeadProxies removes the given addresses from whichever source they
 // came from — a --proxy_file source, the internal config, or the URL
 // cache — and triggers a hot-reload. addrsBySource groups addresses by their
@@ -151,7 +155,7 @@ var fetchMu sync.Mutex
 // Only one fetch cycle may run at a time — if an earlier cycle's probing
 // phase outlasts the refresh interval, the next tick's call returns
 // immediately rather than racing on the same file.
-func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
+func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
 	}
@@ -165,20 +169,23 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 	// we don't hold it across HTTP requests. Only the read-modify-write of
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
+	socks5OnlyCounts := make([]int, len(urls))
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
 			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
 			continue
 		}
-		// Free public proxy lists are mostly dead entries. Probing here, before
-		// anything is ever merged into the cache, means a dead entry never gets
-		// an auth attempt (or a slot from the shared auth rate limiter) in the
-		// first place — instead of relying on 10 auth retries per dead proxy to
-		// find that out the expensive way.
-		reachable := filterReachableProxyURLLines(ctx, lines)
-		tlog("[proxy][url] probed %s: %d/%d reachable\n", url, len(reachable), len(lines))
-		fetched[i] = reachable
+		// Free public proxy lists are mostly dead entries. The dual-stage probe
+		// checks TCP reachability, SOCKS5 protocol compliance, and whether the
+		// proxy can route traffic to the URNetwork API — before anything ever
+		// enters the cache or consumes an auth-rate-limiter slot.
+		apiOK, socks5Only := probeAndFilterProxyURLLines(ctx, lines, apiHost, apiPort)
+		tlog("[proxy][url] probed %s: %d/%d api-reachable, %d socks5-only\n", url, len(apiOK), len(lines), len(socks5Only))
+		// Socks5-only lines are cached with ProbeOK=false so the background
+		// reaper can retry them; they may have had a transient routing issue.
+		fetched[i] = append(apiOK, socks5Only...)
+		socks5OnlyCounts[i] = len(socks5Only)
 	}
 
 	release, err := acquireProxyLock()
@@ -201,6 +208,24 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 		}
 		added := mergeProxyURLEntries(state, fetched[i], maxTotal)
 		totalAdded += added
+		socks5Count := socks5OnlyCounts[i]
+		// Mark socks5-only entries for reaper retry
+		if socks5Count > 0 {
+			marked := 0
+			for _, addr := range fetched[i] {
+				if entry, ok := state.Cache[addr]; ok {
+					if !entry.ProbeOK {
+						// entry already has ProbeOK=false from merge, but
+						// ensure LastProbe is set so the reaper picks it up
+						entry.LastProbe = time.Now()
+						state.Cache[addr] = entry
+						marked++
+					}
+				}
+			}
+			tlog("[proxy][url] %s: %d socks5-only entries marked for reaper\n", url, marked)
+		}
+		totalAdded += added
 		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
 
@@ -216,11 +241,145 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int) {
 	}
 }
 
+// runURLProxyReaper iterates the URL cache and re-probes entries whose
+// ProbeOK is false (socks5-only from a previous fetch, or entries added
+// before the probe fields existed). Entries that fail proxyAPIMaxFails
+// consecutive probes are moved to the persistent Blacklist. Runs every
+// proxyReaperInterval. Exits when ctx is cancelled.
+func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
+	ticker := time.NewTicker(proxyReaperInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		release, err := acquireProxyLock()
+		if err != nil {
+			continue
+		}
+
+		state, err := readProxyURLState()
+		if err != nil {
+			release()
+			continue
+		}
+
+		changed := false
+		for addr, entry := range state.Cache {
+			if entry.ProbeOK {
+				continue
+			}
+			// Don't re-probe if recently tested (within one reaper interval)
+			if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
+				continue
+			}
+
+			result := probeProxy(ctx, addr, apiHost, apiPort)
+			entry.LastProbe = time.Now()
+
+			switch result {
+			case probeAPIReachable:
+				entry.ProbeOK = true
+				entry.ProbeFails = 0
+				state.Cache[addr] = entry
+				changed = true
+
+			case probeSocks5Only:
+				entry.ProbeOK = false
+				entry.ProbeFails++
+				state.Cache[addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
+					}
+					state.Blacklist[addr] = time.Now().UTC()
+					delete(state.Cache, addr)
+					tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", addr, entry.ProbeFails)
+				}
+				changed = true
+
+			case probeDead:
+				entry.ProbeFails++
+				state.Cache[addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
+					}
+					state.Blacklist[addr] = time.Now().UTC()
+					delete(state.Cache, addr)
+					tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", addr, entry.ProbeFails)
+				}
+				changed = true
+			}
+		}
+
+		release()
+
+		if changed {
+			if err := writeProxyURLState(state); err != nil {
+				tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
+			}
+			if reloadPath, err := proxyReloadPath(); err == nil {
+				_ = writeReloadTrigger(reloadPath)
+			}
+		}
+	}
+}
+
+// pruneURLProxyBlacklist removes blacklist entries older than
+// proxyBlacklistCooldown, giving previously-dead addresses a chance to
+// re-enter via a fresh fetch cycle. Runs every proxyBlacklistPruneInterval.
+func pruneURLProxyBlacklist(ctx context.Context) {
+	ticker := time.NewTicker(proxyBlacklistPruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		release, err := acquireProxyLock()
+		if err != nil {
+			continue
+		}
+
+		state, err := readProxyURLState()
+		if err != nil {
+			release()
+			continue
+		}
+
+		cutoff := time.Now().UTC().Add(-proxyBlacklistCooldown)
+		pruned := 0
+		for addr, when := range state.Blacklist {
+			if when.Before(cutoff) {
+				delete(state.Blacklist, addr)
+				pruned++
+			}
+		}
+
+		release()
+
+		if pruned > 0 {
+			tlog("[proxy][url] pruned %d blacklist entries older than %s\n", pruned, proxyBlacklistCooldown)
+			if err := writeProxyURLState(state); err != nil {
+				tlog("[proxy][url] pruner: could not write proxy_url.json: %v\n", err)
+			}
+		}
+	}
+}
+
 // runProxyURLFetcher periodically fetches configured proxy list URLs and
 // merges new entries into the running proxy set. The first fetch runs
 // immediately; subsequent fetches run every refreshInterval. Exits when ctx
 // is cancelled. A no-op if urls is empty.
-func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int) {
+func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
 	}
@@ -236,7 +395,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		}
 	}
 
-	fetchAndMergeProxyURLs(ctx, urls, maxTotal)
+	fetchAndMergeProxyURLs(ctx, urls, maxTotal, apiHost, apiPort)
 
 	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
@@ -245,7 +404,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fetchAndMergeProxyURLs(ctx, urls, maxTotal)
+			fetchAndMergeProxyURLs(ctx, urls, maxTotal, apiHost, apiPort)
 		}
 	}
 }

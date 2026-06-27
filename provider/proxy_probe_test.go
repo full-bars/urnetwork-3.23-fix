@@ -119,15 +119,17 @@ func TestFilterReachableProxyURLLines_KeepsOnlyReachable(t *testing.T) {
 		"not a valid line :::",
 	}
 
-	got := filterReachableProxyURLLines(context.Background(), lines)
-	if len(got) != 1 || got[0] != socks5Addr {
-		t.Fatalf("expected only %q to survive, got %v", socks5Addr, got)
+	apiOK, socks5Only := probeAndFilterProxyURLLines(context.Background(), lines, "", 0)
+	// With empty apiHost the probe skips the CONNECT stage, so SOCKS5
+	// proxies end up in the socks5Only bucket.
+	if len(apiOK) != 0 || len(socks5Only) != 1 || socks5Only[0] != socks5Addr {
+		t.Fatalf("expected %q as socks5-only, got apiOK=%v socks5Only=%v", socks5Addr, apiOK, socks5Only)
 	}
 }
 
 func TestFilterReachableProxyURLLines_EmptyInput(t *testing.T) {
-	got := filterReachableProxyURLLines(context.Background(), nil)
-	if len(got) != 0 {
-		t.Fatalf("expected empty result for empty input, got %v", got)
+	apiOK, socks5Only := probeAndFilterProxyURLLines(context.Background(), nil, "", 0)
+	if len(apiOK) != 0 || len(socks5Only) != 0 {
+		t.Fatalf("expected empty result for empty input, got apiOK=%v socks5Only=%v", apiOK, socks5Only)
 	}
 }
