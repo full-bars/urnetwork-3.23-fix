@@ -389,7 +389,52 @@ func handleNodes(s *store) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(s.list())
+		// Return lightweight node list with aggregate counts (no proxy details)
+		type nodeSummary struct {
+			NodeID      string        `json:"node_id"`
+			Host        string        `json:"host"`
+			Version     string        `json:"version"`
+			Timestamp   time.Time     `json:"ts"`
+			Uptime      float64       `json:"uptime"`
+			Proxies     int           `json:"proxies"`
+			Up          int           `json:"up"`
+			Connecting  int           `json:"connecting"`
+			Degraded    int           `json:"degraded"`
+			Dead        int           `json:"dead"`
+			MbpsRX      float64       `json:"mbps_rx"`
+			MbpsTX      float64       `json:"mbps_tx"`
+			System      systemMetrics `json:"sys"`
+		}
+		nodes := s.list()
+		out := make([]nodeSummary, 0, len(nodes))
+		for _, n := range nodes {
+			var up, connecting, degraded, dead int
+			for _, p := range n.Proxies {
+				switch p.Status {
+				case "up": up++
+				case "connecting": connecting++
+				case "degraded": degraded++
+				default: dead++
+				}
+			}
+			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			out = append(out, nodeSummary{
+				NodeID:    n.NodeID,
+				Host:      n.Host,
+				Version:   n.Version,
+				Timestamp: n.Timestamp,
+				Uptime:    n.Uptime,
+				Proxies:   len(n.Proxies),
+				Up:        up,
+				Connecting: connecting,
+				Degraded:  degraded,
+				Dead:      dead,
+				MbpsRX:    mbpsRX,
+				MbpsTX:    mbpsTX,
+				System:    n.System,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
 	}
 }
 
@@ -630,7 +675,7 @@ tr.expandable:hover { background: #1a2332; }
 .hidden { display: none !important; }
 .drawer-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 100; display: none; }
 .drawer-overlay.open { display: block; }
-.drawer { position: fixed; top: 0; right: -600px; width: 600px; max-width: 100vw; height: 100%; background: #0f172a; border-left: 1px solid #1e293b; z-index: 101; transition: right 0.25s ease; overflow-y: auto; display: flex; flex-direction: column; }
+.drawer { position: fixed; top: 0; right: -90vw; width: 90vw; max-width: 1200px; height: 100%; background: #0f172a; border-left: 1px solid #1e293b; z-index: 101; transition: right 0.25s ease; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
 .drawer.open { right: 0; }
 .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #1e293b; }
 .drawer-header h2 { font-size: 15px; font-weight: 600; }
@@ -938,6 +983,8 @@ function openDrawer(id) {
       return;
     }
     var html = '<table><thead><tr><th>ID</th><th>Address</th><th>Status</th><th class="num">Clients</th><th class="num">Age</th><th class="num">RX</th><th class="num">TX</th><th class="num">Bill RX</th><th class="num">Bill TX</th></tr></thead><tbody>';
+    var sortOrder = {up: 0, connecting: 1, degraded: 2, dead: 3};
+    proxies.sort(function(a, b) { return (sortOrder[a.status]||9) - (sortOrder[b.status]||9); });
     proxies.forEach(function(p) {
       html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
     });

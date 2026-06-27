@@ -298,11 +298,9 @@ func (s *store) loadLatestFromDB() error {
 		if s.prevBillable == nil {
 			s.prevBillable = make(map[string]map[string]uint64)
 		}
-		prevBill := make(map[string]uint64, len(proxies))
-		for _, p := range proxies {
-			prevBill[p.ID] = p.BillRX + p.BillTX
-		}
-		s.prevBillable[n.id] = prevBill
+		// Seed with empty values so the first report after restart always
+		// shows earning=true for any proxy with billable bytes and clients.
+		s.prevBillable[n.id] = make(map[string]uint64)
 	}
 	return nil
 }
