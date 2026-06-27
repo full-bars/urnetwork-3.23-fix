@@ -8,8 +8,13 @@ All notable changes to this project are documented here.
 
 ### Performance
 - **Proxy summary command** (PR #151): New `proxy summary` command shows a fleet-wide overview — total proxies, up/connecting/degraded/dead counts, source breakdown (file vs URL vs internal), URL source URLs with cached/blacklisted counts, provider start time, and file paths. Reads from on-disk `proxy_health.state` and `proxy_url.json` — no provider restart required. Usage: `urnet-tools proxy summary`.
+- **Hub dashboard performance overhaul** (PR #155, #156, #157): The hub dashboard now serves gzip-compressed responses, lazy-loads proxy details on demand (instead of embedding 45k inline rows), and auto-refreshes via lightweight JSON API calls instead of full HTML page fetches. Fleet-wide traffic sparkline chart and historical time series charts via uPlot.
+- **Hub server-side optimizations** (PR #155, #157): Added per-IP rate limiting (60 req/min), stale node auto-eviction (15 min), gzip compression middleware, and N+1 query fix on startup (2 queries instead of 1+N).
 
 ### Added
+- **Idempotent override.conf helpers** (PR #153): New `override_set_env` and `override_rm_env` shell functions ensure systemd Environment= lines in `override.conf` never duplicate regardless of how many times a toggle command is run. Fixes the bug where `toggle_lowmode off` used `rm -rf` on the entire override directory, silently wiping unrelated settings (RAMLOGS, REPORT_URL, etc.).
+- **`urnet-tools report` command** (PR #154): New `urnet-tools report <url>` sets the hub report URL at runtime via `~/.urnetwork/report_url` without restarting the provider. `urnet-tools report` shows the current URL. `urnet-tools report off` disables reporting. Works for both native binary and Docker (PowerShell wrapper).
+- **Hub UI overhaul** (PR #156): Completely redesigned hub dashboard with summary cards (Total Proxies, Healthy, Degraded, Earning, Active Clients), tab navigation (Nodes/History), filter bar with text search and status dropdown, fleet-wide aggregate RX/TX sparkline chart, historical time series charts with 24h/3d/7d ranges, and a slide-out drawer for per-node proxy details.
 - **Dual-stage SOCKS5 + API reachability probe for URL proxies** (PR #152): The URL proxy fetch pipeline now tests both SOCKS5 protocol compliance AND API reachability through each proxy — on a single TCP connection, with DNS resolved once and cached. Proxies that can't reach `api.bringyour.com` through the SOCKS5 tunnel are caught at fetch time (within seconds) instead of wasting auth-rate-limiter slots and generating log noise.
   - Stage 1 (3s): TCP connect + SOCKS5 greeting
   - Stage 2 (5s): SOCKS5 CONNECT to api.bringyour.com:443 through the proxy

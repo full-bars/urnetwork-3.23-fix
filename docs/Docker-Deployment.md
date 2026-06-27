@@ -356,6 +356,36 @@ docker exec -it urfix tail -f /dev/shm/urnetwork.log
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
 
+## 📊 Proxy Summary
+
+View a single-pane fleet overview showing proxy counts by source (file vs URL), health breakdown, and URL cache status:
+
+```sh
+docker exec -it <container> provider proxy summary
+```
+
+## 📡 Report URL
+
+Set or check the hub report URL at runtime without restarting. Uses `~/.urnetwork/report_url` inside the container:
+
+```sh
+# Set report URL
+docker exec -it <container> sh -c 'echo "http://HUB_IP:8080" > "$HOME/.urnetwork/report_url"'
+
+# Check current URL
+docker exec -it <container> sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "not set"'
+
+# Disable
+docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/report_url"'
+```
+
+Or use the PowerShell wrapper (`urnet-tools.ps1`) which handles `docker exec` transparently:
+```powershell
+urnet-tools report http://HUB_IP:8080
+urnet-tools report
+urnet-tools report off
+```
+
 ## 🩺 Viewing Proxy Health
 
 You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
