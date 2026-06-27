@@ -293,6 +293,19 @@ func (s *store) loadLatestFromDB() error {
 
 		totalRX, totalTX, _, _, _ := proxyTotals(proxies)
 		s.rates[n.id] = &nodeRate{ts: state.Timestamp, rx: totalRX, tx: totalTX}
+		// Seed the billable baseline so earning can be computed immediately
+		// on the next report from this node.
+		if s.prevBillable == nil {
+			s.prevBillable = make(map[string]map[string]uint64)
+		}
+		// Seed each proxy ID with 0 so the first report after restart sees
+		// `seen=true` and `billable > 0`, making earning=true for any proxy
+		// with billable traffic and active clients.
+		prev := make(map[string]uint64, len(proxies))
+		for _, p := range proxies {
+			prev[p.ID] = 0
+		}
+		s.prevBillable[n.id] = prev
 	}
 	return nil
 }

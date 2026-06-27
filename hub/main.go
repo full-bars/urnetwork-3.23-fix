@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,6 +27,7 @@ var funcMap = template.FuncMap{
 	"title":    title,
 	"fmtAge":   fmtAge,
 	"pct":      func(a, b int) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
+	"add":      func(a, b float64) float64 { return a + b },
 }
 
 type proxyReport struct {
@@ -237,6 +239,7 @@ type summaryRow struct {
 	TotalRX, TotalTX                       uint64
 	BillRX, BillTX                         uint64
 	Earning, TotalProxies                  int
+	MbpsRX, MbpsTX                         float64
 }
 
 type proxSummary struct {
@@ -367,7 +370,80 @@ func handleReport(s *store) http.HandlerFunc {
 func handleNodes(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(s.list())
+		// Support /api/nodes/<id>/proxies for lazy-loaded proxy detail rows
+		path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+		if path != "" && path != r.URL.Path {
+			if strings.HasSuffix(path, "/proxies") {
+				nodeID := strings.TrimSuffix(path, "/proxies")
+				s.mu.RLock()
+				n, ok := s.Nodes[nodeID]
+				s.mu.RUnlock()
+				if !ok {
+					http.Error(w, "node not found", 404)
+					return
+				}
+				json.NewEncoder(w).Encode(n.Proxies)
+				return
+			}
+			// Unknown subpath
+			http.NotFound(w, r)
+			return
+		}
+		// Return lightweight node list with aggregate counts (no proxy details)
+		type nodeSummary struct {
+			NodeID      string        `json:"node_id"`
+			Host        string        `json:"host"`
+			Version     string        `json:"version"`
+			Timestamp   time.Time     `json:"ts"`
+			Uptime      float64       `json:"uptime"`
+			Proxies     int           `json:"proxies"`
+			Up          int           `json:"up"`
+			Connecting  int           `json:"connecting"`
+			Degraded    int           `json:"degraded"`
+			Dead        int           `json:"dead"`
+			Earning     int           `json:"earning"`
+			MbpsRX      float64       `json:"mbps_rx"`
+			MbpsTX      float64       `json:"mbps_tx"`
+			System      systemMetrics `json:"sys"`
+		}
+		nodes := s.list()
+		out := make([]nodeSummary, 0, len(nodes))
+		for _, n := range nodes {
+			var up, connecting, degraded, dead int
+			for _, p := range n.Proxies {
+				switch p.Status {
+				case "up": up++
+				case "connecting": connecting++
+				case "degraded": degraded++
+				default: dead++
+				}
+			}
+			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			earning := 0
+			nodeEarning := s.getEarning(n.NodeID)
+			for _, p := range n.Proxies {
+				if nodeEarning[p.ID] {
+					earning++
+				}
+			}
+			out = append(out, nodeSummary{
+				NodeID:    n.NodeID,
+				Host:      n.Host,
+				Version:   n.Version,
+				Timestamp: n.Timestamp,
+				Uptime:    n.Uptime,
+				Proxies:   len(n.Proxies),
+				Up:        up,
+				Connecting: connecting,
+				Degraded:  degraded,
+				Dead:      dead,
+				Earning:   earning,
+				MbpsRX:    mbpsRX,
+				MbpsTX:    mbpsTX,
+				System:    n.System,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
 	}
 }
 
@@ -430,11 +506,11 @@ func handleDashboard(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
 
+			var sm summaryRow
 		rows := make([]nodeRow, 0, len(nodes))
 		for i, n := range nodes {
 			nodeEarning := s.getEarning(n.NodeID)
 			var ps proxSummary
-			proxyList := make([]proxyRow, 0, len(n.Proxies))
 			for _, p := range n.Proxies {
 				ps.TotalRX += p.TotalRX
 				ps.TotalTX += p.TotalTX
@@ -442,20 +518,31 @@ func handleDashboard(s *store) http.HandlerFunc {
 				ps.BillTX += p.BillTX
 				ps.Clients += p.Clients
 				switch p.Status {
-				case "up":
-					ps.Up++
-				case "connecting":
-					ps.Connecting++
-				case "degraded":
-					ps.Degraded++
-				default:
-					ps.Dead++
+				case "up": ps.Up++
+				case "connecting": ps.Connecting++
+				case "degraded": ps.Degraded++
+				default: ps.Dead++
 				}
-				isEarning := nodeEarning[p.ID]
-				if isEarning {
+			}
+			// Accumulate fleet totals
+			sm.Nodes++
+			sm.Up += ps.Up
+			sm.Connecting += ps.Connecting
+			sm.Degraded += ps.Degraded
+			sm.Dead += ps.Dead
+			sm.TotalClients += ps.Clients
+			sm.TotalRX += ps.TotalRX
+			sm.TotalTX += ps.TotalTX
+			sm.BillRX += ps.BillRX
+			sm.BillTX += ps.BillTX
+			sm.TotalProxies += len(n.Proxies)
+			// Compute per-node earning
+			ps.Earning = 0
+			for _, p := range n.Proxies {
+				if nodeEarning[p.ID] {
+					sm.Earning++
 					ps.Earning++
 				}
-				proxyList = append(proxyList, proxyRow{proxyReport: p, Earning: isEarning})
 			}
 			uptime := time.Duration(n.Uptime * float64(time.Second)).Round(time.Second)
 			uptimeStr := uptime.String()
@@ -474,6 +561,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 			}
 
 			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			sm.MbpsRX += mbpsRX
+			sm.MbpsTX += mbpsTX
 
 			rows = append(rows, nodeRow{
 				NodeID:    n.NodeID,
@@ -488,12 +577,9 @@ func handleDashboard(s *store) http.HandlerFunc {
 				HeapMiB:   n.System.HeapMiB,
 				SysMiB:    n.System.SysMiB,
 				Conns:     n.System.Connections,
-				ProxyList: proxyList,
 				Index:     i,
 			})
 		}
-
-		sm := s.summary()
 
 		var buf bytes.Buffer
 		tmpl.Execute(&buf, map[string]interface{}{
@@ -524,7 +610,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/report", handleReport(s))
-	mux.HandleFunc("/api/nodes", handleNodes(s))
+	mux.HandleFunc("/api/nodes/", handleNodes(s))
 	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/", handleDashboard(s))
@@ -598,7 +684,7 @@ tr.expandable:hover { background: #1a2332; }
 .hidden { display: none !important; }
 .drawer-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 100; display: none; }
 .drawer-overlay.open { display: block; }
-.drawer { position: fixed; top: 0; right: -600px; width: 600px; max-width: 100vw; height: 100%; background: #0f172a; border-left: 1px solid #1e293b; z-index: 101; transition: right 0.25s ease; overflow-y: auto; display: flex; flex-direction: column; }
+.drawer { position: fixed; top: 0; right: -90vw; width: 90vw; max-width: 1200px; height: 100%; background: #0f172a; border-left: 1px solid #1e293b; z-index: 101; transition: right 0.25s ease; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
 .drawer.open { right: 0; }
 .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #1e293b; }
 .drawer-header h2 { font-size: 15px; font-weight: 600; }
@@ -622,6 +708,8 @@ tr.expandable:hover { background: #1a2332; }
 .chart-box { background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 16px; }
 .chart-box.compact { padding: 8px; }
 .chart-box.compact .u-title { font-size: 12px !important; }
+.charts-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 12px 24px 4px; }
+@media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; padding: 8px 16px 0; } }
 .footer { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; border-top: 1px solid #1e293b; font-size: 13px; color: #64748b; background: #0f172a; }
 .footer a { color: #60a5fa; text-decoration: none; }
 .footer a:hover { text-decoration: underline; }
@@ -646,8 +734,9 @@ tr.expandable:hover { background: #1a2332; }
 <div class="card card-proxies"><div class="label">Total Proxies</div><div class="value">{{.Sum.TotalProxies}}</div><div class="sub">across {{.Sum.Nodes}} nodes</div></div>
 <div class="card card-up"><div class="label">Healthy</div><div class="value">{{.Sum.Up}}</div><div class="sub">{{printf "%.1f" (pct .Sum.Up .Sum.TotalProxies)}}% of fleet</div></div>
 <div class="card card-degraded"><div class="label">Degraded</div><div class="value">{{.Sum.Degraded}}</div><div class="sub">{{.Sum.Dead}} dead</div></div>
-<div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.TotalProxies)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
+<div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.Up)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
 <div class="card card-clients"><div class="label">Active Clients</div><div class="value">{{.Sum.TotalClients}}</div><div class="sub">{{printf "%s" (fmtBytes .Sum.TotalRX)}} RX / {{printf "%s" (fmtBytes .Sum.TotalTX)}} TX</div></div>
+<div class="card card-up"><div class="label">Throughput</div><div class="value">{{printf "%.0f" (add .Sum.MbpsRX .Sum.MbpsTX)}} Mbps</div><div class="sub">{{printf "%.1f" .Sum.MbpsRX}} in / {{printf "%.1f" .Sum.MbpsTX}} out</div></div>
 </div>
 </div>
 <div class="tabs">
@@ -655,8 +744,35 @@ tr.expandable:hover { background: #1a2332; }
 <div class="tab" onclick="switchTab('history')">History</div>
 </div>
 <div id="tab-nodes" class="tab-content active">
-<div class="chart-wrap" style="padding-bottom:8px">
-<div class="chart-box compact"><div id="fleet-chart" style="height:120px"></div></div>
+<div class="charts-row">
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Total Traffic</span>
+<button onclick="resetFleetChart('fleet-traffic')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-traffic" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Billable Traffic</span>
+<button onclick="resetFleetChart('fleet-billable')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-billable" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Peak Clients</span>
+<button onclick="resetFleetChart('fleet-clients')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-clients" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Fleet Nodes</span>
+<button onclick="resetFleetChart('fleet-nodes')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-nodes" style="height:160px"></div>
+</div>
 </div>
 <div class="filter-bar">
 <input type="text" id="filter-input" placeholder="Filter nodes..." oninput="applyFilter()">
@@ -758,37 +874,100 @@ function switchTab(name) {
   if (name === 'nodes') loadFleetChart();
 }
 
+var fleetCharts = [];
+
+var fleetChartData = null;
+
+function makeChart(el, opts, data) {
+  if (!el) return;
+  el.innerHTML = '';
+  var w = el.clientWidth || 400;
+  if (w < 50) w = 400;
+  opts.width = w;
+  opts.height = 120;
+  opts.cursor = { show: true };
+  opts.legend = { show: true };
+  if (!opts.axes) opts.axes = [{ show: false }, { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 55 }];
+  var chart = new uPlot(opts, data, el);
+  fleetCharts.push(chart);
+}
+
+function resetFleetChart(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  // uPlot stores a reference on the element
+  if (el._uplot) { el._uplot.destroy(); }
+  fleetCharts = fleetCharts.filter(function(c) { return c !== el._uplot; });
+  // Re-fetch data and re-render this chart
+  loadFleetChart();
+}
+
 function loadFleetChart() {
-  if (fleetChart) return; // already loaded
+  if (fleetCharts.length > 0) return;
+  
   fetch('/api/history?hours=24').then(function(r) { return r.json(); }).then(function(data) {
     if (!data || data.length === 0) return;
+    
+    // Aggregate by hour across all nodes
     var byHour = {};
     for (var i = 0; i < data.length; i++) {
       var h = data[i];
-      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0 };
+      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0, clients: 0, count: 0 };
       byHour[h.hour].rx += h.total_rx;
       byHour[h.hour].tx += h.total_tx;
+      byHour[h.hour].bill_rx += h.bill_rx;
+      byHour[h.hour].bill_tx += h.bill_tx;
+      byHour[h.hour].clients += h.peak_clients;
+      byHour[h.hour].count++;
     }
+    
     var hours = Object.keys(byHour).sort();
-    var labels = [], rx = [], tx = [];
+    var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [];
+    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
+    
     hours.forEach(function(h) {
       labels.push(parseInt(h));
-      rx.push(byHour[h].rx);
-      tx.push(byHour[h].tx);
+      var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
+      var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
+      var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
+      var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
+      clients.push(byHour[h].clients);
+      nodes.push(byHour[h].count);
     });
-    var opts = {
-      width: document.getElementById('fleet-chart').clientWidth || 800,
-      height: 120,
-      cursor: { show: false },
-      legend: { show: true },
-      axes: [{ show: false }, { show: false }],
+    
+    // Total traffic chart
+    makeChart(document.getElementById('fleet-traffic'), {
       series: [
         {},
-        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, points: { show: false } },
-        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, points: { show: false } }
+        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
+        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
       ]
-    };
-    fleetChart = new uPlot(opts, [labels, rx, tx], document.getElementById('fleet-chart'));
+    }, [labels, rx, tx]);
+    
+    // Billable traffic chart
+    makeChart(document.getElementById('fleet-billable'), {
+      series: [
+        {},
+        { label: 'Bill RX/hr', stroke: '#f59e0b', fill: 'rgba(245,158,11,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
+        { label: 'Bill TX/hr', stroke: '#a78bfa', fill: 'rgba(167,139,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
+      ]
+    }, [labels, brx, btx]);
+    
+    // Peak clients chart
+    makeChart(document.getElementById('fleet-clients'), {
+      series: [
+        {},
+        { label: 'Peak clients', stroke: '#f472b6', fill: 'rgba(244,114,182,0.1)', width: 1.5 },
+      ]
+    }, [labels, clients]);
+    
+    // Fleet nodes chart
+    makeChart(document.getElementById('fleet-nodes'), {
+      series: [
+        {},
+        { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 },
+      ]
+    }, [labels, nodes]);
   }).catch(function() {});
 }
 function applyFilter() {
@@ -804,6 +983,8 @@ function applyFilter() {
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
 var drawerNodeId = null;
+var proxyDrawer = {};
+
 function openDrawer(id) {
   drawerNodeId = id;
   document.getElementById('drawer-overlay').classList.add('open');
@@ -815,15 +996,56 @@ function openDrawer(id) {
       document.getElementById('drawer-body').innerHTML = '<div class="loading">No proxy data</div>';
       return;
     }
-    var html = '<table><thead><tr><th>ID</th><th>Address</th><th>Status</th><th class="num">Clients</th><th class="num">Age</th><th class="num">RX</th><th class="num">TX</th><th class="num">Bill RX</th><th class="num">Bill TX</th></tr></thead><tbody>';
-    proxies.forEach(function(p) {
-      html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
+    proxyDrawer = { data: proxies, col: 'clients', dir: -1 };
+    // Default sort: clients desc, then billable rx desc
+    proxies.sort(function(a, b) {
+      if (b.clients !== a.clients) return b.clients - a.clients;
+      return (b.bill_rx || 0) - (a.bill_rx || 0);
     });
-    html += '</tbody></table>';
-    document.getElementById('drawer-body').innerHTML = html;
+    renderProxyDrawer();
   }).catch(function() {
     document.getElementById('drawer-body').innerHTML = '<div class="loading">Failed to load proxies</div>';
   });
+}
+
+function renderProxyDrawer() {
+  var d = proxyDrawer;
+  var sortOrder = {up: 0, connecting: 1, degraded: 2, dead: 3};
+  var cols = [
+    { key: 'id', label: 'ID', num: false },
+    { key: 'addr', label: 'Address', num: false },
+    { key: 'status', label: 'Status', num: false, fn: function(p) { return sortOrder[p.status]||9; } },
+    { key: 'clients', label: 'Clients', num: true },
+    { key: 'max_age_s', label: 'Age', num: true },
+    { key: 'rx', label: 'RX', num: true },
+    { key: 'tx', label: 'TX', num: true },
+    { key: 'bill_rx', label: 'Bill RX', num: true },
+    { key: 'bill_tx', label: 'Bill TX', num: true }
+  ];
+  d.data.sort(function(a, b) {
+    var col = cols.find(function(c) { return c.key === d.col; });
+    var va = col && col.fn ? col.fn(a) : a[d.col];
+    var vb = col && col.fn ? col.fn(b) : b[d.col];
+    if (typeof va === 'number') return d.dir * (va - vb);
+    return d.dir * String(va).localeCompare(String(vb));
+  });
+  var html = '<table id="drawer-table"><thead><tr>';
+  cols.forEach(function(col) {
+    var arrow = col.key === d.col ? (d.dir === -1 ? ' &#9660;' : ' &#9650;') : '';
+    html += '<th' + (col.num ? ' class="num"' : '') + ' onclick="sortDrawer(\'' + col.key + '\')">' + col.label + arrow + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+  d.data.forEach(function(p) {
+    html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('drawer-body').innerHTML = html;
+}
+
+function sortDrawer(col) {
+  if (proxyDrawer.col === col) proxyDrawer.dir *= -1;
+  else { proxyDrawer.col = col; proxyDrawer.dir = -1; }
+  renderProxyDrawer();
 }
 function closeDrawer() {
   document.getElementById('drawer-overlay').classList.remove('open');
@@ -909,12 +1131,43 @@ function loadHistory() {
       document.getElementById('history-chart').innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">No history data</div>';
       return;
     }
-    var rx = [], tx = [], labels = [];
-    for (var i = data.length - 1; i >= 0; i--) {
-      labels.push(data[i].hour);
-      rx.push(data[i].total_rx);
-      tx.push(data[i].total_tx);
+    // When viewing all nodes, aggregate by hour
+    if (!nodeId) {
+      // All nodes: aggregate by hour
+      var byHour = {};
+      for (var i = 0; i < data.length; i++) {
+        var h = data[i];
+        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
+        byHour[h.hour].rx += h.total_rx;
+        byHour[h.hour].tx += h.total_tx;
+        byHour[h.hour].bill_rx += h.bill_rx;
+        byHour[h.hour].bill_tx += h.bill_tx;
+      }
+      hours = Object.keys(byHour).sort();
+    } else {
+      // Single node: use raw data
+      var byHour = {};
+      for (var i = 0; i < data.length; i++) {
+        var h = data[i];
+        if (h.node_id !== nodeId) continue;
+        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
+        byHour[h.hour].rx += h.total_rx;
+        byHour[h.hour].tx += h.total_tx;
+        byHour[h.hour].bill_rx += h.bill_rx;
+        byHour[h.hour].bill_tx += h.bill_tx;
+      }
+      hours = Object.keys(byHour).sort();
     }
+    var rx = [], tx = [], brx = [], btx = [], labels = [];
+    // Compute hourly deltas (bytes transferred in each hour window)
+    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
+    hours.forEach(function(h) {
+      labels.push(parseInt(h));
+      var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
+      var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
+      var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
+      var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
+    });
     var opts = {
       width: Math.min(document.getElementById('history-chart').clientWidth || 800, 1200),
       height: 300,
@@ -922,16 +1175,18 @@ function loadHistory() {
       legend: { show: true },
       axes: [
         { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 } },
-        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, label: 'Bytes' }
+        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, label: 'Bytes/hr' }
       ],
       series: [
         { label: 'Time', value: '{HH}:{mm}' },
-        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2 },
-        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2 }
+        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'Bill RX/hr', stroke: '#f59e0b', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'Bill TX/hr', stroke: '#a78bfa', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } }
       ]
     };
     if (historyChart) { historyChart.destroy(); historyChart = null; }
-    historyChart = new uPlot(opts, [labels, rx, tx], document.getElementById('history-chart'));
+    historyChart = new uPlot(opts, [labels, rx, tx, brx, btx], document.getElementById('history-chart'));
   }).catch(function() {});
 }
 function fmtAgo(ts) {
@@ -1009,6 +1264,7 @@ function removeNode(nodeId) {
   fetch('/api/nodes/remove', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId})}).then(function(r){if(r.ok)refreshDashboard();});
 }
 loadFleetChart();
+sortBy('clients');
 </script>
 </body>
 </html>
