@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -95,10 +96,38 @@ func newAuthRateLimiter(min, max rate.Limit, burst int) *authRateLimiter {
 	}
 }
 
+// fastAuthPath returns ~/.urnetwork/fast_auth. When this file exists (regardless
+// of content), the auth rate limiter is bypassed — every auth attempt fires
+// immediately. Same effect as URNETWORK_AUTH_UNLIMITED=true but takes effect
+// without restarting the provider.
+func fastAuthPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "fast_auth"), nil
+}
+
+// fastAuthEnabled returns true when the operator has opted out of auth rate
+// limiting, either via the URNETWORK_AUTH_UNLIMITED env var or by creating
+// the ~/.urnetwork/fast_auth marker file. The file is re-stated on every call
+// so a write takes effect immediately.
+func fastAuthEnabled() bool {
+	if os.Getenv("URNETWORK_AUTH_UNLIMITED") == "true" {
+		return true
+	}
+	path, err := fastAuthPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
 // Wait blocks until the next auth attempt is allowed to proceed, or until ctx
 // is done.
 func (a *authRateLimiter) Wait(ctx context.Context) error {
-	if os.Getenv("URNETWORK_AUTH_UNLIMITED") == "true" {
+	if fastAuthEnabled() {
 		return nil
 	}
 	return a.limiter.Wait(ctx)

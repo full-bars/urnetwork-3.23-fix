@@ -73,6 +73,32 @@ func resolveReportURL(envFallback string) string {
 	return envFallback
 }
 
+// nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
+// write at any time to change the node identity reported to the hub without
+// restarting. An empty file or missing file falls back to the startup hostname.
+func nodeNameOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "node_name"), nil
+}
+
+// resolveNodeName re-reads the override file on every call so a change takes
+// effect on the reporter's next tick. startupName is the hostname captured at
+// startup, used when no override file exists or it's empty.
+func resolveNodeName(startupName string) string {
+	path, err := nodeNameOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return startupName
+}
+
 // reportIntervalOverridePath returns ~/.urnetwork/report_interval, a file an
 // operator can write at any time to change the hub report cadence without
 // restarting the provider. It takes precedence over URNETWORK_REPORT_INTERVAL,
@@ -183,6 +209,10 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			tlog("[report] report interval changed to %s (node=%s)\n", newInterval, nodeID)
 		}
 
+		// Re-check the node name on every tick so ~/.urnetwork/node_name
+		// takes effect without restart.
+		activeHost := resolveNodeName(host)
+
 		reportURL := resolveReportURL(envReportURL)
 		if reportURL != activeReportURL {
 			if reportURL == "" {
@@ -202,7 +232,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			continue
 		}
 
-		report := buildReport(nodeID, host, startTime)
+		report := buildReport(nodeID, activeHost, startTime)
 		if len(report.Proxies) == 0 {
 			tlog("[report] skipping (0 proxies in bandwidth map)\n")
 			continue
