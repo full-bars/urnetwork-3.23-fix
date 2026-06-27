@@ -40,7 +40,7 @@ show_help ()
     echo "  proxy refresh           🔄 REFRESH: gracefully drop all connections and force a proxy reload"
     echo "  proxy summary           📊 Show proxy fleet summary (sources, health, counts)"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
-    echo "  report [<url>]          📡 Show or set hub report URL (use 'off' to disable)"
+    echo "  report [<url>|off]      📡 Show or set hub report URL ('report off' to disable)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
@@ -1837,7 +1837,7 @@ do_report ()
     if [ -z "$mode" ]; then
         # Show current setting
         if [ -f "$override_file" ]; then
-            url=$(grep '^Environment="URNETWORK_REPORT_URL=' "$override_file" | sed 's/.*="\(.*\)"/\1/')
+            url=$(grep '^Environment="URNETWORK_REPORT_URL=' "$override_file" | sed 's/^Environment="URNETWORK_REPORT_URL=//; s/"$//')
             if [ -n "$url" ]; then
                 pr_info "Report URL: %s" "$url"
             else
