@@ -544,14 +544,15 @@ switch ($Command) {
         break
     }
 
-    "report") {
+    "report" {
         $reportArg = if ($SubArgs) { $SubArgs[0] } else { "" }
         if ($reportArg -eq "off") {
             docker exec $ContainerName sh -c 'rm -f "$HOME/.urnetwork/report_url"'
             Write-Host "Report URL removed (takes effect on next reporter tick)"
         }
         elseif ($reportArg -ne "") {
-            docker exec $ContainerName sh -c "echo '$reportArg' > \"`$HOME/.urnetwork/report_url\""
+            $safeUrl = $reportArg -replace "'", "'\"'\"'"
+            docker exec $ContainerName sh -c "echo '$safeUrl' > \"`$HOME/.urnetwork/report_url\""
             Write-Host "Report URL set to $reportArg (takes effect on next reporter tick)"
         }
         else {
