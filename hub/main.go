@@ -94,15 +94,10 @@ func (rl *rateLimiter) allow(ip string) bool {
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	rl := newRateLimiter(60, time.Minute) // 60 req/min per IP
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract client IP from X-Forwarded-For or remote address
+		// Use the actual remote address for rate limiting (do not trust
+		// X-Forwarded-For which can be spoofed by any client).
 		ip := r.RemoteAddr
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			if idx := strings.Index(fwd, ","); idx > 0 {
-				ip = strings.TrimSpace(fwd[:idx])
-			} else {
-				ip = strings.TrimSpace(fwd)
-			}
-		} else if idx := strings.LastIndex(ip, ":"); idx > 0 {
+		if idx := strings.LastIndex(ip, ":"); idx > 0 {
 			ip = ip[:idx]
 		}
 		// Don't rate limit the report endpoint
@@ -981,9 +976,11 @@ function refreshDashboard() {
     });
     
     var total = { up: 0, connecting: 0, degraded: 0, dead: 0, clients: 0, earning: 0, proxies: 0, nodes: 0 };
+    var incomingIds = {};
     var frag = document.createDocumentFragment();
     
     nodes.forEach(function(n) {
+      incomingIds[n.node_id] = true;
       total.nodes++;
       total.up += n.up;
       total.connecting += n.connecting;
@@ -991,14 +988,15 @@ function refreshDashboard() {
       total.dead += n.dead;
       total.clients += n.clients;
       total.proxies += n.proxies;
+      total.earning += n.earning;
       
       var ago = fmtAgo(n.ts);
       var uptime = fmtUptime(n.uptime);
       var color = n.ts ? nodeColor(n.ts) : '#ef4444';
-      var existing = rows[n.node_id];
-      if (existing) {
+      var existingRow = rows[n.node_id];
+      if (existingRow) {
         // Update existing row in place
-        existing.innerHTML = '<td><span class="dot" style="background:' + color + '"></span>' + n.node_id + '</td><td>' + (n.host||'') + '</td><td>' + ago + '</td><td>' + uptime + '</td><td class="num">' + n.proxies + '</td><td class="num">' + n.clients + '</td><td class="num">' + fmtBytes(n.rx) + '</td><td class="num">' + fmtBytes(n.tx) + '</td><td class="num">' + fmtBytes(n.bill_rx) + '</td><td class="num">' + fmtBytes(n.bill_tx) + '</td><td class="num">' + fmtMbps(n.mbps_rx) + '</td><td class="num">' + fmtMbps(n.mbps_tx) + '</td><td class="num">' + n.earning + '/' + n.up + '</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\'' + n.node_id + '\')" title="Remove node">&#10005;</span></td>';
+        existingRow.innerHTML = '<td><span class="dot" style="background:' + color + '"></span>' + n.node_id + '</td><td>' + (n.host||'') + '</td><td>' + ago + '</td><td>' + uptime + '</td><td class="num">' + n.proxies + '</td><td class="num">' + n.clients + '</td><td class="num">' + fmtBytes(n.rx) + '</td><td class="num">' + fmtBytes(n.tx) + '</td><td class="num">' + fmtBytes(n.bill_rx) + '</td><td class="num">' + fmtBytes(n.bill_tx) + '</td><td class="num">' + fmtMbps(n.mbps_rx) + '</td><td class="num">' + fmtMbps(n.mbps_tx) + '</td><td class="num">' + n.earning + '/' + n.up + '</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\'' + n.node_id + '\')" title="Remove node">&#10005;</span></td>';
       } else {
         // New node, add a row
         var tr = document.createElement('tr');
@@ -1016,7 +1014,18 @@ function refreshDashboard() {
       }
     });
     
-    tbody.innerHTML = '';
+    // Remove rows for nodes no longer in the response
+    Object.keys(rows).forEach(function(id) {
+      if (!incomingIds[id]) {
+        var r = document.getElementById('detail-' + id);
+        if (r) r.remove();
+        var e = rows[id];
+        if (e) e.remove();
+        delete proxyCache[id];
+      }
+    });
+    
+    // Append new nodes
     tbody.appendChild(frag);
     
     openIds.forEach(function(id) {
@@ -1025,24 +1034,23 @@ function refreshDashboard() {
     });
     
     // Update summary
-    var sumHtml = '<span>' + total.nodes + ' nodes</span><span>' + total.proxies + ' proxies</span><span class="up">' + total.up + ' up</span><span class="warn">' + total.degraded + ' degraded</span><span class="dead">' + total.dead + ' dead</span><span>' + total.clients + ' clients</span>';
+    var sumHtml = '<span>' + total.nodes + ' nodes</span><span>' + total.proxies + ' proxies</span><span class="up">' + total.up + ' up</span><span class="warn">' + total.degraded + ' degraded</span><span class="dead">' + total.dead + ' dead</span><span>' + total.clients + ' clients</span><span>earning ' + total.earning + '</span>';
     document.querySelector('.summary').innerHTML = sumHtml;
     
     if (currentCol) {
-      // Re-sort
-      var rowsArr = Array.from(tbody.querySelectorAll('tr.expandable'));
-      rowsArr.sort(function(a, b) {
+      // Re-sort existing rows (no need to clear/re-add in a batch)
+      var allRows = Array.from(tbody.querySelectorAll('tr.expandable'));
+      allRows.sort(function(a, b) {
         var va = a.cells[getColIndex(currentCol)].textContent.trim();
         var vb = b.cells[getColIndex(currentCol)].textContent.trim();
         return cmpNode(va, vb, currentDir);
       });
       var sortedFrag = document.createDocumentFragment();
-      rowsArr.forEach(function(r) {
+      allRows.forEach(function(r) {
         sortedFrag.appendChild(r);
         var detail = document.getElementById('detail-' + r.getAttribute('data-id'));
         if (detail) sortedFrag.appendChild(detail);
       });
-      tbody.innerHTML = '';
       tbody.appendChild(sortedFrag);
     }
   }).catch(function() {}).then(function() {
