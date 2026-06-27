@@ -41,6 +41,8 @@ show_help ()
     echo "  proxy summary           📊 Show proxy fleet summary (sources, health, counts)"
     echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
     echo "  report [<url>|off]      📡 Show or set hub report URL ('report off' to disable)"
+    echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
+    echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
@@ -1863,6 +1865,114 @@ do_report ()
     esac
 }
 
+do_fast_auth ()
+{
+    file="$HOME/.urnetwork/fast_auth"
+    case "${1:-}" in
+        on)
+            mkdir -p "$HOME/.urnetwork"
+            touch "$file"
+            pr_info "Auth rate limiter bypassed. Takes effect immediately (same as URNETWORK_AUTH_UNLIMITED=true)."
+            ;;
+        off)
+            rm -f "$file"
+            pr_info "Auth rate limiter re-enabled. Takes effect immediately."
+            ;;
+        "")
+            if [ -f "$file" ]; then
+                pr_info "fast-auth: on (rate limiter bypassed)"
+            else
+                pr_info "fast-auth: off (rate limiter active)"
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools fast-auth [on|off]"
+            exit 1
+            ;;
+    esac
+}
+
+# _set_key_to_file maps a user-facing key name to its ~/.urnetwork/ filename.
+# Prints the filename on success, nothing on unknown key.
+_set_key_to_file ()
+{
+    case "$1" in
+        node-name)         echo "node_name" ;;
+        report-interval)   echo "report_interval" ;;
+        proxy-url-max)     echo "proxy_url_max" ;;
+        proxy-url-refresh) echo "proxy_url_refresh" ;;
+        cleanup-scope)     echo "proxy_dead_cleanup_scope" ;;
+        cleanup-interval)  echo "proxy_dead_cleanup_interval" ;;
+        fast-auth)         echo "fast_auth" ;;
+        *)                 ;;
+    esac
+}
+
+do_set ()
+{
+    base_dir="$HOME/.urnetwork"
+    key="${1:-}"
+    value="${2:-}"
+
+    if [ -z "$key" ]; then
+        # Show all active overrides
+        pr_info "Runtime overrides (%s/):" "$base_dir"
+        found=0
+        for name in node_name report_interval proxy_url_max proxy_url_refresh \
+                    proxy_dead_cleanup_scope proxy_dead_cleanup_interval fast_auth; do
+            file="$base_dir/$name"
+            [ -f "$file" ] || continue
+            found=$((found + 1))
+            if [ "$name" = "fast_auth" ]; then
+                printf "  %-32s %s\n" "$name" "on"
+            else
+                printf "  %-32s %s\n" "$name" "$(cat "$file")"
+            fi
+        done
+        [ "$found" -eq 0 ] && pr_info "No runtime overrides set (all using startup defaults)."
+        return
+    fi
+
+    filename=$(_set_key_to_file "$key")
+    if [ -z "$filename" ]; then
+        pr_err "Unknown key: %s" "$key"
+        pr_err "Valid keys: node-name, report-interval, proxy-url-max, proxy-url-refresh,"
+        pr_err "            cleanup-scope, cleanup-interval, fast-auth"
+        exit 1
+    fi
+
+    file="$base_dir/$filename"
+
+    # No value: show current
+    if [ -z "$value" ]; then
+        if [ "$filename" = "fast_auth" ]; then
+            [ -f "$file" ] && pr_info "fast-auth: on" || pr_info "fast-auth: off (not set)"
+        elif [ -f "$file" ]; then
+            pr_info "%s: %s" "$key" "$(cat "$file")"
+        else
+            pr_info "%s: not set (using startup default)" "$key"
+        fi
+        return
+    fi
+
+    # off: clear the override
+    if [ "$value" = "off" ]; then
+        rm -f "$file"
+        pr_info "%s cleared — reverts to startup default on next tick." "$key"
+        return
+    fi
+
+    # fast-auth is existence-based; route through do_fast_auth for consistent messaging
+    if [ "$filename" = "fast_auth" ]; then
+        do_fast_auth "$value"
+        return
+    fi
+
+    mkdir -p "$base_dir"
+    printf '%s' "$value" > "$file"
+    pr_info "%s set to %s — takes effect on next provider tick." "$key" "$value"
+}
+
 do_hub () {
     cmd="$1"
     shift || true
@@ -2491,6 +2601,16 @@ case "$operation" in
 
     report)
         do_report "$@"
+        exit 0
+        ;;
+
+    fast-auth)
+        do_fast_auth "$@"
+        exit 0
+        ;;
+
+    set)
+        do_set "$@"
         exit 0
         ;;
 
