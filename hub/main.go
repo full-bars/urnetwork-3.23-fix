@@ -622,6 +622,8 @@ tr.expandable:hover { background: #1a2332; }
 .chart-box { background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 16px; }
 .chart-box.compact { padding: 8px; }
 .chart-box.compact .u-title { font-size: 12px !important; }
+.charts-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 12px 24px 4px; }
+@media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; padding: 8px 16px 0; } }
 .footer { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; border-top: 1px solid #1e293b; font-size: 13px; color: #64748b; background: #0f172a; }
 .footer a { color: #60a5fa; text-decoration: none; }
 .footer a:hover { text-decoration: underline; }
@@ -655,8 +657,9 @@ tr.expandable:hover { background: #1a2332; }
 <div class="tab" onclick="switchTab('history')">History</div>
 </div>
 <div id="tab-nodes" class="tab-content active">
-<div class="chart-wrap" style="padding-bottom:8px">
-<div class="chart-box compact"><div id="fleet-chart" style="height:120px"></div></div>
+<div class="charts-row">
+<div class="chart-box compact"><div id="fleet-proxies" style="height:120px"></div></div>
+<div class="chart-box compact"><div id="fleet-traffic" style="height:120px"></div></div>
 </div>
 <div class="filter-bar">
 <input type="text" id="filter-input" placeholder="Filter nodes..." oninput="applyFilter()">
@@ -758,8 +761,46 @@ function switchTab(name) {
   if (name === 'nodes') loadFleetChart();
 }
 
+var fleetCharts = [];
+
+function makeChart(el, opts, data) {
+  el.innerHTML = '';
+  var w = el.clientWidth || 400;
+  opts.width = w;
+  opts.height = 120;
+  opts.cursor = { show: true };
+  opts.legend = { show: true };
+  if (!opts.axes) opts.axes = [{ show: false }, { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 55 }];
+  var chart = new uPlot(opts, data, el);
+  fleetCharts.push(chart);
+}
+
 function loadFleetChart() {
-  if (fleetChart) return; // already loaded
+  if (fleetCharts.length > 0) return;
+  
+  // Chart 1: Healthy proxies + Active clients over time
+  fetch('/api/nodes').then(function(r) { return r.json(); }).then(function(nodes) {
+    var byTime = {};
+    nodes.forEach(function(n) {
+      if (!n.ts) return;
+      var hour = Math.floor(new Date(n.ts).getTime() / 3600000) * 3600;
+      if (!byTime[hour]) byTime[hour] = { up: 0, clients: 0 };
+      byTime[hour].up += n.up;
+      byTime[hour].clients += n.clients;
+    });
+    var hours = Object.keys(byTime).sort();
+    var labels = [], up = [], clients = [];
+    hours.forEach(function(h) {
+      labels.push(parseInt(h));
+      up.push(byTime[h].up);
+      clients.push(byTime[h].clients);
+    });
+    makeChart(document.getElementById('fleet-proxies'), {
+      series: [{}, { label: 'Healthy', stroke: '#4ade80', width: 1.5 }, { label: 'Clients', stroke: '#60a5fa', width: 1.5 }]
+    }, [labels, up, clients]);
+  }).catch(function() {});
+
+  // Chart 2: Hourly traffic (RX/TX deltas)
   fetch('/api/history?hours=24').then(function(r) { return r.json(); }).then(function(data) {
     if (!data || data.length === 0) return;
     var byHour = {};
@@ -771,27 +812,23 @@ function loadFleetChart() {
     }
     var hours = Object.keys(byHour).sort();
     var labels = [], rx = [], tx = [];
+    var prevRx = 0, prevTx = 0;
     hours.forEach(function(h) {
       labels.push(parseInt(h));
-      rx.push(byHour[h].rx);
-      tx.push(byHour[h].tx);
+      var drx = byHour[h].rx - prevRx;
+      var dtx = byHour[h].tx - prevTx;
+      rx.push(drx >= 0 ? drx : 0);
+      tx.push(dtx >= 0 ? dtx : 0);
+      prevRx = byHour[h].rx;
+      prevTx = byHour[h].tx;
     });
-    var opts = {
-      width: document.getElementById('fleet-chart').clientWidth || 800,
-      height: 120,
-      cursor: { show: true },
-      legend: { show: true },
-      axes: [
-        { show: false },
-        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 50 }
-      ],
+    makeChart(document.getElementById('fleet-traffic'), {
       series: [
         {},
-        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5 },
-        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 }
+        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
+        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
       ]
-    };
-    fleetChart = new uPlot(opts, [labels, rx, tx], document.getElementById('fleet-chart'));
+    }, [labels, rx, tx]);
   }).catch(function() {});
 }
 function applyFilter() {
@@ -922,10 +959,16 @@ function loadHistory() {
     }
     var hours = Object.keys(byHour).sort();
     var rx = [], tx = [], labels = [];
+    // Compute hourly deltas (bytes transferred in each hour window)
+    var prevRx = 0, prevTx = 0;
     hours.forEach(function(h) {
       labels.push(parseInt(h));
-      rx.push(byHour[h].rx);
-      tx.push(byHour[h].tx);
+      var drx = byHour[h].rx - prevRx;
+      var dtx = byHour[h].tx - prevTx;
+      rx.push(drx >= 0 ? drx : 0);
+      tx.push(dtx >= 0 ? dtx : 0);
+      prevRx = byHour[h].rx;
+      prevTx = byHour[h].tx;
     });
     var opts = {
       width: Math.min(document.getElementById('history-chart').clientWidth || 800, 1200),
@@ -934,12 +977,12 @@ function loadHistory() {
       legend: { show: true },
       axes: [
         { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 } },
-        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, label: 'Bytes' }
+        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, label: 'Bytes/hr' }
       ],
       series: [
         { label: 'Time', value: '{HH}:{mm}' },
-        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2 },
-        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2 }
+        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
+        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } }
       ]
     };
     if (historyChart) { historyChart.destroy(); historyChart = null; }
