@@ -562,7 +562,7 @@ switch ($Command) {
         break
     }
 
-    "logs") {
+    "logs" {
         $n = "0"
         if ($SubArgs -contains "-n") {
             $nIndex = [array]::IndexOf($SubArgs, "-n")
