@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.19] — 2026-06-26
+
+### Performance
+- **Proxy summary command** (PR #151): New `proxy summary` command shows a fleet-wide overview — total proxies, up/connecting/degraded/dead counts, source breakdown (file vs URL vs internal), URL source URLs with cached/blacklisted counts, provider start time, and file paths. Reads from on-disk `proxy_health.state` and `proxy_url.json` — no provider restart required. Usage: `urnet-tools proxy summary`.
+
+### Added
+- **Dual-stage SOCKS5 + API reachability probe for URL proxies** (PR #152): The URL proxy fetch pipeline now tests both SOCKS5 protocol compliance AND API reachability through each proxy — on a single TCP connection, with DNS resolved once and cached. Proxies that can't reach `api.bringyour.com` through the SOCKS5 tunnel are caught at fetch time (within seconds) instead of wasting auth-rate-limiter slots and generating log noise.
+  - Stage 1 (3s): TCP connect + SOCKS5 greeting
+  - Stage 2 (5s): SOCKS5 CONNECT to api.bringyour.com:443 through the proxy
+  - 100ms random stagger before each probe dial spreads 50 concurrent probes across ~5s
+- **Background URL proxy reaper** (PR #152): A background goroutine re-probes cached URL-sourced proxies that weren't fully verified every 5 minutes. After 3 consecutive API reachability failures, the proxy is moved to a persistent blacklist.
+- **Blacklist pruner** (PR #152): Blacklisted addresses automatically expire after 24 hours and are removed, giving them a chance to re-enter on the next URL fetch cycle. Pruner runs every 30 minutes.
+
+### Fixed
+- **URL-sourced proxies that pass SOCKS5 but can't reach the API** are now filtered at fetch time or within 15 minutes by the reaper. Previously these proxies would consume auth rate-limiter slots indefinitely and accumulate retry attempts (up to 51+ seen in production) with "network error reaching API" errors.
+
+---
+
 ## [v3.23.0-fix.24.16] — 2026-06-25
 
 ### Fixed
