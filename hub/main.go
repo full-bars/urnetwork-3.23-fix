@@ -779,13 +779,16 @@ function loadFleetChart() {
     var opts = {
       width: document.getElementById('fleet-chart').clientWidth || 800,
       height: 120,
-      cursor: { show: false },
+      cursor: { show: true },
       legend: { show: true },
-      axes: [{ show: false }, { show: false }],
+      axes: [
+        { show: false },
+        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 50 }
+      ],
       series: [
         {},
-        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, points: { show: false } },
-        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, points: { show: false } }
+        { label: 'RX', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5 },
+        { label: 'TX', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 }
       ]
     };
     fleetChart = new uPlot(opts, [labels, rx, tx], document.getElementById('fleet-chart'));
