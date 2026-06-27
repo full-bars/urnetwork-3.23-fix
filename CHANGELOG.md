@@ -7,19 +7,20 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.24.21] — 2026-06-27
 
 ### Added
-- **Runtime override files for live provider tuning** (PR #159): Seven `~/.urnetwork/` files let you change key behaviors on the fly — re-read on every tick or cycle, no restart needed. Remove the file to revert to the startup value:
+- **`urnet-tools fast-auth [on|off]`**: Toggle the auth rate limiter bypass without restarting the provider. `fast-auth on` takes effect immediately (same as `URNETWORK_AUTH_UNLIMITED=true`). `fast-auth` with no args shows the current state.
+- **`urnet-tools set [<key> [<value>|off]]`**: Unified interface for all runtime tuning overrides — no restart needed, changes take effect on the next provider tick. `urnet-tools set` with no args shows all active overrides. `urnet-tools set <key> off` clears the override and reverts to the startup default.
 
-  | File | Effect | Format |
-  |------|---------|--------|
-  | `node_name` | Hub-reported node identity | plain string |
-  | `report_interval` | Bandwidth report cadence | Go duration (`60s`, `2m`) — min 10s |
-  | `proxy_url_max` | Cap on URL-sourced proxies per fetch | integer |
-  | `proxy_url_refresh` | URL fetch cadence | Go duration — min 10s |
-  | `proxy_dead_cleanup_scope` | Dead-proxy cleanup scope | `all`, `degraded`, etc. |
-  | `proxy_dead_cleanup_interval` | Dead-proxy cleanup cadence | Go duration — min 1m |
-  | `fast_auth` | Bypass auth rate limiter | touch file to enable, delete to disable |
+  | Key | Example | What it changes |
+  |-----|---------|-----------------|
+  | `node-name` | `urnet-tools set node-name ny1-box3` | Identity label shown in hub dashboard |
+  | `report-interval` | `urnet-tools set report-interval 60s` | How often bandwidth stats are posted to the hub (min 10s) |
+  | `proxy-url-max` | `urnet-tools set proxy-url-max 500` | Caps URL-sourced proxies loaded per fetch cycle |
+  | `proxy-url-refresh` | `urnet-tools set proxy-url-refresh 15m` | How often the URL proxy list is re-fetched (min 10s) |
+  | `cleanup-scope` | `urnet-tools set cleanup-scope degraded` | Which proxies the cleanup job targets (`dead`, `degraded`, `all`) |
+  | `cleanup-interval` | `urnet-tools set cleanup-interval 6h` | How often the dead-proxy cleanup job runs (min 1m) |
+  | `fast-auth` | `urnet-tools fast-auth on` | Auth rate limiter bypass (also settable via `set`) |
 
-  These follow the same pattern as the `report_url` override introduced in v3.23.0-fix.24.19.
+  Backed by `~/.urnetwork/<name>` files introduced in PR #159; `urnet-tools set` is the supported interface for all of them.
 
 ### Fixed
 - **Hub fleet charts rewritten** (PR #158): The sparkline was plotting cumulative totals (monotonically increasing, unreadable). Now shows 4 charts in a 2×2 flex grid: healthy proxies + active clients over time; hourly traffic deltas (RX/TX per hour window); billable traffic per hour; peak clients + reporting nodes.
