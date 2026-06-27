@@ -11,7 +11,7 @@ All notable changes to this project are documented here.
 - **File-sourced proxies launch before URL-sourced ones** (PR #139): The proxy launch order at startup was non-deterministic (Go random map iteration), so file-based and URL-sourced proxies were interleaved — no priority for paid proxies. The proxy list is now sorted so file-sourced proxies get lower indices in the launch sequence, giving them a head start via `backoffPacer` before any URL-sourced proxies begin connecting.
 - **URL fetcher waits for file-proxy warmup before first fetch** (PR #140): The URL fetcher was triggering 5-15 minutes after startup, before file proxy warmup completed (~17 min for 1000 proxies at 1s stagger). URL-sourced proxies started authing mid-warmup, competing with file proxies for auth rate-limiter slots. The URL fetcher now waits for warmup to reach `>90% up with <5 connecting`, with a 60-minute timeout fallback so a few slow file proxies don't block URL proxies forever.
 
-## [Unreleased]
+## [v3.23.0-fix.24.18] — 2026-06-26
 
 ### Added
 - **Multi-tier degraded proxy removal** (PR #145): `proxy remove-dead` now supports `--degraded[=<duration>]` to remove degraded proxies offline past a threshold, `--source=<url|file|internal>` to filter by source, `--yes` for non-interactive use, and `--preview` for dry-run. Previously only `dead` (never authed) and `inactive` (7+ days) were removable — the `degraded` category (authed once, now offline) was a blind spot that let zombie proxies clog the pool indefinitely.
