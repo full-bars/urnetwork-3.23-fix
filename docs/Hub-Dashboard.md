@@ -81,21 +81,55 @@ cd hub && go build -o hub .
 ./hub -addr :9090 -data /var/hub-data
 ```
 
-### Configure Providers to Report (Manual / Docker)
+### Configure Providers to Report
 
-Set the `URNETWORK_REPORT_URL` environment variable on each provider:
+Set the `URNETWORK_REPORT_URL` environment variable on each provider at startup, or use the `report` command to set or change it at runtime.
+
+**Startup (Docker):**
 
 ```sh
-# Docker
 docker run -d \
   --name=urfix \
   -e URNETWORK_AUTH_CODE=YOUR_CODE \
   -e URNETWORK_REPORT_URL=http://HUB_IP:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
 
-# Native binary (without urnet-tools)
+**Startup (native binary):**
+
+```sh
 URNETWORK_REPORT_URL=http://HUB_IP:8080 ./ur-provider
 ```
+
+**Runtime (binary -- no restart):**
+
+```sh
+# Set or change the report URL
+urnet-tools report http://HUB_IP:8080
+
+# Check current URL
+urnet-tools report
+
+# Disable reporting
+urnet-tools report off
+```
+
+The `report` command writes to `~/.urnetwork/report_url`, which the provider re-reads on every reporter tick (default 5m). No restart needed.
+
+**Runtime (Docker -- no restart):**
+
+```sh
+# Set or change
+urnet-tools report http://HUB_IP:8080
+
+# Check current
+urnet-tools report
+
+# Disable
+urnet-tools report off
+```
+
+The Docker wrapper `docker exec`s into the container and writes the same `~/.urnetwork/report_url` file. The provider picks it up on the next tick.
 
 > [!TIP]
 > Use a single hub instance for your entire fleet. All nodes report to the same URL.
