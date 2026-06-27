@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,11 +15,109 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 var Version string
+
+// Simple per-IP sliding window rate limiter.
+type rateLimiter struct {
+	mu       sync.Mutex
+	clients  map[string]*clientRate
+	limit    int           // max requests per window
+	window   time.Duration // sliding window size
+}
+
+type clientRate struct {
+	times []time.Time
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	rl := &rateLimiter{
+		clients: make(map[string]*clientRate),
+		limit:   limit,
+		window:  window,
+	}
+	// Background cleanup of stale entries every 5 minutes
+	go func() {
+		for {
+			time.Sleep(5 * time.Minute)
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, cr := range rl.clients {
+				cutoff := now.Add(-rl.window)
+				var kept []time.Time
+				for _, t := range cr.times {
+					if t.After(cutoff) {
+						kept = append(kept, t)
+					}
+				}
+				if len(kept) == 0 {
+					delete(rl.clients, ip)
+				} else {
+					cr.times = kept
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cr, ok := rl.clients[ip]
+	if !ok {
+		cr = &clientRate{}
+		rl.clients[ip] = cr
+	}
+	cutoff := now.Add(-rl.window)
+	var active []time.Time
+	for _, t := range cr.times {
+		if t.After(cutoff) {
+			active = append(active, t)
+		}
+	}
+	if len(active) >= rl.limit {
+		cr.times = active
+		return false
+	}
+	cr.times = append(active, now)
+	return true
+}
+
+// rateLimitMiddleware limits requests to rateLimit per rateWindow per client IP.
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	rl := newRateLimiter(60, time.Minute) // 60 req/min per IP
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract client IP from X-Forwarded-For or remote address
+		ip := r.RemoteAddr
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if idx := strings.Index(fwd, ","); idx > 0 {
+				ip = strings.TrimSpace(fwd[:idx])
+			} else {
+				ip = strings.TrimSpace(fwd)
+			}
+		} else if idx := strings.LastIndex(ip, ":"); idx > 0 {
+			ip = ip[:idx]
+		}
+		// Don't rate limit the report endpoint
+		if r.URL.Path == "/api/report" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !rl.allow(ip) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded", 429)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 var funcMap = template.FuncMap{
 	"fmtBytes": fmtBytes,
@@ -238,6 +337,29 @@ type summaryRow struct {
 	Earning, TotalProxies                  int
 }
 
+// proxyCounts computes aggregate counts from a proxy report slice.
+func proxyCounts(proxies []proxyReport) proxSummary {
+	var ps proxSummary
+	for _, p := range proxies {
+		ps.TotalRX += p.TotalRX
+		ps.TotalTX += p.TotalTX
+		ps.BillRX += p.BillRX
+		ps.BillTX += p.BillTX
+		ps.Clients += p.Clients
+		switch p.Status {
+		case "up":
+			ps.Up++
+		case "connecting":
+			ps.Connecting++
+		case "degraded":
+			ps.Degraded++
+		default:
+			ps.Dead++
+		}
+	}
+	return ps
+}
+
 type proxSummary struct {
 	Up, Connecting, Degraded, Dead int
 	Clients                        int64
@@ -246,28 +368,20 @@ type proxSummary struct {
 	Earning                        int
 }
 
-// proxyRow pairs a reported proxy with its hub-computed earning state for
-// template rendering. proxyReport itself stays a plain decode/persist target.
-type proxyRow struct {
-	proxyReport
-	Earning bool
-}
-
 type nodeRow struct {
-	NodeID        string
-	Host          string
-	Version       string
-	Heartbeat     string
-	Color         string
-	Uptime        string
-	Proxies       proxSummary
-	MbpsRX        float64
-	MbpsTX        float64
-	HeapMiB       uint64
-	SysMiB        uint64
-	Conns         int64
-	ProxyList     []proxyRow
-	Index         int
+	NodeID    string
+	Host      string
+	Version   string
+	Heartbeat string
+	Color     string
+	Uptime    string
+	Proxies   proxSummary
+	MbpsRX    float64
+	MbpsTX    float64
+	HeapMiB   uint64
+	SysMiB    uint64
+	Conns     int64
+	Index     int
 }
 
 func fmtBytes(b uint64) string {
@@ -363,16 +477,106 @@ func handleReport(s *store) http.HandlerFunc {
 	}
 }
 
+// gzipMiddleware wraps an http.Handler, transparently compressing responses
+// when the client sends Accept-Encoding: gzip.
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz, err := gzip.NewWriterLevel(w, gzip.DefaultCompression)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer gz.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, Writer: gz}, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer io.Writer
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	return g.Writer.Write(b)
+}
+
 func handleNodes(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(s.list())
+		// Support /api/nodes/<id>/proxies for lazy-loaded proxy detail rows
+		path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+		if path != "" && strings.HasSuffix(path, "/proxies") {
+			nodeID := strings.TrimSuffix(path, "/proxies")
+			s.mu.RLock()
+			n, ok := s.Nodes[nodeID]
+			s.mu.RUnlock()
+			if !ok {
+				http.Error(w, "node not found", 404)
+				return
+			}
+			json.NewEncoder(w).Encode(n.Proxies)
+			return
+		}
+		// Return node list without proxy details for lightweight polling
+		type nodeSummary struct {
+			NodeID      string         `json:"node_id"`
+			Host        string         `json:"host"`
+			Version     string         `json:"version"`
+			Timestamp   time.Time      `json:"ts"`
+			Uptime      float64        `json:"uptime"`
+			Proxies     int            `json:"proxies"`
+			Up          int            `json:"up"`
+			Connecting  int            `json:"connecting"`
+			Degraded    int            `json:"degraded"`
+			Dead        int            `json:"dead"`
+			MbpsRX      float64        `json:"mbps_rx"`
+			MbpsTX      float64        `json:"mbps_tx"`
+			Earning     int            `json:"earning"`
+			System      systemMetrics  `json:"sys"`
+		}
+		nodes := s.list()
+		out := make([]nodeSummary, 0, len(nodes))
+		for _, n := range nodes {
+			ps := proxyCounts(n.Proxies)
+			nodeEarning := s.getEarning(n.NodeID)
+			earning := 0
+			for _, p := range n.Proxies {
+				if nodeEarning[p.ID] {
+					earning++
+				}
+			}
+			mbpsRX, mbpsTX := s.getRate(n.NodeID)
+			out = append(out, nodeSummary{
+				NodeID:    n.NodeID,
+				Host:      n.Host,
+				Version:   n.Version,
+				Timestamp: n.Timestamp,
+				Uptime:    n.Uptime,
+				Proxies:   len(n.Proxies),
+				Up:        ps.Up,
+				Connecting: ps.Connecting,
+				Degraded:  ps.Degraded,
+				Dead:      ps.Dead,
+				MbpsRX:    mbpsRX,
+				MbpsTX:    mbpsTX,
+				Earning:   earning,
+				System:    n.System,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
 	}
 }
 
+const maxHistoryHours = 168
+
 // handleHistory serves the hourly rollups stored in SQLite as JSON. Query
 // params: node (optional node_id filter) and hours (lookback window, default
-// 24). Example: /api/history?node=la6&hours=168
+// 24, max 168). Example: /api/history?node=la6&hours=168
 func handleHistory(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.URL.Query().Get("node")
@@ -381,6 +585,9 @@ func handleHistory(s *store) http.HandlerFunc {
 			if v, err := strconv.Atoi(h); err == nil && v > 0 {
 				hours = v
 			}
+		}
+		if hours > maxHistoryHours {
+			hours = maxHistoryHours
 		}
 		rows, err := s.history(nodeID, hours)
 		if err != nil {
@@ -429,33 +636,30 @@ func handleDashboard(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
 
+		var sm summaryRow
 		rows := make([]nodeRow, 0, len(nodes))
 		for i, n := range nodes {
 			nodeEarning := s.getEarning(n.NodeID)
-			var ps proxSummary
-			proxyList := make([]proxyRow, 0, len(n.Proxies))
+			ps := proxyCounts(n.Proxies)
+
+			// Accumulate fleet totals in one pass
+			sm.Nodes++
+			sm.Up += ps.Up
+			sm.Connecting += ps.Connecting
+			sm.Degraded += ps.Degraded
+			sm.Dead += ps.Dead
+			sm.TotalClients += ps.Clients
+			sm.TotalRX += ps.TotalRX
+			sm.TotalTX += ps.TotalTX
+			sm.BillRX += ps.BillRX
+			sm.BillTX += ps.BillTX
+			sm.TotalProxies += len(n.Proxies)
 			for _, p := range n.Proxies {
-				ps.TotalRX += p.TotalRX
-				ps.TotalTX += p.TotalTX
-				ps.BillRX += p.BillRX
-				ps.BillTX += p.BillTX
-				ps.Clients += p.Clients
-				switch p.Status {
-				case "up":
-					ps.Up++
-				case "connecting":
-					ps.Connecting++
-				case "degraded":
-					ps.Degraded++
-				default:
-					ps.Dead++
+				if nodeEarning[p.ID] {
+					sm.Earning++
 				}
-				isEarning := nodeEarning[p.ID]
-				if isEarning {
-					ps.Earning++
-				}
-				proxyList = append(proxyList, proxyRow{proxyReport: p, Earning: isEarning})
 			}
+
 			uptime := time.Duration(n.Uptime * float64(time.Second)).Round(time.Second)
 			uptimeStr := uptime.String()
 			if uptime.Hours() > 24 {
@@ -487,12 +691,9 @@ func handleDashboard(s *store) http.HandlerFunc {
 				HeapMiB:   n.System.HeapMiB,
 				SysMiB:    n.System.SysMiB,
 				Conns:     n.System.Connections,
-				ProxyList: proxyList,
 				Index:     i,
 			})
 		}
-
-		sm := s.summary()
 
 		var buf bytes.Buffer
 		tmpl.Execute(&buf, map[string]interface{}{
@@ -529,7 +730,7 @@ func main() {
 	mux.HandleFunc("/", handleDashboard(s))
 
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	if err := http.ListenAndServe(*addr, gzipMiddleware(rateLimitMiddleware(mux))); err != nil {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 		os.Exit(1)
 	}
@@ -572,6 +773,11 @@ tr.expandable { cursor: pointer; }
 tr.detail-row { display: none; }
 tr.detail-row.open { display: table-row; }
 tr.detail-row td { padding: 0; background: #0f172a; }
+.proxy-list .loading { padding: 16px; color: #64748b; text-align: center; }
+.proxy-list table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.proxy-list th { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e293b; color: #64748b; font-weight: 600; white-space: nowrap; cursor: pointer; user-select: none; }
+.proxy-list th:hover { color: #94a3b8; }
+.proxy-list td { padding: 6px 10px; border-bottom: 1px solid #1e293b; font-size: 12px; }
 .detail-inner { padding: 8px 12px 12px 60px; }
 .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .detail-table th { background: transparent; color: #64748b; padding: 6px 8px; font-size: 10px; border-bottom: 1px solid #1e293b; }
@@ -644,7 +850,7 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 </thead>
 <tbody>
 {{range .Rows}}
-<tr class="expandable" onclick="toggleDetail('{{.NodeID}}')">
+<tr class="expandable" data-id="{{.NodeID}}" onclick="toggleDetail('{{.NodeID}}')">
 <td class="node-id">{{.NodeID}} <span class="version">{{.Version}}</span></td>
 <td><span class="dot" style="background:{{.Color}}"></span>{{.Heartbeat}}</td>
 <td>{{.Uptime}}</td>
@@ -663,44 +869,13 @@ tr.detail-row td { padding: 0; background: #0f172a; }
 <td class="num">{{fmtMbps .MbpsTX}}</td>
 <td class="num">{{.HeapMiB}} MiB</td>
 <td class="num">{{.Conns}}</td>
-<td class="num">{{.Proxies.Earning}}/{{len .ProxyList}}</td>
+<td class="num">{{.Proxies.Earning}}/{{.Proxies.Up}}</td>
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">✕</span></td>
 </tr>
 <tr class="detail-row" id="detail-{{.NodeID}}">
 <td colspan="15">
 <div class="detail-inner">
-<table class="detail-table">
-<thead>
-<tr>
-<th>ID</th>
-<th>Address</th>
-<th>Status</th>
-<th class="num">Clients</th>
-<th class="num">Max Age</th>
-<th class="num">RX</th>
-<th class="num">TX</th>
-<th class="num">Bill RX</th>
-<th class="num">Bill TX</th>
-<th>Earning</th>
-</tr>
-</thead>
-<tbody>
-{{range .ProxyList}}
-<tr>
-<td class="num-mono">{{.ID}}</td>
-<td>{{.Address}}</td>
-<td><span class="proxy-status {{.Status}}"></span>{{title .Status}}</td>
-<td class="num">{{.Clients}}</td>
-<td class="num">{{fmtAge .MaxAge}}</td>
-<td class="num">{{fmtBytes .TotalRX}}</td>
-<td class="num">{{fmtBytes .TotalTX}}</td>
-<td class="num">{{fmtBytes .BillRX}}</td>
-<td class="num">{{fmtBytes .BillTX}}</td>
-<td>{{if .Earning}}<span class="status-badge up">Yes</span>{{else}}<span class="status-badge dead">No</span>{{end}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
+<div id="proxies-{{.NodeID}}" class="proxy-list"><div class="loading">Loading proxies...</div></div>
 </div>
 </td>
 </tr>
@@ -721,8 +896,30 @@ auto-refresh
 </div>
 </div>
 <script>
+var proxyCache = {};
+
 function toggleDetail(id) {
-  document.getElementById('detail-' + id).classList.toggle('open');
+  var detail = document.getElementById('detail-' + id);
+  detail.classList.toggle('open');
+  if (detail.classList.contains('open') && !proxyCache[id]) {
+    proxyCache[id] = true;
+    var container = document.getElementById('proxies-' + id);
+    fetch('/api/nodes/' + id + '/proxies').then(function(r) { return r.json(); }).then(function(proxies) {
+      if (!proxies || proxies.length === 0) {
+        container.innerHTML = '<div class="loading">No proxy data</div>';
+        return;
+      }
+      var html = '<table><thead><tr><th>ID</th><th>Address</th><th>Status</th><th class="num">Clients</th><th class="num">Max Age</th><th class="num">RX</th><th class="num">TX</th><th class="num">Bill RX</th><th class="num">Bill TX</th></tr></thead><tbody>';
+      proxies.forEach(function(p) {
+        var earning = p.bill_rx > 0 || p.bill_tx > 0;
+        html += '<tr><td class="num-mono">' + p.id + '</td><td>' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      container.innerHTML = html;
+    }).catch(function() {
+      container.innerHTML = '<div class="loading">Failed to load proxies</div>';
+    });
+  }
 }
 
 function removeNode(nodeId) {
@@ -768,41 +965,88 @@ function closeAllDetails() {
   document.querySelectorAll('.detail-row.open').forEach(function(r) { r.classList.remove('open'); });
 }
 
+var refreshing = false;
+
 function refreshDashboard() {
+  if (refreshing) return;
+  refreshing = true;
   var openIds = [];
   document.querySelectorAll('.detail-row.open').forEach(function(r) { openIds.push(r.id); });
   
-  fetch('/').then(function(r) { return r.text(); }).then(function(html) {
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(html, 'text/html');
-    var newBody = doc.querySelector('#node-table tbody');
-    var newSummary = doc.querySelector('.summary');
-    document.querySelector('#node-table tbody').replaceWith(newBody);
-    document.querySelector('.summary').replaceWith(newSummary);
+  fetch('/api/nodes').then(function(r) { return r.json(); }).then(function(nodes) {
+    var tbody = document.querySelector('#node-table tbody');
+    var rows = {};
+    tbody.querySelectorAll('tr.expandable').forEach(function(r) {
+      rows[r.getAttribute('data-id')] = r;
+    });
+    
+    var total = { up: 0, connecting: 0, degraded: 0, dead: 0, clients: 0, earning: 0, proxies: 0, nodes: 0 };
+    var frag = document.createDocumentFragment();
+    
+    nodes.forEach(function(n) {
+      total.nodes++;
+      total.up += n.up;
+      total.connecting += n.connecting;
+      total.degraded += n.degraded;
+      total.dead += n.dead;
+      total.clients += n.clients;
+      total.proxies += n.proxies;
+      
+      var ago = fmtAgo(n.ts);
+      var uptime = fmtUptime(n.uptime);
+      var color = n.ts ? nodeColor(n.ts) : '#ef4444';
+      var existing = rows[n.node_id];
+      if (existing) {
+        // Update existing row in place
+        existing.innerHTML = '<td><span class="dot" style="background:' + color + '"></span>' + n.node_id + '</td><td>' + (n.host||'') + '</td><td>' + ago + '</td><td>' + uptime + '</td><td class="num">' + n.proxies + '</td><td class="num">' + n.clients + '</td><td class="num">' + fmtBytes(n.rx) + '</td><td class="num">' + fmtBytes(n.tx) + '</td><td class="num">' + fmtBytes(n.bill_rx) + '</td><td class="num">' + fmtBytes(n.bill_tx) + '</td><td class="num">' + fmtMbps(n.mbps_rx) + '</td><td class="num">' + fmtMbps(n.mbps_tx) + '</td><td class="num">' + n.earning + '/' + n.up + '</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\'' + n.node_id + '\')" title="Remove node">&#10005;</span></td>';
+      } else {
+        // New node, add a row
+        var tr = document.createElement('tr');
+        tr.className = 'expandable';
+        tr.setAttribute('data-id', n.node_id);
+        tr.onclick = function() { toggleDetail(n.node_id); };
+        tr.innerHTML = '<td><span class="dot" style="background:' + color + '"></span>' + n.node_id + '</td><td>' + (n.host||'') + '</td><td>' + ago + '</td><td>' + uptime + '</td><td class="num">' + n.proxies + '</td><td class="num">' + n.clients + '</td><td class="num">' + fmtBytes(n.rx) + '</td><td class="num">' + fmtBytes(n.tx) + '</td><td class="num">' + fmtBytes(n.bill_rx) + '</td><td class="num">' + fmtBytes(n.bill_tx) + '</td><td class="num">' + fmtMbps(n.mbps_rx) + '</td><td class="num">' + fmtMbps(n.mbps_tx) + '</td><td class="num">' + n.earning + '/' + n.up + '</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\'' + n.node_id + '\')" title="Remove node">&#10005;</span></td>';
+        frag.appendChild(tr);
+        // Add detail row
+        var detail = document.createElement('tr');
+        detail.className = 'detail-row';
+        detail.id = 'detail-' + n.node_id;
+        detail.innerHTML = '<td colspan="15"><div class="detail-inner"><div id="proxies-' + n.node_id + '" class="proxy-list"><div class="loading">Loading proxies...</div></div></div></td>';
+        frag.appendChild(detail);
+      }
+    });
+    
+    tbody.innerHTML = '';
+    tbody.appendChild(frag);
     
     openIds.forEach(function(id) {
       var r = document.getElementById(id);
       if (r) r.classList.add('open');
     });
     
-    if (typeof attachInnerSort === 'function') attachInnerSort();
+    // Update summary
+    var sumHtml = '<span>' + total.nodes + ' nodes</span><span>' + total.proxies + ' proxies</span><span class="up">' + total.up + ' up</span><span class="warn">' + total.degraded + ' degraded</span><span class="dead">' + total.dead + ' dead</span><span>' + total.clients + ' clients</span>';
+    document.querySelector('.summary').innerHTML = sumHtml;
     
     if (currentCol) {
-      var tbody = document.querySelector('#node-table tbody');
-      var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
-      rows.sort(function(a, b) {
+      // Re-sort
+      var rowsArr = Array.from(tbody.querySelectorAll('tr.expandable'));
+      rowsArr.sort(function(a, b) {
         var va = a.cells[getColIndex(currentCol)].textContent.trim();
         var vb = b.cells[getColIndex(currentCol)].textContent.trim();
         return cmpNode(va, vb, currentDir);
       });
-      rows.forEach(function(r) {
-        var detail = r.nextElementSibling;
-        tbody.appendChild(r);
-        if (detail && detail.classList.contains('detail-row')) {
-          tbody.appendChild(detail);
-        }
+      var sortedFrag = document.createDocumentFragment();
+      rowsArr.forEach(function(r) {
+        sortedFrag.appendChild(r);
+        var detail = document.getElementById('detail-' + r.getAttribute('data-id'));
+        if (detail) sortedFrag.appendChild(detail);
       });
+      tbody.innerHTML = '';
+      tbody.appendChild(sortedFrag);
     }
+  }).catch(function() {}).then(function() {
+    refreshing = false;
   });
 }
 
@@ -849,6 +1093,36 @@ function getColIndex(col) {
 }
 
 // helper matching Go fmtBytes
+function fmtAgo(ts) {
+  if (!ts) return 'never';
+  var d = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (d < 10) return 'just now';
+  if (d < 60) return Math.round(d) + 's ago';
+  if (d < 3600) return Math.round(d/60) + 'm ago';
+  return Math.round(d/3600) + 'h ago';
+}
+
+function fmtUptime(s) {
+  if (!s) return '0s';
+  var h = Math.floor(s / 3600);
+  var d = Math.floor(h / 24);
+  if (d > 0) return d + 'd ' + (h % 24) + 'h';
+  if (h > 0) return h + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  return Math.floor(s / 60) + 'm';
+}
+
+function fmtMbps(v) {
+  if (!v || v === 0) return '—';
+  return v.toFixed(1) + ' Mbps';
+}
+
+function nodeColor(ts) {
+  var age = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (age < 420) return '#22c55e';
+  if (age < 900) return '#eab308';
+  return '#ef4444';
+}
+
 function fmtBytes(b) {
   if (b < 1024) return b + ' B';
   var units = 'KMGTPE';

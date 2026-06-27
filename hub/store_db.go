@@ -246,17 +246,35 @@ func (s *store) loadLatestFromDB() error {
 		return err
 	}
 
-	for _, n := range nrows {
+	// Batch-load the latest snapshot for every known node in a single query
+	// instead of N separate queries.
+	snapshotRows, err := s.db.Query(
+		`SELECT ps.node_id, ps.data
+		 FROM proxy_snapshots ps
+		 INNER JOIN (SELECT node_id, MAX(ts) AS mts FROM proxy_snapshots GROUP BY node_id) latest
+		 ON ps.node_id = latest.node_id AND ps.ts = latest.mts`)
+	if err != nil {
+		return err
+	}
+	defer snapshotRows.Close()
+
+	snapshots := map[string][]byte{}
+	for snapshotRows.Next() {
+		var id string
 		var blob []byte
-		err := s.db.QueryRow(
-			`SELECT data FROM proxy_snapshots WHERE node_id = ? ORDER BY ts DESC LIMIT 1`,
-			n.id,
-		).Scan(&blob)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
+		if err := snapshotRows.Scan(&id, &blob); err != nil {
 			return err
+		}
+		snapshots[id] = blob
+	}
+	if err := snapshotRows.Err(); err != nil {
+		return err
+	}
+
+	for _, n := range nrows {
+		blob, ok := snapshots[n.id]
+		if !ok {
+			continue
 		}
 		var proxies []proxyReport
 		if err := gunzipJSON(blob, &proxies); err != nil {
@@ -273,8 +291,6 @@ func (s *store) loadLatestFromDB() error {
 		}
 		s.Nodes[n.id] = state
 
-		// Seed the rate baseline so the first post-restart report can compute a
-		// rate instead of starting from zero.
 		totalRX, totalTX, _, _, _ := proxyTotals(proxies)
 		s.rates[n.id] = &nodeRate{ts: state.Timestamp, rx: totalRX, tx: totalTX}
 	}
@@ -314,6 +330,7 @@ func (s *store) importJSON(jsonPath string) (int, error) {
 
 // hourlyRow is one bucket of a node's rollup history, returned by /api/history.
 type hourlyRow struct {
+	NodeID      string `json:"node_id,omitempty"`
 	Hour        int64  `json:"hour"` // unix epoch seconds at the start of the hour
 	TotalRX     uint64 `json:"total_rx"`
 	TotalTX     uint64 `json:"total_tx"`
@@ -323,8 +340,10 @@ type hourlyRow struct {
 	Samples     int64  `json:"samples"`
 }
 
+const maxHistoryRows = 10000
+
 // history returns up to the last `hours` hourly rollups for a node (or all
-// nodes when nodeID is empty), most recent first.
+// nodes when nodeID is empty), most recent first. Capped at maxHistoryRows.
 func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	if s.db == nil {
 		return nil, nil
@@ -340,12 +359,12 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	)
 	if nodeID == "" {
 		rows, err = s.db.Query(`
-			SELECT hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
-			FROM node_hourly WHERE hour >= ? ORDER BY hour DESC`, since)
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
+			FROM node_hourly WHERE hour >= ? ORDER BY hour DESC LIMIT ?`, since, maxHistoryRows)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
-			FROM node_hourly WHERE node_id = ? AND hour >= ? ORDER BY hour DESC`, nodeID, since)
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
+			FROM node_hourly WHERE node_id = ? AND hour >= ? ORDER BY hour DESC LIMIT ?`, nodeID, since, maxHistoryRows)
 	}
 	if err != nil {
 		return nil, err
@@ -356,7 +375,7 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	for rows.Next() {
 		var h hourlyRow
 		var hour int64
-		if err := rows.Scan(&hour, &h.TotalRX, &h.TotalTX, &h.BillRX, &h.BillTX, &h.PeakClients, &h.Samples); err != nil {
+		if err := rows.Scan(&h.NodeID, &hour, &h.TotalRX, &h.TotalTX, &h.BillRX, &h.BillTX, &h.PeakClients, &h.Samples); err != nil {
 			return nil, err
 		}
 		h.Hour = hour * 3600
@@ -391,12 +410,53 @@ func (s *store) pruneHourly() (int64, error) {
 	return res.RowsAffected()
 }
 
-// startRetention launches the background pruning loops: snapshots hourly,
-// hourly rollups daily. A small startup jitter avoids hammering the DB right at
-// boot. Both stop when ctx is cancelled.
+// startRetention launches the background retention and eviction loops.
+// Stale node eviction runs every 5 minutes, snapshot pruning hourly,
+// hourly rollups and node table pruning daily. A small startup jitter
+// avoids hammering the DB right at boot. All stop when ctx is cancelled.
 func (s *store) startRetention(ctx context.Context) {
+	go retentionLoop(ctx, 5*time.Minute, "stale-nodes", s.evictStaleNodes)
 	go retentionLoop(ctx, time.Hour, "proxy_snapshots", s.pruneSnapshots)
 	go retentionLoop(ctx, 24*time.Hour, "node_hourly", s.pruneHourly)
+	go retentionLoop(ctx, 24*time.Hour, "nodes", s.pruneNodes)
+}
+
+// evictStaleNodes removes nodes from the in-memory s.Nodes map that haven't
+// reported within staleCutoff (15 minutes). These nodes still exist in the
+// database and will be reloaded on hub restart if their snapshots haven't
+// been pruned yet.
+func (s *store) evictStaleNodes() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-staleCutoff)
+	var n int64
+	for id, node := range s.Nodes {
+		if node.Timestamp.Before(cutoff) {
+			delete(s.Nodes, id)
+			delete(s.rates, id)
+			delete(s.prevBillable, id)
+			delete(s.earning, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+// pruneNodes removes rows from the nodes table that have no corresponding
+// proxy_snapshots (fully expired data) and are older than 7 days.
+func (s *store) pruneNodes() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-7 * 24 * time.Hour).Unix()
+	res, err := s.db.Exec(
+		`DELETE FROM nodes WHERE ts < ? AND node_id NOT IN (SELECT DISTINCT node_id FROM proxy_snapshots)`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func retentionLoop(ctx context.Context, every time.Duration, label string, prune func() (int64, error)) {
