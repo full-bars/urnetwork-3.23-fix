@@ -984,7 +984,12 @@ function openDrawer(id) {
       document.getElementById('drawer-body').innerHTML = '<div class="loading">No proxy data</div>';
       return;
     }
-    proxyDrawer = { data: proxies, col: 'status', dir: -1 };
+    proxyDrawer = { data: proxies, col: 'clients', dir: -1 };
+    // Default sort: clients desc, then billable rx desc
+    proxies.sort(function(a, b) {
+      if (b.clients !== a.clients) return b.clients - a.clients;
+      return (b.bill_rx || 0) - (a.bill_rx || 0);
+    });
     renderProxyDrawer();
   }).catch(function() {
     document.getElementById('drawer-body').innerHTML = '<div class="loading">Failed to load proxies</div>';
