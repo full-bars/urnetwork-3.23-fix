@@ -25,7 +25,7 @@ var funcMap = template.FuncMap{
 	"fmtMbps":  fmtMbps,
 	"title":    title,
 	"fmtAge":   fmtAge,
-	"pct":      func(a, b int) float64 { return float64(a) / float64(b) * 100 },
+	"pct":      func(a, b int) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
 }
 
 type proxyReport struct {
@@ -772,7 +772,7 @@ function loadFleetChart() {
     var hours = Object.keys(byHour).sort();
     var labels = [], rx = [], tx = [];
     hours.forEach(function(h) {
-      labels.push(new Date(parseInt(h) * 1000));
+      labels.push(parseInt(h));
       rx.push(byHour[h].rx);
       tx.push(byHour[h].tx);
     });
@@ -849,9 +849,11 @@ function refreshDashboard() {
     var tbody = document.querySelector('#node-table tbody');
     var existing = {};
     tbody.querySelectorAll('tr.expandable').forEach(function(r) { existing[r.getAttribute('data-id')] = r; });
+    var incomingIds = {};
     var frag = document.createDocumentFragment();
     var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
     nodes.forEach(function(n) {
+      incomingIds[n.node_id] = true;
       nodeCount++; totalProxies += n.proxies; totalUp += n.up; totalDeg += n.degraded; totalDead += n.dead; totalClients += n.clients; totalEarning += n.earning; totalRX += n.rx; totalTX += n.tx;
       var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
       var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
@@ -873,6 +875,13 @@ function refreshDashboard() {
         frag.appendChild(tr);
       }
     });
+    // Remove rows for nodes no longer in the response
+    Object.keys(existing).forEach(function(id) {
+      if (!incomingIds[id]) {
+        var e = existing[id];
+        if (e) e.remove();
+      }
+    });
     tbody.appendChild(frag);
     document.querySelectorAll('.card')[0].innerHTML = '<div class="label">Total Proxies</div><div class="value">' + totalProxies + '</div><div class="sub">across ' + nodeCount + ' nodes</div>';
     document.querySelectorAll('.card')[1].innerHTML = '<div class="label">Healthy</div><div class="value">' + totalUp + '</div><div class="sub">' + (totalProxies > 0 ? (totalUp/totalProxies*100).toFixed(1) : '0') + '% of fleet</div>';
@@ -891,7 +900,7 @@ function setHistoryRange(hours, btn) {
   loadHistory();
 }
 function resetHistoryZoom() {
-  if (historyChart) historyChart.setScale('x', { min: null, max: null });
+  loadHistory();
 }
 function loadHistory() {
   var nodeId = document.getElementById('history-node').value;
@@ -902,7 +911,7 @@ function loadHistory() {
     }
     var rx = [], tx = [], labels = [];
     for (var i = data.length - 1; i >= 0; i--) {
-      labels.push(new Date(data[i].hour * 1000));
+      labels.push(data[i].hour);
       rx.push(data[i].total_rx);
       tx.push(data[i].total_tx);
     }
@@ -980,7 +989,7 @@ function sortBy(col) {
   rows.forEach(function(r) { tbody.appendChild(r); });
 }
 function getColIndex(col) {
-  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,billrx:6,tx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11}[col]||0;
+  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,tx:6,billrx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11}[col]||0;
 }
 function parseSortValue(s) {
   s = s.trim();
