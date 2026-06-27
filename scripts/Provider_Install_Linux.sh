@@ -1490,6 +1490,40 @@ show_logs ()
     fi
 }
 
+# override_set_env KEY VALUE
+# Idempotently sets Environment="KEY=VALUE" in the systemd override.conf.
+# Removes any existing line with the same KEY before appending, so running
+# this multiple times never creates duplicates. Creates the file with a
+# [Service] header if it doesn't exist.
+override_set_env() {
+    local key="$1" value="$2"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    local override_file="$override_dir/override.conf"
+    mkdir -p "$override_dir"
+    if [ ! -f "$override_file" ]; then
+        printf '[Service]\n' > "$override_file"
+    fi
+    # Remove any existing line with this key (matches any value after =)
+    sed -i '/^Environment="'"$key"'=/d' "$override_file"
+    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
+}
+
+# override_rm_env KEY
+# Removes Environment="KEY=..." from override.conf. Cleans up empty files.
+override_rm_env() {
+    local key="$1"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    local override_file="$override_dir/override.conf"
+    if [ -f "$override_file" ]; then
+        sed -i '/^Environment="'"$key"'=/d' "$override_file"
+        # If file only has [Service] header, remove it entirely
+        if [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
+            rm -f "$override_file"
+            rmdir "$override_dir" 2>/dev/null || true
+        fi
+    fi
+}
+
 toggle_ramlogs ()
 {
     mode="$1"
@@ -1500,22 +1534,7 @@ toggle_ramlogs ()
         on)
             confirm_restart "Enabling RAM logging requires restarting the URNetwork provider."
             pr_info "Enabling RAM logging..."
-            mkdir -p "$override_dir"
-            if [ -f "$override_file" ]; then
-                if ! grep -q "URNETWORK_RAMLOGS=1" "$override_file"; then
-                    # Append to existing [Service] block or add it
-                    if grep -q "\[Service\]" "$override_file"; then
-                        sed -i '/\[Service\]/a Environment="URNETWORK_RAMLOGS=1"' "$override_file"
-                    else
-                        printf '\n[Service]\nEnvironment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
-                    fi
-                fi
-            else
-                cat > "$override_file" <<EOF
-[Service]
-Environment="URNETWORK_RAMLOGS=1"
-EOF
-            fi
+            override_set_env "URNETWORK_RAMLOGS" "1"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "RAM logging enabled and service restarted."
@@ -1523,14 +1542,8 @@ EOF
         off)
             confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
+            override_rm_env "URNETWORK_RAMLOGS"
             if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_RAMLOGS=1/d' "$override_file"
-                # If file is empty or only has [Service], remove it
-                if [ ! -s "$override_file" ] || [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
-                    rm -f "$override_file"
-                    # If directory is empty, remove it
-                    rmdir "$override_dir" 2>/dev/null || true
-                fi
                 systemctl --user daemon-reload
                 systemctl --user restart urnetwork.service
             fi
@@ -1575,9 +1588,6 @@ detect_mem_limit_mib ()
 toggle_lowmode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
-
     case "$mode" in
         on)
             confirm_restart "Enabling lowmode requires restarting the URNetwork provider."
@@ -1585,14 +1595,9 @@ toggle_lowmode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 85 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of ${ram_mib}MiB detected RAM)"
-
-            mkdir -p "$override_dir"
-            cat > "$override_file" <<EOF
-[Service]
-Environment="URNETWORK_PROFILE=lowmem"
-Environment="GOMEMLIMIT=${gomem_mib}MiB"
-Environment="GOGC=50"
-EOF
+            override_set_env "URNETWORK_PROFILE" "lowmem"
+            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
+            override_set_env "GOGC" "50"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Lowmode enabled and service restarted."
@@ -1600,7 +1605,9 @@ EOF
         off)
             confirm_restart "Disabling lowmode requires restarting the URNetwork provider."
             pr_info "Disabling lowmode..."
-            rm -rf "$override_dir"
+            override_rm_env "URNETWORK_PROFILE"
+            override_rm_env "GOMEMLIMIT"
+            override_rm_env "GOGC"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Lowmode disabled and service restarted."
@@ -1615,9 +1622,6 @@ EOF
 toggle_ecomode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
-
     case "$mode" in
         on)
             confirm_restart "Enabling eco mode requires restarting the URNetwork provider."
@@ -1625,20 +1629,9 @@ toggle_ecomode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 75 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (75%% of ${ram_mib}MiB detected RAM)"
-
-            mkdir -p "$override_dir"
-            # Preserve unrelated settings (e.g. URNETWORK_RAMLOGS) while
-            # writing the eco-specific vars. Strip any prior profile/GC lines
-            # then append the new ones under an existing [Service] header or
-            # create the file fresh.
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
-            else
-                printf '[Service]\n' > "$override_file"
-            fi
-            printf 'Environment="URNETWORK_PROFILE=eco"\n' >> "$override_file"
-            printf 'Environment="GOMEMLIMIT=%sMiB"\n' "$gomem_mib" >> "$override_file"
-            printf 'Environment="GOGC=50"\n' >> "$override_file"
+            override_set_env "URNETWORK_PROFILE" "eco"
+            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
+            override_set_env "GOGC" "50"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Eco mode enabled and service restarted."
@@ -1646,13 +1639,9 @@ toggle_ecomode ()
         off)
             confirm_restart "Disabling eco mode requires restarting the URNetwork provider."
             pr_info "Disabling eco mode..."
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
-                # Remove the file entirely if nothing meaningful remains
-                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
-                    rm -rf "$override_dir"
-                fi
-            fi
+            override_rm_env "URNETWORK_PROFILE"
+            override_rm_env "GOMEMLIMIT"
+            override_rm_env "GOGC"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Eco mode disabled and service restarted."
@@ -1674,16 +1663,7 @@ toggle_automode ()
         on)
             confirm_restart "Enabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Enabling auto-tune profile..."
-            mkdir -p "$override_dir"
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
-                if ! grep -q '^\[Service\]' "$override_file" 2>/dev/null; then
-                    sed -i '1i[Service]' "$override_file"
-                fi
-            else
-                printf '[Service]\n' > "$override_file"
-            fi
-            printf 'Environment="URNETWORK_PROFILE=auto"\n' >> "$override_file"
+            override_set_env "URNETWORK_PROFILE" "auto"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune enabled and service restarted."
@@ -1691,12 +1671,7 @@ toggle_automode ()
         off)
             confirm_restart "Disabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Disabling auto-tune profile..."
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE=auto/d' "$override_file"
-                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
-                    rm -rf "$override_dir"
-                fi
-            fi
+            override_rm_env "URNETWORK_PROFILE"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune disabled and service restarted."
@@ -1725,16 +1700,7 @@ toggle_turbomode ()
         v4|v8)
             confirm_restart "Enabling turbo mode requires restarting the URNetwork provider."
             pr_info "Enabling turbo %s..." "$mode"
-            mkdir -p "$override_dir"
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
-                if ! grep -q '^\[Service\]' "$override_file" 2>/dev/null; then
-                    sed -i '1i[Service]' "$override_file"
-                fi
-            else
-                printf '[Service]\n' > "$override_file"
-            fi
-            printf 'Environment="URNETWORK_PROFILE=turbo-%s"\n' "$mode" >> "$override_file"
+            override_set_env "URNETWORK_PROFILE" "turbo-${mode}"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Turbo %s enabled and service restarted." "$mode"
@@ -1742,12 +1708,7 @@ toggle_turbomode ()
         off)
             confirm_restart "Disabling turbo mode requires restarting the URNetwork provider."
             pr_info "Disabling turbo mode..."
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_PROFILE\|GOMEMLIMIT\|GOGC/d' "$override_file"
-                if ! grep -q 'Environment=' "$override_file" 2>/dev/null; then
-                    rm -rf "$override_dir"
-                fi
-            fi
+            override_rm_env "URNETWORK_PROFILE"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Turbo mode disabled and service restarted."
@@ -2372,11 +2333,7 @@ EOF
             pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
             
-            if [ -f "$override_file" ]; then
-                sed -i '/URNETWORK_RAMLOGS/d' "$override_file"
-            else
-                printf "[Service]\n" > "$override_file"
-            fi
+            sed -i '/^Environment="URNETWORK_RAMLOGS=/d' "$override_file"
             printf 'Environment="URNETWORK_RAMLOGS=1"\n' >> "$override_file"
         fi
     fi
