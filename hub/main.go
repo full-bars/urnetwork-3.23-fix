@@ -909,12 +909,21 @@ function loadHistory() {
       document.getElementById('history-chart').innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">No history data</div>';
       return;
     }
-    var rx = [], tx = [], labels = [];
-    for (var i = data.length - 1; i >= 0; i--) {
-      labels.push(data[i].hour);
-      rx.push(data[i].total_rx);
-      tx.push(data[i].total_tx);
+    // When viewing all nodes, aggregate by hour
+    var byHour = {};
+    for (var i = 0; i < data.length; i++) {
+      var h = data[i];
+      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0 };
+      byHour[h.hour].rx += h.total_rx;
+      byHour[h.hour].tx += h.total_tx;
     }
+    var hours = Object.keys(byHour).sort();
+    var rx = [], tx = [], labels = [];
+    hours.forEach(function(h) {
+      labels.push(parseInt(h));
+      rx.push(byHour[h].rx);
+      tx.push(byHour[h].tx);
+    });
     var opts = {
       width: Math.min(document.getElementById('history-chart').clientWidth || 800, 1200),
       height: 300,
