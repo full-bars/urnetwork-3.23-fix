@@ -44,6 +44,7 @@ func readReloadSeq(path string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil {
 		// Treat an unparseable trigger as seq 0 rather than failing the watcher.
+		tlog("[proxy] warn: reload trigger file unparseable: %v\n", err)
 		return 0, nil
 	}
 	return n, nil
@@ -171,7 +172,11 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				return
 			case <-ticker.C:
 				seq, err := readReloadSeq(reloadPath)
-				if err != nil || seq == lastSeq {
+				if err != nil {
+					tlog("[proxy] warn: reload trigger read failed: %v\n", err)
+					continue
+				}
+				if seq == lastSeq {
 					continue
 				}
 				lastSeq = seq

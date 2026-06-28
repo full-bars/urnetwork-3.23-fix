@@ -120,7 +120,9 @@ func probeProxy(ctx context.Context, address string, apiHost string, apiPort uin
 	defer conn.Close()
 
 	if deadline, ok := dialCtx.Deadline(); ok {
-		conn.SetDeadline(deadline)
+		if err := conn.SetDeadline(deadline); err != nil {
+			tlog("[proxy][probe] warn: could not set stage-1 deadline: %v\n", err)
+		}
 	}
 
 	if _, err := conn.Write(socks5Greeting); err != nil {
@@ -143,7 +145,10 @@ func probeProxy(ctx context.Context, address string, apiHost string, apiPort uin
 		return probeSocks5Only
 	}
 
-	conn.SetDeadline(time.Now().Add(proxyAPIAccessTimeout))
+	if err := conn.SetDeadline(time.Now().Add(proxyAPIAccessTimeout)); err != nil {
+		tlog("[proxy][probe] warn: could not set stage-2 deadline: %v\n", err)
+		return probeSocks5Only
+	}
 	connectFrame := socks5ConnectV4(apiIP, apiPort)
 	if _, err := conn.Write(connectFrame); err != nil {
 		return probeSocks5Only
