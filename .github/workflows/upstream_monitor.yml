@@ -17,19 +17,37 @@ jobs:
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
-          # The specific files in your fork that you want to protect/monitor
+          # Regex patterns for files that affect the provider fork.
+          # Patterns use extended regex (-E); ^ anchors match start of filename.
+          # Grouped by subsystem for maintainability:
+          #   ip_*       — all IP/packet/security files
+          #   transfer_* — all contract/routing/encryption files
+          #   transport* — all transport abstraction files
+          #   net_*      — all HTTP/resilience/TLS/extender files
+          #   message_*  — all buffer/message-pool files
+          #   proxy_*    — all proxy health/URL/probe files
+          #   protocol/  — protobuf definitions
+          #   provider/  — CLI entry point
+          #   build      — go.mod, Dockerfile, Makefile, security generator
           CRITICAL_FILES=(
-            "ip.go"
-            "transfer.go"
-            "transfer_contract_manager.go"
-            "transfer_route_manager.go"
-            "net_http.go"
-            "net_http_doh.go"
-            "transport.go"
-            "transfer_encrypt.go"
-            "provider/main.go"
-            "proxy_health.go"
-            "message_pool.go"
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
           )
 
           echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
@@ -52,11 +70,14 @@ jobs:
               FILES=$(gh api repos/$UPSTREAM_REPO/pulls/$PR_NUMBER/files | jq -r '.[].filename')
 
               MATCHED_FILES=""
-              for file in "${CRITICAL_FILES[@]}"; do
-                if echo "$FILES" | grep -q "$file"; then
-                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
-                fi
-              done
+              while IFS= read -r filename; do
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$filename" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$FILES"
 
               if [ -n "$MATCHED_FILES" ]; then
                 echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
@@ -181,19 +202,26 @@ jobs:
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
-          # Critical files to watch in commits
+          # Keep in sync with the CRITICAL_FILES in monitor-critical-files above.
           CRITICAL_FILES=(
-            "ip.go"
-            "transfer.go"
-            "transfer_contract_manager.go"
-            "transfer_route_manager.go"
-            "net_http.go"
-            "net_http_doh.go"
-            "transport.go"
-            "transfer_encrypt.go"
-            "provider/main.go"
-            "proxy_health.go"
-            "message_pool.go"
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
           )
 
           echo "Fetching recent commits to $UPSTREAM_REPO/main..."
@@ -214,11 +242,14 @@ jobs:
               COMMIT_FILES=$(gh api repos/$UPSTREAM_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
 
               MATCHED_FILES=""
-              for file in "${CRITICAL_FILES[@]}"; do
-                if echo "$COMMIT_FILES" | grep -q "^$file$"; then
-                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
-                fi
-              done
+              while IFS= read -r filename; do
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$filename" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
 
               if [ -n "$MATCHED_FILES" ]; then
                 echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
@@ -262,19 +293,26 @@ jobs:
           # whether each needs porting.
           SIBLING_REPO="full-bars/connect"
 
-          # Keep this list in sync with the monitor-critical-files job above.
+          # Keep in sync with the CRITICAL_FILES in monitor-critical-files above.
           CRITICAL_FILES=(
-            "ip.go"
-            "transfer.go"
-            "transfer_contract_manager.go"
-            "transfer_route_manager.go"
-            "net_http.go"
-            "net_http_doh.go"
-            "transport.go"
-            "transfer_encrypt.go"
-            "provider/main.go"
-            "proxy_health.go"
-            "message_pool.go"
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
           )
 
           echo "Fetching recent commits to $SIBLING_REPO/main..."
@@ -293,11 +331,14 @@ jobs:
               COMMIT_FILES=$(gh api repos/$SIBLING_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
 
               MATCHED_FILES=""
-              for file in "${CRITICAL_FILES[@]}"; do
-                if echo "$COMMIT_FILES" | grep -q "^$file$"; then
-                  MATCHED_FILES="$MATCHED_FILES \`$file\`"
-                fi
-              done
+              while IFS= read -r filename; do
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$filename" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
 
               if [ -n "$MATCHED_FILES" ]; then
                 echo "🔀 SIBLING DRIFT: Commit $COMMIT_SHA touches:$MATCHED_FILES"
