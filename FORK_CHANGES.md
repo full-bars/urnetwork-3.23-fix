@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.19
+**Current Version**: v3.23.0-fix.24.22
 
 ---
 
@@ -1274,3 +1274,36 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 
 ### Status
 ✅ Merged `main` (2026-06-27). PR #152.
+
+---
+
+## 60. IP Security DPI Refactor — Layered Packet Inspection (Upstream ac91c55)
+
+**Purpose**: Replace the monolithic `ip_security.go` (~66K lines, mostly a `map[[4]byte]bool` blocklist) with a layered deep-packet-inspection pipeline that separates static endpoint reputation, BitTorrent signature detection, and web-standard protocol recognition. Provides payload-level BitTorrent detection instead of port-only heuristics, and adds IPv6 blocklist support.
+
+**Files Added**:
+- `ip_security_cfaa.go` — Static endpoint-reputation detector (blocked IP ranges + port/protocol policy). Three-way verdict: drop/allow/pass-to-DPI.
+- `ip_security_cfaa_block.go` — Packed binary-search IP blocklist (64131 IPv4 ranges + 214 IPv6 ranges). Replaces 66K-line `map[[4]byte]bool`.
+- `ip_security_dmca.go` — Stateful deep-packet inspection: BitTorrent signature detection (BEP 3/5/15/29), entropy-based encrypted-flow heuristic, 16-shard LRU flow table.
+- `ip_security_webstandard.go` — Stateless TLS/DTLS/QUIC/STUN byte-signature matcher. Exempts legitimate encrypted flows from the DMCA entropy heuristic.
+
+**Files Modified**:
+- `ip_security.go` — `SecurityPolicy.Inspect()` interface gains `payload []byte` parameter. Egress rewritten as CFAA → DMCA two-layer pipeline. Ingress uses CFAA source-endpoint check. Exported `NewEgressSecurityPolicy()`, `NewIngressSecurityPolicy()` constructors.
+- `ip.go` — `ClientReceive` and `SendPacket` use `ParseIpPathWithPayload` and pass payload to `Inspect`.
+- `ip_remote_multi_client.go` — Both `Inspect` call sites updated to pass payload/nil.
+- `net_tls.go` — Added `TlsContentType` type and constants (0x14–0x18) for web-standard byte matchers.
+
+**Key Behavior Changes**:
+- **Payload-level DMCA detection**: BitTorrent handshake signatures (BEP 3 peer wire, BEP 3 HTTP tracker, BEP 5 DHT KRPC, BEP 15 UDP tracker, BEP 29 uTP) now detected from L7 content, not just port heuristics.
+- **IPv6 blocked subnets**: `cfaaBlockedPrefix6Data` introduces 214 IPv6 prefix ranges from Spamhaus DROPv6 and other feeds. Previously, IPv6 was unchecked (`// FIXME`).
+- **Blocklist format change**: 66K-line `map[[4]byte]bool` replaced by ~8K-line packed string + binary search. Same feeds, zero-allocation lookup.
+- **Port policy refined**: Three-way verdict (drop/allow/pass-to-DPI) instead of binary allow/drop. Known-safe protocols (NTP, IKE, DNS/UDP) skip DPI entirely.
+
+**Fork Adaptation**: Dropped `Ip6Path.ServerName` reference in `ip_security_dmca.go` (fork's `Ip6Path` is pure 5-tuple; upstream uses `ServerName` for flow affinity which is unused here).
+
+**How to Identify in New Upstream**:
+- The monolithic `ip_security.go` with `var blockIp4s` is gone; replaced by `ip_security_cfaa*.go`, `ip_security_dmca.go`, `ip_security_webstandard.go`
+- Search for `cfaaDetector`, `dmcaDetector`, `webStandardDetector` types
+- `SecurityPolicy.Inspect(provideMode, ipPath, payload)` signature with 3 params
+
+**Status**: ✅ Merged `main` (2026-06-28). PR #160.
