@@ -23,7 +23,6 @@ import (
 func TestVerify_HMACFormats(t *testing.T) {
 	clientId := NewId()
 	settings := DefaultClientSettings()
-	settings.ContractManagerSettings.LegacyCreateContract = true
 	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
 	defer client.Cancel()
 	contractManager := client.ContractManager()
@@ -82,7 +81,6 @@ func TestTakeContract(t *testing.T) {
 	ctx := context.Background()
 	clientId := NewId()
 	settings := DefaultClientSettings()
-	settings.ContractManagerSettings.LegacyCreateContract = true
 	client := NewClient(ctx, clientId, NewNoContractClientOob(), settings)
 	defer client.Cancel()
 	contractManager := client.ContractManager()

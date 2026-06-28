@@ -156,7 +156,6 @@ func runSendReceiveSenderReset(t *testing.T, encMode encryptionMode) {
 	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.IdleTimeout = 300 * time.Second
-	clientSettingsA.ContractManagerSettings.LegacyCreateContract = true
 	applyTestEncryptionSettings(clientSettingsA, encMode)
 	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
 	aRouteManager := a.RouteManager()
@@ -183,7 +182,6 @@ func runSendReceiveSenderReset(t *testing.T, encMode encryptionMode) {
 	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.IdleTimeout = 300 * time.Second
-	clientSettingsB.ContractManagerSettings.LegacyCreateContract = true
 	applyTestEncryptionSettings(clientSettingsB, encMode)
 	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
 	bRouteManager := b.RouteManager()
