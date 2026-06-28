@@ -7,7 +7,7 @@
 me="$0"
 script_rundir="$(pwd)"
 
-if [ "$me" = "sh" ] || [ "$me" = "bash" ] || [ "$me" = "zsh" ] || [ "$URNETWORK_TOOLS_MODE" = "1" ]; then
+if [ "$me" = "sh" ] || [ "$me" = "bash" ] || [ "$me" = "zsh" ]; then
     me="urnet-tools"
 fi
 
@@ -108,8 +108,18 @@ urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-b
 # If no operation is specified:
 # - Default to 'install' if running as a one-off installer (curl | sh)
 # - Show help if running as the installed 'urnet-tools' command
-if [ -z "$operation" ] && [ -z "$URNETWORK_TOOLS_MODE" ]; then
-    operation="install"
+if [ -z "$operation" ]; then
+    case "$0" in
+        *"/urnet-tools"|*"/bin/urnet-tools")
+            # Running as the installed binary — show help
+            show_help >&2
+            exit 1
+            ;;
+        *)
+            # One-off pipe (curl | sh) — default to install
+            operation="install"
+            ;;
+    esac
 fi
 
 if command -v systemctl > /dev/null; then
@@ -1121,13 +1131,7 @@ do_install ()
     fi
 
     rm -f "$install_path/bin/urnet-tools"
-    printf "%s\n" "$script" | head -n1 > "$install_path/bin/urnet-tools"
-
-    {
-        echo "URNETWORK_TOOLS_MODE=1"; 
-    } >> "$install_path/bin/urnet-tools"
-
-    printf "%s\n" "$script" | tail -n +2 >> "$install_path/bin/urnet-tools"
+    printf "%s\n" "$script" > "$install_path/bin/urnet-tools"
     chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
 
     # Overwrite with the tarball-bundled script if available, so even an old
