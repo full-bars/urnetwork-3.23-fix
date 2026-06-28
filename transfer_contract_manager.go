@@ -169,11 +169,6 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 		ContractQueueExpireTimeout: 120 * time.Second,
 
 		ProtocolVersion: DefaultProtocolVersion,
-
-		// TODO remove
-		LegacyCreateContract: false,
-		// TODO remove
-		TrackUsedContracts: false,
 	}
 }
 
@@ -210,11 +205,6 @@ type ContractManagerSettings struct {
 	ContractQueueExpireTimeout time.Duration
 
 	ProtocolVersion int
-
-	// TODO remove
-	LegacyCreateContract bool
-	// TODO remove
-	TrackUsedContracts bool
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -995,7 +985,7 @@ func (self *ContractManager) addContract(contractKey ContractKey, contract *prot
 
 func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeqIndex uint64, minByteCount ByteCount) {
 	// look at destinationContracts and last contract to get previous contract id
-	contractQueue := self.openContractQueue(contractKey)
+	self.openContractQueue(contractKey)
 	defer self.closeContractQueue(contractKey)
 
 	streamVersion := uint32(DefaultStreamVersion)
@@ -1007,9 +997,6 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 		Companion:         contractKey.CompanionContract,
 		ForceStream:       &contractKey.ForceStream,
 		StreamVersion:     &streamVersion,
-	}
-	if self.settings.TrackUsedContracts {
-		createContract.UsedContractIds = contractQueue.UsedContractIdBytes()
 	}
 	frame, err := ToFrame(createContract, self.settings.ProtocolVersion)
 	if err != nil {
@@ -1227,16 +1214,12 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 }
 
 func (self *ContractManager) openContractQueue(contractKey ContractKey) *contractQueue {
-	if self.settings.LegacyCreateContract {
-		contractKey = contractKey.Legacy()
-	}
-
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	contractQueue, ok := self.destinationContracts[contractKey]
 	if !ok {
-		contractQueue = newContractQueue(self.client.log, self.settings.TrackUsedContracts)
+		contractQueue = newContractQueue(self.client.log, false)
 		self.destinationContracts[contractKey] = contractQueue
 	}
 	contractQueue.Open()
@@ -1249,10 +1232,6 @@ func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
 }
 
 func (self *ContractManager) closeContractQueueWithForceRemove(contractKey ContractKey, forceRemove bool) {
-	if self.settings.LegacyCreateContract {
-		contractKey = contractKey.Legacy()
-	}
-
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
