@@ -364,3 +364,121 @@ jobs:
               fi
             fi
           done
+
+  monitor-build-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Watch urnetwork/build for new releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          BUILD_REPO="urnetwork/build"
+          UPSTREAM_REPO="urnetwork/connect"
+
+          CRITICAL_FILES=(
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
+          )
+
+          echo "Fetching latest releases from $BUILD_REPO..."
+
+          RELEASES=$(gh api repos/$BUILD_REPO/releases?per_page=2)
+          LATEST_TAG=$(echo "$RELEASES" | jq -r '.[0].tag_name')
+          PREV_TAG=$(echo "$RELEASES" | jq -r '.[1].tag_name')
+          LATEST_DATE=$(echo "$RELEASES" | jq -r '.[0].created_at')
+          LATEST_URL=$(echo "$RELEASES" | jq -r '.[0].html_url')
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [[ "$LATEST_DATE" < "$TWELVE_HOURS_AGO" ]]; then
+            echo "No new releases in window. Latest: $LATEST_TAG ($LATEST_DATE)"
+            exit 0
+          fi
+
+          echo "New release: $LATEST_TAG (previous: $PREV_TAG, created: $LATEST_DATE)"
+
+          PREV_SHA=$(gh api repos/$UPSTREAM_REPO/git/refs/tags/$PREV_TAG -q '.object.sha' 2>/dev/null || echo "")
+          LATEST_SHA=$(gh api repos/$UPSTREAM_REPO/git/refs/tags/$LATEST_TAG -q '.object.sha' 2>/dev/null || echo "")
+
+          if [ -z "$LATEST_SHA" ]; then
+            echo "Tag $LATEST_TAG not yet in $UPSTREAM_REPO — delaying until next run"
+            exit 0
+          fi
+
+          COMMIT_COUNT="?"
+          MATCHED_FILES=""
+          SAMPLE_COMMIT=""
+
+          if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$LATEST_SHA" ]; then
+            COMPARE=$(gh api repos/$UPSTREAM_REPO/compare/$PREV_TAG...$LATEST_TAG 2>/dev/null || echo "")
+            COMMIT_COUNT=$(echo "$COMPARE" | jq -r '.total_commits // "?"')
+
+            MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty')
+            while IFS= read -r filename; do
+              [ -z "$filename" ] && continue
+              for pattern in "${CRITICAL_FILES[@]}"; do
+                if echo "$filename" | grep -q -E "$pattern"; then
+                  MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                  break
+                fi
+              done
+            done <<< "$MODIFIED_FILES"
+
+            SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
+          fi
+
+          if [ -n "$MATCHED_FILES" ]; then
+            TITLE="🚀 New Build Release Touches Critical Files"
+            COLOR=16776960
+          else
+            TITLE="📦 New Build Release"
+            COLOR=3447003
+          fi
+
+          DESCRIPTION="**Release:** [$LATEST_TAG]($LATEST_URL)\n"
+          DESCRIPTION+="**Previous:** \`$PREV_TAG\`\n"
+          DESCRIPTION+="**Commits since previous:** $COMMIT_COUNT\n\n"
+
+          if [ -n "$MATCHED_FILES" ]; then
+            DESCRIPTION+="**⚠️ Critical Files Modified:**\n$MATCHED_FILES\n\n"
+          fi
+
+          if [ -n "$SAMPLE_COMMIT" ]; then
+            DESCRIPTION+="**Last commit:** $SAMPLE_COMMIT"
+          fi
+
+          echo "---"
+          echo -e "$DESCRIPTION"
+
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            DISCORD_JSON=$(jq -n \
+              --arg title "$TITLE" \
+              --arg desc "$DESCRIPTION" \
+              --argjson color $COLOR \
+            '{
+              "embeds": [{
+                "title": $title,
+                "description": $desc,
+                "color": $color,
+                "footer": { "text": "URNetwork Upstream Monitor • Build Releases" }
+              }]
+            }')
+            curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+          fi
