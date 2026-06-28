@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.22
+**Current Version**: v3.23.0-fix.24.23
 
 ---
 
@@ -1307,3 +1307,19 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - `SecurityPolicy.Inspect(provideMode, ipPath, payload)` signature with 3 params
 
 **Status**: ✅ Merged `main` (2026-06-28). PR #160.
+
+---
+
+## 61. Fix `urnet-tools` No-Args Fallback to Install
+
+**Purpose**: Running `urnet-tools` with no arguments was triggering a full install (fetching release tarball, prompting for restart) instead of showing the help menu. This broke the UX for 5 releases.
+
+**Root Cause**: Commit `c29facf` (v24.18) added a `cp "$workdir/urnet-tools" "$install_path/bin/urnet-tools"` that overwrites the installed script with the tarball-bundled copy, stripping the injected `URNETWORK_TOOLS_MODE=1` env var. Without that flag, the empty-argument fallback defaults to `operation="install"`.
+
+**Fix**: Replaced the env-var injection approach with a direct `$0` path check. When the script's path ends with `urnet-tools`, it shows help on no args instead of defaulting to install. Removed the now-dead `URNETWORK_TOOLS_MODE` injection code.
+
+**Affected Releases**: v3.23.0-fix.24.18 through v3.23.0-fix.24.22. Escape hatch: `urnet-tools update` still works on broken versions (the bug only triggers on empty args) and will download the fixed script.
+
+**How to Identify in New Upstream**: Search for `URNETWORK_TOOLS_MODE` — if it still exists, the old injection approach is in use. The fix is the `case "$0" in *"/urnet-tools")` check in the no-ops fallback block.
+
+**Status**: ✅ Merged `main` (2026-06-28). PR #161.
