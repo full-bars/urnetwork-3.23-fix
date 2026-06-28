@@ -105,7 +105,9 @@ func paceMonitor(ctx context.Context) {
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
-				_ = writeReloadTrigger(reloadPath)
+				if err := writeReloadTrigger(reloadPath); err != nil {
+					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+				}
 			}
 			return
 		}
@@ -117,7 +119,9 @@ func paceMonitor(ctx context.Context) {
 				up, total, pct, connectingN)
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
-				_ = writeReloadTrigger(reloadPath)
+				if err := writeReloadTrigger(reloadPath); err != nil {
+					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+				}
 			}
 			return // warmup complete — stop repeating
 		} else {
@@ -1390,7 +1394,9 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 					delete(state.Proxies, addr)
 				}
 			}
-			_ = writeProxyState(state)
+			if err := writeProxyState(state); err != nil {
+				tlog("[proxy] warn: state write failed: %v\n", err)
+			}
 		}()
 
 		if dir, ok := proxyHealthDir(); ok {
@@ -1911,7 +1917,9 @@ func provide(opts docopt.Opts) {
 						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
 						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
 							time.AfterFunc(delay, func() {
-								_ = writeReloadTrigger(reloadPath)
+								if err := writeReloadTrigger(reloadPath); err != nil {
+									tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+								}
 							})
 						}
 						fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
@@ -3861,6 +3869,8 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 
 	// Automatically trigger a hot-reload so running providers pick up the changes
 	if reloadPath, err := proxyReloadPath(); err == nil {
-		_ = writeReloadTrigger(reloadPath)
+		if err := writeReloadTrigger(reloadPath); err != nil {
+			tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+		}
 	}
 }
