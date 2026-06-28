@@ -2,11 +2,8 @@ package connect
 
 import (
 	"context"
-	"errors"
-	"strings"
-	"time"
-	// "crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	mathrand "math/rand"
@@ -14,7 +11,9 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/exp/maps"
 	"golang.org/x/net/idna"
@@ -22,7 +21,6 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// FIXME DoH certs need to be included in the pinned certs
 
 func DefaultDohSettings() *DohSettings {
 	return &DohSettings{
@@ -89,17 +87,20 @@ type DnsResolverSettings struct {
 }
 
 func httpClientWithSettings(settings *DohSettings) *http.Client {
+	tlsConfig, err := DefaultTlsConfig()
+	if err != nil {
+		panic(fmt.Sprintf("doh: could not build pinned TLS config: %v", err))
+	}
 	tr := &http.Transport{
 		DialContext:         settings.DialContext,
 		TLSHandshakeTimeout: settings.TlsTimeout,
-		// FIXME add the doh server certs to our pinned certs
-		// TLSClientConfig:     settings.TlsConfig,
+		TLSClientConfig:     tlsConfig,
 	}
 	// most doh providers discontinued http1.1 late 2025
 	// we force h2 instead of the default h1->h2 autonegotiate,
 	// since that no longer works
 	// see https://quad9.net/news/blog/doh-http-1-1-retirement/
-	err := http2.ConfigureTransport(tr)
+	err = http2.ConfigureTransport(tr)
 	if err != nil {
 		panic(err)
 	}
