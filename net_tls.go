@@ -39,3 +39,14 @@ func DefaultTlsConfig() (*tls.Config, error) {
 	}
 	return tlsConfig, nil
 }
+
+// RFC 5246
+type TlsContentType = byte
+
+const (
+	TlsContentTypeChangeCipherSpec TlsContentType = 0x14
+	TlsContentTypeAlert            TlsContentType = 0x15
+	TlsContentTypeHandshake        TlsContentType = 0x16
+	TlsContentTypeApplicationData  TlsContentType = 0x17
+	TlsContentTypeHeartbeat        TlsContentType = 0x18
+)
