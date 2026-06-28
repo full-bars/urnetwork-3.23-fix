@@ -105,21 +105,11 @@ version_file="$install_path/.version"
 # Overridable via URNET_INSTALL_URL (e.g. to test a branch before it lands on main).
 urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh}"
 
-# If no operation is specified:
-# - Default to 'install' if running as a one-off installer (curl | sh)
-# - Show help if running as the installed 'urnet-tools' command
+# If no operation is specified and running as a one-off pipe (curl | sh),
+# default to install. The installed urnet-tools binary is handled later
+# (after arg parsing) by the empty-operation check.
 if [ -z "$operation" ]; then
-    case "$0" in
-        *"/urnet-tools"|*"/bin/urnet-tools")
-            # Running as the installed binary — show help
-            show_help >&2
-            exit 1
-            ;;
-        *)
-            # One-off pipe (curl | sh) — default to install
-            operation="install"
-            ;;
-    esac
+    operation="install"
 fi
 
 if command -v systemctl > /dev/null; then
@@ -485,6 +475,16 @@ if [ -n "$1" ]; then
     shift
 fi
 
+# If the default "install" was set above but this is the installed
+# urnet-tools binary with no actual subcommand, show help instead.
+if [ "$operation" = "install" ]; then
+    case "$0" in
+        *"/urnet-tools"|*"/bin/urnet-tools")
+            operation=""
+            ;;
+    esac
+fi
+
 if [ -z "$operation" ]; then
     show_help >&2
     exit 1
@@ -796,10 +796,12 @@ do_install ()
 
     case "$operation" in
         install)
-            if [ -n "$URNETWORK_TOOLS_MODE" ]; then
-                pr_err "Invalid operation '%s'" "$operation"
-                exit 1
-            fi
+            case "$0" in
+                *"/urnet-tools"|*"/bin/urnet-tools")
+                    pr_err "Invalid operation '%s'" "$operation"
+                    exit 1
+                    ;;
+            esac
 
             func_root_guard
 
@@ -1134,11 +1136,9 @@ do_install ()
     printf "%s\n" "$script" > "$install_path/bin/urnet-tools"
     chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
 
-    # Overwrite with the tarball-bundled script if available, so even an old
-    # script that just wrote itself via cat "$0" gets replaced by the latest.
-    if [ -f "$workdir/urnet-tools" ]; then
-        cp "$workdir/urnet-tools" "$install_path/bin/urnet-tools" 2>/dev/null
-    fi
+    # Note: the GitHub-fetched script above (from main branch) is the canonical
+    # version. The tarball copy is NOT used here to avoid overwriting with stale
+    # bundled content that may lack the latest fix.
 
     echo "$version_to_install" > "$install_path/.version"
     echo "$release_date" > "$install_path/.date"
