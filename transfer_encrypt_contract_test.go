@@ -209,7 +209,6 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 		s.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
-		s.ContractManagerSettings.LegacyCreateContract = false
 		s.EncryptionSettings.Encrypt = true
 		s.EncryptionSettings.TlsTimeout = 30 * time.Second
 		// Exercise the symmetric (non-companion) EncryptedControl path.
@@ -417,7 +416,6 @@ func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
 		s.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
-		s.ContractManagerSettings.LegacyCreateContract = false
 		s.EncryptionSettings.Encrypt = true
 		s.EncryptionSettings.TlsTimeout = 30 * time.Second
 		// Server reply carriers ride regular (non-companion) contracts. This is
