@@ -199,6 +199,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
@@ -254,6 +255,31 @@ jobs:
               if [ -n "$MATCHED_FILES" ]; then
                 echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
 
+                AI_SUMMARY=""
+                if [ -n "$GEMINI_API_KEY" ]; then
+                  COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
+                  RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
+                  TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+                  if [ -n "$TRUNCATED_DIFF" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+                      "contents": [{
+                        "parts": [{
+                          "text": ("You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and breaking changes. Skip pleasantries.\n\nDiff:\n" + $diff)
+                        }]
+                      }],
+                      "generationConfig": { "temperature": 0.2 }
+                    }')
+                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -z "$API_ERROR" ]; then
+                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      [ -n "$RAW_SUMMARY" ] && AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    fi
+                  fi
+                fi
+
                 if [ -n "$DISCORD_WEBHOOK" ]; then
                   DISCORD_JSON=$(jq -n \
                     --arg url "$COMMIT_URL" \
@@ -261,11 +287,12 @@ jobs:
                     --arg msg "$COMMIT_MSG" \
                     --arg author "$COMMIT_AUTHOR" \
                     --arg files "$MATCHED_FILES" \
+                    --arg summary "$AI_SUMMARY" \
                   '{
                     "embeds": [{
                       "title": "✅ Upstream Commit to Main (Critical Files)",
                       "url": $url,
-                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files),
+                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Summary:**\n" + $summary else "" end)),
                       "color": 65280,
                       "footer": { "text": "URNetwork Upstream Monitor • Merged" }
                     }]
