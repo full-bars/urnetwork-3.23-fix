@@ -359,7 +359,9 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		return
 	}
 	if reloadPath, err := proxyReloadPath(); err == nil {
-		_ = writeReloadTrigger(reloadPath)
+		if err := writeReloadTrigger(reloadPath); err != nil {
+			tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
+		}
 	}
 }
 
@@ -444,7 +446,9 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 				tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
 			}
 			if reloadPath, err := proxyReloadPath(); err == nil {
-				_ = writeReloadTrigger(reloadPath)
+				if err := writeReloadTrigger(reloadPath); err != nil {
+					tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
+				}
 			}
 		}
 
