@@ -372,16 +372,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           BUILD_REPO="urnetwork/build"
           UPSTREAM_REPO="urnetwork/connect"
 
+          # Same critical-file patterns as the commit monitor above.
           CRITICAL_FILES=(
             "^ip\.go$"
             "^ip_packet\.go$"
             "^ip_remote_multi_client"
             "^ip_security"
-            "^ip_test\.go$"
             "^transfer\.go$"
             "^transfer_"
             "^transport"
@@ -395,6 +396,24 @@ jobs:
             "^Makefile$"
             "^Dockerfile$"
             "^security/gen\.sh$"
+          )
+
+          # Files that are client-only / not used by the provider binary.
+          # When ALL modified files match these patterns, the notification
+          # explicitly says "client-only" so you don't worry.
+          CLIENT_ONLY_FILES=(
+            "^tun"
+            "^transport_p2p_webrtc_pc_js"
+            "^transport_p2p_webrtc_android"
+            "^connect_filtered_path"
+            "^connectctl/"
+            "^hub/"
+            "^mobile/"
+            "\.aar$"
+            "\.xcframework$"
+            "^v2026/"
+            "^security/ips\.go$"
+            "^security/ips\.txt$"
           )
 
           echo "Fetching latest releases from $BUILD_REPO..."
@@ -423,8 +442,11 @@ jobs:
           fi
 
           COMMIT_COUNT="?"
-          MATCHED_FILES=""
+          CRITICAL_MATCHES=""
+          ALL_FILES=""
+          CLIENT_ONLY_COUNT=0
           SAMPLE_COMMIT=""
+          AI_SUMMARY=""
 
           if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$LATEST_SHA" ]; then
             COMPARE=$(gh api repos/$UPSTREAM_REPO/compare/$PREV_TAG...$LATEST_TAG 2>/dev/null || echo "")
@@ -433,35 +455,93 @@ jobs:
             MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty')
             while IFS= read -r filename; do
               [ -z "$filename" ] && continue
+              ALL_FILES="$ALL_FILES \`$filename\`"
+
+              IS_CRITICAL=false
               for pattern in "${CRITICAL_FILES[@]}"; do
                 if echo "$filename" | grep -q -E "$pattern"; then
-                  MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                  CRITICAL_MATCHES="$CRITICAL_MATCHES \`$filename\`"
+                  IS_CRITICAL=true
                   break
                 fi
               done
+
+              if ! $IS_CRITICAL; then
+                for pattern in "${CLIENT_ONLY_FILES[@]}"; do
+                  if echo "$filename" | grep -q -E "$pattern"; then
+                    CLIENT_ONLY_COUNT=$((CLIENT_ONLY_COUNT + 1))
+                    break
+                  fi
+                done
+              fi
             done <<< "$MODIFIED_FILES"
 
             SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
+
+            AI_SUMMARY=""
+            if [ -n "$GEMINI_API_KEY" ]; then
+              RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
+              TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+              if [ -n "$TRUNCATED_DIFF" ]; then
+                JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+                  "contents": [{
+                    "parts": [{
+                      "text": ("You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes. Skip introductory pleasantries.\n\nDiff:\n" + $diff)
+                    }]
+                  }],
+                  "generationConfig": { "temperature": 0.2 }
+                }')
+
+                GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  -d "$JSON_PAYLOAD" \
+                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                if [ -n "$API_ERROR" ]; then
+                  echo "[ERROR] Gemini API error: $API_ERROR"
+                else
+                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                  if [ -n "$RAW_SUMMARY" ]; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[ERROR] Failed to extract summary from response"
+                  fi
+                fi
+              fi
+            fi
           fi
 
-          if [ -n "$MATCHED_FILES" ]; then
-            TITLE="🚀 New Build Release Touches Critical Files"
+          # Build title, colour, and classification note
+          if [ -n "$CRITICAL_MATCHES" ]; then
+            TITLE="🚀 New Build Release — Provider Impact"
             COLOR=16776960
+            CLASSIFICATION="**⚠️ Provider-critical files changed** — evaluate porting need"
+          elif [ "$CLIENT_ONLY_COUNT" -gt 0 ] && [ "$CLIENT_ONLY_COUNT" -eq "$(echo "$ALL_FILES" | wc -w)" ]; then
+            TITLE="📦 New Build Release — Client Only"
+            COLOR=3447003
+            CLASSIFICATION="**ℹ️ Client-only release** — no provider impact"
           else
             TITLE="📦 New Build Release"
             COLOR=3447003
+            CLASSIFICATION="**ℹ️ No provider-critical files changed**"
           fi
 
           DESCRIPTION="**Release:** [$LATEST_TAG]($LATEST_URL)\n"
           DESCRIPTION+="**Previous:** \`$PREV_TAG\`\n"
-          DESCRIPTION+="**Commits since previous:** $COMMIT_COUNT\n\n"
+          DESCRIPTION+="**Commits:** $COMMIT_COUNT\n\n"
+          DESCRIPTION+="$CLASSIFICATION\n\n"
 
-          if [ -n "$MATCHED_FILES" ]; then
-            DESCRIPTION+="**⚠️ Critical Files Modified:**\n$MATCHED_FILES\n\n"
+          if [ -n "$CRITICAL_MATCHES" ]; then
+            DESCRIPTION+="**Files changed:**$CRITICAL_MATCHES\n\n"
           fi
 
           if [ -n "$SAMPLE_COMMIT" ]; then
             DESCRIPTION+="**Last commit:** $SAMPLE_COMMIT"
+          fi
+
+          if [ -n "$AI_SUMMARY" ]; then
+            DESCRIPTION+="\n\n**🤖 AI Summary:**\n$AI_SUMMARY"
           fi
 
           echo "---"
