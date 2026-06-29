@@ -52,10 +52,6 @@ func DefaultDohSettings() *DohSettings {
 // https://developers.cloudflare.com/1.1.1.1/ip-addresses/
 // https://developers.google.com/speed/public-dns/docs/doh/json
 func DefaultDnsResolverSettings() *DnsResolverSettings {
-	tlsConfig, err := DefaultTlsConfig()
-	if err != nil {
-		panic("doh: could not build pinned TLS config: " + err.Error())
-	}
 	return &DnsResolverSettings{
 		EnableRemoteDoh: true,
 		EnableLocalDns:  true,
@@ -68,7 +64,6 @@ func DefaultDnsResolverSettings() *DnsResolverSettings {
 		LocalDnsIpv4: []string{
 			"1.1.1.1",
 		},
-		TlsConfig: tlsConfig,
 	}
 }
 
