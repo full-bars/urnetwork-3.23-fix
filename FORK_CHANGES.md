@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.23
+**Current Version**: v3.23.0-fix.24.24
 
 ---
 
@@ -1323,3 +1323,54 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **How to Identify in New Upstream**: Search for `URNETWORK_TOOLS_MODE` — if it still exists, the old injection approach is in use. The fix is the `case "$0" in *"/urnet-tools")` check in the no-ops fallback block.
 
 **Status**: ✅ Merged `main` (2026-06-28). PR #161.
+
+---
+
+## 62. Codebase Audit Fixes — Error Logging, DoH Pinning, Dead Config Cleanup
+
+**Purpose**: Address findings from a systematic codebase review of the provider and connect packages. Four PRs fixing silent error discards, a security gap, operational hazards, and dead code.
+
+### 62a. Error Propagation for Reload/State Writes (PR #163) — H1, H2
+
+**Problem**: `writeReloadTrigger()` and `writeProxyState()` silently discarded errors with `_ =`. If a write failed (disk full, permissions), hot-reloads silently stopped working and proxy.state went stale — no log, no alert.
+
+**Fix**: All 6 production call sites now log a `tlog` warning on failure. No change to the success path.
+
+**Files**: `provider/main.go` (4 sites), `provider/proxy_url_source.go` (2 sites)
+
+### 62b. DoH Certificate Pinning (PR #164) — H6
+
+**Problem**: The DNS-over-HTTPS resolver built its own `http.Transport` with no TLS config. The `TLSClientConfig` field was commented out with a `// FIXME`. An attacker who could intercept DNS traffic could MITM DoH responses — no cert pinning.
+
+**Fix**: DoH now uses `DefaultTlsConfig()` which pins the ISRG Root X1/X2 certs, same as every other TLS connection the provider makes. Removed stale FIXME comments.
+
+**Files**: `net_http_doh.go`
+
+### 62c. Reload Watcher and Proxy Probe Error Handling (PR #165) — M3, M1
+
+**Problem**: Two issues:
+- `readReloadSeq` errors in the reload watcher were merged into the "no change" branch (`if err != nil || seq == lastSeq`), making transient FS read failures spuriously trigger a full proxy reload (auth storm).
+- `conn.SetDeadline()` return values were discarded at both probe stages. Stage 2 had no context timeout backup — if `SetDeadline` failed the probe could hang indefinitely.
+
+**Fix**:
+- Split the error check from the sequence comparison. Read errors now log a warning and skip the poll cycle instead of spurring a reload.
+- Stage 1 deadline errors log a warning (context timeout is backup). Stage 2 deadline errors log and return `probeSocks5Only` so the probe doesn't hang.
+
+**Files**: `provider/proxy_reload.go`, `provider/proxy_probe.go`
+
+### 62d. Remove Dead Config Fields (PR #166) — H5
+
+**Problem**: `ContractManagerSettings` had two config fields (`LegacyCreateContract`, `TrackUsedContracts`) that were always `false`, never set to `true` anywhere, and marked `// TODO remove`. The code paths guarding them were dead.
+
+**Fix**: Removed both fields from the struct, defaults, and all referencing code paths. Cleaned up test files (4 test files, 6 reference removals).
+
+**Investigated, not changed**: `MultiRouteSelector.Read` returning `nil, nil` on timeout (H3). The FIXME expressed uncertainty but the nil return is the correct signal — `transfer_stream_manager.go:420` checks `if transferFrameBytes == nil` to trigger stream idle-close. Changing it would break stream teardown.
+
+**Files**: `transfer_contract_manager.go`, `transfer_contract_manager_test.go`, `transfer_encrypt_contract_test.go`, `transfer_test.go`
+
+### How to Identify in New Upstream
+- Search for `_ = writeReloadTrigger` or `_ = writeProxyState` in the provider directory — if any remain, the fix hasn't been fully ported.
+- Search for `// FIXME DoH` in `net_http_doh.go` — if found, DoH cert pinning hasn't been ported.
+- Search for `LegacyCreateContract` or `TrackUsedContracts` — if found, the dead config cleanup hasn't been ported.
+
+**Status**: ✅ Merged `main` (2026-06-28). PRs #162, #163, #164, #165, #166.
