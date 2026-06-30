@@ -102,6 +102,7 @@ func TestDohCacheCachesMiss(t *testing.T) {
 	settings.DnsResolverSettings.EnableRemoteDoh = true
 	settings.DnsResolverSettings.EnableRemoteDns = false
 	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = nil
 	settings.DnsResolverSettings.RemoteDohUrlsIpv4 = []string{server.URL}
 
 	dohCache := NewDohCache(settings)
