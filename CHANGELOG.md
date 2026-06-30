@@ -31,6 +31,41 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.22] — 2026-06-28
+
+### Added
+- **IP Security DPI Refactor** (PR #160): Replaced the monolithic `ip_security.go` (~66K lines) with a layered deep-packet-inspection pipeline. Payload-level BitTorrent signature detection (BEP 3/5/15/29, entropy-based encrypted-flow heuristic) instead of port-only heuristics. 214 IPv6 prefix ranges now blocked (previously unchecked). 66K-line `map[[4]byte]bool` blocklist replaced by ~8K-line packed binary-search for zero-allocation lookups. Known-safe protocols (NTP, IKE, DNS/UDP) skip DPI entirely via three-way verdict (drop/allow/pass-to-DPI).
+
+---
+
+## [v3.23.0-fix.24.23] — 2026-06-28
+
+### Fixed
+- **`urnet-tools` no-args shows help instead of triggering install** (PR #161): Running the script with no arguments was triggering a full install instead of showing the help menu. Fixed via `$0` path check instead of the broken `URNETWORK_TOOLS_MODE` env var injection approach.
+
+### Added
+- **Build release monitor** (PR #162): New GitHub Actions job monitors `urnetwork/build` repository for release tags, posts commit summaries with file changes to Discord. Expands critical files list and shows actual filenames in notifications.
+
+---
+
+## [v3.23.0-fix.24.24] — 2026-06-29
+
+### Fixed
+- **Error propagation for reload/state writes** (PR #163): `writeReloadTrigger()` and `writeProxyState()` now log warnings on failure instead of silently discarding errors. Prevents hot-reloads from silently breaking and stale state files when disk writes fail.
+- **DoH certificate pinning** (PR #164): DNS-over-HTTPS resolver now uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure `// FIXME` nil TLS config. Prevents potential MITM of DoH responses.
+- **Reload watcher and proxy probe error handling** (PR #165): Split error check from sequence comparison in `readReloadSeq` to prevent transient FS read failures from spuriously triggering proxy reloads. Added proper timeout handling for `SetDeadline` errors in probe stages.
+- **Removed dead config fields** (PR #166): Eliminated `LegacyCreateContract` and `TrackUsedContracts` fields from `ContractManagerSettings` that were always `false` and had no active code paths.
+
+---
+
+## [v3.23.0-fix.24.25] — 2026-06-29
+
+### Fixed
+- **DoH uses system cert pool** (PR #167): The narrow Let's Encrypt-only cert pool from `DefaultTlsConfig()` was applied to DoH connections, breaking all TLS handshakes with Cloudflare/Google/Quad9/OpenDNS. Now uses Go's system cert pool automatically for DoH while keeping LE pinning for API connections.
+- **`isHttpRequest` detection** (PR #167): Ported from upstream b6ee955. Detects plaintext HTTP/1.x request lines in DPI flow and returns `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false positives on radio/media streaming over non-standard ports.
+
+---
+
 ## [v3.23.0-fix.24.19] — 2026-06-26
 
 ### Performance
