@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.24
+**Current Version**: v3.23.0-fix.24.25
 
 ---
 
@@ -1374,3 +1374,27 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Search for `LegacyCreateContract` or `TrackUsedContracts` — if found, the dead config cleanup hasn't been ported.
 
 **Status**: ✅ Merged `main` (2026-06-28). PRs #162, #163, #164, #165, #166.
+
+---
+
+## 63. DoH System Cert Pool + `isHttpRequest` Detection (Upstream b6ee955 Port)
+
+**Purpose**: Fix two issues found post-v24.24: (1) applying the narrow LE-only cert pool to DoH broke all four DoH providers (Cloudflare, Google, Quad9, OpenDNS), (2) port upstream's `isHttpRequest` check to fix false positives in DPI.
+
+### 63a. DoH Uses System Cert Pool (PR #167)
+
+**Problem**: `DefaultTlsConfig()` only pins ISRG Root X1/X2 — correct for `api.bringyour.com` but none of the four DoH providers use Let's Encrypt. Every TLS handshake failed silently, falling back to plain UDP DNS.
+
+**Fix**: DoH now leaves `TlsConfig` nil, letting Go's `net/http` use the system cert pool automatically. Restores working encrypted DNS and matches upstream behavior.
+
+**Files Modified**: `net_http_doh.go`
+
+### 63b. `isHttpRequest` Detection (Upstream b6ee955)
+
+**Purpose**: Upstream commit `b6ee955` added plaintext HTTP/1.x request line detection so radio/media streaming on non-standard ports isn't falsely flagged by the encrypted-traffic entropy heuristic. The check fires after BitTorrent signatures so HTTP-tracker GET is still classified correctly.
+
+**Files Added**: 36-line `isHttpRequest` function in `ip_security_dmca.go`
+
+**Files Modified**: `net_http_doh.go` — major DoH restructure (dnsmessage parsing, MinCacheTtl, MaxConcurrentResolutions, 4 DoH servers with wire-format support, local DoH) with fork's cert pinning applied via `DefaultTlsConfig()` injected into `DefaultDnsResolverSettings()`.
+
+**Status**: ✅ Merged `main` (2026-06-29). PR #167.
