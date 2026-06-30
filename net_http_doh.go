@@ -626,19 +626,21 @@ func dohQueryWithClientResult(
 		}
 	}
 
-	endTime := time.Now().Add(settings.RequestTimeout)
+		endTime := time.Now().Add(settings.RequestTimeout)
 	mergedResult := newDohQueryResult()
 	for range queryCount {
 		timeout := endTime.Sub(time.Now())
 		if timeout <= 0 {
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Miss:     mergedResult.Miss,
 			}
 		}
 		select {
 		case <-queryCtx.Done():
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Miss:     mergedResult.Miss,
 			}
 		case result := <-receiveResults:
 			maps.Copy(mergedResult.AddrTtls, result.AddrTtls)
@@ -657,6 +659,7 @@ func dohQueryWithClientResult(
 		case <-time.After(timeout):
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Miss:     mergedResult.Miss,
 			}
 		}
 	}
