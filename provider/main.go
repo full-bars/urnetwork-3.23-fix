@@ -1665,7 +1665,7 @@ func provide(opts docopt.Opts) {
 	if apiUrl != "" {
 		if h, p, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")); err == nil {
 			apiProbeHost = h
-			if port, err := strconv.Atoi(p); err == nil {
+			if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
 				apiProbePort = uint16(port)
 			}
 		} else {
