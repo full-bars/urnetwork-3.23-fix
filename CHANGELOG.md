@@ -60,10 +60,15 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+---
+
+## [v3.23.0-fix.24.26] — 2026-06-30
+
 ### Fixed
 - **`isHttpRequest` actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port, but the code was never added to `ip_security_dmca.go`. This change delivers it for real — plaintext HTTP/1.x request lines are detected in the DPI flow and return `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false-positive drops of radio/media streaming over non-standard ports.
 - **Privileged-port DPI skip** (upstream 2144e33): `dmcaDetector.classify()` now allows destination ports `<1024` without payload inspection or flow tracking. A privileged port can't host a peer-to-peer/BitTorrent hole (peers, DHT, uTP, plaintext trackers all run on ephemeral/high ports), so skipping it lets legitimate non-web-standard encrypted services on privileged ports (e.g. Telegram MTProto on 443) through. Peer traffic on high ports is still inspected.
 - **DoH rewrite actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port too, but it was also lost in the same history rewrite. Restored the full DoH refactor: dnsmessage wire-format support for Quad9/OpenDNS, parallel queries to 4 providers (Cloudflare, Google, Quad9, OpenDNS), `MinCacheTtl`/`MaxConcurrentResolutions` settings, single-flight query coalescing, local DoH support, and `TlsConfig` field for cert pinning. Merge conflict resolved by applying LE pinning to remote DoH (tunneled) while preserving system pool for local DoH (host-dialed).
+- **Miss flag lost in DoH merge timeout paths** (PR #169): `dohQueryWithClientResult`'s three early-return paths (deadline, ctx cancel, timeout) were creating a new result struct with only `AddrTtls`, silently dropping a merged `Miss=true` from an already-received NXDOMAIN response. This caused the cache layer to skip caching, doubling DoH requests on resolution timeout.
 
 ### Added
 - **DPI test coverage**: Ported upstream `ip_security_dmca_test.go` wholesale (13 tests). The fork's earlier DPI refactor (`f79e3c5`) brought `ip_security_dmca.go` without its test file, leaving the detector untested; this restores full upstream parity so future audits diff cleanly.
