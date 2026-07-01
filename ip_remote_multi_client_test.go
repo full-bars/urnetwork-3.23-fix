@@ -313,3 +313,58 @@ func TestDefaultMultiRaceClientCount(t *testing.T) {
 		t.Errorf("settings.MultiRaceClientCount = %d, want %d (from defaultMultiRaceClientCount)", settings.MultiRaceClientCount, n)
 	}
 }
+
+func TestMultiClientChannelSendNackCoalesceDoesNotLeak(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	generator := &TestMultiClientGenerator{
+		nextDestinations: func(count int, excludedDestinations []MultiHopId, rankMode string) (map[MultiHopId]DestinationStats, error) {
+			return nil, nil
+		},
+		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
+			return &MultiClientGeneratorClientArgs{ClientId: NewId(), ClientAuth: nil}, nil
+		},
+		removeClientArgs:      func(args *MultiClientGeneratorClientArgs) {},
+		removeClientWithArgs:  func(client *Client, args *MultiClientGeneratorClientArgs) {},
+		newClientSettings:     DefaultClientSettings,
+		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+			return NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings), nil
+		},
+	}
+
+	clientReceivePacket := func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {}
+	contractStatus := func(contractStatus *ContractStatus) {}
+
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = 20 * time.Millisecond
+	settings.StatsWindowDuration = 60 * time.Millisecond
+	settings.BlackholeTimeout = 300 * time.Second
+
+	args, err := generator.NewClientArgs()
+	assert.Equal(t, nil, err)
+	channelArgs := &multiClientChannelArgs{
+		MultiClientGeneratorClientArgs: *args,
+		Destination:                    RequireMultiHopId(NewId()),
+		DestinationStats:               DestinationStats{EstimatedBytesPerSecond: 0, Tier: 0},
+	}
+
+	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, clientReceivePacket, DefaultIngressSecurityPolicy(), contractStatus, nil, settings)
+	assert.Equal(t, nil, err)
+
+	clientChannel.addSendNack(ByteCount(1))
+
+	clientChannel.stateLock.Lock()
+	nackCountAfterAdd := clientChannel.packetStats.sendNackCount
+	clientChannel.stateLock.Unlock()
+	assert.Equal(t, 1, nackCountAfterAdd)
+
+	time.Sleep(settings.StatsWindowDuration + 20*time.Millisecond)
+	clientChannel.addSendSyn(1)
+
+	clientChannel.stateLock.Lock()
+	nackCountAfterEviction := clientChannel.packetStats.sendNackCount
+	clientChannel.stateLock.Unlock()
+
+	assert.Equal(t, 0, nackCountAfterEviction)
+}
