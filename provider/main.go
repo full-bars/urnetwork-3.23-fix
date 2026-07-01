@@ -585,6 +585,7 @@ Usage:
     provider proxy refresh [--force]
     provider proxy add-source <url>
     provider proxy remove-source <url>
+    provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider logs [-n <lines>]
 
@@ -615,7 +616,9 @@ Options:
     <url>                            A proxy list URL.
     --match=<pattern>                Case-insensitive substring matched against proxy hosts (never port or
                                      credentials). Removes matches from the proxy list, proxy file, and URL
-                                     cache, and excludes the pattern from future URL fetches. See 'proxy unexclude'.
+                                     cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
+    <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
+                                     With no pattern, 'proxy exclude' lists active patterns.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
@@ -652,6 +655,8 @@ Options:
 			proxyAddSource(opts)
 		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
 			proxyRemoveSource(opts)
+		} else if exclude, _ := opts.Bool("exclude"); exclude {
+			proxyExclude(opts)
 		} else if add, _ := opts.Bool("add"); add {
 			proxyAdd(opts)
 		} else if removeDead, _ := opts.Bool("remove-dead"); removeDead {
@@ -2879,6 +2884,65 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 	fmt.Println("The running provider will apply the change via hot reload (no restart).")
 }
 
+// proxyExclude manages the URL-fetch exclude patterns:
+//
+//	proxy exclude                    list active patterns
+//	proxy exclude <pattern>          add a pattern
+//	proxy exclude <pattern> --remove delete a pattern
+func proxyExclude(opts docopt.Opts) {
+	pattern, _ := opts.String("<pattern>")
+	removeFlag, _ := opts.Bool("--remove")
+
+	urlState, err := readProxyURLState()
+	if err != nil {
+		fmt.Printf("could not read proxy_url.json: %v\n", err)
+		return
+	}
+
+	if pattern == "" {
+		if removeFlag {
+			fmt.Println("usage: proxy exclude <pattern> --remove")
+			return
+		}
+		if len(urlState.ExcludePatterns) == 0 {
+			fmt.Println("no exclude patterns set")
+			return
+		}
+		fmt.Printf("%d exclude patterns (URL fetches skip matching hosts):\n", len(urlState.ExcludePatterns))
+		for _, p := range urlState.ExcludePatterns {
+			fmt.Printf("    %s\n", p)
+		}
+		return
+	}
+
+	if removeFlag {
+		if !removeExcludePattern(urlState, pattern) {
+			fmt.Printf("pattern %q is not in the exclude list\n", pattern)
+			if len(urlState.ExcludePatterns) > 0 {
+				fmt.Printf("current patterns: %s\n", strings.Join(urlState.ExcludePatterns, ", "))
+			}
+			return
+		}
+		if err := writeProxyURLState(urlState); err != nil {
+			fmt.Printf("could not write proxy_url.json: %v\n", err)
+			return
+		}
+		fmt.Printf("removed exclude pattern %q — matching proxies may return on the next URL fetch\n", pattern)
+		return
+	}
+
+	if !addExcludePattern(urlState, pattern) {
+		fmt.Printf("pattern %q is already excluded\n", pattern)
+		return
+	}
+	if err := writeProxyURLState(urlState); err != nil {
+		fmt.Printf("could not write proxy_url.json: %v\n", err)
+		return
+	}
+	fmt.Printf("added exclude pattern %q — future URL fetches will skip matching hosts\n", pattern)
+	fmt.Println("note: already-cached/running proxies are not removed; use 'proxy remove --match' for that")
+}
+
 type ProxyConfig struct {
 	Auths map[string]*ProxyAuth `json:"auths"`
 	// TODO is there a use case for multiple keys to the same address?
@@ -3662,6 +3726,9 @@ func proxySummary() {
 	fmt.Printf("  Source URLs:        %d\n", urlSources)
 	fmt.Printf("  Cached addresses:   %d\n", urlCached)
 	fmt.Printf("  Blacklisted:        %d\n", urlBlacklisted)
+	if len(urlState.ExcludePatterns) > 0 {
+		fmt.Printf("  Exclude patterns:   %s\n", strings.Join(urlState.ExcludePatterns, ", "))
+	}
 	if urlSources > 0 {
 		fmt.Println()
 		for _, s := range urlState.Sources {

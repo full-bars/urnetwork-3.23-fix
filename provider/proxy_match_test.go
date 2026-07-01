@@ -88,3 +88,16 @@ func TestCollectMatchingProxiesNoState(t *testing.T) {
 		t.Errorf("display = %v, want 2 entries", display)
 	}
 }
+
+func TestRemoveExcludePattern(t *testing.T) {
+	state := &ProxyURLState{ExcludePatterns: []string{"dc.decodo.com", "191.3."}}
+	if !removeExcludePattern(state, "DC.DECODO.COM") {
+		t.Fatal("case-insensitive removal should return true")
+	}
+	if removeExcludePattern(state, "dc.decodo.com") {
+		t.Fatal("second removal should return false")
+	}
+	if len(state.ExcludePatterns) != 1 || state.ExcludePatterns[0] != "191.3." {
+		t.Fatalf("ExcludePatterns = %v, want [191.3.]", state.ExcludePatterns)
+	}
+}
