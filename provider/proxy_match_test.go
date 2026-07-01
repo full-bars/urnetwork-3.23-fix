@@ -36,3 +36,55 @@ func TestMatchProxyHost(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectMatchingProxies(t *testing.T) {
+	servers := map[string]string{
+		"dc.decodo.com:8001:alice:secret": "",
+		"gate.smartproxy.com:7000":        "",
+	}
+	stateProxies := map[string]ProxyEntry{
+		"dc.decodo.com:8002": {Source: "file"},
+		"dc.decodo.com:8003": {Source: "url"},
+		"1.2.3.4:1080":       {Source: "url"},
+	}
+	urlCache := map[string]ProxyURLEntry{
+		"dc.decodo.com:8003": {},
+		"1.2.3.4:1080":       {},
+		"dc.decodo.com:9999": {}, // cached but not in state (not yet launched)
+	}
+
+	addrsBySource, display := collectMatchingProxies("dc.decodo.com", servers, stateProxies, "/etc/proxies.txt", urlCache)
+
+	if got := addrsBySource["internal"]; len(got) != 1 || got[0] != "dc.decodo.com:8001" {
+		t.Errorf("internal = %v, want [dc.decodo.com:8001]", got)
+	}
+	if got := addrsBySource["file"]; len(got) != 1 || got[0] != "dc.decodo.com:8002" {
+		t.Errorf("file = %v, want [dc.decodo.com:8002]", got)
+	}
+	// url matches come from both state (running) and cache (not yet launched), deduped
+	urlGot := map[string]bool{}
+	for _, a := range addrsBySource["url"] {
+		urlGot[a] = true
+	}
+	if len(urlGot) != 2 || !urlGot["dc.decodo.com:8003"] || !urlGot["dc.decodo.com:9999"] {
+		t.Errorf("url = %v, want dc.decodo.com:8003 and dc.decodo.com:9999", addrsBySource["url"])
+	}
+	if len(display) != 4 {
+		t.Errorf("display = %v, want 4 entries", display)
+	}
+}
+
+func TestCollectMatchingProxiesNoState(t *testing.T) {
+	// Provider never ran: state is empty, but proxy.json + URL cache still work.
+	servers := map[string]string{"dc.decodo.com:8001": ""}
+	urlCache := map[string]ProxyURLEntry{"dc.decodo.com:8002": {}}
+
+	addrsBySource, display := collectMatchingProxies("decodo", servers, nil, "", urlCache)
+
+	if len(addrsBySource["internal"]) != 1 || len(addrsBySource["url"]) != 1 {
+		t.Errorf("addrsBySource = %v, want 1 internal + 1 url", addrsBySource)
+	}
+	if len(display) != 2 {
+		t.Errorf("display = %v, want 2 entries", display)
+	}
+}
