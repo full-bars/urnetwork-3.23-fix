@@ -79,6 +79,41 @@ docker exec -it urfix urnet-tools proxy remove-dead
 
 ---
 
+## 🎯 Removing Proxies by Pattern
+
+Remove every proxy from a given provider or IP range in one command — no list reset, no provider restart. Matching is a case-insensitive substring test against the proxy **host only** (never the port or credentials).
+
+### 🐧 Binary / Linux Service
+```sh
+urnet-tools proxy remove --match=dc.decodo.com --preview   # list matches, change nothing
+urnet-tools proxy remove --match=dc.decodo.com             # prompt, then remove
+urnet-tools proxy remove --match=192.3. --yes              # no prompt (IP prefix match)
+```
+
+### 🐳 Docker
+```sh
+docker exec -it urfix urnet-tools proxy remove --match=dc.decodo.com
+```
+
+> [!IMPORTANT]
+> **What it does:**
+>
+> 1. Removes matching proxies from **all three stores**: the internal proxy list (`proxy.json`), your proxy file (`--proxy_file`), and the URL source cache.
+> 2. Adds the pattern to a persistent **exclude list**, so future URL source refreshes silently skip matching proxies — they can't sneak back in.
+> 3. Triggers a **hot reload**: the running provider drops only the removed proxies; everything else keeps serving.
+
+### 🔏 Managing Exclude Patterns
+
+```sh
+urnet-tools proxy exclude                        # list active patterns
+urnet-tools proxy exclude bad-isp.example        # add a pattern (blocks future URL fetches)
+urnet-tools proxy exclude bad-isp.example --remove   # delete a pattern
+```
+
+Active patterns also appear in `urnet-tools proxy summary` under **URL Sources**.
+
+---
+
 ## 📊 Monitoring Proxy Health and Traffic
 
 To help you decide which proxies to prune, use the built-in telemetry commands:

@@ -579,11 +579,13 @@ Usage:
     provider proxy auth remove [<key>] [--all]
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
+    provider proxy remove --match=<pattern> [--yes] [--preview]
     provider proxy remove-dead [--degraded[=<duration>]] [--source=<source>] [--yes] [--preview]
     provider proxy activity
     provider proxy refresh [--force]
     provider proxy add-source <url>
     provider proxy remove-source <url>
+    provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider logs [-n <lines>]
 
@@ -612,6 +614,11 @@ Options:
     --proxy_dead_cleanup_scope=<s>   Automatic daily dead-proxy cleanup scope: none, url, or all. Also settable via PROXY_DEAD_CLEANUP_SCOPE.
     --proxy_dead_cleanup_interval=<dur>  How often automatic cleanup runs, when scope isn't none. Also settable via PROXY_DEAD_CLEANUP_INTERVAL.
     <url>                            A proxy list URL.
+    --match=<pattern>                Case-insensitive substring matched against proxy hosts (never port or
+                                     credentials). Removes matches from the proxy list, proxy file, and URL
+                                     cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
+    <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
+                                     With no pattern, 'proxy exclude' lists active patterns.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
@@ -648,6 +655,8 @@ Options:
 			proxyAddSource(opts)
 		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
 			proxyRemoveSource(opts)
+		} else if exclude, _ := opts.Bool("exclude"); exclude {
+			proxyExclude(opts)
 		} else if add, _ := opts.Bool("add"); add {
 			proxyAdd(opts)
 		} else if removeDead, _ := opts.Bool("remove-dead"); removeDead {
@@ -2741,6 +2750,11 @@ func proxyAdd(opts docopt.Opts) {
 }
 
 func proxyRemove(opts docopt.Opts) {
+	if pattern, _ := opts.String("--match"); pattern != "" {
+		proxyRemoveMatch(pattern, opts)
+		return
+	}
+
 	proxyConfig := readProxyConfig()
 
 	if all, _ := opts.Bool("--all"); all {
@@ -2797,6 +2811,136 @@ func proxyRemove(opts docopt.Opts) {
 	}
 
 	writeProxyConfig(proxyConfig)
+}
+
+func proxyRemoveMatch(pattern string, opts docopt.Opts) {
+	autoYes, _ := opts.Bool("--yes")
+	preview, _ := opts.Bool("--preview")
+
+	proxyConfig := readProxyConfig()
+
+	// state and urlState are optional: the provider may never have run,
+	// or there may be no URL sources. Missing stores just mean fewer
+	// places to search.
+	var stateProxies map[string]ProxyEntry
+	var stateSource string
+	state, stateErr := readProxyState()
+	if stateErr == nil {
+		stateProxies = state.Proxies
+		stateSource = state.Source
+	} else {
+		state = &ProxyState{}
+	}
+	urlState, urlErr := readProxyURLState()
+	if urlErr != nil {
+		urlState = &ProxyURLState{}
+	}
+
+	addrsBySource, display := collectMatchingProxies(
+		pattern, proxyConfig.Servers, stateProxies, stateSource, urlState.Cache)
+
+	if len(display) == 0 {
+		fmt.Printf("no proxies matched %q — nothing to do\n", pattern)
+		return
+	}
+
+	const sampleMax = 10
+	fmt.Printf("%d proxies match %q:\n", len(display), pattern)
+	for i, d := range display {
+		if i == sampleMax {
+			fmt.Printf("    ... and %d more\n", len(display)-sampleMax)
+			break
+		}
+		fmt.Printf("    %s\n", d)
+	}
+
+	if preview {
+		fmt.Println("=== PREVIEW (no changes will be made) ===")
+		return
+	}
+
+	if !autoYes && !confirm(fmt.Sprintf("Remove %d proxies and exclude %q from future URL fetches?", len(display), pattern)) {
+		fmt.Println("Aborted.")
+		return
+	}
+
+	if err := removeDeadProxies(state, addrsBySource); err != nil {
+		fmt.Printf("removal failed: %v\n", err)
+		return
+	}
+
+	// Persist the exclude pattern so URL source refreshes cannot re-add
+	// matching proxies. Re-read to avoid clobbering the cache changes
+	// removeDeadProxies just wrote.
+	if urlState, err := readProxyURLState(); err == nil {
+		if addExcludePattern(urlState, pattern) {
+			if err := writeProxyURLState(urlState); err != nil {
+				fmt.Printf("warning: could not persist exclude pattern: %v\n", err)
+			}
+		}
+	}
+
+	fmt.Printf("Removed %d proxies matching %q. Pattern excluded from future URL fetches.\n", len(display), pattern)
+	fmt.Println("The running provider will apply the change via hot reload (no restart).")
+}
+
+// proxyExclude manages the URL-fetch exclude patterns:
+//
+//	proxy exclude                    list active patterns
+//	proxy exclude <pattern>          add a pattern
+//	proxy exclude <pattern> --remove delete a pattern
+func proxyExclude(opts docopt.Opts) {
+	pattern, _ := opts.String("<pattern>")
+	removeFlag, _ := opts.Bool("--remove")
+
+	urlState, err := readProxyURLState()
+	if err != nil {
+		fmt.Printf("could not read proxy_url.json: %v\n", err)
+		return
+	}
+
+	if pattern == "" {
+		if removeFlag {
+			fmt.Println("usage: proxy exclude <pattern> --remove")
+			return
+		}
+		if len(urlState.ExcludePatterns) == 0 {
+			fmt.Println("no exclude patterns set")
+			return
+		}
+		fmt.Printf("%d exclude patterns (URL fetches skip matching hosts):\n", len(urlState.ExcludePatterns))
+		for _, p := range urlState.ExcludePatterns {
+			fmt.Printf("    %s\n", p)
+		}
+		return
+	}
+
+	if removeFlag {
+		if !removeExcludePattern(urlState, pattern) {
+			fmt.Printf("pattern %q is not in the exclude list\n", pattern)
+			if len(urlState.ExcludePatterns) > 0 {
+				fmt.Printf("current patterns: %s\n", strings.Join(urlState.ExcludePatterns, ", "))
+			}
+			return
+		}
+		if err := writeProxyURLState(urlState); err != nil {
+			fmt.Printf("could not write proxy_url.json: %v\n", err)
+			return
+		}
+		fmt.Printf("removed exclude pattern %q — matching proxies may return on the next URL fetch\n", pattern)
+		return
+	}
+
+	if !addExcludePattern(urlState, pattern) {
+		fmt.Printf("pattern %q is already excluded\n", pattern)
+		return
+	}
+	if err := writeProxyURLState(urlState); err != nil {
+		fmt.Printf("could not write proxy_url.json: %v\n", err)
+		return
+	}
+	fmt.Printf("added exclude pattern %q — future URL fetches will skip matching hosts\n", pattern)
+	fmt.Println("note: already-cached/running proxies are not removed; use 'proxy remove --match' for that")
 }
 
 type ProxyConfig struct {
@@ -3582,6 +3726,9 @@ func proxySummary() {
 	fmt.Printf("  Source URLs:        %d\n", urlSources)
 	fmt.Printf("  Cached addresses:   %d\n", urlCached)
 	fmt.Printf("  Blacklisted:        %d\n", urlBlacklisted)
+	if len(urlState.ExcludePatterns) > 0 {
+		fmt.Printf("  Exclude patterns:   %s\n", strings.Join(urlState.ExcludePatterns, ", "))
+	}
 	if urlSources > 0 {
 		fmt.Println()
 		for _, s := range urlState.Sources {

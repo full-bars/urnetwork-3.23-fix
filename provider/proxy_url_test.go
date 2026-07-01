@@ -268,3 +268,40 @@ func TestMergeProxyURLCache_NilStateIsNoop(t *testing.T) {
 		t.Fatalf("expected no-op, got %v", desiredSet)
 	}
 }
+
+func TestMergeProxyURLEntriesSkipsExcludePatterns(t *testing.T) {
+	state := &ProxyURLState{
+		Cache:           map[string]ProxyURLEntry{},
+		ExcludePatterns: []string{"dc.decodo.com"},
+	}
+	lines := []string{
+		"dc.decodo.com:8001",
+		"DC.DECODO.COM:8002:user:pass",
+		"gate.smartproxy.com:7000",
+	}
+	added := mergeProxyURLEntries(state, lines, 0)
+	if added != 1 {
+		t.Fatalf("added = %d, want 1 (only the non-excluded proxy)", added)
+	}
+	if _, ok := state.Cache["gate.smartproxy.com:7000"]; !ok {
+		t.Errorf("expected gate.smartproxy.com:7000 in cache")
+	}
+	for addr := range state.Cache {
+		if matchProxyHost("dc.decodo.com", addr) {
+			t.Errorf("excluded address %q was cached", addr)
+		}
+	}
+}
+
+func TestAddExcludePattern(t *testing.T) {
+	state := &ProxyURLState{}
+	if !addExcludePattern(state, "dc.decodo.com") {
+		t.Fatal("first add should return true")
+	}
+	if addExcludePattern(state, "DC.Decodo.Com") {
+		t.Fatal("case-insensitive duplicate should return false")
+	}
+	if len(state.ExcludePatterns) != 1 {
+		t.Fatalf("ExcludePatterns = %v, want 1 entry", state.ExcludePatterns)
+	}
+}
