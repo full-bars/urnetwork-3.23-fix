@@ -693,7 +693,7 @@ func dohQueryJson(ctx context.Context, httpClient *http.Client, dohUrl string, r
 	if response.StatusCode != http.StatusOK {
 		return result
 	}
-	data, err := io.ReadAll(response.Body)
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
 		return result
 	}
@@ -764,7 +764,7 @@ func dohQueryWire(ctx context.Context, httpClient *http.Client, dohUrl string, r
 	if response.StatusCode != http.StatusOK {
 		return result
 	}
-	data, err := io.ReadAll(response.Body)
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
 		return result
 	}
