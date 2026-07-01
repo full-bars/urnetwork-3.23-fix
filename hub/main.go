@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -340,6 +341,22 @@ func nodeColor(ts time.Time) string {
 	return "#ef4444"
 }
 
+func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
+	if token == "" {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(authHeader, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authHeader, prefix)), []byte(token)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func handleReport(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -596,6 +613,11 @@ func main() {
 	dataDir := flag.String("data", ".", "data directory for hub.json")
 	flag.Parse()
 
+	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
+	if hubToken == "" {
+		fmt.Println("hub: WARNING URNETWORK_HUB_TOKEN not set — /api/report and /api/nodes/remove are unauthenticated")
+	}
+
 	s, err := openStore(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hub: open store: %v\n", err)
@@ -609,9 +631,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/report", handleReport(s))
+	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
 	mux.HandleFunc("/api/nodes/", handleNodes(s))
-	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
+	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/", handleDashboard(s))
 
