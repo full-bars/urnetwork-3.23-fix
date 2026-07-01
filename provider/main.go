@@ -2004,6 +2004,10 @@ func provide(opts docopt.Opts) {
 		}
 		connectClient.ContractManager().SetProvideModes(provideModes)
 
+		if proxySettings != nil {
+			registerContractCallback(proxySettings.Index, connectClient)
+		}
+
 		select {
 		case <-proxyCtx.Done():
 		}
@@ -3597,6 +3601,25 @@ func proxySummary() {
 	if p, err := proxyURLStatePath(); err == nil {
 		fmt.Printf("  URL state:          %s\n", p)
 	}
+
+	totalAcquired, totalDenied := globalContractMetrics.totals()
+	a15, d15 := globalContractMetrics.windowTotals(15 * time.Minute)
+	a60, d60 := globalContractMetrics.windowTotals(60 * time.Minute)
+	a1440, d1440 := globalContractMetrics.windowTotals(1440 * time.Minute)
+
+	fmt.Println()
+	fmt.Println(" --- Contract Stats ---")
+	cTotal := totalAcquired + totalDenied
+	winRate := 0.0
+	if cTotal > 0 {
+		winRate = float64(totalAcquired) / float64(cTotal) * 100
+	}
+	fmt.Printf("  Acquired:           %d\n", totalAcquired)
+	fmt.Printf("  Denied:             %d\n", totalDenied)
+	fmt.Printf("  Win rate:           %.1f%%\n", winRate)
+	fmt.Printf("  15m:  %d acquired / %d denied\n", a15, d15)
+	fmt.Printf("  1h:   %d acquired / %d denied\n", a60, d60)
+	fmt.Printf("  24h:  %d acquired / %d denied\n", a1440, d1440)
 	fmt.Println("=========================================================================")
 }
 
