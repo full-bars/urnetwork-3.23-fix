@@ -13,11 +13,11 @@ case "$operation" in
         case "$subcmd" in
             health)  exec /usr/local/bin/proxy-health ;;
             traffic) exec /usr/local/bin/proxy-traffic ;;
-            add|clear|refresh|remove-dead)
+            add|clear|refresh|remove-dead|remove|exclude)
                 exec /usr/local/bin/provider proxy "$subcmd" "$@"
                 ;;
             *)
-                echo "Unknown proxy command: $subcmd (Try 'health', 'traffic', 'add', 'clear', 'refresh', or 'remove-dead')"
+                echo "Unknown proxy command: $subcmd (Try 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', or 'exclude')"
                 exit 1
                 ;;
         esac
