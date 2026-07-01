@@ -832,6 +832,13 @@ func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (boo
 }
 
 func (self *UdpSequence) Run() {
+	type writePayload struct {
+		sendIter uint64
+		payload  []byte
+		ipPacket []byte
+	}
+	var writePayloads chan writePayload
+
 	defer func() {
 		atomic.AddInt64(&activeConnectionCount, -1)
 		self.cancel()
@@ -856,6 +863,22 @@ func (self *UdpSequence) Run() {
 				}
 			}
 		}()
+
+		// drain write payloads after the main send loop exits, catching any
+		// items the loop enqueued after the write goroutine's own drain ran
+		if writePayloads != nil {
+			for {
+				select {
+				case p, ok := <-writePayloads:
+					if !ok {
+						return
+					}
+					MessagePoolReturn(p.ipPacket)
+				default:
+					return
+				}
+			}
+		}
 	}()
 
 	receive := func(packet []byte) {
@@ -887,13 +910,7 @@ func (self *UdpSequence) Run() {
 
 	// pipelines
 
-	type writePayload struct {
-		sendIter uint64
-		payload  []byte
-		ipPacket []byte
-	}
-
-	writePayloads := make(chan writePayload, self.udpBufferSettings.SequenceBufferSize)
+	writePayloads = make(chan writePayload, self.udpBufferSettings.SequenceBufferSize)
 	go HandleError(func() {
 		defer self.cancel()
 
@@ -1612,6 +1629,13 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 }
 
 func (self *TcpSequence) Run() {
+	type writePayload struct {
+		sendIter uint64
+		payload  []byte
+		ipPacket []byte
+	}
+	var writePayloads chan writePayload
+
 	defer func() {
 		atomic.AddInt64(&activeConnectionCount, -1)
 		self.cancel()
@@ -1636,6 +1660,21 @@ func (self *TcpSequence) Run() {
 				}
 			}
 		}()
+
+		// drain write payloads after the main send loop exits
+		if writePayloads != nil {
+			for {
+				select {
+				case p, ok := <-writePayloads:
+					if !ok {
+						return
+					}
+					MessagePoolReturn(p.ipPacket)
+				default:
+					return
+				}
+			}
+		}
 	}()
 
 	// note receive is called from multiple goroutines
@@ -1787,13 +1826,7 @@ func (self *TcpSequence) Run() {
 
 	// pipelines
 
-	type writePayload struct {
-		sendIter uint64
-		payload  []byte
-		ipPacket []byte
-	}
-
-	writePayloads := make(chan writePayload, self.tcpBufferSettings.SequenceBufferSize)
+	writePayloads = make(chan writePayload, self.tcpBufferSettings.SequenceBufferSize)
 	go HandleError(func() {
 		defer self.cancel()
 
