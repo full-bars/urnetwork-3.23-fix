@@ -809,7 +809,9 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		os.WriteFile(jwtPath, []byte(byJwt), 0700)
+		if err := os.WriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
+		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
 	}
 }
