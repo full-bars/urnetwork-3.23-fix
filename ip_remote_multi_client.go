@@ -3221,6 +3221,8 @@ func (self *multiClientChannel) coalesceEventBuckets() {
 	removeEventBucket := func(eventBucket *multiClientEventBucket) {
 		self.packetStats.sendAckCount -= eventBucket.sendAckCount
 		self.packetStats.sendAckByteCount -= eventBucket.sendAckByteCount
+		self.packetStats.sendNackCount -= eventBucket.sendNackCount
+		self.packetStats.sendNackByteCount -= eventBucket.sendNackByteCount
 		self.packetStats.sendSynCount -= eventBucket.sendSynCount
 		self.packetStats.receiveAckCount -= eventBucket.receiveAckCount
 		self.packetStats.receiveAckByteCount -= eventBucket.receiveAckByteCount
