@@ -27,3 +27,26 @@ func matchProxyHost(pattern, proxyAddress string) bool {
 	host := hostOfAddress(address)
 	return strings.Contains(strings.ToLower(host), strings.ToLower(pattern))
 }
+
+// hostMatchesAny reports whether address's host matches any of patterns.
+func hostMatchesAny(patterns []string, address string) bool {
+	for _, p := range patterns {
+		if matchProxyHost(p, address) {
+			return true
+		}
+	}
+	return false
+}
+
+// addExcludePattern appends pattern to state.ExcludePatterns unless an
+// equal pattern (case-insensitive) is already present. Returns true if
+// the pattern was added.
+func addExcludePattern(state *ProxyURLState, pattern string) bool {
+	for _, p := range state.ExcludePatterns {
+		if strings.EqualFold(p, pattern) {
+			return false
+		}
+	}
+	state.ExcludePatterns = append(state.ExcludePatterns, pattern)
+	return true
+}

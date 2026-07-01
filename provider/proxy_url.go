@@ -32,6 +32,13 @@ type ProxyURLState struct {
 	// blacklisted address back, even across process restarts.
 	Blacklist map[string]time.Time `json:"blacklist,omitempty"`
 
+	// ExcludePatterns holds case-insensitive host substrings set by
+	// `proxy remove --match`. Any fetched proxy whose host matches one of
+	// these is skipped at merge time, so a URL source refresh can never
+	// re-add proxies the operator removed by pattern. Managed by
+	// `proxy remove --match` / `proxy unexclude`.
+	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
+
 	// DegradedCleanupThreshold sets how long a URL-sourced proxy can be
 	// degraded before the automatic cleanup cycle evicts it. A zero value
 	// (default) disables degraded auto-cleanup — only dead/inactive proxies
@@ -243,6 +250,9 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (a
 			continue
 		}
 		if _, blacklisted := state.Blacklist[address]; blacklisted {
+			continue
+		}
+		if hostMatchesAny(state.ExcludePatterns, address) {
 			continue
 		}
 		if maxTotal > 0 && len(state.Cache) >= maxTotal {
