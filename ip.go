@@ -897,6 +897,22 @@ func (self *UdpSequence) Run() {
 	go HandleError(func() {
 		defer self.cancel()
 
+		// on exit, return any buffers still queued so they aren't leaked from
+		// the message pool (mirrors the readPackets drain below)
+		defer func() {
+			for {
+				select {
+				case writePayload, ok := <-writePayloads:
+					if !ok {
+						return
+					}
+					MessagePoolReturn(writePayload.ipPacket)
+				default:
+					return
+				}
+			}
+		}()
+
 		for {
 			select {
 			case <-self.ctx.Done():
@@ -1780,6 +1796,22 @@ func (self *TcpSequence) Run() {
 	writePayloads := make(chan writePayload, self.tcpBufferSettings.SequenceBufferSize)
 	go HandleError(func() {
 		defer self.cancel()
+
+		// on exit, return any buffers still queued so they aren't leaked from
+		// the message pool (mirrors the readPackets drain below)
+		defer func() {
+			for {
+				select {
+				case writePayload, ok := <-writePayloads:
+					if !ok {
+						return
+					}
+					MessagePoolReturn(writePayload.ipPacket)
+				default:
+					return
+				}
+			}
+		}()
 
 		for {
 			select {
