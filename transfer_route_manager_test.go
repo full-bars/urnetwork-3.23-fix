@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,4 +115,47 @@ func TestMultiRoute(t *testing.T) {
 	for receiveTransport, _ := range receiveTransports {
 		routeManager.RemoveTransport(receiveTransport)
 	}
+}
+
+func TestDowngradeReceiverConnectionConcurrentWithTransportUpdate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rm := NewRouteManager(ctx, "test-client-tag")
+
+	destination := DestinationId(NewId())
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				rm.DowngradeReceiverConnection(destination)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				w := rm.OpenMultiRouteWriter(destination)
+				rm.CloseMultiRouteWriter(w)
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
