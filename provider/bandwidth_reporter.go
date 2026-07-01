@@ -170,6 +170,8 @@ func resolveAlertWebhook(envFallback string) string {
 // proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
 // here in sync with hub/main.go.
 func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
+	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
+
 	interval := 5 * time.Minute
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 10*time.Second {
@@ -245,7 +247,16 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			continue
 		}
 
-		resp, err := client.Post(apiURL, "application/json", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			tlog("[report] request build error: %v\n", err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if hubToken != "" {
+			req.Header.Set("Authorization", "Bearer "+hubToken)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			tlog("[report] post failed: %v\n", err)
 			continue
