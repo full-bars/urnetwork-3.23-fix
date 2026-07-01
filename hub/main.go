@@ -364,7 +364,7 @@ func handleReport(s *store) http.HandlerFunc {
 			return
 		}
 		var ns nodeState
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
