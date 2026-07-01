@@ -340,9 +340,10 @@ func (self *PlatformTransport) SetAuth(auth *ClientAuth) {
 
 func (self *PlatformTransport) setModeAvailable(mode TransportMode, available bool) {
 	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
 	self.availableModes[mode] = available
+	self.stateLock.Unlock()
+
+	self.modeMonitor.NotifyAll()
 }
 
 func (self *PlatformTransport) modeAvailable(mode TransportMode) (bool, chan struct{}) {
@@ -361,9 +362,10 @@ func (self *PlatformTransport) modesAvailable() (map[TransportMode]bool, chan st
 
 func (self *PlatformTransport) setActiveMode(mode TransportMode) {
 	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
 	self.mode = mode
+	self.stateLock.Unlock()
+
+	self.modeMonitor.NotifyAll()
 }
 
 func (self *PlatformTransport) activeMode() (TransportMode, chan struct{}) {
