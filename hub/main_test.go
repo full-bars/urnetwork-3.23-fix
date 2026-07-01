@@ -300,6 +300,81 @@ func TestStoreLoadAndSave(t *testing.T) {
 	}
 }
 
+// --- Auth tests ---
+
+func TestReportEndpointRejectsWrongToken(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s)))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	report := nodeState{NodeID: "test-node", Host: "test-host"}
+	body, _ := json.Marshal(report)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/api/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	if s.Nodes["test-node"] != nil {
+		t.Errorf("node was stored despite wrong token")
+	}
+}
+
+func TestReportEndpointAcceptsCorrectToken(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s)))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	report := nodeState{NodeID: "test-node", Host: "test-host"}
+	body, _ := json.Marshal(report)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/api/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if s.Nodes["test-node"] == nil {
+		t.Errorf("node not stored despite correct token")
+	}
+}
+
+func TestRequireAuthNoTokenConfiguredAllowsAll(t *testing.T) {
+	called := false
+	handler := requireAuth("", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(204)
+	})
+	req := httptest.NewRequest("POST", "/api/report", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if !called {
+		t.Errorf("handler not called when no token configured")
+	}
+	if rec.Code != 204 {
+		t.Errorf("status = %d, want 204", rec.Code)
+	}
+}
+
 func TestStoreLoadNonexistent(t *testing.T) {
 	s, err := openStore(t.TempDir())
 	if err != nil {
