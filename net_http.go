@@ -407,7 +407,7 @@ type evalResult struct {
 func newEvalResultFromHttpResponse(response *http.Response, err error) *evalResult {
 	if err == nil {
 		defer response.Body.Close()
-		bodyBytes, err := io.ReadAll(response.Body)
+		bodyBytes, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 		return &evalResult{
 			err: err,
 			httpResult: httpResult{
