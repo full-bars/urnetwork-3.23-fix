@@ -28,19 +28,23 @@ var funcMap = template.FuncMap{
 	"title":    title,
 	"fmtAge":   fmtAge,
 	"pct":      func(a, b int) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
+	"pct64":    func(a, b int64) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
 	"add":      func(a, b float64) float64 { return a + b },
+	"add64":    func(a, b int64) int64 { return a + b },
 }
 
 type proxyReport struct {
-	ID      string `json:"id"`
-	Address string `json:"addr"`
-	Status  string `json:"status"`
-	TotalRX uint64 `json:"rx"`
-	TotalTX uint64 `json:"tx"`
-	BillRX  uint64 `json:"bill_rx"`
-	BillTX  uint64 `json:"bill_tx"`
-	Clients int64  `json:"clients"`
-	MaxAge  int64  `json:"max_age_s"`
+	ID                string `json:"id"`
+	Address           string `json:"addr"`
+	Status            string `json:"status"`
+	TotalRX           uint64 `json:"rx"`
+	TotalTX           uint64 `json:"tx"`
+	BillRX            uint64 `json:"bill_rx"`
+	BillTX            uint64 `json:"bill_tx"`
+	Clients           int64  `json:"clients"`
+	MaxAge            int64  `json:"max_age_s"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
 }
 
 type systemMetrics struct {
@@ -241,6 +245,7 @@ type summaryRow struct {
 	BillRX, BillTX                         uint64
 	Earning, TotalProxies                  int
 	MbpsRX, MbpsTX                         float64
+	ContractsAcquired, ContractsDenied     int64
 }
 
 type proxSummary struct {
@@ -249,6 +254,7 @@ type proxSummary struct {
 	TotalRX, TotalTX               uint64
 	BillRX, BillTX                 uint64
 	Earning                        int
+	ContractsAcquired, ContractsDenied int64
 }
 
 // proxyRow pairs a reported proxy with its hub-computed earning state for
@@ -408,25 +414,28 @@ func handleNodes(s *store) http.HandlerFunc {
 		}
 		// Return lightweight node list with aggregate counts (no proxy details)
 		type nodeSummary struct {
-			NodeID      string        `json:"node_id"`
-			Host        string        `json:"host"`
-			Version     string        `json:"version"`
-			Timestamp   time.Time     `json:"ts"`
-			Uptime      float64       `json:"uptime"`
-			Proxies     int           `json:"proxies"`
-			Up          int           `json:"up"`
-			Connecting  int           `json:"connecting"`
-			Degraded    int           `json:"degraded"`
-			Dead        int           `json:"dead"`
-			Earning     int           `json:"earning"`
-			MbpsRX      float64       `json:"mbps_rx"`
-			MbpsTX      float64       `json:"mbps_tx"`
-			System      systemMetrics `json:"sys"`
+			NodeID            string        `json:"node_id"`
+			Host              string        `json:"host"`
+			Version           string        `json:"version"`
+			Timestamp         time.Time     `json:"ts"`
+			Uptime            float64       `json:"uptime"`
+			Proxies           int           `json:"proxies"`
+			Up                int           `json:"up"`
+			Connecting        int           `json:"connecting"`
+			Degraded          int           `json:"degraded"`
+			Dead              int           `json:"dead"`
+			Earning           int           `json:"earning"`
+			ContractsAcquired int64         `json:"contracts_acquired"`
+			ContractsDenied   int64         `json:"contracts_denied"`
+			MbpsRX            float64       `json:"mbps_rx"`
+			MbpsTX            float64       `json:"mbps_tx"`
+			System            systemMetrics `json:"sys"`
 		}
 		nodes := s.list()
 		out := make([]nodeSummary, 0, len(nodes))
 		for _, n := range nodes {
 			var up, connecting, degraded, dead int
+			var cAcquired, cDenied int64
 			for _, p := range n.Proxies {
 				switch p.Status {
 				case "up": up++
@@ -434,6 +443,8 @@ func handleNodes(s *store) http.HandlerFunc {
 				case "degraded": degraded++
 				default: dead++
 				}
+				cAcquired += p.ContractsAcquired
+				cDenied += p.ContractsDenied
 			}
 			mbpsRX, mbpsTX := s.getRate(n.NodeID)
 			earning := 0
@@ -444,20 +455,22 @@ func handleNodes(s *store) http.HandlerFunc {
 				}
 			}
 			out = append(out, nodeSummary{
-				NodeID:    n.NodeID,
-				Host:      n.Host,
-				Version:   n.Version,
-				Timestamp: n.Timestamp,
-				Uptime:    n.Uptime,
-				Proxies:   len(n.Proxies),
-				Up:        up,
-				Connecting: connecting,
-				Degraded:  degraded,
-				Dead:      dead,
-				Earning:   earning,
-				MbpsRX:    mbpsRX,
-				MbpsTX:    mbpsTX,
-				System:    n.System,
+				NodeID:            n.NodeID,
+				Host:              n.Host,
+				Version:           n.Version,
+				Timestamp:         n.Timestamp,
+				Uptime:            n.Uptime,
+				Proxies:           len(n.Proxies),
+				Up:                up,
+				Connecting:        connecting,
+				Degraded:          degraded,
+				Dead:              dead,
+				Earning:           earning,
+				ContractsAcquired: cAcquired,
+				ContractsDenied:   cDenied,
+				MbpsRX:            mbpsRX,
+				MbpsTX:            mbpsTX,
+				System:            n.System,
 			})
 		}
 		json.NewEncoder(w).Encode(out)
@@ -534,6 +547,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 				ps.BillRX += p.BillRX
 				ps.BillTX += p.BillTX
 				ps.Clients += p.Clients
+				ps.ContractsAcquired += p.ContractsAcquired
+				ps.ContractsDenied += p.ContractsDenied
 				switch p.Status {
 				case "up": ps.Up++
 				case "connecting": ps.Connecting++
@@ -553,6 +568,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 			sm.BillRX += ps.BillRX
 			sm.BillTX += ps.BillTX
 			sm.TotalProxies += len(n.Proxies)
+			sm.ContractsAcquired += ps.ContractsAcquired
+			sm.ContractsDenied += ps.ContractsDenied
 			// Compute per-node earning
 			ps.Earning = 0
 			for _, p := range n.Proxies {
@@ -759,6 +776,7 @@ tr.expandable:hover { background: #1a2332; }
 <div class="card card-earn"><div class="label">Earning</div><div class="value">{{printf "%.1f" (pct .Sum.Earning .Sum.Up)}}%</div><div class="sub">{{.Sum.Earning}} / {{.Sum.Up}} up proxies</div></div>
 <div class="card card-clients"><div class="label">Active Clients</div><div class="value">{{.Sum.TotalClients}}</div><div class="sub">{{printf "%s" (fmtBytes .Sum.TotalRX)}} RX / {{printf "%s" (fmtBytes .Sum.TotalTX)}} TX</div></div>
 <div class="card card-up"><div class="label">Throughput</div><div class="value">{{printf "%.0f" (add .Sum.MbpsRX .Sum.MbpsTX)}} Mbps</div><div class="sub">{{printf "%.1f" .Sum.MbpsRX}} in / {{printf "%.1f" .Sum.MbpsTX}} out</div></div>
+<div class="card card-earn"><div class="label">Contract Win Rate</div><div class="value">{{printf "%.1f" (pct64 .Sum.ContractsAcquired (add64 .Sum.ContractsAcquired .Sum.ContractsDenied))}}%</div><div class="sub">{{.Sum.ContractsAcquired}} acquired / {{.Sum.ContractsDenied}} denied</div></div>
 </div>
 </div>
 <div class="tabs">
@@ -795,6 +813,13 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div id="fleet-nodes" style="height:160px"></div>
 </div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:11px;color:#64748b">Contracts/hr</span>
+<button onclick="resetFleetChart('fleet-contracts')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
+</div>
+<div id="fleet-contracts" style="height:160px"></div>
+</div>
 </div>
 <div class="filter-bar">
 <input type="text" id="filter-input" placeholder="Filter nodes..." oninput="applyFilter()">
@@ -822,6 +847,7 @@ tr.expandable:hover { background: #1a2332; }
 <th data-col="rate-rx" class="num" onclick="sortBy('rate-rx')">In Mbps <span class="sort-arrow"></span></th>
 <th data-col="rate-tx" class="num" onclick="sortBy('rate-tx')">Out Mbps <span class="sort-arrow"></span></th>
 <th data-col="earning" class="num" onclick="sortBy('earning')">Earning <span class="sort-arrow"></span></th>
+<th data-col="contracts" class="num" onclick="sortBy('contracts')">Contracts <span class="sort-arrow"></span></th>
 <th></th>
 </tr>
 </thead>
@@ -840,6 +866,7 @@ tr.expandable:hover { background: #1a2332; }
 <td class="num">{{printf "%.1f" .MbpsRX}}</td>
 <td class="num">{{printf "%.1f" .MbpsTX}}</td>
 <td class="num">{{.Proxies.Earning}}/{{.Proxies.Up}}</td>
+<td class="num">{{.Proxies.ContractsAcquired}}</td>
 <td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">&#10005;</span></td>
 </tr>
 {{end}}
@@ -934,18 +961,20 @@ function loadFleetChart() {
     var byHour = {};
     for (var i = 0; i < data.length; i++) {
       var h = data[i];
-      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0, clients: 0, count: 0 };
+      if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0, clients: 0, count: 0, acquired: 0, denied: 0 };
       byHour[h.hour].rx += h.total_rx;
       byHour[h.hour].tx += h.total_tx;
       byHour[h.hour].bill_rx += h.bill_rx;
       byHour[h.hour].bill_tx += h.bill_tx;
       byHour[h.hour].clients += h.peak_clients;
       byHour[h.hour].count++;
+      byHour[h.hour].acquired += (h.contracts_acquired || 0);
+      byHour[h.hour].denied += (h.contracts_denied || 0);
     }
     
     var hours = Object.keys(byHour).sort();
-    var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [];
-    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
+    var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [], acquired = [], denied = [];
+    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0, prevAcq = 0, prevDen = 0;
     
     hours.forEach(function(h) {
       labels.push(parseInt(h));
@@ -955,6 +984,8 @@ function loadFleetChart() {
       var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
       clients.push(byHour[h].clients);
       nodes.push(byHour[h].count);
+      var dacq = byHour[h].acquired - prevAcq; acquired.push(dacq >= 0 ? dacq : 0); prevAcq = byHour[h].acquired;
+      var dden = byHour[h].denied - prevDen; denied.push(dden >= 0 ? dden : 0); prevDen = byHour[h].denied;
     });
     
     // Total traffic chart
@@ -990,6 +1021,15 @@ function loadFleetChart() {
         { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 },
       ]
     }, [labels, nodes]);
+
+    // Contract chart
+    makeChart(document.getElementById('fleet-contracts'), {
+      series: [
+        {},
+        { label: 'Acquired/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 },
+        { label: 'Denied/hr', stroke: '#f87171', fill: 'rgba(248,113,113,0.1)', width: 1.5 },
+      ]
+    }, [labels, acquired, denied]);
   }).catch(function() {});
 }
 function applyFilter() {
@@ -1042,7 +1082,9 @@ function renderProxyDrawer() {
     { key: 'rx', label: 'RX', num: true },
     { key: 'tx', label: 'TX', num: true },
     { key: 'bill_rx', label: 'Bill RX', num: true },
-    { key: 'bill_tx', label: 'Bill TX', num: true }
+    { key: 'bill_tx', label: 'Bill TX', num: true },
+    { key: 'contracts_acquired', label: 'Won', num: true },
+    { key: 'contracts_denied', label: 'Lost', num: true }
   ];
   d.data.sort(function(a, b) {
     var col = cols.find(function(c) { return c.key === d.col; });
@@ -1058,7 +1100,7 @@ function renderProxyDrawer() {
   });
   html += '</tr></thead><tbody>';
   d.data.forEach(function(p) {
-    html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td></tr>';
+    html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td><td class="num">' + (p.contracts_acquired||0) + '</td><td class="num">' + (p.contracts_denied||0) + '</td></tr>';
   });
   html += '</tbody></table>';
   document.getElementById('drawer-body').innerHTML = html;
@@ -1266,7 +1308,7 @@ function sortBy(col) {
   rows.forEach(function(r) { tbody.appendChild(r); });
 }
 function getColIndex(col) {
-  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,tx:6,billrx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11}[col]||0;
+  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,tx:6,billrx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11,contracts:12}[col]||0;
 }
 function parseSortValue(s) {
   s = s.trim();
