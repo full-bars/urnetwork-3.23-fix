@@ -1668,8 +1668,8 @@ func (self *SendBuffer) Ack(destination TransferPath, ack *protocol.Ack, timeout
 		anyFound = true
 		if success, err := seq.Ack(ack, timeout); success && err == nil {
 			anySuccess = true
+			break
 		}
-		break
 	}
 	if !anyFound {
 		self.log.V(1).Infof("[sb]ack miss sequence does not exist %s\n", destination)
