@@ -1474,14 +1474,14 @@ func HttpPostStreamWithStrategyRaw(
 		req.Header.Set("Authorization", "Bearer "+byJwt)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
 	defer res.Body.Close()
-	bodyBytes, err := io.ReadAll(res.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {
 		return nil, err
 	}
