@@ -19,6 +19,12 @@ import (
 // (queued by the forwarding loop but not yet dequeued) was dropped instead of
 // returned to the message pool.
 //
+// The same drain defer is applied to `TcpSequence.Run`'s write pipeline
+// (identical 14-line block, same goroutine pattern). An automated TCP test is
+// impractical — it requires constructing valid SYN packets and a full TCP
+// handshake — but the fix is code-review verified: both paths share the same
+// structure, same variable names, and same defer placement.
+//
 // The race is inherently timing-dependent (map/channel select ordering), so
 // this runs many iterations with a small channel capacity and an immediate
 // cancel to make the window in which items are still queued at cancellation
