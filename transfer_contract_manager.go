@@ -1087,10 +1087,12 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 			opened = true
 			allottedByteCount = allotted
 			contractKey = self.localStats.ContractOpenKeys[contractId]
-			self.localStats.ContractCloseCount += 1
-			delete(self.localStats.ContractOpenByteCounts, contractId)
-			delete(self.localStats.ContractOpenKeys, contractId)
-			self.localStats.ContractCloseByteCount += ackedByteCount
+			if !checkpoint {
+				self.localStats.ContractCloseCount += 1
+				delete(self.localStats.ContractOpenByteCounts, contractId)
+				delete(self.localStats.ContractOpenKeys, contractId)
+				self.localStats.ContractCloseByteCount += ackedByteCount
+			}
 		} else {
 			self.localStats.ReceiveContractCloseByteCount += ackedByteCount
 		}
@@ -1101,7 +1103,12 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		if allottedByteCount > 0 {
 			util = float64(ackedByteCount) / float64(allottedByteCount) * 100
 		}
-		self.client.log.Infof("[contract] closed acked=%s allotted=%s util=%.0f%% destination=%s\n",
+		action := "closed"
+		if checkpoint {
+			action = "checkpointed"
+		}
+		self.client.log.Infof("[contract] %s acked=%s allotted=%s util=%.0f%% destination=%s\n",
+			action,
 			ByteCountHumanReadable(ackedByteCount),
 			ByteCountHumanReadable(allottedByteCount),
 			util,
