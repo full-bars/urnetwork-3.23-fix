@@ -95,6 +95,9 @@ func NewRouteManagerWithLogger(ctx context.Context, clientTag string, log Logger
 }
 
 func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
 	self.readerMatchState.Downgrade(source)
 }
 
