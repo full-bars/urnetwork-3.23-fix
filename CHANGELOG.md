@@ -7,11 +7,25 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.24.28] — 2026-07-01
 
 ### Added
-- **Per-proxy contract metrics** (PR #182): Tracks contract acquired/denied counts per proxy with rolling time windows (15m, 1h, 24h). Adds `contracts_acquired`/`contracts_denied` fields to hub bandwidth reports and SQLite rollups. Two new layers:
+- **Per-proxy contract metrics** — Each proxy goroutine now tracks contract acquisition and denial counts with lock-free atomic counters. Rolling time windows (15m, 1h, 24h) let operators spot short-term performance changes. Two new visibility layers:
 
-  **Provider CLI** — `urnet-tools proxy summary` now includes a Contract Stats section with acquired/denied totals, win rate, and rolling window breakdown.
+  **Provider CLI**: `urnet-tools proxy summary` now shows:
+  
+    --- Contract Stats ---
+      Acquired: 262
+      Denied:   1012
+      Win rate: 20.5%
+      15m:  42 acquired / 181 denied
+      1h:   262 acquired / 1012 denied  
+      24h:  262 acquired / 1012 denied
 
-  **Hub dashboard** — New Contract Win Rate summary card, Contracts/hr uPlot chart (green=acquired, red=denied), Contracts column in the fleet node table, and Won/Lost columns in per-proxy drawer with sort support.
+  **Hub dashboard**:
+  - **Contract Win Rate card** — Fleet-wide view of raw acquired vs denied totals and computed win percentage
+  - **Contracts/hr chart** — uPlot chart showing acquired (green) and denied (red) contracts per hour, letting you see patterns across the day
+  - **Contracts column** in the fleet node table — Sortable column showing which nodes win contracts
+  - **Won/Lost in proxy drawer** — Per-proxy breakdown of successful vs denied contracts, sortable by either column
+
+  **SQLite storage**: `node_hourly.contracts_acquired` and `node_hourly.contracts_denied` store contract history for 1-year retention, queryable via `/api/history?hours=168` for weekly rollups.
 
 ---
 
