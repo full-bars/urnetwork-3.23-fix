@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.28] — 2026-07-01
+
+### Added
+- **Per-proxy contract metrics** (PR #182): Tracks contract acquired/denied counts per proxy with rolling time windows (15m, 1h, 24h). Adds `contracts_acquired`/`contracts_denied` fields to hub bandwidth reports and SQLite rollups. Two new layers:
+
+  **Provider CLI** — `urnet-tools proxy summary` now includes a Contract Stats section with acquired/denied totals, win rate, and rolling window breakdown.
+
+  **Hub dashboard** — New Contract Win Rate summary card, Contracts/hr uPlot chart (green=acquired, red=denied), Contracts column in the fleet node table, and Won/Lost columns in per-proxy drawer with sort support.
+
+---
+
 ## [v3.23.0-fix.24.27] — 2026-07-01
 
 ### Fixed
