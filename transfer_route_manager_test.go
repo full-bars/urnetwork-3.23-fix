@@ -159,3 +159,30 @@ func TestDowngradeReceiverConnectionConcurrentWithTransportUpdate(t *testing.T) 
 	close(stop)
 	wg.Wait()
 }
+
+func TestMultiRouteSelectorReadRespectsCallerContext(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+
+	selector := NewMultiRouteSelector(parentCtx, "test-client-tag", nil, DestinationId(NewId()), false)
+
+	callerCtx, callerCancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := selector.Read(callerCtx, -1)
+		done <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	callerCancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from caller context cancellation")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Read did not return after caller context was cancelled")
+	}
+}
