@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.27] — 2026-07-01
+
+### Fixed
+- **Hub bearer token authentication**: `/api/report` and `/api/nodes/remove` now require `URNETWORK_HUB_TOKEN` (PR #170). Constant-time comparison, backward-compatible (unset = unauthenticated). Report body capped at 1MB.
+- **RouteManager concurrent map crash**: Added mutex lock in `DowngradeReceiverConnection` to prevent "concurrent map iteration and write" crash under transport churn (PR #171).
+- **NACK accounting leak**: `removeEventBucket` now subtracts `sendNackCount`/`sendNackByteCount` on bucket eviction, preventing permanent bandwidth accounting drift (PR #172).
+- **SendBuffer.Ack wrong sequence handling**: Moved `break` inside success branch so all candidate sequences are tried before giving up (PR #173).
+- **Mode monitor waiters never wake**: Added `NotifyAll()` calls after `setModeAvailable`/`setActiveMode`, allowing H1/H3 mode-wait loops to wake on state change instead of timing out (PR #174).
+- **Write-pipeline buffer leak on cancel**: UDP and TCP write goroutines now drain `writePayloads` on exit; additional drain in `Run()` catches items re-queued after the goroutine drain (PR #175).
+- **MultiRouteSelector.Read ignored caller context**: Changed to use passed-in `ctx` instead of `self.ctx` (PR #176).
+- **Checkpoint contracts closed incorrectly**: `CloseContractWithCheckpoint` now guards cleanup behind `!checkpoint` (PR #177).
+- **Client replace cleanup bypassed removeClient**: `expand()` now calls `clientRemoveCallback` instead of bare `Cancel`, properly cleaning up `clientUpdates` entries (PR #178).
+- **PeerConn data channel not closed on teardown**: Added `conn.Close()` to deferred cleanup in `peerConn.Run()` (PR #179).
+- **Unbounded HTTP/DoH reads**: Added `io.LimitReader` caps (8 MiB / 64 KiB) on all response body reads (PR #180).
+- **JWT write error silently ignored**: Added error check + fatal log for `os.WriteFile` in JWT persist (PR #181).
+
+---
+
 ## [v3.23.0-fix.24.21] — 2026-06-27
 
 ### Added
