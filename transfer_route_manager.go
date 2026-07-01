@@ -12,7 +12,6 @@ import (
 	// "runtime/debug"
 
 	"golang.org/x/exp/maps"
-
 )
 
 // manage multiple routes to a destination, allowing weighted reads and writes to the routes
@@ -732,14 +731,14 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 		// - transport update
 		// - timeout (may not exist)
 
-selectCases := make([]reflect.SelectCase, 0, 4+len(activeRoutes))
+		selectCases := make([]reflect.SelectCase, 0, 4+len(activeRoutes))
 
-	// add the context done case
-	contextDoneIndex := len(selectCases)
-	selectCases = append(selectCases, reflect.SelectCase{
-		Dir:  reflect.SelectRecv,
-		Chan: reflect.ValueOf(ctx.Done()),
-	})
+		// add the context done case
+		contextDoneIndex := len(selectCases)
+		selectCases = append(selectCases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		})
 
 		// add the done case
 		doneIndex := len(selectCases)
