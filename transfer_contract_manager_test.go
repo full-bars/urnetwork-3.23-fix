@@ -201,3 +201,30 @@ func TestTakeContract(t *testing.T) {
 
 	// all the contracts are accounted for
 }
+
+func TestCheckpointContractDoesNotCloseOpenContract(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	contractId := NewId()
+	cm.mutex.Lock()
+	initialCloseCount := cm.localStats.ContractCloseCount
+	cm.localStats.ContractOpenByteCounts[contractId] = 1024
+	cm.localStats.ContractOpenKeys[contractId] = ContractKey{
+		Destination: DestinationId(NewId()),
+	}
+	cm.mutex.Unlock()
+
+	cm.CheckpointContract(contractId, 100, 50)
+
+	cm.mutex.Lock()
+	_, stillOpen := cm.localStats.ContractOpenByteCounts[contractId]
+	finalCloseCount := cm.localStats.ContractCloseCount
+	cm.mutex.Unlock()
+
+	assert.Equal(t, true, stillOpen)
+	assert.Equal(t, initialCloseCount, finalCloseCount)
+}
