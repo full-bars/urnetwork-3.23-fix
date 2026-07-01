@@ -2333,6 +2333,7 @@ func (self *multiClientWindow) expand(
 								}()
 								if replacedClient != nil {
 									replacedClient.Cancel()
+									self.clientRemoveCallback(replacedClient)
 									self.monitor.AddProviderEvent(replacedClient.ClientId(), ProviderStateRemoved)
 								}
 								pingSuccess += 1
