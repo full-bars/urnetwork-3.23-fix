@@ -537,8 +537,16 @@ switch ($Command) {
             "reload"  { docker exec $ContainerName provider proxy refresh }
             "remove-dead" { docker exec $ContainerName provider proxy remove-dead }
             "summary" { docker exec $ContainerName provider proxy summary }
+            "remove" {
+                $rest = if ($SubArgs.Length -gt 1) { $SubArgs[1..($SubArgs.Length - 1)] } else { @() }
+                docker exec -i $ContainerName provider proxy remove @rest
+            }
+            "exclude" {
+                $rest = if ($SubArgs.Length -gt 1) { $SubArgs[1..($SubArgs.Length - 1)] } else { @() }
+                docker exec $ContainerName provider proxy exclude @rest
+            }
             default {
-                Write-Host "Usage: proxy [refresh|reload|remove-dead|summary]"
+                Write-Host "Usage: proxy [refresh|reload|remove-dead|summary|remove --match=<pat>|exclude [<pat>] [--remove]]"
             }
         }
         break
