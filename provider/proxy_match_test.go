@@ -22,7 +22,7 @@ func TestMatchProxyHost(t *testing.T) {
 		want             bool
 	}{
 		{"dc.decodo.com", "dc.decodo.com:8001", true},
-		{"DECODO", "dc.decodo.com:8001", true},              // case-insensitive
+		{"DECODO", "dc.decodo.com:8001", true}, // case-insensitive
 		{"decodo", "gate.smartproxy.com:7000", false},
 		{"191.3.", "191.3.44.7:1080", true},                 // IP prefix
 		{"8001", "dc.decodo.com:8001", false},               // never match port
