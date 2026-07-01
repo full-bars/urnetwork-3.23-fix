@@ -53,6 +53,18 @@ func addExcludePattern(state *ProxyURLState, pattern string) bool {
 	return true
 }
 
+// removeExcludePattern removes pattern (case-insensitive exact match)
+// from state.ExcludePatterns. Returns true if a pattern was removed.
+func removeExcludePattern(state *ProxyURLState, pattern string) bool {
+	for i, p := range state.ExcludePatterns {
+		if strings.EqualFold(p, pattern) {
+			state.ExcludePatterns = append(state.ExcludePatterns[:i], state.ExcludePatterns[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // collectMatchingProxies scans the three proxy stores for addresses whose
 // host matches pattern and groups them by the source keys that
 // removeDeadProxies consumes ("internal", "file", "url").
