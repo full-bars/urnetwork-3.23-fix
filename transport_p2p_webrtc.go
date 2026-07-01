@@ -635,6 +635,13 @@ func (self *peerConn) Run() {
 	defer func() {
 		self.cancel()
 
+		self.stateLock.Lock()
+		conn := self.conn
+		self.stateLock.Unlock()
+		if conn != nil {
+			conn.Close()
+		}
+
 		self.pc.Close()
 		self.connMonitor.NotifyAll()
 	}()
