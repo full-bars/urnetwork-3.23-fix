@@ -44,14 +44,16 @@ CREATE TABLE IF NOT EXISTS proxy_snapshots (
 CREATE INDEX IF NOT EXISTS idx_proxy_snapshots_ts ON proxy_snapshots(ts);
 
 CREATE TABLE IF NOT EXISTS node_hourly (
-  node_id      TEXT NOT NULL,
-  hour         INTEGER NOT NULL,    -- unix epoch hour (unix / 3600)
-  total_rx     INTEGER,
-  total_tx     INTEGER,
-  bill_rx      INTEGER,
-  bill_tx      INTEGER,
-  peak_clients INTEGER,
-  samples      INTEGER,
+  node_id            TEXT NOT NULL,
+  hour               INTEGER NOT NULL,
+  total_rx           INTEGER,
+  total_tx           INTEGER,
+  bill_rx            INTEGER,
+  bill_tx            INTEGER,
+  peak_clients       INTEGER,
+  samples            INTEGER,
+  contracts_acquired INTEGER,
+  contracts_denied   INTEGER,
   PRIMARY KEY (node_id, hour)
 );
 CREATE INDEX IF NOT EXISTS idx_node_hourly_hour ON node_hourly(hour);
@@ -114,7 +116,7 @@ func gunzipJSON(data []byte, out any) error {
 // proxyTotals sums the per-proxy counters of a snapshot into node-level totals
 // plus the peak client count. The per-proxy TotalRX/TX are cumulative since the
 // proxy started, so the sums are a cumulative gauge for the node.
-func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64, peakClients int64) {
+func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64, peakClients int64, cAcquired, cDenied int64) {
 	for _, p := range proxies {
 		totalRX += p.TotalRX
 		totalTX += p.TotalTX
@@ -123,6 +125,8 @@ func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64
 		if p.Clients > peakClients {
 			peakClients = p.Clients
 		}
+		cAcquired += p.ContractsAcquired
+		cDenied += p.ContractsDenied
 	}
 	return
 }
@@ -135,7 +139,7 @@ func (s *store) persist(state *nodeState) error {
 		return nil
 	}
 	ts := state.Timestamp.Unix()
-	totalRX, totalTX, billRX, billTX, peakClients := proxyTotals(state.Proxies)
+	totalRX, totalTX, billRX, billTX, peakClients, cAcquired, cDenied := proxyTotals(state.Proxies)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -176,14 +180,16 @@ func (s *store) persist(state *nodeState) error {
 	hour := ts / 3600
 	if _, err := tx.Exec(`
 		INSERT INTO node_hourly
-			(node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+			(node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(node_id, hour) DO UPDATE SET
 			total_rx=excluded.total_rx, total_tx=excluded.total_tx,
 			bill_rx=excluded.bill_rx, bill_tx=excluded.bill_tx,
 			peak_clients=MAX(node_hourly.peak_clients, excluded.peak_clients),
+			contracts_acquired=excluded.contracts_acquired,
+			contracts_denied=excluded.contracts_denied,
 			samples=node_hourly.samples + 1`,
-		state.NodeID, hour, totalRX, totalTX, billRX, billTX, peakClients,
+		state.NodeID, hour, totalRX, totalTX, billRX, billTX, peakClients, cAcquired, cDenied,
 	); err != nil {
 		return fmt.Errorf("upsert rollup: %w", err)
 	}
@@ -291,7 +297,7 @@ func (s *store) loadLatestFromDB() error {
 		}
 		s.Nodes[n.id] = state
 
-		totalRX, totalTX, _, _, _ := proxyTotals(proxies)
+		totalRX, totalTX, _, _, _, _, _ := proxyTotals(proxies)
 		s.rates[n.id] = &nodeRate{ts: state.Timestamp, rx: totalRX, tx: totalTX}
 		// Seed the billable baseline so earning can be computed immediately
 		// on the next report from this node.
@@ -343,14 +349,16 @@ func (s *store) importJSON(jsonPath string) (int, error) {
 
 // hourlyRow is one bucket of a node's rollup history, returned by /api/history.
 type hourlyRow struct {
-	NodeID      string `json:"node_id,omitempty"`
-	Hour        int64  `json:"hour"` // unix epoch seconds at the start of the hour
-	TotalRX     uint64 `json:"total_rx"`
-	TotalTX     uint64 `json:"total_tx"`
-	BillRX      uint64 `json:"bill_rx"`
-	BillTX      uint64 `json:"bill_tx"`
-	PeakClients int64  `json:"peak_clients"`
-	Samples     int64  `json:"samples"`
+	NodeID            string `json:"node_id,omitempty"`
+	Hour              int64  `json:"hour"`
+	TotalRX           uint64 `json:"total_rx"`
+	TotalTX           uint64 `json:"total_tx"`
+	BillRX            uint64 `json:"bill_rx"`
+	BillTX            uint64 `json:"bill_tx"`
+	PeakClients       int64  `json:"peak_clients"`
+	Samples           int64  `json:"samples"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
 }
 
 const maxHistoryRows = 10000
@@ -372,11 +380,11 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	)
 	if nodeID == "" {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
 			FROM node_hourly WHERE hour >= ? ORDER BY hour DESC LIMIT ?`, since, maxHistoryRows)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
 			FROM node_hourly WHERE node_id = ? AND hour >= ? ORDER BY hour DESC LIMIT ?`, nodeID, since, maxHistoryRows)
 	}
 	if err != nil {
@@ -388,7 +396,7 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	for rows.Next() {
 		var h hourlyRow
 		var hour int64
-		if err := rows.Scan(&h.NodeID, &hour, &h.TotalRX, &h.TotalTX, &h.BillRX, &h.BillTX, &h.PeakClients, &h.Samples); err != nil {
+		if err := rows.Scan(&h.NodeID, &hour, &h.TotalRX, &h.TotalTX, &h.BillRX, &h.BillTX, &h.PeakClients, &h.Samples, &h.ContractsAcquired, &h.ContractsDenied); err != nil {
 			return nil, err
 		}
 		h.Hour = hour * 3600

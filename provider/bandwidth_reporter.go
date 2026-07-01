@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/metrics"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,15 +29,17 @@ type bandwidthReport struct {
 }
 
 type proxyReport struct {
-	ID      string `json:"id"`
-	Address string `json:"addr"`
-	Status  string `json:"status"`
-	TotalRX uint64 `json:"rx"`
-	TotalTX uint64 `json:"tx"`
-	BillRX  uint64 `json:"bill_rx"`
-	BillTX  uint64 `json:"bill_tx"`
-	Clients int64  `json:"clients"`
-	MaxAge  int64  `json:"max_age_s"`
+	ID                string `json:"id"`
+	Address           string `json:"addr"`
+	Status            string `json:"status"`
+	TotalRX           uint64 `json:"rx"`
+	TotalTX           uint64 `json:"tx"`
+	BillRX            uint64 `json:"bill_rx"`
+	BillTX            uint64 `json:"bill_tx"`
+	Clients           int64  `json:"clients"`
+	MaxAge            int64  `json:"max_age_s"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
 }
 
 type systemMetrics struct {
@@ -310,16 +313,25 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			status = "connecting"
 		}
 
+		var cAcquired, cDenied int64
+		if idx := parseProxyIndex(key); idx >= 0 {
+			if m := globalContractMetrics.get(idx); m != nil {
+				cAcquired, cDenied = m.snapshot()
+			}
+		}
+
 		proxies = append(proxies, proxyReport{
-			ID:      key,
-			Address: ip,
-			Status:  status,
-			TotalRX: bw.TotalRx.Load(),
-			TotalTX: bw.TotalTx.Load(),
-			BillRX:  bw.BillableRx.Load(),
-			BillTX:  bw.BillableTx.Load(),
-			Clients: bw.Clients.Load(),
-			MaxAge:  int64(bw.MaxAge().Seconds()),
+			ID:                key,
+			Address:           ip,
+			Status:            status,
+			TotalRX:           bw.TotalRx.Load(),
+			TotalTX:           bw.TotalTx.Load(),
+			BillRX:            bw.BillableRx.Load(),
+			BillTX:            bw.BillableTx.Load(),
+			Clients:           bw.Clients.Load(),
+			MaxAge:            int64(bw.MaxAge().Seconds()),
+			ContractsAcquired: cAcquired,
+			ContractsDenied:   cDenied,
 		})
 	}
 
@@ -336,4 +348,20 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			Connections: connect.ActiveConnectionCount(),
 		},
 	}
+}
+
+func parseProxyIndex(key string) int {
+	idx := strings.IndexByte(key, ']')
+	if idx <= 0 {
+		return -1
+	}
+	start := strings.IndexByte(key[:idx], '[')
+	if start < 0 {
+		return -1
+	}
+	n, err := strconv.Atoi(key[start+1 : idx])
+	if err != nil {
+		return -1
+	}
+	return n
 }
