@@ -1214,6 +1214,16 @@ function applyFilter() {
     r.classList.toggle('hidden', !match);
     if (match) visible++;
   });
+  var showGroup = false;
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var r = rows[i];
+    if (r.classList.contains('group-header')) {
+      r.classList.toggle('hidden', !showGroup);
+      showGroup = false;
+    } else if (!r.classList.contains('hidden')) {
+      showGroup = true;
+    }
+  }
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
 var sortState = {};
