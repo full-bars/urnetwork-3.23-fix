@@ -44,6 +44,7 @@ show_help ()
     echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
+    echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert fingerprint"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
     echo ""
@@ -2048,6 +2049,10 @@ do_hub () {
             do_hub_link "$url"
             ;;
 
+        test)
+            do_hub_test "$@"
+            ;;
+
         unlink)
             do_hub_unlink
             ;;
@@ -2250,15 +2255,110 @@ EOF
             ;;
 
         "")
-            pr_err "Usage: urnet-tools hub <init|link <url>|unlink|set <url>|off|install|update>"
+            pr_err "Usage: urnet-tools hub <init|link|unlink|set|off|install|update|test [url]>"
             exit 1
             ;;
 
         *)
-            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', or 'update')" "$cmd"
+            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', 'update', or 'test')" "$cmd"
             exit 1
             ;;
     esac
+}
+
+do_hub_test () {
+    url="$1"
+    pin_file="$HOME/.urnetwork/hub.pin"
+    report_file="$HOME/.urnetwork/report_url"
+
+    if [ -z "$url" ]; then
+        if [ -f "$report_file" ]; then
+            url="$(cat "$report_file" | tr -d '\n')"
+        fi
+    fi
+    if [ -z "$url" ]; then
+        pr_err "No hub URL configured. Specify one or run 'urnet-tools hub link https://...' first."
+        exit 1
+    fi
+
+    url="${url%/}"
+    case "$url" in
+        https://*) ;;
+        *) pr_err "URL must use https:// for TLS verification (got: %s)" "$url"; exit 1 ;;
+    esac
+
+    host="${url#https://}"
+    host="${host%%:*}"
+    port_tmp="${url#https://}"
+    port_tmp="${port_tmp#*:}"
+    if [ "$port_tmp" = "${url#https://}" ]; then port=443; else port="$port_tmp"; fi
+
+    pr_info "Testing TLS to %s:%s ..." "$host" "$port"
+
+    expected=""
+    if [ -f "$pin_file" ]; then
+        expected="$(cat "$pin_file" | tr -d ' \n')"
+        case "$expected" in
+            SHA256:*) ;;
+            *) expected="" ;;
+        esac
+    fi
+
+    if [ -n "$expected" ]; then
+        pr_info "Pinned fingerprint: %s" "$expected"
+    fi
+
+    if command -v openssl > /dev/null; then
+        actual_hex=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+        if [ -z "$actual_hex" ]; then
+            pr_err "Could not connect to %s:%s or retrieve certificate." "$host" "$port"
+            pr_err "Make sure the hub is running and reachable."
+            exit 1
+        fi
+        actual="SHA256:${actual_hex}"
+        pr_info "Hub certificate:  %s" "$actual"
+
+        if [ -n "$expected" ]; then
+            if [ "$expected" = "$actual" ]; then
+                pr_info "TLS OK — fingerprint matches."
+                return 0
+            else
+                pr_err "TLS FAILED — fingerprint MISMATCH!"
+                pr_err "Expected:  %s" "$expected"
+                pr_err "Got:       %s" "$actual"
+                pr_err "To re-pin: urnet-tools hub link %s" "$url"
+                exit 1
+            fi
+        else
+            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
+        fi
+    elif command -v curl > /dev/null; then
+        pr_info "openssl not found, using curl fallback..."
+        cert_json=$(tls_fetch "$url/api/cert" 2>/dev/null)
+        if [ -z "$cert_json" ]; then
+            pr_err "Could not reach hub at %s." "$url"
+            exit 1
+        fi
+        fp=$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')
+        if [ -z "$fp" ]; then
+            pr_err "Hub responded but did not return a fingerprint."
+            exit 1
+        fi
+        pr_info "Hub fingerprint: %s" "$fp"
+        if [ -n "$expected" ]; then
+            if [ "$expected" = "$fp" ]; then
+                pr_info "TLS OK — fingerprint matches."
+            else
+                pr_err "TLS FAILED — fingerprint MISMATCH!"
+                exit 1
+            fi
+        else
+            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
+        fi
+    else
+        pr_err "Neither openssl nor curl found."
+        exit 1
+    fi
 }
 
 do_hub_update () {

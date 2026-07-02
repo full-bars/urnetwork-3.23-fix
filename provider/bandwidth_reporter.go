@@ -413,7 +413,9 @@ func newClientForURL(reportURL string) *http.Client {
 			if pins[fp] {
 				return nil
 			}
-			return fmt.Errorf("certificate fingerprint %s is not pinned", fp)
+			err := fmt.Errorf("certificate fingerprint %s is not pinned", fp)
+			os.WriteFile(filepath.Join(os.TempDir(), "hub-tls-debug.txt"), []byte(fmt.Sprintf("computed: %s\npinned: %v\nerror: %v\n", fp, pins, err)), 0644)
+			return err
 		}
 	} else {
 		tlsCfg.InsecureSkipVerify = true

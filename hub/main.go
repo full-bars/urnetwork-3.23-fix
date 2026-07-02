@@ -453,6 +453,11 @@ func handleNodes(s *store) http.HandlerFunc {
 			Degraded          int           `json:"degraded"`
 			Dead              int           `json:"dead"`
 			Earning           int           `json:"earning"`
+			Clients           int64         `json:"clients"`
+			RX                uint64        `json:"rx"`
+			TX                uint64        `json:"tx"`
+			BillRX            uint64        `json:"bill_rx"`
+			BillTX            uint64        `json:"bill_tx"`
 			ContractsAcquired int64         `json:"contracts_acquired"`
 			ContractsDenied   int64         `json:"contracts_denied"`
 			MbpsRX            float64       `json:"mbps_rx"`
@@ -464,6 +469,8 @@ func handleNodes(s *store) http.HandlerFunc {
 		for _, n := range nodes {
 			var up, connecting, degraded, dead int
 			var cAcquired, cDenied int64
+			var totalRX, totalTX, billRX, billTX uint64
+			var clients int64
 			for _, p := range n.Proxies {
 				switch p.Status {
 				case "up":
@@ -477,6 +484,11 @@ func handleNodes(s *store) http.HandlerFunc {
 				}
 				cAcquired += p.ContractsAcquired
 				cDenied += p.ContractsDenied
+				totalRX += p.TotalRX
+				totalTX += p.TotalTX
+				billRX += p.BillRX
+				billTX += p.BillTX
+				clients += p.Clients
 			}
 			mbpsRX, mbpsTX := s.getRate(n.NodeID)
 			earning := 0
@@ -499,6 +511,11 @@ func handleNodes(s *store) http.HandlerFunc {
 				Degraded:          degraded,
 				Dead:              dead,
 				Earning:           earning,
+				Clients:           clients,
+				RX:                totalRX,
+				TX:                totalTX,
+				BillRX:            billRX,
+				BillTX:            billTX,
 				ContractsAcquired: cAcquired,
 				ContractsDenied:   cDenied,
 				MbpsRX:            mbpsRX,
@@ -663,6 +680,17 @@ func handleDashboard(s *store) http.HandlerFunc {
 }
 
 func main() {
+	for _, a := range os.Args[1:] {
+		if a == "-version" || a == "--version" || a == "-v" {
+			v := Version
+			if v == "" {
+				v = "dev"
+			}
+			fmt.Println("urnetwork-hub " + v)
+			os.Exit(0)
+		}
+	}
+
 	addr := flag.String("addr", ":8080", "listen address")
 	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
 	dataDir := flag.String("data", ".", "data directory for hub.json")
@@ -1260,6 +1288,7 @@ setInterval(function tick(){
 function toggleRefresh() { if (document.getElementById('auto-refresh').checked) secondsLeft = 30; }
 function refreshDashboard() {
   if (refreshing) return; refreshing = true;
+  var fc = document.getElementById('filter-count'); if (fc) fc.textContent = 'Refreshing\u2026';
   fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
     var tbody = document.querySelector('#node-table tbody');
     var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
@@ -1296,7 +1325,7 @@ function refreshDashboard() {
     document.querySelectorAll('.card')[3].innerHTML = '<div class="label">Earning</div><div class="value">'+(totalUp>0?(totalEarning/totalUp*100).toFixed(1):'0')+'%</div><div class="sub">'+totalEarning+' / '+totalUp+' up</div>';
     document.querySelectorAll('.card')[4].innerHTML = '<div class="label">Active Clients</div><div class="value">'+totalClients+'</div><div class="sub">'+fmtBytes(totalRX)+' RX / '+fmtBytes(totalTX)+' TX</div>';
     applyFilter();
-  }).catch(function(){}).then(function(){refreshing=false;});
+  }).catch(function(e){var fc=document.getElementById('filter-count');if(fc)fc.textContent='Error: '+(e&&e.message||e||'unknown');}).then(function(){refreshing=false;});
 }
 function removeNode(nodeId) {
   if (!confirm('Remove ' + nodeId + ' from dashboard?')) return;
@@ -1305,7 +1334,7 @@ function removeNode(nodeId) {
 }
 
 // === Utility ===
-function fmtBytes(b){if(b<1024)return b+' B';var u='KMGTPE',i=-1,n=b;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(1)+' '+u[i]+'B';}
+function fmtBytes(b){if(!b&&b!==0)return '0 B';if(b<1024)return b+' B';var u='KMGTPE',i=-1,n=b;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(1)+' '+u[i]+'B';}
 function fmtAge(s){if(!s||s===0)return'&mdash;';if(s<60)return s+'s';if(s<3600)return Math.round(s/60)+'m';return Math.round(s/3600)+'h';}
 function fmtAgo(ts){if(!ts)return'never';var d=(Date.now()-new Date(ts).getTime())/1000;if(d<10)return'now';if(d<60)return Math.round(d)+'s';if(d<3600)return Math.round(d/60)+'m';return Math.round(d/3600)+'h';}
 function fmtUptime(s){if(!s)return'0s';var h=Math.floor(s/3600),d=Math.floor(h/24);if(d>0)return d+'d '+(h%24)+'h';if(h>0)return h+'h';return Math.floor(s/60)+'m';}
