@@ -332,7 +332,7 @@ func handleNodeContracts(s *store) http.HandlerFunc {
 		since := timeNowHour() - int64(hours)
 
 		rows, err := s.db.Query(`
-			SELECT hour, contracts_acquired, contracts_denied
+			SELECT hour, COALESCE(contracts_acquired,0), COALESCE(contracts_denied,0)
 			FROM node_hourly
 			WHERE node_id = ? AND hour >= ?
 			ORDER BY hour ASC`, node, since)

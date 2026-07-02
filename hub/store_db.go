@@ -506,11 +506,11 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	)
 	if nodeID == "" {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, COALESCE(contracts_acquired,0), COALESCE(contracts_denied,0)
 			FROM node_hourly WHERE hour >= ? ORDER BY hour DESC LIMIT ?`, since, maxHistoryRows)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, COALESCE(contracts_acquired,0), COALESCE(contracts_denied,0)
 			FROM node_hourly WHERE node_id = ? AND hour >= ? ORDER BY hour DESC LIMIT ?`, nodeID, since, maxHistoryRows)
 	}
 	if err != nil {
