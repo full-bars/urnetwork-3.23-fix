@@ -95,10 +95,24 @@ type store struct {
 	deltas       *deltaTracker                `json:"-"` // cumulative -> per-interval counters
 }
 
+// proxyStatus is the compact per-proxy fields a heartbeat carries — status
+// and contract counters only, no byte-level detail. json tags must match
+// provider/bandwidth_reporter.go's proxyStatus.
+type proxyStatus struct {
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
+}
+
 // heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
-// bandwidthReport (provider/bandwidth_reporter.go): no per-proxy detail,
-// just enough to keep the dashboard's "last seen" and Mbps rate live between
-// the much less frequent full /api/report ticks. Never persisted to DB.
+// bandwidthReport (provider/bandwidth_reporter.go): no byte-level detail,
+// just enough to keep the dashboard's "last seen", Mbps rate, and per-proxy
+// status/contracts live between the much less frequent full /api/report
+// ticks. Never persisted to DB. Proxies is sparse — the provider only
+// includes entries that changed since its last heartbeat tick (see
+// filterChangedProxies in provider/bandwidth_reporter.go), so most ticks
+// carry an empty or near-empty slice.
 type heartbeatReport struct {
 	NodeID    string        `json:"node_id"`
 	Timestamp time.Time     `json:"ts"`
@@ -107,6 +121,7 @@ type heartbeatReport struct {
 	TotalTX   uint64        `json:"tx"`
 	Clients   int64         `json:"clients"`
 	System    systemMetrics `json:"sys"`
+	Proxies   []proxyStatus `json:"proxies,omitempty"`
 }
 
 type nodeRate struct {
@@ -238,6 +253,20 @@ func (s *store) heartbeat(nodeID string, hb *heartbeatReport) bool {
 		prev.tx = hb.TotalTX
 	} else {
 		s.rates[nodeID] = &nodeRate{ts: hb.Timestamp, rx: hb.TotalRX, tx: hb.TotalTX}
+	}
+
+	if len(hb.Proxies) > 0 {
+		byID := make(map[string]int, len(n.Proxies))
+		for i, p := range n.Proxies {
+			byID[p.ID] = i
+		}
+		for _, ps := range hb.Proxies {
+			if i, ok := byID[ps.ID]; ok {
+				n.Proxies[i].Status = ps.Status
+				n.Proxies[i].ContractsAcquired = ps.ContractsAcquired
+				n.Proxies[i].ContractsDenied = ps.ContractsDenied
+			}
+		}
 	}
 
 	n.Timestamp = hb.Timestamp

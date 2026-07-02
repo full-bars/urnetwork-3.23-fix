@@ -722,6 +722,73 @@ func TestStoreHeartbeatDoesNotPersist(t *testing.T) {
 	}
 }
 
+func TestStoreHeartbeatMergesKnownProxyStatus(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	now := time.Now().UTC()
+	s.upsert("n1", &nodeState{
+		NodeID: "n1", Timestamp: now,
+		Proxies: []proxyReport{
+			{ID: "p1", Status: "up", TotalRX: 1000, ContractsAcquired: 2, ContractsDenied: 1},
+			{ID: "p2", Status: "up", TotalRX: 2000},
+		},
+	})
+
+	ok := s.heartbeat("n1", &heartbeatReport{
+		NodeID: "n1", Timestamp: now.Add(10 * time.Second),
+		Proxies: []proxyStatus{
+			{ID: "p1", Status: "degraded", ContractsAcquired: 3, ContractsDenied: 2},
+		},
+	})
+	if !ok {
+		t.Fatalf("heartbeat for known node returned false")
+	}
+
+	p1 := s.Nodes["n1"].Proxies[0]
+	if p1.Status != "degraded" {
+		t.Errorf("p1 status = %q, want %q", p1.Status, "degraded")
+	}
+	if p1.ContractsAcquired != 3 || p1.ContractsDenied != 2 {
+		t.Errorf("p1 contracts = %d/%d, want 3/2", p1.ContractsAcquired, p1.ContractsDenied)
+	}
+	if p1.TotalRX != 1000 {
+		t.Errorf("p1 TotalRX = %d, want 1000 (heartbeat must not touch byte counters)", p1.TotalRX)
+	}
+
+	p2 := s.Nodes["n1"].Proxies[1]
+	if p2.Status != "up" || p2.ContractsAcquired != 0 {
+		t.Errorf("p2 was modified by a heartbeat that didn't mention it: %+v", p2)
+	}
+}
+
+func TestStoreHeartbeatSkipsUnknownProxyID(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	now := time.Now().UTC()
+	s.upsert("n1", &nodeState{
+		NodeID: "n1", Timestamp: now,
+		Proxies: []proxyReport{{ID: "p1", Status: "up"}},
+	})
+
+	ok := s.heartbeat("n1", &heartbeatReport{
+		NodeID: "n1", Timestamp: now.Add(10 * time.Second),
+		Proxies: []proxyStatus{{ID: "ghost-proxy", Status: "up"}},
+	})
+	if !ok {
+		t.Fatalf("heartbeat for known node returned false")
+	}
+	if len(s.Nodes["n1"].Proxies) != 1 {
+		t.Errorf("unknown proxy ID in heartbeat created an entry: %+v", s.Nodes["n1"].Proxies)
+	}
+	if s.Nodes["n1"].Proxies[0].ID != "p1" {
+		t.Errorf("existing proxy was replaced: %+v", s.Nodes["n1"].Proxies[0])
+	}
+}
+
 func TestHeartbeatEndpointKnownNode(t *testing.T) {
 	s := &store{
 		Nodes: make(map[string]*nodeState),
