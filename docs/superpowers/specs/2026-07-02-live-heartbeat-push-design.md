@@ -53,6 +53,58 @@ skipped — new proxies are still only created by a full `/api/report`,
 same as today. This keeps `store.heartbeat()`'s existing contract: no DB
 write, no-op for a node with no prior full report.
 
+### 1a. Sparse: only send proxies that actually changed
+
+Most proxies in a fleet are idle at any given 15s window — sending all of
+them every tick makes the heartbeat payload scale with proxy count instead
+of with actual activity, which defeats the point of a lightweight signal
+at fleet scale (nodes can carry dozens to hundreds of proxies). Instead,
+the provider only includes a proxy in `Proxies` if its `Status` or either
+contract counter differs from what it sent last tick.
+
+To keep `buildHeartbeat` pure and independently testable (no hidden
+cross-tick state), the diffing lives in a separate pure helper that the
+already-stateful `runHeartbeatReporter` loop threads across ticks (it
+already carries loop-local state like `consecutiveFailures` and
+`activeReportURL`, so this fits the existing shape):
+
+```go
+// filterChangedProxies returns only the entries in current whose Status or
+// contract counters differ from prev (or that have no entry in prev), plus
+// the updated snapshot to pass as prev on the next call. proxyStatus is a
+// plain comparable struct, so equality is a simple !=.
+func filterChangedProxies(prev map[string]proxyStatus, current []proxyStatus) ([]proxyStatus, map[string]proxyStatus) {
+    next := make(map[string]proxyStatus, len(current))
+    var changed []proxyStatus
+    for _, p := range current {
+        next[p.ID] = p
+        if old, ok := prev[p.ID]; !ok || old != p {
+            changed = append(changed, p)
+        }
+    }
+    return changed, next
+}
+```
+
+`runHeartbeatReporter` holds `prevProxyStatus := map[string]proxyStatus{}`
+as a loop-local var (reset each process start, same lifetime as
+`consecutiveFailures`), and each tick does
+`hb.Proxies, prevProxyStatus = filterChangedProxies(prevProxyStatus, hb.Proxies)`
+before marshaling.
+
+Two accepted consequences, worth being explicit about:
+
+- **First tick after a (re)start sends the full proxy list** (`prev` is
+  empty, so every entry counts as "changed") — this establishes the hub's
+  baseline and is the same shape as a full report, just once. Steady
+  state then shrinks to whatever's actually moving.
+- **A proxy that disappears from the provider's list (e.g. removed via
+  `proxy remove`) is never explicitly retracted via heartbeat** — it just
+  stops appearing in `current`, so the hub keeps showing its last-known
+  heartbeat state until the next full `/api/report` reconciles the whole
+  `n.Proxies` slice. This matches today's behavior (heartbeat never
+  deletes), so it's not a new gap, just worth naming.
+
 ### 2. Hub broadcasts a "something changed" pulse over SSE
 
 New `GET /api/events` endpoint, unauthenticated (matches `/api/nodes`,
@@ -117,6 +169,12 @@ against.
 
 ## Testing
 
+- `filterChangedProxies`: unchanged entry (same status/counters as prev) is
+  excluded; changed status, changed acquired, or changed denied each
+  trigger inclusion independently; an entry absent from `prev` is always
+  included (first-tick/new-proxy case); the returned `next` map reflects
+  `current` exactly regardless of what was filtered, so the following
+  call's diff is correct.
 - `store.heartbeat()`: extend existing tests — per-proxy status merge for
   a known ID, a heartbeat proxy ID with no match in `n.Proxies` is
   skipped (no panic, no partial entry created), existing byte counters
