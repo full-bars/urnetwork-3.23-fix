@@ -711,6 +711,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 .card-clients .value { color: #a78bfa; }
 .card-proxies .value { color: #e2e8f0; }
 .card .sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+.layout { display: flex; min-height: calc(100vh - 40px); }
+.sidebar { background: #0f172a; border-right: 1px solid #1e293b; width: 140px; flex-shrink: 0; padding: 8px 0; }
+.nav-item { padding: 8px 14px; cursor: pointer; color: #64748b; font-size: 12px; font-weight: 500; user-select: none; border-left: 2px solid transparent; }
+.nav-item:hover { color: #94a3b8; background: #1a2332; }
+.nav-item.active { color: #60a5fa; border-left-color: #60a5fa; background: #1a2332; font-weight: 600; }
+.nav-item .badge { float: right; font-size: 10px; background: #1e293b; padding: 1px 5px; border-radius: 3px; color: #94a3b8; }
+.content { flex: 1; overflow-x: hidden; }
+.page { display: none; }
+.page.active { display: block; }
+.page-header { padding: 12px 20px; font-size: 13px; font-weight: 600; color: #64748b; border-bottom: 1px solid #1e293b; text-transform: uppercase; letter-spacing: 0.05em; }
+.window-pills { display: flex; gap: 6px; padding: 8px 20px; background: #0f172a; border-bottom: 1px solid #1e293b; align-items: center; }
+.window-pills .pill { background: #1a2332; border: 1px solid #1e293b; color: #94a3b8; padding: 3px 10px; border-radius: 5px; font-size: 11px; cursor: pointer; user-select: none; }
+.window-pills .pill:hover { border-color: #60a5fa; }
+.window-pills .pill.on { background: #60a5fa; color: #fff; border-color: #60a5fa; }
+.window-pills .info { margin-left: auto; font-size: 11px; color: #64748b; }
+.spark { font-family: monospace; letter-spacing: -1px; font-size: 13px; }
+.bar-h { height: 6px; border-radius: 3px; margin: 3px 0; }
+.bar-h.g { background: linear-gradient(90deg, #60a5fa, #4ade80); }
+.win-bar { display: flex; height: 7px; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+.win-bar .w { background: #4ade80; } .win-bar .l { background: #ef4444; }
+.node-tag { background: #1a2332; border-radius: 3px; padding: 0 4px; color: #a78bfa; font-size: 10px; }
+.table-section-header { padding: 8px 20px; font-size: 11px; color: #64748b; border-top: 1px solid #1e293b; cursor: pointer; user-select: none; }
+.table-section-header:hover { color: #94a3b8; }
 .tabs { display: flex; gap: 0; border-bottom: 1px solid #1e293b; background: #0f172a; padding: 0 24px; position: sticky; top: 0; z-index: 10; }
 .tab { padding: 10px 20px; cursor: pointer; color: #64748b; font-size: 13px; font-weight: 500; border-bottom: 2px solid transparent; user-select: none; }
 .tab:hover { color: #94a3b8; }
@@ -792,6 +815,17 @@ tr.expandable:hover { background: #1a2332; }
 </style>
 </head>
 <body>
+<div class="layout">
+<nav class="sidebar">
+<div class="nav-item active" data-page="overview" onclick="switchPage('overview')">Overview</div>
+<div class="nav-item" data-page="servers" onclick="switchPage('servers')">Servers</div>
+<div class="nav-item" data-page="proxies" onclick="switchPage('proxies')">Proxies</div>
+<div class="nav-item" data-page="contracts" onclick="switchPage('contracts')">Contracts</div>
+</nav>
+<main class="content">
+
+<!-- ===== OVERVIEW ===== -->
+<div id="page-overview" class="page active">
 <div class="header">
 <h1>URnetwork Hub <small>fleet bandwidth dashboard</small></h1>
 <div class="cards">
@@ -804,48 +838,33 @@ tr.expandable:hover { background: #1a2332; }
 <div class="card card-earn"><div class="label">Contract Win Rate</div><div class="value">{{printf "%.1f" (pct64 .Sum.ContractsAcquired (add64 .Sum.ContractsAcquired .Sum.ContractsDenied))}}%</div><div class="sub">{{.Sum.ContractsAcquired}} acquired / {{.Sum.ContractsDenied}} denied</div></div>
 </div>
 </div>
-<div class="tabs">
-<div class="tab active" onclick="switchTab('nodes')">Nodes</div>
-<div class="tab" onclick="switchTab('history')">History</div>
-</div>
-<div id="tab-nodes" class="tab-content active">
 <div class="charts-row">
 <div class="chart-box compact">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-<span style="font-size:11px;color:#64748b">Total Traffic</span>
-<button onclick="resetFleetChart('fleet-traffic')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
-</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Total Traffic</span><button onclick="resetFleetChart('fleet-traffic')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-traffic" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-<span style="font-size:11px;color:#64748b">Billable Traffic</span>
-<button onclick="resetFleetChart('fleet-billable')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
-</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Billable Traffic</span><button onclick="resetFleetChart('fleet-billable')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-billable" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-<span style="font-size:11px;color:#64748b">Peak Clients</span>
-<button onclick="resetFleetChart('fleet-clients')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
-</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Peak Clients</span><button onclick="resetFleetChart('fleet-clients')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-clients" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-<span style="font-size:11px;color:#64748b">Fleet Nodes</span>
-<button onclick="resetFleetChart('fleet-nodes')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
-</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Fleet Nodes</span><button onclick="resetFleetChart('fleet-nodes')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-nodes" style="height:160px"></div>
 </div>
 <div class="chart-box compact">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-<span style="font-size:11px;color:#64748b">Contracts/hr</span>
-<button onclick="resetFleetChart('fleet-contracts')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button>
-</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Contracts/hr</span><button onclick="resetFleetChart('fleet-contracts')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-contracts" style="height:160px"></div>
 </div>
 </div>
+</div>
+
+<!-- ===== SERVERS ===== -->
+<div id="page-servers" class="page">
+<div class="page-header">Servers</div>
 <div class="filter-bar">
 <input type="text" id="filter-input" placeholder="Filter nodes..." oninput="applyFilter()">
 <select id="filter-status" onchange="applyFilter()">
@@ -899,32 +918,55 @@ tr.expandable:hover { background: #1a2332; }
 </table>
 </div>
 </div>
-<div id="tab-history" class="tab-content">
-<div class="chart-wrap">
-<div class="chart-controls">
-<button class="active" onclick="setHistoryRange(24,this)">24h</button>
-<button onclick="setHistoryRange(72,this)">3d</button>
-<button onclick="setHistoryRange(168,this)">7d</button>
-<button onclick="resetHistoryZoom()" style="margin-left:4px;color:#64748b;font-size:11px">Reset zoom</button>
-<select id="history-node" onchange="loadHistory()" style="background:#1a2332;border:1px solid #1e293b;color:#e2e8f0;padding:4px 8px;border-radius:6px;font-size:12px;margin-left:auto">
-<option value="">All nodes</option>
-{{range .Rows}}
-<option value="{{.NodeID}}">{{.NodeID}}</option>
-{{end}}
+
+<!-- ===== PROXIES ===== -->
+<div id="page-proxies" class="page">
+<div class="page-header">Proxies</div>
+<div class="window-pills">
+<span class="pill on" onclick="setProxiesWindow('7d',this)">7d</span>
+<span class="pill" onclick="setProxiesWindow('24h',this)">24h</span>
+<span class="pill" onclick="setProxiesWindow('1h',this)">1h</span>
+<span class="pill" onclick="setProxiesWindow('30d',this)">30d</span>
+<span class="pill" onclick="setProxiesWindow('1y',this)">1y</span>
+<select id="proxies-sort" onchange="loadProxies()" style="background:#1a2332;border:1px solid #1e293b;color:#e2e8f0;padding:3px 8px;border-radius:5px;font-size:11px">
+<option value="traffic">Traffic</option>
+<option value="contracts">Contracts</option>
+<option value="denied">Denied</option>
 </select>
+<select id="proxies-node" onchange="loadProxies()" style="background:#1a2332;border:1px solid #1e293b;color:#e2e8f0;padding:3px 8px;border-radius:5px;font-size:11px">
+<option value="">All nodes</option>
+</select>
+<span class="info" id="proxies-info">Loading...</span>
 </div>
-<div class="chart-box"><div id="history-chart"></div></div>
+<div id="proxies-charts" style="display:flex;gap:8px;padding:10px 20px;"></div>
+<div class="table-section-header" style="font-weight:600">ACTIVE PROXIES</div>
+<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th>#</th><th>Proxy</th><th>Traffic</th><th>Won</th><th>Denied</th><th>Win%</th><th>Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-section-header" onclick="toggleIdleProxies()" style="font-weight:600">IDLE PROXIES <span id="idle-count"></span><span style="color:#475569;margin-left:8px;font-weight:400">click to expand</span></div>
+<div id="proxies-idle-wrap" class="hidden"><div class="table-wrap"><table id="proxies-idle-table"><thead><tr><th>Proxy</th><th>Nodes</th><th>Last activity</th></tr></thead><tbody id="proxies-idle-body"></tbody></table></div></div>
 </div>
+
+<!-- ===== CONTRACTS ===== -->
+<div id="page-contracts" class="page">
+<div class="page-header">Contracts</div>
+<div class="window-pills">
+<span class="pill on" onclick="setContractsWindow('7d',this)">7d</span>
+<span class="pill" onclick="setContractsWindow('24h',this)">24h</span>
+<span class="pill" onclick="setContractsWindow('1h',this)">1h</span>
+<span class="pill" onclick="setContractsWindow('30d',this)">30d</span>
+<span class="info" id="contracts-fleet-info">Loading...</span>
 </div>
+<div class="chart-wrap"><div class="chart-box"><div id="contracts-fleet-chart"></div></div></div>
+<div class="table-section-header" style="font-weight:600">PER SERVER &middot; sorted by win rate &middot; click for detail</div>
+<div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th>Won</th><th>Denied</th><th>Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+</div>
+
+</main>
+</div>
+
 <div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
-<div class="drawer-header">
-<h2 id="drawer-title">Node</h2>
-<span class="drawer-close" onclick="closeDrawer()">&#10005;</span>
-</div>
-<div class="drawer-body" id="drawer-body">
-<div class="loading">Select a node to view proxy details</div>
-</div>
+<div class="drawer-header"><h2 id="drawer-title">Node</h2><span class="drawer-close" onclick="closeDrawer()">&#10005;</span></div>
+<div class="drawer-body" id="drawer-body"><div class="loading">Select a node to view proxy details</div></div>
 </div>
 <div class="footer">
 <div class="auto-refresh">
@@ -932,136 +974,84 @@ tr.expandable:hover { background: #1a2332; }
 <label for="auto-refresh">auto-refresh</label>
 <span class="countdown" id="countdown">30s</span>
 </div>
-<div>
-<a href="/api/nodes">/api/nodes (JSON)</a>
+<div><a href="/api/nodes">/api/nodes (JSON)</a></div>
 </div>
-</div>
-<script>
-var fleetChart = null;
 
-function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-  document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); });
-  document.querySelectorAll('.tab')[name === 'nodes' ? 0 : 1].classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
-  if (name === 'history') loadHistory();
-  if (name === 'nodes') loadFleetChart();
+<script>
+var fleetCharts = [], fleetChartData = null;
+var historyChart = null, historyHours = 24;
+var contractsChart = null;
+
+// === Page switching ===
+function switchPage(name) {
+  document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active');});
+  document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
+  document.querySelector('.nav-item[data-page="'+name+'"]').classList.add('active');
+  document.getElementById('page-'+name).classList.add('active');
+  if (name === 'overview') loadFleetChart();
+  if (name === 'proxies') loadProxies();
+  if (name === 'contracts') loadContracts();
+  if (name === 'proxies' || name === 'contracts') loadNodeOptions();
 }
 
-var fleetCharts = [];
-
-var fleetChartData = null;
-
+// === Fleet charts (Overview) ===
 function makeChart(el, opts, data) {
   if (!el) return;
   el.innerHTML = '';
   var w = el.clientWidth || 400;
   if (w < 50) w = 400;
-  opts.width = w;
-  opts.height = 120;
-  opts.cursor = { show: true };
-  opts.legend = { show: true };
+  opts.width = w; opts.height = 120; opts.cursor = { show: true }; opts.legend = { show: true };
   if (!opts.axes) opts.axes = [{ show: false }, { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 55 }];
   var chart = new uPlot(opts, data, el);
   fleetCharts.push(chart);
 }
-
 function resetFleetChart(id) {
   var el = document.getElementById(id);
   if (!el) return;
-  // uPlot stores a reference on the element
   if (el._uplot) { el._uplot.destroy(); }
   fleetCharts = fleetCharts.filter(function(c) { return c !== el._uplot; });
-  // Re-fetch data and re-render this chart
   loadFleetChart();
 }
-
 function loadFleetChart() {
   if (fleetCharts.length > 0) return;
-  
-  fetch('/api/history?hours=24').then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/history?hours=24').then(function(r){return r.json();}).then(function(data){
     if (!data || data.length === 0) return;
-    
-    // Aggregate by hour across all nodes
     var byHour = {};
     for (var i = 0; i < data.length; i++) {
       var h = data[i];
       if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0, clients: 0, count: 0, acquired: 0, denied: 0 };
-      byHour[h.hour].rx += h.total_rx;
-      byHour[h.hour].tx += h.total_tx;
-      byHour[h.hour].bill_rx += h.bill_rx;
-      byHour[h.hour].bill_tx += h.bill_tx;
-      byHour[h.hour].clients += h.peak_clients;
-      byHour[h.hour].count++;
-      byHour[h.hour].acquired += (h.contracts_acquired || 0);
-      byHour[h.hour].denied += (h.contracts_denied || 0);
+      byHour[h.hour].rx += h.total_rx; byHour[h.hour].tx += h.total_tx;
+      byHour[h.hour].bill_rx += h.bill_rx; byHour[h.hour].bill_tx += h.bill_tx;
+      byHour[h.hour].clients += h.peak_clients; byHour[h.hour].count++;
+      byHour[h.hour].acquired += (h.contracts_acquired || 0); byHour[h.hour].denied += (h.contracts_denied || 0);
     }
-    
     var hours = Object.keys(byHour).sort();
     var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [], acquired = [], denied = [];
     var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0, prevAcq = 0, prevDen = 0;
-    
     hours.forEach(function(h) {
       labels.push(parseInt(h));
       var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
       var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
       var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
       var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
-      clients.push(byHour[h].clients);
-      nodes.push(byHour[h].count);
+      clients.push(byHour[h].clients); nodes.push(byHour[h].count);
       var dacq = byHour[h].acquired - prevAcq; acquired.push(dacq >= 0 ? dacq : 0); prevAcq = byHour[h].acquired;
       var dden = byHour[h].denied - prevDen; denied.push(dden >= 0 ? dden : 0); prevDen = byHour[h].denied;
     });
-    
-    // Total traffic chart
-    makeChart(document.getElementById('fleet-traffic'), {
-      series: [
-        {},
-        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
-        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
-      ]
-    }, [labels, rx, tx]);
-    
-    // Billable traffic chart
-    makeChart(document.getElementById('fleet-billable'), {
-      series: [
-        {},
-        { label: 'Bill RX/hr', stroke: '#f59e0b', fill: 'rgba(245,158,11,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } },
-        { label: 'Bill TX/hr', stroke: '#a78bfa', fill: 'rgba(167,139,250,0.1)', width: 1.5, value: function(u,v) { return fmtBytes(v)+'/h'; } }
-      ]
-    }, [labels, brx, btx]);
-    
-    // Peak clients chart
-    makeChart(document.getElementById('fleet-clients'), {
-      series: [
-        {},
-        { label: 'Peak clients', stroke: '#f472b6', fill: 'rgba(244,114,182,0.1)', width: 1.5 },
-      ]
-    }, [labels, clients]);
-    
-    // Fleet nodes chart
-    makeChart(document.getElementById('fleet-nodes'), {
-      series: [
-        {},
-        { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 },
-      ]
-    }, [labels, nodes]);
-
-    // Contract chart
-    makeChart(document.getElementById('fleet-contracts'), {
-      series: [
-        {},
-        { label: 'Acquired/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 },
-        { label: 'Denied/hr', stroke: '#f87171', fill: 'rgba(248,113,113,0.1)', width: 1.5 },
-      ]
-    }, [labels, acquired, denied]);
-  }).catch(function() {});
+    makeChart(document.getElementById('fleet-traffic'), { series: [{}, { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 1.5, value: function(u,v){return fmtBytes(v)+'/h';} }, { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5, value: function(u,v){return fmtBytes(v)+'/h';} }] }, [labels, rx, tx]);
+    makeChart(document.getElementById('fleet-billable'), { series: [{}, { label: 'Bill RX/hr', stroke: '#f59e0b', fill: 'rgba(245,158,11,0.1)', width: 1.5, value: function(u,v){return fmtBytes(v)+'/h';} }, { label: 'Bill TX/hr', stroke: '#a78bfa', fill: 'rgba(167,139,250,0.1)', width: 1.5, value: function(u,v){return fmtBytes(v)+'/h';} }] }, [labels, brx, btx]);
+    makeChart(document.getElementById('fleet-clients'), { series: [{}, { label: 'Peak clients', stroke: '#f472b6', fill: 'rgba(244,114,182,0.1)', width: 1.5 }] }, [labels, clients]);
+    makeChart(document.getElementById('fleet-nodes'), { series: [{}, { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 }] }, [labels, nodes]);
+    makeChart(document.getElementById('fleet-contracts'), { series: [{}, { label: 'Acquired/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 }, { label: 'Denied/hr', stroke: '#f87171', fill: 'rgba(248,113,113,0.1)', width: 1.5 }] }, [labels, acquired, denied]);
+  }).catch(function(){});
 }
+
+// === Servers table ===
 function applyFilter() {
   var q = document.getElementById('filter-input').value.toLowerCase();
   var status = document.getElementById('filter-status').value;
   var visible = 0;
-  document.querySelectorAll('#node-table tbody tr.expandable').forEach(function(r) {
+  document.querySelectorAll('#node-table tbody tr.expandable').forEach(function(r){
     var match = r.getAttribute('data-id').toLowerCase().indexOf(q) >= 0;
     if (status !== 'all' && r.getAttribute('data-status') !== status) match = false;
     r.classList.toggle('hidden', !match);
@@ -1069,289 +1059,247 @@ function applyFilter() {
   });
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
-var drawerNodeId = null;
-var proxyDrawer = {};
+var sortState = {};
+function sortBy(col) {
+  var dir = sortState[col] === -1 ? 1 : -1; sortState[col] = dir;
+  document.querySelectorAll('th[data-col]').forEach(function(th){th.classList.remove('sorted');th.querySelector('.sort-arrow').textContent='';});
+  var th = document.querySelector('th[data-col="'+col+'"]');
+  th.classList.add('sorted'); th.querySelector('.sort-arrow').textContent = dir === -1 ? '\u25BC' : '\u25B2';
+  var tbody = document.querySelector('#node-table tbody');
+  var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
+  rows.sort(function(a,b){return cmpNode(a.cells[getColIndex(col)].textContent.trim(), b.cells[getColIndex(col)].textContent.trim(), dir);});
+  rows.forEach(function(r){tbody.appendChild(r);});
+}
+function getColIndex(col) {
+  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,tx:6,billrx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11,contracts:12}[col]||0;
+}
+function parseSortValue(s) {
+  s = s.trim(); if (s === '') return -1;
+  var m = s.match(/^([\d.]+)\s*([KMGTPE]?B)$/i);
+  if (m) return parseFloat(m[1]) * ({'B':1,'KB':1024,'MB':1048576,'GB':1073741824,'TB':1099511627776}[m[2].toUpperCase()]||1);
+  if (/^-?[\d.]+$/.test(s)) return parseFloat(s);
+  return s;
+}
+function cmpNode(a,b,dir){var pa=parseSortValue(a),pb=parseSortValue(b);if(typeof pa==='number'&&typeof pb==='number')return dir*(pa-pb);return dir*String(a).localeCompare(String(b),undefined,{numeric:true});}
 
+// === Drawer ===
+var drawerNodeId = null, proxyDrawer = {};
 function openDrawer(id) {
   drawerNodeId = id;
   document.getElementById('drawer-overlay').classList.add('open');
   document.getElementById('drawer').classList.add('open');
   document.getElementById('drawer-title').textContent = 'Node: ' + id;
   document.getElementById('drawer-body').innerHTML = '<div class="loading">Loading proxies...</div>';
-  fetch('/api/nodes/' + id + '/proxies').then(function(r) { return r.json(); }).then(function(proxies) {
-    if (!proxies || proxies.length === 0) {
-      document.getElementById('drawer-body').innerHTML = '<div class="loading">No proxy data</div>';
-      return;
-    }
+  fetch('/api/nodes/' + id + '/proxies').then(function(r){return r.json();}).then(function(proxies){
+    if (!proxies || proxies.length === 0) { document.getElementById('drawer-body').innerHTML = '<div class="loading">No proxy data</div>'; return; }
     proxyDrawer = { data: proxies, col: 'clients', dir: -1 };
-    // Default sort: clients desc, then billable rx desc
-    proxies.sort(function(a, b) {
-      if (b.clients !== a.clients) return b.clients - a.clients;
-      return (b.bill_rx || 0) - (a.bill_rx || 0);
-    });
+    proxies.sort(function(a,b){if(b.clients!==a.clients)return b.clients-a.clients;return(b.bill_rx||0)-(a.bill_rx||0);});
     renderProxyDrawer();
-  }).catch(function() {
-    document.getElementById('drawer-body').innerHTML = '<div class="loading">Failed to load proxies</div>';
-  });
+  }).catch(function(){document.getElementById('drawer-body').innerHTML='<div class="loading">Failed to load proxies</div>';});
 }
-
 function renderProxyDrawer() {
   var d = proxyDrawer;
-  var sortOrder = {up: 0, connecting: 1, degraded: 2, dead: 3};
-  var cols = [
-    { key: 'id', label: 'ID', num: false },
-    { key: 'addr', label: 'Address', num: false },
-    { key: 'status', label: 'Status', num: false, fn: function(p) { return sortOrder[p.status]||9; } },
-    { key: 'clients', label: 'Clients', num: true },
-    { key: 'max_age_s', label: 'Age', num: true },
-    { key: 'rx', label: 'RX', num: true },
-    { key: 'tx', label: 'TX', num: true },
-    { key: 'bill_rx', label: 'Bill RX', num: true },
-    { key: 'bill_tx', label: 'Bill TX', num: true },
-    { key: 'contracts_acquired', label: 'Won', num: true },
-    { key: 'contracts_denied', label: 'Lost', num: true }
-  ];
-  d.data.sort(function(a, b) {
-    var col = cols.find(function(c) { return c.key === d.col; });
-    var va = col && col.fn ? col.fn(a) : a[d.col];
-    var vb = col && col.fn ? col.fn(b) : b[d.col];
-    if (typeof va === 'number') return d.dir * (va - vb);
-    return d.dir * String(va).localeCompare(String(vb));
-  });
+  var sortOrder = {up:0,connecting:1,degraded:2,dead:3};
+  var cols = [{key:'id',label:'ID',num:false},{key:'addr',label:'Address',num:false},{key:'status',label:'Status',num:false,fn:function(p){return sortOrder[p.status]||9;}},{key:'clients',label:'Clients',num:true},{key:'max_age_s',label:'Age',num:true},{key:'rx',label:'RX',num:true},{key:'tx',label:'TX',num:true},{key:'bill_rx',label:'Bill RX',num:true},{key:'bill_tx',label:'Bill TX',num:true},{key:'contracts_acquired',label:'Won',num:true},{key:'contracts_denied',label:'Lost',num:true}];
+  d.data.sort(function(a,b){var col=cols.find(function(c){return c.key===d.col;});var va=col&&col.fn?col.fn(a):a[d.col];var vb=col&&col.fn?col.fn(b):b[d.col];if(typeof va==='number')return d.dir*(va-vb);return d.dir*String(va).localeCompare(String(vb));});
   var html = '<table id="drawer-table"><thead><tr>';
-  cols.forEach(function(col) {
-    var arrow = col.key === d.col ? (d.dir === -1 ? ' &#9660;' : ' &#9650;') : '';
-    html += '<th' + (col.num ? ' class="num"' : '') + ' onclick="sortDrawer(\'' + col.key + '\')">' + col.label + arrow + '</th>';
-  });
-  html += '</tr></thead><tbody>';
-  d.data.forEach(function(p) {
-    html += '<tr><td class="num-mono">' + p.id + '</td><td class="truncate">' + p.addr + '</td><td><span class="proxy-status ' + p.status + '"></span>' + p.status + '</td><td class="num">' + p.clients + '</td><td class="num">' + fmtAge(p.max_age_s) + '</td><td class="num">' + fmtBytes(p.rx) + '</td><td class="num">' + fmtBytes(p.tx) + '</td><td class="num">' + fmtBytes(p.bill_rx) + '</td><td class="num">' + fmtBytes(p.bill_tx) + '</td><td class="num">' + (p.contracts_acquired||0) + '</td><td class="num">' + (p.contracts_denied||0) + '</td></tr>';
-  });
-  html += '</tbody></table>';
+  cols.forEach(function(col){var arrow=col.key===d.col?(d.dir===-1?' &#9660;':' &#9650;'):'';html+='<th'+(col.num?' class="num"':'')+' onclick="sortDrawer(\''+col.key+'\')">'+col.label+arrow+'</th>';});
+  html+='</tr></thead><tbody>';
+  d.data.forEach(function(p){html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
+  html+='</tbody></table>';
   document.getElementById('drawer-body').innerHTML = html;
 }
+function sortDrawer(col){if(proxyDrawer.col===col)proxyDrawer.dir*=-1;else{proxyDrawer.col=col;proxyDrawer.dir=-1;}renderProxyDrawer();}
+function closeDrawer(){document.getElementById('drawer-overlay').classList.remove('open');document.getElementById('drawer').classList.remove('open');}
 
-function sortDrawer(col) {
-  if (proxyDrawer.col === col) proxyDrawer.dir *= -1;
-  else { proxyDrawer.col = col; proxyDrawer.dir = -1; }
-  renderProxyDrawer();
-}
-function closeDrawer() {
-  document.getElementById('drawer-overlay').classList.remove('open');
-  document.getElementById('drawer').classList.remove('open');
-}
-var secondsLeft = 30;
-var countdownEl = document.getElementById('countdown');
-var autoRefresh = document.getElementById('auto-refresh');
-function tick() {
-  if (!autoRefresh.checked) { countdownEl.textContent = 'paused'; return; }
+// === Auto-refresh ===
+var secondsLeft = 30, refreshing = false;
+setInterval(function tick(){
+  if (!document.getElementById('auto-refresh').checked) { document.getElementById('countdown').textContent = 'paused'; return; }
   secondsLeft--;
   if (secondsLeft <= 0) { secondsLeft = 30; refreshDashboard(); return; }
-  countdownEl.textContent = secondsLeft + 's';
-}
-setInterval(tick, 1000);
-countdownEl.textContent = '30s';
-function toggleRefresh() { if (autoRefresh.checked) secondsLeft = 30; }
-var refreshing = false;
+  document.getElementById('countdown').textContent = secondsLeft + 's';
+}, 1000);
+function toggleRefresh() { if (document.getElementById('auto-refresh').checked) secondsLeft = 30; }
 function refreshDashboard() {
-  if (refreshing) return;
-  refreshing = true;
-  fetch('/api/nodes').then(function(r) { return r.json(); }).then(function(nodes) {
+  if (refreshing) return; refreshing = true;
+  fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
     var tbody = document.querySelector('#node-table tbody');
     var existing = {};
-    tbody.querySelectorAll('tr.expandable').forEach(function(r) { existing[r.getAttribute('data-id')] = r; });
-    var incomingIds = {};
+    tbody.querySelectorAll('tr.expandable').forEach(function(r){existing[r.getAttribute('data-id')]=r;});
+    var incomingIds = {}, totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
     var frag = document.createDocumentFragment();
-    var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
-    nodes.forEach(function(n) {
+    nodes.forEach(function(n){
       incomingIds[n.node_id] = true;
       nodeCount++; totalProxies += n.proxies; totalUp += n.up; totalDeg += n.degraded; totalDead += n.dead; totalClients += n.clients; totalEarning += n.earning; totalRX += n.rx; totalTX += n.tx;
       var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
       var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
-      var existingRow = existing[n.node_id];
-      if (existingRow) {
-        var c = existingRow.cells;
-        c[0].innerHTML = '<span class="dot' + (n.up > 0 ? ' alive' : '') + '" style="background:' + color + '"></span>' + n.node_id + ' <span class="version">' + (n.sys.host||'') + '</span>';
-        c[1].textContent = ago; c[2].textContent = uptime;
-        c[3].innerHTML = n.up + (n.degraded > 0 ? ' <span class="status-badge degraded">' + n.degraded + '</span>' : '') + (n.dead > 0 ? ' <span class="status-badge dead">' + n.dead + '</span>' : '');
-        c[4].textContent = n.clients; c[5].textContent = fmtBytes(n.rx); c[6].textContent = fmtBytes(n.tx);
-        c[7].textContent = fmtBytes(n.bill_rx); c[8].textContent = fmtBytes(n.bill_tx);
-        c[9].textContent = n.mbps_rx ? n.mbps_rx.toFixed(1) : ''; c[10].textContent = n.mbps_tx ? n.mbps_tx.toFixed(1) : '';
-        c[11].textContent = n.earning + '/' + n.up;
-        existingRow.setAttribute('data-status', sc);
+      var er = existing[n.node_id];
+      if (er) {
+        er.cells[0].innerHTML = '<span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span>';
+        er.cells[1].textContent = ago; er.cells[2].textContent = uptime;
+        er.cells[3].innerHTML = n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'');
+        er.cells[4].textContent = n.clients; er.cells[5].textContent = fmtBytes(n.rx); er.cells[6].textContent = fmtBytes(n.tx);
+        er.cells[7].textContent = fmtBytes(n.bill_rx); er.cells[8].textContent = fmtBytes(n.bill_tx);
+        er.cells[9].textContent = n.mbps_rx ? n.mbps_rx.toFixed(1) : ''; er.cells[10].textContent = n.mbps_tx ? n.mbps_tx.toFixed(1) : '';
+        er.cells[11].textContent = n.earning+'/'+n.up;
+        er.setAttribute('data-status', sc);
       } else {
         var tr = document.createElement('tr'); tr.className = 'expandable'; tr.setAttribute('data-id', n.node_id); tr.setAttribute('data-status', sc);
-        tr.onclick = function() { openDrawer(n.node_id); };
-        tr.innerHTML = '<td class="node-id"><span class="dot' + (n.up > 0 ? ' alive' : '') + '" style="background:' + color + '"></span>' + n.node_id + ' <span class="version">' + (n.sys.host||'') + '</span></td><td>' + ago + '</td><td>' + uptime + '</td><td class="num">' + n.up + (n.degraded > 0 ? ' <span class="status-badge degraded">' + n.degraded + '</span>' : '') + (n.dead > 0 ? ' <span class="status-badge dead">' + n.dead + '</span>' : '') + '</td><td class="num">' + n.clients + '</td><td class="num">' + fmtBytes(n.rx) + '</td><td class="num">' + fmtBytes(n.tx) + '</td><td class="num">' + fmtBytes(n.bill_rx) + '</td><td class="num">' + fmtBytes(n.bill_tx) + '</td><td class="num">' + (n.mbps_rx ? n.mbps_rx.toFixed(1) : '') + '</td><td class="num">' + (n.mbps_tx ? n.mbps_tx.toFixed(1) : '') + '</td><td class="num">' + n.earning + '/' + n.up + '</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\'' + n.node_id + '\')">&#10005;</span></td>';
+        tr.onclick = function(){openDrawer(n.node_id);};
+        tr.innerHTML = '<td class="node-id"><span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span></td><td>'+ago+'</td><td>'+uptime+'</td><td class="num">'+n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'')+'</td><td class="num">'+n.clients+'</td><td class="num">'+fmtBytes(n.rx)+'</td><td class="num">'+fmtBytes(n.tx)+'</td><td class="num">'+fmtBytes(n.bill_rx)+'</td><td class="num">'+fmtBytes(n.bill_tx)+'</td><td class="num">'+(n.mbps_rx?n.mbps_rx.toFixed(1):'')+'</td><td class="num">'+(n.mbps_tx?n.mbps_tx.toFixed(1):'')+'</td><td class="num">'+n.earning+'/'+n.up+'</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\''+n.node_id+'\')">&#10005;</span></td>';
         frag.appendChild(tr);
       }
     });
-    // Remove rows for nodes no longer in the response
-    Object.keys(existing).forEach(function(id) {
-      if (!incomingIds[id]) {
-        var e = existing[id];
-        if (e) e.remove();
-      }
-    });
+    Object.keys(existing).forEach(function(id){if(!incomingIds[id]){var e=existing[id];if(e)e.remove();}});
     tbody.appendChild(frag);
-    document.querySelectorAll('.card')[0].innerHTML = '<div class="label">Total Proxies</div><div class="value">' + totalProxies + '</div><div class="sub">across ' + nodeCount + ' nodes</div>';
-    document.querySelectorAll('.card')[1].innerHTML = '<div class="label">Healthy</div><div class="value">' + totalUp + '</div><div class="sub">' + (totalProxies > 0 ? (totalUp/totalProxies*100).toFixed(1) : '0') + '% of fleet</div>';
-    document.querySelectorAll('.card')[2].innerHTML = '<div class="label">Degraded</div><div class="value">' + totalDeg + '</div><div class="sub">' + totalDead + ' dead</div>';
-    document.querySelectorAll('.card')[3].innerHTML = '<div class="label">Earning</div><div class="value">' + (totalUp > 0 ? (totalEarning/totalUp*100).toFixed(1) : '0') + '%</div><div class="sub">' + totalEarning + ' / ' + totalUp + ' up</div>';
-    document.querySelectorAll('.card')[4].innerHTML = '<div class="label">Active Clients</div><div class="value">' + totalClients + '</div><div class="sub">' + fmtBytes(totalRX) + ' RX / ' + fmtBytes(totalTX) + ' TX</div>';
+    document.querySelectorAll('.card')[0].innerHTML = '<div class="label">Total Proxies</div><div class="value">'+totalProxies+'</div><div class="sub">across '+nodeCount+' nodes</div>';
+    document.querySelectorAll('.card')[1].innerHTML = '<div class="label">Healthy</div><div class="value">'+totalUp+'</div><div class="sub">'+(totalProxies>0?(totalUp/totalProxies*100).toFixed(1):'0')+'% of fleet</div>';
+    document.querySelectorAll('.card')[2].innerHTML = '<div class="label">Degraded</div><div class="value">'+totalDeg+'</div><div class="sub">'+totalDead+' dead</div>';
+    document.querySelectorAll('.card')[3].innerHTML = '<div class="label">Earning</div><div class="value">'+(totalUp>0?(totalEarning/totalUp*100).toFixed(1):'0')+'%</div><div class="sub">'+totalEarning+' / '+totalUp+' up</div>';
+    document.querySelectorAll('.card')[4].innerHTML = '<div class="label">Active Clients</div><div class="value">'+totalClients+'</div><div class="sub">'+fmtBytes(totalRX)+' RX / '+fmtBytes(totalTX)+' TX</div>';
     applyFilter();
-  }).catch(function() {}).then(function() { refreshing = false; });
-}
-var historyChart = null;
-var historyHours = 24;
-function setHistoryRange(hours, btn) {
-  historyHours = hours;
-  document.querySelectorAll('.chart-controls button').forEach(function(b) { b.classList.remove('active'); });
-  if (btn) btn.classList.add('active');
-  loadHistory();
-}
-function resetHistoryZoom() {
-  loadHistory();
-}
-function loadHistory() {
-  var nodeId = document.getElementById('history-node').value;
-  fetch('/api/history?hours=' + historyHours + (nodeId ? '&node=' + nodeId : '')).then(function(r) { return r.json(); }).then(function(data) {
-    if (!data || data.length === 0) {
-      document.getElementById('history-chart').innerHTML = '<div style="text-align:center;padding:40px;color:#64748b">No history data</div>';
-      return;
-    }
-    // When viewing all nodes, aggregate by hour
-    if (!nodeId) {
-      // All nodes: aggregate by hour
-      var byHour = {};
-      for (var i = 0; i < data.length; i++) {
-        var h = data[i];
-        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
-        byHour[h.hour].rx += h.total_rx;
-        byHour[h.hour].tx += h.total_tx;
-        byHour[h.hour].bill_rx += h.bill_rx;
-        byHour[h.hour].bill_tx += h.bill_tx;
-      }
-      hours = Object.keys(byHour).sort();
-    } else {
-      // Single node: use raw data
-      var byHour = {};
-      for (var i = 0; i < data.length; i++) {
-        var h = data[i];
-        if (h.node_id !== nodeId) continue;
-        if (!byHour[h.hour]) byHour[h.hour] = { rx: 0, tx: 0, bill_rx: 0, bill_tx: 0 };
-        byHour[h.hour].rx += h.total_rx;
-        byHour[h.hour].tx += h.total_tx;
-        byHour[h.hour].bill_rx += h.bill_rx;
-        byHour[h.hour].bill_tx += h.bill_tx;
-      }
-      hours = Object.keys(byHour).sort();
-    }
-    var rx = [], tx = [], brx = [], btx = [], labels = [];
-    // Compute hourly deltas (bytes transferred in each hour window)
-    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0;
-    hours.forEach(function(h) {
-      labels.push(parseInt(h));
-      var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
-      var dtx = byHour[h].tx - prevTx; tx.push(dtx >= 0 ? dtx : 0); prevTx = byHour[h].tx;
-      var dbrx = byHour[h].bill_rx - prevBRx; brx.push(dbrx >= 0 ? dbrx : 0); prevBRx = byHour[h].bill_rx;
-      var dbtx = byHour[h].bill_tx - prevBTx; btx.push(dbtx >= 0 ? dbtx : 0); prevBTx = byHour[h].bill_tx;
-    });
-    var opts = {
-      width: Math.min(document.getElementById('history-chart').clientWidth || 800, 1200),
-      height: 300,
-      cursor: { show: true },
-      legend: { show: true },
-      axes: [
-        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 } },
-        { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, label: 'Bytes/hr' }
-      ],
-      series: [
-        { label: 'Time', value: '{HH}:{mm}' },
-        { label: 'RX/hr', stroke: '#60a5fa', fill: 'rgba(96,165,250,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
-        { label: 'TX/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 2, value: function(u, v) { return fmtBytes(v) + '/h'; } },
-        { label: 'Bill RX/hr', stroke: '#f59e0b', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } },
-        { label: 'Bill TX/hr', stroke: '#a78bfa', width: 1.5, value: function(u, v) { return fmtBytes(v) + '/h'; } }
-      ]
-    };
-    if (historyChart) { historyChart.destroy(); historyChart = null; }
-    historyChart = new uPlot(opts, [labels, rx, tx, brx, btx], document.getElementById('history-chart'));
-  }).catch(function() {});
-}
-function fmtAgo(ts) {
-  if (!ts) return 'never';
-  var d = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (d < 10) return 'now';
-  if (d < 60) return Math.round(d) + 's';
-  if (d < 3600) return Math.round(d/60) + 'm';
-  return Math.round(d/3600) + 'h';
-}
-function fmtUptime(s) {
-  if (!s) return '0s';
-  var h = Math.floor(s / 3600);
-  var d = Math.floor(h / 24);
-  if (d > 0) return d + 'd ' + (h % 24) + 'h';
-  if (h > 0) return h + 'h';
-  return Math.floor(s / 60) + 'm';
-}
-function nodeColor(ts) {
-  var age = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (age < 420) return '#22c55e';
-  if (age < 900) return '#eab308';
-  return '#ef4444';
-}
-function fmtBytes(b) {
-  if (b < 1024) return b + ' B';
-  var units = 'KMGTPE';
-  var i = -1;
-  var n = b;
-  while (n >= 1024 && i < units.length-1) { n /= 1024; i++; }
-  return n.toFixed(1) + ' ' + units[i] + 'B';
-}
-function fmtAge(s) {
-  if (!s || s === 0) return '&mdash;';
-  if (s < 60) return s + 's';
-  if (s < 3600) return Math.round(s/60) + 'm';
-  return Math.round(s/3600) + 'h';
-}
-var sortState = {};
-function sortBy(col) {
-  var dir = sortState[col] === -1 ? 1 : -1;
-  sortState[col] = dir;
-  document.querySelectorAll('th[data-col]').forEach(function(th) {
-    th.classList.remove('sorted');
-    th.querySelector('.sort-arrow').textContent = '';
-  });
-  var th = document.querySelector('th[data-col="' + col + '"]');
-  th.classList.add('sorted');
-  th.querySelector('.sort-arrow').textContent = dir === -1 ? '\u25BC' : '\u25B2';
-  var tbody = document.querySelector('#node-table tbody');
-  var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
-  rows.sort(function(a, b) {
-    return cmpNode(a.cells[getColIndex(col)].textContent.trim(), b.cells[getColIndex(col)].textContent.trim(), dir);
-  });
-  rows.forEach(function(r) { tbody.appendChild(r); });
-}
-function getColIndex(col) {
-  return {node:0,heartbeat:1,uptime:2,proxies:3,clients:4,rx:5,tx:6,billrx:7,billtx:8,'rate-rx':9,'rate-tx':10,earning:11,contracts:12}[col]||0;
-}
-function parseSortValue(s) {
-  s = s.trim();
-  if (s === '') return -1;
-  var m = s.match(/^([\d.]+)\s*([KMGTPE]?B)$/i);
-  if (m) return parseFloat(m[1]) * ({'B':1,'KB':1024,'MB':1048576,'GB':1073741824,'TB':1099511627776}[m[2].toUpperCase()]||1);
-  if (/^-?[\d.]+$/.test(s)) return parseFloat(s);
-  return s;
-}
-function cmpNode(a, b, dir) {
-  var pa = parseSortValue(a), pb = parseSortValue(b);
-  if (typeof pa === 'number' && typeof pb === 'number') return dir * (pa - pb);
-  return dir * String(a).localeCompare(String(b), undefined, {numeric:true});
+  }).catch(function(){}).then(function(){refreshing=false;});
 }
 function removeNode(nodeId) {
   if (!confirm('Remove ' + nodeId + ' from dashboard?')) return;
-  fetch('/api/nodes/remove', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId})}).then(function(r){if(r.ok)refreshDashboard();});
+  fetch('/api/nodes/remove', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId})})
+    .then(function(r){if(r.ok)refreshDashboard();});
 }
+
+// === Utility ===
+function fmtBytes(b){if(b<1024)return b+' B';var u='KMGTPE',i=-1,n=b;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(1)+' '+u[i]+'B';}
+function fmtAge(s){if(!s||s===0)return'&mdash;';if(s<60)return s+'s';if(s<3600)return Math.round(s/60)+'m';return Math.round(s/3600)+'h';}
+function fmtAgo(ts){if(!ts)return'never';var d=(Date.now()-new Date(ts).getTime())/1000;if(d<10)return'now';if(d<60)return Math.round(d)+'s';if(d<3600)return Math.round(d/60)+'m';return Math.round(d/3600)+'h';}
+function fmtUptime(s){if(!s)return'0s';var h=Math.floor(s/3600),d=Math.floor(h/24);if(d>0)return d+'d '+(h%24)+'h';if(h>0)return h+'h';return Math.floor(s/60)+'m';}
+function nodeColor(ts){var age=(Date.now()-new Date(ts).getTime())/1000;if(age<420)return'#22c55e';if(age<900)return'#eab308';return'#ef4444';}
+
+// === Load node options for proxy/contract filters ===
+var nodeOptionsLoaded = false;
+function loadNodeOptions() {
+  if (nodeOptionsLoaded) return;
+  fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
+    var sel = document.getElementById('proxies-node');
+    nodes.forEach(function(n){var o=document.createElement('option');o.value=n.node_id;o.textContent=n.node_id;sel.appendChild(o);});
+    nodeOptionsLoaded = true;
+  }).catch(function(){});
+}
+
+// === Proxies page ===
+var proxiesWindow = '7d';
+function setProxiesWindow(w, btn) {
+  proxiesWindow = w;
+  document.querySelectorAll('#page-proxies .pill').forEach(function(p){p.classList.remove('on');});
+  if (btn) btn.classList.add('on');
+  loadProxies();
+}
+function loadProxies() {
+  if (!document.getElementById('page-proxies').classList.contains('active')) return;
+  var sort = document.getElementById('proxies-sort').value;
+  var node = document.getElementById('proxies-node').value;
+  var url = '/api/proxies/top?window='+proxiesWindow+'&sort='+sort+'&limit=100'+(node?'&node='+node:'');
+  document.getElementById('proxies-info').textContent = 'Loading...';
+  fetch(url).then(function(r){return r.json();}).then(function(rows){
+    var tbody = document.getElementById('proxies-active-body');
+    if (!rows || rows.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">No proxy data in this window</td></tr>'; document.getElementById('proxies-info').textContent = '0 proxies'; return; }
+    var totalRX = 0, totalTX = 0, totalAcq = 0, totalDen = 0;
+    rows.forEach(function(r){totalRX+=r.rx;totalTX+=r.tx;totalAcq+=r.acq;totalDen+=r.denied;});
+    document.getElementById('proxies-info').textContent = rows.length+' active';
+    var html = '';
+    rows.forEach(function(r,i){
+      var traffic = r.rx + r.tx;
+      var acq = r.acq || 0, den = r.denied || 0, total = acq + den;
+      var winPct = total > 0 ? (acq/total*100).toFixed(1) : '—';
+      var cl = winPct >= 90 ? 'g' : (winPct >= 70 ? 'y' : 'r');
+      html += '<tr><td class="num">'+(i+1)+'</td>';
+      html += '<td><span class="b">'+r.addr+'</span></td>';
+      html += '<td class="num">'+fmtBytes(traffic)+'</td>';
+      html += '<td class="num g">'+acq+'</td>';
+      html += '<td class="num r">'+den+'</td>';
+      html += '<td class="num '+cl+'">'+winPct+(winPct!=='—'?'%':'')+'</td>';
+      html += '<td class="num">'+(r.nodes||0)+'</td></tr>';
+    });
+    tbody.innerHTML = html;
+
+    // Idle proxies: entries with zero traffic and zero contracts
+    var idle = rows.filter(function(r){return (r.rx+r.tx)===0&&(r.acq||0)+(r.denied||0)===0;});
+    document.getElementById('idle-count').textContent = ' ('+idle.length+' idle)';
+    var ibody = document.getElementById('proxies-idle-body');
+    if (idle.length === 0) {
+      ibody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#475569">No idle proxies</td></tr>';
+    } else {
+      var ihtml = '';
+      idle.forEach(function(r){ihtml+='<tr><td>'+r.addr+'</td><td class="num">'+(r.nodes||0)+'</td><td class="num">—</td></tr>';});
+      ibody.innerHTML = ihtml;
+    }
+  }).catch(function(){document.getElementById('proxies-info').textContent = 'Error loading';});
+}
+function toggleIdleProxies() {
+  document.getElementById('proxies-idle-wrap').classList.toggle('hidden');
+}
+
+// === Contracts page ===
+var contractsWindow = '7d';
+function setContractsWindow(w, btn) {
+  contractsWindow = w;
+  document.querySelectorAll('#page-contracts .pill').forEach(function(p){p.classList.remove('on');});
+  if (btn) btn.classList.add('on');
+  loadContracts();
+}
+function loadContracts() {
+  if (!document.getElementById('page-contracts').classList.contains('active')) return;
+  document.getElementById('contracts-fleet-info').textContent = 'Loading...';
+  // Fetch per-node contracts from /api/nodes/contracts for each node visible in the server table
+  fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
+    var nodeIDs = nodes.map(function(n){return n.node_id;});
+    if (nodeIDs.length === 0) { document.getElementById('contracts-fleet-info').textContent = 'No nodes'; return; }
+    var promises = nodeIDs.map(function(id){return fetch('/api/nodes/contracts?node='+id+'&window='+contractsWindow).then(function(r){return r.json();}).then(function(d){return {node:id,data:d};});});
+    Promise.all(promises).then(function(results){
+      // Build per-node totals
+      var serverRows = [];
+      var fleetAcq = 0, fleetDen = 0;
+      var fleetByHour = {};
+      results.forEach(function(r){
+        var acq = 0, den = 0;
+        if (r.data) {
+          r.data.forEach(function(p){acq+=p.acq;den+=p.denied;var h=p.ts/3600;if(!fleetByHour[h])fleetByHour[h]={acq:0,den:0};fleetByHour[h].acq+=p.acq;fleetByHour[h].den+=p.denied;});
+        }
+        fleetAcq += acq; fleetDen += den;
+        var total = acq + den;
+        serverRows.push({node:r.node, acq:acq, den:den, total:total, pct:total>0?(acq/total*100).toFixed(1):'—'});
+      });
+      serverRows.sort(function(a,b){var pa=parseFloat(a.pct),pb=parseFloat(b.pct);if(isNaN(pa))return 1;if(isNaN(pb))return-1;return pb-pa;});
+      document.getElementById('contracts-fleet-info').textContent = 'fleet: '+fleetAcq+' won / '+fleetDen+' denied / '+(fleetAcq+fleetDen>0?(fleetAcq/(fleetAcq+fleetDen)*100).toFixed(1)+'%':'—');
+      // Render fleet chart
+      var hours=Object.keys(fleetByHour).sort();
+      var labels=[],acqArr=[],denArr=[];
+      hours.forEach(function(h){labels.push(parseInt(h)*3600);acqArr.push(fleetByHour[h].acq);denArr.push(fleetByHour[h].den);});
+      var el = document.getElementById('contracts-fleet-chart');
+      if (contractsChart) { contractsChart.destroy(); contractsChart = null; }
+      if (labels.length > 0) {
+        contractsChart = new uPlot({width:el.clientWidth||700,height:160,cursor:{show:true},legend:{show:true},axes:[{stroke:'#64748b',grid:{stroke:'#1e293b',width:1}},{stroke:'#64748b',grid:{stroke:'#1e293b',width:1}}],series:[{label:'Time',value:'{HH}:{mm}'},{label:'Won',stroke:'#4ade80',fill:'rgba(74,222,128,0.15)',width:2},{label:'Denied',stroke:'#f87171',fill:'rgba(248,113,113,0.15)',width:2}]},[labels,acqArr,denArr],el);
+      }
+      // Render per-server table
+      var body = document.getElementById('contracts-body');
+      var html = '';
+      serverRows.forEach(function(r){
+        var pct = parseFloat(r.pct), cl = isNaN(pct)?'':(pct>=90?'g':(pct>=70?'y':'r'));
+        html += '<tr onclick="openDrawer(\''+r.node+'\')" style="cursor:pointer">';
+        html += '<td>'+r.node+'</td>';
+        html += '<td class="num g">'+r.acq+'</td>';
+        html += '<td class="num r">'+r.den+'</td>';
+        html += '<td class="num '+cl+'">'+r.pct+(r.pct!=='—'?'%':'')+'</td>';
+        var wp;
+        if (r.total > 0) { var ww = Math.round(r.acq/r.total*100); wp = '<div class="win-bar"><div class="w" style="width:'+ww+'%"></div><div class="l" style="width:'+(100-ww)+'%"></div></div>'; }
+        else { wp = '<div class="win-bar"><div class="l" style="width:100%"></div></div>'; }
+        html += '<td>'+wp+'</td></tr>';
+      });
+      body.innerHTML = html;
+    }).catch(function(){document.getElementById('contracts-fleet-info').textContent='Error';});
+  }).catch(function(){document.getElementById('contracts-fleet-info').textContent='Error';});
+}
+
+// === Init ===
 loadFleetChart();
 sortBy('clients');
 </script>
