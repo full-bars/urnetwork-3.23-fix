@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   host     TEXT,
   version  TEXT,
   uptime   REAL,
+  source_ip TEXT,
   heap_mib INTEGER,
   sys_mib  INTEGER,
   conns    INTEGER,
@@ -236,6 +237,9 @@ func (s *store) persist(state *nodeState) error {
 			d.Acq == 0 && d.Denied == 0 && d.Clients == 0 {
 			continue
 		}
+		if p.Address == "" {
+			continue
+		}
 		proxyID, err := s.internProxy(p.Address)
 		if err != nil {
 			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
@@ -250,13 +254,14 @@ func (s *store) persist(state *nodeState) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(`
-		INSERT INTO nodes (node_id, host, version, uptime, heap_mib, sys_mib, conns, ts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO nodes (node_id, host, version, uptime, source_ip, heap_mib, sys_mib, conns, ts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(node_id) DO UPDATE SET
 			host=excluded.host, version=excluded.version, uptime=excluded.uptime,
+			source_ip=excluded.source_ip,
 			heap_mib=excluded.heap_mib, sys_mib=excluded.sys_mib,
 			conns=excluded.conns, ts=excluded.ts`,
-		state.NodeID, state.Host, state.Version, state.Uptime,
+		state.NodeID, state.Host, state.Version, state.Uptime, state.SourceIP,
 		state.System.HeapMiB, state.System.SysMiB, state.System.Connections, ts,
 	); err != nil {
 		return fmt.Errorf("upsert node: %w", err)
@@ -354,22 +359,22 @@ func (s *store) loadLatestFromDB() error {
 	if s.db == nil {
 		return nil
 	}
-	rows, err := s.db.Query(`SELECT node_id, host, version, uptime, heap_mib, sys_mib, conns, ts FROM nodes`)
+	rows, err := s.db.Query(`SELECT node_id, host, version, uptime, source_ip, heap_mib, sys_mib, conns, ts FROM nodes`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	type nodeRow struct {
-		id, host, version string
-		uptime            float64
-		heap, sys         uint64
-		conns, ts         int64
+		id, host, version, sourceIP string
+		uptime                      float64
+		heap, sys                   uint64
+		conns, ts                   int64
 	}
 	var nrows []nodeRow
 	for rows.Next() {
 		var n nodeRow
-		if err := rows.Scan(&n.id, &n.host, &n.version, &n.uptime, &n.heap, &n.sys, &n.conns, &n.ts); err != nil {
+		if err := rows.Scan(&n.id, &n.host, &n.version, &n.uptime, &n.sourceIP, &n.heap, &n.sys, &n.conns, &n.ts); err != nil {
 			return err
 		}
 		nrows = append(nrows, n)
@@ -418,6 +423,7 @@ func (s *store) loadLatestFromDB() error {
 			Version:   n.version,
 			Timestamp: time.Unix(n.ts, 0).UTC(),
 			Uptime:    n.uptime,
+			SourceIP:  n.sourceIP,
 			Proxies:   proxies,
 			System:    systemMetrics{HeapMiB: n.heap, SysMiB: n.sys, Connections: n.conns},
 		}
@@ -506,11 +512,11 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	)
 	if nodeID == "" {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, COALESCE(contracts_acquired,0), COALESCE(contracts_denied,0)
 			FROM node_hourly WHERE hour >= ? ORDER BY hour DESC LIMIT ?`, since, maxHistoryRows)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, contracts_acquired, contracts_denied
+			SELECT node_id, hour, total_rx, total_tx, bill_rx, bill_tx, peak_clients, samples, COALESCE(contracts_acquired,0), COALESCE(contracts_denied,0)
 			FROM node_hourly WHERE node_id = ? AND hour >= ? ORDER BY hour DESC LIMIT ?`, nodeID, since, maxHistoryRows)
 	}
 	if err != nil {

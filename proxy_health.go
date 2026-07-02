@@ -311,7 +311,11 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		case h.currentlyUp:
 			up++
 		case h.everUp:
-			degraded = append(degraded, formatProxyEntry(idx, h.address))
+			if !h.downSince.IsZero() && time.Since(h.downSince) >= 7*24*time.Hour {
+				dead = append(dead, formatProxyEntry(idx, h.address))
+			} else {
+				degraded = append(degraded, formatProxyEntry(idx, h.address))
+			}
 		case h.connecting:
 			connecting = append(connecting, formatProxyEntry(idx, h.address))
 		default:

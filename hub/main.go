@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,6 +70,7 @@ type nodeState struct {
 	Version   string        `json:"version"`
 	Timestamp time.Time     `json:"ts"`
 	Uptime    float64       `json:"uptime"`
+	SourceIP  string        `json:"source_ip"`
 	Proxies   []proxyReport `json:"proxies"`
 	System    systemMetrics `json:"sys"`
 }
@@ -398,6 +400,9 @@ func handleReport(s *store) http.HandlerFunc {
 			return
 		}
 		ns.Timestamp = time.Now().UTC()
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ns.SourceIP = host
+		}
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
 		w.WriteHeader(204)
@@ -433,6 +438,7 @@ func handleNodes(s *store) http.HandlerFunc {
 			Version           string        `json:"version"`
 			Timestamp         time.Time     `json:"ts"`
 			Uptime            float64       `json:"uptime"`
+			SourceIP          string        `json:"source_ip"`
 			Proxies           int           `json:"proxies"`
 			Up                int           `json:"up"`
 			Connecting        int           `json:"connecting"`
@@ -478,6 +484,7 @@ func handleNodes(s *store) http.HandlerFunc {
 				Version:           n.Version,
 				Timestamp:         n.Timestamp,
 				Uptime:            n.Uptime,
+				SourceIP:          n.SourceIP,
 				Proxies:           len(n.Proxies),
 				Up:                up,
 				Connecting:        connecting,
@@ -812,6 +819,10 @@ tr.expandable:hover { background: #1a2332; }
   .footer { padding: 10px 16px; flex-direction: column; gap: 6px; text-align: center; }
   .drawer { width: 100vw; right: -100vw; }
 }
+tr.group-header { background: #1e293b; cursor: default; }
+tr.group-header td { padding: 4px 16px; font-size: 12px; color: #94a3b8; border-bottom: 1px solid #334155; }
+tr.group-header .group-ip { font-weight: 600; color: #e2e8f0; }
+tr.group-header .group-count { margin-left: 8px; color: #64748b; }
 </style>
 </head>
 <body>
@@ -879,41 +890,24 @@ tr.expandable:hover { background: #1a2332; }
 <table id="node-table">
 <thead>
 <tr>
-<th data-col="node" onclick="sortBy('node')">Node <span class="sort-arrow"></span></th>
-<th data-col="heartbeat" onclick="sortBy('heartbeat')">Heartbeat <span class="sort-arrow"></span></th>
-<th data-col="uptime" onclick="sortBy('uptime')">Uptime <span class="sort-arrow"></span></th>
-<th data-col="proxies" class="num" onclick="sortBy('proxies')">Proxies <span class="sort-arrow"></span></th>
-<th data-col="clients" class="num" onclick="sortBy('clients')">Clients <span class="sort-arrow"></span></th>
-<th data-col="rx" class="num" onclick="sortBy('rx')">RX <span class="sort-arrow"></span></th>
-<th data-col="tx" class="num" onclick="sortBy('tx')">TX <span class="sort-arrow"></span></th>
-<th data-col="billrx" class="num" onclick="sortBy('billrx')">Bill RX <span class="sort-arrow"></span></th>
-<th data-col="billtx" class="num" onclick="sortBy('billtx')">Bill TX <span class="sort-arrow"></span></th>
-<th data-col="rate-rx" class="num" onclick="sortBy('rate-rx')">In Mbps <span class="sort-arrow"></span></th>
-<th data-col="rate-tx" class="num" onclick="sortBy('rate-tx')">Out Mbps <span class="sort-arrow"></span></th>
-<th data-col="earning" class="num" onclick="sortBy('earning')">Earning <span class="sort-arrow"></span></th>
-<th data-col="contracts" class="num" onclick="sortBy('contracts')">Contracts <span class="sort-arrow"></span></th>
+<th>Node</th>
+<th>Heartbeat</th>
+<th>Uptime</th>
+<th class="num">Proxies</th>
+<th class="num">Clients</th>
+<th class="num">RX</th>
+<th class="num">TX</th>
+<th class="num">Bill RX</th>
+<th class="num">Bill TX</th>
+<th class="num">In Mbps</th>
+<th class="num">Out Mbps</th>
+<th class="num">Earning</th>
+<th class="num">Contracts</th>
 <th></th>
 </tr>
 </thead>
-<tbody>
-{{range .Rows}}
-<tr class="expandable" data-id="{{.NodeID}}" data-status="{{if .Proxies.Dead}}dead{{else if .Proxies.Degraded}}degraded{{else}}up{{end}}" onclick="openDrawer('{{.NodeID}}')">
-<td class="node-id"><span class="dot{{if .Proxies.Up}} alive{{end}}" style="background:{{.Color}}"></span>{{.NodeID}} <span class="version">{{.Version}}</span></td>
-<td>{{.Heartbeat}}</td>
-<td>{{.Uptime}}</td>
-<td class="num">{{.Proxies.Up}}{{if .Proxies.Degraded}} <span class="status-badge degraded">{{.Proxies.Degraded}}</span>{{end}}{{if .Proxies.Dead}} <span class="status-badge dead">{{.Proxies.Dead}}</span>{{end}}</td>
-<td class="num">{{.Proxies.Clients}}</td>
-<td class="num">{{fmtBytes .Proxies.TotalRX}}</td>
-<td class="num">{{fmtBytes .Proxies.TotalTX}}</td>
-<td class="num">{{fmtBytes .Proxies.BillRX}}</td>
-<td class="num">{{fmtBytes .Proxies.BillTX}}</td>
-<td class="num">{{printf "%.1f" .MbpsRX}}</td>
-<td class="num">{{printf "%.1f" .MbpsTX}}</td>
-<td class="num">{{.Proxies.Earning}}/{{.Proxies.Up}}</td>
-<td class="num">{{.Proxies.ContractsAcquired}}</td>
-<td><span class="remove-btn" onclick="event.stopPropagation();removeNode('{{.NodeID}}')" title="Remove node">&#10005;</span></td>
-</tr>
-{{end}}
+<tbody id="node-body">
+<tr><td colspan="14" style="text-align:center;color:#64748b;padding:20px">Loading servers...</td></tr>
 </tbody>
 </table>
 </div>
@@ -923,9 +917,9 @@ tr.expandable:hover { background: #1a2332; }
 <div id="page-proxies" class="page">
 <div class="page-header">Proxies</div>
 <div class="window-pills">
-<span class="pill on" onclick="setProxiesWindow('7d',this)">7d</span>
-<span class="pill" onclick="setProxiesWindow('24h',this)">24h</span>
 <span class="pill" onclick="setProxiesWindow('1h',this)">1h</span>
+<span class="pill" onclick="setProxiesWindow('24h',this)">24h</span>
+<span class="pill on" onclick="setProxiesWindow('7d',this)">7d</span>
 <span class="pill" onclick="setProxiesWindow('30d',this)">30d</span>
 <span class="pill" onclick="setProxiesWindow('1y',this)">1y</span>
 <select id="proxies-sort" onchange="loadProxies()" style="background:#1a2332;border:1px solid #1e293b;color:#e2e8f0;padding:3px 8px;border-radius:5px;font-size:11px">
@@ -940,7 +934,7 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div id="proxies-charts" style="display:flex;gap:8px;padding:10px 20px;"></div>
 <div class="table-section-header" style="font-weight:600">ACTIVE PROXIES</div>
-<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th>#</th><th>Proxy</th><th>Traffic</th><th>Won</th><th>Denied</th><th>Win%</th><th>Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th class="num">#</th><th>Proxy</th><th class="num">Traffic</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th class="num">Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 <div class="table-section-header" onclick="toggleIdleProxies()" style="font-weight:600">IDLE PROXIES <span id="idle-count"></span><span style="color:#475569;margin-left:8px;font-weight:400">click to expand</span></div>
 <div id="proxies-idle-wrap" class="hidden"><div class="table-wrap"><table id="proxies-idle-table"><thead><tr><th>Proxy</th><th>Nodes</th><th>Last activity</th></tr></thead><tbody id="proxies-idle-body"></tbody></table></div></div>
 </div>
@@ -949,15 +943,15 @@ tr.expandable:hover { background: #1a2332; }
 <div id="page-contracts" class="page">
 <div class="page-header">Contracts</div>
 <div class="window-pills">
-<span class="pill on" onclick="setContractsWindow('7d',this)">7d</span>
-<span class="pill" onclick="setContractsWindow('24h',this)">24h</span>
 <span class="pill" onclick="setContractsWindow('1h',this)">1h</span>
+<span class="pill" onclick="setContractsWindow('24h',this)">24h</span>
+<span class="pill on" onclick="setContractsWindow('7d',this)">7d</span>
 <span class="pill" onclick="setContractsWindow('30d',this)">30d</span>
 <span class="info" id="contracts-fleet-info">Loading...</span>
 </div>
 <div class="chart-wrap"><div class="chart-box"><div id="contracts-fleet-chart"></div></div></div>
 <div class="table-section-header" style="font-weight:600">PER SERVER &middot; sorted by win rate &middot; click for detail</div>
-<div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th>Won</th><th>Denied</th><th>Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
 </main>
@@ -1027,7 +1021,12 @@ function loadFleetChart() {
     }
     var hours = Object.keys(byHour).sort();
     var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [], acquired = [], denied = [];
-    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0, prevAcq = 0, prevDen = 0;
+    // Seed cumulative deltas from the first hour so the initial spike doesn't
+    // dominate the y-axis and flatten subsequent values.
+    var first = hours.length > 0 ? byHour[hours[0]] : null;
+    var prevRx = first ? first.rx : 0, prevTx = first ? first.tx : 0;
+    var prevBRx = first ? first.bill_rx : 0, prevBTx = first ? first.bill_tx : 0;
+    var prevAcq = first ? first.acquired : 0, prevDen = first ? first.denied : 0;
     hours.forEach(function(h) {
       labels.push(parseInt(h));
       var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
@@ -1050,13 +1049,26 @@ function loadFleetChart() {
 function applyFilter() {
   var q = document.getElementById('filter-input').value.toLowerCase();
   var status = document.getElementById('filter-status').value;
+  var tbody = document.querySelector('#node-table tbody');
   var visible = 0;
-  document.querySelectorAll('#node-table tbody tr.expandable').forEach(function(r){
+  var rows = tbody.querySelectorAll('tr');
+  rows.forEach(function(r){
+    if (!r.classList.contains('expandable')) return;
     var match = r.getAttribute('data-id').toLowerCase().indexOf(q) >= 0;
     if (status !== 'all' && r.getAttribute('data-status') !== status) match = false;
     r.classList.toggle('hidden', !match);
     if (match) visible++;
   });
+  var showGroup = false;
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var r = rows[i];
+    if (r.classList.contains('group-header')) {
+      r.classList.toggle('hidden', !showGroup);
+      showGroup = false;
+    } else if (!r.classList.contains('hidden')) {
+      showGroup = true;
+    }
+  }
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
 var sortState = {};
@@ -1125,33 +1137,33 @@ function refreshDashboard() {
   if (refreshing) return; refreshing = true;
   fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
     var tbody = document.querySelector('#node-table tbody');
-    var existing = {};
-    tbody.querySelectorAll('tr.expandable').forEach(function(r){existing[r.getAttribute('data-id')]=r;});
-    var incomingIds = {}, totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
-    var frag = document.createDocumentFragment();
+    var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
+    // Group nodes by source_ip
+    var groups = {};
     nodes.forEach(function(n){
-      incomingIds[n.node_id] = true;
-      nodeCount++; totalProxies += n.proxies; totalUp += n.up; totalDeg += n.degraded; totalDead += n.dead; totalClients += n.clients; totalEarning += n.earning; totalRX += n.rx; totalTX += n.tx;
-      var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
-      var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
-      var er = existing[n.node_id];
-      if (er) {
-        er.cells[0].innerHTML = '<span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span>';
-        er.cells[1].textContent = ago; er.cells[2].textContent = uptime;
-        er.cells[3].innerHTML = n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'');
-        er.cells[4].textContent = n.clients; er.cells[5].textContent = fmtBytes(n.rx); er.cells[6].textContent = fmtBytes(n.tx);
-        er.cells[7].textContent = fmtBytes(n.bill_rx); er.cells[8].textContent = fmtBytes(n.bill_tx);
-        er.cells[9].textContent = n.mbps_rx ? n.mbps_rx.toFixed(1) : ''; er.cells[10].textContent = n.mbps_tx ? n.mbps_tx.toFixed(1) : '';
-        er.cells[11].textContent = n.earning+'/'+n.up;
-        er.setAttribute('data-status', sc);
-      } else {
+      nodeCount++; totalProxies += n.proxies; totalUp += n.up; totalDeg += n.degraded; totalDead += n.dead;
+      totalClients += n.clients; totalEarning += n.earning; totalRX += n.rx; totalTX += n.tx;
+      var ip = n.source_ip || 'unknown';
+      if (!groups[ip]) groups[ip] = [];
+      groups[ip].push(n);
+    });
+    var frag = document.createDocumentFragment();
+    var ipList = Object.keys(groups).sort();
+    ipList.forEach(function(ip){
+      var grp = groups[ip];
+      var gh = document.createElement('tr'); gh.className = 'group-header';
+      gh.innerHTML = '<td colspan="14"><span class="group-ip">&#9881; '+(ip||'unknown')+'</span> <span class="group-count">'+(grp.length === 1 ? '1 provider' : grp.length+' providers')+'</span></td>';
+      frag.appendChild(gh);
+      grp.forEach(function(n){
+        var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
+        var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
         var tr = document.createElement('tr'); tr.className = 'expandable'; tr.setAttribute('data-id', n.node_id); tr.setAttribute('data-status', sc);
         tr.onclick = function(){openDrawer(n.node_id);};
         tr.innerHTML = '<td class="node-id"><span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span></td><td>'+ago+'</td><td>'+uptime+'</td><td class="num">'+n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'')+'</td><td class="num">'+n.clients+'</td><td class="num">'+fmtBytes(n.rx)+'</td><td class="num">'+fmtBytes(n.tx)+'</td><td class="num">'+fmtBytes(n.bill_rx)+'</td><td class="num">'+fmtBytes(n.bill_tx)+'</td><td class="num">'+(n.mbps_rx?n.mbps_rx.toFixed(1):'')+'</td><td class="num">'+(n.mbps_tx?n.mbps_tx.toFixed(1):'')+'</td><td class="num">'+n.earning+'/'+n.up+'</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\''+n.node_id+'\')">&#10005;</span></td>';
         frag.appendChild(tr);
-      }
+      });
     });
-    Object.keys(existing).forEach(function(id){if(!incomingIds[id]){var e=existing[id];if(e)e.remove();}});
+    tbody.innerHTML = '';
     tbody.appendChild(frag);
     document.querySelectorAll('.card')[0].innerHTML = '<div class="label">Total Proxies</div><div class="value">'+totalProxies+'</div><div class="sub">across '+nodeCount+' nodes</div>';
     document.querySelectorAll('.card')[1].innerHTML = '<div class="label">Healthy</div><div class="value">'+totalUp+'</div><div class="sub">'+(totalProxies>0?(totalUp/totalProxies*100).toFixed(1):'0')+'% of fleet</div>';
@@ -1301,7 +1313,7 @@ function loadContracts() {
 
 // === Init ===
 loadFleetChart();
-sortBy('clients');
+refreshDashboard();
 </script>
 </body>
 </html>
