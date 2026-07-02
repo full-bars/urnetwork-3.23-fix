@@ -923,9 +923,9 @@ tr.expandable:hover { background: #1a2332; }
 <div id="page-proxies" class="page">
 <div class="page-header">Proxies</div>
 <div class="window-pills">
-<span class="pill on" onclick="setProxiesWindow('7d',this)">7d</span>
-<span class="pill" onclick="setProxiesWindow('24h',this)">24h</span>
 <span class="pill" onclick="setProxiesWindow('1h',this)">1h</span>
+<span class="pill" onclick="setProxiesWindow('24h',this)">24h</span>
+<span class="pill on" onclick="setProxiesWindow('7d',this)">7d</span>
 <span class="pill" onclick="setProxiesWindow('30d',this)">30d</span>
 <span class="pill" onclick="setProxiesWindow('1y',this)">1y</span>
 <select id="proxies-sort" onchange="loadProxies()" style="background:#1a2332;border:1px solid #1e293b;color:#e2e8f0;padding:3px 8px;border-radius:5px;font-size:11px">
@@ -949,9 +949,9 @@ tr.expandable:hover { background: #1a2332; }
 <div id="page-contracts" class="page">
 <div class="page-header">Contracts</div>
 <div class="window-pills">
-<span class="pill on" onclick="setContractsWindow('7d',this)">7d</span>
-<span class="pill" onclick="setContractsWindow('24h',this)">24h</span>
 <span class="pill" onclick="setContractsWindow('1h',this)">1h</span>
+<span class="pill" onclick="setContractsWindow('24h',this)">24h</span>
+<span class="pill on" onclick="setContractsWindow('7d',this)">7d</span>
 <span class="pill" onclick="setContractsWindow('30d',this)">30d</span>
 <span class="info" id="contracts-fleet-info">Loading...</span>
 </div>
