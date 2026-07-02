@@ -441,6 +441,25 @@ func buildHeartbeat(nodeID, host string, startTime time.Time) heartbeatReport {
 	}
 }
 
+// filterChangedProxies returns only the entries in current whose Status or
+// contract counters differ from prev (or that have no entry in prev), plus
+// the updated snapshot to pass as prev on the next call. proxyStatus is a
+// plain comparable struct (string/string/int64/int64 fields), so equality
+// is a simple !=. Most proxies in a fleet are idle at any given tick, so
+// this keeps the heartbeat's per-proxy payload proportional to what's
+// actually changing rather than to total proxy count.
+func filterChangedProxies(prev map[string]proxyStatus, current []proxyStatus) ([]proxyStatus, map[string]proxyStatus) {
+	next := make(map[string]proxyStatus, len(current))
+	var changed []proxyStatus
+	for _, p := range current {
+		next[p.ID] = p
+		if old, ok := prev[p.ID]; !ok || old != p {
+			changed = append(changed, p)
+		}
+	}
+	return changed, next
+}
+
 // runHeartbeatReporter periodically POSTs a lightweight liveness/rate ping
 // to the hub's /api/heartbeat, on a much shorter cadence than
 // runBandwidthReporter's full /api/report (default 15s vs 5m). It shares

@@ -178,3 +178,68 @@ func TestNextHeartbeatInterval_BacksOffOnConsecutiveFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterChangedProxies_UnchangedEntryExcluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up", ContractsAcquired: 5, ContractsDenied: 1},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up", ContractsAcquired: 5, ContractsDenied: 1},
+	}
+
+	changed, next := filterChangedProxies(prev, current)
+
+	if len(changed) != 0 {
+		t.Errorf("changed = %+v, want empty for an unchanged proxy", changed)
+	}
+	if next["p1"] != current[0] {
+		t.Errorf("next[p1] = %+v, want %+v", next["p1"], current[0])
+	}
+}
+
+func TestFilterChangedProxies_StatusChangeIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up"},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "dead"},
+	}
+
+	changed, _ := filterChangedProxies(prev, current)
+
+	if len(changed) != 1 || changed[0].Status != "dead" {
+		t.Errorf("changed = %+v, want a single dead-status entry", changed)
+	}
+}
+
+func TestFilterChangedProxies_ContractCounterChangeIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up", ContractsAcquired: 5},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up", ContractsAcquired: 6},
+	}
+
+	changed, _ := filterChangedProxies(prev, current)
+
+	if len(changed) != 1 || changed[0].ContractsAcquired != 6 {
+		t.Errorf("changed = %+v, want a single entry with ContractsAcquired=6", changed)
+	}
+}
+
+func TestFilterChangedProxies_UnknownEntryAlwaysIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up"},
+		{ID: "p2", Status: "up"},
+	}
+
+	changed, next := filterChangedProxies(prev, current)
+
+	if len(changed) != 2 {
+		t.Errorf("changed = %+v, want both entries included on first sighting", changed)
+	}
+	if len(next) != 2 {
+		t.Errorf("next = %+v, want both entries recorded for the following diff", next)
+	}
+}
