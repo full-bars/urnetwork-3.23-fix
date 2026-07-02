@@ -128,6 +128,22 @@ func TestBuildHeartbeat_NoProxiesConfigured(t *testing.T) {
 	}
 }
 
+// TestBuildHeartbeat_ProjectsProxyStatus is the deterministic case for the
+// new Proxies field: with no proxies registered in the global bandwidth
+// map (same setup as TestBuildHeartbeat_NoProxiesConfigured — buildReport
+// itself isn't independently testable since it reads global state), the
+// projection must produce an empty slice rather than nil-panicking or
+// carrying stale data.
+func TestBuildHeartbeat_ProjectsProxyStatus(t *testing.T) {
+	start := time.Now().Add(-1 * time.Minute)
+
+	hb := buildHeartbeat("test-node", "test-host", start)
+
+	if len(hb.Proxies) != 0 {
+		t.Errorf("Proxies = %+v, want empty with no proxies configured", hb.Proxies)
+	}
+}
+
 // TestNextHeartbeatInterval_NoFailuresUsesBase covers the steady-state case:
 // with no consecutive failures, the heartbeat loop must tick at exactly the
 // configured base interval.
@@ -160,5 +176,70 @@ func TestNextHeartbeatInterval_BacksOffOnConsecutiveFailures(t *testing.T) {
 		if got := nextHeartbeatInterval(base, c.failures); got != c.want {
 			t.Errorf("interval with %d failures = %s, want %s", c.failures, got, c.want)
 		}
+	}
+}
+
+func TestFilterChangedProxies_UnchangedEntryExcluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up", ContractsAcquired: 5, ContractsDenied: 1},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up", ContractsAcquired: 5, ContractsDenied: 1},
+	}
+
+	changed, next := filterChangedProxies(prev, current)
+
+	if len(changed) != 0 {
+		t.Errorf("changed = %+v, want empty for an unchanged proxy", changed)
+	}
+	if next["p1"] != current[0] {
+		t.Errorf("next[p1] = %+v, want %+v", next["p1"], current[0])
+	}
+}
+
+func TestFilterChangedProxies_StatusChangeIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up"},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "dead"},
+	}
+
+	changed, _ := filterChangedProxies(prev, current)
+
+	if len(changed) != 1 || changed[0].Status != "dead" {
+		t.Errorf("changed = %+v, want a single dead-status entry", changed)
+	}
+}
+
+func TestFilterChangedProxies_ContractCounterChangeIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{
+		"p1": {ID: "p1", Status: "up", ContractsAcquired: 5},
+	}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up", ContractsAcquired: 6},
+	}
+
+	changed, _ := filterChangedProxies(prev, current)
+
+	if len(changed) != 1 || changed[0].ContractsAcquired != 6 {
+		t.Errorf("changed = %+v, want a single entry with ContractsAcquired=6", changed)
+	}
+}
+
+func TestFilterChangedProxies_UnknownEntryAlwaysIncluded(t *testing.T) {
+	prev := map[string]proxyStatus{}
+	current := []proxyStatus{
+		{ID: "p1", Status: "up"},
+		{ID: "p2", Status: "up"},
+	}
+
+	changed, next := filterChangedProxies(prev, current)
+
+	if len(changed) != 2 {
+		t.Errorf("changed = %+v, want both entries included on first sighting", changed)
+	}
+	if len(next) != 2 {
+		t.Errorf("next = %+v, want both entries recorded for the following diff", next)
 	}
 }
