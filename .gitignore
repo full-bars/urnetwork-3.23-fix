@@ -13,3 +13,4 @@ security/ips.{go,txt}
 progress.md
 *.bak
 .worktrees
+docs/superpowers/

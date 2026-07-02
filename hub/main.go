@@ -93,12 +93,27 @@ type store struct {
 	earning      map[string]map[string]bool   `json:"-"` // nodeID -> proxyID -> earning=yes/no
 	proxyIDs     map[string]int64             `json:"-"` // proxy addr -> interned proxies.id
 	deltas       *deltaTracker                `json:"-"` // cumulative -> per-interval counters
+	broadcast    *broadcaster                 `json:"-"` // live-update SSE fan-out; nil-safe, see broadcaster.publish
+}
+
+// proxyStatus is the compact per-proxy fields a heartbeat carries — status
+// and contract counters only, no byte-level detail. json tags must match
+// provider/bandwidth_reporter.go's proxyStatus.
+type proxyStatus struct {
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
 }
 
 // heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
-// bandwidthReport (provider/bandwidth_reporter.go): no per-proxy detail,
-// just enough to keep the dashboard's "last seen" and Mbps rate live between
-// the much less frequent full /api/report ticks. Never persisted to DB.
+// bandwidthReport (provider/bandwidth_reporter.go): no byte-level detail,
+// just enough to keep the dashboard's "last seen", Mbps rate, and per-proxy
+// status/contracts live between the much less frequent full /api/report
+// ticks. Never persisted to DB. Proxies is sparse — the provider only
+// includes entries that changed since its last heartbeat tick (see
+// filterChangedProxies in provider/bandwidth_reporter.go), so most ticks
+// carry an empty or near-empty slice.
 type heartbeatReport struct {
 	NodeID    string        `json:"node_id"`
 	Timestamp time.Time     `json:"ts"`
@@ -107,6 +122,7 @@ type heartbeatReport struct {
 	TotalTX   uint64        `json:"tx"`
 	Clients   int64         `json:"clients"`
 	System    systemMetrics `json:"sys"`
+	Proxies   []proxyStatus `json:"proxies,omitempty"`
 }
 
 type nodeRate struct {
@@ -135,6 +151,7 @@ func openStore(dataDir string) (*store, error) {
 		earning:      make(map[string]map[string]bool),
 		proxyIDs:     make(map[string]int64),
 		deltas:       newDeltaTracker(),
+		broadcast:    newBroadcaster(),
 	}
 
 	jsonPath := filepath.Join(dataDir, "hub.json")
@@ -238,6 +255,20 @@ func (s *store) heartbeat(nodeID string, hb *heartbeatReport) bool {
 		prev.tx = hb.TotalTX
 	} else {
 		s.rates[nodeID] = &nodeRate{ts: hb.Timestamp, rx: hb.TotalRX, tx: hb.TotalTX}
+	}
+
+	if len(hb.Proxies) > 0 {
+		byID := make(map[string]int, len(n.Proxies))
+		for i, p := range n.Proxies {
+			byID[p.ID] = i
+		}
+		for _, ps := range hb.Proxies {
+			if i, ok := byID[ps.ID]; ok {
+				n.Proxies[i].Status = ps.Status
+				n.Proxies[i].ContractsAcquired = ps.ContractsAcquired
+				n.Proxies[i].ContractsDenied = ps.ContractsDenied
+			}
+		}
 	}
 
 	n.Timestamp = hb.Timestamp
@@ -464,6 +495,7 @@ func handleReport(s *store) http.HandlerFunc {
 		ns.TLS = r.TLS != nil
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
+		s.broadcast.publish()
 		w.WriteHeader(204)
 	}
 }
@@ -498,6 +530,7 @@ func handleHeartbeat(s *store) http.HandlerFunc {
 			w.WriteHeader(202)
 			return
 		}
+		s.broadcast.publish()
 		w.WriteHeader(204)
 	}
 }
@@ -809,6 +842,7 @@ func main() {
 	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
 	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
+	mux.HandleFunc("/api/events", handleEvents(s))
 
 	tlsListen := *tlsAddr
 	if tlsListen == "" {
@@ -1372,6 +1406,18 @@ setInterval(function tick(){
   document.getElementById('countdown').textContent = secondsLeft + 's';
 }, 1000);
 function toggleRefresh() { if (document.getElementById('auto-refresh').checked) secondsLeft = 30; }
+
+// === Live updates (SSE) ===
+// Pushes a bare "something changed" signal from the hub the moment a
+// heartbeat or report lands, so the dashboard doesn't wait out the full
+// 30s poll above. The poll stays as a backstop for links where SSE gets
+// buffered/stripped (e.g. some reverse proxies) — EventSource retries on
+// its own with native backoff, no custom reconnect logic needed here.
+if (window.EventSource) {
+  var liveEvents = new EventSource('/api/events');
+  liveEvents.onmessage = function() { refreshDashboard(); };
+}
+
 function refreshDashboard() {
   if (refreshing) return; refreshing = true;
   var fc = document.getElementById('filter-count'); if (fc) fc.textContent = 'Refreshing\u2026';
