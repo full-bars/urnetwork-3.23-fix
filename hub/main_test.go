@@ -924,3 +924,113 @@ func TestHeartbeatEndpointRejectsWrongToken(t *testing.T) {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestHandleReportPublishesOnSuccess(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+	ch := s.broadcast.subscribe()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", handleReport(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	report := nodeState{NodeID: "n1", Proxies: []proxyReport{{ID: "p1"}}}
+	body, _ := json.Marshal(report)
+	resp, err := http.Post(ts.URL+"/api/report", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	select {
+	case <-ch:
+	default:
+		t.Errorf("broadcaster did not fire on a successful report")
+	}
+}
+
+func TestHandleReportDoesNotPublishOnBadRequest(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+	ch := s.broadcast.subscribe()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", handleReport(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(nodeState{Host: "no-id"}) // missing node_id -> 400
+	resp, err := http.Post(ts.URL+"/api/report", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	select {
+	case <-ch:
+		t.Errorf("broadcaster fired on a 400 response")
+	default:
+	}
+}
+
+func TestHandleHeartbeatPublishesOnKnownNode(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+	s.upsert("n1", &nodeState{NodeID: "n1", Timestamp: time.Now().UTC(), Proxies: []proxyReport{{TotalRX: 0}}})
+	ch := s.broadcast.subscribe()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(heartbeatReport{NodeID: "n1"})
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	select {
+	case <-ch:
+	default:
+		t.Errorf("broadcaster did not fire on a known-node heartbeat")
+	}
+}
+
+func TestHandleHeartbeatDoesNotPublishOnUnknownNode(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+	ch := s.broadcast.subscribe()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(heartbeatReport{NodeID: "ghost"})
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	select {
+	case <-ch:
+		t.Errorf("broadcaster fired on an unknown-node (202) heartbeat")
+	default:
+	}
+}

@@ -93,6 +93,7 @@ type store struct {
 	earning      map[string]map[string]bool   `json:"-"` // nodeID -> proxyID -> earning=yes/no
 	proxyIDs     map[string]int64             `json:"-"` // proxy addr -> interned proxies.id
 	deltas       *deltaTracker                `json:"-"` // cumulative -> per-interval counters
+	broadcast    *broadcaster                 `json:"-"` // live-update SSE fan-out; nil-safe, see broadcaster.publish
 }
 
 // proxyStatus is the compact per-proxy fields a heartbeat carries — status
@@ -150,6 +151,7 @@ func openStore(dataDir string) (*store, error) {
 		earning:      make(map[string]map[string]bool),
 		proxyIDs:     make(map[string]int64),
 		deltas:       newDeltaTracker(),
+		broadcast:    newBroadcaster(),
 	}
 
 	jsonPath := filepath.Join(dataDir, "hub.json")
@@ -493,6 +495,7 @@ func handleReport(s *store) http.HandlerFunc {
 		ns.TLS = r.TLS != nil
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
+		s.broadcast.publish()
 		w.WriteHeader(204)
 	}
 }
@@ -527,6 +530,7 @@ func handleHeartbeat(s *store) http.HandlerFunc {
 			w.WriteHeader(202)
 			return
 		}
+		s.broadcast.publish()
 		w.WriteHeader(204)
 	}
 }
