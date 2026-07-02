@@ -101,7 +101,27 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased]
+## [v3.23.0-fix.24.29] — 2026-07-02
+
+### Added
+- **Pattern-based proxy removal** (PR #183): `proxy remove --match=<substring>` removes all proxies whose host matches a case-insensitive substring — no provider restart needed. Matching operates on host only (never port/user/pass). Persists exclusion patterns to `proxy_url.json` so URL source refreshes don't re-add matching proxies. `proxy exclude <pat>` / `proxy exclude --remove <pat>` manages the pattern list; `proxy summary` shows active patterns.
+- **Fleet-wide per-proxy analytics** (PR #184): Three-tier proxy history in the hub database with delta-based ingestion, automatic rollups, and time-based retention:
+  - **Tier 1 — proxy_node_hourly (90d)**: Sparse per-node per-proxy hourly deltas from cumulative provider counters. A delta tracker suppresses the first report after provider restart (counter going backwards = new baseline, no spike). Only proxies with actual activity get rows.
+  - **Tier 2 — proxy_node_daily (13mo)**: Rolled up from hourly by a background goroutine using a high-water mark to prevent double-counting.
+  - **Tier 3 — proxy_fleet_daily (forever)**: Fleet-wide daily aggregates with per-proxy node count.
+  - Retention windows configurable via `URNETWORK_HUB_RETAIN_HOURLY_DAYS` (default 90) and `URNETWORK_HUB_RETAIN_DAILY_MONTHS` (default 13).
+- **New hub read APIs** (PR #184): Three GET endpoints consumed by the new UI:
+  - `/api/proxies/top?window=&sort=&node=&limit=` — proxy leaderboard with traffic/contracts/denied sorting
+  - `/api/proxies/history?addr=&window=&split=node` — per-proxy time series with optional per-node comparison
+  - `/api/nodes/contracts?node=&window=` — per-server won/denied contract series from node_hourly
+- **Hub UI overhaul** (PR #184): Sidebar navigation with four pages:
+  - **Overview**: summary cards + 5 fleet mini-charts (traffic, billable, clients, nodes, contracts/hr)
+  - **Servers**: sortable/filterable node table with per-node proxy drawer
+  - **Proxies**: leaderboard from `/api/proxies/top` with window pills, sort dropdown, node filter, color-coded win%, and collapsible idle section
+  - **Contracts**: fleet won-vs-denied uPlot chart + per-server table sorted by win rate with green/red split bars; click a server opens its proxy drawer
+
+### Fixed
+- **Hub test CI timeout**: `TestRollupAndPrune` was processing 17000+ empty rollup hours on every run, timing out at 600s in CI. Mocked `nowFunc` to limit the rollup window to only the 3 test hours (0.06s → 0.06s, was 15s without race).
 
 ---
 
