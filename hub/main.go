@@ -79,6 +79,7 @@ type nodeState struct {
 	Timestamp time.Time     `json:"ts"`
 	Uptime    float64       `json:"uptime"`
 	SourceIP  string        `json:"source_ip"`
+	TLS       bool          `json:"tls"`
 	Proxies   []proxyReport `json:"proxies"`
 	System    systemMetrics `json:"sys"`
 }
@@ -411,6 +412,7 @@ func handleReport(s *store) http.HandlerFunc {
 		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 			ns.SourceIP = host
 		}
+		ns.TLS = r.TLS != nil
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
 		w.WriteHeader(204)
@@ -447,6 +449,7 @@ func handleNodes(s *store) http.HandlerFunc {
 			Timestamp         time.Time     `json:"ts"`
 			Uptime            float64       `json:"uptime"`
 			SourceIP          string        `json:"source_ip"`
+			TLS               bool          `json:"tls"`
 			Proxies           int           `json:"proxies"`
 			Up                int           `json:"up"`
 			Connecting        int           `json:"connecting"`
@@ -505,6 +508,7 @@ func handleNodes(s *store) http.HandlerFunc {
 				Timestamp:         n.Timestamp,
 				Uptime:            n.Uptime,
 				SourceIP:          n.SourceIP,
+				TLS:               n.TLS,
 				Proxies:           len(n.Proxies),
 				Up:                up,
 				Connecting:        connecting,
@@ -972,10 +976,8 @@ tr.expandable:hover { background: #1a2332; }
   .footer { padding: 10px 16px; flex-direction: column; gap: 6px; text-align: center; }
   .drawer { width: 100vw; right: -100vw; }
 }
-tr.group-header { background: #1e293b; cursor: default; }
-tr.group-header td { padding: 4px 16px; font-size: 12px; color: #94a3b8; border-bottom: 1px solid #334155; }
-tr.group-header .group-ip { font-weight: 600; color: #e2e8f0; }
-tr.group-header .group-count { margin-left: 8px; color: #64748b; }
+.ip-tag { display: inline-block; margin-left: 8px; padding: 0 6px; border: 1px solid; border-radius: 4px; font-size: 10px; font-weight: 500; vertical-align: middle; }
+.sort-arrow { margin-left: 4px; font-size: 10px; }
 </style>
 </head>
 <body>
@@ -1043,19 +1045,19 @@ tr.group-header .group-count { margin-left: 8px; color: #64748b; }
 <table id="node-table">
 <thead>
 <tr>
-<th>Node</th>
-<th>Heartbeat</th>
-<th>Uptime</th>
-<th class="num">Proxies</th>
-<th class="num">Clients</th>
-<th class="num">RX</th>
-<th class="num">TX</th>
-<th class="num">Bill RX</th>
-<th class="num">Bill TX</th>
-<th class="num">In Mbps</th>
-<th class="num">Out Mbps</th>
-<th class="num">Earning</th>
-<th class="num">Contracts</th>
+<th data-col="node" onclick="sortBy('node')">Node <span class="sort-arrow"></span></th>
+<th data-col="heartbeat" onclick="sortBy('heartbeat')">Heartbeat <span class="sort-arrow"></span></th>
+<th data-col="uptime" onclick="sortBy('uptime')">Uptime <span class="sort-arrow"></span></th>
+<th class="num" data-col="proxies" onclick="sortBy('proxies')">Proxies <span class="sort-arrow"></span></th>
+<th class="num" data-col="clients" onclick="sortBy('clients')">Clients <span class="sort-arrow"></span></th>
+<th class="num" data-col="rx" onclick="sortBy('rx')">RX <span class="sort-arrow"></span></th>
+<th class="num" data-col="tx" onclick="sortBy('tx')">TX <span class="sort-arrow"></span></th>
+<th class="num" data-col="billrx" onclick="sortBy('billrx')">Bill RX <span class="sort-arrow"></span></th>
+<th class="num" data-col="billtx" onclick="sortBy('billtx')">Bill TX <span class="sort-arrow"></span></th>
+<th class="num" data-col="rate-rx" onclick="sortBy('rate-rx')">In Mbps <span class="sort-arrow"></span></th>
+<th class="num" data-col="rate-tx" onclick="sortBy('rate-tx')">Out Mbps <span class="sort-arrow"></span></th>
+<th class="num" data-col="earning" onclick="sortBy('earning')">Earning <span class="sort-arrow"></span></th>
+<th class="num" data-col="contracts" onclick="sortBy('contracts')">Contracts <span class="sort-arrow"></span></th>
 <th></th>
 </tr>
 </thead>
@@ -1212,16 +1214,6 @@ function applyFilter() {
     r.classList.toggle('hidden', !match);
     if (match) visible++;
   });
-  var showGroup = false;
-  for (var i = rows.length - 1; i >= 0; i--) {
-    var r = rows[i];
-    if (r.classList.contains('group-header')) {
-      r.classList.toggle('hidden', !showGroup);
-      showGroup = false;
-    } else if (!r.classList.contains('hidden')) {
-      showGroup = true;
-    }
-  }
   document.getElementById('filter-count').textContent = visible + ' / ' + document.querySelectorAll('#node-table tbody tr.expandable').length + ' nodes';
 }
 var sortState = {};
@@ -1292,30 +1284,30 @@ function refreshDashboard() {
   fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
     var tbody = document.querySelector('#node-table tbody');
     var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
-    // Group nodes by source_ip
-    var groups = {};
+
+    // Assign a color to each unique source IP from a fixed palette
+    var ipColors = {}, palette = ['#6366f1','#8b5cf6','#ec4899','#f43f5e','#f97316','#eab308','#22c55e','#14b8a6','#06b6d4','#3b82f6'];
+    var ci = 0;
+    nodes.sort(function(a,b){return (a.source_ip||'unknown').localeCompare(b.source_ip||'unknown');});
     nodes.forEach(function(n){
       nodeCount++; totalProxies += n.proxies; totalUp += n.up; totalDeg += n.degraded; totalDead += n.dead;
       totalClients += n.clients; totalEarning += n.earning; totalRX += n.rx; totalTX += n.tx;
       var ip = n.source_ip || 'unknown';
-      if (!groups[ip]) groups[ip] = [];
-      groups[ip].push(n);
+      if (!ipColors[ip]) { ipColors[ip] = palette[ci % palette.length]; ci++; }
     });
+
     var frag = document.createDocumentFragment();
-    var ipList = Object.keys(groups).sort();
-    ipList.forEach(function(ip){
-      var grp = groups[ip];
-      var gh = document.createElement('tr'); gh.className = 'group-header';
-      gh.innerHTML = '<td colspan="14"><span class="group-ip">&#9881; '+(ip||'unknown')+'</span> <span class="group-count">'+(grp.length === 1 ? '1 provider' : grp.length+' providers')+'</span></td>';
-      frag.appendChild(gh);
-      grp.forEach(function(n){
-        var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
-        var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
-        var tr = document.createElement('tr'); tr.className = 'expandable'; tr.setAttribute('data-id', n.node_id); tr.setAttribute('data-status', sc);
-        tr.onclick = function(){openDrawer(n.node_id);};
-        tr.innerHTML = '<td class="node-id"><span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span></td><td>'+ago+'</td><td>'+uptime+'</td><td class="num">'+n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'')+'</td><td class="num">'+n.clients+'</td><td class="num">'+fmtBytes(n.rx)+'</td><td class="num">'+fmtBytes(n.tx)+'</td><td class="num">'+fmtBytes(n.bill_rx)+'</td><td class="num">'+fmtBytes(n.bill_tx)+'</td><td class="num">'+(n.mbps_rx?n.mbps_rx.toFixed(1):'')+'</td><td class="num">'+(n.mbps_tx?n.mbps_tx.toFixed(1):'')+'</td><td class="num">'+n.earning+'/'+n.up+'</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\''+n.node_id+'\')">&#10005;</span></td>';
-        frag.appendChild(tr);
-      });
+    nodes.forEach(function(n){
+      var ip = n.source_ip || 'unknown';
+      var ipColor = ipColors[ip];
+      var ago = fmtAgo(n.ts), uptime = fmtUptime(n.uptime), color = n.ts ? nodeColor(n.ts) : '#ef4444';
+      var sc = n.dead > 0 ? 'dead' : (n.degraded > 0 ? 'degraded' : 'up');
+      var tlsIcon = n.tls ? '<span style="color:#4ade80;font-size:11px" title="Encrypted (TLS)">&#128274;</span> ' : '';
+      var tr = document.createElement('tr'); tr.className = 'expandable'; tr.setAttribute('data-id', n.node_id); tr.setAttribute('data-status', sc);
+      tr.setAttribute('data-ip', ip);
+      tr.onclick = function(){openDrawer(n.node_id);};
+      tr.innerHTML = '<td class="node-id"><span class="dot'+(n.up>0?' alive':'')+'" style="background:'+color+'"></span>'+tlsIcon+n.node_id+' <span class="version">'+(n.sys.host||'')+'</span><span class="ip-tag" style="border-color:'+ipColor+';color:'+ipColor+'">'+ip+'</span></td><td>'+ago+'</td><td>'+uptime+'</td><td class="num">'+n.up+(n.degraded>0?' <span class="status-badge degraded">'+n.degraded+'</span>':'')+(n.dead>0?' <span class="status-badge dead">'+n.dead+'</span>':'')+'</td><td class="num">'+n.clients+'</td><td class="num">'+fmtBytes(n.rx)+'</td><td class="num">'+fmtBytes(n.tx)+'</td><td class="num">'+fmtBytes(n.bill_rx)+'</td><td class="num">'+fmtBytes(n.bill_tx)+'</td><td class="num">'+(n.mbps_rx?n.mbps_rx.toFixed(1):'')+'</td><td class="num">'+(n.mbps_tx?n.mbps_tx.toFixed(1):'')+'</td><td class="num">'+n.earning+'/'+n.up+'</td><td><span class="remove-btn" onclick="event.stopPropagation();removeNode(\''+n.node_id+'\')">&#10005;</span></td>';
+      frag.appendChild(tr);
     });
     tbody.innerHTML = '';
     tbody.appendChild(frag);
