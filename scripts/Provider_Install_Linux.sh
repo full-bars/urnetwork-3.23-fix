@@ -1547,42 +1547,30 @@ override_rm_env() {
     fi
 }
 
-# open_firewall_port PORT [PROTO]
-# Opens a port in the detected firewall (firewalld, ufw, iptables, nftables).
-# Returns 0 if opened, 1 if no supported firewall found.
-open_firewall_port() {
+# firewall_hint PORT [PROTO]
+# Detects the local firewall and prints the command to open the port.
+# Does NOT execute anything — the operator runs it with sudo.
+firewall_hint() {
     port="$1"
     proto="${2:-tcp}"
 
     if command -v firewall-cmd > /dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
-        pr_info "Opening %s/%s via firewalld..." "$port" "$proto"
-        firewall-cmd --add-port="${port}/${proto}" --permanent 2>/dev/null || true
-        firewall-cmd --reload 2>/dev/null || true
+        printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
         return 0
     fi
 
     if command -v ufw > /dev/null; then
-        pr_info "Opening %s/%s via ufw..." "$port" "$proto"
-        ufw allow "${port}/${proto}" 2>/dev/null || true
+        printf '  sudo ufw allow %s/%s\n' "$port" "$proto"
         return 0
     fi
 
     if command -v iptables > /dev/null; then
-        pr_info "Opening %s/%s via iptables..." "$port" "$proto"
-        if ! iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
-            iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT
-        fi
-        if command -v netfilter-persistent > /dev/null 2>&1; then
-            netfilter-persistent save >/dev/null 2>&1 || true
-        elif command -v iptables-save > /dev/null; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-        fi
+        printf '  sudo iptables -I INPUT -p %s --dport %s -j ACCEPT\n' "$proto" "$port"
         return 0
     fi
 
     if command -v nft > /dev/null && nft list tables 2>/dev/null | grep -q .; then
-        pr_info "Opening %s/%s via nftables..." "$port" "$proto"
-        nft add rule inet filter input "$proto" dport "$port" accept 2>/dev/null || true
+        printf '  sudo nft add rule inet filter input %s dport %s accept\n' "$proto" "$port"
         return 0
     fi
 
@@ -2102,10 +2090,9 @@ do_hub () {
                 pr_err "Usage: urnet-tools hub open-port <port>"
                 exit 1
             fi
-            if open_firewall_port "$port"; then
-                pr_info "Port %s opened." "$port"
-            else
-                pr_err "No supported firewall found. Open port %s manually." "$port"
+            if ! firewall_hint "$port"; then
+                pr_err "No supported firewall detected."
+                pr_err "Open port %s manually in your firewall." "$port"
                 exit 1
             fi
             ;;
@@ -2371,9 +2358,10 @@ do_hub_test () {
             pr_err "Could not connect to %s:%s or retrieve certificate." "$host" "$port"
             pr_err ""
             pr_err "Check:"
-            pr_err "  1. Is the hub running? systemctl --user status urnetwork-hub.service"
-            pr_err "  2. Is port %s open in the firewall? Try:" "$port"
-            pr_err "     urnet-tools hub open-port %s" "$port"
+            pr_err "  1. Is the hub running?"
+            pr_err "     systemctl --user status urnetwork-hub.service"
+            pr_err "  2. Is port %s open?" "$port"
+            firewall_hint "$port"
             exit 1
         fi
         actual="SHA256:${actual_hex}"
@@ -2691,7 +2679,9 @@ do_hub_init () {
         fingerprint="(fingerprint file not found)"
     fi
 
-    open_firewall_port 8443 || pr_warn "Could not open port 8443 in the firewall. Providers may not be able to reach this hub."
+    pr_info ""
+    pr_info "Ensure port 8443 is open in your firewall so providers can reach the hub:"
+    firewall_hint 8443 || pr_info "  (open port 8443/tcp in your firewall)"
 
     pr_info "Hub TLS is ready."
     pr_info "Fingerprint: %s" "$fingerprint"
