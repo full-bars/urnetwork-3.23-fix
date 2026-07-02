@@ -128,6 +128,22 @@ func TestBuildHeartbeat_NoProxiesConfigured(t *testing.T) {
 	}
 }
 
+// TestBuildHeartbeat_ProjectsProxyStatus is the deterministic case for the
+// new Proxies field: with no proxies registered in the global bandwidth
+// map (same setup as TestBuildHeartbeat_NoProxiesConfigured — buildReport
+// itself isn't independently testable since it reads global state), the
+// projection must produce an empty slice rather than nil-panicking or
+// carrying stale data.
+func TestBuildHeartbeat_ProjectsProxyStatus(t *testing.T) {
+	start := time.Now().Add(-1 * time.Minute)
+
+	hb := buildHeartbeat("test-node", "test-host", start)
+
+	if len(hb.Proxies) != 0 {
+		t.Errorf("Proxies = %+v, want empty with no proxies configured", hb.Proxies)
+	}
+}
+
 // TestNextHeartbeatInterval_NoFailuresUsesBase covers the steady-state case:
 // with no consecutive failures, the heartbeat loop must tick at exactly the
 // configured base interval.

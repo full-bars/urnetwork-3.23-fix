@@ -51,11 +51,23 @@ type systemMetrics struct {
 	Connections int64  `json:"conns"`
 }
 
+// proxyStatus is the compact per-proxy fields a heartbeat carries — status
+// and contract counters only, no byte-level detail. json tags must match
+// hub/main.go's proxyStatus.
+type proxyStatus struct {
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	ContractsAcquired int64  `json:"contracts_acquired"`
+	ContractsDenied   int64  `json:"contracts_denied"`
+}
+
 // heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
-// bandwidthReport: no per-proxy detail, just enough for the hub to keep
-// "last seen" and the Mbps rate live between the much less frequent full
-// /api/report ticks (5-15m default). Its json tags must stay in sync with
-// hub/main.go's heartbeatReport.
+// bandwidthReport: no byte-level detail, just enough for the hub to keep
+// "last seen", the Mbps rate, and per-proxy status/contracts live between
+// the much less frequent full /api/report ticks (5-15m default). Its json
+// tags must stay in sync with hub/main.go's heartbeatReport. Proxies is
+// sparse by the time it's marshaled — see filterChangedProxies, applied by
+// runHeartbeatReporter before sending.
 type heartbeatReport struct {
 	NodeID    string        `json:"node_id"`
 	Timestamp time.Time     `json:"ts"`
@@ -64,6 +76,7 @@ type heartbeatReport struct {
 	TotalTX   uint64        `json:"tx"`
 	Clients   int64         `json:"clients"`
 	System    systemMetrics `json:"sys"`
+	Proxies   []proxyStatus `json:"proxies,omitempty"`
 }
 
 // reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
@@ -404,10 +417,17 @@ func buildHeartbeat(nodeID, host string, startTime time.Time) heartbeatReport {
 
 	var totalRX, totalTX uint64
 	var clients int64
+	proxies := make([]proxyStatus, 0, len(report.Proxies))
 	for _, p := range report.Proxies {
 		totalRX += p.TotalRX
 		totalTX += p.TotalTX
 		clients += p.Clients
+		proxies = append(proxies, proxyStatus{
+			ID:                p.ID,
+			Status:            p.Status,
+			ContractsAcquired: p.ContractsAcquired,
+			ContractsDenied:   p.ContractsDenied,
+		})
 	}
 
 	return heartbeatReport{
@@ -417,6 +437,7 @@ func buildHeartbeat(nodeID, host string, startTime time.Time) heartbeatReport {
 		TotalTX: totalTX,
 		Clients: clients,
 		System:  report.System,
+		Proxies: proxies,
 	}
 }
 
