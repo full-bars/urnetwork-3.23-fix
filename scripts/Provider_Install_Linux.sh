@@ -1546,6 +1546,48 @@ override_rm_env() {
     fi
 }
 
+# open_firewall_port PORT [PROTO]
+# Opens a port in the detected firewall (firewalld, ufw, iptables, nftables).
+# Returns 0 if opened, 1 if no supported firewall found.
+open_firewall_port() {
+    port="$1"
+    proto="${2:-tcp}"
+
+    if command -v firewall-cmd > /dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
+        pr_info "Opening %s/%s via firewalld..." "$port" "$proto"
+        firewall-cmd --add-port="${port}/${proto}" --permanent 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+        return 0
+    fi
+
+    if command -v ufw > /dev/null; then
+        pr_info "Opening %s/%s via ufw..." "$port" "$proto"
+        ufw allow "${port}/${proto}" 2>/dev/null || true
+        return 0
+    fi
+
+    if command -v iptables > /dev/null; then
+        pr_info "Opening %s/%s via iptables..." "$port" "$proto"
+        if ! iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
+            iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT
+        fi
+        if command -v netfilter-persistent > /dev/null 2>&1; then
+            netfilter-persistent save >/dev/null 2>&1 || true
+        elif command -v iptables-save > /dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        fi
+        return 0
+    fi
+
+    if command -v nft > /dev/null && nft list tables 2>/dev/null | grep -q .; then
+        pr_info "Opening %s/%s via nftables..." "$port" "$proto"
+        nft add rule inet filter input "$proto" dport "$port" accept 2>/dev/null || true
+        return 0
+    fi
+
+    return 1
+}
+
 # override_set_env_for_hub KEY VALUE
 # Same as override_set_env but targets urnetwork-hub.service (the hub's systemd
 # unit) instead of urnetwork.service (the provider's unit).
@@ -2629,6 +2671,8 @@ do_hub_init () {
     else
         fingerprint="(fingerprint file not found)"
     fi
+
+    open_firewall_port 8443 || pr_warn "Could not open port 8443 in the firewall. Providers may not be able to reach this hub."
 
     pr_info "Hub TLS is ready."
     pr_info "Fingerprint: %s" "$fingerprint"
