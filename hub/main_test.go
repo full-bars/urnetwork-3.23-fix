@@ -638,3 +638,222 @@ func TestRemoveEndpoint(t *testing.T) {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
 	}
 }
+
+// --- Heartbeat tests ---
+
+func TestStoreHeartbeatUnknownNodeNoop(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+
+	ok := s.heartbeat("ghost", &heartbeatReport{NodeID: "ghost", Timestamp: time.Now().UTC()})
+	if ok {
+		t.Errorf("heartbeat for unknown node returned true, want false")
+	}
+	if len(s.Nodes) != 0 {
+		t.Errorf("heartbeat for unknown node created a node entry")
+	}
+}
+
+func TestStoreHeartbeatUpdatesRateAndTimestamp(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	now := time.Now().UTC()
+	s.upsert("n1", &nodeState{
+		NodeID: "n1", Timestamp: now,
+		Proxies: []proxyReport{{TotalRX: 0, TotalTX: 0}},
+	})
+
+	ok := s.heartbeat("n1", &heartbeatReport{
+		NodeID: "n1", Timestamp: now.Add(10 * time.Second),
+		TotalRX: 5_000_000, TotalTX: 2_500_000,
+	})
+	if !ok {
+		t.Fatalf("heartbeat for known node returned false")
+	}
+
+	rx, tx := s.getRate("n1")
+	if rx != 4.0 {
+		t.Errorf("rx rate = %f, want 4.0", rx)
+	}
+	if tx != 2.0 {
+		t.Errorf("tx rate = %f, want 2.0", tx)
+	}
+	if !s.Nodes["n1"].Timestamp.Equal(now.Add(10 * time.Second)) {
+		t.Errorf("timestamp not updated by heartbeat")
+	}
+}
+
+func TestStoreHeartbeatDoesNotPersist(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+
+	now := time.Now().UTC()
+	s.upsert("n1", &nodeState{
+		NodeID: "n1", Timestamp: now,
+		Proxies: []proxyReport{{ID: "p1", Address: "1.2.3.4:1080", TotalRX: 0, TotalTX: 0}},
+	})
+
+	var before int64
+	if err := s.db.QueryRow(`SELECT ts FROM nodes WHERE node_id = ?`, "n1").Scan(&before); err != nil {
+		t.Fatalf("query before: %v", err)
+	}
+
+	s.heartbeat("n1", &heartbeatReport{
+		NodeID: "n1", Timestamp: now.Add(30 * time.Second),
+		TotalRX: 1000, TotalTX: 500,
+	})
+
+	var after int64
+	if err := s.db.QueryRow(`SELECT ts FROM nodes WHERE node_id = ?`, "n1").Scan(&after); err != nil {
+		t.Fatalf("query after: %v", err)
+	}
+	if before != after {
+		t.Errorf("db ts changed after heartbeat: before=%d after=%d, want unchanged (heartbeat must not persist)", before, after)
+	}
+	if !s.Nodes["n1"].Timestamp.Equal(now.Add(30 * time.Second)) {
+		t.Errorf("in-memory timestamp not updated by heartbeat despite no persist")
+	}
+}
+
+func TestHeartbeatEndpointKnownNode(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	s.upsert("n1", &nodeState{NodeID: "n1", Timestamp: time.Now().UTC(), Proxies: []proxyReport{{TotalRX: 0}}})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	hb := heartbeatReport{NodeID: "n1", TotalRX: 100, TotalTX: 50}
+	body, _ := json.Marshal(hb)
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestHeartbeatEndpointUnknownNode(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	hb := heartbeatReport{NodeID: "ghost", TotalRX: 100, TotalTX: 50}
+	body, _ := json.Marshal(hb)
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Errorf("status = %d, want 202", resp.StatusCode)
+	}
+}
+
+func TestHeartbeatEndpointMissingNodeID(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(heartbeatReport{})
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHeartbeatEndpointGetRejected(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/heartbeat")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 405 {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestHeartbeatEndpointInvalidBody(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", handleHeartbeat(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/heartbeat", "application/json", bytes.NewReader([]byte("not json")))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHeartbeatEndpointRejectsWrongToken(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	s.upsert("n1", &nodeState{NodeID: "n1", Timestamp: time.Now().UTC(), Proxies: []proxyReport{{TotalRX: 0}}})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/heartbeat", requireAuth("secret-token", handleHeartbeat(s)))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(heartbeatReport{NodeID: "n1"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/heartbeat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
