@@ -274,6 +274,15 @@ func TestRollupAndPrune(t *testing.T) {
 		}
 	}
 
+	// Mock nowFunc so maxHour (nowFunc-26h) sits just past our test data.
+	// This makes rollup only process hours 1000..1002 instead of scanning
+	// from epoch 0 to today.
+	origNow := nowFunc
+	nowFunc = func() time.Time {
+		return time.Unix((baseHour+2+27)*3600, 0).UTC() // nowHour = baseHour+2+27, maxHour = baseHour+2+1
+	}
+	defer func() { nowFunc = origNow }()
+
 	// Set high-water mark so rollup only processes our 3 test hours instead
 	// of scanning from epoch=0.
 	if _, err := s.db.Exec(`INSERT INTO rollup_state (id, last_hour) VALUES (1, ?)`, baseHour-1); err != nil {

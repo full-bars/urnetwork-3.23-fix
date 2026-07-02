@@ -582,7 +582,7 @@ func (s *store) rollupProxyDaily() (int64, error) {
 	if s.db == nil {
 		return 0, nil
 	}
-	nowHour := time.Now().Unix() / 3600
+	nowHour := nowFunc().Unix() / 3600
 	maxHour := nowHour - 26 // don't touch hours that may still be receiving reports
 
 	var lastRolled int64
@@ -669,7 +669,7 @@ func (s *store) pruneProxyHourly() (int64, error) {
 	if s.db == nil {
 		return 0, nil
 	}
-	cutoffHour := time.Now().Unix()/3600 - int64(retainHourlyDays*24)
+	cutoffHour := nowFunc().Unix()/3600 - int64(retainHourlyDays*24)
 
 	var lastRolled int64
 	if err := s.db.QueryRow(`SELECT last_hour FROM rollup_state WHERE id = 1`).Scan(&lastRolled); err != nil {
@@ -693,7 +693,7 @@ func (s *store) pruneProxyDaily() (int64, error) {
 	if s.db == nil {
 		return 0, nil
 	}
-	cutoffDay := time.Now().Unix()/3600/24 - int64(retainDailyMonths*30)
+	cutoffDay := nowFunc().Unix()/3600/24 - int64(retainDailyMonths*30)
 	res, err := s.db.Exec(`DELETE FROM proxy_node_daily WHERE day < ?`, cutoffDay)
 	if err != nil {
 		return 0, err
