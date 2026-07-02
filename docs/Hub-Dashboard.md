@@ -7,18 +7,21 @@ A live fleet monitoring dashboard that aggregates bandwidth reports from all pro
 ## Architecture
 
 ```
-┌─────────┐   POST /api/report (every 5m)    ┌─────────┐
-│ Provider│ ────────────────────────────────▶ │  Hub    │
-│  (node) │                                   │ :8080   │
-└─────────┘                                   └─────────┘
-                                                    │
-                                                    ▼
-                                             ┌──────────────┐
-                                             │  hub.db       │
-                                             │  (SQLite/WAL: │
-                                             │   live cache +│
-                                             │   history)    │
-                                             └──────────────┘
+┌─────────┐   POST /api/report (every 5-15m) ┌─────────┐
+│ Provider│  POST /api/heartbeat (every 15s)  │  Hub    │
+│  (node) │ ────────────────────────────────▶ │ :8080   │
+│         │                                    │ :8443   │
+│         │  ┌── HTTPS (TLS with cert pin) ──┐ │ (TLS)   │
+└─────────┘  └──────────────────────────────┘ └─────────┘
+                                                     │
+                                      ┌──────────────┼──────────────┐
+                                      ▼              ▼              ▼
+                               ┌────────────┐ ┌──────────┐ ┌──────────────┐
+                               │  hub.db    │ │ In-memory│ │ GET /api/    │
+                               │  (SQLite:  │ │ node map │ │ events (SSE) │
+                               │   history) │ │ (no DB   │ │ → dashboard  │
+                               └────────────┘ │  writes) │ └──────────────┘
+                                              └──────────┘
 ```
 
 Each provider sends a bandwidth report containing per-proxy traffic counters, health status, and system metrics. The hub keeps the latest state from each node in an in-memory cache (used to render the dashboard and compute delta-based traffic rates between consecutive reports) and persists to a SQLite database, `hub.db`, in WAL mode.
@@ -29,6 +32,8 @@ Persistence is two-tier:
 - **`node_hourly`** — a small per-node, per-hour rollup (cumulative RX/TX, billable, peak clients, sample count), retained 365 days for long-range history.
 
 On startup the hub rebuilds its in-memory cache from the latest stored snapshot of each node, so a restart doesn't blank the dashboard. A legacy `hub.json` from an older build is migrated into `hub.db` once on first boot, then retired to `hub.json.imported`.
+
+In addition to the full report endpoint, providers can send lightweight **heartbeats** to `/api/heartbeat` every 15 seconds (configurable via `HEARTBEAT_INTERVAL`). Heartbeats carry Mbps rates, client/connection counts, contract stats, and memory — all updated in-memory only with **zero DB writes**. The dashboard re-fetches instantly when an SSE push arrives via `GET /api/events`.
 
 Historical rollups are queryable at `/api/history` (params: `node` for a single node, `hours` for the lookback window; defaults to all nodes over 24h).
 
@@ -65,6 +70,23 @@ journalctl --user -fu urnetwork-hub.service
 
 > [!NOTE]
 > `hub install` writes a systemd drop-in that persists across reboots. The hub database lives at `~/.local/share/urnetwork-hub/hub.db`.
+
+#### TLS Hub Setup (Built-in HTTPS)
+
+The hub has built-in TLS with self-signed cert and trust-on-first-use pinning — no reverse proxy needed:
+
+```sh
+# Enable TLS on the hub (restarts it with HTTPS on :8443)
+urnet-tools hub init
+
+# Get the fingerprint (also printed by hub init) and pin it on a remote provider
+urnet-tools hub test https://HUB_IP:8443    # verify TLS works
+
+# From the provider machine, pin the hub's cert and point reports at it
+urnet-tools hub link https://HUB_IP:8443
+```
+
+The hub auto-generates an ECDSA P-256 cert on first boot with TLS enabled. The provider stores the pinned SHA-256 fingerprint in `~/.urnetwork/hub.pin` and verifies it on every connection. Mismatch = connection refused + debug info written to `/tmp/hub-tls-debug.txt`.
 
 ---
 
@@ -136,7 +158,15 @@ The PowerShell wrapper handles the `docker exec` transparently -- it writes `~/.
 > [!TIP]
 > Use a single hub instance for your entire fleet. All nodes report to the same URL.
 
-## Secure Deployment (Reverse Proxy)
+## Secure Deployment
+
+The hub supports two approaches for encrypted reporting:
+
+### Built-in TLS (No Reverse Proxy Needed)
+
+The hub has a built-in TLS listener on `:8443` with auto-generated self-signed ECDSA P-256 cert. Providers pin the cert fingerprint via `urnet-tools hub link https://HUB_IP:8443`. Best for deployments inside a trusted network (e.g., VPN between fleet nodes).
+
+### Reverse Proxy (For Public-Facing Hubs)
 
 > [!TIP]
 > If your nodes are distributed across different networks, it is highly recommended to deploy the Hub behind a reverse proxy like [Caddy](https://caddyserver.com/). This provides automatic HTTPS (SSL/TLS) and allows you to use a clean Domain or DDNS URL.
@@ -186,6 +216,8 @@ Filter nodes by name (text search) and status (All / Healthy / Degraded / Dead) 
 | Column | Description |
 |--------|-------------|
 | Node | Node ID (name) with version, colored heartbeat dot (pulses when live) |
+| Source IP | Color-coded badge showing the node's source IP; same IP = same color, so same-NAT boxes cluster visually |
+| TLS | Green padlock icon if the node reported over HTTPS; blank for HTTP |
 | Heartbeat | Time since last report, with green/yellow/red health dot |
 | Uptime | Provider uptime |
 | Proxies | Color-coded status badges (up/degraded/dead) |
@@ -205,7 +237,7 @@ Time series chart showing RX/TX over the last 24 hours, 3 days, or 7 days. Filte
 The hub dashboard is optimized to handle large fleets efficiently:
 - **Gzip compression** — all HTTP responses are gzip-compressed (HTML, JSON)
 - **Lazy proxy loading** — proxy details are fetched on demand via `/api/nodes/<id>/proxies` rather than embedded inline
-- **JSON-only auto-refresh** — the 30-second auto-refresh fetches lightweight node metadata via `/api/nodes` and updates the DOM in place
+- **JSON-only auto-refresh** — the 30-second auto-refresh fetches lightweight node metadata via `/api/nodes` and updates the DOM in place; also triggered immediately by SSE push from `GET /api/events` when reports or heartbeats land
 - **Rate limiting** — per-IP rate limiter (60 req/min) protects against accidental or malicious request floods; `/api/report` is exempt so provider reports are never blocked
 - **Stale node eviction** — nodes that haven't reported in 15 minutes are automatically removed from the in-memory dashboard; they reappear when they report again
 - **History query safety** — history queries are capped at 7 days (168 hours) and 10,000 rows |
@@ -237,19 +269,22 @@ Click any node row to expand its full proxy list:
 
 Click the expanded row again to collapse.
 
-### Auto-Refresh
+### Live Updates via SSE
 
-The dashboard reloads every **30 seconds**. A countdown shows time until the next refresh. Toggle auto-refresh off with the checkbox to pause updates.
+The dashboard subscribes to `GET /api/events` via the `EventSource` API. The hub pushes a `data: refresh` signal the instant a heartbeat or report lands, so the dashboard re-fetches node metadata immediately — no need to wait for the poll timer. A 30-second periodic poll stays active as a fallback for proxies or networks that buffer or strip SSE.
 
 ### JSON API
 
 For external tooling:
 
 ```sh
-curl http://HUB_IP:8080/api/nodes
+curl http://HUB_IP:8080/api/nodes             # full node state as JSON
+curl -sN http://HUB_IP:8080/api/events        # SSE stream (data: refresh on updates)
 ```
 
-Returns the full node state as JSON, including all proxy details and system metrics.
+`/api/nodes` returns the full node state as JSON, including all proxy details, system metrics, and a `tls` field indicating whether the last report arrived over HTTPS.
+
+Heartbeats from providers are sent to `/api/heartbeat` (POST). The heartbeat carries the same `node_id` as the report and includes `mbps_rx`, `mbps_tx`, `clients`, contract counts, and per-proxy status changes — all updated in-memory without touching the database.
 
 ## Report Format
 
@@ -309,6 +344,8 @@ This lets you see at a glance how much traffic is revenue-generating vs. total w
 | Node shows "—" for rates | Only one report received; wait for the next report cycle |
 | Node shows red dot | No report received in >5 minutes |
 | Dashboard shows stale data | Provider process may be down or `URNETWORK_REPORT_URL` is misconfigured |
+| TLS padlock shows for some nodes but not others | Those nodes report to the HTTP port instead of HTTPS; run `urnet-tools hub link https://HUB_IP:8443` on the provider |
+| Hub TLS link fails with "fingerprint mismatch" | The hub cert was regenerated (e.g., hub restart after cert file loss). Run `hub test` to inspect the new fingerprint, then `hub link` again to re-pin |
 | No proxies in drilldown | Provider sent empty proxy list; check provider logs |
 | "b" shows 0 B for billable | Proxy did not report billable bytes (may be in warmup state) |
 
