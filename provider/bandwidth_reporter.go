@@ -496,6 +496,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 	var activeReportURL string
 	consecutiveFailures := 0
 	activeInterval := baseInterval
+	prevProxyStatus := map[string]proxyStatus{}
 
 	for {
 		select {
@@ -520,6 +521,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 
 		activeHost := resolveNodeName(host)
 		hb := buildHeartbeat(nodeID, activeHost, startTime)
+		hb.Proxies, prevProxyStatus = filterChangedProxies(prevProxyStatus, hb.Proxies)
 
 		body, err := json.Marshal(hb)
 		if err != nil {
