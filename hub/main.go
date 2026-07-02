@@ -27,10 +27,20 @@ var funcMap = template.FuncMap{
 	"fmtMbps":  fmtMbps,
 	"title":    title,
 	"fmtAge":   fmtAge,
-	"pct":      func(a, b int) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
-	"pct64":    func(a, b int64) float64 { if b == 0 { return 0 }; return float64(a) / float64(b) * 100 },
-	"add":      func(a, b float64) float64 { return a + b },
-	"add64":    func(a, b int64) int64 { return a + b },
+	"pct": func(a, b int) float64 {
+		if b == 0 {
+			return 0
+		}
+		return float64(a) / float64(b) * 100
+	},
+	"pct64": func(a, b int64) float64 {
+		if b == 0 {
+			return 0
+		}
+		return float64(a) / float64(b) * 100
+	},
+	"add":   func(a, b float64) float64 { return a + b },
+	"add64": func(a, b int64) int64 { return a + b },
 }
 
 type proxyReport struct {
@@ -54,13 +64,13 @@ type systemMetrics struct {
 }
 
 type nodeState struct {
-	NodeID    string         `json:"node_id"`
-	Host      string         `json:"host"`
-	Version   string         `json:"version"`
-	Timestamp time.Time      `json:"ts"`
-	Uptime    float64        `json:"uptime"`
-	Proxies   []proxyReport  `json:"proxies"`
-	System    systemMetrics  `json:"sys"`
+	NodeID    string        `json:"node_id"`
+	Host      string        `json:"host"`
+	Version   string        `json:"version"`
+	Timestamp time.Time     `json:"ts"`
+	Uptime    float64       `json:"uptime"`
+	Proxies   []proxyReport `json:"proxies"`
+	System    systemMetrics `json:"sys"`
 }
 
 type store struct {
@@ -70,12 +80,14 @@ type store struct {
 	rates        map[string]*nodeRate         `json:"-"`
 	prevBillable map[string]map[string]uint64 `json:"-"` // nodeID -> proxyID -> last seen BillRX+BillTX
 	earning      map[string]map[string]bool   `json:"-"` // nodeID -> proxyID -> earning=yes/no
+	proxyIDs     map[string]int64             `json:"-"` // proxy addr -> interned proxies.id
+	deltas       *deltaTracker                `json:"-"` // cumulative -> per-interval counters
 }
 
 type nodeRate struct {
-	ts  time.Time
-	rx  uint64
-	tx  uint64
+	ts     time.Time
+	rx     uint64
+	tx     uint64
 	mbpsRx float64
 	mbpsTx float64
 }
@@ -96,6 +108,8 @@ func openStore(dataDir string) (*store, error) {
 		rates:        make(map[string]*nodeRate),
 		prevBillable: make(map[string]map[string]uint64),
 		earning:      make(map[string]map[string]bool),
+		proxyIDs:     make(map[string]int64),
+		deltas:       newDeltaTracker(),
 	}
 
 	jsonPath := filepath.Join(dataDir, "hub.json")
@@ -240,20 +254,20 @@ func (s *store) summary() summaryRow {
 
 type summaryRow struct {
 	Nodes, Up, Connecting, Degraded, Dead int
-	TotalClients                           int64
-	TotalRX, TotalTX                       uint64
-	BillRX, BillTX                         uint64
-	Earning, TotalProxies                  int
-	MbpsRX, MbpsTX                         float64
-	ContractsAcquired, ContractsDenied     int64
+	TotalClients                          int64
+	TotalRX, TotalTX                      uint64
+	BillRX, BillTX                        uint64
+	Earning, TotalProxies                 int
+	MbpsRX, MbpsTX                        float64
+	ContractsAcquired, ContractsDenied    int64
 }
 
 type proxSummary struct {
-	Up, Connecting, Degraded, Dead int
-	Clients                        int64
-	TotalRX, TotalTX               uint64
-	BillRX, BillTX                 uint64
-	Earning                        int
+	Up, Connecting, Degraded, Dead     int
+	Clients                            int64
+	TotalRX, TotalTX                   uint64
+	BillRX, BillTX                     uint64
+	Earning                            int
 	ContractsAcquired, ContractsDenied int64
 }
 
@@ -265,20 +279,20 @@ type proxyRow struct {
 }
 
 type nodeRow struct {
-	NodeID        string
-	Host          string
-	Version       string
-	Heartbeat     string
-	Color         string
-	Uptime        string
-	Proxies       proxSummary
-	MbpsRX        float64
-	MbpsTX        float64
-	HeapMiB       uint64
-	SysMiB        uint64
-	Conns         int64
-	ProxyList     []proxyRow
-	Index         int
+	NodeID    string
+	Host      string
+	Version   string
+	Heartbeat string
+	Color     string
+	Uptime    string
+	Proxies   proxSummary
+	MbpsRX    float64
+	MbpsTX    float64
+	HeapMiB   uint64
+	SysMiB    uint64
+	Conns     int64
+	ProxyList []proxyRow
+	Index     int
 }
 
 func fmtBytes(b uint64) string {
@@ -438,10 +452,14 @@ func handleNodes(s *store) http.HandlerFunc {
 			var cAcquired, cDenied int64
 			for _, p := range n.Proxies {
 				switch p.Status {
-				case "up": up++
-				case "connecting": connecting++
-				case "degraded": degraded++
-				default: dead++
+				case "up":
+					up++
+				case "connecting":
+					connecting++
+				case "degraded":
+					degraded++
+				default:
+					dead++
 				}
 				cAcquired += p.ContractsAcquired
 				cDenied += p.ContractsDenied
@@ -536,7 +554,7 @@ func handleDashboard(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes := s.list()
 
-			var sm summaryRow
+		var sm summaryRow
 		rows := make([]nodeRow, 0, len(nodes))
 		for i, n := range nodes {
 			nodeEarning := s.getEarning(n.NodeID)
@@ -550,10 +568,14 @@ func handleDashboard(s *store) http.HandlerFunc {
 				ps.ContractsAcquired += p.ContractsAcquired
 				ps.ContractsDenied += p.ContractsDenied
 				switch p.Status {
-				case "up": ps.Up++
-				case "connecting": ps.Connecting++
-				case "degraded": ps.Degraded++
-				default: ps.Dead++
+				case "up":
+					ps.Up++
+				case "connecting":
+					ps.Connecting++
+				case "degraded":
+					ps.Degraded++
+				default:
+					ps.Dead++
 				}
 			}
 			// Accumulate fleet totals
@@ -649,8 +671,11 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
-	mux.HandleFunc("/api/nodes/", handleNodes(s))
 	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
+	mux.HandleFunc("/api/nodes/contracts", handleNodeContracts(s))
+	mux.HandleFunc("/api/nodes/", handleNodes(s))
+	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
+	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/", handleDashboard(s))
 

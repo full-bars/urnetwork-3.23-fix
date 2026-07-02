@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -57,6 +58,70 @@ CREATE TABLE IF NOT EXISTS node_hourly (
   PRIMARY KEY (node_id, hour)
 );
 CREATE INDEX IF NOT EXISTS idx_node_hourly_hour ON node_hourly(hour);
+
+CREATE TABLE IF NOT EXISTS proxies (
+  id   INTEGER PRIMARY KEY,
+  addr TEXT UNIQUE NOT NULL
+);
+
+-- Tier 1: per-node per-proxy hourly deltas. Sparse: rows exist only for
+-- hours where a proxy actually moved bytes or had contract activity.
+-- hour is epoch-hours (ts/3600), matching node_hourly.
+CREATE TABLE IF NOT EXISTS proxy_node_hourly (
+  node_id      TEXT NOT NULL,
+  proxy_id     INTEGER NOT NULL,
+  hour         INTEGER NOT NULL,
+  rx           INTEGER NOT NULL DEFAULT 0,
+  tx           INTEGER NOT NULL DEFAULT 0,
+  bill_rx      INTEGER NOT NULL DEFAULT 0,
+  bill_tx      INTEGER NOT NULL DEFAULT 0,
+  acq          INTEGER NOT NULL DEFAULT 0,
+  denied       INTEGER NOT NULL DEFAULT 0,
+  clients_peak INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (node_id, proxy_id, hour)
+);
+CREATE INDEX IF NOT EXISTS idx_pnh_hour ON proxy_node_hourly(hour);
+CREATE INDEX IF NOT EXISTS idx_pnh_proxy ON proxy_node_hourly(proxy_id);
+
+-- Tier 2: per-node per-proxy daily, rolled up from tier 1 as it ages.
+-- day is epoch-days (hour/24).
+CREATE TABLE IF NOT EXISTS proxy_node_daily (
+  node_id      TEXT NOT NULL,
+  proxy_id     INTEGER NOT NULL,
+  day          INTEGER NOT NULL,
+  rx           INTEGER NOT NULL DEFAULT 0,
+  tx           INTEGER NOT NULL DEFAULT 0,
+  bill_rx      INTEGER NOT NULL DEFAULT 0,
+  bill_tx      INTEGER NOT NULL DEFAULT 0,
+  acq          INTEGER NOT NULL DEFAULT 0,
+  denied       INTEGER NOT NULL DEFAULT 0,
+  clients_peak INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (node_id, proxy_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_pnd_day ON proxy_node_daily(day);
+CREATE INDEX IF NOT EXISTS idx_pnd_proxy ON proxy_node_daily(proxy_id);
+
+-- Tier 3: fleet-wide per-proxy daily. Never pruned.
+CREATE TABLE IF NOT EXISTS proxy_fleet_daily (
+  proxy_id   INTEGER NOT NULL,
+  day        INTEGER NOT NULL,
+  rx         INTEGER NOT NULL DEFAULT 0,
+  tx         INTEGER NOT NULL DEFAULT 0,
+  bill_rx    INTEGER NOT NULL DEFAULT 0,
+  bill_tx    INTEGER NOT NULL DEFAULT 0,
+  acq        INTEGER NOT NULL DEFAULT 0,
+  denied     INTEGER NOT NULL DEFAULT 0,
+  node_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (proxy_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_pfd_day ON proxy_fleet_daily(day);
+
+-- Rollup high-water mark: tier-1 hours <= last_hour have been folded into
+-- tiers 2/3. Single row (id=1).
+CREATE TABLE IF NOT EXISTS rollup_state (
+  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  last_hour INTEGER NOT NULL
+);
 `
 
 // openDB opens (creating if needed) the hub SQLite database at path with WAL
@@ -141,6 +206,43 @@ func (s *store) persist(state *nodeState) error {
 	ts := state.Timestamp.Unix()
 	totalRX, totalTX, billRX, billTX, peakClients, cAcquired, cDenied := proxyTotals(state.Proxies)
 
+	// Per-proxy hourly deltas (tier 1 of the proxy analytics history) are
+	// computed and interned BEFORE the transaction opens: internProxy
+	// writes through s.db, and doing that while a tx holds SQLite's write
+	// lock would risk SQLITE_BUSY. Sparse: only proxies with activity this
+	// interval get a row. The deltaTracker turns cumulative counters into
+	// per-interval increments and suppresses the first report after a
+	// provider restart. (If the tx below fails, baselines have already
+	// advanced and this interval's deltas are dropped — acceptable for
+	// best-effort telemetry.)
+	type hourlyRow struct {
+		proxyID int64
+		d       proxyCounters
+	}
+	var hourlyRows []hourlyRow
+	for i := range state.Proxies {
+		p := &state.Proxies[i]
+		cur := proxyCounters{
+			RX: p.TotalRX, TX: p.TotalTX,
+			BillRX: p.BillRX, BillTX: p.BillTX,
+			Acq: p.ContractsAcquired, Denied: p.ContractsDenied,
+			Clients: p.Clients,
+		}
+		d, ok := s.deltas.delta(state.NodeID, p.Address, cur)
+		if !ok {
+			continue
+		}
+		if d.RX == 0 && d.TX == 0 && d.BillRX == 0 && d.BillTX == 0 &&
+			d.Acq == 0 && d.Denied == 0 && d.Clients == 0 {
+			continue
+		}
+		proxyID, err := s.internProxy(p.Address)
+		if err != nil {
+			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
+		}
+		hourlyRows = append(hourlyRows, hourlyRow{proxyID: proxyID, d: d})
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -194,6 +296,27 @@ func (s *store) persist(state *nodeState) error {
 		return fmt.Errorf("upsert rollup: %w", err)
 	}
 
+	for _, row := range hourlyRows {
+		d := row.d
+		if _, err := tx.Exec(`
+			INSERT INTO proxy_node_hourly
+				(node_id, proxy_id, hour, rx, tx, bill_rx, bill_tx, acq, denied, clients_peak)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, proxy_id, hour) DO UPDATE SET
+				rx=proxy_node_hourly.rx+excluded.rx,
+				tx=proxy_node_hourly.tx+excluded.tx,
+				bill_rx=proxy_node_hourly.bill_rx+excluded.bill_rx,
+				bill_tx=proxy_node_hourly.bill_tx+excluded.bill_tx,
+				acq=proxy_node_hourly.acq+excluded.acq,
+				denied=proxy_node_hourly.denied+excluded.denied,
+				clients_peak=MAX(proxy_node_hourly.clients_peak, excluded.clients_peak)`,
+			state.NodeID, row.proxyID, hour,
+			d.RX, d.TX, d.BillRX, d.BillTX, d.Acq, d.Denied, d.Clients,
+		); err != nil {
+			return fmt.Errorf("upsert proxy hourly: %w", err)
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -203,6 +326,7 @@ func (s *store) deleteFromDB(nodeID string) error {
 	if s.db == nil {
 		return nil
 	}
+	s.deltas.forgetNode(nodeID)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -212,6 +336,8 @@ func (s *store) deleteFromDB(nodeID string) error {
 		`DELETE FROM nodes WHERE node_id = ?`,
 		`DELETE FROM proxy_snapshots WHERE node_id = ?`,
 		`DELETE FROM node_hourly WHERE node_id = ?`,
+		`DELETE FROM proxy_node_hourly WHERE node_id = ?`,
+		`DELETE FROM proxy_node_daily WHERE node_id = ?`,
 	} {
 		if _, err := tx.Exec(q, nodeID); err != nil {
 			return err
@@ -235,10 +361,10 @@ func (s *store) loadLatestFromDB() error {
 	defer rows.Close()
 
 	type nodeRow struct {
-		id, host, version          string
-		uptime                     float64
-		heap, sys                  uint64
-		conns, ts                  int64
+		id, host, version string
+		uptime            float64
+		heap, sys         uint64
+		conns, ts         int64
 	}
 	var nrows []nodeRow
 	for rows.Next() {
@@ -372,7 +498,7 @@ func (s *store) history(nodeID string, hours int) ([]hourlyRow, error) {
 	if hours <= 0 {
 		hours = 24
 	}
-	since := time.Now().Add(-time.Duration(hours) * time.Hour).Unix() / 3600
+	since := time.Now().Add(-time.Duration(hours)*time.Hour).Unix() / 3600
 
 	var (
 		rows *sql.Rows
@@ -431,14 +557,162 @@ func (s *store) pruneHourly() (int64, error) {
 	return res.RowsAffected()
 }
 
+var (
+	retainHourlyDays  = envInt("URNETWORK_HUB_RETAIN_HOURLY_DAYS", 90)
+	retainDailyMonths = envInt("URNETWORK_HUB_RETAIN_DAILY_MONTHS", 13)
+)
+
+func envInt(key string, def int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return def
+	}
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil || v <= 0 {
+		return def
+	}
+	return v
+}
+
+// rollupProxyDaily aggregates proxy_node_hourly rows into proxy_node_daily
+// (upsert-add) and proxy_fleet_daily (full recompute from daily for the
+// affected days). Only hours older than 26h and not yet rolled up are
+// processed; a high-water mark in rollup_state prevents double-counting.
+func (s *store) rollupProxyDaily() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	nowHour := time.Now().Unix() / 3600
+	maxHour := nowHour - 26 // don't touch hours that may still be receiving reports
+
+	var lastRolled int64
+	if err := s.db.QueryRow(`SELECT last_hour FROM rollup_state WHERE id = 1`).Scan(&lastRolled); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		lastRolled = -1
+	}
+	if maxHour <= lastRolled {
+		return 0, nil
+	}
+
+	var rolled int64
+	for h := lastRolled + 1; h <= maxHour; h++ {
+		day := h / 24
+		res, err := s.db.Exec(`
+			INSERT INTO proxy_node_daily
+				(node_id, proxy_id, day, rx, tx, bill_rx, bill_tx, acq, denied, clients_peak)
+			SELECT node_id, proxy_id, ?, rx, tx, bill_rx, bill_tx, acq, denied, clients_peak
+			FROM proxy_node_hourly WHERE hour = ?
+			ON CONFLICT(node_id, proxy_id, day) DO UPDATE SET
+				rx=proxy_node_daily.rx+excluded.rx,
+				tx=proxy_node_daily.tx+excluded.tx,
+				bill_rx=proxy_node_daily.bill_rx+excluded.bill_rx,
+				bill_tx=proxy_node_daily.bill_tx+excluded.bill_tx,
+				acq=proxy_node_daily.acq+excluded.acq,
+				denied=proxy_node_daily.denied+excluded.denied,
+				clients_peak=MAX(proxy_node_daily.clients_peak, excluded.clients_peak)`,
+			day, h,
+		)
+		if err != nil {
+			return rolled, err
+		}
+		n, _ := res.RowsAffected()
+		rolled += n
+	}
+
+	// Recomputed affected days into proxy_fleet_daily from the now-complete
+	// proxy_node_daily view. This is UPSERT-replace (not add), since we
+	// recompute the full day from daily every time.
+	affectedDays, err := s.db.Query(
+		`SELECT DISTINCT day FROM proxy_node_daily WHERE day >= ? AND day <= ?`,
+		(lastRolled+1)/24, maxHour/24,
+	)
+	if err != nil {
+		return rolled, err
+	}
+	defer affectedDays.Close()
+
+	for affectedDays.Next() {
+		var day int64
+		if err := affectedDays.Scan(&day); err != nil {
+			return rolled, err
+		}
+		if _, err := s.db.Exec(`
+			INSERT OR REPLACE INTO proxy_fleet_daily
+				(proxy_id, day, rx, tx, bill_rx, bill_tx, acq, denied, node_count)
+			SELECT proxy_id, day, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+			       SUM(acq), SUM(denied), COUNT(DISTINCT node_id)
+			FROM proxy_node_daily WHERE day = ? GROUP BY proxy_id`,
+			day,
+		); err != nil {
+			return rolled, err
+		}
+	}
+	if err := affectedDays.Err(); err != nil {
+		return rolled, err
+	}
+
+	// Advance high-water mark.
+	if _, err := s.db.Exec(
+		`INSERT OR REPLACE INTO rollup_state (id, last_hour) VALUES (1, ?)`, maxHour,
+	); err != nil {
+		return rolled, err
+	}
+	return rolled, nil
+}
+
+// pruneProxyHourly deletes proxy_node_hourly rows older than the retention
+// window, but only rows whose hour <= the rollup high-water mark (it is
+// unsafe to delete un-rolled-up hours).
+func (s *store) pruneProxyHourly() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoffHour := time.Now().Unix()/3600 - int64(retainHourlyDays*24)
+
+	var lastRolled int64
+	if err := s.db.QueryRow(`SELECT last_hour FROM rollup_state WHERE id = 1`).Scan(&lastRolled); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		return 0, nil
+	}
+	// Only delete what is past retention AND past the rollup watermark.
+	safeMax := min(cutoffHour, lastRolled)
+	res, err := s.db.Exec(`DELETE FROM proxy_node_hourly WHERE hour <= ?`, safeMax)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// pruneProxyDaily deletes proxy_node_daily rows older than the retention
+// window. proxy_fleet_daily is never pruned.
+func (s *store) pruneProxyDaily() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoffDay := time.Now().Unix()/3600/24 - int64(retainDailyMonths*30)
+	res, err := s.db.Exec(`DELETE FROM proxy_node_daily WHERE day < ?`, cutoffDay)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // startRetention launches the background retention and eviction loops.
 // Stale node eviction runs every 5 minutes, snapshot pruning hourly,
-// hourly rollups and node table pruning daily. A small startup jitter
-// avoids hammering the DB right at boot. All stop when ctx is cancelled.
+// proxy hourly → daily rollup + hourly prune hourly, daily prune daily,
+// node hourly + table pruning daily. A small startup jitter avoids
+// hammering the DB right at boot. All stop when ctx is cancelled.
 func (s *store) startRetention(ctx context.Context) {
 	go retentionLoop(ctx, 5*time.Minute, "stale-nodes", s.evictStaleNodes)
 	go retentionLoop(ctx, time.Hour, "proxy_snapshots", s.pruneSnapshots)
+	go retentionLoop(ctx, time.Hour, "proxy-daily-rollup", s.rollupProxyDaily)
+	go retentionLoop(ctx, time.Hour, "proxy-hourly-prune", s.pruneProxyHourly)
 	go retentionLoop(ctx, 24*time.Hour, "node_hourly", s.pruneHourly)
+	go retentionLoop(ctx, 24*time.Hour, "proxy-daily-prune", s.pruneProxyDaily)
 	go retentionLoop(ctx, 24*time.Hour, "nodes", s.pruneNodes)
 }
 
@@ -457,6 +731,7 @@ func (s *store) evictStaleNodes() (int64, error) {
 			delete(s.rates, id)
 			delete(s.prevBillable, id)
 			delete(s.earning, id)
+			s.deltas.forgetNode(id)
 			n++
 		}
 	}
