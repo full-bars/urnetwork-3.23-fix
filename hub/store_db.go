@@ -143,6 +143,28 @@ func openDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+
+	// Migration: add source_ip column to nodes table if missing.
+	cols, err := db.Query("PRAGMA table_info(nodes)")
+	if err == nil {
+		hasSourceIP := false
+		for cols.Next() {
+			var cid, notNull, pk int
+			var name, colType string
+			var dflt sql.NullString
+			if cols.Scan(&cid, &name, &colType, &notNull, &dflt, &pk) == nil && name == "source_ip" {
+				hasSourceIP = true
+				break
+			}
+		}
+		cols.Close()
+		if !hasSourceIP {
+			if _, err := db.Exec("ALTER TABLE nodes ADD COLUMN source_ip TEXT"); err != nil {
+				fmt.Printf("hub: migration source_ip on nodes: %v\n", err)
+			}
+		}
+	}
+
 	return db, nil
 }
 
@@ -359,7 +381,7 @@ func (s *store) loadLatestFromDB() error {
 	if s.db == nil {
 		return nil
 	}
-	rows, err := s.db.Query(`SELECT node_id, host, version, uptime, source_ip, heap_mib, sys_mib, conns, ts FROM nodes`)
+	rows, err := s.db.Query(`SELECT node_id, host, version, uptime, COALESCE(source_ip, '') AS source_ip, heap_mib, sys_mib, conns, ts FROM nodes`)
 	if err != nil {
 		return err
 	}

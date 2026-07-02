@@ -44,6 +44,8 @@ show_help ()
     echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
+    echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert fingerprint"
+    echo "  hub open-port <port>     Open a port in the local firewall (ufw/firewalld/iptables/nftables)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
     echo ""
@@ -284,6 +286,20 @@ network_fetch ()
     fi
 
     return 1
+}
+
+# tls_fetch URL — like network_fetch but tolerates self-signed certificates
+# (-k for curl, --no-check-certificate for wget). Used during hub link TOFU
+# provisioning when the TLS cert hasn't been pinned yet.
+tls_fetch () {
+    url="$1"
+    if command -v curl > /dev/null; then
+        curl -k --connect-timeout 10 -fSsL "$url" 2>/dev/null
+    elif command -v wget > /dev/null; then
+        wget -q --no-check-certificate --timeout=10 -O - "$url" 2>/dev/null
+    else
+        return 1
+    fi
 }
 
 show_version ()
@@ -1531,6 +1547,66 @@ override_rm_env() {
     fi
 }
 
+# firewall_hint PORT [PROTO]
+# Detects the local firewall and prints the command to open the port.
+# Does NOT execute anything — the operator runs it with sudo.
+firewall_hint() {
+    port="$1"
+    proto="${2:-tcp}"
+
+    if command -v firewall-cmd > /dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
+        printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
+        return 0
+    fi
+
+    if command -v ufw > /dev/null; then
+        printf '  sudo ufw allow %s/%s\n' "$port" "$proto"
+        return 0
+    fi
+
+    if command -v iptables > /dev/null; then
+        printf '  sudo iptables -I INPUT -p %s --dport %s -j ACCEPT\n' "$proto" "$port"
+        return 0
+    fi
+
+    if command -v nft > /dev/null && nft list tables 2>/dev/null | grep -q .; then
+        printf '  sudo nft add rule inet filter input %s dport %s accept\n' "$proto" "$port"
+        return 0
+    fi
+
+    return 1
+}
+
+# override_set_env_for_hub KEY VALUE
+# Same as override_set_env but targets urnetwork-hub.service (the hub's systemd
+# unit) instead of urnetwork.service (the provider's unit).
+override_set_env_for_hub() {
+    local key="$1" value="$2"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
+    local override_file="$override_dir/override.conf"
+    mkdir -p "$override_dir"
+    if [ ! -f "$override_file" ]; then
+        printf '[Service]\n' > "$override_file"
+    fi
+    sed -i '/^Environment="'"$key"'=/d' "$override_file"
+    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
+}
+
+# override_rm_env_for_hub KEY
+# Same as override_rm_env but targets urnetwork-hub.service.
+override_rm_env_for_hub() {
+    local key="$1"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
+    local override_file="$override_dir/override.conf"
+    if [ -f "$override_file" ]; then
+        sed -i '/^Environment="'"$key"'=/d' "$override_file"
+        if [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
+            rm -f "$override_file"
+            rmdir "$override_dir" 2>/dev/null || true
+        fi
+    fi
+}
+
 toggle_ramlogs ()
 {
     mode="$1"
@@ -1989,6 +2065,42 @@ do_hub () {
     hub_bin="$install_path/bin/urnetwork-hub"
 
     case "$cmd" in
+        init)
+            do_hub_init
+            ;;
+
+        link)
+            url="$1"
+            if [ -z "$url" ]; then
+                pr_err "Usage: urnet-tools hub link <https://hub-host:port>"
+                pr_err "Fetches the hub's TLS certificate, confirms the fingerprint,"
+                pr_err "and pins it so all future reports are encrypted."
+                exit 1
+            fi
+            do_hub_link "$url"
+            ;;
+
+        test)
+            do_hub_test "$@"
+            ;;
+
+        open-port)
+            port="$1"
+            if [ -z "$port" ]; then
+                pr_err "Usage: urnet-tools hub open-port <port>"
+                exit 1
+            fi
+            if ! firewall_hint "$port"; then
+                pr_err "No supported firewall detected."
+                pr_err "Open port %s manually in your firewall." "$port"
+                exit 1
+            fi
+            ;;
+
+        unlink)
+            do_hub_unlink
+            ;;
+
         set)
             url="$1"
             if [ -z "$url" ]; then
@@ -2151,16 +2263,524 @@ EOF
             fi
             ;;
 
+        update)
+            force=0
+            hub_tag_arg=""
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -f|--force)
+                        force=1
+                        shift
+                        ;;
+                    -t|--tag)
+                        if [ -z "$2" ]; then
+                            opt_requires_arg "$1"
+                            exit 1
+                        fi
+                        hub_tag_arg="$2"
+                        if [ "$hub_tag_arg" != "latest" ] && [ "$(printf '%s' "$hub_tag_arg" | cut -c -1)" != "v" ]; then
+                            hub_tag_arg="v$hub_tag_arg"
+                        fi
+                        shift 2
+                        ;;
+                    -*)
+                        pr_warn "Ignoring unknown option '%s'" "$1"
+                        shift
+                        ;;
+                    *)
+                        pr_err "Unexpected argument '%s' (try 'urnet-tools hub update' without extra args)" "$1"
+                        exit 1
+                        ;;
+                esac
+            done
+
+            do_hub_update "$hub_tag_arg" "$force"
+            ;;
+
         "")
-            pr_err "Usage: urnet-tools hub <set <http://host:port>|off|install>"
+            pr_err "Usage: urnet-tools hub <init|link|unlink|set|off|install|update|test [url]>"
             exit 1
             ;;
 
         *)
-            pr_err "Unknown hub command: %s (try 'set', 'off', or 'install')" "$cmd"
+            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', 'update', or 'test')" "$cmd"
             exit 1
             ;;
     esac
+}
+
+do_hub_test () {
+    url="$1"
+    pin_file="$HOME/.urnetwork/hub.pin"
+    report_file="$HOME/.urnetwork/report_url"
+
+    if [ -z "$url" ]; then
+        if [ -f "$report_file" ]; then
+            url="$(cat "$report_file" | tr -d '\n')"
+        fi
+    fi
+    if [ -z "$url" ]; then
+        pr_err "No hub URL configured. Specify one or run 'urnet-tools hub link https://...' first."
+        exit 1
+    fi
+
+    url="${url%/}"
+    case "$url" in
+        https://*) ;;
+        *) pr_err "URL must use https:// for TLS verification (got: %s)" "$url"; exit 1 ;;
+    esac
+
+    host="${url#https://}"
+    host="${host%%:*}"
+    port_tmp="${url#https://}"
+    port_tmp="${port_tmp#*:}"
+    if [ "$port_tmp" = "${url#https://}" ]; then port=443; else port="$port_tmp"; fi
+
+    pr_info "Testing TLS to %s:%s ..." "$host" "$port"
+
+    expected=""
+    if [ -f "$pin_file" ]; then
+        expected="$(cat "$pin_file" | tr -d ' \n')"
+        case "$expected" in
+            SHA256:*) ;;
+            *) expected="" ;;
+        esac
+    fi
+
+    if [ -n "$expected" ]; then
+        pr_info "Pinned fingerprint: %s" "$expected"
+    fi
+
+    if command -v openssl > /dev/null; then
+        actual_hex=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+        if [ -z "$actual_hex" ]; then
+            pr_err "Could not connect to %s:%s or retrieve certificate." "$host" "$port"
+            pr_err ""
+            pr_err "Check:"
+            pr_err "  1. Is the hub running?"
+            pr_err "     systemctl --user status urnetwork-hub.service"
+            pr_err "  2. Is port %s open?" "$port"
+            firewall_hint "$port"
+            exit 1
+        fi
+        actual="SHA256:${actual_hex}"
+        pr_info "Hub certificate:  %s" "$actual"
+
+        if [ -n "$expected" ]; then
+            if [ "$expected" = "$actual" ]; then
+                pr_info "TLS OK — fingerprint matches."
+                return 0
+            else
+                pr_err "TLS FAILED — fingerprint MISMATCH!"
+                pr_err "Expected:  %s" "$expected"
+                pr_err "Got:       %s" "$actual"
+                pr_err "To re-pin: urnet-tools hub link %s" "$url"
+                exit 1
+            fi
+        else
+            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
+        fi
+    elif command -v curl > /dev/null; then
+        pr_info "openssl not found, using curl fallback..."
+        cert_json=$(tls_fetch "$url/api/cert" 2>/dev/null)
+        if [ -z "$cert_json" ]; then
+            pr_err "Could not reach hub at %s." "$url"
+            exit 1
+        fi
+        fp=$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')
+        if [ -z "$fp" ]; then
+            pr_err "Hub responded but did not return a fingerprint."
+            exit 1
+        fi
+        pr_info "Hub fingerprint: %s" "$fp"
+        if [ -n "$expected" ]; then
+            if [ "$expected" = "$fp" ]; then
+                pr_info "TLS OK — fingerprint matches."
+            else
+                pr_err "TLS FAILED — fingerprint MISMATCH!"
+                exit 1
+            fi
+        else
+            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
+        fi
+    else
+        pr_err "Neither openssl nor curl found."
+        exit 1
+    fi
+}
+
+do_hub_update () {
+    hub_tag_arg="$1"
+    force="$2"
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    hub_version_file="$hub_data_dir/.hub_version"
+
+    if [ "$has_systemd" -eq 0 ]; then
+        pr_err "systemd is not available on this system"
+        exit 1
+    fi
+
+    # Resolve which tag to download
+    hub_tag="$hub_tag_arg"
+    if [ -z "$hub_tag" ]; then
+        hub_tag="${URNETWORK_HUB_TAG:-}"
+    fi
+    if [ -z "$hub_tag" ] && [ -f "$hub_version_file" ]; then
+        hub_tag="$(cat "$hub_version_file")"
+    fi
+    if [ -z "$hub_tag" ]; then
+        hub_tag=latest
+    fi
+
+    if [ "$hub_tag" = "latest" ]; then
+        pr_info "Resolving latest release tag..."
+        api_url="$api_base/releases/latest"
+        release="$(network_fetch "$api_url" 2>/dev/null || true)"
+        hub_tag="$(get_version_from_api_response "$release" 2>/dev/null)"
+
+        if [ -z "$hub_tag" ] && command -v curl > /dev/null; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} \
+                "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+                hub_tag="${tag_url##*/}"
+            fi
+        fi
+
+        if [ -z "$hub_tag" ]; then
+            pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub update"
+            exit 1
+        fi
+    fi
+
+    pr_info "Target version: %s" "$hub_tag"
+
+    # Idempotency check: skip if already at this version and not forced
+    if [ "$force" != "1" ] && [ -f "$hub_version_file" ]; then
+        current="$(cat "$hub_version_file")"
+        if [ "$current" = "$hub_tag" ]; then
+            if [ -x "$hub_bin" ]; then
+                pr_info "Hub binary is already at version %s. Nothing to do." "$hub_tag"
+                pr_info "Use --force to re-download and reinstall."
+                return
+            fi
+        fi
+    fi
+
+    # State tracking for transactional rollback
+    _service_was_active=false
+    _db_was_backed_up=false
+    _binary_was_backed_up=false
+    _binary_was_swapped=false
+
+    _restore_and_abort() {
+        local fail_step="$1"
+        local fail_msg="$2"
+        pr_err "%s" "$fail_msg"
+
+        if [ "$_binary_was_swapped" = true ]; then
+            pr_warn "Rolling back: restoring previous binary and database..."
+            if [ -f "${hub_bin}.old" ]; then
+                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary from ${hub_bin}.old"
+            fi
+            if [ "$_db_was_backed_up" = true ] && [ -f "${hub_data_dir}/hub.db.bak" ]; then
+                cp "${hub_data_dir}/hub.db.bak" "${hub_data_dir}/hub.db" || pr_warn "Could not restore database backup"
+                pr_info "Database restored from backup."
+            fi
+        elif [ "$_binary_was_backed_up" = true ]; then
+            pr_warn "Rolling back: restoring previous binary..."
+            if [ -f "${hub_bin}.old" ]; then
+                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary"
+            fi
+        fi
+
+        if [ "$_service_was_active" = true ]; then
+            pr_info "Starting previous hub service..."
+            systemctl --user start urnetwork-hub.service 2>/dev/null || true
+            sleep 1
+            if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+                pr_info "Hub service restarted with the previous binary."
+            else
+                pr_warn "Could not restart hub service. Check: journalctl --user -u urnetwork-hub.service -n 30"
+            fi
+        fi
+
+        pr_err "Hub update failed at: %s" "$fail_step"
+        exit 1
+    }
+
+    # Step 1: Stop hub service if running
+    pr_info "Checking hub service state..."
+    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+        _service_was_active=true
+        pr_info "Stopping hub service..."
+        systemctl --user stop urnetwork-hub.service || _restore_and_abort "stop-service" "Failed to stop hub service"
+        pr_info "Hub service stopped."
+    else
+        pr_info "Hub service is not running."
+    fi
+
+    # Step 2: Back up database
+    if [ -f "${hub_data_dir}/hub.db" ]; then
+        pr_info "Backing up database to hub.db.bak..."
+        cp "${hub_data_dir}/hub.db" "${hub_data_dir}/hub.db.bak" || _restore_and_abort "backup-db" "Failed to back up database"
+        _db_was_backed_up=true
+        pr_info "Database backed up."
+    else
+        pr_info "No database found — nothing to back up."
+    fi
+
+    # Step 3: Download new binary to a temp file on the same filesystem
+    # so that the final mv is an atomic rename, not a cross-filesystem copy.
+    hub_dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+    pr_info "Downloading hub binary from: %s" "$hub_dl_url"
+
+    mkdir -p "$install_path/bin"
+    _tmp_hub="${hub_bin}.new"
+
+    if ! download_asset "$hub_dl_url" "$_tmp_hub"; then
+        rm -f "$_tmp_hub"
+        _restore_and_abort "download" "Failed to download hub binary from: $hub_dl_url"
+    fi
+    pr_info "Download complete."
+
+    # Step 4: Verify downloaded binary
+    chmod 755 "$_tmp_hub"
+    if ! _tmp_version="$("$_tmp_hub" --version 2>/dev/null)"; then
+        rm -f "$_tmp_hub"
+        _restore_and_abort "verify-binary" "Downloaded binary is not executable or does not report a version"
+    fi
+    pr_info "Downloaded binary version: %s" "$(printf '%s' "$_tmp_version" | head -n 1)"
+
+    # Step 5: Back up current binary (copy, not move, so the binary is
+    # never missing even if the user hits Ctrl+C mid-update).
+    if [ -f "$hub_bin" ]; then
+        pr_info "Backing up current binary to ${hub_bin}.old..."
+        cp "$hub_bin" "${hub_bin}.old" || _restore_and_abort "backup-binary" "Failed to back up current binary"
+        _binary_was_backed_up=true
+        pr_info "Binary backed up."
+    fi
+
+    # Step 6: Atomic swap (same-filesystem rename — either succeeds or
+    # leaves the old binary untouched).
+    pr_info "Installing new binary..."
+    if ! mv "$_tmp_hub" "$hub_bin"; then
+        _restore_and_abort "swap-binary" "Failed to install new binary at $hub_bin"
+    fi
+    _binary_was_swapped=true
+    chmod 755 "$hub_bin"
+    pr_info "New binary installed at: %s" "$hub_bin"
+
+    # Step 7: Ensure systemd unit exists
+    if [ ! -f "$hub_service" ]; then
+        pr_info "Systemd unit not found — installing hub service unit..."
+        mkdir -p "$hub_service_dir"
+        cat > "$hub_service" <<EOF
+[Unit]
+Description=URnetwork Hub Dashboard
+
+[Service]
+ExecStart=$hub_bin -addr :8080 -data $hub_data_dir
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd after creating unit"
+        pr_info "Hub service unit installed."
+    fi
+
+    # Step 8: daemon-reload (in case unit changed or binary path updated)
+    systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd"
+
+    # Step 9: Start hub service
+    if [ "$_service_was_active" = true ]; then
+        pr_info "Starting hub service..."
+        systemctl --user start urnetwork-hub.service || _restore_and_abort "start-service" "Failed to start hub service after update"
+        sleep 2
+        if ! systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+            _restore_and_abort "verify-service" "Hub service started but is not active. Check: journalctl --user -u urnetwork-hub.service -n 30"
+        fi
+        pr_info "Hub service started successfully."
+    else
+        pr_info "Hub service was not previously running — leaving it stopped."
+        pr_info "Start it with: systemctl --user start urnetwork-hub.service"
+    fi
+
+    # Step 10: Write version file
+    printf '%s\n' "$hub_tag" > "$hub_version_file"
+    pr_info "Version recorded: %s" "$hub_tag"
+
+    # Cleanup binary backup
+    if [ -f "${hub_bin}.old" ]; then
+        rm -f "${hub_bin}.old"
+        pr_info "Binary backup removed."
+    fi
+
+    pr_info ""
+    pr_info "Hub updated successfully to %s." "$hub_tag"
+    if [ -f "${hub_data_dir}/hub.db.bak" ]; then
+        pr_info "Database backup preserved at: ${hub_data_dir}/hub.db.bak"
+    fi
+    if [ "$_service_was_active" = true ]; then
+        pr_info "Dashboard: http://localhost:8080"
+        if [ -f "${hub_data_dir}/tls.crt" ]; then
+            pr_info "TLS dashboard: https://localhost:8443"
+        fi
+    fi
+}
+
+do_hub_init () {
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    cert_file="$hub_data_dir/tls.crt"
+
+    if [ -f "$cert_file" ]; then
+        fp_path="$hub_data_dir/tls.fingerprint"
+        if [ -f "$fp_path" ]; then
+            fp="$(cat "$fp_path")"
+        else
+            fp="(fingerprint file not found — check hub logs)"
+        fi
+        pr_info "Hub TLS is already initialized."
+        pr_info "Fingerprint: %s" "$fp"
+        pr_info ""
+        pr_info "On each provider, run:"
+        pr_info "  urnet-tools hub link https://<this-host>:8443"
+        return
+    fi
+
+    # Enable TLS on the hub by writing URNETWORK_HUB_TLS_ADDR into its
+    # systemd drop-in. The hub binary reads this env var and starts an
+    # HTTPS listener on the given address, auto-generating a cert on
+    # first boot if one doesn't exist.
+    override_set_env_for_hub "URNETWORK_HUB_TLS_ADDR" ":8443"
+    systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
+
+    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+        systemctl --user restart urnetwork-hub.service || { pr_err "Failed to restart hub"; exit 1; }
+    else
+        systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
+    fi
+
+    pr_info "Hub restarted with TLS. Waiting for cert generation..."
+    sleep 5
+
+    if [ ! -f "$cert_file" ]; then
+        pr_err "TLS certificate not generated. Check hub logs:"
+        pr_err "  journalctl --user -u urnetwork-hub.service --no-pager -n 30"
+        exit 1
+    fi
+
+    fp_path="$hub_data_dir/tls.fingerprint"
+    if [ -f "$fp_path" ]; then
+        fingerprint="$(cat "$fp_path")"
+    else
+        fingerprint="(fingerprint file not found)"
+    fi
+
+    pr_info ""
+    pr_info "Ensure port 8443 is open in your firewall so providers can reach the hub:"
+    firewall_hint 8443 || pr_info "  (open port 8443/tcp in your firewall)"
+
+    pr_info "Hub TLS is ready."
+    pr_info "Fingerprint: %s" "$fingerprint"
+    pr_info ""
+    pr_info "On each provider, run:"
+    pr_info "  urnet-tools hub link https://<this-host>:8443"
+}
+
+do_hub_link () {
+    url="$1"
+
+    case "$url" in
+        https://*) ;;
+        *)
+            pr_err "Hub link URL must start with https://"
+            pr_err "Usage: urnet-tools hub link https://<hub-host>:8443"
+            exit 1
+            ;;
+    esac
+
+    # Strip trailing slashes
+    url="${url%/}"
+
+    hub_dir="$HOME/.urnetwork"
+    pin_file="$hub_dir/hub.pin"
+    report_file="$hub_dir/report_url"
+
+    # Fetch the hub's certificate via POST-less TLS (tls_fetch tolerates self-signed).
+    pr_info "Fetching hub certificate from %s/api/cert ..." "$url"
+    cert_json="$(tls_fetch "$url/api/cert")" || { pr_err "Could not reach hub at %s. Is the hub running and reachable?" "$url"; exit 1; }
+
+    # Extract fingerprint from JSON: {"fingerprint":"SHA256:abc...","pem":"..."}
+    fingerprint="$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')"
+    if [ -z "$fingerprint" ]; then
+        pr_err "Could not extract fingerprint from hub response."
+        pr_err "Response: %s" "$cert_json"
+        exit 1
+    fi
+
+    pr_info ""
+    pr_info "Hub certificate fingerprint:"
+    pr_info "  %s" "$fingerprint"
+    pr_info ""
+
+    if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+        printf "Accept this fingerprint? (y/n) "
+        read -r answer
+        case "$answer" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) pr_err "Aborted by user."; exit 1 ;;
+        esac
+    fi
+
+    # Atomic writes: write temp file then rename (mv is atomic on the same fs).
+    mkdir -p "$hub_dir"
+
+    printf '%s\n' "$fingerprint" > "$pin_file.tmp"
+    mv "$pin_file.tmp" "$pin_file"
+    pr_info "Fingerprint pinned to %s" "$pin_file"
+
+    printf '%s\n' "$url" > "$report_file.tmp"
+    mv "$report_file.tmp" "$report_file"
+    pr_info "Report URL set to %s" "$url"
+    pr_info ""
+    pr_info "Success. The provider will now send encrypted reports to %s." "$url"
+    pr_info "The change takes effect on the next report tick (no restart needed)."
+}
+
+do_hub_unlink () {
+    hub_dir="$HOME/.urnetwork"
+    pin_file="$hub_dir/hub.pin"
+    report_file="$hub_dir/report_url"
+
+    rm -f "$pin_file"
+    pr_info "Removed %s" "$pin_file"
+
+    # Rewrite the report URL from https:// to http:// on the same host, port 8080,
+    # if it currently points to an HTTPS URL.
+    if [ -f "$report_file" ]; then
+        current="$(cat "$report_file")"
+        case "$current" in
+            https://*)
+                # Extract host from https://host:port → http://host:8080
+                host_port="${current#https://}"
+                host="${host_port%%:*}"
+                new_url="http://${host}:8080"
+                printf '%s\n' "$new_url" > "$report_file.tmp"
+                mv "$report_file.tmp" "$report_file"
+                pr_info "Report URL changed to %s (insecure)" "$new_url"
+                ;;
+            *)
+                pr_info "Report URL is %s (not HTTPS, left unchanged)" "$current"
+                ;;
+        esac
+    fi
+
+    pr_info ""
+    pr_info "Unlinked. Reports are no longer encrypted."
+    pr_info "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
 }
 
 do_proxy () {
