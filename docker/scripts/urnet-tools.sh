@@ -125,6 +125,12 @@ case "$operation" in
         case "$subcmd" in
             link) shift; hub_link "$@" ;;
             unlink) hub_unlink ;;
+            update|install|init)
+                echo "In Docker, update the hub by pulling a new image:"
+                echo "  docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest"
+                echo "Or re-create the container with the updated image."
+                exit 1
+                ;;
             *) echo "Unknown hub command: $subcmd (try 'link <url>' or 'unlink')"; exit 1 ;;
         esac
         ;;

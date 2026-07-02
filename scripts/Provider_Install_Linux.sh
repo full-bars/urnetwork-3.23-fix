@@ -2214,16 +2214,272 @@ EOF
             fi
             ;;
 
+        update)
+            force=0
+            hub_tag_arg=""
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -f|--force)
+                        force=1
+                        shift
+                        ;;
+                    -t|--tag)
+                        if [ -z "$2" ]; then
+                            opt_requires_arg "$1"
+                            exit 1
+                        fi
+                        hub_tag_arg="$2"
+                        if [ "$hub_tag_arg" != "latest" ] && [ "$(printf '%s' "$hub_tag_arg" | cut -c -1)" != "v" ]; then
+                            hub_tag_arg="v$hub_tag_arg"
+                        fi
+                        shift 2
+                        ;;
+                    -*)
+                        pr_warn "Ignoring unknown option '%s'" "$1"
+                        shift
+                        ;;
+                    *)
+                        pr_err "Unexpected argument '%s' (try 'urnet-tools hub update' without extra args)" "$1"
+                        exit 1
+                        ;;
+                esac
+            done
+
+            do_hub_update "$hub_tag_arg" "$force"
+            ;;
+
         "")
-            pr_err "Usage: urnet-tools hub <init|link <url>|unlink|set <url>|off|install>"
+            pr_err "Usage: urnet-tools hub <init|link <url>|unlink|set <url>|off|install|update>"
             exit 1
             ;;
 
         *)
-            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', or 'install')" "$cmd"
+            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', or 'update')" "$cmd"
             exit 1
             ;;
     esac
+}
+
+do_hub_update () {
+    hub_tag_arg="$1"
+    force="$2"
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    hub_version_file="$hub_data_dir/.hub_version"
+
+    if [ "$has_systemd" -eq 0 ]; then
+        pr_err "systemd is not available on this system"
+        exit 1
+    fi
+
+    # Resolve which tag to download
+    hub_tag="$hub_tag_arg"
+    if [ -z "$hub_tag" ]; then
+        hub_tag="${URNETWORK_HUB_TAG:-}"
+    fi
+    if [ -z "$hub_tag" ] && [ -f "$hub_version_file" ]; then
+        hub_tag="$(cat "$hub_version_file")"
+    fi
+    if [ -z "$hub_tag" ]; then
+        hub_tag=latest
+    fi
+
+    if [ "$hub_tag" = "latest" ]; then
+        pr_info "Resolving latest release tag..."
+        api_url="$api_base/releases/latest"
+        release="$(network_fetch "$api_url" 2>/dev/null || true)"
+        hub_tag="$(get_version_from_api_response "$release" 2>/dev/null)"
+
+        if [ -z "$hub_tag" ] && command -v curl > /dev/null; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} \
+                "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+                hub_tag="${tag_url##*/}"
+            fi
+        fi
+
+        if [ -z "$hub_tag" ]; then
+            pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub update"
+            exit 1
+        fi
+    fi
+
+    pr_info "Target version: %s" "$hub_tag"
+
+    # Idempotency check: skip if already at this version and not forced
+    if [ "$force" != "1" ] && [ -f "$hub_version_file" ]; then
+        current="$(cat "$hub_version_file")"
+        if [ "$current" = "$hub_tag" ]; then
+            if [ -x "$hub_bin" ]; then
+                pr_info "Hub binary is already at version %s. Nothing to do." "$hub_tag"
+                pr_info "Use --force to re-download and reinstall."
+                return
+            fi
+        fi
+    fi
+
+    # State tracking for transactional rollback
+    _service_was_active=false
+    _db_was_backed_up=false
+    _binary_was_backed_up=false
+    _binary_was_swapped=false
+
+    _restore_and_abort() {
+        local fail_step="$1"
+        local fail_msg="$2"
+        pr_err "%s" "$fail_msg"
+
+        if [ "$_binary_was_swapped" = true ]; then
+            pr_warn "Rolling back: restoring previous binary and database..."
+            if [ -f "${hub_bin}.old" ]; then
+                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary from ${hub_bin}.old"
+            fi
+            if [ "$_db_was_backed_up" = true ] && [ -f "${hub_data_dir}/hub.db.bak" ]; then
+                cp "${hub_data_dir}/hub.db.bak" "${hub_data_dir}/hub.db" || pr_warn "Could not restore database backup"
+                pr_info "Database restored from backup."
+            fi
+        elif [ "$_binary_was_backed_up" = true ]; then
+            pr_warn "Rolling back: restoring previous binary..."
+            if [ -f "${hub_bin}.old" ]; then
+                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary"
+            fi
+        fi
+
+        if [ "$_service_was_active" = true ]; then
+            pr_info "Starting previous hub service..."
+            systemctl --user start urnetwork-hub.service 2>/dev/null || true
+            sleep 1
+            if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+                pr_info "Hub service restarted with the previous binary."
+            else
+                pr_warn "Could not restart hub service. Check: journalctl --user -u urnetwork-hub.service -n 30"
+            fi
+        fi
+
+        pr_err "Hub update failed at: %s" "$fail_step"
+        exit 1
+    }
+
+    # Step 1: Stop hub service if running
+    pr_info "Checking hub service state..."
+    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+        _service_was_active=true
+        pr_info "Stopping hub service..."
+        systemctl --user stop urnetwork-hub.service || _restore_and_abort "stop-service" "Failed to stop hub service"
+        pr_info "Hub service stopped."
+    else
+        pr_info "Hub service is not running."
+    fi
+
+    # Step 2: Back up database
+    if [ -f "${hub_data_dir}/hub.db" ]; then
+        pr_info "Backing up database to hub.db.bak..."
+        cp "${hub_data_dir}/hub.db" "${hub_data_dir}/hub.db.bak" || _restore_and_abort "backup-db" "Failed to back up database"
+        _db_was_backed_up=true
+        pr_info "Database backed up."
+    else
+        pr_info "No database found — nothing to back up."
+    fi
+
+    # Step 3: Download new binary to a temp file on the same filesystem
+    # so that the final mv is an atomic rename, not a cross-filesystem copy.
+    hub_dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+    pr_info "Downloading hub binary from: %s" "$hub_dl_url"
+
+    mkdir -p "$install_path/bin"
+    _tmp_hub="${hub_bin}.new"
+
+    if ! download_asset "$hub_dl_url" "$_tmp_hub"; then
+        rm -f "$_tmp_hub"
+        _restore_and_abort "download" "Failed to download hub binary from: $hub_dl_url"
+    fi
+    pr_info "Download complete."
+
+    # Step 4: Verify downloaded binary
+    chmod 755 "$_tmp_hub"
+    if ! _tmp_version="$("$_tmp_hub" --version 2>/dev/null)"; then
+        rm -f "$_tmp_hub"
+        _restore_and_abort "verify-binary" "Downloaded binary is not executable or does not report a version"
+    fi
+    pr_info "Downloaded binary version: %s" "$(printf '%s' "$_tmp_version" | head -n 1)"
+
+    # Step 5: Back up current binary (copy, not move, so the binary is
+    # never missing even if the user hits Ctrl+C mid-update).
+    if [ -f "$hub_bin" ]; then
+        pr_info "Backing up current binary to ${hub_bin}.old..."
+        cp "$hub_bin" "${hub_bin}.old" || _restore_and_abort "backup-binary" "Failed to back up current binary"
+        _binary_was_backed_up=true
+        pr_info "Binary backed up."
+    fi
+
+    # Step 6: Atomic swap (same-filesystem rename — either succeeds or
+    # leaves the old binary untouched).
+    pr_info "Installing new binary..."
+    if ! mv "$_tmp_hub" "$hub_bin"; then
+        _restore_and_abort "swap-binary" "Failed to install new binary at $hub_bin"
+    fi
+    _binary_was_swapped=true
+    chmod 755 "$hub_bin"
+    pr_info "New binary installed at: %s" "$hub_bin"
+
+    # Step 7: Ensure systemd unit exists
+    if [ ! -f "$hub_service" ]; then
+        pr_info "Systemd unit not found — installing hub service unit..."
+        mkdir -p "$hub_service_dir"
+        cat > "$hub_service" <<EOF
+[Unit]
+Description=URnetwork Hub Dashboard
+
+[Service]
+ExecStart=$hub_bin -addr :8080 -data $hub_data_dir
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd after creating unit"
+        pr_info "Hub service unit installed."
+    fi
+
+    # Step 8: daemon-reload (in case unit changed or binary path updated)
+    systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd"
+
+    # Step 9: Start hub service
+    if [ "$_service_was_active" = true ]; then
+        pr_info "Starting hub service..."
+        systemctl --user start urnetwork-hub.service || _restore_and_abort "start-service" "Failed to start hub service after update"
+        sleep 2
+        if ! systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+            _restore_and_abort "verify-service" "Hub service started but is not active. Check: journalctl --user -u urnetwork-hub.service -n 30"
+        fi
+        pr_info "Hub service started successfully."
+    else
+        pr_info "Hub service was not previously running — leaving it stopped."
+        pr_info "Start it with: systemctl --user start urnetwork-hub.service"
+    fi
+
+    # Step 10: Write version file
+    printf '%s\n' "$hub_tag" > "$hub_version_file"
+    pr_info "Version recorded: %s" "$hub_tag"
+
+    # Cleanup binary backup
+    if [ -f "${hub_bin}.old" ]; then
+        rm -f "${hub_bin}.old"
+        pr_info "Binary backup removed."
+    fi
+
+    pr_info ""
+    pr_info "Hub updated successfully to %s." "$hub_tag"
+    if [ -f "${hub_data_dir}/hub.db.bak" ]; then
+        pr_info "Database backup preserved at: ${hub_data_dir}/hub.db.bak"
+    fi
+    if [ "$_service_was_active" = true ]; then
+        pr_info "Dashboard: http://localhost:8080"
+        if [ -f "${hub_data_dir}/tls.crt" ]; then
+            pr_info "TLS dashboard: https://localhost:8443"
+        fi
+    fi
 }
 
 do_hub_init () {
