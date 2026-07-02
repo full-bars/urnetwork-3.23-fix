@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestResolveReportURL_FallsBackToEnvWhenNoOverrideFile is a regression test
@@ -99,5 +100,65 @@ func TestResolveAlertWebhook_FallsBackToEnvWhenNoOverrideFile(t *testing.T) {
 
 	if got := resolveAlertWebhook("https://fallback.example.com"); got != "https://fallback.example.com" {
 		t.Fatalf("expected fallback to env value, got %q", got)
+	}
+}
+
+// TestBuildHeartbeat_NoProxiesConfigured is the deterministic case for
+// buildHeartbeat: with no proxies registered in the global bandwidth map,
+// it must still return a well-formed report (node/host set, zeroed
+// counters) rather than panicking or leaving fields uninitialized. This is
+// the lightweight companion to buildReport's per-proxy detail — it must
+// carry the same NodeID/Uptime so the hub can match it to an existing node.
+func TestBuildHeartbeat_NoProxiesConfigured(t *testing.T) {
+	start := time.Now().Add(-5 * time.Minute)
+
+	hb := buildHeartbeat("test-node", "test-host", start)
+
+	if hb.NodeID != "test-node" {
+		t.Errorf("NodeID = %q, want %q", hb.NodeID, "test-node")
+	}
+	if hb.TotalRX != 0 || hb.TotalTX != 0 {
+		t.Errorf("TotalRX/TX = %d/%d, want 0/0 with no proxies configured", hb.TotalRX, hb.TotalTX)
+	}
+	if hb.Clients != 0 {
+		t.Errorf("Clients = %d, want 0 with no proxies configured", hb.Clients)
+	}
+	if hb.Uptime <= 0 {
+		t.Errorf("Uptime = %f, want > 0 for a start time 5m in the past", hb.Uptime)
+	}
+}
+
+// TestNextHeartbeatInterval_NoFailuresUsesBase covers the steady-state case:
+// with no consecutive failures, the heartbeat loop must tick at exactly the
+// configured base interval.
+func TestNextHeartbeatInterval_NoFailuresUsesBase(t *testing.T) {
+	if got := nextHeartbeatInterval(15*time.Second, 0); got != 15*time.Second {
+		t.Errorf("interval with 0 failures = %s, want 15s", got)
+	}
+}
+
+// TestNextHeartbeatInterval_BacksOffOnConsecutiveFailures is the fix for a
+// flaky-internet hub (e.g. Detroit): a fleet of 30 providers hammering a
+// down hub every 15s with no backoff turns a transient outage into
+// sustained connection churn. Each consecutive failure should double the
+// wait, capped, so the fleet backs off during an extended outage instead of
+// retry-storming it.
+func TestNextHeartbeatInterval_BacksOffOnConsecutiveFailures(t *testing.T) {
+	base := 15 * time.Second
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{1, 30 * time.Second},
+		{2, 60 * time.Second},
+		{3, 120 * time.Second},
+		{4, 240 * time.Second},
+		{5, 300 * time.Second}, // capped at 5m
+		{50, 300 * time.Second},
+	}
+	for _, c := range cases {
+		if got := nextHeartbeatInterval(base, c.failures); got != c.want {
+			t.Errorf("interval with %d failures = %s, want %s", c.failures, got, c.want)
+		}
 	}
 }

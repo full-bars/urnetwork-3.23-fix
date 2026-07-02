@@ -1660,6 +1660,7 @@ func provide(opts docopt.Opts) {
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
 	go runProfitHeartbeat(ctx)
