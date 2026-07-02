@@ -559,6 +559,9 @@ func TestDashboardEndpoint(t *testing.T) {
 	if !bytes.Contains(body, []byte("Total Proxies")) {
 		t.Errorf("dashboard body does not contain summary cards")
 	}
+	if !bytes.Contains(body, []byte("/api/events")) {
+		t.Errorf("dashboard body does not wire up the live-update SSE endpoint")
+	}
 }
 
 func TestDashboardEndpointEmpty(t *testing.T) {

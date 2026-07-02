@@ -1406,6 +1406,18 @@ setInterval(function tick(){
   document.getElementById('countdown').textContent = secondsLeft + 's';
 }, 1000);
 function toggleRefresh() { if (document.getElementById('auto-refresh').checked) secondsLeft = 30; }
+
+// === Live updates (SSE) ===
+// Pushes a bare "something changed" signal from the hub the moment a
+// heartbeat or report lands, so the dashboard doesn't wait out the full
+// 30s poll above. The poll stays as a backstop for links where SSE gets
+// buffered/stripped (e.g. some reverse proxies) — EventSource retries on
+// its own with native backoff, no custom reconnect logic needed here.
+if (window.EventSource) {
+  var liveEvents = new EventSource('/api/events');
+  liveEvents.onmessage = function() { refreshDashboard(); };
+}
+
 function refreshDashboard() {
   if (refreshing) return; refreshing = true;
   var fc = document.getElementById('filter-count'); if (fc) fc.textContent = 'Refreshing\u2026';
