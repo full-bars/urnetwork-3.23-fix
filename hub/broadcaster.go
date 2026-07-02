@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"net/http"
+	"sync"
+)
 
 // broadcaster is a minimal fan-out signal for the dashboard's live-update
 // SSE stream: publish() wakes every subscribed channel with a bare
@@ -50,6 +53,41 @@ func (b *broadcaster) publish() {
 		select {
 		case ch <- struct{}{}:
 		default:
+		}
+	}
+}
+
+// handleEvents serves the dashboard's live-update stream over
+// Server-Sent Events: GET /api/events. It carries no payload — each event
+// is a bare "go re-fetch" signal the browser turns into one /api/nodes
+// call (see refreshDashboard() in the dashboard template). Blocks for the
+// lifetime of the connection; returns when the browser disconnects.
+func handleEvents(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(200)
+		flusher.Flush()
+
+		ch := s.broadcast.subscribe()
+		defer s.broadcast.unsubscribe(ch)
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ch:
+				if _, err := w.Write([]byte("data: refresh\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
 		}
 	}
 }

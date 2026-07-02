@@ -842,6 +842,7 @@ func main() {
 	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
 	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
+	mux.HandleFunc("/api/events", handleEvents(s))
 
 	tlsListen := *tlsAddr
 	if tlsListen == "" {

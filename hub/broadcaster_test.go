@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -65,4 +67,77 @@ func TestBroadcasterUnsubscribeStopsDelivery(t *testing.T) {
 func TestBroadcasterPublishOnNilReceiverIsSafe(t *testing.T) {
 	var b *broadcaster
 	b.publish() // must not panic — many existing store tests build &store{} without a broadcaster
+}
+
+func TestHandleEventsDeliversRefreshOnPublish(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/events", handleEvents(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/events")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	result := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _ := resp.Body.Read(buf)
+		result <- string(buf[:n])
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let the handler subscribe before publishing
+	s.broadcast.publish()
+
+	select {
+	case got := <-result:
+		if got != "data: refresh\n\n" {
+			t.Errorf("body = %q, want %q", got, "data: refresh\n\n")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE event")
+	}
+}
+
+func TestHandleEventsUnsubscribesOnClientDisconnect(t *testing.T) {
+	s := &store{
+		Nodes:     make(map[string]*nodeState),
+		rates:     make(map[string]*nodeRate),
+		broadcast: newBroadcaster(),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/events", handleEvents(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/events")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close() // simulate the browser navigating away
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.broadcast.mu.Lock()
+		n := len(s.broadcast.subs)
+		s.broadcast.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("handler did not unsubscribe after client disconnect")
 }
