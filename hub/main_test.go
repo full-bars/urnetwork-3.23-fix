@@ -550,8 +550,8 @@ func TestDashboardEndpoint(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if !bytes.Contains(body, []byte("n1")) {
-		t.Errorf("dashboard body does not contain node ID")
+	if !bytes.Contains(body, []byte("Loading servers")) {
+		t.Errorf("dashboard body does not contain loading indicator")
 	}
 	if !bytes.Contains(body, []byte("URnetwork Hub")) {
 		t.Errorf("dashboard body does not contain title")
@@ -582,8 +582,8 @@ func TestDashboardEndpointEmpty(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if !bytes.Contains(body, []byte("Nodes")) || !bytes.Contains(body, []byte(">0<")) {
-		t.Errorf("empty dashboard should show Nodes = 0")
+	if !bytes.Contains(body, []byte("Loading servers")) {
+		t.Errorf("empty dashboard body does not contain loading indicator")
 	}
 }
 

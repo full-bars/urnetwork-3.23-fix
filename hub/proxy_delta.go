@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -72,6 +73,9 @@ func (d *deltaTracker) forgetNode(nodeID string) {
 func (s *store) internProxy(addr string) (int64, error) {
 	if id, ok := s.proxyIDs[addr]; ok {
 		return id, nil
+	}
+	if addr == "" {
+		return 0, fmt.Errorf("empty proxy address")
 	}
 
 	var id int64
