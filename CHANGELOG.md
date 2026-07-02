@@ -4,6 +4,34 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.30] — 2026-07-02
+
+### Added
+- **Hub TLS with cert pinning (TOFU)** (PR #186): Hub binary accepts `-tls-addr` and auto-generates a self-signed ECDSA P-256 cert on first boot. `/api/cert` exposes the SHA-256 fingerprint for trust-on-first-use pinning; providers verify it via `~/.urnetwork/hub.pin` before reporting. New `urnet-tools hub` subcommands:
+
+  | Command | What it does |
+  |---|---|
+  | `hub init` | Enables TLS via `URNETWORK_HUB_TLS_ADDR=:8443`, restarts, prints fingerprint + firewall hint |
+  | `hub link https://host:8443` | Fetches and confirms the fingerprint, pins it, sets `report_url` |
+  | `hub unlink` | Removes the pin, reverts to plain HTTP |
+  | `hub test [url]` | Verifies the pinned fingerprint still matches (openssl, curl fallback) |
+  | `hub open-port <port>` | Detects firewalld/ufw/iptables/nftables, prints the exact command to open it |
+  | `hub update [-f] [-t tag]` | Transactional binary update with automatic rollback on failure |
+
+- **Transactional hub update** (PR #186): `hub update` is atomic — stops the service, backs up `hub.db`, downloads and verifies the new binary, swaps it in, restarts, and verifies it came up. Any failure restores the old binary + DB and restarts the previous version. Idempotent (no-ops at the target version unless `--force`). 40 test cases cover tag resolution, rollback states, and systemd templating.
+- **Live hub heartbeat** (PR #187, #188): New `/api/heartbeat` endpoint gives the dashboard a 15s-cadence liveness signal, separate from the full `/api/report` (5-15m) — Mbps rate, last-seen, uptime, and now per-proxy status/contract counts, all updated in-memory only (no DB writes). The provider only sends proxies whose status or contract counters actually changed since the last tick, so payload size scales with fleet activity, not fleet size. One `http.Client` is reused per reporter instance instead of a fresh TCP+TLS handshake every tick, and consecutive failures back off exponentially (capped at 5m) so a flaky link to the hub doesn't turn into a retry storm.
+- **Live dashboard updates via SSE** (PR #188): New `GET /api/events` endpoint pushes a "something changed" signal to connected browser tabs the instant a heartbeat or report lands, instead of waiting on the dashboard's 30s poll. The poll stays as a backstop for links where SSE gets buffered or stripped.
+- **Dashboard visual polish** (PR #186): Inline color-coded IP tags per node row (same-NAT boxes cluster visually), a green TLS padlock icon on nodes reporting over HTTPS, and sortable Servers-page columns (replacing the old grouped-header layout).
+
+### Fixed
+- **Dead proxy reclassification** (PR #185): Proxies down for ≥7 days are now classified `dead` instead of `degraded` in `ProxyHealthSnapshot()`, matching the existing `inactive` tier.
+- **Fleet chart initial-spike glitch** (PR #185): `loadFleetChart()` now seeds cumulative deltas from the first hour's data instead of 0, preventing a flattened chart after the first spike.
+- **Window pill ordering** (PR #185): Proxies/Contracts page time-window pills now read ascending (1h → 24h → 7d → 30d → 1y).
+- **NULL contract columns crash** (PR #185): `COALESCE(contracts_acquired,0)` / `COALESCE(contracts_denied,0)` guards added to three queries that could hit a NULL scan error on older rows.
+- **`/api/nodes` missing traffic fields** (PR #186): Response now includes `rx`/`tx`/`bill_rx`/`bill_tx`/`clients` aggregated from proxy data — these were missing and caused `undefined` errors in the dashboard JS.
+
+---
+
 ## [v3.23.0-fix.24.28] — 2026-07-01
 
 ### Added
