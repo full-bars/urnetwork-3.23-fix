@@ -45,6 +45,7 @@ show_help ()
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert fingerprint"
+    echo "  hub open-port <port>     Open a port in the local firewall (ufw/firewalld/iptables/nftables)"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
     echo ""
@@ -2095,6 +2096,20 @@ do_hub () {
             do_hub_test "$@"
             ;;
 
+        open-port)
+            port="$1"
+            if [ -z "$port" ]; then
+                pr_err "Usage: urnet-tools hub open-port <port>"
+                exit 1
+            fi
+            if open_firewall_port "$port"; then
+                pr_info "Port %s opened." "$port"
+            else
+                pr_err "No supported firewall found. Open port %s manually." "$port"
+                exit 1
+            fi
+            ;;
+
         unlink)
             do_hub_unlink
             ;;
@@ -2354,7 +2369,11 @@ do_hub_test () {
         actual_hex=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
         if [ -z "$actual_hex" ]; then
             pr_err "Could not connect to %s:%s or retrieve certificate." "$host" "$port"
-            pr_err "Make sure the hub is running and reachable."
+            pr_err ""
+            pr_err "Check:"
+            pr_err "  1. Is the hub running? systemctl --user status urnetwork-hub.service"
+            pr_err "  2. Is port %s open in the firewall? Try:" "$port"
+            pr_err "     urnet-tools hub open-port %s" "$port"
             exit 1
         fi
         actual="SHA256:${actual_hex}"
