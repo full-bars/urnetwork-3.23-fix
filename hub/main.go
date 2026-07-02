@@ -1027,7 +1027,12 @@ function loadFleetChart() {
     }
     var hours = Object.keys(byHour).sort();
     var labels = [], rx = [], tx = [], brx = [], btx = [], clients = [], nodes = [], acquired = [], denied = [];
-    var prevRx = 0, prevTx = 0, prevBRx = 0, prevBTx = 0, prevAcq = 0, prevDen = 0;
+    // Seed cumulative deltas from the first hour so the initial spike doesn't
+    // dominate the y-axis and flatten subsequent values.
+    var first = hours.length > 0 ? byHour[hours[0]] : null;
+    var prevRx = first ? first.rx : 0, prevTx = first ? first.tx : 0;
+    var prevBRx = first ? first.bill_rx : 0, prevBTx = first ? first.bill_tx : 0;
+    var prevAcq = first ? first.acquired : 0, prevDen = first ? first.denied : 0;
     hours.forEach(function(h) {
       labels.push(parseInt(h));
       var drx = byHour[h].rx - prevRx; rx.push(drx >= 0 ? drx : 0); prevRx = byHour[h].rx;
