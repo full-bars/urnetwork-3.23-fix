@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.29
+**Current Version**: v3.23.0-fix.24.30
 
 ---
 
@@ -1398,3 +1398,88 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **Files Modified**: `net_http_doh.go` — major DoH restructure (dnsmessage parsing, MinCacheTtl, MaxConcurrentResolutions, 4 DoH servers with wire-format support, local DoH) with fork's cert pinning applied via `DefaultTlsConfig()` injected into `DefaultDnsResolverSettings()`.
 
 **Status**: ✅ Merged `main` (2026-06-29). PR #167.
+
+---
+
+## 64. Hub TLS, Live Heartbeat, SSE Dashboard Push, Dashboard Polish (PR #186, #188)
+
+**Purpose**: Enable encrypted provider-to-hub reporting with trust-on-first-use cert pinning, add a lightweight in-memory heartbeat endpoint for sub-minute dashboard freshness, push real-time updates to browser tabs via Server-Sent Events, and visually polish the dashboard.
+
+### 64a. Hub TLS with Cert Pinning (PR #186)
+
+**Problem**: Provider bandwidth reports were sent over plain HTTP. An attacker on the same network could read or modify report data. The upstream hub has no TLS support.
+
+**Solution**: The hub binary accepts a `-tls-addr` flag (`URNETWORK_HUB_TLS_ADDR` env, default `:8443`). On first boot with TLS enabled, the hub auto-generates a self-signed ECDSA P-256 certificate and starts an HTTPS listener in addition to the existing HTTP listener. A `/api/cert` endpoint exposes the SHA-256 fingerprint for trust-on-first-use pinning.
+
+**Provider side**:
+- `bandwidth_reporter.go` uses `newClientForURL()` which detects HTTPS URLs and creates an HTTP client with a `VerifyConnection` callback that checks the peer cert's SHA-256 fingerprint against `~/.urnetwork/hub.pin`
+- Cert mismatch: connection refused with a descriptive error + debug info written to `/tmp/hub-tls-debug.txt`
+- The dashboard shows a green padlock icon next to nodes that reported via TLS
+
+**`urnet-tools hub` subcommands**:
+
+| Command | What it does |
+|---|---|
+| `hub init` | Enables TLS via `URNETWORK_HUB_TLS_ADDR=:8443`, restarts, waits for cert gen, prints fingerprint + firewall hint |
+| `hub link https://host:8443` | Fetches fingerprint from `/api/cert`, prompts for confirmation, pins to `hub.pin` and sets `report_url` |
+| `hub unlink` | Removes pin, rewrites report URL to plain `http://:8080` |
+| `hub test [url]` | Connects via openssl to verify the TLS cert fingerprint matches the pinned value |
+
+**Files Added**: `hub/tls.go` (cert generation / fingerprint / API endpoint / TLS config applied in `main()`)
+
+**Files Modified**: `hub/main.go`, `hub/store_db.go`, `provider/bandwidth_reporter.go`, `urnet-tools` (hub subcommand methods)
+
+### 64b. Transactional Hub Update (PR #186)
+
+**Problem**: Updating the hub binary was a manual, error-prone process with no rollback safety.
+
+**Solution**: `hub update` is atomic and rollback-capable:
+
+**Sequence**: stop service → backup `hub.db` → download to same-fs temp file → verify `--version` → copy old binary to `.old` → `rename()` new in → create systemd unit if missing → start service → verify it came up.
+
+**Rollback**: any failure restores the old binary + DB backup + restarts the old service with a descriptive error. After success, keeps `hub.db.bak` as safety net and removes `.old`.
+
+**Idempotent**: exits 0 with "Nothing to do" if already at the target version (unless `--force`).
+
+**Testing**: 40 test cases in `scripts/test_hub_update.sh` covering tag resolution, idempotency, rollback states, systemd templating, E2E, Docker wrapper.
+
+**Files Added**: `scripts/test_hub_update.sh`
+
+**Files Modified**: `urnet-tools` (hub update subcommand methods)
+
+### 64c. Live Hub Heartbeat + SSE Push (PR #187, #188)
+
+**Problem**: Full reports arrive every 5-15 minutes, so dashboard Mbps, client counts, and contract rates can be minutes stale. Increasing the report cadence would hammer the hub DB.
+
+**Solution**: Two layered additions:
+
+**`/api/heartbeat`** — lightweight POST endpoint (15s default cadence, configurable via `HEARTBEAT_INTERVAL` env):
+- Carries `node_id`, `mbps_rx`, `mbps_tx`, `clients`, `conns`, `heap_mib`, `sys_mib`, `uptime`, `contracts_acquired`, `contracts_denied`
+- Per-proxy status array included only for proxies whose status or contract counters changed since the last tick (`filterChangedProxies`)
+- Zero DB writes — merges into in-memory node state only
+- One `http.Client` reused per reporter instance (no TCP+TLS handshake per tick)
+- Consecutive failures back off exponentially (capped at 5m)
+
+**`GET /api/events`** (SSE) — pushes a bare `data: refresh` to connected dashboard tabs the instant a heartbeat or report lands:
+- Implemented via an in-process `broadcaster` (non-blocking, nil-safe)
+- Dashboard subscribes via `EventSource` and re-fetches node metadata on push
+- Existing 30s poll stays as backstop for environments where SSE is buffered/stripped
+
+**Blocker**: `api.go:552` was not reachable via `make all` + `go get` flow because `golang.org/x/net/context` is a deprecated alias. The fix replaces `x/net/context` with `context` from the stdlib.
+
+**Files Modified**: `hub/main.go`, `provider/bandwidth_reporter.go`, `api.go`
+
+### 64d. Dashboard Visual Polish (PR #186)
+
+**Problem**: The node table had a grouped-header layout that wasted space, no source-IP visibility for multi-node fleets, no TLS indicator, and columns were not sortable.
+
+**Changes**:
+- **Inline IP tags**: Each node row shows its source IP as a color-coded badge. Same-NAT boxes (same IP) share a color from a 10-color palette so they cluster visually.
+- **TLS padlock**: A green lock icon appears next to nodes that reported via HTTPS.
+- **Sortable columns**: Click any column header to sort ascending/descending. Active sort column shows ▼/▲ indicator.
+- Removed group-header rows in favor of a simpler flat layout.
+- `fmtBytes` defensive against `undefined` input.
+
+**Files Modified**: `hub/main.go` (template + static JS/CSS), `hub/node_info.go`
+
+**Status**: ✅ Merged `main` (2026-07-02). PRs #186, #187, #188.
