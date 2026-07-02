@@ -236,6 +236,9 @@ func (s *store) persist(state *nodeState) error {
 			d.Acq == 0 && d.Denied == 0 && d.Clients == 0 {
 			continue
 		}
+		if p.Address == "" {
+			continue
+		}
 		proxyID, err := s.internProxy(p.Address)
 		if err != nil {
 			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
