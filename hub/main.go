@@ -3,13 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"html/template"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -656,6 +664,7 @@ func handleDashboard(s *store) http.HandlerFunc {
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
 	dataDir := flag.String("data", ".", "data directory for hub.json")
 	flag.Parse()
 
@@ -684,6 +693,59 @@ func main() {
 	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
 	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
+
+	tlsListen := *tlsAddr
+	if tlsListen == "" {
+		tlsListen = os.Getenv("URNETWORK_HUB_TLS_ADDR")
+	}
+
+	var certFingerprint string
+	var certPath, keyPath string
+
+	if tlsListen != "" {
+		certPath = filepath.Join(*dataDir, "tls.crt")
+		keyPath = filepath.Join(*dataDir, "tls.key")
+		certPEM, keyPEM, fp, err := loadOrGenerateCert(certPath, keyPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: TLS setup failed: %v\n", err)
+			os.Exit(1)
+		}
+		certFingerprint = fp
+		fmt.Printf("hub: TLS fingerprint %s\n", fp)
+
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			os.WriteFile(certPath, certPEM, 0600)
+			os.WriteFile(keyPath, keyPEM, 0600)
+			fpPath := filepath.Join(*dataDir, "tls.fingerprint")
+			os.WriteFile(fpPath, []byte(fp+"\n"), 0644)
+		}
+
+		mux.HandleFunc("/api/cert", func(w http.ResponseWriter, r *http.Request) {
+			certBytes, err := os.ReadFile(certPath)
+			if err != nil {
+				http.Error(w, "cert not available", 500)
+				return
+			}
+			fp := certFingerprint
+			if fp == "" {
+				fp = fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(certBytes)))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"fingerprint": fp,
+				"pem":         strings.TrimSpace(string(certBytes)),
+			})
+		})
+
+		go func() {
+			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
+			if err := http.ListenAndServeTLS(tlsListen, certPath, keyPath, mux); err != nil {
+				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
+				os.Exit(1)
+			}
+		}()
+	}
+
 	mux.HandleFunc("/", handleDashboard(s))
 
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
@@ -691,6 +753,69 @@ func main() {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func loadOrGenerateCert(certPath, keyPath string) (certPEM, keyPEM []byte, fingerprint string, err error) {
+	certPEM, err = os.ReadFile(certPath)
+	if err == nil && len(certPEM) > 0 {
+		keyPEM, err = os.ReadFile(keyPath)
+		if err == nil && len(keyPEM) > 0 {
+			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(certPEM)))
+			return certPEM, keyPEM, fp, nil
+		}
+	}
+	return generateCert()
+}
+
+func generateCert() (certPEM, keyPEM []byte, fingerprint string, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("generate key: %w", err)
+	}
+
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "urnetwork-hub"
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("serial: %w", err)
+	}
+
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    now,
+		NotAfter:     now.AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{host},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("create cert: %w", err)
+	}
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	fingerprint = fmt.Sprintf("SHA256:%x", sha256.Sum256(der))
+	return certPEM, keyPEM, fingerprint, nil
+}
+
+func pemDecodeCert(pemBytes []byte) []byte {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil
+	}
+	return block.Bytes
 }
 
 var tmpl = template.Must(template.New("dashboard").Funcs(funcMap).Parse(`<!DOCTYPE html>

@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -181,8 +184,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			interval = d
 		}
 	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
+	_ = interval // keep the variable for resolveReportInterval; client created per tick below
 
 	// startup jitter so a fleet that restarts together doesn't post on the same
 	// wall-clock boundary and thundering-herd the hub. mirrors the proxy
@@ -259,7 +261,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		if hubToken != "" {
 			req.Header.Set("Authorization", "Bearer "+hubToken)
 		}
-		resp, err := client.Do(req)
+		resp, err := newClientForURL(reportURL).Do(req)
 		if err != nil {
 			tlog("[report] post failed: %v\n", err)
 			continue
@@ -364,4 +366,63 @@ func parseProxyIndex(key string) int {
 		return -1
 	}
 	return n
+}
+
+func hubPinPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "hub.pin"), nil
+}
+
+func loadPinnedFPs() map[string]bool {
+	pins := map[string]bool{}
+	path, err := hubPinPath()
+	if err != nil {
+		return pins
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return pins
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pins[line] = true
+		}
+	}
+	return pins
+}
+
+func newClientForURL(reportURL string) *http.Client {
+	if !strings.HasPrefix(reportURL, "https://") {
+		return &http.Client{Timeout: 10 * time.Second}
+	}
+
+	pins := loadPinnedFPs()
+
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if len(pins) > 0 {
+		tlsCfg.InsecureSkipVerify = true
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("no peer certificates")
+			}
+			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(cs.PeerCertificates[0].Raw))
+			if pins[fp] {
+				return nil
+			}
+			return fmt.Errorf("certificate fingerprint %s is not pinned", fp)
+		}
+	} else {
+		tlsCfg.InsecureSkipVerify = true
+	}
+
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+		},
+	}
 }

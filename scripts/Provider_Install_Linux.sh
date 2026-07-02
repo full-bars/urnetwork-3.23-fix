@@ -286,6 +286,20 @@ network_fetch ()
     return 1
 }
 
+# tls_fetch URL — like network_fetch but tolerates self-signed certificates
+# (-k for curl, --no-check-certificate for wget). Used during hub link TOFU
+# provisioning when the TLS cert hasn't been pinned yet.
+tls_fetch () {
+    url="$1"
+    if command -v curl > /dev/null; then
+        curl -k --connect-timeout 10 -fSsL "$url" 2>/dev/null
+    elif command -v wget > /dev/null; then
+        wget -q --no-check-certificate --timeout=10 -O - "$url" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
 show_version ()
 {
     # Report two facts that can legitimately differ, and used to be conflated:
@@ -1531,6 +1545,36 @@ override_rm_env() {
     fi
 }
 
+# override_set_env_for_hub KEY VALUE
+# Same as override_set_env but targets urnetwork-hub.service (the hub's systemd
+# unit) instead of urnetwork.service (the provider's unit).
+override_set_env_for_hub() {
+    local key="$1" value="$2"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
+    local override_file="$override_dir/override.conf"
+    mkdir -p "$override_dir"
+    if [ ! -f "$override_file" ]; then
+        printf '[Service]\n' > "$override_file"
+    fi
+    sed -i '/^Environment="'"$key"'=/d' "$override_file"
+    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
+}
+
+# override_rm_env_for_hub KEY
+# Same as override_rm_env but targets urnetwork-hub.service.
+override_rm_env_for_hub() {
+    local key="$1"
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
+    local override_file="$override_dir/override.conf"
+    if [ -f "$override_file" ]; then
+        sed -i '/^Environment="'"$key"'=/d' "$override_file"
+        if [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
+            rm -f "$override_file"
+            rmdir "$override_dir" 2>/dev/null || true
+        fi
+    fi
+}
+
 toggle_ramlogs ()
 {
     mode="$1"
@@ -1989,6 +2033,25 @@ do_hub () {
     hub_bin="$install_path/bin/urnetwork-hub"
 
     case "$cmd" in
+        init)
+            do_hub_init
+            ;;
+
+        link)
+            url="$1"
+            if [ -z "$url" ]; then
+                pr_err "Usage: urnet-tools hub link <https://hub-host:port>"
+                pr_err "Fetches the hub's TLS certificate, confirms the fingerprint,"
+                pr_err "and pins it so all future reports are encrypted."
+                exit 1
+            fi
+            do_hub_link "$url"
+            ;;
+
+        unlink)
+            do_hub_unlink
+            ;;
+
         set)
             url="$1"
             if [ -z "$url" ]; then
@@ -2152,15 +2215,163 @@ EOF
             ;;
 
         "")
-            pr_err "Usage: urnet-tools hub <set <http://host:port>|off|install>"
+            pr_err "Usage: urnet-tools hub <init|link <url>|unlink|set <url>|off|install>"
             exit 1
             ;;
 
         *)
-            pr_err "Unknown hub command: %s (try 'set', 'off', or 'install')" "$cmd"
+            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', or 'install')" "$cmd"
             exit 1
             ;;
     esac
+}
+
+do_hub_init () {
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    cert_file="$hub_data_dir/tls.crt"
+
+    if [ -f "$cert_file" ]; then
+        fp_path="$hub_data_dir/tls.fingerprint"
+        if [ -f "$fp_path" ]; then
+            fp="$(cat "$fp_path")"
+        else
+            fp="(fingerprint file not found — check hub logs)"
+        fi
+        pr_info "Hub TLS is already initialized."
+        pr_info "Fingerprint: %s" "$fp"
+        pr_info ""
+        pr_info "On each provider, run:"
+        pr_info "  urnet-tools hub link https://<this-host>:8443"
+        return
+    fi
+
+    # Enable TLS on the hub by writing URNETWORK_HUB_TLS_ADDR into its
+    # systemd drop-in. The hub binary reads this env var and starts an
+    # HTTPS listener on the given address, auto-generating a cert on
+    # first boot if one doesn't exist.
+    override_set_env_for_hub "URNETWORK_HUB_TLS_ADDR" ":8443"
+    systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
+
+    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
+        systemctl --user restart urnetwork-hub.service || { pr_err "Failed to restart hub"; exit 1; }
+    else
+        systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
+    fi
+
+    pr_info "Hub restarted with TLS. Waiting for cert generation..."
+    sleep 5
+
+    if [ ! -f "$cert_file" ]; then
+        pr_err "TLS certificate not generated. Check hub logs:"
+        pr_err "  journalctl --user -u urnetwork-hub.service --no-pager -n 30"
+        exit 1
+    fi
+
+    fp_path="$hub_data_dir/tls.fingerprint"
+    if [ -f "$fp_path" ]; then
+        fingerprint="$(cat "$fp_path")"
+    else
+        fingerprint="(fingerprint file not found)"
+    fi
+
+    pr_info "Hub TLS is ready."
+    pr_info "Fingerprint: %s" "$fingerprint"
+    pr_info ""
+    pr_info "On each provider, run:"
+    pr_info "  urnet-tools hub link https://<this-host>:8443"
+}
+
+do_hub_link () {
+    url="$1"
+
+    case "$url" in
+        https://*) ;;
+        *)
+            pr_err "Hub link URL must start with https://"
+            pr_err "Usage: urnet-tools hub link https://<hub-host>:8443"
+            exit 1
+            ;;
+    esac
+
+    # Strip trailing slashes
+    url="${url%/}"
+
+    hub_dir="$HOME/.urnetwork"
+    pin_file="$hub_dir/hub.pin"
+    report_file="$hub_dir/report_url"
+
+    # Fetch the hub's certificate via POST-less TLS (tls_fetch tolerates self-signed).
+    pr_info "Fetching hub certificate from %s/api/cert ..." "$url"
+    cert_json="$(tls_fetch "$url/api/cert")" || { pr_err "Could not reach hub at %s. Is the hub running and reachable?" "$url"; exit 1; }
+
+    # Extract fingerprint from JSON: {"fingerprint":"SHA256:abc...","pem":"..."}
+    fingerprint="$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')"
+    if [ -z "$fingerprint" ]; then
+        pr_err "Could not extract fingerprint from hub response."
+        pr_err "Response: %s" "$cert_json"
+        exit 1
+    fi
+
+    pr_info ""
+    pr_info "Hub certificate fingerprint:"
+    pr_info "  %s" "$fingerprint"
+    pr_info ""
+
+    if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+        printf "Accept this fingerprint? (y/n) "
+        read -r answer
+        case "$answer" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) pr_err "Aborted by user."; exit 1 ;;
+        esac
+    fi
+
+    # Atomic writes: write temp file then rename (mv is atomic on the same fs).
+    mkdir -p "$hub_dir"
+
+    printf '%s\n' "$fingerprint" > "$pin_file.tmp"
+    mv "$pin_file.tmp" "$pin_file"
+    pr_info "Fingerprint pinned to %s" "$pin_file"
+
+    printf '%s\n' "$url" > "$report_file.tmp"
+    mv "$report_file.tmp" "$report_file"
+    pr_info "Report URL set to %s" "$url"
+    pr_info ""
+    pr_info "Success. The provider will now send encrypted reports to %s." "$url"
+    pr_info "The change takes effect on the next report tick (no restart needed)."
+}
+
+do_hub_unlink () {
+    hub_dir="$HOME/.urnetwork"
+    pin_file="$hub_dir/hub.pin"
+    report_file="$hub_dir/report_url"
+
+    rm -f "$pin_file"
+    pr_info "Removed %s" "$pin_file"
+
+    # Rewrite the report URL from https:// to http:// on the same host, port 8080,
+    # if it currently points to an HTTPS URL.
+    if [ -f "$report_file" ]; then
+        current="$(cat "$report_file")"
+        case "$current" in
+            https://*)
+                # Extract host from https://host:port → http://host:8080
+                host_port="${current#https://}"
+                host="${host_port%%:*}"
+                new_url="http://${host}:8080"
+                printf '%s\n' "$new_url" > "$report_file.tmp"
+                mv "$report_file.tmp" "$report_file"
+                pr_info "Report URL changed to %s (insecure)" "$new_url"
+                ;;
+            *)
+                pr_info "Report URL is %s (not HTTPS, left unchanged)" "$current"
+                ;;
+        esac
+    fi
+
+    pr_info ""
+    pr_info "Unlinked. Reports are no longer encrypted."
+    pr_info "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
 }
 
 do_proxy () {
