@@ -95,6 +95,20 @@ type store struct {
 	deltas       *deltaTracker                `json:"-"` // cumulative -> per-interval counters
 }
 
+// heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
+// bandwidthReport (provider/bandwidth_reporter.go): no per-proxy detail,
+// just enough to keep the dashboard's "last seen" and Mbps rate live between
+// the much less frequent full /api/report ticks. Never persisted to DB.
+type heartbeatReport struct {
+	NodeID    string        `json:"node_id"`
+	Timestamp time.Time     `json:"ts"`
+	Uptime    float64       `json:"uptime"`
+	TotalRX   uint64        `json:"rx"`
+	TotalTX   uint64        `json:"tx"`
+	Clients   int64         `json:"clients"`
+	System    systemMetrics `json:"sys"`
+}
+
 type nodeRate struct {
 	ts     time.Time
 	rx     uint64
@@ -195,6 +209,41 @@ func (s *store) upsert(nodeID string, state *nodeState) {
 	if err := s.persist(state); err != nil {
 		fmt.Printf("persist %s: %v\n", nodeID, err)
 	}
+}
+
+// heartbeat applies a lightweight, high-frequency ping to a node that has
+// already been established by a full /api/report: it refreshes the
+// freshness timestamp and Mbps rate the same way upsert does, but never
+// touches Proxies (heartbeats carry no per-proxy detail) and never persists
+// to DB (see persist() in store_db.go — this intentionally bypasses it).
+// Returns false, and does nothing, for a node ID that has never sent a full
+// report yet, since there's no proxy list to show on the dashboard.
+func (s *store) heartbeat(nodeID string, hb *heartbeatReport) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.Nodes[nodeID]
+	if !ok {
+		return false
+	}
+
+	if prev, ok := s.rates[nodeID]; ok {
+		dt := hb.Timestamp.Sub(prev.ts).Seconds()
+		if dt > 1 && hb.TotalRX >= prev.rx && hb.TotalTX >= prev.tx {
+			prev.mbpsRx = float64(hb.TotalRX-prev.rx) / dt * 8 / 1_000_000
+			prev.mbpsTx = float64(hb.TotalTX-prev.tx) / dt * 8 / 1_000_000
+		}
+		prev.ts = hb.Timestamp
+		prev.rx = hb.TotalRX
+		prev.tx = hb.TotalTX
+	} else {
+		s.rates[nodeID] = &nodeRate{ts: hb.Timestamp, rx: hb.TotalRX, tx: hb.TotalTX}
+	}
+
+	n.Timestamp = hb.Timestamp
+	n.Uptime = hb.Uptime
+	n.System = hb.System
+	return true
 }
 
 func (s *store) list() []*nodeState {
@@ -415,6 +464,40 @@ func handleReport(s *store) http.HandlerFunc {
 		ns.TLS = r.TLS != nil
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
+		w.WriteHeader(204)
+	}
+}
+
+// handleHeartbeat serves the lightweight companion to /api/report (see
+// heartbeatReport). A 202 for an unknown node tells the provider "received,
+// but I have no baseline for you yet" without it being treated as an error
+// worth retry-storming over — the provider's own report loop will establish
+// the node on its next full-report tick.
+func handleHeartbeat(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var hb heartbeatReport
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if err := json.Unmarshal(body, &hb); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if hb.NodeID == "" {
+			http.Error(w, "missing node_id", 400)
+			return
+		}
+		hb.Timestamp = time.Now().UTC()
+		if !s.heartbeat(hb.NodeID, &hb) {
+			w.WriteHeader(202)
+			return
+		}
 		w.WriteHeader(204)
 	}
 }
@@ -719,6 +802,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
+	mux.HandleFunc("/api/heartbeat", requireAuth(hubToken, handleHeartbeat(s)))
 	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
 	mux.HandleFunc("/api/nodes/contracts", handleNodeContracts(s))
 	mux.HandleFunc("/api/nodes/", handleNodes(s))

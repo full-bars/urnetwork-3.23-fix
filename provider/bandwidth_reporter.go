@@ -51,6 +51,21 @@ type systemMetrics struct {
 	Connections int64  `json:"conns"`
 }
 
+// heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
+// bandwidthReport: no per-proxy detail, just enough for the hub to keep
+// "last seen" and the Mbps rate live between the much less frequent full
+// /api/report ticks (5-15m default). Its json tags must stay in sync with
+// hub/main.go's heartbeatReport.
+type heartbeatReport struct {
+	NodeID    string        `json:"node_id"`
+	Timestamp time.Time     `json:"ts"`
+	Uptime    float64       `json:"uptime"`
+	TotalRX   uint64        `json:"rx"`
+	TotalTX   uint64        `json:"tx"`
+	Clients   int64         `json:"clients"`
+	System    systemMetrics `json:"sys"`
+}
+
 // reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
 // can write at any time to set or change the hub target without restarting
 // the provider. It takes precedence over URNETWORK_REPORT_URL, which is read
@@ -349,6 +364,159 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			SysMiB:      sysMiB,
 			Connections: connect.ActiveConnectionCount(),
 		},
+	}
+}
+
+// maxHeartbeatBackoff caps how far consecutive-failure backoff can stretch
+// the heartbeat interval. A fleet-wide hub outage on a flaky link (e.g.
+// Detroit) should quiet down to at most one attempt every 5m per node
+// rather than retrying every base interval indefinitely.
+const maxHeartbeatBackoff = 5 * time.Minute
+
+// nextHeartbeatInterval doubles the wait for each consecutive heartbeat
+// failure (base, 2x, 4x, 8x, ...), capped at maxHeartbeatBackoff, so a
+// fleet doesn't retry-storm a hub that's down or unreachable. Resets to
+// base as soon as a heartbeat succeeds (consecutiveFailures back to 0).
+func nextHeartbeatInterval(base time.Duration, consecutiveFailures int) time.Duration {
+	if consecutiveFailures <= 0 {
+		return base
+	}
+	d := base
+	for i := 0; i < consecutiveFailures; i++ {
+		if d >= maxHeartbeatBackoff {
+			return maxHeartbeatBackoff
+		}
+		d *= 2
+	}
+	if d > maxHeartbeatBackoff {
+		return maxHeartbeatBackoff
+	}
+	return d
+}
+
+// buildHeartbeat is buildReport's lightweight counterpart: it reuses the
+// same proxy-bandwidth aggregation (buildReport already talks to the global
+// bandwidth map, proxy health snapshot, and contract metrics) but projects
+// down to just the top-level counters the dashboard's Mbps/last-seen display
+// needs, since a heartbeat carries no per-proxy detail.
+func buildHeartbeat(nodeID, host string, startTime time.Time) heartbeatReport {
+	report := buildReport(nodeID, host, startTime)
+
+	var totalRX, totalTX uint64
+	var clients int64
+	for _, p := range report.Proxies {
+		totalRX += p.TotalRX
+		totalTX += p.TotalTX
+		clients += p.Clients
+	}
+
+	return heartbeatReport{
+		NodeID:  nodeID,
+		Uptime:  report.Uptime,
+		TotalRX: totalRX,
+		TotalTX: totalTX,
+		Clients: clients,
+		System:  report.System,
+	}
+}
+
+// runHeartbeatReporter periodically POSTs a lightweight liveness/rate ping
+// to the hub's /api/heartbeat, on a much shorter cadence than
+// runBandwidthReporter's full /api/report (default 15s vs 5m). It shares
+// resolveReportURL/resolveNodeName with the full reporter so hub target and
+// node name changes apply to both without a restart. The hub only accepts a
+// heartbeat for a node it already knows about (established by a prior full
+// report), so an all-heartbeats-rejected hub log is expected right after a
+// provider restart until the first /api/report lands.
+func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
+	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
+
+	baseInterval := 15 * time.Second
+	if s := os.Getenv("URNETWORK_HEARTBEAT_INTERVAL"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d >= 5*time.Second {
+			baseInterval = d
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Duration(rand.Int63n(int64(baseInterval)))):
+	}
+
+	ticker := time.NewTicker(baseInterval)
+	defer ticker.Stop()
+
+	// The client is cached across ticks and only rebuilt when the target
+	// hub URL changes, so a 15s heartbeat cadence doesn't pay a fresh
+	// TCP+TLS handshake every tick the way a client-per-request would — at
+	// fleet scale (dozens of nodes) that handshake cost is what actually
+	// stresses a hub on a flaky link, not the ~200-byte JSON payload.
+	var client *http.Client
+	var activeReportURL string
+	consecutiveFailures := 0
+	activeInterval := baseInterval
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		reportURL := resolveReportURL(envReportURL)
+		if reportURL == "" {
+			continue
+		}
+		if reportURL != activeReportURL {
+			client = newClientForURL(reportURL)
+			activeReportURL = reportURL
+		}
+
+		apiURL, err := url.JoinPath(reportURL, "/api/heartbeat")
+		if err != nil {
+			continue
+		}
+
+		activeHost := resolveNodeName(host)
+		hb := buildHeartbeat(nodeID, activeHost, startTime)
+
+		body, err := json.Marshal(hb)
+		if err != nil {
+			continue
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if hubToken != "" {
+			req.Header.Set("Authorization", "Bearer "+hubToken)
+		}
+
+		resp, err := client.Do(req)
+		ok := err == nil && resp.StatusCode/100 == 2
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+
+		if ok {
+			consecutiveFailures = 0
+		} else {
+			consecutiveFailures++
+		}
+
+		// A flaky link to the hub (e.g. an outage) shouldn't have every
+		// node in the fleet retry-storming it every base interval — back
+		// off the next tick's wait on consecutive failures, capped, and
+		// snap straight back to baseInterval the moment it recovers.
+		if newInterval := nextHeartbeatInterval(baseInterval, consecutiveFailures); newInterval != activeInterval {
+			ticker.Stop()
+			ticker = time.NewTicker(newInterval)
+			activeInterval = newInterval
+		}
 	}
 }
 
