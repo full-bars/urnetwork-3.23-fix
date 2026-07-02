@@ -940,7 +940,7 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div id="proxies-charts" style="display:flex;gap:8px;padding:10px 20px;"></div>
 <div class="table-section-header" style="font-weight:600">ACTIVE PROXIES</div>
-<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th>#</th><th>Proxy</th><th>Traffic</th><th>Won</th><th>Denied</th><th>Win%</th><th>Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th class="num">#</th><th>Proxy</th><th class="num">Traffic</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th class="num">Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 <div class="table-section-header" onclick="toggleIdleProxies()" style="font-weight:600">IDLE PROXIES <span id="idle-count"></span><span style="color:#475569;margin-left:8px;font-weight:400">click to expand</span></div>
 <div id="proxies-idle-wrap" class="hidden"><div class="table-wrap"><table id="proxies-idle-table"><thead><tr><th>Proxy</th><th>Nodes</th><th>Last activity</th></tr></thead><tbody id="proxies-idle-body"></tbody></table></div></div>
 </div>
@@ -957,7 +957,7 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div class="chart-wrap"><div class="chart-box"><div id="contracts-fleet-chart"></div></div></div>
 <div class="table-section-header" style="font-weight:600">PER SERVER &middot; sorted by win rate &middot; click for detail</div>
-<div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th>Won</th><th>Denied</th><th>Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
 </main>
