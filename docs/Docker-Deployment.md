@@ -48,6 +48,9 @@ docker run -d --name urfix \
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
 | `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting. Can be changed at runtime via `urnet-tools report <url>` (writes `~/.urnetwork/report_url` via docker exec). |
 
+> [!TIP]
+> `hub-server` above needs to be running the hub itself somewhere. If that host doesn't have systemd (Windows, macOS, or you just prefer containers), the hub can also run in Docker — see [Hub Setup](Hub-Setup.md#running-the-hub-in-docker-windows--mac--any-host).
+
 For additional containers, change the container name and volumes together.
 
 ### 🔐 JWT Auth
