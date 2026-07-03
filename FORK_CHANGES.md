@@ -1483,3 +1483,39 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 **Files Modified**: `hub/main.go` (template + static JS/CSS), `hub/node_info.go`
 
 **Status**: ✅ Merged `main` (2026-07-02). PRs #186, #187, #188.
+
+### 64e. DNS Cache, Dial Timeout, Connecting-State Cleanup (PR #190)
+
+**Purpose**: Fix proxy warmup death spiral on nodes with large proxy pools (2000+). Three compounding issues caused 100% CPU, thousands of goroutines stuck in "connecting" state, and swap thrashing during warmup.
+
+**Changes**:
+
+1. **DNS cache** (`net.go`): The `net.DefaultResolver.LookupIP` call added in PR #189 was hitting the system resolver on every SOCKS5 dial. With 2000+ concurrent warmup goroutines resolving the same hostnames simultaneously, the resolver became a bottleneck. Fix: cache hostname-to-IPv4 lookups behind `sync.Mutex` with a 60s TTL. Falls back to stale entries on transient resolver failures.
+
+2. **Dial timeout** (`net.go`): The startup warmup creates proxy goroutines with `context.WithCancel` (no deadline). A SOCKS5 proxy that accepts TCP but never responds to the handshake could pin a goroutine indefinitely. Fix: apply a 30s timeout to the SOCKS5 dial when the caller's context has no deadline. Paths with existing deadlines (e.g., `serialEval` with 15s `RequestTimeout`) are unaffected.
+
+3. **Connecting-state fix** (`proxy_health.go`): `markProxyDown` now clears `h.connecting`. Previously, only `markProxyUp` cleared it, so a proxy whose initial connection attempt failed stayed in "connecting" state forever, making the health snapshot show thousands of "connecting" proxies that were actually stuck.
+
+**Files Modified**: `net.go`, `proxy_health.go`
+
+**Status**: ✅ Merged `main` (2026-07-03). PR #190. v3.23.0-fix.24.32.
+
+### 64f. Transport Mode Monitor Self-Wake Fix (PR #191)
+
+**Severity**: High — caused 100% CPU on all deployments since first shipped in v3.23.0-fix.24.27 (June 30, 2026).
+
+**Root Cause**: Commit `1f64686` (PR #188, live heartbeat SSE push) added `modeMonitor.NotifyAll()` to `PlatformTransport.setActiveMode()` so that goroutines waiting on transport mode changes would be woken immediately. However, `PlatformTransport.run()` calls `setActiveMode()` on every loop iteration unconditionally — even when the selected mode is already active. `NotifyAll()` closes the notification channel that `run()` literally just captured half an iteration earlier via `modesAvailable()`. The `select { case <-notify: }` fires instantly, creating a self-wake feedback loop that runs the loop body (map clone, extract keys, sort, mutex operations) at ~8,000 Hz per CPU core.
+
+Each `NotifyAll` also wakes 4+ mode-waiting goroutines (H1/H3 read/write loops), which check the mode, find nothing changed, and re-park — creating a futex storm and saturating both cores.
+
+**Fix**: Gate `NotifyAll()` on actual state change — only fire the wake signal when the mode or availability genuinely transitions. `run()` now blocks normally on its select, waiting for real mode changes from `setModeAvailable` or external triggers. Same guard applied to `setModeAvailable()`.
+
+**Affected releases**: v3.23.0-fix.24.27 through .32. First shipped June 30, 2026.
+
+**Diagnostic**: 
+- `setActiveMode` now logs a rate-limited warning when called with the mode already active
+- `[health]` log line now includes `goroutines=N` for spotting goroutine leaks
+
+**Files Modified**: `transport.go`, `provider/main.go`
+
+**Status**: ✅ Merged `main` (2026-07-03). PR #191. v3.23.0-fix.24.33.
