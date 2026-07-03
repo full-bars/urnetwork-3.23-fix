@@ -363,6 +363,8 @@ func (self *PlatformTransport) modesAvailable() (map[TransportMode]bool, chan st
 	return maps.Clone(self.availableModes), self.modeMonitor.NotifyChannel()
 }
 
+var transportSpuriousSetActiveLogged time.Time
+
 func (self *PlatformTransport) setActiveMode(mode TransportMode) {
 	self.stateLock.Lock()
 	changed := self.mode != mode
@@ -371,6 +373,15 @@ func (self *PlatformTransport) setActiveMode(mode TransportMode) {
 
 	if changed {
 		self.modeMonitor.NotifyAll()
+	} else if mode != TransportModeNone {
+		// Log at most once per 10s when setActiveMode is called with
+		// the same mode already active — this indicates the run()
+		// loop is spinning on a self-wake feedback loop.
+		now := time.Now()
+		if now.Sub(transportSpuriousSetActiveLogged) > 10*time.Second {
+			transportSpuriousSetActiveLogged = now
+			DefaultLogger().Infof("[transport] setActiveMode spurious call: mode=%v unchanged — likely self-wake loop\n", mode)
+		}
 	}
 }
 
