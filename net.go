@@ -15,6 +15,48 @@ import (
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 type DialTlsContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 
+// dnsCacheEntry holds a resolved IP plus its expiry time.
+type dnsCacheEntry struct {
+	ip     string
+	expiry time.Time
+}
+
+// dnsCache caches hostname-to-IPv4 lookups for proxy SOCKS5 CONNECT
+// targets, so the system resolver isn't hit on every single dial through
+// every proxy. TTL is 60 seconds — long enough to absorb burst dials from
+// 2000+ concurrent warmup goroutines, short enough to pick up DNS changes.
+var dnsCache struct {
+	mu sync.Mutex
+	m  map[string]dnsCacheEntry
+}
+
+const dnsCacheTTL = 60 * time.Second
+
+func lookupProxyTarget(host string) (string, bool) {
+	dnsCache.mu.Lock()
+	defer dnsCache.mu.Unlock()
+	if dnsCache.m == nil {
+		dnsCache.m = make(map[string]dnsCacheEntry)
+	}
+	e, ok := dnsCache.m[host]
+	if ok && time.Now().Before(e.expiry) {
+		return e.ip, true
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip4", host)
+	if err != nil || len(ips) == 0 {
+		if ok {
+			// Stale entry is better than nothing — return it if the
+			// lookup failed, so a transient resolver blip doesn't
+			// cause every proxy dial to fall back to the hostname.
+			return e.ip, true
+		}
+		return "", false
+	}
+	ip := ips[0].String()
+	dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	return ip, true
+}
+
 func DefaultConnectSettings() *ConnectSettings {
 	tlsConfig, err := DefaultTlsConfig()
 	if err != nil {
@@ -143,13 +185,22 @@ type ProxySettings struct {
 	Auth    *proxy.Auth
 }
 
+// proxySOCKS5DialTimeout is the maximum time a single SOCKS5 dial (TCP
+// connect + greeting + CONNECT) is allowed to take through a proxy. Paths
+// that already carry a context deadline (e.g. serialEval with its 15s
+// RequestTimeout) are unaffected — this only applies when the caller's
+// context has no deadline, which happens during the startup warmup burst
+// where 2000+ goroutines compete for admission and can pile up
+// indefinitely.
+const proxySOCKS5DialTimeout = 30 * time.Second
+
 func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dialer) DialContextFunction {
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err == nil {
 			if ip := net.ParseIP(host); ip == nil {
-				if ips, lookupErr := net.DefaultResolver.LookupIP(ctx, "ip", host); lookupErr == nil && len(ips) > 0 {
-					addr = net.JoinHostPort(ips[0].String(), port)
+				if resolved, ok := lookupProxyTarget(host); ok {
+					addr = net.JoinHostPort(resolved, port)
 				}
 			}
 		}
@@ -164,9 +215,16 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 			return nil, err
 		}
 
+		dialCtx := ctx
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			dialCtx, cancel = context.WithTimeout(ctx, proxySOCKS5DialTimeout)
+			defer cancel()
+		}
+
 		var conn net.Conn
 		if v, ok := proxyDialer.(proxy.ContextDialer); ok {
-			conn, err = v.DialContext(ctx, network, addr)
+			conn, err = v.DialContext(dialCtx, network, addr)
 		} else {
 			conn, err = proxyDialer.Dial(network, addr)
 		}
