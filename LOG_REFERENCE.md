@@ -26,6 +26,25 @@ Fires **once per process** at startup when `URNETWORK_PROFILE=auto` is set, rega
 
 ---
 
+## 🚀 Provider Startup
+
+```
+❤️ [startup] provider version=v3.23.0-fix.24.34
+```
+
+Emitted exactly **once per provider process**, early in the startup sequence before any proxy work begins. This line confirms the exact binary version that is running.
+
+| Field | Meaning |
+|---|---|
+| `version` | The provider binary version (from `-ldflags -X main.Version=...`). In Docker this matches the image tag; after `urnet-tools update` it reflects the updated binary. |
+
+> [!NOTE]
+> Docker deployments also log `[INFO] Running UrNetwork build v...` from the startup script; the `[startup]` line makes the same information available in bare-metal/binary installs and is written to RAMLOGS when enabled.
+
+The existing `client_id` and `instance_id` lines are printed separately, once per proxy, and are unchanged by this log line.
+
+---
+
 ## 🍃 Eco Memory Monitor
 
 ```
@@ -181,7 +200,7 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 ## 💓 Health Heartbeat
 
 ```
-[health] uptime=15m0s profile=auto heap=80MiB sys=255MiB connections=998 proxies=1150
+[health] uptime=15m0s profile=auto heap=80MiB sys=255MiB goroutines=2156 connections=998 proxies=1150
 ```
 
 Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
@@ -192,6 +211,7 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 | `profile` | The active performance profile (e.g., `auto`, `turbo-v4`, `lowmem`). |
 | `heap` | RAM currently used by live Go objects. |
 | `sys` | Total RAM reserved from the OS (includes stack, heap, and unused reservations). |
+| `goroutines` | Number of live goroutines. Useful for spotting leaks or runaway growth (e.g., the self-wake loop fixed in v3.23.0-fix.24.33). |
 | `connections` | Total number of **active end-user NAT sessions** (TCP/UDP) currently routing through the provider. |
 | `proxies` | Total number of **authenticated, working proxy links** to the platform (how many proxies from your list are online). |
 
@@ -200,6 +220,7 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 - `proxies` much lower than your `proxy.txt` count — indicates many proxies are failing auth or networking (check `[net][s]select` logs).
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
+- `goroutines` climbing steadily while load is flat — likely a goroutine leak (watch for repeated logs that should fire once per process, such as `[tune] auto-profile`).
 
 ### 💀 Dead-Proxy Health Report
 

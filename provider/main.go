@@ -1616,6 +1616,7 @@ func provide(opts docopt.Opts) {
 	applyPoolAutoSize(maxMemory)
 
 	provideStartTime = time.Now()
+	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
 
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
@@ -1984,7 +1985,6 @@ func provide(opts docopt.Opts) {
 
 		fmt.Printf("client_id: %s\n", clientId)
 		fmt.Printf("instance_id: %s\n", instanceId)
-		tlog("❤️ [startup] provider version=%s client_id=%s instance_id=%s\n", RequireVersion(), clientId, instanceId)
 
 		auth := &connect.ClientAuth{
 			ByJwt: byClientJwt,
