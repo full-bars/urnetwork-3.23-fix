@@ -148,8 +148,19 @@ docker run -d \
 
 The cert/key are generated into `/data` on first boot and persist in the volume, same as the native `hub init` flow. Get the fingerprint from the container logs on first start (`docker logs urnetwork-hub`) or via `/api/cert`, then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.
 
-> [!NOTE]
-> This is a plain Dockerfile for now — not yet published as a prebuilt image or wired into CI. Build it locally per the above until that lands.
+### Prebuilt Image
+
+CI publishes multi-arch (amd64/arm64) images on every change under `hub/`, tagged independently from the provider's `v3.23.0-fix.X.Y` scheme — the hub uses its own `vX.Y.Z` versions starting at `v0.1.0`, cut via `hub-vX.Y.Z` git tags:
+
+```sh
+docker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+# or
+docker pull 3cape/urnetwork-hub:latest
+
+docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
+  -e URNETWORK_HUB_TOKEN=YOUR_SHARED_SECRET \
+  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+```
 
 ## Manual / Non-`urnet-tools` Setup
 
