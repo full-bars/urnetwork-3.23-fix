@@ -24,9 +24,6 @@ ARG TARGETARCH
 ARG VERSION=v.unknown
 WORKDIR /app
 
-# Set version environment variable as a backup
-ENV WARP_VERSION=${VERSION}
-
 # Install TechRoy's dependencies
 RUN apk update && apk add --no-cache \
     tzdata iputils vnstat dos2unix \
