@@ -31,17 +31,21 @@ urnetwork-3.23-fix/
 │   ├── dup_linux_generic.go       # Generic Linux platform-specific stubs
 │
 ├── hub/
-│   └── main.go                    # Standalone Bandwidth Hub server; provides :8080 JSON API and HTML dashboard
+│   ├── main.go                    # Standalone Bandwidth Hub server; provides :8080 JSON API and HTML dashboard
+│   ├── broadcaster.go             # SSE event broadcaster for live dashboard updates
+│   ├── proxy_api.go               # /api/proxies/* leaderboard and history endpoints
+│   ├── proxy_delta.go             # Delta-based proxy bandwidth ingestion and rollups
+│   └── store_db.go                # SQLite persistence for node/proxy history and snapshots
 │
 ├── scripts/
 │   └── Provider_Install_Linux.sh  # Bare-metal installer & `urnet-tools` CLI (hub, logs, optimize, proxy cmds)
 │
 ├── docker/
-│   └── scripts/                   # Docker-specific helper scripts (entrypoint.sh, proxy-health.sh, proxy-traffic.sh)
+│   └── scripts/                   # Docker-specific helper scripts (entrypoint.sh, start_*.sh, urnet-tools.sh, proxy-health.sh, proxy-traffic.sh, logs.sh)
 │
 ├── Dockerfile                     # Alpine-based, multi-stage, multi-arch build with vnStat integration
 ├── FORK_CHANGES.md                # Comprehensive documentation of all modifications made vs upstream
-├── PROGRESS.md                    # Active development tracker
+├── progress.md                    # Active development tracker
 │
 # Core Library Components (Root)
 ├── connect.go                     # Core types: TransferPath, Id (16-byte ULID), ByteCount
@@ -70,6 +74,8 @@ urnetwork-3.23-fix/
 ├── tuning.go                      # System auto-profiling (Tier1/Tier2/Tier3) based on cgroup RAM
 ├── ip.go                          # IP-layer NAT, security policy, RemoteUserNatProvider
 ├── ip_security.go                 # Egress/ingress security policy (port rules, IP blocklist)
+├── ip_security_dmca.go            # DPI-based BitTorrent/media fingerprint detection
+├── ip_security_cfaa.go            # DMCA/CFAA-style traffic classification pipeline
 ├── ip_remote_multi_client.go      # Multi-client relay for remote user NAT
 ├── ip_packet.go                   # Raw IP packet framing
 ├── audit.go                       # Passive host kernel setting validator (conntrack, ulimit, disk)
@@ -78,6 +84,7 @@ urnetwork-3.23-fix/
 ├── frame.go                       # Protocol Buffer frame encoding/decoding
 ├── jwt.go                         # JWT auth token management
 ├── log.go                         # Logger interface + glog adapter
+├── log_throttle.go                # Shared rate-limiting helpers for log-spam reduction
 ├── pulse.go                       # Periodic transport wake-up for stalled recovery
 ├── wakeup_schedule.go             # Delayed wake-up scheduler
 └── api.go                         # Platform API client (auth, OOB control)
