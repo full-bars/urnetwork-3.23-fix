@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.30
+**Current Version**: v3.23.0-fix.24.34
 
 ---
 
@@ -1512,14 +1512,16 @@ Each `NotifyAll` also wakes 4+ mode-waiting goroutines (H1/H3 read/write loops),
 
 **Affected releases**: v3.23.0-fix.24.27 through .32. First shipped June 30, 2026.
 
-**Diagnostic**: 
+**Diagnostic** (all shipped in v3.23.0-fix.24.33):
 - `setActiveMode` now logs a rate-limited warning when called with the mode already active
+
+**Follow-up diagnostics shipped in v3.23.0-fix.24.34**:
 - `[health]` log line now includes `goroutines=N` for spotting goroutine leaks
-- Provider logs `[startup] provider version=...` on successful auth
+- Provider logs `[startup] provider version=...` exactly once at process startup (before proxy setup)
 
 **Files Modified**: `transport.go`, `provider/main.go`
 
-**Status**: ✅ Merged `main` (2026-07-03). PR #191. v3.23.0-fix.24.33.
+**Status**: ✅ Merged `main` (2026-07-03). PR #191. Core fix shipped in v3.23.0-fix.24.33; diagnostics above shipped in v3.23.0-fix.24.34.
 
 ### 64g. Remove Redundant WARP_VERSION Env Var
 
@@ -1528,8 +1530,8 @@ Each `NotifyAll` also wakes 4+ mode-waiting goroutines (H1/H3 read/write loops),
 **Changes**:
 - `RequireVersion()` now returns `Version` directly instead of checking `WARP_VERSION` first
 - Removed `ENV WARP_VERSION=${VERSION}` from the Dockerfile
-- Removed the `log "Provider version: ..."` line from the entrypoint (depended on WARP_VERSION)
+- Added a single `[startup] provider version=...` log line at the top of `provide()` so every deployment shows the running binary version once at process startup
 
-**Files Modified**: `provider/main.go`, `Dockerfile`, `docker/scripts/entrypoint.sh`
+**Files Modified**: `provider/main.go`, `Dockerfile`
 
-**Status**: ✅ Merged `main` (2026-07-03). v3.23.0-fix.24.33.
+**Status**: ✅ Merged `main` (2026-07-03). v3.23.0-fix.24.34.

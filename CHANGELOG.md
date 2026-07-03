@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.34] — 2026-07-03
+
+### Added
+- **Provider version startup log**: The binary now logs `[startup] provider version=...` once at process startup (inside `provide()` before proxy setup), matching the version line Docker already printed via startup scripts. Existing `client_id`/`instance_id` output is unchanged.
+- **Goroutine count in health heartbeat**: The `[health]` log line now includes `goroutines=N` for spotting leaks and runaway goroutine growth.
+
+### Changed
+- **Removed legacy `WARP_VERSION` env var**: `RequireVersion()` now returns the linked-in `Version` directly. The Dockerfile no longer sets `WARP_VERSION`, so in-container `urnet-tools update` no longer pins the reported version to the original image version.
+
+---
+
 ## [v3.23.0-fix.24.33] — 2026-07-03
 
 ### Fixed
