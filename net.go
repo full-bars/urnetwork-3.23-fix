@@ -145,6 +145,15 @@ type ProxySettings struct {
 
 func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dialer) DialContextFunction {
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err == nil {
+			if ip := net.ParseIP(host); ip == nil {
+				if ips, lookupErr := net.DefaultResolver.LookupIP(ctx, "ip", host); lookupErr == nil && len(ips) > 0 {
+					addr = net.JoinHostPort(ips[0].String(), port)
+				}
+			}
+		}
+
 		proxyDialer, err := proxy.SOCKS5(
 			self.Network,
 			self.Address,
