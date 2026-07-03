@@ -200,6 +200,7 @@ func markProxyDown(index int) {
 			h.downSince = time.Now()
 		}
 		h.currentlyUp = false
+		h.connecting = false
 	}
 }
 
