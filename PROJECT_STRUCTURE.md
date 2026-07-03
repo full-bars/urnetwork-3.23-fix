@@ -8,24 +8,27 @@ This document outlines the high-level architecture and directory structure of th
 urnetwork-3.23-fix/
 ├── provider/
 │   ├── main.go                    # Provider entrypoint, settings parsing, and graceful shutdown
-│   ├── auth_rate_limiter.go       # Global adaptive auth rate limiter (AIMD: 1-10 req/s)
+│   ├── auth_rate_limiter.go       # Global adaptive auth rate limiter (AIMD: 20-200 req/s)
 │   ├── proxy_admission_gate.go    # Weighted-lottery admission gate for auth slots
-│   ├── proxy_probe.go             # SOCKS5 handshake probe (TCP + greeting verification)
 │   ├── proxy_failure_history.go   # Persistent per-proxy failure count (across requeues)
 │   ├── proxy_auth_history.go      # Proven-proxy set for rate limiter gating
+│   ├── proxy_probe.go             # Dual-stage SOCKS5 probe (TCP + API CONNECT)
 │   ├── proxy_url.go               # Proxy URL state persistence (proxy_url.json)
-│   ├── proxy_url_source.go        # URL fetcher, merge, periodic refresh, cleanup
+│   ├── proxy_url_source.go        # URL fetcher, merge, periodic refresh, reaper, blacklist
 │   ├── proxy_reload.go            # Hot-reload engine via .reload trigger files + give-up cooldown
 │   ├── proxy_state.go             # On-disk proxy state management (proxy.state)
 │   ├── proxy_id.go                # Stable monotonic proxy ID assignment (e.g., proxy[0])
 │   ├── proxy_health_log.go        # Durable state persistence for proxy health (disk writer)
 │   ├── proxy_benchmark.go         # Opt-in staggered latency probing (TCP and SOCKS5)
+│   ├── proxy_match.go             # Pattern-based proxy removal (proxy remove --match)
+│   ├── contract_metrics.go        # Fleet-wide per-proxy contract history tracking
 │   ├── bandwidth_reporter.go      # Pushes periodic JSON telemetry to the Hub
-│   ├── shmlog_linux.go            # Rolling ring-buffer RAM log (/dev/shm/urnetwork.log)
+│   ├── important_log.go           # Important-event log (/dev/shm/urnetwork-important.log)
+│   ├── tlog.go                    # Thread-safe timestamped logging helpers
+│   ├── shmlog.go                  # Rolling ring-buffer RAM log (/dev/shm/urnetwork.log)
 │   ├── shmlog_fallback.go         # Fallback RAM logger for non-Linux
-│   ├── start_stable.sh            # Docker entrypoint for stable configuration
-│   ├── start_jwt.sh               # Docker entrypoint with JWT auto-refresh healing
-│   └── Makefile                   # Multi-architecture (amd64/arm64) build targets
+│   ├── dup_linux_arm64.go         # ARM64 platform-specific stubs
+│   ├── dup_linux_generic.go       # Generic Linux platform-specific stubs
 │
 ├── hub/
 │   └── main.go                    # Standalone Bandwidth Hub server; provides :8080 JSON API and HTML dashboard
