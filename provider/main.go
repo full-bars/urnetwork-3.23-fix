@@ -1232,8 +1232,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		tlog("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB connections=%d proxies=%d\n",
-			uptime, profile, heapMiB, sysMiB, connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
+		tlog("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d\n",
+			uptime, profile, heapMiB, sysMiB, runtime.NumGoroutine(), connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 
 		if connect.ProxyHealthCount() == 0 {
 			continue // non-proxy mode: no [health][proxies] lines
