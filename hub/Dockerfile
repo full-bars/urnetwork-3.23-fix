@@ -5,8 +5,14 @@ ARG TARGETARCH
 ARG VERSION=v.unknown
 WORKDIR /app
 
-# hub uses modernc.org/sqlite (pure Go, no cgo) so no gcc/musl-dev needed here
-COPY . .
+# Cached as its own layer: only busts when go.mod/go.sum change, not on
+# every hub/*.go edit (which is what actually triggers this build).
+COPY go.mod go.sum ./
+RUN go mod download
+
+# hub uses modernc.org/sqlite (pure Go, no cgo) so no gcc/musl-dev needed here,
+# and hub/ imports nothing else from this module, so only it needs copying.
+COPY hub/ ./hub/
 
 RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath \
