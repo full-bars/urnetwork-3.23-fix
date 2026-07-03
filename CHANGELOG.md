@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.33] — 2026-07-03
+
+### Fixed
+- **100% CPU self-wake feedback loop** (PR #191): Commit `1f64686` (v24.27) added `modeMonitor.NotifyAll()` to `PlatformTransport.setActiveMode()` so mode-waiting goroutines would wake on changes. However `run()` calls `setActiveMode()` unconditionally — even when the selected mode is already active — causing `NotifyAll()` to close the notification channel `run()` literally just captured, forming a self-wake loop that spins ~8,000 Hz per CPU core. Fix: gate `NotifyAll()` on actual mode change. Same guard applied to `setModeAvailable()`. Regression tests added.
+
+### Added
+- **Self-wake diagnostic log**: `setActiveMode` now logs a rate-limited warning when called with the mode already active — surfaces the feedback loop pattern in logs before it silently consumes 100% CPU.
+- **Regression tests**: `TestSetModeAvailableNoSpuriousWake` and `TestSetActiveModeNoSpuriousWake` verify that neither setter fires `NotifyAll` when the value hasn't changed, but both still fire on real transitions.
+
+---
+
+## [v3.23.0-fix.24.32] — 2026-07-03
+
+### Fixed
+- **Proxy warmup goroutine pileup** (PR #190): Three fixes for warmup on large proxy pools (2000+): DNS lookup cache (60s TTL) so 2000+ concurrent goroutines don't hammer the system resolver; 30s SOCKS5 dial timeout for the warmup path (no-op for paths with existing context deadlines); `markProxyDown` now clears `h.connecting` so proxies whose initial connection fails aren't stuck in "connecting" state forever.
+
+---
+
+## [v3.23.0-fix.24.31] — 2026-07-02
+
+### Fixed
+- **SOCKS5 proxy DNS death spiral** (PR #189): Broken DNS resolvers on paid SOCKS5 proxies caused `golang.org/x/net/proxy` to fail TLS handshakes. Fix resolves target hostnames locally before passing them to the SOCKS5 dialer, converting FQDN → IPv4. Downgrade-safe.
+
+---
+
 ## [v3.23.0-fix.24.30] — 2026-07-02
 
 ### Added
