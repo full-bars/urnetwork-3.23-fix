@@ -25,7 +25,8 @@ urnetwork-3.23-fix/
 │
 ├── hub/                          # Fleet bandwidth dashboard server
 │   ├── main.go                   # HTTP server: /api/report ingress, dashboard render
-│   └── main_test.go              # 18 unit tests for rate calculation and state logic
+│   ├── main_test.go              # 18 unit tests for rate calculation and state logic
+│   └── Dockerfile                # Containerized hub (Windows/Mac/any host, no systemd needed)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
@@ -60,6 +61,7 @@ urnetwork-3.23-fix/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
+│   ├── Hub-Setup.md
 │   ├── Hub-Dashboard.md
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md

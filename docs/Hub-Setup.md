@@ -114,6 +114,43 @@ urnet-tools hub set https://hub.yourdomain.com
 - Green heartbeat dot = reporting normally; red = no report in 5+ minutes; check `URNETWORK_REPORT_URL` / `hub set` on that node if it stays red.
 - TLS padlock icon appears next to nodes reporting over HTTPS — if some nodes show it and others don't, those nodes still need `hub link`.
 
+## Running the Hub in Docker (Windows / Mac / any host)
+
+`urnet-tools hub install` sets the hub up as a systemd user service, which only works on Linux. For Windows and macOS hosts — or any Linux box where you'd rather not manage a systemd service — build and run the hub as a container instead using `hub/Dockerfile`:
+
+```sh
+# From the repo root
+docker build -f hub/Dockerfile -t urnetwork-hub .
+
+docker run -d \
+  --name urnetwork-hub \
+  -p 8080:8080 \
+  -v hubdata:/data \
+  -e URNETWORK_HUB_TOKEN=YOUR_SHARED_SECRET \
+  urnetwork-hub
+```
+
+- `-v hubdata:/data` — named volume holding `hub.db` (and `tls.crt`/`tls.key` if TLS is enabled). Persists across container recreation/updates; back it up with `docker volume` or `docker cp`.
+- `URNETWORK_HUB_TOKEN` — sets the shared secret required on `/api/report` and `/api/nodes/remove`. Without it the hub starts but logs a warning and accepts unauthenticated reports — set this for anything beyond local testing.
+- The image builds `CGO_ENABLED=0` since the hub's SQLite driver (`modernc.org/sqlite`) is pure Go — no gcc/musl needed, keeping the final image just the binary + `ca-certificates` on Alpine.
+
+To enable the built-in TLS listener in the container, publish `8443` and set `URNETWORK_HUB_TLS_ADDR`:
+
+```sh
+docker run -d \
+  --name urnetwork-hub \
+  -p 8080:8080 -p 8443:8443 \
+  -v hubdata:/data \
+  -e URNETWORK_HUB_TOKEN=YOUR_SHARED_SECRET \
+  -e URNETWORK_HUB_TLS_ADDR=:8443 \
+  urnetwork-hub
+```
+
+The cert/key are generated into `/data` on first boot and persist in the volume, same as the native `hub init` flow. Get the fingerprint from the container logs on first start (`docker logs urnetwork-hub`) or via `/api/cert`, then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.
+
+> [!NOTE]
+> This is a plain Dockerfile for now — not yet published as a prebuilt image or wired into CI. Build it locally per the above until that lands.
+
 ## Manual / Non-`urnet-tools` Setup
 
 If you're not using `urnet-tools` (e.g. building from source):

@@ -148,14 +148,18 @@ Monitor your entire fleet in real time. The hub aggregates bandwidth reports fro
 ![Hub Dashboard Preview](docs/hub-dashboard-preview.png)
 
 ```bash
-# Run the hub
-./hub -addr :8080 -data /var/hub-data
+# Run the hub (Linux, via urnet-tools — recommended)
+urnet-tools hub install
+
+# Or run it in Docker (Windows / Mac / any host)
+docker build -f hub/Dockerfile -t urnetwork-hub .
+docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data urnetwork-hub
 
 # Point each provider at it
 URNETWORK_REPORT_URL=http://HUB_IP:8080
 ```
 
-See [Hub Dashboard](docs/Hub-Dashboard.md) for full deployment details.
+See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub-Dashboard.md) for full feature details.
 
 ---
 
@@ -179,6 +183,7 @@ See [Hub Dashboard](docs/Hub-Dashboard.md) for full deployment details.
 - [Configuration Reference](docs/Configuration.md)
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
+- [Hub Setup](docs/Hub-Setup.md)
 - [Hub Dashboard](docs/Hub-Dashboard.md)
 - [Changelog](CHANGELOG.md)
 

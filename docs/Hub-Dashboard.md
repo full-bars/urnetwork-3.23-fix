@@ -90,7 +90,18 @@ The hub auto-generates an ECDSA P-256 cert on first boot with TLS enabled. The p
 
 ---
 
-### Option B: Build & Run Manually
+### Option B: Docker (Windows / Mac / any host)
+
+For hosts without systemd — Windows, macOS, or a Linux box where you'd rather not run a user service:
+
+```sh
+docker build -f hub/Dockerfile -t urnetwork-hub .
+docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data urnetwork-hub
+```
+
+See [Hub-Setup.md](Hub-Setup.md#running-the-hub-in-docker-windows--mac--any-host) for the full walkthrough, including enabling TLS in-container.
+
+### Option C: Build & Run Manually
 
 ```sh
 # Build from source
