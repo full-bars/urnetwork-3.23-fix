@@ -1515,7 +1515,21 @@ Each `NotifyAll` also wakes 4+ mode-waiting goroutines (H1/H3 read/write loops),
 **Diagnostic**: 
 - `setActiveMode` now logs a rate-limited warning when called with the mode already active
 - `[health]` log line now includes `goroutines=N` for spotting goroutine leaks
+- Provider logs `[startup] provider version=...` on successful auth
 
 **Files Modified**: `transport.go`, `provider/main.go`
 
 **Status**: ✅ Merged `main` (2026-07-03). PR #191. v3.23.0-fix.24.33.
+
+### 64g. Remove Redundant WARP_VERSION Env Var
+
+**Purpose**: The `WARP_VERSION` environment variable was a legacy override for the binary version string. It duplicated the linked-in `main.Version` (set via `-ldflags`) and was only set in Docker to the same value. If someone ran `urnet-tools update` inside a Docker container, the version string would freeze at the image's build version instead of showing the actual running binary version.
+
+**Changes**:
+- `RequireVersion()` now returns `Version` directly instead of checking `WARP_VERSION` first
+- Removed `ENV WARP_VERSION=${VERSION}` from the Dockerfile
+- Removed the `log "Provider version: ..."` line from the entrypoint (depended on WARP_VERSION)
+
+**Files Modified**: `provider/main.go`, `Dockerfile`, `docker/scripts/entrypoint.sh`
+
+**Status**: ✅ Merged `main` (2026-07-03). v3.23.0-fix.24.33.
