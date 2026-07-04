@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 
@@ -428,12 +427,10 @@ func (self *StreamSequence) Run() {
 				}
 				success, err := mrw.WriteDetailed(self.ctx, transferFrameBytes, self.streamBufferSettings.WriteTimeout)
 				if err != nil {
-					MessagePoolReturn(transferFrameBytes)
 					return
 				}
 				if !success {
-					// drop it
-					MessagePoolReturn(transferFrameBytes)
+					// drop it — WriteDetailed already returned the buffer
 				}
 			}
 		}
