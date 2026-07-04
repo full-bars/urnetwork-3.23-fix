@@ -177,7 +177,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout:            15 * time.Second,
-		ResendQueueMaxByteCount: mib(2),
+		ResendQueueMaxByteCount: mib(4),
 		ContractFillFraction:    0.7,
 		ProtocolVersion:         DefaultProtocolVersion,
 		MaxResendCount:          16,
