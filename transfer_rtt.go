@@ -185,8 +185,7 @@ func (self *rttHeap) MinRtt() time.Duration {
 	if n == 0 {
 		return time.Duration(0)
 	}
-	maxItem := self.items[n-1]
-	return maxItem.rtt
+	return self.items[0].rtt
 }
 
 func (self *rttHeap) MeanRtt() time.Duration {
