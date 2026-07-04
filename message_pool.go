@@ -23,7 +23,9 @@ import (
 var DefaultMessagePoolShardCount = func() int {
 	if s := os.Getenv("URNETWORK_MESSAGE_POOL_SHARD_COUNT"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= 256 {
-			return n
+			if n&(n-1) == 0 {
+				return n
+			}
 		}
 	}
 	return 16
@@ -85,6 +87,11 @@ type messagePool struct {
 
 func newMessagePool(size int, maxCount int) *messagePool {
 	shardCount := DefaultMessagePoolShardCount
+	// Per-shard freelist capacity has a floor of 1 buffer. At the shipped
+	// defaults this distributes correctly (e.g. lowmem's 1 MiB budget yields
+	// 512 pool entries / 16 shards = 32 per shard). If shard count is raised
+	// significantly without raising the pool budget, this floor could inflate
+	// memory beyond the intended per-class cap.
 	maxCountPerShard := maxCount / shardCount
 	if maxCountPerShard < 1 {
 		maxCountPerShard = 1

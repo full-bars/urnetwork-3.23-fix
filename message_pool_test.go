@@ -241,6 +241,17 @@ func TestMessagePoolShardTagConcurrent(t *testing.T) {
 	}
 }
 
+func TestMessagePoolShardPowerOfTwo(t *testing.T) {
+	powersOfTwo := []int{1, 2, 4, 8, 16, 32, 64, 128, 256}
+	for _, v := range powersOfTwo {
+		assert.Equal(t, v&(v-1) == 0, true)
+	}
+	nonPowersOfTwo := []int{3, 5, 6, 7, 9, 10, 15, 31, 63, 127, 255}
+	for _, v := range nonPowersOfTwo {
+		assert.Equal(t, v&(v-1) == 0, false)
+	}
+}
+
 func TestBase64(t *testing.T) {
 	for range 128 {
 		n := mathrand.Intn(512)
