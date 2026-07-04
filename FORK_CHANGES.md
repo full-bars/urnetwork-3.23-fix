@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.34
+**Current Version**: v3.23.0-fix.24.35
 
 ---
 
@@ -1535,3 +1535,80 @@ Each `NotifyAll` also wakes 4+ mode-waiting goroutines (H1/H3 read/write loops),
 **Files Modified**: `provider/main.go`, `Dockerfile`
 
 **Status**: ✅ Merged `main` (2026-07-03). v3.23.0-fix.24.34.
+
+---
+
+## 65. Core Networking Audit Fixes (PR #200–#206)
+
+**Purpose**: Fix 7 correctness and performance bugs found in a July 4, 2026 deep-dive audit of the fork's transfer/contract/route-manager/message-pool code. Five correctness bugs (one HIGH, three MEDIUM, one LOW), one throughput config change, and one tuning change.
+
+### 65a. HIGH — Park resend-capped items instead of dropping (transfer.go)
+
+When `sendCount >= MaxResendCount` (16), the old code continued without re-adding the item to the resend queue. The item was already removed at line 2125, so it stayed orphaned in `sendItems`. When a cumulative ack later reached that item, the implicit-ack loop called `resendQueue.RemoveByMessageId`, got nil, and hit `panic("Missing item")`. HandleError would recover but the entire send sequence was torn down — pending sends erred, contracts flushed.
+
+Reachable under ordinary sustained loss (16 resends at ≥2s `ScaledRtt` fit inside 60s `AckTimeout`), worst at outage recovery.
+
+**Fix**: Park instead of drop — set `resendTime = sendTime + AckTimeout` and re-`Add` to the queue. Retransmission stops but ack/teardown bookkeeping stays consistent. The ack-timeout check at line 2107 uses `sendTime` (never updated on resend), so once `sendTime + AckTimeout` elapses, the loop closes the entire sequence gracefully.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #201. v3.23.0-fix.24.35.
+
+---
+
+### 65b. MEDIUM — Dispatch ContractStatus on Trust/Invalid errors (transfer_contract_manager.go)
+
+`HandleControlFrame` constructed `ContractStatus` structs in both error branches (Trust on `addContract` failure, Invalid on `ProtoUnmarshal` failure) but `return err` fired before `self.contractStatus()` dispatch. Only the success branch dispatched. Platform denials (the `contractErrors` loop) did dispatch, so hub metrics were mostly correct, but locally-rejected and malformed contracts were invisible to `registerContractCallback` (provider contract metrics) and multi-client penalty logic.
+
+**Fix**: Call `self.contractStatus(contractStatus)` before the `return err` in both error branches.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #202. v3.23.0-fix.24.35.
+
+---
+
+### 65c. MEDIUM — Pooled buffer leak on write timeout (transfer_route_manager.go, transfer_stream_manager.go)
+
+`writeMaybeWrappedBytes` calls `MessagePoolShareReadOnly` to increment the pool message refcount before passing to `Write`/`WriteDetailed`. When `WriteDetailed` failed (timeout, ctx-cancelled, done channel), the shared ref was never returned — the `MessagePoolReturn` calls were commented out. Each timed-out write (WriteTimeout=15s) permanently stranded one refcount. `reflect.Select` guarantees the send case didn't fire on those branches, so returning is safe.
+
+The caller-side `StreamSequence` at `transfer_stream_manager.go:429` passes a raw (unshared) buffer from `Read()` and returns it itself on failure. After restoring `WriteDetailed`'s returns, both callee and caller returned the same buffer — creating a double-free that could reassign a live buffer to another goroutine (silent cross-sequence corruption under production concurrency).
+
+**Fix (v2)**: Restore `MessagePoolReturn` in `WriteDetailed`'s contextDoneIndex/doneIndex/timeoutIndex branches. Remove the two redundant `MessagePoolReturn` calls in `transfer_stream_manager.go`'s err/!success branches — `WriteDetailed` handles the return on all failure paths; on success the route owns the buffer.
+
+**Status**: ✅ Merged `main` (2026-07-04). PRs #203, #206. v3.23.0-fix.24.35.
+
+---
+
+### 65d. LOW — MinRtt returns garbage, setActive ignores param (transfer_rtt.go, transfer_route_manager.go)
+
+Two latent bugs with no current impact:
+
+- `rttHeap.MinRtt()` returned `items[n-1]` — an arbitrary heap leaf, neither min nor max. Min is `items[0]`. Unused today; fixed before anyone builds on it.
+- `MultiRouteSelector.setActive(route, active)` always set `routeActive[route] = false`, ignoring the `active` param. Both current callers pass `false` so behavior is correct; fixed to remove the footgun.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #200. v3.23.0-fix.24.35.
+
+---
+
+### 65e. Performance — Default resend queue 2→4 MiB (transfer.go)
+
+Commit `c3cefc7` raised TCP/UDP `MaxWindowSize` to 4 MiB, but `DefaultSendBufferSettings.ResendQueueMaxByteCount` stayed at `mib(2)`. Transfer-layer in-flight is capped at `min(window, resend_queue)`, so the effective per-sequence ceiling was 2 MiB/RTT (~160 Mbps at 100ms) — half the window ceiling.
+
+**Fix**: Raise to `mib(4)`. Tier3 auto and turbo already set 4 MiB queues, so the value is fleet-proven. Memory cost is +2 MiB per active send sequence. Profiles that set their own queue size explicitly (tier1/lowmem/tier2/tier3/turbo) are unaffected.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #204. v3.23.0-fix.24.35.
+
+---
+
+### 65f. Tuning — RTT fill-fraction floor 0.5→0.7 (transfer.go)
+
+`computeFillFraction` linearly interpolates fill fraction from 0.85 (RTT ≤100ms) to a floor (RTT ≥1s). The floor was 0.5, meaning only ~64 MiB of a 128 MiB standard contract was consumed before renegotiation on ≥1s-RTT clients — doubling contract-negotiation frequency for the slowest links (mobile, satellite, remote).
+
+**Fix**: Raise the floor to 0.7 (~90 MiB consumed). Halves contract churn on high-RTT paths while the 0.85 ceiling still provides a 0.15 head start on renegotiation vs the hot path. 60s AckTimeout + 15s WriteTimeout provide ample slop if renegotiation is slower than expected.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #205. v3.23.0-fix.24.35.
+
+---
+
+### 65g. Cleanup — gofmt
+
+Tab indentation introduced by PRs #201, #202, #203 in `transfer.go`, `transfer_route_manager.go`, and `transfer_contract_manager.go` was cleaned up with `gofmt -w`.
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #206. v3.23.0-fix.24.35.
