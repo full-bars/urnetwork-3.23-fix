@@ -671,17 +671,17 @@ func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrame
 			self.log.V(2).Infof("[mrw]b %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.SourceId)
 
 			switch chosenIndex {
-			case contextDoneIndex:
-				// MessagePoolReturn(transferFrameBytes)
-				return false, errors.New("Context done")
-			case doneIndex:
-				// MessagePoolReturn(transferFrameBytes)
-				return false, errors.New("Done")
-			case transportUpdateIndex:
-				// new routes, try again
-			case timeoutIndex:
-				// MessagePoolReturn(transferFrameBytes)
-				return false, nil
+		case contextDoneIndex:
+			MessagePoolReturn(transferFrameBytes)
+			return false, errors.New("Context done")
+		case doneIndex:
+			MessagePoolReturn(transferFrameBytes)
+			return false, errors.New("Done")
+		case transportUpdateIndex:
+			// new routes, try again
+		case timeoutIndex:
+			MessagePoolReturn(transferFrameBytes)
+			return false, nil
 			default:
 				// a route
 				routeIndex := chosenIndex - routeStartIndex
