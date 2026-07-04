@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"hash/maphash"
 	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/maps"
@@ -17,98 +20,162 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var DefaultMessagePoolShardCount = func() int {
+	if s := os.Getenv("URNETWORK_MESSAGE_POOL_SHARD_COUNT"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= 256 {
+			return n
+		}
+	}
+	return 16
+}()
+
 // new byte allocations in the connect package use pooled message buffers,
 // either via `MessagePoolCopy` or `MessagePoolGet`.
 // There are three rules for pooled messages:
 // - an owner of a message should return the message to the pool with `MessagePoolReturn`
-//   when no longer used.
+//
+//	when no longer used.
+//
 // - message ownership is handed off on send/channel write.
-//   If the caller wants to retain the passed message, it should call `MessagePoolShareReadOnly`
-//   before calling send/channel write.
+//
+//	If the caller wants to retain the passed message, it should call `MessagePoolShareReadOnly`
+//	before calling send/channel write.
+//
 // - messages are valid only for duration of a receive callback.
-//   If the receiver wants to keep the message longer, it shoudl call `MessagePoolShareReadOnly`
-//   before the callback returns.
+//
+//	If the receiver wants to keep the message longer, it shoudl call `MessagePoolShareReadOnly`
+//	before the callback returns.
+//
 // Shared messages are returned to the pool the same as normal messages.
 // `MessagePoolReturn`/`MessagePoolShareReadOnly` is a noop when using a `[]byte` that is not part of the pool.
 
 // set this to true to tag messages with useful debugging information e.g. the creation site
 const debugTags = false
 
-// [8 byte id][1 byte tag][1 byte flags][2 byte ref count]
-const MessagePoolMetaByteCount = 12
+// [8 byte id][1 byte tag][1 byte flags][2 byte ref count][1 byte shard index]
+const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
 
 var InitialMessagePoolByteCount = mib(1)
 
-type messagePool struct {
-	size         int
+type poolShard struct {
+	mutex        sync.Mutex
 	pool         [][]byte
 	count        int
+	nextId       uint64
 	takenTags    [256]uint64
 	returnedTags [256]uint64
 	createdTags  [256]uint64
-	stateLock    sync.Mutex
-	nextId       uint64
+}
+
+func newPoolShard(maxCount int) *poolShard {
+	return &poolShard{
+		pool:  make([][]byte, maxCount),
+		count: 0,
+	}
+}
+
+type messagePool struct {
+	size        int
+	shards      []*poolShard
+	shardCount  int
+	shardMask   uint32
+	shardNext   atomic.Uint64
 }
 
 func newMessagePool(size int, maxCount int) *messagePool {
+	shardCount := DefaultMessagePoolShardCount
+	maxCountPerShard := maxCount / shardCount
+	if maxCountPerShard < 1 {
+		maxCountPerShard = 1
+	}
+
 	mp := &messagePool{
-		size:  size,
-		pool:  make([][]byte, maxCount),
-		count: 0,
+		size:       size,
+		shards:     make([]*poolShard, shardCount),
+		shardCount: shardCount,
+		shardMask:  uint32(shardCount - 1),
+	}
+	for i := range shardCount {
+		mp.shards[i] = newPoolShard(maxCountPerShard)
 	}
 	return mp
 }
 
-func (self *messagePool) Resize(maxCount int) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+func (self *messagePool) shard(index int) *poolShard {
+	return self.shards[index]
+}
 
-	newPool := make([][]byte, maxCount)
-	newCount := copy(newPool, self.pool[:self.count])
-	self.pool = newPool
-	self.count = newCount
+func (self *messagePool) nextShardIndex() int {
+	return int(self.shardNext.Add(1)-1) & int(self.shardMask)
+}
+
+func (self *messagePool) Resize(maxCount int) {
+	maxCountPerShard := maxCount / self.shardCount
+	if maxCountPerShard < 1 {
+		maxCountPerShard = 1
+	}
+	for _, shard := range self.shards {
+		shard.mutex.Lock()
+		newPool := make([][]byte, maxCountPerShard)
+		newCount := copy(newPool, shard.pool[:shard.count])
+		shard.pool = newPool
+		shard.count = newCount
+		shard.mutex.Unlock()
+	}
 }
 
 func (self *messagePool) Clear() {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	for i := range self.count {
-		self.pool[i] = nil
+	for _, shard := range self.shards {
+		shard.mutex.Lock()
+		for i := range shard.count {
+			shard.pool[i] = nil
+		}
+		shard.count = 0
+		shard.mutex.Unlock()
 	}
-	self.count = 0
 }
 
 // the returned does not come in an initialized zero state,
 // i.e. it can have garbage bytes
 func (self *messagePool) Get() []byte {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+	shardIndex := self.nextShardIndex()
+	shard := self.shard(shardIndex)
 
-	if 0 < self.count {
-		poolMessage := self.pool[self.count-1]
-		self.pool[self.count-1] = nil
-		self.count -= 1
+	shard.mutex.Lock()
+	defer shard.mutex.Unlock()
+
+	if 0 < shard.count {
+		poolMessage := shard.pool[shard.count-1]
+		shard.pool[shard.count-1] = nil
+		shard.count -= 1
+		poolMessage[self.size+12] = uint8(shardIndex)
 		return poolMessage
 	}
 
 	// create a new message
 	poolMessage := make([]byte, self.size+MessagePoolMetaByteCount)
-	self.nextId += 1
-	binary.BigEndian.PutUint64(poolMessage[self.size:], self.nextId)
+	shard.nextId += 1
+	binary.BigEndian.PutUint64(poolMessage[self.size:], shard.nextId)
 	poolMessage[self.size+8] = 255
+	poolMessage[self.size+12] = uint8(shardIndex)
 	return poolMessage
 }
 
 func (self *messagePool) Put(poolMessage []byte) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+	shardIndex := int(poolMessage[self.size+12])
+	if shardIndex < 0 || shardIndex >= self.shardCount {
+		return
+	}
+	shard := self.shard(shardIndex)
 
-	if self.count < len(self.pool) {
+	shard.mutex.Lock()
+	defer shard.mutex.Unlock()
+
+	if shard.count < len(shard.pool) {
 		// note we do not need to zero out the message
-		self.pool[self.count] = poolMessage
-		self.count += 1
+		shard.pool[shard.count] = poolMessage
+		shard.count += 1
 	}
 	// else no capacity, discard the message
 }
@@ -130,20 +197,21 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 })
 
 func poolStats(pools []*messagePool) {
-	// print stats from all pools on a regular interval
 	for {
 		for _, pool := range pools {
 			for tag := range 256 {
 				var taken uint64
 				var returned uint64
 				var created uint64
-				func() {
-					pool.stateLock.Lock()
-					defer pool.stateLock.Unlock()
-					taken = pool.takenTags[tag]
-					returned = pool.returnedTags[tag]
-					created = pool.createdTags[tag]
-				}()
+				for _, shard := range pool.shards {
+					func() {
+						shard.mutex.Lock()
+						defer shard.mutex.Unlock()
+						taken += shard.takenTags[tag]
+						returned += shard.returnedTags[tag]
+						created += shard.createdTags[tag]
+					}()
+				}
 				if 0 < taken {
 					ratio := float32(returned) / float32(taken)
 					reuse := float32(taken-created) / float32(taken)
@@ -207,15 +275,17 @@ func debugTag() uint8 {
 
 func ResetMessagePoolStats() {
 	for _, pool := range orderedMessagePools() {
-		func() {
-			pool.stateLock.Lock()
-			defer pool.stateLock.Unlock()
-			for tag := range 256 {
-				pool.takenTags[tag] = 0
-				pool.returnedTags[tag] = 0
-				pool.createdTags[tag] = 0
-			}
-		}()
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					shard.takenTags[tag] = 0
+					shard.returnedTags[tag] = 0
+					shard.createdTags[tag] = 0
+				}
+			}()
+		}
 	}
 }
 
@@ -226,13 +296,14 @@ func MessagePoolStats() map[int]map[int]float32 {
 		for tag := range 256 {
 			var taken uint64
 			var returned uint64
-			func() {
-				pool.stateLock.Lock()
-				defer pool.stateLock.Unlock()
-				taken = pool.takenTags[tag]
-				returned = pool.returnedTags[tag]
-			}()
-
+			for _, shard := range pool.shards {
+				func() {
+					shard.mutex.Lock()
+					defer shard.mutex.Unlock()
+					taken += shard.takenTags[tag]
+					returned += shard.returnedTags[tag]
+				}()
+			}
 			if 0 < taken {
 				ratio := float32(returned) / float32(taken)
 				tagRatios[tag] = ratio
@@ -242,19 +313,6 @@ func MessagePoolStats() map[int]map[int]float32 {
 	}
 	return sizeTagRatios
 }
-
-/*
-func MessagePool(targetSize int) (*messagePool, int) {
-	for _, pool := range orderedMessagePools {
-		if targetSize <= pool.size {
-			return pool, pool.size
-		}
-	}
-	// return the largest
-	pool := orderedMessagePools[len(orderedMessagePools)-1]
-	return pool, pool.size
-}
-*/
 
 func MessagePoolReadAll(r io.Reader) ([]byte, error) {
 	return MessagePoolReadAllWithTag(r, 0)
@@ -345,14 +403,17 @@ func MessagePoolGetDetailedWithTag(n int, tag uint8) ([]byte, bool) {
 			poolMessage[pool.size+8] = tag
 			id := binary.BigEndian.Uint64(poolMessage[pool.size:])
 
+			shardIndex := int(poolMessage[pool.size+12])
+			shard := pool.shard(shardIndex)
+
 			func() {
-				pool.stateLock.Lock()
-				defer pool.stateLock.Unlock()
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
 
 				if c {
-					pool.createdTags[tag] += 1
+					shard.createdTags[tag] += 1
 				}
-				pool.takenTags[tag] += 1
+				shard.takenTags[tag] += 1
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 
@@ -383,11 +444,16 @@ func MessagePoolReturn(message []byte) bool {
 			id := binary.BigEndian.Uint64(poolMessage[pool.size:])
 
 			tag := poolMessage[pool.size+8]
+			shardIndex := int(poolMessage[pool.size+12])
+			if shardIndex < 0 || shardIndex >= pool.shardCount {
+				return false
+			}
+			shard := pool.shard(shardIndex)
 
 			r := false
 			func() {
-				pool.stateLock.Lock()
-				defer pool.stateLock.Unlock()
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
@@ -402,7 +468,7 @@ func MessagePoolReturn(message []byte) bool {
 					poolMessage[pool.size+9] = 0
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], 0)
 					r = true
-					pool.returnedTags[tag] += 1
+					shard.returnedTags[tag] += 1
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count-1)
 				}
@@ -428,9 +494,15 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 			poolMessage := message[:c]
 			id := binary.BigEndian.Uint64(poolMessage[pool.size:])
 
+			shardIndex := int(poolMessage[pool.size+12])
+			if shardIndex < 0 || shardIndex >= pool.shardCount {
+				return message
+			}
+			shard := pool.shard(shardIndex)
+
 			func() {
-				pool.stateLock.Lock()
-				defer pool.stateLock.Unlock()
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
@@ -456,9 +528,15 @@ func MessagePoolCheck(message []byte) (pooled bool, shared bool) {
 		if c == pool.size+MessagePoolMetaByteCount {
 			poolMessage := message[:c]
 
+			shardIndex := int(poolMessage[pool.size+12])
+			if shardIndex < 0 || shardIndex >= pool.shardCount {
+				return
+			}
+			shard := pool.shard(shardIndex)
+
 			func() {
-				pool.stateLock.Lock()
-				defer pool.stateLock.Unlock()
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if 0 < count {
@@ -494,9 +572,6 @@ func ProtoMarshalWithTag(m proto.Message, tag uint8) ([]byte, error) {
 		MessagePoolReturn(buf)
 		return nil, err
 	}
-	// if proto.Size underestimated, MarshalAppend may have allocated a fresh
-	// slice; the pool buffer is then orphaned and must be returned to balance
-	// the Get above. detected by a cap change (append only grows cap).
 	if cap(out) != cap(buf) {
 		MessagePoolReturn(buf)
 	}

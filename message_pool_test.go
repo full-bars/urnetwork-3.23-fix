@@ -115,6 +115,132 @@ func TestMessagePoolShare(t *testing.T) {
 	}
 }
 
+func TestMessagePoolShardRouting(t *testing.T) {
+	pool := newMessagePool(2048, 32)
+	defer pool.Clear()
+
+	m := pool.Get()
+	full := m[:cap(m)]
+	shardIndex := int(full[pool.size+12])
+	assert.Equal(t, shardIndex >= 0, true)
+	assert.Equal(t, shardIndex < pool.shardCount, true)
+
+	shard := pool.shard(shardIndex)
+	before := shard.count
+	pool.Put(m)
+	assert.Equal(t, shard.count, before+1)
+
+	m2 := pool.Get()
+	full2 := m2[:cap(m2)]
+	shardIndex2 := int(full2[pool.size+12])
+	assert.Equal(t, shardIndex2 >= 0, true)
+	assert.Equal(t, shardIndex2 < pool.shardCount, true)
+
+	shard2 := pool.shard(shardIndex2)
+	before2 := shard2.count
+	pool.Put(m2)
+	assert.Equal(t, shard2.count, before2+1)
+}
+
+func TestMessagePoolShardWithTag(t *testing.T) {
+	pools := orderedMessagePools()
+	pool := pools[0]
+
+	m, _ := MessagePoolGetDetailedWithTag(pool.size, 42)
+	full := m[:cap(m)]
+
+	shardIndex := int(full[pool.size+12])
+
+	r := MessagePoolReturn(m)
+	assert.Equal(t, r, true)
+
+	shard := pool.shard(shardIndex)
+	assert.Equal(t, shard.returnedTags[42], uint64(1))
+}
+
+func TestMessagePoolShardRoundRobin(t *testing.T) {
+	pool := newMessagePool(2048, 1024)
+	defer pool.Clear()
+
+	shardHits := make([]int, pool.shardCount)
+	for range pool.shardCount * 100 {
+		m := pool.Get()
+		si := int(m[pool.size+12])
+		shardHits[si]++
+		pool.Put(m)
+	}
+
+	for i, hits := range shardHits {
+		assert.Equal(t, hits > 0, true)
+		t.Logf("shard[%d] = %d hits", i, hits)
+	}
+}
+
+func TestMessagePoolShardContention(t *testing.T) {
+	const goroutines = 32
+	const iterations = 1000
+	const dataSize = 1500
+
+	done := make(chan bool)
+
+	for range goroutines {
+		go func() {
+			for range iterations {
+				m := MessagePoolGet(dataSize)
+				m[0] = byte('x')
+				m[dataSize-1] = byte('y')
+				MessagePoolReturn(m)
+			}
+			done <- true
+		}()
+	}
+
+	for range goroutines {
+		<-done
+	}
+
+	t.Log("contention test completed")
+}
+
+func TestMessagePoolShardTagConcurrent(t *testing.T) {
+	const goroutines = 16
+	const iterations = 500
+
+	done := make(chan bool)
+
+	for i := range goroutines {
+		tag := uint8(i + 1)
+		go func() {
+			for range iterations {
+				m, _ := MessagePoolGetDetailedWithTag(1500, tag)
+				m[0] = byte('x')
+				MessagePoolReturn(m)
+			}
+			done <- true
+		}()
+	}
+
+	for range goroutines {
+		<-done
+	}
+
+	pool := orderedMessagePools()[0]
+	for i := range goroutines {
+		tag := uint8(i + 1)
+		var taken, returned, created uint64
+		for _, shard := range pool.shards {
+			shard.mutex.Lock()
+			taken += shard.takenTags[tag]
+			returned += shard.returnedTags[tag]
+			created += shard.createdTags[tag]
+			shard.mutex.Unlock()
+		}
+		assert.Equal(t, taken, uint64(iterations))
+		assert.Equal(t, returned, uint64(iterations))
+		t.Logf("tag[%d] taken=%d returned=%d created=%d", tag, taken, returned, created)
+	}
+}
+
 func TestBase64(t *testing.T) {
 	for range 128 {
 		n := mathrand.Intn(512)
