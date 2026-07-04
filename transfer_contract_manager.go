@@ -491,24 +491,26 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 			c := func() error {
 				err := self.addContract(contractKey, contract)
 				var contractStatus *ContractStatus
+			if err != nil {
+				// contract rejected
+				contractError := protocol.ContractError_Trust
+				contractStatus = &ContractStatus{
+					Key:   contractKey,
+					Error: &contractError,
+				}
+				self.contractStatus(contractStatus)
+				return err
+				} else {
+					storedContract := &protocol.StoredContract{}
+			err = ProtoUnmarshal(contract.StoredContractBytes, storedContract)
 				if err != nil {
-					// contract rejected
-					contractError := protocol.ContractError_Trust
+					contractError := protocol.ContractError_Invalid
 					contractStatus = &ContractStatus{
 						Key:   contractKey,
 						Error: &contractError,
 					}
+					self.contractStatus(contractStatus)
 					return err
-				} else {
-					storedContract := &protocol.StoredContract{}
-					err = ProtoUnmarshal(contract.StoredContractBytes, storedContract)
-					if err != nil {
-						contractError := protocol.ContractError_Invalid
-						contractStatus = &ContractStatus{
-							Key:   contractKey,
-							Error: &contractError,
-						}
-						return err
 					} else {
 						premium := false
 						if storedContract.Priority != nil {
