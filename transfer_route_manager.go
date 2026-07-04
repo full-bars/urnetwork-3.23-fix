@@ -544,9 +544,7 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if _, ok := self.routeActive[route]; ok {
-		self.routeActive[route] = false
-	}
+	self.routeActive[route] = active
 }
 
 func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount ByteCount) {
