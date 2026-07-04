@@ -237,6 +237,8 @@ cap:   256 MiB
 
 This is skipped when `URNETWORK_PROFILE=lowmem` (lowmem manages its own footprint) and when `--max-memory` is set explicitly (that path already calls `ResizeMessagePools(maxMemory/8)`).
 
+**Mutex sharding** (added in v24.35) splits each size class into N internal shards with independent mutexes, eliminating cross-proxy lock contention on the hottest allocation path. Default is 16 shards. Override with `URNETWORK_MESSAGE_POOL_SHARD_COUNT` (power of two, 1–256). Set to `1` to disable (pre-v24.35 behavior).
+
 **Startup log:**
 ```
 [pool] message pool 61MiB (RAM=1964MiB)

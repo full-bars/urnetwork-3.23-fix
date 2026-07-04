@@ -17,6 +17,9 @@ All notable changes to this project are documented here.
 - **Default resend queue 2→4 MiB** (PR #204): Raised `ResendQueueMaxByteCount` to match the already-raised 4 MiB send window. ~2× per-client throughput ceiling on default-profile nodes. Fleet-proven value (Tier3/turbo already run 4 MiB).
 - **RTT fill-fraction floor 0.5→0.7** (PR #205): At ≥1s RTT, 90 MiB consumed per 128 MiB contract before renegotiation (was 64 MiB). Halves contract churn on high-latency (mobile/satellite) paths.
 
+### Performance
+- **Message pool N-way mutex sharding** (PR #207): Each size-class freelist (2048/4096/16384/32768/65536) is now split into 16 internal shards with independent mutexes, eliminating cross-proxy lock contention on the hottest allocation path. Shard index stored in a new dedicated metadata byte (bumped `MessagePoolMetaByteCount` 12→13). Round-robin shard selection at Get time; Return reads index back for correct routing. Rollback lever: `URNETWORK_MESSAGE_POOL_SHARD_COUNT=1` (unsharded). ~60-80% contention reduction expected at fleet packet rates.
+
 ### Cleanup
 - Applied `gofmt -w` to `transfer.go`, `transfer_route_manager.go`, `transfer_contract_manager.go` (PR #206)
 

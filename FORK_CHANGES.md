@@ -1612,3 +1612,56 @@ Commit `c3cefc7` raised TCP/UDP `MaxWindowSize` to 4 MiB, but `DefaultSendBuffer
 Tab indentation introduced by PRs #201, #202, #203 in `transfer.go`, `transfer_route_manager.go`, and `transfer_contract_manager.go` was cleaned up with `gofmt -w`.
 
 **Status**: ✅ Merged `main` (2026-07-04). PR #206. v3.23.0-fix.24.35.
+
+---
+
+## 66. Message Pool N-Way Mutex Sharding (PR #207)
+
+**Purpose**: Eliminate per-size-class lock contention — the dominant synchronization bottleneck on the provider hot path. At fleet-node packet rates (hundreds of K pps), every ~1500B packet's Get/Put/Return/ShareReadOnly previously serialized on a single `stateLock` per size class, capping per-node throughput.
+
+### 66a. Internal sharding
+
+Each `messagePool` now holds N `poolShard` structs (N=16 default), each with its own freelist, mutex, nextId counter, and per-tag accounting arrays. No buffer ever migrates across shards — a buffer created in shard K stays in shard K for life.
+
+**Shard selection**: Per-pool atomic `shardNext` counter, incremented on every Get. `shardIndex = counter & (shardCount-1)`. Round-robin; guaranteed even distribution.
+
+**Shard routing on Return**: The shard index is stored in buffer metadata at `size+12` at creation time. `MessagePoolReturn`, `MessagePoolShareReadOnly`, and `MessagePoolCheck` all read this byte and lock only the designated shard. Every read path has a bounds check — a hypothetically corrupted byte fails safe (drops buffer) rather than panicking or accessing wrong shard.
+
+### 66b. Metadata layout change
+
+`MessagePoolMetaByteCount` bumped 12→13. Byte `size+8` remains the tag byte (used by `MessagePoolGetDetailedWithTag` for per-caller accounting). The new byte at `size+12` is the shard index.
+
+```
+[size : size+8]      — nextId (uint64, 8 bytes)
+[size+8]             — tag (uint8, 0-254=active, 255=untagged)
+[size+9]             — flags (uint8, MessagePoolFlagShared)
+[size+10 : size+12]  — refcount (uint16, 2 bytes)
+[size+12]            — shard index (uint8, NEW)
+```
+
+All `make([]byte, size+MessagePoolMetaByteCount)` call sites automatically use the new size via the constant. No migration needed — on restart, old 12-byte-metadata buffers are GC'd; new allocations use 13 bytes.
+
+### 66c. Rollback lever
+
+Env var `URNETWORK_MESSAGE_POOL_SHARD_COUNT` overrides the shard count (must be power of two, 1–256). Set to 1 for functionally identical pre-sharding behavior — all Gets route to shard 0, one mutex behind the scenes.
+
+### 66d. Tag accounting
+
+`takenTags`, `returnedTags`, `createdTags` are per-shard (`[256]uint64` on each `poolShard`). `poolStats` and `MessagePoolStats` iterate all shards, summing each tag column. `ResetMessagePoolStats` zeros all shard tag arrays.
+
+### 66e. Per-shard freelist capacity
+
+Pool budget is divided evenly: `maxCount / shardCount`. Per-shard capacity floors at 1 buffer. At shipped defaults this distributes correctly (e.g. lowmem's 1 MiB budget → 512 pool entries / 16 shards = 32 per shard). If shard count is raised significantly without raising the pool budget, this floor inflates memory — see comment in `newMessagePool`.
+
+**Files Modified**: `message_pool.go`, `message_pool_test.go`
+
+**Tests**: 5 new shard-specific tests + power-of-two validation test, all passing under `-race`:
+- `TestMessagePoolShardRouting` — buffer routes to correct shard, Return increments correct freelist
+- `TestMessagePoolShardWithTag` — tag byte (size+8) and shard byte (size+12) don't collide; per-shard tag accounting correct
+- `TestMessagePoolShardRoundRobin` — 1600 Gets distributes evenly across 16 shards (100 each)
+- `TestMessagePoolShardContention` — 32 goroutines × 1000 iterations concurrent Get/Return, `-race` clean
+- `TestMessagePoolShardTagConcurrent` — 16 goroutines with distinct tags, taken=returned for all tags, `-race` clean
+- `TestMessagePoolShardPowerOfTwo` — validates bitmask routing constraint
+- All existing `TestMessagePool` / `TestMessagePoolShare` / transfer / send-receive tests continue passing
+
+**Status**: ✅ Merged `main` (2026-07-04). PR #207. v3.23.0-fix.24.35.
