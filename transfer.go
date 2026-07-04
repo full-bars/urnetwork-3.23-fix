@@ -2284,7 +2284,7 @@ func computeFillFraction(meanRtt time.Duration, fallback float32) float32 {
 	}
 	ms := float64(meanRtt / time.Millisecond)
 	const high = 0.85
-	const low = 0.5
+	const low = 0.7
 	if ms <= 100 {
 		return float32(high)
 	}
