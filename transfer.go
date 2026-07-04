@@ -2173,12 +2173,14 @@ func (self *SendSequence) Run() {
 					}
 				}
 
-				item.sendCount += 1
-				maxResendCount := self.sendBufferSettings.MaxResendCount
-				if maxResendCount > 0 && item.sendCount >= maxResendCount {
-					self.log.V(1).Infof("[s]resend cap drop after %d sends %s->%s...%s s(%s)\n", item.sendCount, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
-					continue
-				}
+			item.sendCount += 1
+			maxResendCount := self.sendBufferSettings.MaxResendCount
+			if maxResendCount > 0 && item.sendCount >= maxResendCount {
+				self.log.V(1).Infof("[s]resend cap park after %d sends %s->%s...%s s(%s)\n", item.sendCount, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+				item.resendTime = sendTime.Add(self.sendBufferSettings.AckTimeout)
+				self.resendQueue.Add(item)
+				continue
+			}
 				var itemResendTimeout time.Duration
 				if isBackendDegraded() {
 					shift := uint(min(item.sendCount, 6))
