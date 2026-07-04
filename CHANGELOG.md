@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.24.35] — 2026-07-04
+
+### Fixed
+- **SendSequence corruption at resend cap** (PR #201): When a packet hit the 16-resend limit, it was removed from the resend queue but left orphaned in `sendItems`. The next cumulative ack would hit `panic("Missing item")`, tearing down the entire send sequence and flushing pending contracts. Fix: park the item at `AckTimeout` horizon instead of dropping it.
+- **Contract rejection statuses invisible to callbacks** (PR #202): `HandleControlFrame` constructed `ContractStatus` on Trust/Invalid errors but returned before dispatching. Locally-rejected and malformed contracts were invisible to `registerContractCallback` (provider metrics) and penalty logic. Fix: dispatch before the early return.
+- **Pooled buffer leak on write timeout** (PR #203, #206): `WriteDetailed` timeout/ctx-done/done branches had `MessagePoolReturn` commented out, stranding one shared pool ref per timed-out write. Fix: restore returns + remove redundant returns in the `StreamSequence` caller (v2 fix for double-return regression).
+- **`rttHeap.MinRtt()` returned garbage** (PR #200): Returned `items[n-1]` (arbitrary heap leaf) instead of `items[0]` (the actual min). Unused today; fixed before anyone builds on it.
+- **`MultiRouteSelector.setActive()` ignored its `active` param** (PR #200): Always set `false` regardless of parameter. All current callers pass `false` so no behavior change; fix removes footgun.
+
+### Changed
+- **Default resend queue 2→4 MiB** (PR #204): Raised `ResendQueueMaxByteCount` to match the already-raised 4 MiB send window. ~2× per-client throughput ceiling on default-profile nodes. Fleet-proven value (Tier3/turbo already run 4 MiB).
+- **RTT fill-fraction floor 0.5→0.7** (PR #205): At ≥1s RTT, 90 MiB consumed per 128 MiB contract before renegotiation (was 64 MiB). Halves contract churn on high-latency (mobile/satellite) paths.
+
+### Cleanup
+- Applied `gofmt -w` to `transfer.go`, `transfer_route_manager.go`, `transfer_contract_manager.go` (PR #206)
+
+---
+
 ## [v3.23.0-fix.24.34] — 2026-07-03
 
 ### Added
