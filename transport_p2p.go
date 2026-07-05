@@ -119,12 +119,15 @@ func NewP2pTransport(
 		peerType:            peerType,
 		settings:            settings,
 	}
-	HandleError(p2pTransport.run)
+	go HandleError(p2pTransport.run, cancel)
 	return p2pTransport
 }
 
 func (self *P2pTransport) run() {
 	defer self.cancel()
+
+	self.client.log.Infof("[p2p]s(%s) %s transport starting peer=%s\n", self.streamId, self.peerType, self.peerId)
+	defer self.client.log.Infof("[p2p]s(%s) %s transport stopped peer=%s\n", self.streamId, self.peerType, self.peerId)
 
 	for {
 		// TODO using net.Conn as a stand in for the actual interface
