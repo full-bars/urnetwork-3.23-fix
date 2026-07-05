@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.25.1
+**Current Version**: v3.23.0-fix.25.2
 
 ---
 
@@ -1721,3 +1721,29 @@ Bounded by `DnsMaxCombine`/`DnsMaxCombinePerAddress` so not unbounded, but a ste
 **Fix**: Return buffers in all three paths. Added `TestCombineRemoveOlderReturnsPooledBuffers` and `TestCombineDuplicateIndexReturnsPooledBuffer` regression tests.
 
 **Status**: ✅ Merged `main` (2026-07-05). PR #211. v3.23.0-fix.25.1.
+
+---
+
+## 69. Systemd Restart Drop-In Self-Heal + Log File:Line Fix
+
+**Purpose**: Two fixes from a live NY2 incident response on 2026-07-05.
+
+### 69a. Self-heal invalid `Restart=` systemd drop-in (scripts/Provider_Install_Linux.sh)
+
+NY2's `urnetwork.service` was found `inactive (dead)` after an update. Root cause: a `urnetwork.service.d/restart-override.conf` drop-in set `Restart=yes` — not a valid systemd value (the directive is an enum: `no`/`always`/`on-success`/`on-failure`/`on-abnormal`/`on-watchdog`/`on-abort`, not a boolean). systemd silently rejected that one line on every `daemon-reload` (logged as a parse warning, easy to miss) and fell back to the base unit's `Restart=no`, leaving the node with zero crash-restart protection since at least 2026-07-01.
+
+A full history search of this script (all commits, all branches) found no reference to `restart-override.conf` or `Restart=yes` ever — urnet-tools has never generated this file. Origin is unknown; most likely a manual `systemctl --user edit` at some point, possibly by analogy to other tools' boolean restart flags. A fleet sweep afterward found the same rogue drop-in (with varying values, `yes` on 2 nodes, the correct `on-failure` on 1) on 3 of 31 reachable nodes, confirming it wasn't NY2-specific.
+
+**Fix**: `install_systemd_units` now runs `sanitize_restart_dropins`, which scans all `urnetwork.service.d/*.conf` files (not just the ones urnet-tools manages) on every install/update/reinstall and rewrites `Restart=yes|true|1` to `Restart=on-failure`.
+
+**Status**: ✅ Merged `main` (2026-07-05, direct commit — hotfix). v3.23.0-fix.25.2.
+
+---
+
+### 69b. Restore correct file:line in log output (log.go)
+
+The glog→Logger interface migration (#65, PR #69, 2026-06-15) added a wrapper frame between call sites and the actual `glog` calls. The `V(n)` verbose path was updated to account for the extra frame (`glog.VDepth`, `InfoDepth`), but the plain `Info`/`Infof`/`Warningf`/`Errorf` methods on `glogLogger` called glog's non-depth-aware functions directly — so every plain-level log line in the codebase (the majority of INFO output, including the message-pool stats line) has reported `log.go`'s own line instead of the real caller since that PR merged.
+
+**Fix**: Switched to glog's depth-aware variants (`InfoDepth`/`InfoDepthf`/`WarningDepthf`/`ErrorDepthf`) with `depth=1` to skip the wrapper frame, matching the verbose path's existing convention. Verified via `TestCombine`: log output now shows `message_pool.go:231` instead of `log.go:100`.
+
+**Status**: ✅ Merged `main` (2026-07-05). PR #213. v3.23.0-fix.25.2.
