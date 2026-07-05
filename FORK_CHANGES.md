@@ -1726,13 +1726,13 @@ Bounded by `DnsMaxCombine`/`DnsMaxCombinePerAddress` so not unbounded, but a ste
 
 ## 69. Systemd Restart Drop-In Self-Heal + Log File:Line Fix
 
-**Purpose**: Two fixes from a live NY2 incident response on 2026-07-05.
+**Purpose**: Two fixes from a live fleet incident response on 2026-07-05.
 
 ### 69a. Self-heal invalid `Restart=` systemd drop-in (scripts/Provider_Install_Linux.sh)
 
-NY2's `urnetwork.service` was found `inactive (dead)` after an update. Root cause: a `urnetwork.service.d/restart-override.conf` drop-in set `Restart=yes` — not a valid systemd value (the directive is an enum: `no`/`always`/`on-success`/`on-failure`/`on-abnormal`/`on-watchdog`/`on-abort`, not a boolean). systemd silently rejected that one line on every `daemon-reload` (logged as a parse warning, easy to miss) and fell back to the base unit's `Restart=no`, leaving the node with zero crash-restart protection since at least 2026-07-01.
+A provider node's `urnetwork.service` was found `inactive (dead)` after an update. Root cause: a `urnetwork.service.d/restart-override.conf` drop-in set `Restart=yes` — not a valid systemd value (the directive is an enum: `no`/`always`/`on-success`/`on-failure`/`on-abnormal`/`on-watchdog`/`on-abort`, not a boolean). systemd silently rejected that one line on every `daemon-reload` (logged as a parse warning, easy to miss) and fell back to the base unit's `Restart=no`, leaving the node with zero crash-restart protection since at least 2026-07-01.
 
-A full history search of this script (all commits, all branches) found no reference to `restart-override.conf` or `Restart=yes` ever — urnet-tools has never generated this file. Origin is unknown; most likely a manual `systemctl --user edit` at some point, possibly by analogy to other tools' boolean restart flags. A fleet sweep afterward found the same rogue drop-in (with varying values, `yes` on 2 nodes, the correct `on-failure` on 1) on 3 of 31 reachable nodes, confirming it wasn't NY2-specific.
+A full history search of this script (all commits, all branches) found no reference to `restart-override.conf` or `Restart=yes` ever — urnet-tools has never generated this file. Origin is unknown; most likely a manual `systemctl --user edit` at some point, possibly by analogy to other tools' boolean restart flags. A fleet sweep afterward found the same rogue drop-in (with varying values, `yes` on 2 nodes, the correct `on-failure` on 1) on 3 of 31 reachable nodes, confirming it wasn't isolated to a single node.
 
 **Fix**: `install_systemd_units` now runs `sanitize_restart_dropins`, which scans all `urnetwork.service.d/*.conf` files (not just the ones urnet-tools manages) on every install/update/reinstall and rewrites `Restart=yes|true|1` to `Restart=on-failure`.
 

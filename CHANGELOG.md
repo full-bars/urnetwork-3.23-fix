@@ -7,11 +7,11 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.25.2] — 2026-07-05
 
 ### Summary
-Two more fixes found while responding to a live NY2 incident: a self-healing repair for a rogue systemd drop-in that left the provider with no crash-restart protection, and a logging regression that's been misattributing every plain-level log line to `log.go` since mid-June.
+Two more fixes found while responding to a live fleet incident: a self-healing repair for a rogue systemd drop-in that left the provider with no crash-restart protection, and a logging regression that's been misattributing every plain-level log line to `log.go` since mid-June.
 
 ### Fixed
 
-**Self-heal invalid `Restart=` systemd drop-in**: a `restart-override.conf` drop-in with `Restart=yes` (not a valid systemd value — the directive only accepts `no`/`always`/`on-failure`/etc.) was found on NY2, silently rejected by systemd on every reload and falling back to the base unit's `Restart=no`. This left the node with zero auto-restart protection since at least July 1. Not something urnet-tools ever wrote — a full history search turned up no commit that ever generated this file or value — so origin is unknown (likely a manual edit). `install_systemd_units` now scans `urnetwork.service.d/*.conf` on every install/update/reinstall and repairs `Restart=yes|true|1` to `Restart=on-failure`.
+**Self-heal invalid `Restart=` systemd drop-in**: a `restart-override.conf` drop-in with `Restart=yes` (not a valid systemd value — the directive only accepts `no`/`always`/`on-failure`/etc.) was found on a fleet node, silently rejected by systemd on every reload and falling back to the base unit's `Restart=no`. This left the node with zero auto-restart protection since at least July 1. Not something urnet-tools ever wrote — a full history search turned up no commit that ever generated this file or value — so origin is unknown (likely a manual edit). `install_systemd_units` now scans `urnetwork.service.d/*.conf` on every install/update/reinstall and repairs `Restart=yes|true|1` to `Restart=on-failure`.
 
 **Restore correct file:line in log output**: the glog→Logger interface migration (PR #69, 2026-06-15) added a wrapper frame between call sites and the actual `glog` calls. Only the `V(n)` verbose path accounted for the extra frame; the plain `Info`/`Infof`/`Warningf`/`Errorf` methods called glog's non-depth-aware functions directly, so every plain-level log line in the codebase has reported `log.go`'s own line instead of the real caller since that PR merged. Switched to glog's depth-aware variants (`InfoDepth`/`InfoDepthf`/`WarningDepthf`/`ErrorDepthf`) to match the verbose path's existing convention.
 
