@@ -40,17 +40,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-gobuild-${{ hashFiles('go.sum') }}
+          key: v2-${{ runner.os }}-gobuild-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-gobuild-
+            v2-${{ runner.os }}-gobuild-
 
       - name: Cache Go module download
         uses: actions/cache@v4
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-gomod-${{ hashFiles('go.sum') }}
+          key: v2-${{ runner.os }}-gomod-${{ hashFiles('go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-gomod-
+            v2-${{ runner.os }}-gomod-
 
       - name: Run Go Unit Tests
         run: |
