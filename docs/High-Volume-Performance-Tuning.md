@@ -51,7 +51,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB |
-| `ContractTransferByteSeqScale` | 4 | 2 | 4 | 4 | 2 | 2 |
+| `ContractTransferByteSeqScale` | 4 | 3 | 4 | 4 | 2 | 2 |
 | `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* |
 | `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s |
 | `ResendQueueMaxByteCount` | 2 MiB | 2 MiB | reduced | 2 MiB | 8 MiB | 16 MiB |
@@ -205,7 +205,7 @@ This means the provider can hold many concurrent idle connections cheaply while 
 
 **`InitialContractTransferByteCount`** controls how many bytes are authorized per contract on the first request. The upstream default of 16 KiB means a new connection hits its quota almost immediately and must renegotiate — under heavy load this creates a signaling storm. The fork raises this to 2 MiB, so a new connection can transfer a meaningful amount before the first renegotiation.
 
-**`ContractTransferByteSeqScale`** controls how many contracts it takes to reach full (`StandardContractTransferByteCount`) speed. The fork default is 2 (full speed in 2 contracts). Lowmem and eco use 4 to reduce signaling frequency on constrained nodes.
+**`ContractTransferByteSeqScale`** controls how many contracts it takes to reach full (`StandardContractTransferByteCount`) speed. The fork default is 3 (full speed in 3 contracts, 4 steps: 2 MiB → ~44 MiB → ~86 MiB → 128 MiB). Turbo profiles override to 2 for faster ramp-up. Lowmem and eco use 4 to reduce signaling frequency on constrained nodes.
 
 **`ContractFillFraction`** (`dynamic` starting v3.23.0-fix.24) adapts to the observed transfer RTT. At low RTT (≤100ms) it fills to 0.85 — refills arrive quickly so we can pack close to capacity. At high RTT (≥1000ms) it drops to 0.50 — bytes drain faster relative to API round-trip so more headroom is needed. Falls back to the static 0.7 when no RTT data is available (e.g. cold start). Lowmem and eco profiles still use the static 0.7 to avoid the per-sequence RTT window allocation.
 
