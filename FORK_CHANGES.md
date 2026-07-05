@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.25
+**Current Version**: v3.23.0-fix.25.1
 
 ---
 
@@ -1689,3 +1689,35 @@ Pool budget is divided evenly: `maxCount / shardCount`. Per-shard capacity floor
 **Tradeoff**: One additional contract negotiation per session for more granular sizing that better matches actual usage. Connections that complete in 1-2 contracts now allocate ~44 MiB instead of ~65 MiB, reducing waste.
 
 **Status**: ✅ Merged `main` (2026-07-05). PR #209. v3.23.0-fix.25.
+
+---
+
+## 68. P2P Transport Async Startup + DNS Fragment Buffer Leaks (PR #211)
+
+**Purpose**: Fix two correctness bugs found in a July 5, 2026 deep-dive audit — both introduced when the fork first branched from stock v3.23 and never ported from upstream's later fixes.
+
+### 68a. HIGH — P2P transport setup blocked forever, dropping one direction of every bidirectional relay stream (transport_p2p.go, transfer_stream_manager.go)
+
+`NewP2pTransport()` started its connection-negotiation loop with `HandleError(p2pTransport.run)` — no `go`. Upstream runs this as `go HandleError(p2pTransport.run, cancel)`, fire-and-forget. `run()` is a `for {}` loop that only returns on `ctx.Done()`, so the synchronous call never returned until the stream tore down.
+
+`StreamSequence.Run()` needs two P2P transports for a bidirectional relay stream — one "to destination", one "to source" — calling `NewP2pTransport` twice back to back. Because the first call blocked for the stream's entire lifetime, the second call was unreachable code. Every bidirectional P2P stream ended up with only one direction's WebRTC transport ever negotiated; the other direction silently fell back to the lowest-priority gateway transport (relayed through the platform's own servers instead of a direct peer hop). No error, no log — this degraded routing performance and understated relayed-bandwidth on affected streams for the entire life of the fork.
+
+**Fix**: Restore `go HandleError(p2pTransport.run, cancel)`. Added INFO-level logging (`[p2p]` transport start/stop, `[sm]` both-transports-created) so a regression of this kind shows up as a missing log line instead of failing silently.
+
+**Status**: ✅ Merged `main` (2026-07-05). PR #211. v3.23.0-fix.25.1.
+
+---
+
+### 68b. MEDIUM — Message pool buffer leak in DNS fragment reassembly (transport_pt_queue.go, transport_pt.go)
+
+Three leak paths in `combineQueue`/`decodeDns`, all fixed upstream but absent here:
+
+- `RemoveOlder`: when a fragment-reassembly item timed out before all fragments arrived, its already-received fragment buffers (`MessagePoolGet`-backed) were dropped without a `MessagePoolReturn`.
+- `Combine`: a duplicate/retransmitted fragment index overwrote `item.packets[i]` without returning the buffer it replaced.
+- `decodeDns`'s goroutine had no shutdown drain — buffers still queued in `dnsCombineQueue` or `readPipeline` at teardown were never returned.
+
+Bounded by `DnsMaxCombine`/`DnsMaxCombinePerAddress` so not unbounded, but a steady, avoidable drain on the pool under sustained fragmented-DNS or retransmit traffic.
+
+**Fix**: Return buffers in all three paths. Added `TestCombineRemoveOlderReturnsPooledBuffers` and `TestCombineDuplicateIndexReturnsPooledBuffer` regression tests.
+
+**Status**: ✅ Merged `main` (2026-07-05). PR #211. v3.23.0-fix.25.1.
