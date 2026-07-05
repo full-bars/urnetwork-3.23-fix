@@ -93,14 +93,14 @@ func TestComputeFillFraction(t *testing.T) {
 	assert.Equal(t, computeFillFraction(50*time.Millisecond, fallback), float32(0.85))
 	assert.Equal(t, computeFillFraction(100*time.Millisecond, fallback), float32(0.85))
 
-	// above 1000ms → low (0.5)
-	assert.Equal(t, computeFillFraction(1000*time.Millisecond, fallback), float32(0.5))
-	assert.Equal(t, computeFillFraction(2000*time.Millisecond, fallback), float32(0.5))
+	// above 1000ms → low (0.7)
+	assert.Equal(t, computeFillFraction(1000*time.Millisecond, fallback), float32(0.7))
+	assert.Equal(t, computeFillFraction(2000*time.Millisecond, fallback), float32(0.7))
 
-	// midpoint of range → should be approximately 0.675 (halfway between 0.85 and 0.5 at 550ms)
+	// midpoint of range → should be approximately 0.775 (halfway between 0.85 and 0.7 at 550ms)
 	midFill := computeFillFraction(550*time.Millisecond, fallback)
-	if midFill < 0.674 || midFill > 0.676 {
-		t.Errorf("expected mid fill ~0.675, got %f", midFill)
+	if midFill < 0.774 || midFill > 0.776 {
+		t.Errorf("expected mid fill ~0.775, got %f", midFill)
 	}
 
 	// increasing RTT decreases fill
