@@ -53,6 +53,12 @@ func (self *combineQueue) RemoveOlder(minUpdateTime time.Time) {
 	for 0 < len(self.orderedItems) && self.orderedItems[0].updateTime.Before(minUpdateTime) {
 		item := heap.Remove(self, 0).(*combineItem)
 
+		for _, p := range item.packets {
+			if p != nil {
+				MessagePoolReturn(p.data)
+			}
+		}
+
 		delete(self.keyItems, item.key)
 
 		if c := self.addrItemCount[item.addr.String()]; c <= 1 {
@@ -99,6 +105,9 @@ func (self *combineQueue) Combine(addr net.Addr, header [18]byte, data []byte) (
 
 	if item.packets[i] == nil {
 		item.n += 1
+	} else {
+		// duplicate/retransmitted fragment index: return the buffer we're about to overwrite
+		MessagePoolReturn(item.packets[i].data)
 	}
 	item.packets[i] = &packet{
 		data: data,

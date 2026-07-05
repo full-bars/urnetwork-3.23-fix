@@ -189,6 +189,66 @@ func TestCombineTrim(t *testing.T) {
 
 }
 
+// regression test: RemoveOlder must return pooled buffers for fragment sets
+// that time out before all fragments arrive, not just drop the item.
+func TestCombineRemoveOlderReturnsPooledBuffers(t *testing.T) {
+	ResetMessagePoolStats()
+
+	settings := DefaultPacketTranslationSettings()
+	cq := newCombineQueue(settings)
+	addr := &net.UDPAddr{Port: 1}
+
+	var header [18]byte
+	mathrand.Read(header[0:16])
+	header[16] = 2 // expect 2 fragments; only send 1 so the set stays incomplete
+
+	data := MessagePoolGet(64)
+	out, limit, err := cq.Combine(addr, header, data)
+	assert.Equal(t, err, nil)
+	assert.Equal(t, limit, false)
+	assert.Equal(t, out, nil)
+
+	// evict the incomplete set as if it timed out
+	cq.RemoveOlder(time.Now().Add(time.Second))
+	assert.Equal(t, cq.Len(), 0)
+
+	ratios := MessagePoolStats()[2048]
+	assert.Equal(t, ratios[0], float32(1))
+}
+
+// regression test: a duplicate/retransmitted fragment index must return the
+// buffer it replaces, not just overwrite the slot and drop the reference.
+func TestCombineDuplicateIndexReturnsPooledBuffer(t *testing.T) {
+	ResetMessagePoolStats()
+
+	settings := DefaultPacketTranslationSettings()
+	cq := newCombineQueue(settings)
+	addr := &net.UDPAddr{Port: 1}
+
+	var header [18]byte
+	mathrand.Read(header[0:16])
+	header[16] = 2 // expect 2 fragments
+
+	first := MessagePoolGet(64)
+	out, limit, err := cq.Combine(addr, header, first)
+	assert.Equal(t, err, nil)
+	assert.Equal(t, limit, false)
+	assert.Equal(t, out, nil)
+
+	// retransmit of the same fragment index (index 0) before completion
+	duplicate := MessagePoolGet(64)
+	out, limit, err = cq.Combine(addr, header, duplicate)
+	assert.Equal(t, err, nil)
+	assert.Equal(t, limit, false)
+	assert.Equal(t, out, nil)
+
+	// clean up the still-outstanding second fragment slot
+	cq.RemoveOlder(time.Now().Add(time.Second))
+
+	ratios := MessagePoolStats()[2048]
+	assert.Equal(t, ratios[0], float32(1))
+}
+
 func TestPump(t *testing.T) {
 	settings := DefaultPacketTranslationSettings()
 	pq := newPumpQueue(settings)

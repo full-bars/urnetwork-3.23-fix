@@ -397,6 +397,7 @@ func (self *StreamSequence) Run() {
 			PeerTypeSource,
 			self.streamBufferSettings.P2pTransportSettings,
 		)
+		self.streamManager.Client().log.Infof("[sm]s(%s) p2p transports created: to-dest, to-source\n", self.streamId)
 
 		forward := func(routeManager *RouteManager) {
 			defer self.cancel()
