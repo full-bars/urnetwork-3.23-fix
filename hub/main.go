@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -30,6 +31,122 @@ import (
 )
 
 var Version string
+
+// Simple per-IP sliding window rate limiter.
+type rateLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*clientRate
+	limit   int           // max requests per window
+	window  time.Duration // sliding window size
+}
+
+type clientRate struct {
+	times []time.Time
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	rl := &rateLimiter{
+		clients: make(map[string]*clientRate),
+		limit:   limit,
+		window:  window,
+	}
+	go func() {
+		for {
+			time.Sleep(5 * time.Minute)
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, cr := range rl.clients {
+				cutoff := now.Add(-rl.window)
+				var kept []time.Time
+				for _, t := range cr.times {
+					if t.After(cutoff) {
+						kept = append(kept, t)
+					}
+				}
+				if len(kept) == 0 {
+					delete(rl.clients, ip)
+				} else {
+					cr.times = kept
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	cr, ok := rl.clients[ip]
+	if !ok {
+		cr = &clientRate{}
+		rl.clients[ip] = cr
+	}
+	cutoff := now.Add(-rl.window)
+	var active []time.Time
+	for _, t := range cr.times {
+		if t.After(cutoff) {
+			active = append(active, t)
+		}
+	}
+	if len(active) >= rl.limit {
+		cr.times = active
+		return false
+	}
+	cr.times = append(active, now)
+	return true
+}
+
+// rateLimitMiddleware limits requests to rateLimit per rateWindow per client IP.
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	rl := newRateLimiter(60, time.Minute)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if idx := strings.LastIndex(ip, ":"); idx > 0 {
+			ip = ip[:idx]
+		}
+		if r.URL.Path == "/api/report" || r.URL.Path == "/api/events" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !rl.allow(ip) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded", 429)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// gzipMiddleware transparently compresses responses when the client
+// sends Accept-Encoding: gzip.
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz, err := gzip.NewWriterLevel(w, gzip.DefaultCompression)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer gz.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, Writer: gz}, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer io.Writer
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	return g.Writer.Write(b)
+}
 
 var funcMap = template.FuncMap{
 	"fmtBytes": fmtBytes,
@@ -844,6 +961,8 @@ func main() {
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/api/events", handleEvents(s))
 
+	wrapped := gzipMiddleware(rateLimitMiddleware(mux))
+
 	tlsListen := *tlsAddr
 	if tlsListen == "" {
 		tlsListen = os.Getenv("URNETWORK_HUB_TLS_ADDR")
@@ -889,7 +1008,7 @@ func main() {
 
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
-			if err := http.ListenAndServeTLS(tlsListen, certPath, keyPath, mux); err != nil {
+			if err := http.ListenAndServeTLS(tlsListen, certPath, keyPath, wrapped); err != nil {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
 				os.Exit(1)
 			}
@@ -899,7 +1018,7 @@ func main() {
 	mux.HandleFunc("/", handleDashboard(s))
 
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	if err := http.ListenAndServe(*addr, wrapped); err != nil {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 		os.Exit(1)
 	}
