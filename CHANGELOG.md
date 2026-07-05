@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.25.1] — 2026-07-05
+
+### Summary
+Two correctness fixes found during a deep code audit, both introduced when the fork branched from stock v3.23 and never ported from upstream.
+
+### Fixed
+
+**P2P transport setup blocked forever, silently dropping one direction of every bidirectional relay stream**: `NewP2pTransport()` started its connection-negotiation loop synchronously (`HandleError(p2pTransport.run)` with no `go`). Since that loop only returns when the stream's context is cancelled, the first call never returned — so `StreamSequence.Run()`'s second `NewP2pTransport()` call (needed for the opposite direction) was unreachable. Every bidirectional P2P stream ended up with only one direction's WebRTC transport ever negotiated, forcing silent fallback to lower-priority transports. Fix: restore `go HandleError(p2pTransport.run, cancel)` to match upstream. Added INFO-level logging (`[p2p]` transport start/stop, `[sm]` both-transports-created) so this class of bug is visible in logs going forward instead of failing silently.
+
+**Message pool buffer leak in DNS fragment reassembly**: `combineQueue.RemoveOlder` dropped timed-out fragment sets without returning their pooled buffers via `MessagePoolReturn`; `combineQueue.Combine` overwrote a fragment slot on a duplicate/retransmitted index without returning the buffer it replaced; and `packetTranslation.decodeDns`'s goroutine had no shutdown drain for its `dnsCombineQueue` or `readPipeline`, leaking any buffers still in flight at teardown. All three now return buffers to the pool.
+
+---
+
 ## [v3.23.0-fix.25] — 2026-07-05
 
 ### Summary

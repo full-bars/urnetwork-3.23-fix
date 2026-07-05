@@ -511,6 +511,25 @@ func (self *packetTranslation) decodeDns() {
 		defer self.cancel()
 
 		dnsCombineQueue := newCombineQueue(self.settings)
+		defer func() {
+			// drain any partially-combined fragment sets and any reads still
+			// queued at shutdown so their pooled buffers are returned
+			for _, item := range dnsCombineQueue.orderedItems {
+				for _, p := range item.packets {
+					if p != nil {
+						MessagePoolReturn(p.data)
+					}
+				}
+			}
+			for {
+				select {
+				case r := <-readPipeline:
+					MessagePoolReturn(r.data)
+				default:
+					return
+				}
+			}
+		}()
 
 		for {
 			select {
