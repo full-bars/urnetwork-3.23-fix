@@ -4,24 +4,135 @@ All notable changes to this project are documented here.
 
 ---
 
-## [v3.23.0-fix.24.35] — 2026-07-04
+## [v3.23.0-fix.25] — 2026-07-05
 
-### Fixed
-- **SendSequence corruption at resend cap** (PR #201): When a packet hit the 16-resend limit, it was removed from the resend queue but left orphaned in `sendItems`. The next cumulative ack would hit `panic("Missing item")`, tearing down the entire send sequence and flushing pending contracts. Fix: park the item at `AckTimeout` horizon instead of dropping it.
-- **Contract rejection statuses invisible to callbacks** (PR #202): `HandleControlFrame` constructed `ContractStatus` on Trust/Invalid errors but returned before dispatching. Locally-rejected and malformed contracts were invisible to `registerContractCallback` (provider metrics) and penalty logic. Fix: dispatch before the early return.
-- **Pooled buffer leak on write timeout** (PR #203, #206): `WriteDetailed` timeout/ctx-done/done branches had `MessagePoolReturn` commented out, stranding one shared pool ref per timed-out write. Fix: restore returns + remove redundant returns in the `StreamSequence` caller (v2 fix for double-return regression).
-- **`rttHeap.MinRtt()` returned garbage** (PR #200): Returned `items[n-1]` (arbitrary heap leaf) instead of `items[0]` (the actual min). Unused today; fixed before anyone builds on it.
-- **`MultiRouteSelector.setActive()` ignored its `active` param** (PR #200): Always set `false` regardless of parameter. All current callers pass `false` so no behavior change; fix removes footgun.
+### Summary
+Minor version bump covering ~50 PRs across core networking stability, performance optimization, proxy lifecycle management, a fully self-hosted hub dashboard with live SSE push, audited error propagation, and tightened security. Includes all sub-patch releases from v3.23.0-fix.24.1 through v3.23.0-fix.24.34 plus new fixes and tuning.
 
-### Changed
-- **Default resend queue 2→4 MiB** (PR #204): Raised `ResendQueueMaxByteCount` to match the already-raised 4 MiB send window. ~2× per-client throughput ceiling on default-profile nodes. Fleet-proven value (Tier3/turbo already run 4 MiB).
-- **RTT fill-fraction floor 0.5→0.7** (PR #205): At ≥1s RTT, 90 MiB consumed per 128 MiB contract before renegotiation (was 64 MiB). Halves contract churn on high-latency (mobile/satellite) paths.
+---
+
+### Core Networking
+
+**SendSequence no longer panics at resend cap** (PR #201): When a packet hit the 16-resend limit, it was removed from the resend queue but left orphaned in `sendItems`. The next cumulative ack would hit `panic("Missing item")`, tearing down the entire send sequence and flushing pending contracts. Fix: park the item at `AckTimeout` horizon instead of dropping it.
+
+**Contract rejection statuses now visible to callbacks** (PR #202): `HandleControlFrame` constructed `ContractStatus` on Trust/Invalid errors but returned before dispatching. Locally-rejected and malformed contracts were invisible to `registerContractCallback` (provider metrics) and penalty logic. Fix: dispatch before the early return.
+
+**Pool buffer leak on write timeout — v2** (PRs #203, #206): `WriteDetailed` timeout/ctx-done/done branches had `MessagePoolReturn` commented out, stranding one shared pool ref per timed-out write. PR #206 removes the double-return regression from the first fix and applies `gofmt -w`.
+
+**SOCKS5 proxy DNS death spiral** (PR #189): Resolve target hostnames locally before passing to SOCKS5 dialer, converting FQDN→IPv4. Prevents proxy infrastructure DNS from being blacklisted by upstream resolvers.
+
+**Proxy warmup pileup on 2000+ proxy pools** (PR #190): Three compounding fixes — DNS lookup cache (60s TTL), 30s SOCKS5 dial timeout, and `markProxyDown` now clears `h.connecting` state to unblock warmup progress tracking.
+
+**Self-wake 100% CPU feedback loop** (PR #191): `modeMonitor.NotifyAll()` gated on actual mode changes. Affected v24.27–v24.32.
+
+**Error propagation for reload/state writes** (PRs #163, #165): Silently discarded errors in reload trigger and proxy probe paths now log warnings. Split error check from sequence comparison to prevent transient FS failures from spuriously triggering reloads.
+
+**Port bounds check** (PR #168): Fix CodeQL alert #11 — `strconv.Atoi` could produce values outside 0–65535 port range before `uint16` cast.
+
+**Dead code cleanup** (PR #200): `rttHeap.MinRtt()` returned arbitrary heap leaf instead of actual min. `MultiRouteSelector.setActive()` ignored its parameter. Both fixed.
+
+---
 
 ### Performance
-- **Message pool N-way mutex sharding** (PR #207): Each size-class freelist (2048/4096/16384/32768/65536) is now split into 16 internal shards with independent mutexes, eliminating cross-proxy lock contention on the hottest allocation path. Shard index stored in a new dedicated metadata byte (bumped `MessagePoolMetaByteCount` 12→13). Round-robin shard selection at Get time; Return reads index back for correct routing. Rollback lever: `URNETWORK_MESSAGE_POOL_SHARD_COUNT=1` (unsharded). ~60-80% contention reduction expected at fleet packet rates.
 
-### Cleanup
-- Applied `gofmt -w` to `transfer.go`, `transfer_route_manager.go`, `transfer_contract_manager.go` (PR #206)
+**Message pool N-way mutex sharding** (PR #207): Each size-class freelist (2048–65536) split into 16 internal shards with independent mutexes, eliminating cross-proxy lock contention on the hottest allocation path. Rollback lever: `URNETWORK_MESSAGE_POOL_SHARD_COUNT=1`. ~60–80% contention reduction expected at fleet packet rates.
+
+**Default resend queue 2→4 MiB** (PR #204): Raised `ResendQueueMaxByteCount` to match the 4 MiB send window. ~2× per-client throughput ceiling on default-profile nodes.
+
+**Contract ramp-up scale 2→3** (PR #209): Adds intermediate ramp step (2 MiB → ~44 MiB → ~86 MiB → 128 MiB vs 2 MiB → ~65 MiB → 128 MiB). Reduces unused contract allocation on short-lived connections by ~30%.
+
+**RTT fill-fraction floor 0.5→0.7** (PR #205): At ≥1s RTT, 90 MiB consumed per 128 MiB contract before renegotiation (was 64 MiB). Halves contract churn on high-latency paths.
+
+**Hot-path allocation optimizations** (PRs #137, #138, #148–#150): Zero-alloc marshal via `frame_protobuf.go`, `ulid.Make()` replaced with allocation-free `NewId()`, closure hoisting in `ip_remote_multi_client.go`, `ip.go` IpPath caching + timer reuse, `transfer.go` safeAck by-value + timer reuse.
+
+**Message pool optimized for write pipeline** (PRs #148–#150): Pooled buffers drained from write pipeline on cancellation. `SendBuffer.Ack` tries all candidate sequences instead of only the first.
+
+---
+
+### Hub Dashboard & Self-Hosting
+
+**Self-hosted hub dashboard** — a full-featured fleet management UI:
+- SQLite-backed historical storage with 5m report interval (PR #123)
+- Multiple sortable data views: Overview, Servers, Proxies, Contracts (PRs #184, #185)
+- uPlot charts: healthy proxies, traffic, billable bytes, clients (PR #158)
+- Summary cards, lazy proxy loading, filter/search, slide-out drawer (PRs #155–#157)
+- Per-proxy earning column (`earning=yes/no`) (PR #124)
+- Per-proxy contract metrics with 15m/1h/24h rolling windows (PR #182)
+- Fleet-wide per-proxy analytics: hourly 90d, daily 13mo, fleet_daily forever (PR #184)
+
+**Live updates via SSE** (PR #188): Server-sent events push `data: refresh` to dashboard tabs the moment a heartbeat or report arrives. No polling.
+
+**TLS hub reports with cert pinning** (PR #186): Auto-generated ECDSA P-256 cert, TOFU-style pinning, `hub init`/`hub link`/`hub unlink` commands, transactional `hub update` with rollback.
+
+**Live heartbeat endpoint** (PR #187): `/api/heartbeat` at 15s cadence with connection reuse and exponential failure backoff (capped at 5m).
+
+**Performance** (PR #186): Gzip compression, per-IP rate limiting (60 req/min), stale node eviction (15 min), nodeSummary API.
+
+**Operational commands**: `urnet-tools report <url>` for runtime hub URL config (PR #154), `urnet-tools set report-interval 60s` for runtime report cadence (PR #159).
+
+**Hub Docker & CI** (PRs #193–#195, #197): First-class Docker image with buildx caching, CI pipeline building on `hub/**` changes, reduced build context.
+
+---
+
+### Proxy URL Sources & Lifecycle
+
+**Dual-stage SOCKS5 + API reachability probe** (PR #152): Tests SOCKS5 compliance AND API reachability through the proxy on a single TCP connection. Background reaper with 5-min retry, 3-failure eviction to 24h persistent blacklist.
+
+**Escalating give-up backoff** (PRs #129, #133): 15m → 30m → 1h → 2h → 4h → 8h → 16h → 24h, permanent eviction after 10 cycles via persisted `proxy_url.json` blacklist.
+
+**File-before-URL launch priority** (PRs #139, #140): File-based proxies launch before URL-sourced ones (sorted by source). URL fetcher waits for warmup completion.
+
+**Pattern-based proxy management** (PR #183): `proxy remove --match=<substring>` with host-substring matching, persisted exclusion patterns, `proxy exclude` subcommand.
+
+**Multi-tier degraded proxy cleanup** (PRs #145, #185): Runtime-configurable auto-cleanup with source filtering. Dead proxy reclassification after 7 days down.
+
+**Operator-curated proxy resilience** (PRs #119, #120): Auth retry with slow capped backoff (5m→10m→15m). URL requeue decoupled from reload engine via `time.AfterFunc`.
+
+---
+
+### Observability
+
+**Per-proxy contract metrics** (PRs #182, #184): Lock-free atomic counters for acquired/denied contracts. Contract Win Rate card, contracts/hr chart, sortable Contracts column in node table.
+
+**Per-minute earning windows** (PR #121): `[earn] billable_1m/5m/15m/60m` every 60 seconds, decoupled from health heartbeat.
+
+**`[profit]` heartbeat + contract utilization** (PR #126): 15s ticker showing `earning=yes/no clients=N rate=X`. Contract close logging with `acked=X allotted=Y util=Z%`.
+
+**Important log buffer** (PR #135): 1 MiB `/dev/shm/urnetwork-important.log` — high-value lines only (`[profit]`, `[health]`, `[outage]`). Survives main ramlog flood.
+
+**Log spam suppression** (PRs #131, #135): Unified `logThrottle` replaces 4 identical rate-limiters. `[c]ping err` suppressed to 1 line per 5 minutes with `(N suppressed)` count.
+
+**Version awareness** (PR #132): `urnet-tools -v` shows running vs on-disk version separately. Provider version logged at startup. Goroutine count in health heartbeat.
+
+---
+
+### Security
+
+**DoH certificate pinning** (PR #164): Uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure nil TLS config for all four DoH providers.
+
+**System cert pool for DoH** (PR #167): Restored Go's system cert pool after LE-only pool broke Cloudflare, Google, Quad9, and OpenDNS.
+
+**Hub bearer token authentication** (PR #170): `URNETWORK_HUB_TOKEN` required for `/api/report` and `/api/nodes/remove` write endpoints.
+
+**Cap unbounded reads** (PRs #180, #181): `io.LimitReader` (8 MiB HTTP / 64 KiB DoH) on all response body reads. JWT write failure now triggers `log.Fatal`.
+
+**IP Security DPI refactor** (PR #160): Replaced monolithic `ip_security.go` with layered DPI pipeline. Packed binary-search blocklist (64,131 IPv4 + 214 IPv6 ranges). BitTorrent signature detection (BEP 3/5/15/29).
+
+---
+
+### CI/CD & Operations
+
+- **`urnet-tools update -f`** now stops, updates, and restarts non-interactively (PR #125)
+- **`urnet-tools update`** fetches latest script from GitHub; bundled in tarball (PR #136)
+- **Idempotent `override.conf` helpers**: `override_set_env`/`override_rm_env` eliminate duplicate systemd entries (PR #153)
+- **Runtime tunables**: `urnet-tools set node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `fast-auth` (PR #159)
+- **Provider version resolution** scoped to its own tag scheme (PR #199)
+- **Remove dead config fields**: `LegacyCreateContract` and `TrackUsedContracts` (PR #166)
+- **`urnet-tools` no-args** shows help instead of triggering install (PR #161)
+- **Dash/bash compatibility**: `echo -e` replaced with `printf` across scripts; lint extended to deps/uninstall (PR #117)
+- **Build release monitor**: Discord notifications on `urnetwork/build` release tags (PR #162)
+- **CI**: Docker build depends on test success, module cache, skip registry logins on PR builds (PRs #112, #198)
+- **Deps**: Bump `golang.org/x/net` (PR #196)
 
 ---
 

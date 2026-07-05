@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.24.35
+**Current Version**: v3.23.0-fix.25
 
 ---
 
@@ -1550,7 +1550,7 @@ Reachable under ordinary sustained loss (16 resends at ≥2s `ScaledRtt` fit ins
 
 **Fix**: Park instead of drop — set `resendTime = sendTime + AckTimeout` and re-`Add` to the queue. Retransmission stops but ack/teardown bookkeeping stays consistent. The ack-timeout check at line 2107 uses `sendTime` (never updated on resend), so once `sendTime + AckTimeout` elapses, the loop closes the entire sequence gracefully.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #201. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #201. v3.23.0-fix.25.
 
 ---
 
@@ -1560,7 +1560,7 @@ Reachable under ordinary sustained loss (16 resends at ≥2s `ScaledRtt` fit ins
 
 **Fix**: Call `self.contractStatus(contractStatus)` before the `return err` in both error branches.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #202. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #202. v3.23.0-fix.25.
 
 ---
 
@@ -1572,7 +1572,7 @@ The caller-side `StreamSequence` at `transfer_stream_manager.go:429` passes a ra
 
 **Fix (v2)**: Restore `MessagePoolReturn` in `WriteDetailed`'s contextDoneIndex/doneIndex/timeoutIndex branches. Remove the two redundant `MessagePoolReturn` calls in `transfer_stream_manager.go`'s err/!success branches — `WriteDetailed` handles the return on all failure paths; on success the route owns the buffer.
 
-**Status**: ✅ Merged `main` (2026-07-04). PRs #203, #206. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PRs #203, #206. v3.23.0-fix.25.
 
 ---
 
@@ -1583,7 +1583,7 @@ Two latent bugs with no current impact:
 - `rttHeap.MinRtt()` returned `items[n-1]` — an arbitrary heap leaf, neither min nor max. Min is `items[0]`. Unused today; fixed before anyone builds on it.
 - `MultiRouteSelector.setActive(route, active)` always set `routeActive[route] = false`, ignoring the `active` param. Both current callers pass `false` so behavior is correct; fixed to remove the footgun.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #200. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #200. v3.23.0-fix.25.
 
 ---
 
@@ -1593,7 +1593,7 @@ Commit `c3cefc7` raised TCP/UDP `MaxWindowSize` to 4 MiB, but `DefaultSendBuffer
 
 **Fix**: Raise to `mib(4)`. Tier3 auto and turbo already set 4 MiB queues, so the value is fleet-proven. Memory cost is +2 MiB per active send sequence. Profiles that set their own queue size explicitly (tier1/lowmem/tier2/tier3/turbo) are unaffected.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #204. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #204. v3.23.0-fix.25.
 
 ---
 
@@ -1603,7 +1603,7 @@ Commit `c3cefc7` raised TCP/UDP `MaxWindowSize` to 4 MiB, but `DefaultSendBuffer
 
 **Fix**: Raise the floor to 0.7 (~90 MiB consumed). Halves contract churn on high-RTT paths while the 0.85 ceiling still provides a 0.15 head start on renegotiation vs the hot path. 60s AckTimeout + 15s WriteTimeout provide ample slop if renegotiation is slower than expected.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #205. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #205. v3.23.0-fix.25.
 
 ---
 
@@ -1611,7 +1611,7 @@ Commit `c3cefc7` raised TCP/UDP `MaxWindowSize` to 4 MiB, but `DefaultSendBuffer
 
 Tab indentation introduced by PRs #201, #202, #203 in `transfer.go`, `transfer_route_manager.go`, and `transfer_contract_manager.go` was cleaned up with `gofmt -w`.
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #206. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #206. v3.23.0-fix.25.
 
 ---
 
@@ -1664,4 +1664,28 @@ Pool budget is divided evenly: `maxCount / shardCount`. Per-shard capacity floor
 - `TestMessagePoolShardPowerOfTwo` — validates bitmask routing constraint
 - All existing `TestMessagePool` / `TestMessagePoolShare` / transfer / send-receive tests continue passing
 
-**Status**: ✅ Merged `main` (2026-07-04). PR #207. v3.23.0-fix.24.35.
+**Status**: ✅ Merged `main` (2026-07-04). PR #207. v3.23.0-fix.25.
+
+---
+
+## 67. Contract Ramp-Up Scale 3
+
+**Purpose**: Increase `ContractTransferByteSeqScale` from 2 to 3, adding an intermediate ramp step between the 2 MiB initial and 128 MiB standard contract sizes. Reduces the proportion of unused contract allocations on short-lived connections (probes, quick disconnects, unreachable targets).
+
+**Files Modified**: `transfer_contract_manager.go`
+
+**Changes**:
+- `ContractTransferByteSeqScale`: 2 → 3
+
+**Ramp progression**:
+
+| Step | Scale=2 (before) | Scale=3 (after) |
+| :--- | :--- | :--- |
+| 0 (initial) | 2 MiB | 2 MiB |
+| 1 | ~65 MiB | ~44 MiB |
+| 2 | 128 MiB | ~86 MiB |
+| 3 | — | 128 MiB |
+
+**Tradeoff**: One additional contract negotiation per session for more granular sizing that better matches actual usage. Connections that complete in 1-2 contracts now allocate ~44 MiB instead of ~65 MiB, reducing waste.
+
+**Status**: ✅ Merged `main` (2026-07-05). PR #209. v3.23.0-fix.25.
