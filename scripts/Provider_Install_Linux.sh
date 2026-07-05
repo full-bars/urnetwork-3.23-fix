@@ -545,9 +545,38 @@ stop_systemd_units ()
     fi
 }
 
+# sanitize_restart_dropins
+# Repairs any urnetwork.service.d/*.conf drop-in with an invalid `Restart=`
+# value. systemd only accepts no/always/on-success/on-failure/on-abnormal/
+# on-watchdog/on-abort for this directive -- not a bare "yes"/"true"/"1"
+# (a common mistake by analogy to other tools' boolean restart flags). An
+# invalid value isn't an error systemd surfaces loudly: it logs a parse
+# warning on every daemon-reload/start and silently ignores that one line,
+# falling back to the base unit's `Restart=no`, which leaves the service
+# with zero crash-restart protection. urnet-tools has never written a
+# drop-in like this itself, but a stray/manually-created one persists
+# across installs and updates since nothing else in this script scans
+# urnetwork.service.d for foreign files -- only override.conf is managed
+# by override_set_env/override_rm_env.
+sanitize_restart_dropins ()
+{
+    dropin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    [ -d "$dropin_dir" ] || return 0
+
+    for f in "$dropin_dir"/*.conf; do
+        [ -f "$f" ] || continue
+        if grep -Eq '^Restart=(yes|true|1)[[:space:]]*$' "$f"; then
+            pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
+            sed -i -E 's/^Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
+        fi
+    done
+}
+
 install_systemd_units ()
 {
     start="$systemd_units_stopped"
+
+    sanitize_restart_dropins
 
     pr_info "Installing urnetwork.service in %s" "$systemd_service"
     mkdir -p "$systemd_userdir"
