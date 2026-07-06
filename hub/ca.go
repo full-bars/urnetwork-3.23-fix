@@ -172,11 +172,33 @@ func leafSANs() []string {
 	return sans
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func loadOrCreateCAMaterial(dataDir string) (password string, salt []byte, generatedPassword bool, err error) {
 	passwordPath := filepath.Join(dataDir, "hub.password")
 	saltPath := filepath.Join(dataDir, "hub.salt")
 
-	if data, readErr := os.ReadFile(passwordPath); readErr == nil {
+	pwExists := fileExists(passwordPath)
+	saltExists := fileExists(saltPath)
+
+	// Cross-consistency guard: if one file exists but the other doesn't, the
+	// missing half was likely deleted accidentally. Regenerating either half
+	// in isolation produces a completely different CA root, silently breaking
+	// every provider's trust chain. Treat this as corruption.
+	if pwExists != saltExists {
+		return "", nil, false, fmt.Errorf(
+			"CA material inconsistency: password exists=%v salt exists=%v — "+
+				"both files must exist or neither. If you intend to reset the CA, "+
+				"delete both %s and %s and restart",
+			pwExists, saltExists, passwordPath, saltPath,
+		)
+	}
+
+	if pwExists {
+		data, _ := os.ReadFile(passwordPath)
 		password = strings.TrimSpace(string(data))
 	} else {
 		b := make([]byte, 24)
@@ -203,6 +225,11 @@ func loadOrCreateCAMaterial(dataDir string) (password string, salt []byte, gener
 		if writeErr := writeFileAtomic(saltPath, []byte(hex.EncodeToString(salt)+"\n"), 0600); writeErr != nil {
 			return password, nil, generatedPassword, fmt.Errorf("write salt: %w", writeErr)
 		}
+	}
+
+	if len(password) < 8 {
+		return password, nil, generatedPassword, fmt.Errorf(
+			"hub password must be at least 8 characters (got %d)", len(password))
 	}
 
 	return password, salt, generatedPassword, nil

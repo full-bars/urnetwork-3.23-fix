@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -182,6 +184,40 @@ func TestLeafSANs_ContainsHostname(t *testing.T) {
 	}
 	if !found["127.0.0.1"] {
 		t.Error("missing 127.0.0.1 in SANs")
+	}
+}
+
+func TestLoadOrCreateCAMaterial_PartialMaterialFails(t *testing.T) {
+	dir := t.TempDir()
+
+	// Fresh start: should succeed and generate both files
+	pw, _, _, err := loadOrCreateCAMaterial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pw) == 0 {
+		t.Fatal("expected non-empty password")
+	}
+
+	// Delete salt only — must fail, not regenerate
+	os.Remove(filepath.Join(dir, "hub.salt"))
+	_, _, _, err = loadOrCreateCAMaterial(dir)
+	if err == nil {
+		t.Fatal("expected error when salt is missing but password exists")
+	}
+
+	// Delete password too — fresh start again, must succeed
+	os.Remove(filepath.Join(dir, "hub.password"))
+	_, _, _, err = loadOrCreateCAMaterial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now delete password only — must fail
+	os.Remove(filepath.Join(dir, "hub.password"))
+	_, _, _, err = loadOrCreateCAMaterial(dir)
+	if err == nil {
+		t.Fatal("expected error when password is missing but salt exists")
 	}
 }
 

@@ -1022,11 +1022,10 @@ func main() {
 		}
 		fmt.Printf("hub: CA fingerprint %s\n", ca.caFingerprint())
 
-		// Write CA cert
+		// Write CA cert (non-fatal — the hub can still serve TLS without it on disk)
 		caPath := filepath.Join(*dataDir, "ca.crt")
 		if err := os.WriteFile(caPath, ca.certPEM, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "hub: write CA cert: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "hub: WARNING: could not write CA cert to disk: %v\n", err)
 		}
 
 		// Issue initial leaf
@@ -1050,6 +1049,13 @@ func main() {
 				}
 				leafHolder.Store(&newLeaf)
 				fmt.Printf("hub: leaf certificate rotated\n")
+
+				// Re-write ca.crt to disk in case it was deleted mid-run.
+				// Providers fetch it at /api/ca-cert, but operators
+				// may copy it directly from the data dir.
+				if err := os.WriteFile(caPath, ca.certPEM, 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "hub: WARNING: could not rewrite CA cert: %v\n", err)
+				}
 			}
 		}()
 
