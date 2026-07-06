@@ -205,6 +205,21 @@ docker run -d --name=urfix \
 URNETWORK_REPORT_URL=http://HUB_IP:8080 ./ur-provider
 ```
 
+To use encrypted, CA-verified reporting (Option A above) without `urnet-tools hub link`, fetch the CA cert by hand and point the provider at `https://` instead:
+
+```sh
+# One-shot join token, minted on the hub:
+#   ./hub -mint-onboard-token -data /var/hub-data
+mkdir -p ~/.urnetwork
+curl -fsSk "https://HUB_IP:8443/api/ca-cert?token=YOUR_TOKEN" \
+  | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' \
+  | sed 's/\\n/\n/g' > ~/.urnetwork/hub_ca.pem
+
+URNETWORK_REPORT_URL=https://HUB_IP:8443 ./ur-provider
+```
+
+The provider reads the CA cert from the fixed path `~/.urnetwork/hub_ca.pem` — no env var to point it elsewhere. If the file isn't there, it falls back to the legacy `~/.urnetwork/hub.pin` fingerprint (if present) and otherwise fails closed rather than connecting unverified.
+
 ## Updating & Uninstalling
 
 ```sh
