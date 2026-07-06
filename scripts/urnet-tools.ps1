@@ -584,6 +584,19 @@ switch ($Command) {
 
     "hub" {
         $hubSubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
+
+        # Detect deployment model: Docker container takes priority; native
+        # binary is the fallback. Both may coexist on the same machine —
+        # container detection is scoped to $ContainerName so they don't
+        # contaminate each other.
+        $useDocker = $false
+        if (Get-Command docker -ErrorAction SilentlyContinue) {
+            $running = docker ps --format '{{.Names}}' 2>$null
+            if ($running -match $ContainerName) {
+                $useDocker = $true
+            }
+        }
+
         switch ($hubSubCmd) {
             "link" {
                 if ($SubArgs.Length -lt 2) {
@@ -591,12 +604,109 @@ switch ($Command) {
                     break
                 }
                 $rest = $SubArgs[1..($SubArgs.Length - 1)]
-                docker exec $ContainerName /usr/local/bin/urnet-tools hub link @rest
+
+                if ($useDocker) {
+                    docker exec $ContainerName /usr/local/bin/urnet-tools hub link @rest
+                    break
+                }
+
+                $url = $SubArgs[1]
+                $token = ""
+                if ($SubArgs.Length -gt 3 -and $SubArgs[2] -eq "--token") {
+                    $token = $SubArgs[3]
+                }
+                $hubDir = "$env:USERPROFILE\.urnetwork"
+                $null = New-Item -ItemType Directory -Force -Path $hubDir
+                $caFile = "$hubDir\hub_ca.pem"
+                $pinFile = "$hubDir\hub.pin"
+                $reportFile = "$hubDir\report_url"
+
+                # -SkipCertificateCheck requires PowerShell 6+ (pwsh)
+
+                try {
+                    if ($token -ne "") {
+                        Write-Host "Fetching hub CA certificate via onboard token..."
+                        $resp = Invoke-RestMethod -Uri "${url}/api/ca-cert?token=${token}" -SkipCertificateCheck -ErrorAction Stop
+                        if (-not $resp.ca_pem) {
+                            Write-Error "Hub responded but did not return a CA certificate."
+                            break
+                        }
+                        Write-Host ""
+                        Write-Host "Hub CA fingerprint: $($resp.ca_fingerprint)"
+                        Write-Host ""
+                        $pem = $resp.ca_pem -replace '\\n', "`n"
+                        Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
+                        Move-Item -Force "$caFile.tmp" $caFile
+                        Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
+                        Write-Host "CA certificate saved to $caFile"
+                    } else {
+                        Write-Host "Fetching hub CA certificate from $url/api/cert ..."
+                        $resp = Invoke-RestMethod -Uri "${url}/api/cert" -SkipCertificateCheck -ErrorAction Stop
+                        if ($resp.ca_pem) {
+                            Write-Host ""
+                            Write-Host "Hub CA fingerprint: $($resp.ca_fingerprint)"
+                            Write-Host ""
+                            $pem = $resp.ca_pem -replace '\\n', "`n"
+                            Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
+                            Move-Item -Force "$caFile.tmp" $caFile
+                            Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
+                            Write-Host "CA certificate saved to $caFile"
+                        } elseif ($resp.fingerprint) {
+                            Write-Warning "Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
+                            Write-Host ""
+                            Write-Host "Hub certificate fingerprint: $($resp.fingerprint)"
+                            Write-Host ""
+                            Set-Content -Path "$pinFile" -Value $resp.fingerprint -NoNewline
+                            Write-Host "Fingerprint pinned to $pinFile"
+                        } else {
+                            Write-Error "Could not extract CA certificate or fingerprint from hub response."
+                            break
+                        }
+                    }
+                } catch {
+                    Write-Error "Failed to reach hub: $_"
+                    break
+                }
+
+                Set-Content -Path "$reportFile" -Value $url -NoNewline
+                Write-Host "Report URL set to $url"
+                Write-Host ""
+                Write-Host "Success. The provider will now send encrypted reports to $url."
+                Write-Host "The change takes effect on the next report tick (no restart needed)."
                 break
             }
 
             "unlink" {
-                docker exec $ContainerName /usr/local/bin/urnet-tools hub unlink
+                if ($useDocker) {
+                    docker exec $ContainerName /usr/local/bin/urnet-tools hub unlink
+                    break
+                }
+
+                $hubDir = "$env:USERPROFILE\.urnetwork"
+                $caFile = "$hubDir\hub_ca.pem"
+                $pinFile = "$hubDir\hub.pin"
+                $reportFile = "$hubDir\report_url"
+
+                Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
+                Remove-Item -Path $caFile -ErrorAction SilentlyContinue
+                Write-Host "Removed $pinFile"
+                Write-Host "Removed $caFile"
+
+                if (Test-Path $reportFile) {
+                    $current = Get-Content $reportFile -Raw
+                    if ($current -match "^https://") {
+                        $hostPort = $current -replace "^https://", ""
+                        $hostOnly = $hostPort -replace ":.*", ""
+                        $newUrl = "http://${hostOnly}:8080"
+                        Set-Content -Path "$reportFile" -Value $newUrl -NoNewline
+                        Write-Host "Report URL changed to $newUrl (insecure)"
+                    } else {
+                        Write-Host "Report URL is $current (not HTTPS, left unchanged)"
+                    }
+                }
+                Write-Host ""
+                Write-Host "Unlinked. Reports are no longer encrypted."
+                Write-Host "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
                 break
             }
 
