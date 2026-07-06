@@ -55,7 +55,7 @@ hub_link() {
             echo "this directory — containers with bind mounts, native installs on"
             echo "the same user, etc."
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Proceed? (y/n) "
                 read -r answer
                 case "$answer" in
@@ -121,7 +121,7 @@ hub_link() {
             echo ""
             echo "Hub CA fingerprint: $ca_fp"
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Accept this fingerprint? (y/n) "
                 read -r answer
                 case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac
@@ -136,7 +136,7 @@ hub_link() {
             echo ""
             echo "Hub certificate fingerprint: $legacy_fp"
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Accept this fingerprint? (y/n) "
                 read -r answer
                 case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac

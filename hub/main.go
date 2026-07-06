@@ -101,9 +101,9 @@ func (rl *rateLimiter) allow(ip string) bool {
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	rl := newRateLimiter(60, time.Minute)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if idx := strings.LastIndex(ip, ":"); idx > 0 {
-			ip = ip[:idx]
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
 		}
 		if r.URL.Path == "/api/report" || r.URL.Path == "/api/events" {
 			next.ServeHTTP(w, r)
@@ -915,16 +915,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 }
 
 func main() {
-	for _, a := range os.Args[1:] {
-		if a == "-version" || a == "--version" || a == "-v" {
-			v := Version
-			if v == "" {
-				v = "dev"
-			}
-			fmt.Println("urnetwork-hub " + v)
-			os.Exit(0)
-		}
-	}
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.BoolVar(showVersion, "v", false, "print version and exit (alias)")
 
 	addr := flag.String("addr", ":8080", "listen address")
 	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
@@ -932,6 +924,15 @@ func main() {
 	showPassword := flag.Bool("show-password", false, "print the CA password and exit")
 	doMintOnboardToken := flag.Bool("mint-onboard-token", false, "mint an onboarding token and exit")
 	flag.Parse()
+
+	if *showVersion {
+		v := Version
+		if v == "" {
+			v = "dev"
+		}
+		fmt.Println("urnetwork-hub " + v)
+		os.Exit(0)
+	}
 
 	if *showPassword {
 		pwPath := filepath.Join(*dataDir, "hub.password")

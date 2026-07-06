@@ -35,6 +35,7 @@ const (
 	argonMemory      = 64 * 1024 // 64 MiB
 	argonThreads     = 4
 	argonKeyLen      = 32
+	leafSANMax       = 64
 )
 
 type hubCA struct {
@@ -57,7 +58,10 @@ func deriveCA(password string, salt []byte) (*hubCA, error) {
 	}
 	serial := new(big.Int).SetBytes(serialBytes)
 
-	notBefore, _ := time.Parse(time.RFC3339, caNotBefore)
+	notBefore, err := time.Parse(time.RFC3339, caNotBefore)
+	if err != nil {
+		return nil, fmt.Errorf("parse caNotBefore: %w", err)
+	}
 	notAfter := notBefore.AddDate(caValidYears, 0, 0)
 
 	tmpl := &x509.Certificate{
@@ -173,6 +177,9 @@ func leafSANs() []string {
 			}
 		}
 	}
+	if len(sans) > leafSANMax {
+		sans = sans[:leafSANMax]
+	}
 	return sans
 }
 
@@ -182,6 +189,8 @@ func fileExists(path string) bool {
 }
 
 func loadOrCreateCAMaterial(dataDir string) (password string, salt []byte, generatedPassword bool, err error) {
+	sweepStaleTmpFiles(dataDir)
+
 	passwordPath := filepath.Join(dataDir, "hub.password")
 	saltPath := filepath.Join(dataDir, "hub.salt")
 
@@ -245,4 +254,16 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func sweepStaleTmpFiles(dataDir string) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+			os.Remove(filepath.Join(dataDir, e.Name()))
+		}
+	}
 }
