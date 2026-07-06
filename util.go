@@ -16,6 +16,8 @@ import (
 	// "strings"
 	// "encoding/json"
 	// "reflect"
+
+	"github.com/urnetwork/glog"
 	mathrand "math/rand"
 )
 
@@ -271,10 +273,11 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 	go HandleError(func() {
 		for {
 			select {
-			case _, ok := <-stopSignal:
+			case sig, ok := <-stopSignal:
 				if !ok {
 					return
 				}
+				glog.InfoDepthf(2, "[signal] received %v — shutting down\n", sig)
 				self.Set()
 			}
 		}
