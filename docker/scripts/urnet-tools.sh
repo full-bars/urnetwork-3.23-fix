@@ -36,6 +36,36 @@ hub_link() {
     pin_file="$hub_dir/hub.pin"
     report_file="$hub_dir/report_url"
 
+    extract_host() {
+        h="$1"
+        h="${h#https://}"
+        h="${h#http://}"
+        h="${h%%:*}"
+        printf '%s' "$h" | tr '[:upper:]' '[:lower:]'
+    }
+    if [ -f "$report_file" ]; then
+        old_host=$(extract_host "$(cat "$report_file" | tr -d '\n')")
+        new_host=$(extract_host "$url")
+        if [ "$old_host" != "$new_host" ]; then
+            echo "WARNING: This provider directory is already linked to a different hub host."
+            echo "  Current: $old_host"
+            echo "  New:     $new_host"
+            echo ""
+            echo "Linking to a different host will reconfigure all providers sharing"
+            echo "this directory — containers with bind mounts, native installs on"
+            echo "the same user, etc."
+            echo ""
+            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+                printf "Proceed? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) echo "Aborted."; exit 1 ;;
+                esac
+            fi
+        fi
+    fi
+
     fetch_json() {
         local u="$1"
         if command -v curl > /dev/null; then
@@ -74,6 +104,7 @@ hub_link() {
         mkdir -p "$hub_dir"
         printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
         chmod 600 "$ca_file"
+        rm -f "$pin_file"
         echo "CA certificate saved to $ca_file"
     else
         echo "Fetching hub certificate from $url/api/cert ..."
@@ -98,6 +129,7 @@ hub_link() {
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
             chmod 600 "$ca_file"
+            rm -f "$pin_file"
             echo "CA certificate saved to $ca_file"
         elif [ -n "$legacy_fp" ]; then
             echo "WARNING: Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
@@ -118,7 +150,6 @@ hub_link() {
         fi
     fi
 
-    rm -f "$pin_file"
     printf '%s\n' "$url" > "$report_file.tmp" && mv "$report_file.tmp" "$report_file"
     echo "Report URL set to $url"
     echo ""
