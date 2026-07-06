@@ -2101,14 +2101,13 @@ do_hub () {
             ;;
 
         link)
-            url="$1"
-            if [ -z "$url" ]; then
-                pr_err "Usage: urnet-tools hub link <https://hub-host:port>"
-                pr_err "Fetches the hub's TLS certificate, confirms the fingerprint,"
-                pr_err "and pins it so all future reports are encrypted."
+            if [ $# -eq 0 ]; then
+                pr_err "Usage: urnet-tools hub link <https://hub-host:port> [--token <onboard-token>]"
+                pr_err "Fetches the hub's CA certificate and configures TLS trust so all"
+                pr_err "future reports are encrypted and verified."
                 exit 1
             fi
-            do_hub_link "$url"
+            do_hub_link "$@"
             ;;
 
         test)
@@ -2711,6 +2710,11 @@ do_hub_init () {
         esac
     done
 
+    if [ "$has_systemd" -eq 0 ]; then
+        pr_err "systemd is not available on this system"
+        exit 1
+    fi
+
     if [ -f "$ca_cert" ]; then
         if command -v openssl > /dev/null; then
             fp=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
@@ -2820,7 +2824,8 @@ do_hub_onboard_cmd () {
     # Best-effort local IP for the one-liner
     local_ip=""
     if command -v hostname > /dev/null; then
-        local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        # Prefer the first IPv4 address — IPv6 needs brackets in URLs
+        local_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 '\.')
     fi
 
     pr_info "Token:      %s" "$token"
