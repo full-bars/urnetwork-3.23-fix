@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -222,6 +223,77 @@ func TestLoadOrCreateCAMaterial_PartialMaterialFails(t *testing.T) {
 	_, _, _, err = loadOrCreateCAMaterial(dir)
 	if err == nil {
 		t.Fatal("expected error when password is missing but salt exists")
+	}
+}
+
+func TestLoadOrCreateCAMaterial_RejectsShortPassword(t *testing.T) {
+	dir := t.TempDir()
+	// Write a too-short password alongside a valid salt
+	_ = os.WriteFile(filepath.Join(dir, "hub.password"), []byte("abc"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "hub.salt"), []byte("deadbeef"), 0600)
+
+	_, _, _, err := loadOrCreateCAMaterial(dir)
+	if err == nil {
+		t.Fatal("expected error for password shorter than 8 chars")
+	}
+	if !strings.Contains(err.Error(), "at least 8 characters") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestCaFingerprint_ErrorOnCorruptPEM(t *testing.T) {
+	ca := &hubCA{certPEM: []byte("this is not a PEM certificate")}
+	_, err := ca.caFingerprint()
+	if err == nil {
+		t.Fatal("expected error on corrupt PEM")
+	}
+}
+
+func TestLeafSANs_IncludesIPv6Loopback(t *testing.T) {
+	// The loopback check in leafSANs is independent of host interfaces.
+	sans := leafSANs()
+	found := false
+	for _, s := range sans {
+		if s == "::1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ::1 in leaf SANs")
+	}
+}
+
+func TestLeafSANs_CappedAtMax(t *testing.T) {
+	sans := leafSANs()
+	if len(sans) > leafSANMax {
+		t.Errorf("leafSANs returned %d entries, expected at most %d", len(sans), leafSANMax)
+	}
+}
+
+func TestSweepStaleTmpFiles_RemovesTmpFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Create a few .tmp files
+	for _, name := range []string{"hub.password.tmp", "hub.salt.tmp", "ca.crt.tmp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create a non-empty, non-.tmp file that should survive
+	realFile := filepath.Join(dir, "hub.password")
+	if err := os.WriteFile(realFile, []byte("real"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepStaleTmpFiles(dir)
+
+	for _, name := range []string{"hub.password.tmp", "hub.salt.tmp", "ca.crt.tmp"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("expected %s to be removed", name)
+		}
+	}
+	if _, err := os.Stat(realFile); err != nil {
+		t.Errorf("expected hub.password to survive sweep: %v", err)
 	}
 }
 
