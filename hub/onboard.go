@@ -197,8 +197,25 @@ mkdir -p ~/.urnetwork
 echo "Fetching CA certificate..."
 RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo "$HUB_URL" | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
 
-CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
-CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+CA_PEM=""
+CA_FP=""
+if command -v jq >/dev/null 2>&1; then
+    CA_PEM=$(echo "$RESPONSE" | jq -r '.ca_pem // ""' 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | jq -r '.ca_fingerprint // ""' 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ] && command -v python3 >/dev/null 2>&1; then
+    CA_PEM=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ca_pem',''))" 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ca_fingerprint',''))" 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ]; then
+    # awk fallback for bare Alpine/BusyBox (no jq, no python3)
+    CA_PEM=$(echo "$RESPONSE" | awk -F'"' '{for(i=1;i<NF;i++) if($i=="ca_pem"){v=$(i+2); gsub(/\\\\n/,"\n",v); print v; exit}}' 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | awk -F'"' '{for(i=1;i<NF;i++) if($i=="ca_fingerprint"){print $(i+2); exit}}' 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ]; then
+    CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
+    CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+fi
 
 if [ -z "$CA_PEM" ]; then
     echo "ERROR: Could not parse CA certificate"
