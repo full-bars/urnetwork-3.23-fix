@@ -640,10 +640,12 @@ switch ($Command) {
                             Write-Warning "this directory — containers with bind mounts, native installs on"
                             Write-Warning "the same user, etc."
                             Write-Warning ""
-                            $answer = Read-Host "Proceed? (y/n)"
-                            if ($answer -ne "y") {
-                                Write-Host "Aborted."
-                                break
+                            if ($env:HUB_LINK_YES -ne "1") {
+                                $answer = Read-Host "Proceed? (y/n)"
+                                if ($answer -ne "y") {
+                                    Write-Host "Aborted."
+                                    break
+                                }
                             }
                         }
                     }
