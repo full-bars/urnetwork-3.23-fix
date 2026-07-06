@@ -183,6 +183,10 @@ func TestReadSHMLog_LastN(t *testing.T) {
 }
 
 func TestProxyReloadTrigger_WriteAndRead(t *testing.T) {
+	writeReloadTriggerDebounce = 0
+	lastReloadTriggerTime.ts = time.Time{}
+	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "proxy.reload")
 
@@ -241,6 +245,10 @@ func TestAcquireProxyLock_SecondFails(t *testing.T) {
 }
 
 func TestWriteProxyConfig_AutoReloadTrigger(t *testing.T) {
+	writeReloadTriggerDebounce = 0
+	lastReloadTriggerTime.ts = time.Time{}
+	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
+
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)

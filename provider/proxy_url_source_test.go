@@ -16,6 +16,8 @@ func withTempHome(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir) // os.UserHomeDir() reads this on Windows
+	// Disable reload trigger debounce for tests that write triggers back-to-back.
+	lastReloadTriggerTime.ts = time.Time{}
 	return dir
 }
 

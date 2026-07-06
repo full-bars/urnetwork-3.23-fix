@@ -50,21 +50,6 @@ func readReloadSeq(path string) (int, error) {
 	return n, nil
 }
 
-// writeReloadTrigger increments the sequence number in the trigger file.
-// Called by the proxy refresh subcommand after confirmation.
-func writeReloadTrigger(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	seq, _ := readReloadSeq(path)
-	seq++
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.Itoa(seq)), 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // acquireProxyLock creates the lock file at the default path. Returns an error
 // if a reload is already in progress (lock already held).
 func acquireProxyLock() (func(), error) {
@@ -98,6 +83,54 @@ func acquireProxyLockAt(path string) (func(), error) {
 }
 
 const proxyLockStaleAge = 5 * time.Minute
+
+// writeReloadTriggerDebounce is the minimum interval between consecutive
+// trigger writes. Callers inside fetch/reaper loops may fire hundreds of
+// times per cycle; this ensures the watcher only picks up one trigger
+// per debounce window instead of spawning overlapping reloads.
+var writeReloadTriggerDebounce = 30 * time.Second
+
+var lastReloadTriggerTime struct {
+	sync.Mutex
+	ts      time.Time
+	pending bool // true if a suppressed call is waiting for trailing write
+}
+
+func writeReloadTrigger(path string) error {
+	now := time.Now()
+	lastReloadTriggerTime.Lock()
+	elapsed := now.Sub(lastReloadTriggerTime.ts)
+	if elapsed < writeReloadTriggerDebounce {
+		if !lastReloadTriggerTime.pending {
+			lastReloadTriggerTime.pending = true
+			remaining := writeReloadTriggerDebounce - elapsed
+			time.AfterFunc(remaining, func() { doWriteReloadTrigger(path) })
+		}
+		lastReloadTriggerTime.Unlock()
+		return nil
+	}
+	lastReloadTriggerTime.ts = now
+	lastReloadTriggerTime.Unlock()
+	return doWriteReloadTrigger(path)
+}
+
+func doWriteReloadTrigger(path string) error {
+	lastReloadTriggerTime.Lock()
+	lastReloadTriggerTime.pending = false
+	lastReloadTriggerTime.ts = time.Now()
+	lastReloadTriggerTime.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	seq, _ := readReloadSeq(path)
+	seq++
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.Itoa(seq)), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
 
 func isLockStale(data []byte) bool {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
