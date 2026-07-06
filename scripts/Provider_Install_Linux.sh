@@ -2742,14 +2742,17 @@ do_hub_init () {
         pr_warn "been interrupted. Re-running init will overwrite the existing password."
         pr_warn "If you continue, you may need to re-link all providers."
         pr_warn ""
-        if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-            printf "Proceed? (y/n) "
-            read -r answer
-            case "$answer" in
-                [Yy]|[Yy][Ee][Ss]) ;;
-                *) pr_err "Aborted by user."; exit 1 ;;
-            esac
-        fi
+        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+            1|yes|true|y) ;;
+            *)
+                printf "Proceed? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) pr_err "Aborted by user."; exit 1 ;;
+                esac
+                ;;
+        esac
     fi
 
     # Write password to hub.data dir before start so hub derives CA from it
@@ -2937,14 +2940,17 @@ do_hub_link () {
             pr_warn "this directory — containers with bind mounts, native installs on"
             pr_warn "the same user, etc."
             pr_warn ""
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
+        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+            1|yes|true|y) ;;
+            *)
                 printf "Proceed? (y/n) "
                 read -r answer
                 case "$answer" in
                     [Yy]|[Yy][Ee][Ss]) ;;
                     *) pr_err "Aborted by user."; exit 1 ;;
                 esac
-            fi
+                ;;
+        esac
         fi
     fi
 
@@ -2998,14 +3004,17 @@ do_hub_link () {
             pr_info "  %s" "$ca_fingerprint"
             pr_info ""
 
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
 
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
@@ -3023,14 +3032,17 @@ do_hub_link () {
             pr_info "  %s" "$legacy_fp"
             pr_info ""
 
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
 
             mkdir -p "$hub_dir"
             printf '%s\n' "$legacy_fp" > "$pin_file.tmp"

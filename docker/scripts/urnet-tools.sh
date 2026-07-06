@@ -55,14 +55,17 @@ hub_link() {
             echo "this directory — containers with bind mounts, native installs on"
             echo "the same user, etc."
             echo ""
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-                printf "Proceed? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) echo "Aborted."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Proceed? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
         fi
     fi
 
@@ -122,11 +125,17 @@ hub_link() {
             echo ""
             echo "Hub CA fingerprint: $ca_fp"
             echo ""
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
             chmod 600 "$ca_file"
@@ -137,11 +146,17 @@ hub_link() {
             echo ""
             echo "Hub certificate fingerprint: $legacy_fp"
             echo ""
-            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
             mkdir -p "$hub_dir"
             printf '%s\n' "$legacy_fp" > "$pin_file.tmp" && mv "$pin_file.tmp" "$pin_file"
             echo "Fingerprint pinned to $pin_file"
