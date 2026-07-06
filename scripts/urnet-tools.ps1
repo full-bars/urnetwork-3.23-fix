@@ -559,6 +559,10 @@ switch ($Command) {
             Write-Host "Report URL removed (takes effect on next reporter tick)"
         }
         elseif ($reportArg -ne "") {
+            if ($reportArg -notmatch '^https?://') {
+                Write-Error "Report URL must start with http:// or https://"
+                break
+            }
             $safeUrl = $reportArg -replace "'", "'\"'\"'"
             docker exec $ContainerName sh -c "echo '$safeUrl' > \"`$HOME/.urnetwork/report_url\""
             Write-Host "Report URL set to $reportArg (takes effect on next reporter tick)"
@@ -592,12 +596,22 @@ switch ($Command) {
         $useDocker = $false
         if (Get-Command docker -ErrorAction SilentlyContinue) {
             try {
-                $job = Start-Job -ScriptBlock { docker ps --format '{{.Names}}' 2>$null }
+                $job = Start-Job -ScriptBlock { docker ps -a --format '{{.Names}}' 2>$null }
                 $null = Wait-Job $job -Timeout 5
-                $running = Receive-Job $job -ErrorAction SilentlyContinue
+                $allContainers = Receive-Job $job -ErrorAction SilentlyContinue
                 Remove-Job $job -Force
-                if (($running -split "`n") -contains $ContainerName) {
-                    $useDocker = $true
+
+                $job2 = Start-Job -ScriptBlock { docker ps --format '{{.Names}}' 2>$null }
+                $null = Wait-Job $job2 -Timeout 5
+                $running = Receive-Job $job2 -ErrorAction SilentlyContinue
+                Remove-Job $job2 -Force
+
+                if (($allContainers -split "`n") -contains $ContainerName) {
+                    if (($running -split "`n") -contains $ContainerName) {
+                        $useDocker = $true
+                    } else {
+                        Write-Warning "Container '$ContainerName' exists but is stopped. Start it first: docker start $ContainerName"
+                    }
                 }
             } catch {
                 $useDocker = $false
@@ -631,7 +645,8 @@ switch ($Command) {
                 }
 
                 if (-not $useDocker) {
-                    $reportFile = "$env:USERPROFILE\.urnetwork\report_url"
+                    $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
+                    $reportFile = "$homeDir\.urnetwork\report_url"
                     $newHost = ($url -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
                     $newHost = $newHost.ToLower()
                     if (Test-Path $reportFile) {
@@ -647,7 +662,8 @@ switch ($Command) {
                             Write-Warning "this directory — containers with bind mounts, native installs on"
                             Write-Warning "the same user, etc."
                             Write-Warning ""
-                            if ($env:HUB_LINK_YES -ne "1") {
+                            $hly = if ($env:HUB_LINK_YES) { $env:HUB_LINK_YES.ToLower() } else { "0" }
+                            if ($hly -ne "1" -and $hly -ne "yes" -and $hly -ne "true" -and $hly -ne "y") {
                                 $answer = Read-Host "Proceed? (y/n)"
                                 if ($answer -ne "y") {
                                     Write-Host "Aborted."
@@ -658,7 +674,7 @@ switch ($Command) {
                     }
                 }
 
-                $hubDir = "$env:USERPROFILE\.urnetwork"
+                $hubDir = "$homeDir\.urnetwork"
                 $null = New-Item -ItemType Directory -Force -Path $hubDir
                 $caFile = "$hubDir\hub_ca.pem"
                 $pinFile = "$hubDir\hub.pin"
@@ -725,7 +741,8 @@ switch ($Command) {
                     break
                 }
 
-                $hubDir = "$env:USERPROFILE\.urnetwork"
+                $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
+                $hubDir = "$homeDir\.urnetwork"
                 $caFile = "$hubDir\hub_ca.pem"
                 $pinFile = "$hubDir\hub.pin"
                 $reportFile = "$hubDir\report_url"

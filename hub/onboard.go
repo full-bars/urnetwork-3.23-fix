@@ -23,7 +23,7 @@ var tokenFileMu sync.Mutex
 
 // mintOnboardToken creates a token, appends to onboard.tokens, prunes expired
 func mintOnboardToken(dataDir string, now time.Time, ttl time.Duration) (token string, expiry time.Time, err error) {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", time.Time{}, fmt.Errorf("generate token: %w", err)
 	}
@@ -72,6 +72,20 @@ func validateOnboardToken(dataDir, token string, now time.Time) bool {
 			if now.Before(time.Unix(expiryUnix, 0)) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func tokenExists(dataDir, token string) bool {
+	path := filepath.Join(dataDir, "onboard.tokens")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, token+" ") {
+			return true
 		}
 	}
 	return false
@@ -127,7 +141,12 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 			return
 		}
 		if !validateOnboardToken(dataDir, token, time.Now()) {
-			http.Error(w, `{"error":"invalid or expired token"}`, 403)
+			// Distinguish "token not found" from "token expired"
+			if tokenExists(dataDir, token) {
+				http.Error(w, `{"error":"token expired"}`, 403)
+			} else {
+				http.Error(w, `{"error":"token not found"}`, 403)
+			}
 			return
 		}
 		tokenPrefix := token

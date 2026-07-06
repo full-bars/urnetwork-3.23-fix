@@ -2742,7 +2742,7 @@ do_hub_init () {
         pr_warn "been interrupted. Re-running init will overwrite the existing password."
         pr_warn "If you continue, you may need to re-link all providers."
         pr_warn ""
-        if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+        if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
             printf "Proceed? (y/n) "
             read -r answer
             case "$answer" in
@@ -2773,6 +2773,10 @@ do_hub_init () {
     if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
         systemctl --user restart urnetwork-hub.service || { pr_err "Failed to restart hub"; exit 1; }
     else
+        if systemctl --user is-enabled urnetwork-hub.service 2>/dev/null | grep -q 'masked'; then
+            pr_err "urnetwork-hub.service is masked — unmask it first: systemctl --user unmask urnetwork-hub.service"
+            exit 1
+        fi
         systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
     fi
 
@@ -2808,8 +2812,8 @@ do_hub_init () {
 
 do_hub_show_password () {
     hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -f "$hub_bin" ]; then
-        pr_err "Hub binary not found at %s" "$hub_bin"
+    if [ ! -x "$hub_bin" ]; then
+        pr_err "Hub binary not executable at %s" "$hub_bin"
         exit 1
     fi
     pr_info "Hub password (keep this secret, do not paste it anywhere public):"
@@ -2819,8 +2823,8 @@ do_hub_show_password () {
 
 do_hub_onboard_cmd () {
     hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -f "$hub_bin" ]; then
-        pr_err "Hub binary not found at %s" "$hub_bin"
+    if [ ! -x "$hub_bin" ]; then
+        pr_err "Hub binary not executable at %s" "$hub_bin"
         exit 1
     fi
 
@@ -2933,7 +2937,7 @@ do_hub_link () {
             pr_warn "this directory — containers with bind mounts, native installs on"
             pr_warn "the same user, etc."
             pr_warn ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Proceed? (y/n) "
                 read -r answer
                 case "$answer" in
@@ -2993,7 +2997,7 @@ do_hub_link () {
             pr_info "  %s" "$ca_fingerprint"
             pr_info ""
 
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Accept this fingerprint? (y/n) "
                 read -r answer
                 case "$answer" in
@@ -3018,7 +3022,7 @@ do_hub_link () {
             pr_info "  %s" "$legacy_fp"
             pr_info ""
 
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            if [ "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "1" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "yes" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "true" && "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" != "y" ]; then
                 printf "Accept this fingerprint? (y/n) "
                 read -r answer
                 case "$answer" in
