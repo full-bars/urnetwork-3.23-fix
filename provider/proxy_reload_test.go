@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -229,4 +230,96 @@ func TestReload_WarmupGate_DefersThenLaunchesURLProxies(t *testing.T) {
 	if !launched {
 		t.Fatal("URL proxy must be launched after warmup completes")
 	}
+}
+
+func TestWriteReloadTrigger_DebounceSuppressesRapidWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.reload")
+
+	// Enable debounce at 500ms for fast test
+	writeReloadTriggerDebounce = 500 * time.Millisecond
+	lastReloadTriggerTime.ts = time.Time{}
+	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
+
+	// First write succeeds
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+	seq1, _ := readReloadSeq(path)
+	if seq1 != 1 {
+		t.Fatalf("first write: expected seq 1, got %d", seq1)
+	}
+
+	// Second write within debounce window is suppressed
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// After debounced second write: trailing edge scheduled but not yet fired → seq still 1
+	seqAfter := func() int { s, _ := readReloadSeq(path); return s }()
+	if seqAfter != 1 {
+		t.Fatalf("expected seq 1 (trailing not yet fired), got %d", seqAfter)
+	}
+
+	// Wait for trailing edge to fire
+	time.Sleep(600 * time.Millisecond)
+	seqAfter = func() int { s, _ := readReloadSeq(path); return s }()
+	if seqAfter != 2 {
+		t.Fatalf("expected seq 2 (trailing edge fired), got %d", seqAfter)
+	}
+}
+
+func TestWriteReloadTrigger_TrailingEdgeFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.reload")
+
+	writeReloadTriggerDebounce = 100 * time.Millisecond
+	lastReloadTriggerTime.ts = time.Time{}
+	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
+
+	// First write
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second write within window — suppressed, schedules trailing edge
+	if err := writeReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sequence should still be 1 (trailing edge hasn't fired yet)
+	seq, _ := readReloadSeq(path)
+	if seq != 1 {
+		t.Fatalf("expected seq 1 (trailing not yet fired), got %d", seq)
+	}
+
+	// Wait for trailing edge + some margin
+	time.Sleep(200 * time.Millisecond)
+
+	seq, _ = readReloadSeq(path)
+	if seq != 2 {
+		t.Fatalf("expected seq 2 (trailing edge fired), got %d", seq)
+	}
+}
+
+func TestDoWriteReloadTrigger_IncrementsSequence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.reload")
+
+	if err := doWriteReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+	seq, _ := readReloadSeq(path)
+	if seq != 1 {
+		t.Fatalf("expected seq 1, got %d", seq)
+	}
+
+	if err := doWriteReloadTrigger(path); err != nil {
+		t.Fatal(err)
+	}
+	seq, _ = readReloadSeq(path)
+	if seq != 2 {
+		t.Fatalf("expected seq 2, got %d", seq)
+	}
+	// Confirm doWriteReloadTrigger bypasses debounce (no suppression)
 }
