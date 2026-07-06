@@ -191,15 +191,19 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 // added proxies (staggered), and rewrites proxy.state. Untouched proxies are
 // never disturbed.
 func (r *ProxyReloader) reload() {
+	reloadStart := time.Now()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	lockAcqStart := time.Now()
 	lockRelease, err := acquireProxyLock()
 	if err != nil {
-		tlog("[proxy] reload skipped: %v\n", err)
+		tlog("[proxy] reload skipped: %v (waited %v)\n", err, time.Since(reloadStart).Round(time.Millisecond))
 		return
 	}
 	defer lockRelease()
+	lockWait := time.Since(lockAcqStart)
 
 	proxyStateMu.Lock()
 	if newState, err := readProxyState(); err == nil {
@@ -257,6 +261,9 @@ func (r *ProxyReloader) reload() {
 		running[addr] = true
 	}
 	r.cancelMapMu.Unlock()
+
+	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
+		len(running), len(desiredSet), lockWait.Round(time.Millisecond))
 
 	var added []*connect.ProxySettings
 	deferredBackoff := 0
@@ -404,10 +411,12 @@ func (r *ProxyReloader) reload() {
 	proxyStateMu.Unlock()
 
 	deferredTotal := deferredBackoff + warmupDeferred
+	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
 	if deferredTotal > 0 {
-		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d)\n",
-			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred)
+		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
+			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
 	} else {
-		tlog("[proxy] reloaded: +%d added, -%d removed\n", len(added), len(removed))
+		tlog("[proxy] reloaded: +%d added, -%d removed [%s]\n",
+			len(added), len(removed), reloadDur)
 	}
 }
