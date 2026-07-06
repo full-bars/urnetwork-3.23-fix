@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"net"
 	"testing"
 	"time"
 )
@@ -101,6 +102,44 @@ func TestIssueLeaf_WrongCAFails(t *testing.T) {
 	}
 	if _, err := leafCert.Verify(opts); err == nil {
 		t.Error("wrong CA should not verify")
+	}
+}
+
+// TestIssueLeaf_ClassifiesIPSANsCorrectly guards against IP-literal SANs
+// (e.g. "127.0.0.1", interface IPs from leafSANs) ending up in DNSNames
+// instead of IPAddresses — the wrong general-name type per x509, which
+// breaks hostname verification by IP for any consumer that checks it (a
+// browser, openssl s_client, or a future `hub test` command), even though
+// verifyHubChain itself skips hostname checking.
+func TestIssueLeaf_ClassifiesIPSANsCorrectly(t *testing.T) {
+	ca, err := deriveCA("test-password", randomBytes(t, 32))
+	if err != nil {
+		t.Fatalf("deriveCA: %v", err)
+	}
+
+	leaf, err := ca.issueLeaf([]string{"hub.example", "127.0.0.1", "10.0.0.5"}, 48*time.Hour)
+	if err != nil {
+		t.Fatalf("issueLeaf: %v", err)
+	}
+	leafCert, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+
+	if len(leafCert.IPAddresses) != 2 {
+		t.Errorf("IPAddresses = %v, want 2 entries (127.0.0.1, 10.0.0.5)", leafCert.IPAddresses)
+	}
+	for _, dns := range leafCert.DNSNames {
+		if net.ParseIP(dns) != nil {
+			t.Errorf("DNSNames = %v, contains an IP literal %q that belongs in IPAddresses", leafCert.DNSNames, dns)
+		}
+	}
+	if len(leafCert.DNSNames) != 1 || leafCert.DNSNames[0] != "hub.example" {
+		t.Errorf("DNSNames = %v, want exactly [\"hub.example\"]", leafCert.DNSNames)
+	}
+
+	if err := leafCert.VerifyHostname("127.0.0.1"); err != nil {
+		t.Errorf("VerifyHostname(127.0.0.1) failed: %v — IP SAN not recognized", err)
 	}
 }
 
