@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,14 +19,7 @@ const (
 	onboardTokenTTL = 15 * time.Minute
 )
 
-type tokenEntry struct {
-	token   string
-	expiry  time.Time
-}
-
-var (
-	tokenFileMu sync.Mutex
-)
+var tokenFileMu sync.Mutex
 
 // mintOnboardToken creates a token, appends to onboard.tokens, prunes expired
 func mintOnboardToken(dataDir string, now time.Time, ttl time.Duration) (token string, expiry time.Time, err error) {
@@ -70,7 +64,7 @@ func validateOnboardToken(dataDir, token string, now time.Time) bool {
 		if len(parts) != 2 {
 			continue
 		}
-		if parts[0] == token {
+		if subtle.ConstantTimeCompare([]byte(parts[0]), []byte(token)) == 1 {
 			expiryUnix, err := strconv.ParseInt(parts[1], 10, 64)
 			if err != nil {
 				continue
@@ -147,11 +141,15 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 // handleOnboardScript serves GET /onboard.sh
 func handleOnboardScript(tlsPort string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		// Derive HTTPS URL from Host header
-		httpsURL := fmt.Sprintf("https://%s", host)
+		// r.Host carries whatever port the request actually arrived on
+		// (e.g. the plain-HTTP port from the documented curl one-liner),
+		// which is unrelated to tlsPort — always take just the hostname
+		// and append tlsPort explicitly, rather than falling back to the
+		// request's own host:port when tlsPort happens to be "443".
+		hostOnly := strings.Split(r.Host, ":")[0]
+		httpsURL := fmt.Sprintf("https://%s", hostOnly)
 		if tlsPort != "" && tlsPort != "443" {
-			httpsURL = fmt.Sprintf("https://%s:%s", strings.Split(host, ":")[0], tlsPort)
+			httpsURL = fmt.Sprintf("https://%s:%s", hostOnly, tlsPort)
 		}
 
 		w.Header().Set("Content-Type", "text/x-shellscript")
@@ -174,7 +172,7 @@ mkdir -p ~/.urnetwork
 echo "Fetching CA certificate..."
 RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo $HUB_URL | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
 
-CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\(.*\)".*/\1/p' | sed 's/\\n/\n/g')
+CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
 CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
 
 if [ -z "$CA_PEM" ]; then
@@ -184,8 +182,16 @@ fi
 
 echo "CA fingerprint: $CA_FP"
 
-# Write CA cert
-echo "$CA_PEM" | base64 -d > ~/.urnetwork/hub_ca.pem 2>/dev/null || echo "$CA_PEM" > ~/.urnetwork/hub_ca.pem
+# Write CA cert. CA_PEM is already the actual PEM text (BEGIN/END markers
+# and base64 body), not a base64-encoded blob of the whole thing — write it
+# directly. Piping it through "base64 -d" is wrong here and dangerous on
+# BusyBox/Alpine specifically: BusyBox's base64 -d silently ignores invalid
+# characters (like the "-----BEGIN CERTIFICATE-----" header) and exits 0
+# with corrupted output instead of failing, so a "|| fallback" pattern would
+# never trigger and hub_ca.pem would end up as garbage on exactly the
+# fork's documented Docker/Alpine deployment target.
+echo "$CA_PEM" > ~/.urnetwork/hub_ca.pem.tmp
+mv ~/.urnetwork/hub_ca.pem.tmp ~/.urnetwork/hub_ca.pem
 chmod 600 ~/.urnetwork/hub_ca.pem
 
 # Set report URL
