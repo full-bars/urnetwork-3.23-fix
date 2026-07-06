@@ -101,6 +101,16 @@ func (ca *hubCA) issueLeaf(sans []string, validity time.Duration) (tls.Certifica
 		return tls.Certificate{}, fmt.Errorf("leaf serial: %w", err)
 	}
 
+	var dnsNames []string
+	var ipAddrs []net.IP
+	for _, san := range sans {
+		if ip := net.ParseIP(san); ip != nil {
+			ipAddrs = append(ipAddrs, ip)
+		} else {
+			dnsNames = append(dnsNames, san)
+		}
+	}
+
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -109,7 +119,8 @@ func (ca *hubCA) issueLeaf(sans []string, validity time.Duration) (tls.Certifica
 		NotAfter:     now.Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     sans,
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddrs,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
