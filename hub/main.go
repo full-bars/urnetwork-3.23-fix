@@ -4,14 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
@@ -19,7 +14,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -1104,61 +1098,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func loadOrGenerateCert(certPath, keyPath string) (certPEM, keyPEM []byte, fingerprint string, err error) {
-	certPEM, err = os.ReadFile(certPath)
-	if err == nil && len(certPEM) > 0 {
-		keyPEM, err = os.ReadFile(keyPath)
-		if err == nil && len(keyPEM) > 0 {
-			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(certPEM)))
-			return certPEM, keyPEM, fp, nil
-		}
-	}
-	return generateCert()
-}
-
-func generateCert() (certPEM, keyPEM []byte, fingerprint string, err error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("generate key: %w", err)
-	}
-
-	host, _ := os.Hostname()
-	if host == "" {
-		host = "urnetwork-hub"
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("serial: %w", err)
-	}
-
-	now := time.Now()
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    now,
-		NotAfter:     now.AddDate(10, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{host},
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("create cert: %w", err)
-	}
-
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyBytes, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("marshal key: %w", err)
-	}
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
-
-	fingerprint = fmt.Sprintf("SHA256:%x", sha256.Sum256(der))
-	return certPEM, keyPEM, fingerprint, nil
 }
 
 func pemDecodeCert(pemBytes []byte) []byte {
