@@ -75,22 +75,24 @@ Reports contain fleet bandwidth and proxy details — don't send them over plain
 
 ### Option A: Built-in TLS (best for a trusted network / VPN)
 
-The hub has a TLS listener on `:8443` with an auto-generated self-signed ECDSA P-256 cert, using trust-on-first-use pinning (no CA, no reverse proxy needed).
+The hub uses a password-derived certificate authority (CA) for provider authentication. The CA key is derived from your password using Argon2id (memory-hard KDF), so no private key is ever stored on disk.
 
 ```sh
-# On the hub machine: turn on TLS (restarts the hub with HTTPS on :8443)
+# On the hub machine: initialize TLS (auto-generates password, derives CA)
 urnet-tools hub init
 
-# Sanity check from anywhere:
-urnet-tools hub test https://HUB_IP:8443
+# Get the one-time onboarding token:
+urnet-tools hub onboard-cmd
 
-# On each provider: pin the hub's cert fingerprint and switch reporting to HTTPS
-urnet-tools hub link https://HUB_IP:8443
+# On each provider: run the onboarding one-liner (valid 15 minutes)
+curl -fsSL http://HUB_IP:8080/onboard.sh | sh -s -- TOKEN
 ```
 
-The fingerprint is stored at `~/.urnetwork/hub.pin` on each provider and re-verified on every connection. A mismatch (e.g. the hub's cert was regenerated) refuses the connection and logs debug info to `/tmp/hub-tls-debug.txt` — re-run `hub link` to re-pin.
+The CA certificate is stored at `~/.urnetwork/hub_ca.pem` on each provider. If the hub is redeployed with a different password (new CA), providers will fail verification with a clear error — re-run onboarding.
 
-To roll back to plain reporting: `urnet-tools hub unlink`.
+To view your hub password: `urnet-tools hub show-password`
+
+To roll back to plain reporting: `urnet-tools hub unlink`
 
 ### Option B: Reverse proxy with a real domain (best for public-facing hubs)
 
