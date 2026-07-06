@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
@@ -27,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -931,7 +933,19 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
 	dataDir := flag.String("data", ".", "data directory for hub.json")
+	showPassword := flag.Bool("show-password", false, "print the CA password and exit")
 	flag.Parse()
+
+	if *showPassword {
+		pwPath := filepath.Join(*dataDir, "hub.password")
+		data, err := os.ReadFile(pwPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: no password found (run 'hub init' first): %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(strings.TrimSpace(string(data)))
+		os.Exit(0)
+	}
 
 	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
 	if hubToken == "" {
@@ -968,47 +982,80 @@ func main() {
 		tlsListen = os.Getenv("URNETWORK_HUB_TLS_ADDR")
 	}
 
-	var certFingerprint string
-	var certPath, keyPath string
-
 	if tlsListen != "" {
-		certPath = filepath.Join(*dataDir, "tls.crt")
-		keyPath = filepath.Join(*dataDir, "tls.key")
-		certPEM, keyPEM, fp, err := loadOrGenerateCert(certPath, keyPath)
+		// CA-based TLS setup
+		password, salt, generated, err := loadOrCreateCAMaterial(*dataDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "hub: TLS setup failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "hub: CA setup failed: %v\n", err)
 			os.Exit(1)
 		}
-		certFingerprint = fp
-		fmt.Printf("hub: TLS fingerprint %s\n", fp)
-
-		if _, err := os.Stat(certPath); os.IsNotExist(err) {
-			os.WriteFile(certPath, certPEM, 0600)
-			os.WriteFile(keyPath, keyPEM, 0600)
-			fpPath := filepath.Join(*dataDir, "tls.fingerprint")
-			os.WriteFile(fpPath, []byte(fp+"\n"), 0644)
+		if generated {
+			fmt.Printf("hub: Generated new password. Save it now — retrieve later with 'hub show-password'\n")
 		}
 
+		ca, err := deriveCA(password, salt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: CA derivation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("hub: CA fingerprint %s\n", ca.caFingerprint())
+
+		// Write CA cert
+		caPath := filepath.Join(*dataDir, "ca.crt")
+		if err := os.WriteFile(caPath, ca.certPEM, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "hub: write CA cert: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Issue initial leaf
+		leaf, err := ca.issueLeaf(leafSANs(), leafValidHours*time.Hour)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: initial leaf issuance failed: %v\n", err)
+			os.Exit(1)
+		}
+		leafHolder := &atomic.Pointer[tls.Certificate]{}
+		leafHolder.Store(&leaf)
+
+		// Leaf rotation goroutine
+		go func() {
+			ticker := time.NewTicker(leafRotationHours * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				newLeaf, err := ca.issueLeaf(leafSANs(), leafValidHours*time.Hour)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "hub: leaf rotation failed: %v\n", err)
+					continue
+				}
+				leafHolder.Store(&newLeaf)
+				fmt.Printf("hub: leaf certificate rotated\n")
+			}
+		}()
+
+		// Extended /api/cert endpoint
 		mux.HandleFunc("/api/cert", func(w http.ResponseWriter, r *http.Request) {
-			certBytes, err := os.ReadFile(certPath)
-			if err != nil {
-				http.Error(w, "cert not available", 500)
-				return
-			}
-			fp := certFingerprint
-			if fp == "" {
-				fp = fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(certBytes)))
-			}
+			currentLeaf := leafHolder.Load()
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
-				"fingerprint": fp,
-				"pem":         strings.TrimSpace(string(certBytes)),
+				"fingerprint":  fmt.Sprintf("SHA256:%x", sha256.Sum256(currentLeaf.Certificate[0])),
+				"pem":          strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: currentLeaf.Certificate[0]}))),
+				"ca_pem":       strings.TrimSpace(string(ca.certPEM)),
+				"ca_fingerprint": ca.caFingerprint(),
 			})
 		})
 
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
-			if err := http.ListenAndServeTLS(tlsListen, certPath, keyPath, wrapped); err != nil {
+			srv := &http.Server{
+				Addr:    tlsListen,
+				Handler: wrapped,
+				TLSConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+						return leafHolder.Load(), nil
+					},
+				},
+			}
+			if err := srv.ListenAndServeTLS("", ""); err != nil {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
 				os.Exit(1)
 			}
