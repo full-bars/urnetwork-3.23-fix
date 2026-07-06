@@ -199,7 +199,7 @@ func (r *ProxyReloader) reload() {
 	lockAcqStart := time.Now()
 	lockRelease, err := acquireProxyLock()
 	if err != nil {
-		tlog("[proxy] reload skipped: %v\n", err)
+		tlog("[proxy] reload skipped: %v (waited %v)\n", err, time.Since(reloadStart).Round(time.Millisecond))
 		return
 	}
 	defer lockRelease()
