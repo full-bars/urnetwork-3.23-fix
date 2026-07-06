@@ -35,6 +35,7 @@ const (
 	argonMemory      = 64 * 1024 // 64 MiB
 	argonThreads     = 4
 	argonKeyLen      = 32
+	leafSANMax       = 64
 )
 
 type hubCA struct {
@@ -57,7 +58,10 @@ func deriveCA(password string, salt []byte) (*hubCA, error) {
 	}
 	serial := new(big.Int).SetBytes(serialBytes)
 
-	notBefore, _ := time.Parse(time.RFC3339, caNotBefore)
+	notBefore, err := time.Parse(time.RFC3339, caNotBefore)
+	if err != nil {
+		return nil, fmt.Errorf("parse caNotBefore: %w", err)
+	}
 	notAfter := notBefore.AddDate(caValidYears, 0, 0)
 
 	tmpl := &x509.Certificate{
@@ -86,8 +90,12 @@ func deriveCA(password string, salt []byte) (*hubCA, error) {
 	return &hubCA{key: key, cert: cert, certPEM: certPEM}, nil
 }
 
-func (ca *hubCA) caFingerprint() string {
-	return fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(ca.certPEM)))
+func (ca *hubCA) caFingerprint() (string, error) {
+	cert := pemDecodeCert(ca.certPEM)
+	if cert == nil {
+		return "", fmt.Errorf("decode CA certificate PEM for fingerprint")
+	}
+	return fmt.Sprintf("SHA256:%x", sha256.Sum256(cert)), nil
 }
 
 func (ca *hubCA) issueLeaf(sans []string, validity time.Duration) (tls.Certificate, error) {
@@ -148,7 +156,7 @@ func leafSANs() []string {
 	if h, _ := os.Hostname(); h != "" {
 		sans = append(sans, h)
 	}
-	sans = append(sans, "localhost", "127.0.0.1")
+	sans = append(sans, "localhost", "127.0.0.1", "::1")
 	if ifis, err := net.Interfaces(); err == nil {
 		for _, ifi := range ifis {
 			if ifi.Flags&net.FlagLoopback != 0 {
@@ -169,14 +177,41 @@ func leafSANs() []string {
 			}
 		}
 	}
+	if len(sans) > leafSANMax {
+		sans = sans[:leafSANMax]
+	}
 	return sans
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func loadOrCreateCAMaterial(dataDir string) (password string, salt []byte, generatedPassword bool, err error) {
+	sweepStaleTmpFiles(dataDir)
+
 	passwordPath := filepath.Join(dataDir, "hub.password")
 	saltPath := filepath.Join(dataDir, "hub.salt")
 
-	if data, readErr := os.ReadFile(passwordPath); readErr == nil {
+	pwExists := fileExists(passwordPath)
+	saltExists := fileExists(saltPath)
+
+	// Cross-consistency guard: if one file exists but the other doesn't, the
+	// missing half was likely deleted accidentally. Regenerating either half
+	// in isolation produces a completely different CA root, silently breaking
+	// every provider's trust chain. Treat this as corruption.
+	if pwExists != saltExists {
+		return "", nil, false, fmt.Errorf(
+			"CA material inconsistency: password exists=%v salt exists=%v — "+
+				"both files must exist or neither. If you intend to reset the CA, "+
+				"delete both %s and %s and restart",
+			pwExists, saltExists, passwordPath, saltPath,
+		)
+	}
+
+	if pwExists {
+		data, _ := os.ReadFile(passwordPath)
 		password = strings.TrimSpace(string(data))
 	} else {
 		b := make([]byte, 24)
@@ -205,6 +240,11 @@ func loadOrCreateCAMaterial(dataDir string) (password string, salt []byte, gener
 		}
 	}
 
+	if len(password) < 8 {
+		return password, nil, generatedPassword, fmt.Errorf(
+			"hub password must be at least 8 characters (got %d)", len(password))
+	}
+
 	return password, salt, generatedPassword, nil
 }
 
@@ -214,4 +254,16 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func sweepStaleTmpFiles(dataDir string) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+			os.Remove(filepath.Join(dataDir, e.Name()))
+		}
+	}
 }

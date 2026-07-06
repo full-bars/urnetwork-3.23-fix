@@ -23,7 +23,7 @@ var tokenFileMu sync.Mutex
 
 // mintOnboardToken creates a token, appends to onboard.tokens, prunes expired
 func mintOnboardToken(dataDir string, now time.Time, ttl time.Duration) (token string, expiry time.Time, err error) {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", time.Time{}, fmt.Errorf("generate token: %w", err)
 	}
@@ -72,6 +72,20 @@ func validateOnboardToken(dataDir, token string, now time.Time) bool {
 			if now.Before(time.Unix(expiryUnix, 0)) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func tokenExists(dataDir, token string) bool {
+	path := filepath.Join(dataDir, "onboard.tokens")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, token+" ") {
+			return true
 		}
 	}
 	return false
@@ -127,13 +141,24 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 			return
 		}
 		if !validateOnboardToken(dataDir, token, time.Now()) {
-			http.Error(w, `{"error":"invalid or expired token"}`, 403)
+			// Distinguish "token not found" from "token expired"
+			if tokenExists(dataDir, token) {
+				http.Error(w, `{"error":"token expired"}`, 403)
+			} else {
+				http.Error(w, `{"error":"token not found"}`, 403)
+			}
 			return
 		}
+		tokenPrefix := token
+		if len(tokenPrefix) > 8 {
+			tokenPrefix = tokenPrefix[:8]
+		}
+		fmt.Printf("hub: onboard %s... from %s\n", tokenPrefix, r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
+		caFP, _ := ca.caFingerprint()
 		json.NewEncoder(w).Encode(map[string]string{
 			"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
-			"ca_fingerprint": ca.caFingerprint(),
+			"ca_fingerprint": caFP,
 		})
 	}
 }
@@ -170,10 +195,27 @@ HUB_URL="%s"
 mkdir -p ~/.urnetwork
 
 echo "Fetching CA certificate..."
-RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo $HUB_URL | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
+RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo "$HUB_URL" | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
 
-CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
-CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+CA_PEM=""
+CA_FP=""
+if command -v jq >/dev/null 2>&1; then
+    CA_PEM=$(echo "$RESPONSE" | jq -r '.ca_pem // ""' 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | jq -r '.ca_fingerprint // ""' 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ] && command -v python3 >/dev/null 2>&1; then
+    CA_PEM=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ca_pem',''))" 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ca_fingerprint',''))" 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ]; then
+    # awk fallback for bare Alpine/BusyBox (no jq, no python3)
+    CA_PEM=$(echo "$RESPONSE" | awk -F'"' '{for(i=1;i<NF;i++) if($i=="ca_pem"){v=$(i+2); gsub(/\\\\n/,"\n",v); print v; exit}}' 2>/dev/null)
+    CA_FP=$(echo "$RESPONSE" | awk -F'"' '{for(i=1;i<NF;i++) if($i=="ca_fingerprint"){print $(i+2); exit}}' 2>/dev/null)
+fi
+if [ -z "$CA_PEM" ]; then
+    CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
+    CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+fi
 
 if [ -z "$CA_PEM" ]; then
     echo "ERROR: Could not parse CA certificate"
