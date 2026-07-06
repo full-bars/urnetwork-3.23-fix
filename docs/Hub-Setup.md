@@ -73,24 +73,39 @@ urnet-tools report
 
 Reports contain fleet bandwidth and proxy details — don't send them over plaintext HTTP across the open internet. Pick one:
 
-### Option A: Built-in TLS (best for a trusted network / VPN)
+### Option A: Password-derived CA (recommended for any fleet)
 
-The hub has a TLS listener on `:8443` with an auto-generated self-signed ECDSA P-256 cert, using trust-on-first-use pinning (no CA, no reverse proxy needed).
+The hub derives an Ed25519 CA from a password, signs an ephemeral ECDSA P-256 leaf cert (rotated every 48h), and serves TLS on `:8443`. Providers verify the hub's leaf cert against the CA certificate — no TOFU, no fingerprint pinning, no reverse proxy.
 
 ```sh
-# On the hub machine: turn on TLS (restarts the hub with HTTPS on :8443)
+# On the hub machine: set a password and turn on TLS
+urnet-tools hub init --password "your-password-here"
+
+# Or let the hub auto-generate one, then retrieve it:
 urnet-tools hub init
+urnet-tools hub show-password   # prints the auto-generated password
 
 # Sanity check from anywhere:
 urnet-tools hub test https://HUB_IP:8443
 
-# On each provider: pin the hub's cert fingerprint and switch reporting to HTTPS
+# On each provider: fetch the CA cert and verify future connections
 urnet-tools hub link https://HUB_IP:8443
 ```
 
-The fingerprint is stored at `~/.urnetwork/hub.pin` on each provider and re-verified on every connection. A mismatch (e.g. the hub's cert was regenerated) refuses the connection and logs debug info to `/tmp/hub-tls-debug.txt` — re-run `hub link` to re-pin.
+**Password is only needed if you re-deploy the hub on a new machine** — the same password always derives the same CA. Providers never see the password; they only need the CA public cert (`~/.urnetwork/hub_ca.pem`). If the hub's leaf cert rotates (every 48h), providers trust the new cert automatically via CA chain verification.
 
-To roll back to plain reporting: `urnet-tools hub unlink`.
+To roll back to plain HTTP reporting: `urnet-tools hub unlink`.
+
+#### Zero-touch onboard for new providers
+
+Mint a 15-minute join token that any provider can use to fetch the CA cert and link itself — no SSH to each box:
+
+```sh
+urnet-tools hub onboard-cmd
+# Prints: curl -fsSL http://<this-host>:8080/onboard.sh | sh -s -- <token>
+```
+
+Paste that one-liner on each provider. The same token works for the entire fleet within the 15-minute window.
 
 ### Option B: Reverse proxy with a real domain (best for public-facing hubs)
 
@@ -146,7 +161,13 @@ docker run -d \
   urnetwork-hub
 ```
 
-The cert/key are generated into `/data` on first boot and persist in the volume, same as the native `hub init` flow. Get the fingerprint from the container logs on first start (`docker logs urnetwork-hub`) or via `/api/cert`, then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.
+The CA cert and password are generated into `/data` on first boot and persist in the volume. Get the CA fingerprint via `/api/cert` or mint an onboard token inside the container:
+
+```sh
+docker exec urnetwork-hub /hub -mint-onboard-token -data /data
+```
+
+Then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.
 
 ### Prebuilt Image
 
@@ -199,7 +220,7 @@ systemctl --user disable urnetwork-hub.service  # remove from boot
 | Node never appears | `hub set`/`URNETWORK_REPORT_URL` not set on that node, or it can't reach `HUB_IP:8080` (firewall/NAT) |
 | Node shows red heartbeat dot | No report in 5+ minutes — provider may be down or misconfigured |
 | TLS padlock missing for some nodes | Those nodes are still on HTTP — run `urnet-tools hub link https://HUB_IP:8443` on them |
-| `hub link` fails with "fingerprint mismatch" | Hub cert was regenerated (e.g. after data dir loss). Run `hub test` for the new fingerprint, then `hub link` again |
+| `hub link` fails with "fingerprint mismatch" | Hub is running an old version without CA support — fallback to legacy pinning failed. Update the hub binary |
 | `hub install` doesn't pick up new tag | Re-run with `URNETWORK_HUB_TAG=vX.Y.Z`, then `systemctl --user restart urnetwork-hub.service` |
 
 For dashboard usage, report format, and the JSON/SSE API, see [Hub-Dashboard.md](Hub-Dashboard.md).

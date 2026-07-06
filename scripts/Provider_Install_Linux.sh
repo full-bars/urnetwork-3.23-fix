@@ -44,8 +44,10 @@ show_help ()
     echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
-    echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert fingerprint"
+    echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert/CA fingerprint"
     echo "  hub open-port <port>     Open a port in the local firewall (ufw/firewalld/iptables/nftables)"
+    echo "  hub show-password        Show the hub's CA password (printed once after init)"
+    echo "  hub onboard-cmd          Mint a 15-min join token and print the curl | sh one-liner"
     echo "  hub off                 Stop reporting to hub (removes override, restarts provider)"
     echo "  hub install             Download and install the hub binary as a systemd user service"
     echo ""
@@ -2113,6 +2115,14 @@ do_hub () {
             do_hub_test "$@"
             ;;
 
+        show-password)
+            do_hub_show_password
+            ;;
+
+        onboard-cmd)
+            do_hub_onboard_cmd
+            ;;
+
         open-port)
             port="$1"
             if [ -z "$port" ]; then
@@ -2328,12 +2338,12 @@ EOF
             ;;
 
         "")
-            pr_err "Usage: urnet-tools hub <init|link|unlink|set|off|install|update|test [url]>"
+            pr_err "Usage: urnet-tools hub <init|link|unlink|set|off|install|update|test|show-password|onboard-cmd>"
             exit 1
             ;;
 
         *)
-            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', 'update', or 'test')" "$cmd"
+            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', 'update', 'test', 'show-password', or 'onboard-cmd')" "$cmd"
             exit 1
             ;;
     esac
@@ -2341,6 +2351,7 @@ EOF
 
 do_hub_test () {
     url="$1"
+    ca_file="$HOME/.urnetwork/hub_ca.pem"
     pin_file="$HOME/.urnetwork/hub.pin"
     report_file="$HOME/.urnetwork/report_url"
 
@@ -2368,6 +2379,24 @@ do_hub_test () {
 
     pr_info "Testing TLS to %s:%s ..." "$host" "$port"
 
+    # CA-based verification path (preferred)
+    if [ -f "$ca_file" ]; then
+        if ! command -v openssl > /dev/null; then
+            pr_err "openssl is required for CA-based verification."
+            exit 1
+        fi
+        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" -verify_return_error 2>&1)
+        if echo "$result" | grep -q "Verify return code: 0"; then
+            pr_info "TLS OK — CA chain verification passed."
+            return 0
+        else
+            pr_err "TLS FAILED — CA chain verification error."
+            echo "$result" | grep "Verify return code:"
+            exit 1
+        fi
+    fi
+
+    # Legacy fingerprint-based verification path (hub.pin)
     expected=""
     if [ -f "$pin_file" ]; then
         expected="$(cat "$pin_file" | tr -d ' \n')"
@@ -2662,27 +2691,59 @@ EOF
 
 do_hub_init () {
     hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    cert_file="$hub_data_dir/tls.crt"
+    ca_cert="$hub_data_dir/ca.crt"
+    password=""
 
-    if [ -f "$cert_file" ]; then
-        fp_path="$hub_data_dir/tls.fingerprint"
-        if [ -f "$fp_path" ]; then
-            fp="$(cat "$fp_path")"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --password|-p)
+                if [ -z "$2" ]; then
+                    pr_err "Option --password requires a value."
+                    exit 1
+                fi
+                password="$2"
+                shift 2
+                ;;
+            *)
+                pr_err "Unknown argument: %s (usage: init [--password <pw>])" "$1"
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -f "$ca_cert" ]; then
+        if command -v openssl > /dev/null; then
+            fp=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+            fp="SHA256:${fp}"
         else
-            fp="(fingerprint file not found — check hub logs)"
+            fp="(openssl not found)"
         fi
-        pr_info "Hub TLS is already initialized."
-        pr_info "Fingerprint: %s" "$fp"
+        pr_info "Hub CA is already initialized."
+        pr_info "CA fingerprint: %s" "$fp"
         pr_info ""
         pr_info "On each provider, run:"
         pr_info "  urnet-tools hub link https://<this-host>:8443"
+        pr_info ""
+        pr_info "Or use the onboard token for zero-touch provisioning:"
+        pr_info "  urnet-tools hub onboard-cmd"
         return
+    fi
+
+    # Write password to hub.data dir before start so hub derives CA from it
+    if [ -n "$password" ]; then
+        mkdir -p "$hub_data_dir"
+        printf '%s' "$password" > "$hub_data_dir/hub.password.tmp"
+        mv "$hub_data_dir/hub.password.tmp" "$hub_data_dir/hub.password"
+        chmod 600 "$hub_data_dir/hub.password"
+        pr_info "Password written to hub data directory."
+    else
+        pr_info "No password provided — hub will auto-generate one."
+        pr_info "After init, run 'urnet-tools hub show-password' to retrieve it."
     fi
 
     # Enable TLS on the hub by writing URNETWORK_HUB_TLS_ADDR into its
     # systemd drop-in. The hub binary reads this env var and starts an
-    # HTTPS listener on the given address, auto-generating a cert on
-    # first boot if one doesn't exist.
+    # HTTPS listener on the given address.
     override_set_env_for_hub "URNETWORK_HUB_TLS_ADDR" ":8443"
     systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
 
@@ -2692,20 +2753,20 @@ do_hub_init () {
         systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
     fi
 
-    pr_info "Hub restarted with TLS. Waiting for cert generation..."
+    pr_info "Hub started with TLS. Waiting for CA certificate..."
     sleep 5
 
-    if [ ! -f "$cert_file" ]; then
-        pr_err "TLS certificate not generated. Check hub logs:"
+    if [ ! -f "$ca_cert" ]; then
+        pr_err "CA certificate not generated. Check hub logs:"
         pr_err "  journalctl --user -u urnetwork-hub.service --no-pager -n 30"
         exit 1
     fi
 
-    fp_path="$hub_data_dir/tls.fingerprint"
-    if [ -f "$fp_path" ]; then
-        fingerprint="$(cat "$fp_path")"
+    if command -v openssl > /dev/null; then
+        fingerprint=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+        fingerprint="SHA256:${fingerprint}"
     else
-        fingerprint="(fingerprint file not found)"
+        fingerprint="(openssl not found)"
     fi
 
     pr_info ""
@@ -2713,63 +2774,215 @@ do_hub_init () {
     firewall_hint 8443 || pr_info "  (open port 8443/tcp in your firewall)"
 
     pr_info "Hub TLS is ready."
-    pr_info "Fingerprint: %s" "$fingerprint"
+    pr_info "CA fingerprint: %s" "$fingerprint"
     pr_info ""
     pr_info "On each provider, run:"
     pr_info "  urnet-tools hub link https://<this-host>:8443"
+    pr_info ""
+    pr_info "Or mint an onboard token for the whole fleet at once:"
+    pr_info "  urnet-tools hub onboard-cmd"
+}
+
+do_hub_show_password () {
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    if [ ! -f "$hub_bin" ]; then
+        pr_err "Hub binary not found at %s" "$hub_bin"
+        exit 1
+    fi
+    pr_info "Hub password (keep this secret, do not paste it anywhere public):"
+    pr_info ""
+    "$hub_bin" -show-password -data "$hub_data_dir" || exit 1
+}
+
+do_hub_onboard_cmd () {
+    hub_data_dir="$HOME/.local/share/urnetwork-hub"
+    if [ ! -f "$hub_bin" ]; then
+        pr_err "Hub binary not found at %s" "$hub_bin"
+        exit 1
+    fi
+
+    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir" 2>&1) || {
+        pr_err "Failed to mint onboard token:"
+        pr_err "%s" "$output"
+        exit 1
+    }
+
+    token=$(printf '%s' "$output" | sed -n 's/^Token: *//p')
+    expires=$(printf '%s' "$output" | sed -n 's/^Expires: *//p')
+    ca_fp=$(printf '%s' "$output" | sed -n 's/^CA fingerprint: *//p')
+
+    if [ -z "$token" ] || [ -z "$expires" ]; then
+        pr_err "Unexpected output from hub:"
+        printf '%s\n' "$output"
+        exit 1
+    fi
+
+    # Best-effort local IP for the one-liner
+    local_ip=""
+    if command -v hostname > /dev/null; then
+        local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+
+    pr_info "Token:      %s" "$token"
+    pr_info "Expires:    %s" "$expires"
+    pr_info "CA fingerprint: %s" "$ca_fp"
+    pr_info ""
+    pr_info "On each provider, run this one-liner:"
+    pr_info ""
+
+    if [ -n "$local_ip" ]; then
+        pr_info "  curl -fsSL http://%s:8080/onboard.sh | sh -s -- %s" "$local_ip" "$token"
+        pr_info ""
+        pr_info "  (if %s is not the address providers reach, substitute the correct host)" "$local_ip"
+    else
+        pr_info "  curl -fsSL http://<this-host>:8080/onboard.sh | sh -s -- %s" "$token"
+    fi
+
+    pr_info ""
+    pr_info "The token is reusable for 15 minutes — paste once and onboard the whole fleet."
 }
 
 do_hub_link () {
-    url="$1"
+    url=""
+    token=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --token)
+                if [ -z "$2" ]; then
+                    pr_err "Option --token requires a value."
+                    exit 1
+                fi
+                token="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$url" ]; then
+                    url="$1"
+                    shift
+                else
+                    pr_err "Unexpected argument: %s" "$1"
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$url" ]; then
+        pr_err "Usage: urnet-tools hub link <https://hub-host:port> [--token <onboard-token>]"
+        pr_err "Fetches the hub's CA certificate and configures TLS trust so all"
+        pr_err "future reports are encrypted and verified."
+        exit 1
+    fi
 
     case "$url" in
         https://*) ;;
         *)
             pr_err "Hub link URL must start with https://"
-            pr_err "Usage: urnet-tools hub link https://<hub-host>:8443"
             exit 1
             ;;
     esac
 
-    # Strip trailing slashes
     url="${url%/}"
-
     hub_dir="$HOME/.urnetwork"
+    ca_file="$hub_dir/hub_ca.pem"
     pin_file="$hub_dir/hub.pin"
     report_file="$hub_dir/report_url"
 
-    # Fetch the hub's certificate via POST-less TLS (tls_fetch tolerates self-signed).
-    pr_info "Fetching hub certificate from %s/api/cert ..." "$url"
-    cert_json="$(tls_fetch "$url/api/cert")" || { pr_err "Could not reach hub at %s. Is the hub running and reachable?" "$url"; exit 1; }
+    # Token-based flow: fetch CA cert from the onboarding endpoint
+    if [ -n "$token" ]; then
+        pr_info "Fetching hub CA certificate via onboard token..."
+        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${token}") || {
+            pr_err "Could not reach hub at %s with the given token." "$url"
+            pr_err "Is the hub running and is the token still valid (15 min TTL)?"
+            exit 1
+        }
 
-    # Extract fingerprint from JSON: {"fingerprint":"SHA256:abc...","pem":"..."}
-    fingerprint="$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')"
-    if [ -z "$fingerprint" ]; then
-        pr_err "Could not extract fingerprint from hub response."
-        pr_err "Response: %s" "$cert_json"
-        exit 1
+        ca_pem=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p')
+        ca_fingerprint=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+
+        if [ -z "$ca_pem" ]; then
+            pr_err "Hub responded but did not return a CA certificate (may be running an older version)."
+            pr_err "Response: %s" "$cert_json"
+            exit 1
+        fi
+
+        pr_info ""
+        pr_info "Hub CA fingerprint: %s" "$ca_fingerprint"
+        pr_info ""
+
+        # Write CA cert: decode JSON-escaped PEM (embedded \n) to real newlines
+        mkdir -p "$hub_dir"
+        printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
+        mv "$ca_file.tmp" "$ca_file"
+        chmod 600 "$ca_file"
+        pr_info "CA certificate saved to %s" "$ca_file"
+    else
+        # Legacy/TOFU flow: fetch /api/cert (which now returns ca_pem too)
+        pr_info "Fetching hub certificate from %s/api/cert ..." "$url"
+        cert_json=$(tls_fetch "${url}/api/cert") || {
+            pr_err "Could not reach hub at %s. Is the hub running and reachable?" "$url"
+            exit 1
+        }
+
+        ca_pem=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p')
+        ca_fingerprint=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
+        # Also try legacy fingerprint field (old hubs without CA support)
+        legacy_fp=$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')
+
+        if [ -n "$ca_pem" ]; then
+            # New CA-capable hub
+            pr_info ""
+            pr_info "Hub CA fingerprint:"
+            pr_info "  %s" "$ca_fingerprint"
+            pr_info ""
+
+            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+                printf "Accept this fingerprint? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) pr_err "Aborted by user."; exit 1 ;;
+                esac
+            fi
+
+            mkdir -p "$hub_dir"
+            printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
+            mv "$ca_file.tmp" "$ca_file"
+            chmod 600 "$ca_file"
+            pr_info "CA certificate saved to %s" "$ca_file"
+        elif [ -n "$legacy_fp" ]; then
+            # Legacy hub (old TOFU flow)
+            pr_warn "Hub does not support CA-based trust (missing ca_pem in response)."
+            pr_warn "Falling back to legacy fingerprint pinning."
+
+            pr_info ""
+            pr_info "Hub certificate fingerprint:"
+            pr_info "  %s" "$legacy_fp"
+            pr_info ""
+
+            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+                printf "Accept this fingerprint? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) pr_err "Aborted by user."; exit 1 ;;
+                esac
+            fi
+
+            mkdir -p "$hub_dir"
+            printf '%s\n' "$legacy_fp" > "$pin_file.tmp"
+            mv "$pin_file.tmp" "$pin_file"
+            pr_info "Fingerprint pinned to %s" "$pin_file"
+        else
+            pr_err "Could not extract CA certificate or fingerprint from hub response."
+            pr_err "Response: %s" "$cert_json"
+            exit 1
+        fi
     fi
 
-    pr_info ""
-    pr_info "Hub certificate fingerprint:"
-    pr_info "  %s" "$fingerprint"
-    pr_info ""
-
-    if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-        printf "Accept this fingerprint? (y/n) "
-        read -r answer
-        case "$answer" in
-            [Yy]|[Yy][Ee][Ss]) ;;
-            *) pr_err "Aborted by user."; exit 1 ;;
-        esac
-    fi
-
-    # Atomic writes: write temp file then rename (mv is atomic on the same fs).
-    mkdir -p "$hub_dir"
-
-    printf '%s\n' "$fingerprint" > "$pin_file.tmp"
-    mv "$pin_file.tmp" "$pin_file"
-    pr_info "Fingerprint pinned to %s" "$pin_file"
+    # Remove legacy pin file when CA cert is in use
+    rm -f "$pin_file"
 
     printf '%s\n' "$url" > "$report_file.tmp"
     mv "$report_file.tmp" "$report_file"
@@ -2782,10 +2995,15 @@ do_hub_link () {
 do_hub_unlink () {
     hub_dir="$HOME/.urnetwork"
     pin_file="$hub_dir/hub.pin"
+    ca_file="$hub_dir/hub_ca.pem"
     report_file="$hub_dir/report_url"
 
     rm -f "$pin_file"
     pr_info "Removed %s" "$pin_file"
+    if [ -f "$ca_file" ]; then
+        rm -f "$ca_file"
+        pr_info "Removed %s" "$ca_file"
+    fi
 
     # Rewrite the report URL from https:// to http:// on the same host, port 8080,
     # if it currently points to an HTTPS URL.
