@@ -26,7 +26,7 @@ func TestDeriveCA_DeterministicAcrossCalls(t *testing.T) {
 	if string(ca1.certPEM) != string(ca2.certPEM) {
 		t.Error("certPEM differs between calls")
 	}
-	if ca1.caFingerprint() != ca2.caFingerprint() {
+	if fp1, _ := ca1.caFingerprint(); fp1 != func() string { fp2, _ := ca2.caFingerprint(); return fp2 }() {
 		t.Error("fingerprint differs between calls")
 	}
 	// Verify same public key
@@ -40,7 +40,9 @@ func TestDeriveCA_DifferentPasswordDifferentCA(t *testing.T) {
 	ca1, _ := deriveCA("password1", salt)
 	ca2, _ := deriveCA("password2", salt)
 
-	if ca1.caFingerprint() == ca2.caFingerprint() {
+	fp1, _ := ca1.caFingerprint()
+	fp2, _ := ca2.caFingerprint()
+	if fp1 == fp2 {
 		t.Error("same fingerprint for different passwords")
 	}
 }
@@ -50,7 +52,9 @@ func TestDeriveCA_DifferentSaltDifferentCA(t *testing.T) {
 	ca1, _ := deriveCA(password, randomBytes(t, 32))
 	ca2, _ := deriveCA(password, randomBytes(t, 32))
 
-	if ca1.caFingerprint() == ca2.caFingerprint() {
+	fp1, _ := ca1.caFingerprint()
+	fp2, _ := ca2.caFingerprint()
+	if fp1 == fp2 {
 		t.Error("same fingerprint for different salts")
 	}
 }

@@ -86,8 +86,12 @@ func deriveCA(password string, salt []byte) (*hubCA, error) {
 	return &hubCA{key: key, cert: cert, certPEM: certPEM}, nil
 }
 
-func (ca *hubCA) caFingerprint() string {
-	return fmt.Sprintf("SHA256:%x", sha256.Sum256(pemDecodeCert(ca.certPEM)))
+func (ca *hubCA) caFingerprint() (string, error) {
+	cert := pemDecodeCert(ca.certPEM)
+	if cert == nil {
+		return "", fmt.Errorf("decode CA certificate PEM for fingerprint")
+	}
+	return fmt.Sprintf("SHA256:%x", sha256.Sum256(cert)), nil
 }
 
 func (ca *hubCA) issueLeaf(sans []string, validity time.Duration) (tls.Certificate, error) {
@@ -148,7 +152,7 @@ func leafSANs() []string {
 	if h, _ := os.Hostname(); h != "" {
 		sans = append(sans, h)
 	}
-	sans = append(sans, "localhost", "127.0.0.1")
+	sans = append(sans, "localhost", "127.0.0.1", "::1")
 	if ifis, err := net.Interfaces(); err == nil {
 		for _, ifi := range ifis {
 			if ifi.Flags&net.FlagLoopback != 0 {
