@@ -2916,6 +2916,7 @@ do_hub_link () {
         printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
         mv "$ca_file.tmp" "$ca_file"
         chmod 600 "$ca_file"
+        rm -f "$pin_file"
         pr_info "CA certificate saved to %s" "$ca_file"
     else
         # Legacy/TOFU flow: fetch /api/cert (which now returns ca_pem too)
@@ -2950,6 +2951,7 @@ do_hub_link () {
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
             mv "$ca_file.tmp" "$ca_file"
             chmod 600 "$ca_file"
+            rm -f "$pin_file"
             pr_info "CA certificate saved to %s" "$ca_file"
         elif [ -n "$legacy_fp" ]; then
             # Legacy hub (old TOFU flow)
@@ -2980,9 +2982,6 @@ do_hub_link () {
             exit 1
         fi
     fi
-
-    # Remove legacy pin file when CA cert is in use
-    rm -f "$pin_file"
 
     printf '%s\n' "$url" > "$report_file.tmp"
     mv "$report_file.tmp" "$report_file"

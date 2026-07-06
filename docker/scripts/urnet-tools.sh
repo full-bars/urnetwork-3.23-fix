@@ -74,6 +74,7 @@ hub_link() {
         mkdir -p "$hub_dir"
         printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
         chmod 600 "$ca_file"
+        rm -f "$pin_file"
         echo "CA certificate saved to $ca_file"
     else
         echo "Fetching hub certificate from $url/api/cert ..."
@@ -98,6 +99,7 @@ hub_link() {
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
             chmod 600 "$ca_file"
+            rm -f "$pin_file"
             echo "CA certificate saved to $ca_file"
         elif [ -n "$legacy_fp" ]; then
             echo "WARNING: Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
@@ -118,7 +120,6 @@ hub_link() {
         fi
     fi
 
-    rm -f "$pin_file"
     printf '%s\n' "$url" > "$report_file.tmp" && mv "$report_file.tmp" "$report_file"
     echo "Report URL set to $url"
     echo ""

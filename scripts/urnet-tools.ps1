@@ -618,6 +618,7 @@ switch ($Command) {
                         $pem = $resp.ca_pem -replace '\\n', "`n"
                         Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
                         Move-Item -Force "$caFile.tmp" $caFile
+                        Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                         Write-Host "CA certificate saved to $caFile"
                     } else {
                         Write-Host "Fetching hub CA certificate from $url/api/cert ..."
@@ -629,6 +630,7 @@ switch ($Command) {
                             $pem = $resp.ca_pem -replace '\\n', "`n"
                             Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
                             Move-Item -Force "$caFile.tmp" $caFile
+                            Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                             Write-Host "CA certificate saved to $caFile"
                         } elseif ($resp.fingerprint) {
                             Write-Warning "Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
@@ -647,8 +649,6 @@ switch ($Command) {
                     break
                 }
 
-                # Remove legacy pin file when CA cert is in use
-                Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                 Set-Content -Path "$reportFile" -Value $url -NoNewline
                 Write-Host "Report URL set to $url"
                 Write-Host ""
