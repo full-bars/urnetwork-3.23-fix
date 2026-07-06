@@ -934,6 +934,7 @@ func main() {
 	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
 	dataDir := flag.String("data", ".", "data directory for hub.json")
 	showPassword := flag.Bool("show-password", false, "print the CA password and exit")
+	doMintOnboardToken := flag.Bool("mint-onboard-token", false, "mint an onboarding token and exit")
 	flag.Parse()
 
 	if *showPassword {
@@ -944,6 +945,33 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(strings.TrimSpace(string(data)))
+		os.Exit(0)
+	}
+
+	if *doMintOnboardToken {
+		pwPath := filepath.Join(*dataDir, "hub.password")
+		if _, err := os.Stat(pwPath); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "hub: no password found (run 'hub init' first)\n")
+			os.Exit(1)
+		}
+		password, salt, _, err := loadOrCreateCAMaterial(*dataDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: CA setup failed: %v\n", err)
+			os.Exit(1)
+		}
+		ca, err := deriveCA(password, salt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: CA derivation failed: %v\n", err)
+			os.Exit(1)
+		}
+		token, expiry, err := mintOnboardToken(*dataDir, time.Now(), onboardTokenTTL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: mint token failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Token: %s\n", token)
+		fmt.Printf("Expires: %s\n", expiry.Format(time.RFC3339))
+		fmt.Printf("CA fingerprint: %s\n", ca.caFingerprint())
 		os.Exit(0)
 	}
 
@@ -1036,12 +1064,19 @@ func main() {
 			currentLeaf := leafHolder.Load()
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
-				"fingerprint":  fmt.Sprintf("SHA256:%x", sha256.Sum256(currentLeaf.Certificate[0])),
-				"pem":          strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: currentLeaf.Certificate[0]}))),
-				"ca_pem":       strings.TrimSpace(string(ca.certPEM)),
+				"fingerprint":    fmt.Sprintf("SHA256:%x", sha256.Sum256(currentLeaf.Certificate[0])),
+				"pem":            strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: currentLeaf.Certificate[0]}))),
+				"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
 				"ca_fingerprint": ca.caFingerprint(),
 			})
 		})
+
+		// CA cert endpoint for onboarding
+		mux.HandleFunc("/api/ca-cert", handleCACert(*dataDir, ca))
+
+		// Onboard script endpoint
+		_, port, _ := net.SplitHostPort(tlsListen)
+		mux.HandleFunc("/onboard.sh", handleOnboardScript(port))
 
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
