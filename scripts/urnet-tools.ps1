@@ -592,7 +592,7 @@ switch ($Command) {
         $useDocker = $false
         if (Get-Command docker -ErrorAction SilentlyContinue) {
             $running = docker ps --format '{{.Names}}' 2>$null
-            if ($running -match $ContainerName) {
+            if (($running -split "`n") -contains $ContainerName) {
                 $useDocker = $true
             }
         }
@@ -615,6 +615,40 @@ switch ($Command) {
                 if ($SubArgs.Length -gt 3 -and $SubArgs[2] -eq "--token") {
                     $token = $SubArgs[3]
                 }
+
+                if (-not $useDocker) {
+                    if (-not (Test-Path $BinaryPath)) {
+                        Write-Error "No provider found — check -ContainerName (Docker) or install path (native)."
+                        break
+                    }
+                }
+
+                if (-not $useDocker) {
+                    $reportFile = "$env:USERPROFILE\.urnetwork\report_url"
+                    $newHost = ($url -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
+                    $newHost = $newHost.ToLower()
+                    if (Test-Path $reportFile) {
+                        $existing = (Get-Content $reportFile -Raw).Trim()
+                        $oldHost = ($existing -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
+                        $oldHost = $oldHost.ToLower()
+                        if ($oldHost -ne $newHost -and $oldHost -ne '') {
+                            Write-Warning "This provider directory is already linked to a different hub host."
+                            Write-Warning "  Current: $oldHost"
+                            Write-Warning "  New:     $newHost"
+                            Write-Warning ""
+                            Write-Warning "Linking to a different host will reconfigure all providers sharing"
+                            Write-Warning "this directory — containers with bind mounts, native installs on"
+                            Write-Warning "the same user, etc."
+                            Write-Warning ""
+                            $answer = Read-Host "Proceed? (y/n)"
+                            if ($answer -ne "y") {
+                                Write-Host "Aborted."
+                                break
+                            }
+                        }
+                    }
+                }
+
                 $hubDir = "$env:USERPROFILE\.urnetwork"
                 $null = New-Item -ItemType Directory -Force -Path $hubDir
                 $caFile = "$hubDir\hub_ca.pem"

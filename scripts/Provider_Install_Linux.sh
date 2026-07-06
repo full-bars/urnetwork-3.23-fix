@@ -2889,6 +2889,37 @@ do_hub_link () {
     pin_file="$hub_dir/hub.pin"
     report_file="$hub_dir/report_url"
 
+    # Warn if linking would reconfigure a provider tied to a different host
+    extract_host() {
+        h="$1"
+        h="${h#https://}"
+        h="${h#http://}"
+        h="${h%%:*}"
+        printf '%s' "$h" | tr '[:upper:]' '[:lower:]'
+    }
+    if [ -f "$report_file" ]; then
+        old_host=$(extract_host "$(cat "$report_file" | tr -d '\n')")
+        new_host=$(extract_host "$url")
+        if [ "$old_host" != "$new_host" ]; then
+            pr_warn "This provider directory is already linked to a different hub host."
+            pr_warn "  Current: %s" "$old_host"
+            pr_warn "  New:     %s" "$new_host"
+            pr_warn ""
+            pr_warn "Linking to a different host will reconfigure all providers sharing"
+            pr_warn "this directory — containers with bind mounts, native installs on"
+            pr_warn "the same user, etc."
+            pr_warn ""
+            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+                printf "Proceed? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) pr_err "Aborted by user."; exit 1 ;;
+                esac
+            fi
+        fi
+    fi
+
     # Token-based flow: fetch CA cert from the onboarding endpoint
     if [ -n "$token" ]; then
         pr_info "Fetching hub CA certificate via onboard token..."
