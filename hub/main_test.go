@@ -1037,3 +1037,26 @@ func TestHandleHeartbeatDoesNotPublishOnUnknownNode(t *testing.T) {
 	default:
 	}
 }
+
+func TestRateLimiter_IPv6AddressParsing(t *testing.T) {
+	rl := newRateLimiter(5, time.Minute)
+	// IPv4 with port
+	if !rl.allow("192.168.1.1:12345") {
+		t.Error("IPv4 should be allowed")
+	}
+	// IPv6 with port
+	if !rl.allow("[::1]:12345") {
+		t.Error("IPv6 loopback should be allowed")
+	}
+	// IPv6 full address with port
+	if !rl.allow("[2001:db8::1]:8080") {
+		t.Error("full IPv6 should be allowed")
+	}
+
+	// Verify IPv4 and IPv6 are treated as different keys
+	rl2 := newRateLimiter(1, time.Hour)
+	rl2.allow("192.168.1.1:12345")                          // consume IPv4 allowance
+	if !rl2.allow("[::1]:12345") {                           // IPv6 should still work
+		t.Error("IPv6 should have separate rate-limit key from IPv4")
+	}
+}
