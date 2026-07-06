@@ -16,6 +16,7 @@ import (
 	"runtime/metrics"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -605,6 +606,37 @@ func loadPinnedFPs() map[string]bool {
 	return pins
 }
 
+// hubPinMu serializes pinHubCertificate against concurrent bandwidth/heartbeat
+// reporter goroutines racing to append the same first-seen fingerprint.
+var hubPinMu sync.Mutex
+
+// pinHubCertificate records fp in hub.pin the first time it's seen (TOFU).
+// Once pinned, loadPinnedFPs picks it up on the next newClientForURL call and
+// the strict pinned-verification path above takes over for good. Best-effort:
+// a failure to persist just means TOFU re-runs on the next connection rather
+// than failing the report.
+func pinHubCertificate(fp string) {
+	hubPinMu.Lock()
+	defer hubPinMu.Unlock()
+
+	if loadPinnedFPs()[fp] {
+		return
+	}
+	path, err := hubPinPath()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s\n", fp)
+}
+
 func newClientForURL(reportURL string) *http.Client {
 	if !strings.HasPrefix(reportURL, "https://") {
 		return &http.Client{Timeout: 10 * time.Second}
@@ -628,7 +660,18 @@ func newClientForURL(reportURL string) *http.Client {
 			return err
 		}
 	} else {
+		// TOFU: no pin exists yet. Accept this connection (nothing to verify
+		// against yet) but pin the fingerprint so every subsequent connection
+		// is checked against it via the branch above.
 		tlsCfg.InsecureSkipVerify = true
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("no peer certificates")
+			}
+			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(cs.PeerCertificates[0].Raw))
+			pinHubCertificate(fp)
+			return nil
+		}
 	}
 
 	return &http.Client{

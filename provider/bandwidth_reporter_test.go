@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -241,5 +242,57 @@ func TestFilterChangedProxies_UnknownEntryAlwaysIncluded(t *testing.T) {
 	}
 	if len(next) != 2 {
 		t.Errorf("next = %+v, want both entries recorded for the following diff", next)
+	}
+}
+
+// TestPinHubCertificate_FirstSeenIsPersisted is the TOFU bootstrap: a
+// fingerprint seen for the first time (no hub.pin yet) must be written so the
+// pinned-verification branch in newClientForURL picks it up on the next call.
+func TestPinHubCertificate_FirstSeenIsPersisted(t *testing.T) {
+	withTempHome(t)
+
+	pinHubCertificate("SHA256:deadbeef")
+
+	if pins := loadPinnedFPs(); !pins["SHA256:deadbeef"] {
+		t.Fatalf("pins = %v, want SHA256:deadbeef persisted", pins)
+	}
+}
+
+// TestPinHubCertificate_RepeatedCallsDoNotDuplicate guards against the
+// reporter loop (which calls newClientForURL, and therefore pinHubCertificate
+// on the unpinned path, every report/heartbeat cycle) growing hub.pin
+// unbounded — the fingerprint should be written exactly once.
+func TestPinHubCertificate_RepeatedCallsDoNotDuplicate(t *testing.T) {
+	home := withTempHome(t)
+
+	pinHubCertificate("SHA256:deadbeef")
+	pinHubCertificate("SHA256:deadbeef")
+	pinHubCertificate("SHA256:deadbeef")
+
+	path := filepath.Join(home, ".urnetwork", "hub.pin")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("hub.pin has %d lines, want exactly 1: %q", len(lines), string(data))
+	}
+}
+
+// TestPinHubCertificate_DoesNotOverwriteExistingPin ensures a second,
+// different fingerprint (e.g. a legitimate cert rotation) is added alongside
+// an existing pin rather than replacing it — matching the intent that
+// re-pinning after a rotation is a deliberate operator action (delete
+// hub.pin), not something a stray connection should silently do.
+func TestPinHubCertificate_DoesNotOverwriteExistingPin(t *testing.T) {
+	withTempHome(t)
+
+	pinHubCertificate("SHA256:first")
+	pinHubCertificate("SHA256:second")
+
+	pins := loadPinnedFPs()
+	if !pins["SHA256:first"] || !pins["SHA256:second"] {
+		t.Fatalf("pins = %v, want both fingerprints present", pins)
 	}
 }
