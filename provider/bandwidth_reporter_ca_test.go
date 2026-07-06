@@ -262,3 +262,29 @@ func TestReporterClient_ConnectsToCASignedHub(t *testing.T) {
 		t.Errorf("error = %q, want it to contain the actionable re-onboard message", err.Error())
 	}
 }
+
+func TestNewClientForURL_LegacyPinDeprecationLoggedOnce(t *testing.T) {
+	_ = withTempHome(t)
+
+	pinFile, err := hubPinPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Dir(pinFile), 0700)
+	_ = os.WriteFile(pinFile, []byte("SHA256:deadbeef\n"), 0600)
+	t.Cleanup(func() { os.Remove(pinFile) })
+
+	loggedLegacyPinDeprecation = false
+
+	_ = newClientForURL("https://hub.example.com")
+	if !loggedLegacyPinDeprecation {
+		t.Error("expected deprecation flag set after first legacy-pin client")
+	}
+
+	loggedLegacyPinDeprecation = false
+	_ = newClientForURL("https://hub.example.com")
+	if !loggedLegacyPinDeprecation {
+		t.Error("expected deprecation flag set again (package-level, reset between calls)")
+	}
+	loggedLegacyPinDeprecation = false
+}
