@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased] — Hub CA Trust System
+
+### Added
+
+**Password-derived CA for hub↔provider TLS**: replaces random self-signed certs with a deterministic Ed25519 CA derived from the operator's password using Argon2id (memory-hard KDF). The CA certificate is deterministic — same password+salt always produces byte-identical PEM, surviving hub restarts without re-pinning.
+
+Key changes:
+- `hub/ca.go`: deterministic CA derivation, ECDSA P-256 leaf issuance, leaf rotation
+- `hub/onboard.go`: token-based onboarding flow, `/api/ca-cert` endpoint, `/onboard.sh`
+- `provider/bandwidth_reporter.go`: CA verification replaces TOFU fingerprint pinning
+- Fail-closed default: HTTPS with no trust material = error, not MITM risk
+
+**Onboarding flow**: `urnet-tools hub onboard-cmd` mints a 15-minute token and prints a curl one-liner. Providers run `curl -fsSL http://hub:8080/onboard.sh | sh -s -- TOKEN` to fetch and install the CA cert.
+
+**`-show-password` flag**: retrieve the hub password without parsing files: `urnet-tools hub show-password`
+
+**`-mint-onboard-token` flag**: mint tokens without starting the hub server.
+
+### Deprecated
+
+**Fingerprint pinning (`hub.pin`)**: still honored for one release with deprecation warning. `hub link`/onboarding now writes `hub_ca.pem` and removes `hub.pin`. Remove the code path entirely in the next release.
+
+---
+
 ## [v3.23.0-fix.25.2] — 2026-07-05
 
 ### Summary
