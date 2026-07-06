@@ -601,8 +601,7 @@ switch ($Command) {
                 $pinFile = "$hubDir\hub.pin"
                 $reportFile = "$hubDir\report_url"
 
-                # Bypass cert validation for bootstrap (self-signed hub cert)
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                # -SkipCertificateCheck requires PowerShell 6+ (pwsh)
 
                 try {
                     if ($token -ne "") {
@@ -646,8 +645,6 @@ switch ($Command) {
                 } catch {
                     Write-Error "Failed to reach hub: $_"
                     break
-                } finally {
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
                 }
 
                 # Remove legacy pin file when CA cert is in use
