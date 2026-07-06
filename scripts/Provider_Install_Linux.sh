@@ -2951,7 +2951,8 @@ do_hub_link () {
     # Token-based flow: fetch CA cert from the onboarding endpoint
     if [ -n "$token" ]; then
         pr_info "Fetching hub CA certificate via onboard token..."
-        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${token}") || {
+        encoded_token=$(printf '%s' "$token" | sed 's/+/%2B/g; s/=/%3D/g; s/\//%2F/g')
+        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${encoded_token}") || {
             pr_err "Could not reach hub at %s with the given token." "$url"
             pr_err "Is the hub running and is the token still valid (15 min TTL)?"
             exit 1
