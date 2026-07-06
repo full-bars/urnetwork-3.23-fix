@@ -607,6 +607,8 @@ func loadPinnedFPs() map[string]bool {
 	return pins
 }
 
+var loggedLegacyPinDeprecation bool
+
 func newClientForURL(reportURL string) *http.Client {
 	if !strings.HasPrefix(reportURL, "https://") {
 		return &http.Client{Timeout: 10 * time.Second}
@@ -629,6 +631,10 @@ func newClientForURL(reportURL string) *http.Client {
 	// Legacy fingerprint pinning (deprecated)
 	pins := loadPinnedFPs()
 	if len(pins) > 0 {
+		if !loggedLegacyPinDeprecation {
+			loggedLegacyPinDeprecation = true
+			tlog("[hub] hub.pin is deprecated — re-run 'urnet-tools hub link' to switch to CA-based trust\n")
+		}
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 		tlsCfg.InsecureSkipVerify = true
 		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
