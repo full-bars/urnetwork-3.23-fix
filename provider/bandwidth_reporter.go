@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math/rand"
@@ -610,10 +612,24 @@ func newClientForURL(reportURL string) *http.Client {
 		return &http.Client{Timeout: 10 * time.Second}
 	}
 
-	pins := loadPinnedFPs()
+	// CA-based verification
+	if pool, ok := loadHubCAPool(); ok {
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion:       tls.VersionTLS12,
+					InsecureSkipVerify: true, // we verify via VerifyConnection
+					VerifyConnection: verifyHubChain(pool),
+				},
+			},
+		}
+	}
 
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	// Legacy fingerprint pinning (deprecated)
+	pins := loadPinnedFPs()
 	if len(pins) > 0 {
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 		tlsCfg.InsecureSkipVerify = true
 		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
@@ -623,18 +639,73 @@ func newClientForURL(reportURL string) *http.Client {
 			if pins[fp] {
 				return nil
 			}
-			err := fmt.Errorf("certificate fingerprint %s is not pinned", fp)
-			os.WriteFile(filepath.Join(os.TempDir(), "hub-tls-debug.txt"), []byte(fmt.Sprintf("computed: %s\npinned: %v\nerror: %v\n", fp, pins, err)), 0644)
-			return err
+			return fmt.Errorf("certificate fingerprint %s is not pinned", fp)
 		}
-	} else {
-		tlsCfg.InsecureSkipVerify = true
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsCfg,
+			},
+		}
 	}
 
+	// Fail closed - no trust material
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: tlsCfg,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					return fmt.Errorf("no hub CA installed — run 'urnet-tools hub link https://hub:port' or hub onboarding before using HTTPS")
+				},
+			},
 		},
+	}
+}
+
+func hubCACertPath() (string, error) {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".urnetwork", "hub_ca.pem"), nil
+}
+
+func loadHubCAPool() (*x509.CertPool, bool) {
+	path, err := hubCACertPath()
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, false
+	}
+	return pool, true
+}
+
+func verifyHubChain(pool *x509.CertPool) func(cs tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("no peer certificates")
+		}
+
+		intermediates := x509.NewCertPool()
+		for _, cert := range cs.PeerCertificates[1:] {
+			intermediates.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+		}
+
+		opts := x509.VerifyOptions{
+			Roots:         pool,
+			Intermediates: intermediates,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		if _, err := cs.PeerCertificates[0].Verify(opts); err != nil {
+			return fmt.Errorf("hub CA verification failed (%w) — the hub may have been redeployed with a different password; re-run 'urnet-tools hub link' or hub onboarding", err)
+		}
+		return nil
 	}
 }
