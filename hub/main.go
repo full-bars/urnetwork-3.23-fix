@@ -17,12 +17,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -99,9 +101,9 @@ func (rl *rateLimiter) allow(ip string) bool {
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	rl := newRateLimiter(60, time.Minute)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if idx := strings.LastIndex(ip, ":"); idx > 0 {
-			ip = ip[:idx]
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
 		}
 		if r.URL.Path == "/api/report" || r.URL.Path == "/api/events" {
 			next.ServeHTTP(w, r)
@@ -913,16 +915,8 @@ func handleDashboard(s *store) http.HandlerFunc {
 }
 
 func main() {
-	for _, a := range os.Args[1:] {
-		if a == "-version" || a == "--version" || a == "-v" {
-			v := Version
-			if v == "" {
-				v = "dev"
-			}
-			fmt.Println("urnetwork-hub " + v)
-			os.Exit(0)
-		}
-	}
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.BoolVar(showVersion, "v", false, "print version and exit (alias)")
 
 	addr := flag.String("addr", ":8080", "listen address")
 	tlsAddr := flag.String("tls-addr", "", "HTTPS listen address (empty disables TLS)")
@@ -930,6 +924,15 @@ func main() {
 	showPassword := flag.Bool("show-password", false, "print the CA password and exit")
 	doMintOnboardToken := flag.Bool("mint-onboard-token", false, "mint an onboarding token and exit")
 	flag.Parse()
+
+	if *showVersion {
+		v := Version
+		if v == "" {
+			v = "dev"
+		}
+		fmt.Println("urnetwork-hub " + v)
+		os.Exit(0)
+	}
 
 	if *showPassword {
 		pwPath := filepath.Join(*dataDir, "hub.password")
@@ -965,7 +968,9 @@ func main() {
 		}
 		fmt.Printf("Token: %s\n", token)
 		fmt.Printf("Expires: %s\n", expiry.Format(time.RFC3339))
-		fmt.Printf("CA fingerprint: %s\n", ca.caFingerprint())
+		if fp, err := ca.caFingerprint(); err == nil {
+			fmt.Printf("CA fingerprint: %s\n", fp)
+		}
 		os.Exit(0)
 	}
 
@@ -981,7 +986,7 @@ func main() {
 	}
 	defer s.db.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	s.startRetention(ctx)
 
@@ -1020,13 +1025,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hub: CA derivation failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("hub: CA fingerprint %s\n", ca.caFingerprint())
+		if fp, err := ca.caFingerprint(); err == nil { fmt.Printf("hub: CA fingerprint %s\n", fp) }
 
-		// Write CA cert
+		// Write CA cert (non-fatal — the hub can still serve TLS without it on disk)
 		caPath := filepath.Join(*dataDir, "ca.crt")
 		if err := os.WriteFile(caPath, ca.certPEM, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "hub: write CA cert: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "hub: WARNING: could not write CA cert to disk: %v\n", err)
 		}
 
 		// Issue initial leaf
@@ -1050,6 +1054,13 @@ func main() {
 				}
 				leafHolder.Store(&newLeaf)
 				fmt.Printf("hub: leaf certificate rotated\n")
+
+				// Re-write ca.crt to disk in case it was deleted mid-run.
+				// Providers fetch it at /api/ca-cert, but operators
+				// may copy it directly from the data dir.
+				if err := os.WriteFile(caPath, ca.certPEM, 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "hub: WARNING: could not rewrite CA cert: %v\n", err)
+				}
 			}
 		}()
 
@@ -1057,11 +1068,12 @@ func main() {
 		mux.HandleFunc("/api/cert", func(w http.ResponseWriter, r *http.Request) {
 			currentLeaf := leafHolder.Load()
 			w.Header().Set("Content-Type", "application/json")
+			caFP, _ := ca.caFingerprint()
 			json.NewEncoder(w).Encode(map[string]string{
 				"fingerprint":    fmt.Sprintf("SHA256:%x", sha256.Sum256(currentLeaf.Certificate[0])),
 				"pem":            strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: currentLeaf.Certificate[0]}))),
 				"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
-				"ca_fingerprint": ca.caFingerprint(),
+				"ca_fingerprint": caFP,
 			})
 		})
 
@@ -1086,7 +1098,7 @@ func main() {
 			}
 			if err := srv.ListenAndServeTLS("", ""); err != nil {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
-				os.Exit(1)
+				return
 			}
 		}()
 	}
@@ -1096,7 +1108,6 @@ func main() {
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
 	if err := http.ListenAndServe(*addr, wrapped); err != nil {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
-		os.Exit(1)
 	}
 }
 

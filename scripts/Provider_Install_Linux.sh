@@ -2101,14 +2101,13 @@ do_hub () {
             ;;
 
         link)
-            url="$1"
-            if [ -z "$url" ]; then
-                pr_err "Usage: urnet-tools hub link <https://hub-host:port>"
-                pr_err "Fetches the hub's TLS certificate, confirms the fingerprint,"
-                pr_err "and pins it so all future reports are encrypted."
+            if [ $# -eq 0 ]; then
+                pr_err "Usage: urnet-tools hub link <https://hub-host:port> [--token <onboard-token>]"
+                pr_err "Fetches the hub's CA certificate and configures TLS trust so all"
+                pr_err "future reports are encrypted and verified."
                 exit 1
             fi
-            do_hub_link "$url"
+            do_hub_link "$@"
             ;;
 
         test)
@@ -2381,11 +2380,15 @@ do_hub_test () {
 
     # CA-based verification path (preferred)
     if [ -f "$ca_file" ]; then
+        if [ ! -s "$ca_file" ]; then
+            pr_err "CA certificate file is empty — re-run 'urnet-tools hub link' to re-fetch."
+            exit 1
+        fi
         if ! command -v openssl > /dev/null; then
             pr_err "openssl is required for CA-based verification."
             exit 1
         fi
-        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" -verify_return_error 2>&1)
+        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" 2>&1)
         if echo "$result" | grep -q "Verify return code: 0"; then
             pr_info "TLS OK — CA chain verification passed."
             return 0
@@ -2711,6 +2714,11 @@ do_hub_init () {
         esac
     done
 
+    if [ "$has_systemd" -eq 0 ]; then
+        pr_err "systemd is not available on this system"
+        exit 1
+    fi
+
     if [ -f "$ca_cert" ]; then
         if command -v openssl > /dev/null; then
             fp=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
@@ -2727,6 +2735,24 @@ do_hub_init () {
         pr_info "Or use the onboard token for zero-touch provisioning:"
         pr_info "  urnet-tools hub onboard-cmd"
         return
+    fi
+
+    if [ -f "$hub_data_dir/hub.password" ] && [ ! -f "$ca_cert" ]; then
+        pr_warn "hub.password exists but ca.crt is missing — a previous init may have"
+        pr_warn "been interrupted. Re-running init will overwrite the existing password."
+        pr_warn "If you continue, you may need to re-link all providers."
+        pr_warn ""
+        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+            1|yes|true|y) ;;
+            *)
+                printf "Proceed? (y/n) "
+                read -r answer
+                case "$answer" in
+                    [Yy]|[Yy][Ee][Ss]) ;;
+                    *) pr_err "Aborted by user."; exit 1 ;;
+                esac
+                ;;
+        esac
     fi
 
     # Write password to hub.data dir before start so hub derives CA from it
@@ -2750,6 +2776,10 @@ do_hub_init () {
     if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
         systemctl --user restart urnetwork-hub.service || { pr_err "Failed to restart hub"; exit 1; }
     else
+        if systemctl --user is-enabled urnetwork-hub.service 2>/dev/null | grep -q 'masked'; then
+            pr_err "urnetwork-hub.service is masked — unmask it first: systemctl --user unmask urnetwork-hub.service"
+            exit 1
+        fi
         systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
     fi
 
@@ -2785,8 +2815,8 @@ do_hub_init () {
 
 do_hub_show_password () {
     hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -f "$hub_bin" ]; then
-        pr_err "Hub binary not found at %s" "$hub_bin"
+    if [ ! -x "$hub_bin" ]; then
+        pr_err "Hub binary not executable at %s" "$hub_bin"
         exit 1
     fi
     pr_info "Hub password (keep this secret, do not paste it anywhere public):"
@@ -2796,12 +2826,12 @@ do_hub_show_password () {
 
 do_hub_onboard_cmd () {
     hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -f "$hub_bin" ]; then
-        pr_err "Hub binary not found at %s" "$hub_bin"
+    if [ ! -x "$hub_bin" ]; then
+        pr_err "Hub binary not executable at %s" "$hub_bin"
         exit 1
     fi
 
-    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir" 2>&1) || {
+    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir") || {
         pr_err "Failed to mint onboard token:"
         pr_err "%s" "$output"
         exit 1
@@ -2820,7 +2850,8 @@ do_hub_onboard_cmd () {
     # Best-effort local IP for the one-liner
     local_ip=""
     if command -v hostname > /dev/null; then
-        local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        # Prefer the first IPv4 address — IPv6 needs brackets in URLs
+        local_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 '\.')
     fi
 
     pr_info "Token:      %s" "$token"
@@ -2909,21 +2940,25 @@ do_hub_link () {
             pr_warn "this directory — containers with bind mounts, native installs on"
             pr_warn "the same user, etc."
             pr_warn ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+            1|yes|true|y) ;;
+            *)
                 printf "Proceed? (y/n) "
                 read -r answer
                 case "$answer" in
                     [Yy]|[Yy][Ee][Ss]) ;;
                     *) pr_err "Aborted by user."; exit 1 ;;
                 esac
-            fi
+                ;;
+        esac
         fi
     fi
 
     # Token-based flow: fetch CA cert from the onboarding endpoint
     if [ -n "$token" ]; then
         pr_info "Fetching hub CA certificate via onboard token..."
-        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${token}") || {
+        encoded_token=$(printf '%s' "$token" | sed 's/+/%2B/g; s/=/%3D/g; s/\//%2F/g')
+        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${encoded_token}") || {
             pr_err "Could not reach hub at %s with the given token." "$url"
             pr_err "Is the hub running and is the token still valid (15 min TTL)?"
             exit 1
@@ -2969,14 +3004,17 @@ do_hub_link () {
             pr_info "  %s" "$ca_fingerprint"
             pr_info ""
 
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
 
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
@@ -2994,14 +3032,17 @@ do_hub_link () {
             pr_info "  %s" "$legacy_fp"
             pr_info ""
 
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
 
             mkdir -p "$hub_dir"
             printf '%s\n' "$legacy_fp" > "$pin_file.tmp"

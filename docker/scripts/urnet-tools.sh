@@ -55,14 +55,17 @@ hub_link() {
             echo "this directory — containers with bind mounts, native installs on"
             echo "the same user, etc."
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-                printf "Proceed? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) echo "Aborted."; exit 1 ;;
-                esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Proceed? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
         fi
     fi
 
@@ -87,7 +90,8 @@ hub_link() {
 
     if [ -n "$token" ]; then
         echo "Fetching hub CA certificate via onboard token..."
-        cert_json="$(fetch_json "${url}/api/ca-cert?token=${token}")" || true
+        encoded_token=$(printf '%s' "$token" | sed 's/+/%2B/g; s/=/%3D/g; s/\//%2F/g')
+        cert_json="$(fetch_json "${url}/api/ca-cert?token=${encoded_token}")" || true
         if [ -z "$cert_json" ]; then
             echo "Could not reach hub at $url with the given token."
             exit 1
@@ -121,11 +125,17 @@ hub_link() {
             echo ""
             echo "Hub CA fingerprint: $ca_fp"
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
             mkdir -p "$hub_dir"
             printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp" && mv "$ca_file.tmp" "$ca_file"
             chmod 600 "$ca_file"
@@ -136,11 +146,17 @@ hub_link() {
             echo ""
             echo "Hub certificate fingerprint: $legacy_fp"
             echo ""
-            if [ "${HUB_LINK_YES:-0}" != "1" ]; then
-                printf "Accept this fingerprint? (y/n) "
-                read -r answer
-                case "$answer" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "Aborted."; exit 1 ;; esac
-            fi
+            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
+                1|yes|true|y) ;;
+                *)
+                    printf "Accept this fingerprint? (y/n) "
+                    read -r answer
+                    case "$answer" in
+                        [Yy]|[Yy][Ee][Ss]) ;;
+                        *) pr_err "Aborted by user."; exit 1 ;;
+                    esac
+                    ;;
+            esac
             mkdir -p "$hub_dir"
             printf '%s\n' "$legacy_fp" > "$pin_file.tmp" && mv "$pin_file.tmp" "$pin_file"
             echo "Fingerprint pinned to $pin_file"
@@ -196,9 +212,10 @@ case "$operation" in
         subcmd="${1:-}"
         shift || true
         case "$subcmd" in
-            health)  exec /usr/local/bin/proxy-health ;;
-            traffic) exec /usr/local/bin/proxy-traffic ;;
+            health)  [ -x /usr/local/bin/proxy-health ] && exec /usr/local/bin/proxy-health || { echo "proxy-health not found"; exit 1; } ;;
+            traffic) [ -x /usr/local/bin/proxy-traffic ] && exec /usr/local/bin/proxy-traffic || { echo "proxy-traffic not found"; exit 1; } ;;
             add|clear|refresh|remove-dead|remove|exclude)
+                [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
                 exec /usr/local/bin/provider proxy "$subcmd" "$@"
                 ;;
             *)
@@ -208,15 +225,15 @@ case "$operation" in
         esac
         ;;
     logs)
-        exec /usr/local/bin/logs "$@"
+        [ -x /usr/local/bin/logs ] && exec /usr/local/bin/logs "$@" || { echo "logs tool not found"; exit 1; }
         ;;
     status)
         echo "URNetwork Provider (Docker)"
-        /usr/local/bin/provider -v
+        [ -x /usr/local/bin/provider ] && /usr/local/bin/provider -v || echo "provider binary not found"
         echo "Status: Running"
         ;;
     -v|version)
-        exec /usr/local/bin/provider -v
+        [ -x /usr/local/bin/provider ] && exec /usr/local/bin/provider -v || { echo "provider binary not found"; exit 1; }
         ;;
     optimize)
         echo "Optimization is mostly handled by Docker runtime/host settings."
