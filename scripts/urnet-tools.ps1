@@ -584,17 +584,73 @@ switch ($Command) {
 
     "hub" {
         $hubSubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
+
+        # Detect deployment model: Docker container takes priority; native
+        # binary is the fallback. Both may coexist on the same machine —
+        # container detection is scoped to $ContainerName so they don't
+        # contaminate each other.
+        $useDocker = $false
+        if (Get-Command docker -ErrorAction SilentlyContinue) {
+            $running = docker ps --format '{{.Names}}' 2>$null
+            if (($running -split "`n") -contains $ContainerName) {
+                $useDocker = $true
+            }
+        }
+
         switch ($hubSubCmd) {
             "link" {
                 if ($SubArgs.Length -lt 2) {
                     Write-Host "Usage: hub link <https://hub-host:port> [--token <onboard-token>]"
                     break
                 }
+                $rest = $SubArgs[1..($SubArgs.Length - 1)]
+
+                if ($useDocker) {
+                    docker exec $ContainerName /usr/local/bin/urnet-tools hub link @rest
+                    break
+                }
+
                 $url = $SubArgs[1]
                 $token = ""
                 if ($SubArgs.Length -gt 3 -and $SubArgs[2] -eq "--token") {
                     $token = $SubArgs[3]
                 }
+
+                if (-not $useDocker) {
+                    if (-not (Test-Path $BinaryPath)) {
+                        Write-Error "No provider found — check -ContainerName (Docker) or install path (native)."
+                        break
+                    }
+                }
+
+                if (-not $useDocker) {
+                    $reportFile = "$env:USERPROFILE\.urnetwork\report_url"
+                    $newHost = ($url -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
+                    $newHost = $newHost.ToLower()
+                    if (Test-Path $reportFile) {
+                        $existing = (Get-Content $reportFile -Raw).Trim()
+                        $oldHost = ($existing -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
+                        $oldHost = $oldHost.ToLower()
+                        if ($oldHost -ne $newHost -and $oldHost -ne '') {
+                            Write-Warning "This provider directory is already linked to a different hub host."
+                            Write-Warning "  Current: $oldHost"
+                            Write-Warning "  New:     $newHost"
+                            Write-Warning ""
+                            Write-Warning "Linking to a different host will reconfigure all providers sharing"
+                            Write-Warning "this directory — containers with bind mounts, native installs on"
+                            Write-Warning "the same user, etc."
+                            Write-Warning ""
+                            if ($env:HUB_LINK_YES -ne "1") {
+                                $answer = Read-Host "Proceed? (y/n)"
+                                if ($answer -ne "y") {
+                                    Write-Host "Aborted."
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+
                 $hubDir = "$env:USERPROFILE\.urnetwork"
                 $null = New-Item -ItemType Directory -Force -Path $hubDir
                 $caFile = "$hubDir\hub_ca.pem"
@@ -614,10 +670,10 @@ switch ($Command) {
                         Write-Host ""
                         Write-Host "Hub CA fingerprint: $($resp.ca_fingerprint)"
                         Write-Host ""
-                        # JSON-escaped PEM (embedded \n) needs decoding to real newlines
                         $pem = $resp.ca_pem -replace '\\n', "`n"
                         Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
                         Move-Item -Force "$caFile.tmp" $caFile
+                        Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                         Write-Host "CA certificate saved to $caFile"
                     } else {
                         Write-Host "Fetching hub CA certificate from $url/api/cert ..."
@@ -629,6 +685,7 @@ switch ($Command) {
                             $pem = $resp.ca_pem -replace '\\n', "`n"
                             Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
                             Move-Item -Force "$caFile.tmp" $caFile
+                            Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                             Write-Host "CA certificate saved to $caFile"
                         } elseif ($resp.fingerprint) {
                             Write-Warning "Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
@@ -647,8 +704,6 @@ switch ($Command) {
                     break
                 }
 
-                # Remove legacy pin file when CA cert is in use
-                Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
                 Set-Content -Path "$reportFile" -Value $url -NoNewline
                 Write-Host "Report URL set to $url"
                 Write-Host ""
@@ -658,6 +713,11 @@ switch ($Command) {
             }
 
             "unlink" {
+                if ($useDocker) {
+                    docker exec $ContainerName /usr/local/bin/urnet-tools hub unlink
+                    break
+                }
+
                 $hubDir = "$env:USERPROFILE\.urnetwork"
                 $caFile = "$hubDir\hub_ca.pem"
                 $pinFile = "$hubDir\hub.pin"
