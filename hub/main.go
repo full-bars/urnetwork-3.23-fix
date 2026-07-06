@@ -17,12 +17,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -965,7 +967,9 @@ func main() {
 		}
 		fmt.Printf("Token: %s\n", token)
 		fmt.Printf("Expires: %s\n", expiry.Format(time.RFC3339))
-		fmt.Printf("CA fingerprint: %s\n", ca.caFingerprint())
+		if fp, err := ca.caFingerprint(); err == nil {
+			fmt.Printf("CA fingerprint: %s\n", fp)
+		}
 		os.Exit(0)
 	}
 
@@ -981,7 +985,7 @@ func main() {
 	}
 	defer s.db.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	s.startRetention(ctx)
 
@@ -1020,7 +1024,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hub: CA derivation failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("hub: CA fingerprint %s\n", ca.caFingerprint())
+		if fp, err := ca.caFingerprint(); err == nil { fmt.Printf("hub: CA fingerprint %s\n", fp) }
 
 		// Write CA cert (non-fatal — the hub can still serve TLS without it on disk)
 		caPath := filepath.Join(*dataDir, "ca.crt")
@@ -1063,11 +1067,12 @@ func main() {
 		mux.HandleFunc("/api/cert", func(w http.ResponseWriter, r *http.Request) {
 			currentLeaf := leafHolder.Load()
 			w.Header().Set("Content-Type", "application/json")
+			caFP, _ := ca.caFingerprint()
 			json.NewEncoder(w).Encode(map[string]string{
 				"fingerprint":    fmt.Sprintf("SHA256:%x", sha256.Sum256(currentLeaf.Certificate[0])),
 				"pem":            strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: currentLeaf.Certificate[0]}))),
 				"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
-				"ca_fingerprint": ca.caFingerprint(),
+				"ca_fingerprint": caFP,
 			})
 		})
 
@@ -1092,7 +1097,7 @@ func main() {
 			}
 			if err := srv.ListenAndServeTLS("", ""); err != nil {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
-				os.Exit(1)
+				return
 			}
 		}()
 	}
@@ -1102,7 +1107,6 @@ func main() {
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
 	if err := http.ListenAndServe(*addr, wrapped); err != nil {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
-		os.Exit(1)
 	}
 }
 

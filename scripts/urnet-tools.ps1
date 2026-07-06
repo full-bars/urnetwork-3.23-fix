@@ -591,9 +591,16 @@ switch ($Command) {
         # contaminate each other.
         $useDocker = $false
         if (Get-Command docker -ErrorAction SilentlyContinue) {
-            $running = docker ps --format '{{.Names}}' 2>$null
-            if (($running -split "`n") -contains $ContainerName) {
-                $useDocker = $true
+            try {
+                $job = Start-Job -ScriptBlock { docker ps --format '{{.Names}}' 2>$null }
+                $null = Wait-Job $job -Timeout 5
+                $running = Receive-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force
+                if (($running -split "`n") -contains $ContainerName) {
+                    $useDocker = $true
+                }
+            } catch {
+                $useDocker = $false
             }
         }
 

@@ -2380,11 +2380,15 @@ do_hub_test () {
 
     # CA-based verification path (preferred)
     if [ -f "$ca_file" ]; then
+        if [ ! -s "$ca_file" ]; then
+            pr_err "CA certificate file is empty — re-run 'urnet-tools hub link' to re-fetch."
+            exit 1
+        fi
         if ! command -v openssl > /dev/null; then
             pr_err "openssl is required for CA-based verification."
             exit 1
         fi
-        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" -verify_return_error 2>&1)
+        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" 2>&1)
         if echo "$result" | grep -q "Verify return code: 0"; then
             pr_info "TLS OK — CA chain verification passed."
             return 0
@@ -2733,6 +2737,21 @@ do_hub_init () {
         return
     fi
 
+    if [ -f "$hub_data_dir/hub.password" ] && [ ! -f "$ca_cert" ]; then
+        pr_warn "hub.password exists but ca.crt is missing — a previous init may have"
+        pr_warn "been interrupted. Re-running init will overwrite the existing password."
+        pr_warn "If you continue, you may need to re-link all providers."
+        pr_warn ""
+        if [ "${HUB_LINK_YES:-0}" != "1" ]; then
+            printf "Proceed? (y/n) "
+            read -r answer
+            case "$answer" in
+                [Yy]|[Yy][Ee][Ss]) ;;
+                *) pr_err "Aborted by user."; exit 1 ;;
+            esac
+        fi
+    fi
+
     # Write password to hub.data dir before start so hub derives CA from it
     if [ -n "$password" ]; then
         mkdir -p "$hub_data_dir"
@@ -2805,7 +2824,7 @@ do_hub_onboard_cmd () {
         exit 1
     fi
 
-    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir" 2>&1) || {
+    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir") || {
         pr_err "Failed to mint onboard token:"
         pr_err "%s" "$output"
         exit 1

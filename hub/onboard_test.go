@@ -137,8 +137,9 @@ func TestHandleCACert_ValidToken(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "BEGIN CERTIFICATE") {
 		t.Errorf("body = %q, want it to contain the CA PEM", w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), ca.caFingerprint()) {
-		t.Errorf("body = %q, want it to contain the CA fingerprint %q", w.Body.String(), ca.caFingerprint())
+	caFP, _ := ca.caFingerprint()
+	if !strings.Contains(w.Body.String(), caFP) {
+		t.Errorf("body = %q, want it to contain the CA fingerprint %q", w.Body.String(), caFP)
 	}
 }
 

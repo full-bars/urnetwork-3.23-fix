@@ -130,10 +130,16 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 			http.Error(w, `{"error":"invalid or expired token"}`, 403)
 			return
 		}
+		tokenPrefix := token
+		if len(tokenPrefix) > 8 {
+			tokenPrefix = tokenPrefix[:8]
+		}
+		fmt.Printf("hub: onboard %s... from %s\n", tokenPrefix, r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
+		caFP, _ := ca.caFingerprint()
 		json.NewEncoder(w).Encode(map[string]string{
 			"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
-			"ca_fingerprint": ca.caFingerprint(),
+			"ca_fingerprint": caFP,
 		})
 	}
 }
@@ -170,7 +176,7 @@ HUB_URL="%s"
 mkdir -p ~/.urnetwork
 
 echo "Fetching CA certificate..."
-RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo $HUB_URL | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
+RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo "$HUB_URL" | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
 
 CA_PEM=$(echo "$RESPONSE" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
 CA_FP=$(echo "$RESPONSE" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
