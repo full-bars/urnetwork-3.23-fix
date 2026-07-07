@@ -8,11 +8,15 @@ import (
 	"encoding/json"
 )
 
-func createFakeJWT(exp int64) string {
+func createFakeJWTWithClaims(claims map[string]interface{}) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payloadBytes, _ := json.Marshal(map[string]interface{}{"exp": float64(exp)})
+	payloadBytes, _ := json.Marshal(claims)
 	payload := base64.RawURLEncoding.EncodeToString(payloadBytes)
 	return fmt.Sprintf("%s.%s.fakesig", header, payload)
+}
+
+func createFakeJWT(exp int64) string {
+	return createFakeJWTWithClaims(map[string]interface{}{"exp": float64(exp)})
 }
 
 func TestValidateJWTExpiry(t *testing.T) {
@@ -68,6 +72,55 @@ func TestValidateJWTExpiry(t *testing.T) {
 			err := validateJWTExpiry(token)
 			if err != tt.wantErr {
 				t.Errorf("validateJWTExpiry() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestJWTContainsClientId(t *testing.T) {
+	tests := []struct {
+		name   string
+		jwt    string
+		want   bool
+	}{
+		{
+			name: "network JWT without client_id",
+			jwt: createFakeJWTWithClaims(map[string]interface{}{
+				"network_id":   "abc123",
+				"user_id":      "def456",
+				"network_name": "testnet",
+				"exp":          float64(time.Now().Unix() + 86400),
+			}),
+			want: false,
+		},
+		{
+			name: "client JWT with client_id",
+			jwt: createFakeJWTWithClaims(map[string]interface{}{
+				"network_id": "abc123",
+				"user_id":    "def456",
+				"client_id":  "xyz789",
+				"device_id":  "dev001",
+				"exp":        float64(time.Now().Unix() + 86400),
+			}),
+			want: true,
+		},
+		{
+			name:   "invalid JWT",
+			jwt:    "not.a.jwt",
+			want:   false,
+		},
+		{
+			name:   "empty string",
+			jwt:    "",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jwtContainsClientId(tt.jwt)
+			if got != tt.want {
+				t.Errorf("jwtContainsClientId() = %v, want %v", got, tt.want)
 			}
 		})
 	}
