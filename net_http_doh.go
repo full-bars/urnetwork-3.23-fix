@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/maps"
@@ -23,6 +24,17 @@ import (
 
 	"golang.org/x/net/http2"
 )
+
+// dohFailureCount tracks DoH failures for aggregate reporting in health heartbeat
+var dohFailureCount atomic.Int64
+
+func GetDohFailureCount() uint64 {
+	return uint64(dohFailureCount.Swap(0))
+}
+
+var dohErrThrottle = newLogThrottle(5 * time.Minute)
+
+func shouldLogDohErr() (bool, int64) { return dohErrThrottle.Allow(time.Now()) }
 
 func DefaultDohSettings() *DohSettings {
 	return &DohSettings{
@@ -453,8 +465,17 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			}
 		} else if authoritativeDnsMiss(err) {
 			cacheMiss = true
-		} else if log := self.log.V(2); log.Enabled() {
-			log.Infof("[doh]remote (%s) err = %s\n", q.Domain, err)
+		} else {
+			dohFailureCount.Add(1)
+			if ok, suppressed := shouldLogDohErr(); ok {
+				if suppressed > 100 {
+					self.log.Infof("🚨 [doh] %d failures in last window — last: remote (%s) err = %s\n", suppressed+1, q.Domain, err)
+				} else if suppressed > 0 {
+					self.log.Infof("🌐 [doh] remote (%s) err = %s (%d suppressed)\n", q.Domain, err, suppressed)
+				} else {
+					self.log.Infof("🌐 [doh] remote (%s) err = %s\n", q.Domain, err)
+				}
+			}
 		}
 	}
 
@@ -474,8 +495,15 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			}
 		} else if authoritativeDnsMiss(err) {
 			cacheMiss = true
-		} else if log := self.log.V(2); log.Enabled() {
-			log.Infof("[doh]local (%s) err = %s\n", q.Domain, err)
+		} else {
+			dohFailureCount.Add(1)
+			if ok, suppressed := shouldLogDohErr(); ok {
+				if suppressed > 0 {
+					self.log.Infof("🌐 [doh] local (%s) err = %s (%d suppressed)\n", q.Domain, err, suppressed)
+				} else {
+					self.log.Infof("🌐 [doh] local (%s) err = %s\n", q.Domain, err)
+				}
+			}
 		}
 	}
 
@@ -626,7 +654,7 @@ func dohQueryWithClientResult(
 		}
 	}
 
-		endTime := time.Now().Add(settings.RequestTimeout)
+	endTime := time.Now().Add(settings.RequestTimeout)
 	mergedResult := newDohQueryResult()
 	for range queryCount {
 		timeout := endTime.Sub(time.Now())
