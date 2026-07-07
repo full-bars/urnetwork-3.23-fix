@@ -331,18 +331,20 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 	b, _ := MessagePoolGetDetailedWithTag(orderedMessagePools[0].size, tag)
 	i := 0
 	for j := 0; j < len(orderedMessagePools); j += 1 {
-		for {
+		for i < len(b) {
 			n, err := r.Read(b[i:])
-			i += n
-			if err == io.EOF {
-				return b[:i], nil
+			if n > 0 {
+				i += n
 			}
 			if err != nil {
+				if err == io.EOF {
+					return b[:i], nil
+				}
 				MessagePoolReturn(b)
 				return nil, err
 			}
-			if i >= len(b) {
-				break
+			if n == 0 {
+				return b[:i], nil
 			}
 		}
 
@@ -361,12 +363,20 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 	defer MessagePoolReturn(b)
 	for {
 		n, err := r.Read(b)
-		out = append(out, b[:n]...)
-		if err == io.EOF {
-			return out, nil
+		if n > 0 {
+			out = append(out, b[:n]...)
 		}
 		if err != nil {
+			if err == io.EOF {
+				return out, nil
+			}
+			// Preserve the historical contract that (non-EOF) errors yield a nil buffer
+			// (callers do not expect to MessagePoolReturn on the error path).
+			// We still consumed the bytes (preventing reader desync on streams).
 			return nil, err
+		}
+		if n == 0 {
+			return out, nil
 		}
 	}
 }
