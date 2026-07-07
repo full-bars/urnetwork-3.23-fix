@@ -26,7 +26,6 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/gorilla/websocket"
-
 )
 
 // censorship-resistant strategies for making https connections
@@ -231,7 +230,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			}
 
 			dialer := &clientDialer{
-				log: loggerOrDefault(settings.Log),
+				log:            loggerOrDefault(settings.Log),
 				description:    "normal",
 				minimumWeight:  0.5,
 				priority:       25,
@@ -246,7 +245,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		if settings.ExposeServerHostNames && settings.ExposeServerIps {
 			// fragment+reorder
 			dialer1 := &clientDialer{
-				log: loggerOrDefault(settings.Log),
+				log:            loggerOrDefault(settings.Log),
 				description:    "fragment+reorder",
 				minimumWeight:  0.25,
 				priority:       50,
@@ -256,7 +255,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// fragment
 			// this is the highest priority because it has no performance impact and additional security benefits
 			dialer2 := &clientDialer{
-				log: loggerOrDefault(settings.Log),
+				log:            loggerOrDefault(settings.Log),
 				description:    "fragment",
 				minimumWeight:  0.25,
 				priority:       0,
@@ -265,7 +264,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			}
 			// reorder
 			dialer3 := &clientDialer{
-				log: loggerOrDefault(settings.Log),
+				log:            loggerOrDefault(settings.Log),
 				description:    "reorder",
 				minimumWeight:  0.25,
 				priority:       50,
@@ -316,7 +315,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 
 	return &ClientStrategy{
 		ctx:                 ctx,
-		log: loggerOrDefault(settings.Log),
+		log:                 loggerOrDefault(settings.Log),
 		settings:            settings,
 		dialers:             dialers,
 		resolvedExtenderIps: resolvedExtenderIps,
@@ -678,14 +677,14 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					self.mutex.Lock()
 					self.failureCount = 0
 					self.mutex.Unlock()
-					self.log.Infof("[net][s]select: %s dur=%dms\n", dialer.String(), dialDur.Milliseconds())
+					self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.String(), dialDur.Milliseconds())
 					return result
 				}
 				if ok, suppressed := shouldLogSelectErr(); ok {
 					if suppressed > 0 {
-						self.log.Infof("[net][s]select: %s = %s dur=%dms (%d suppressed)\n", dialer.String(), result.err, dialDur.Milliseconds(), suppressed)
+						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms (%d suppressed)\n", dialer.String(), result.err, dialDur.Milliseconds(), suppressed)
 					} else {
-						self.log.Infof("[net][s]select: %s = %s dur=%dms\n", dialer.String(), result.err, dialDur.Milliseconds())
+						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms\n", dialer.String(), result.err, dialDur.Milliseconds())
 					}
 				}
 				result.Close()

@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "errors"
@@ -25,6 +26,18 @@ import (
 var oobErrThrottle = newLogThrottle(time.Minute)
 
 func shouldLogOobErr() (bool, int64) { return oobErrThrottle.Allow(time.Now()) }
+
+// Contract counters for aggregate metrics in heartbeat
+var contractsAcquired uint64
+var contractsDenied uint64
+var contractUtilSum uint64
+
+func ContractMetricsSnapshot() (acquired, denied, utilSum uint64) {
+	acquired = atomic.SwapUint64(&contractsAcquired, 0)
+	denied = atomic.SwapUint64(&contractsDenied, 0)
+	utilSum = atomic.SwapUint64(&contractUtilSum, 0)
+	return acquired, denied, utilSum
+}
 
 // manage contracts which are embedded into each transfer sequence
 
@@ -525,6 +538,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						self.client.log.Infof("🤝 [contract] acquired size=%s destination=%s\n",
 							ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())),
 							contractKey.Destination.DestinationId)
+						atomic.AddUint64(&contractsAcquired, 1)
 						return nil
 					}
 				}
@@ -539,7 +553,8 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 			}
 		}
 		for _, contractError := range contractErrors {
-			self.client.log.Infof("[contract] denied = %s destination=%s\n", contractError, contractKey.Destination.DestinationId)
+			self.client.log.Infof("⛔ [contract] denied = %s destination=%s\n", contractError, contractKey.Destination.DestinationId)
+			atomic.AddUint64(&contractsDenied, 1)
 			c := func() {
 				contractStatus := &ContractStatus{
 					Key:   contractKey,
@@ -1115,6 +1130,7 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 			ByteCountHumanReadable(allottedByteCount),
 			util,
 			contractKey.Destination.DestinationId)
+		atomic.AddUint64(&contractUtilSum, uint64(util*100))
 	}
 
 	// Reliable delivery via a per-contract `ControlSync`. The

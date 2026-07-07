@@ -455,10 +455,10 @@ func (r *ProxyReloader) reload() {
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
 	if deferredTotal > 0 {
-		tlog("[proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
+		tlog("🔄 [proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
 			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
 	} else {
-		tlog("[proxy] reloaded: +%d added, -%d removed [%s]\n",
+		tlog("🔄 [proxy] reloaded: +%d added, -%d removed [%s]\n",
 			len(added), len(removed), reloadDur)
 	}
 }

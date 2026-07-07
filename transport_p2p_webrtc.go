@@ -818,6 +818,11 @@ func (self *peerConn) setConnected(connected bool) {
 	}()
 
 	if changed {
+		if connected {
+			self.log.Infof("🔗 [signal] peer connected %s\n", self.key.String())
+		} else {
+			self.log.Infof("🔗 [signal] peer disconnected %s\n", self.key.String())
+		}
 		self.connectedChanged(self.Connected())
 	}
 }

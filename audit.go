@@ -15,8 +15,8 @@ import (
 // Golden Values for a high-performance provider.
 // Based on the user's fleet (Arch/Debian) optimization profiles.
 const (
-	GoldenUlimit          = 1048576
-	GoldenConntrackMax    = 1048576 // Scaled dynamically, but this is the "Warning" floor
+	GoldenUlimit           = 1048576
+	GoldenConntrackMax     = 1048576 // Scaled dynamically, but this is the "Warning" floor
 	GoldenConntrackTimeout = 5400    // 90 minutes
 )
 
@@ -104,7 +104,7 @@ func CheckDiskSpace() (int64, bool) {
 	freeMiB := freeBytes / 1024 / 1024
 
 	if freeMiB < 1024 { // < 1GB
-		fmt.Printf("[audit] CRITICAL: Low disk space (%d MiB available). Provider may fail.\n", freeMiB)
+		fmt.Printf("🚨 [audit] CRITICAL: Low disk space (%d MiB available). Provider may fail.\n", freeMiB)
 		return freeMiB, true
 	}
 	return freeMiB, false
