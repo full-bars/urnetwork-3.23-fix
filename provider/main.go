@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"runtime/debug"
 	"runtime/metrics"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +42,11 @@ const DefaultApiUrl = "https://api.bringyour.com"
 const DefaultConnectUrl = "wss://connect.bringyour.com"
 
 var webhookClient = &http.Client{Timeout: 5 * time.Second}
+
+// jwtExpiryThrottle throttles JWT expiry warnings to 1 per hour
+var jwtExpiryThrottle = connect.NewLogThrottle(1 * time.Hour)
+
+func shouldLogJwtExpiry() (bool, int64) { return jwtExpiryThrottle.Allow(time.Now()) }
 
 // proxyLaunchCount tracks how many proxy goroutines have passed the stagger
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
@@ -304,7 +309,7 @@ func applyPoolAutoSize(maxMemory connect.ByteCount) {
 		poolBytes = ceiling
 	}
 	connect.ResizeMessagePools(poolBytes)
-	tlog("[pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
+	tlog("📦 [pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
 }
 
 func applyEcoSettings(maxMemory connect.ByteCount) {
@@ -506,14 +511,14 @@ func runEcoMemoryMonitor(ctx context.Context) {
 			switch state {
 			case ecoStateNormal:
 				debug.SetGCPercent(gcNormal)
-				tlog("[eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
+				tlog("🌿🟢 [eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
 			case ecoStatePressure:
 				debug.SetGCPercent(gcPressure)
-				tlog("[eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
+				tlog("🌿🟡 [eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
 			case ecoStateCritical:
 				debug.SetGCPercent(gcCritical)
 				runtime.GC()
-				tlog("[eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
+				tlog("🌿🔴 [eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
 			}
 		}
 	}
@@ -847,9 +852,9 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 
 	webhookURL := resolveAlertWebhook(envWebhookURL)
 	if webhookURL != "" {
-		tlog("[outage] watcher active node=%s webhook=configured\n", nodeName)
+		tlog("👀 [outage] watcher active node=%s webhook=configured\n", nodeName)
 	} else {
-		tlog("[outage] watcher active node=%s\n", nodeName)
+		tlog("👀 [outage] watcher active node=%s\n", nodeName)
 	}
 
 	ticker := time.NewTicker(pollInterval)
@@ -880,7 +885,7 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 				degradedCount++
 				if degradedCount >= startConfirm {
 					degraded = true
-					tlog("[outage] backend degraded — holding existing connections, not accepting new ones\n")
+					tlog("🚨 [outage] backend degraded — holding existing connections, not accepting new ones\n")
 					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
 						lastStartFire = time.Now()
 						go fireWebhook(webhookURL, nodeName, "outage_start",
@@ -895,7 +900,7 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 				if clearCount >= clearConfirm {
 					degraded = false
 					clearCount = 0
-					tlog("[outage] backend recovered\n")
+					tlog("🚨 [outage] backend recovered\n")
 					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
 						lastClearFire = time.Now()
 						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
@@ -933,7 +938,7 @@ func fireWebhook(url, nodeName, event, message string) {
 	}
 	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
-		tlog("[webhook] delivery failed (%s): %v\n", event, err)
+		tlog("📡 [webhook] delivery failed (%s): %v\n", event, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1113,6 +1118,7 @@ func runProfitHeartbeat(ctx context.Context) {
 	prevTickTime := time.Now()
 	var lastLogTime time.Time
 	wasEarning := false
+	var prevClients int64
 
 	for {
 		select {
@@ -1161,6 +1167,14 @@ func runProfitHeartbeat(ctx context.Context) {
 
 		earning := delta > 0 && clients > 0
 		justStopped := wasEarning && !earning
+
+		// Traffic start/stop markers (✈️/🛬 on clients transition)
+		if prevClients == 0 && clients > 0 {
+			tlog("✈️ [traffic] started (clients=%d)\n", clients)
+		} else if prevClients > 0 && clients == 0 {
+			tlog("🛬 [traffic] stopped (was=%d clients)\n", prevClients)
+		}
+
 		wasEarning = earning
 
 		if earning || justStopped || lastLogTime.IsZero() || now.Sub(lastLogTime) >= profitIdleLogInterval {
@@ -1181,9 +1195,19 @@ func runProfitHeartbeat(ctx context.Context) {
 			if status == "yes" {
 				profitEmoji = "💰 "
 			}
-			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d\n",
-				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle)
+			acquired, denied, utilSum := connect.ContractMetricsSnapshot()
+			contractFields := ""
+			if acquired+denied > 0 {
+				avgUtil := uint64(0)
+				if acquired > 0 {
+					avgUtil = utilSum / acquired
+				}
+				contractFields = fmt.Sprintf(" contracts=%d denied=%d avg_util=%d%%", acquired, denied, avgUtil)
+			}
+			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s\n",
+				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle, contractFields)
 			lastLogTime = now
+			prevClients = clients
 		}
 	}
 }
@@ -1217,6 +1241,11 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	midnightCheckpoint := map[string]uint64{}
 	nextMidnightReset := nextMidnight(time.Now())
 
+	// velocity and peak tracking
+	var prevTotalRx, prevTotalTx uint64
+	var peakRx, peakTx uint64
+	velocityLogged := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1232,8 +1261,13 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		heapMiB := metricBytesToMiB("/memory/classes/heap/objects:bytes", samples[0].Value)
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
-		tlog("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d\n",
+		dohFailures := connect.GetDohFailureCount()
+		healthLine := fmt.Sprintf("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d",
 			uptime, profile, heapMiB, sysMiB, runtime.NumGoroutine(), connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
+		if dohFailures > 0 {
+			healthLine += fmt.Sprintf(" dns_failures=%d", dohFailures)
+		}
+		tlog("%s\n", healthLine)
 
 		if connect.ProxyHealthCount() == 0 {
 			continue // non-proxy mode: no [health][proxies] lines
@@ -1325,7 +1359,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if age := bw.MaxAge(); age > 0 {
 				ageStr = fmt.Sprintf(" age=%s", age.Round(time.Second))
 			}
-			tlog("[traffic] %s rx=%s tx=%s clients=%d%s billable_today=%s\n",
+			tlog("📈 [traffic] %s rx=%s tx=%s clients=%d%s billable_today=%s\n",
 				key,
 				fmtRate(float64(rxDelta)/elapsed),
 				fmtRate(float64(txDelta)/elapsed),
@@ -1335,17 +1369,62 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			)
 		}
 		prevTickTime = now
+
+		// velocity alerts: detect dramatic rate changes
+		totalRx := totalRxDelta
+		totalTx := totalTxDelta
+		if prevTotalRx > 0 || prevTotalTx > 0 {
+			prevTotal := prevTotalRx + prevTotalTx
+			currTotal := totalRx + totalTx
+			if currTotal > 0 && prevTotal > 0 {
+				if currTotal > prevTotal*3 && (currTotal-prevTotal) > 100*1024 {
+					if time.Since(velocityLogged) > 5*time.Minute {
+						tlog("📈 [traffic] velocity: %.1fx → rx=%s tx=%s (was rx=%s tx=%s)\n",
+							float64(currTotal)/float64(prevTotal),
+							fmtRate(float64(totalRx)/elapsed),
+							fmtRate(float64(totalTx)/elapsed),
+							fmtRate(float64(prevTotalRx)/elapsed),
+							fmtRate(float64(prevTotalTx)/elapsed))
+						velocityLogged = now
+					}
+				} else if prevTotal > currTotal*3 && (prevTotal-currTotal) > 100*1024 {
+					if time.Since(velocityLogged) > 5*time.Minute {
+						tlog("📈 [traffic] velocity: %.1fx → rx=%s tx=%s (was rx=%s tx=%s) — traffic dropping\n",
+							float64(currTotal)/float64(prevTotal),
+							fmtRate(float64(totalRx)/elapsed),
+							fmtRate(float64(totalTx)/elapsed),
+							fmtRate(float64(prevTotalRx)/elapsed),
+							fmtRate(float64(prevTotalTx)/elapsed))
+						velocityLogged = now
+					}
+				}
+			}
+		}
+
+		// peak tracking: update high water marks
+		if totalRx > peakRx {
+			peakRx = totalRx
+		}
+		if totalTx > peakTx {
+			peakTx = totalTx
+		}
+
+		prevTotalRx = totalRx
+		prevTotalTx = totalTx
+
 		earning := "no"
 		if totalBillable > 0 {
 			earning = "yes"
 		}
-		tlog("📈 [traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s\n",
+		tlog("📈 [traffic] total rx=%s tx=%s clients=%d active_proxies=%d billable_today=%s earning=%s peak_rx=%s peak_tx=%s\n",
 			fmtRate(float64(totalRxDelta)/elapsed),
 			fmtRate(float64(totalTxDelta)/elapsed),
 			totalClients,
 			activeProxies,
 			fmtBytes(totalBillable),
 			earning,
+			fmtRate(float64(peakRx)/elapsed),
+			fmtRate(float64(peakTx)/elapsed),
 		)
 		// [earn] surfaces utilization: how many up proxies are actually carrying
 		// users (serving) vs sitting idle. Sustained high idle with up>0 means the
@@ -1521,6 +1600,18 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 			exp := parseJWTExpiryTime(byJwt)
 			expiryDue := exp != nil && time.Until(*exp) <= expiryFallbackWindow
 
+			// Emit throttled warning when expiry is within 48h
+			if expiryDue && exp != nil {
+				if ok, suppressed := shouldLogJwtExpiry(); ok {
+					remaining := time.Until(*exp)
+					if suppressed > 0 {
+						tlog("🔑 [jwt] ⚠ expires in %s — refresh triggered (%d suppressed)\n", formatDuration(remaining), suppressed)
+					} else {
+						tlog("🔑 [jwt] ⚠ expires in %s — refresh triggered\n", formatDuration(remaining))
+					}
+				}
+			}
+
 			if periodicDue || expiryDue {
 				var reason string
 				switch {
@@ -1537,7 +1628,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
-					tlog("[jwt] refresh failed: %v (will retry in 1h)\n", err)
+					tlog("🔑 [jwt] refresh failed: %v (will retry in 1h)\n", err)
 				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
 					tlog("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
 				} else {
@@ -1617,6 +1708,24 @@ func provide(opts docopt.Opts) {
 
 	provideStartTime = time.Now()
 	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+
+	// Log JWT expiry status at startup
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		jwtPath := filepath.Join(home, ".urnetwork", "jwt")
+		if _, err := os.Stat(jwtPath); err == nil {
+			if jwtBytes, err := os.ReadFile(jwtPath); err == nil {
+				if exp := parseJWTExpiryTime(string(jwtBytes)); exp != nil {
+					daysUntil := time.Until(*exp).Hours() / 24
+					if daysUntil > 0 {
+						tlog("🔑 [jwt] expires in %d days\n", int(daysUntil))
+					} else {
+						tlog("🔑 [jwt] EXPIRED %d days ago — refresh needed\n", int(-daysUntil))
+					}
+				}
+			}
+		}
+	}
 
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
@@ -3464,7 +3573,7 @@ func proxyActivity() {
 		}
 	}()
 
-	fmt.Print("\033[?25l") // hide cursor
+	fmt.Print("\033[?25l")       // hide cursor
 	defer fmt.Print("\033[?25h") // show cursor
 
 	// Scroll window tracking recent contract events
@@ -3655,7 +3764,7 @@ func proxySummary() {
 		if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, " Up:") {
-						var down int
+					var down int
 					fmt.Sscanf(line, " Up: %d | Down: %d | Dead: %d | Degraded: %d", &up, &down, &dead, &degraded)
 				}
 			}

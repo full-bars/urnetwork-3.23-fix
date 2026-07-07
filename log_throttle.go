@@ -25,6 +25,11 @@ func newLogThrottle(interval time.Duration) *logThrottle {
 	return &logThrottle{intervalNanos: int64(interval)}
 }
 
+// NewLogThrottle is the exported constructor for logThrottle (used by provider package).
+func NewLogThrottle(interval time.Duration) *logThrottle {
+	return &logThrottle{intervalNanos: int64(interval)}
+}
+
 // Allow reports whether a log line may be emitted as of now. When it returns
 // true, the second value is the number of lines suppressed since the previous
 // allowed line (reset to 0 by this call). When false, the caller should stay
