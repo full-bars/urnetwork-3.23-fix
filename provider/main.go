@@ -1188,6 +1188,7 @@ func runProfitHeartbeat(ctx context.Context) {
 		} else if prevClients > 0 && clients == 0 {
 			tlog("🛬 [traffic] stopped (was=%d clients)\n", prevClients)
 		}
+		prevClients = clients
 
 		wasEarning = earning
 
@@ -1221,7 +1222,6 @@ func runProfitHeartbeat(ctx context.Context) {
 			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s\n",
 				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle, contractFields)
 			lastLogTime = now
-			prevClients = clients
 		}
 	}
 }
