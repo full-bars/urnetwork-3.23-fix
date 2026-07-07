@@ -1,13 +1,42 @@
 package connect
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// proxyBandwidthSnapshot returns a detached copy of bw that carries the same
+// latency, byte, and client counters, plus enough internal timing state for
+// MaxAge() to return the correct value. It avoids the fake-AddSession pattern
+// that silently zeroed LatencyNs/SocksLatencyNs on every copy.
+func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
+	out := &ProxyBandwidth{}
+	out.TotalRx.Store(bw.TotalRx.Load())
+	out.TotalTx.Store(bw.TotalTx.Load())
+	out.BillableRx.Store(bw.BillableRx.Load())
+	out.BillableTx.Store(bw.BillableTx.Load())
+	out.Clients.Store(bw.Clients.Load())
+	out.LatencyNs.Store(bw.LatencyNs.Load())
+	out.SocksLatencyNs.Store(bw.SocksLatencyNs.Load())
+
+	bw.mu.Lock()
+	out.presenceSince = bw.presenceSince
+	out.lastActivity = bw.lastActivity
+	if bw.sessions != nil && len(bw.sessions) > 0 {
+		out.sessions = make(map[any]time.Time, 1)
+		out.sessions["snapshot"] = time.Now()
+	}
+	bw.mu.Unlock()
+
+	return out
+}
 
 // ProxyBandwidth tracks the data usage and session timing of a proxy.
 type ProxyBandwidth struct {
@@ -204,6 +233,17 @@ func markProxyDown(index int) {
 	}
 }
 
+// isTimeoutError returns true if err indicates a timeout — either a
+// context deadline or an underlying net.Error with Timeout()==true.
+// Avoids fragile substring-matching on error strings.
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // RecordProxyAuthFailure increments the auth-failure counter for a proxy.
 func RecordProxyAuthFailure(index int, err error) {
 	proxyHealthMu.Lock()
@@ -212,11 +252,11 @@ func RecordProxyAuthFailure(index int, err error) {
 		errStr := ""
 		if err != nil {
 			errStr = err.Error()
-		}
-		if strings.Contains(strings.ToLower(errStr), "timeout") {
-			h.failures.TimeoutFailures.Add(1)
-		} else {
-			h.failures.AuthFailures.Add(1)
+			if isTimeoutError(err) {
+				h.failures.TimeoutFailures.Add(1)
+			} else {
+				h.failures.AuthFailures.Add(1)
+			}
 		}
 		h.lastError = errStr
 		h.lastErrorAt = time.Now()
@@ -325,13 +365,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 
 		if h.bw != nil {
 			bwCount++
-			pb := &ProxyBandwidth{}
-			pb.TotalRx.Store(h.bw.TotalRx.Load())
-			pb.TotalTx.Store(h.bw.TotalTx.Load())
-			pb.BillableRx.Store(h.bw.BillableRx.Load())
-			pb.BillableTx.Store(h.bw.BillableTx.Load())
-			pb.Clients.Store(h.bw.Clients.Load())
-			pb.AddSession("snapshot", time.Now().Add(-h.bw.MaxAge()))
+			pb := proxyBandwidthSnapshot(h.bw)
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
@@ -366,13 +400,7 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		}
 
 		if h.bw != nil {
-			pb := &ProxyBandwidth{}
-			pb.TotalRx.Store(h.bw.TotalRx.Load())
-			pb.TotalTx.Store(h.bw.TotalTx.Load())
-			pb.BillableRx.Store(h.bw.BillableRx.Load())
-			pb.BillableTx.Store(h.bw.BillableTx.Load())
-			pb.Clients.Store(h.bw.Clients.Load())
-			pb.AddSession("snapshot", time.Now().Add(-h.bw.MaxAge()))
+			pb := proxyBandwidthSnapshot(h.bw)
 			r.Bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 
