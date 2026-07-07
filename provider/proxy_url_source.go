@@ -325,6 +325,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 
 	totalAdded := 0
+	dirty := false
 	for i, url := range urls {
 		if fetched[i] == nil {
 			continue
@@ -343,6 +344,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 						entry.LastProbe = time.Now()
 						state.Cache[addr] = entry
 						marked++
+						dirty = true
 					}
 				}
 			}
@@ -351,7 +353,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
 
-	if totalAdded == 0 {
+	if totalAdded == 0 && !dirty {
 		return
 	}
 	if err := writeProxyURLState(state); err != nil {
