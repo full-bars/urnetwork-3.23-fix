@@ -119,9 +119,14 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 }
 
 // gzipMiddleware transparently compresses responses when the client
-// sends Accept-Encoding: gzip.
+// sends Accept-Encoding: gzip. Skips SSE endpoints since gzip buffering
+// breaks the streaming response flush pattern.
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/events" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 			return
@@ -992,6 +997,8 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	var tlsSrv *http.Server
+
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
 	mux.HandleFunc("/api/heartbeat", requireAuth(hubToken, handleHeartbeat(s)))
 	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
@@ -1086,7 +1093,7 @@ func main() {
 
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
-			srv := &http.Server{
+			tlsSrv = &http.Server{
 				Addr:    tlsListen,
 				Handler: wrapped,
 				TLSConfig: &tls.Config{
@@ -1096,17 +1103,28 @@ func main() {
 					},
 				},
 			}
-			if err := srv.ListenAndServeTLS("", ""); err != nil {
+			if err := tlsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
-				return
 			}
 		}()
 	}
 
 	mux.HandleFunc("/", handleDashboard(s))
 
+	plainSrv := &http.Server{Addr: *addr, Handler: wrapped}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if tlsSrv != nil {
+			_ = tlsSrv.Shutdown(shutdownCtx)
+		}
+		_ = plainSrv.Shutdown(shutdownCtx)
+	}()
+
 	fmt.Printf("hub listening on %s (data: %s)\n", *addr, filepath.Join(*dataDir, "hub.db"))
-	if err := http.ListenAndServe(*addr, wrapped); err != nil {
+	if err := plainSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "hub: %v\n", err)
 	}
 }
