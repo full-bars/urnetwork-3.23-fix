@@ -2622,8 +2622,7 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, returnErr error) {
 	if entry, ok := globalClientJWTStore.Get(identityKey); ok {
 		if err := validateJWTExpiry(entry.ByClientJWT); err == nil &&
-			jwtContainsClientId(entry.ByClientJWT) &&
-			time.Since(entry.MintedAt) < clientJWTMaxAge {
+			jwtContainsClientId(entry.ByClientJWT) {
 			if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 				return entry.ByClientJWT, parsedId, nil
 			}
