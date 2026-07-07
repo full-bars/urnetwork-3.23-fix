@@ -453,6 +453,39 @@ type AuthCodeLoginError struct {
 	Message string `json:"message"`
 }
 
+type AuthCodeCreateCallback ApiCallback[*AuthCodeCreateResult]
+
+type AuthCodeCreateArgs struct {
+	DurationMinutes float64 `json:"duration_minutes,omitempty"`
+	Uses            int     `json:"uses,omitempty"`
+}
+
+type AuthCodeCreateResult struct {
+	AuthCode        string               `json:"auth_code,omitempty"`
+	DurationMinutes float64              `json:"duration_minutes,omitempty"`
+	Uses            int                  `json:"uses,omitempty"`
+	Error           *AuthCodeCreateError `json:"error,omitempty"`
+}
+
+type AuthCodeCreateError struct {
+	AuthCodeLimitExceeded bool   `json:"auth_code_limit_exceeded,omitempty"`
+	Message               string `json:"message,omitempty"`
+}
+
+func (self *BringYourApi) AuthCodeCreate(authCodeCreate *AuthCodeCreateArgs, callback AuthCodeCreateCallback) {
+	go HandleError(func() {
+		HttpPostWithStrategy(
+			self.ctx,
+			self.clientStrategy,
+			fmt.Sprintf("%s/auth/code-create", self.apiUrl),
+			authCodeCreate,
+			self.ByJwt(),
+			&AuthCodeCreateResult{},
+			callback,
+		)
+	})
+}
+
 func (self *BringYourApi) AuthCodeLogin(authCodeLogin *AuthCodeLoginArgs, callback AuthCodeLoginCallback) {
 	go HandleError(func() {
 		HttpPostWithStrategy(
