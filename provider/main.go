@@ -453,6 +453,20 @@ func parseJWTExpiryTime(byJwt string) *time.Time {
 	return &t
 }
 
+func jwtContainsClientId(byJwt string) bool {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return false
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return false
+	}
+	_, hasClientId := claims["client_id"]
+	return hasClientId
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -1497,41 +1511,88 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	}
 }
 
-// refreshJWT calls AuthNetworkClient with the current JWT and returns a fresh
-// ByClientJwt from the API response. This is the same endpoint used during
-// initial authentication — calling it early extends the token lifetime without
-// any service disruption.
+// refreshJWT renews the provider's network JWT (the same token species originally
+// minted by the auth command and stored at ~/.urnetwork/jwt). It uses the
+// same code-create → code-login flow as initial authentication so it returns
+// a network JWT (no client_id claim) instead of a client JWT.
+//
+// Previous implementation used /network/auth-client which is a client-provisioning
+// endpoint — every call minted a new throwaway client_id + device row and
+// silently corrupted the on-disk token from network JWT to client JWT.
 func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 
-	callback, channel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
+	ccCallback, ccChannel := connect.NewBlockingApiCallback[*connect.AuthCodeCreateResult](ctx)
+	api.AuthCodeCreate(&connect.AuthCodeCreateArgs{}, ccCallback)
 
-	api.AuthNetworkClient(&connect.AuthNetworkClientArgs{
-		Description: "jwt-refresh",
-		DeviceSpec:  "",
-	}, callback)
-
-	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
+	var ccResult connect.ApiCallbackResult[*connect.AuthCodeCreateResult]
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case result = <-channel:
+	case ccResult = <-ccChannel:
 	}
-	if result.Error != nil {
-		return "", fmt.Errorf("api error: %w", result.Error)
+	if ccResult.Error != nil {
+		return "", fmt.Errorf("code-create api error: %w", ccResult.Error)
 	}
-	if result.Result == nil {
-		return "", fmt.Errorf("empty result from auth API")
+	if ccResult.Result == nil {
+		return "", fmt.Errorf("empty result from code-create API")
 	}
-	if result.Result.Error != nil {
-		return "", fmt.Errorf("auth rejected: %s", result.Result.Error.Message)
+	if ccResult.Result.Error != nil {
+		if ccResult.Result.Error.AuthCodeLimitExceeded {
+			return "", fmt.Errorf("auth code limit exceeded: %s", ccResult.Result.Error.Message)
+		}
+		return "", fmt.Errorf("code-create rejected: %s", ccResult.Result.Error.Message)
 	}
-	if result.Result.ByClientJwt == "" {
-		return "", fmt.Errorf("empty ByClientJwt in response")
+	if ccResult.Result.AuthCode == "" {
+		return "", fmt.Errorf("empty auth code in response")
 	}
-	return result.Result.ByClientJwt, nil
+
+	clCallback, clChannel := connect.NewBlockingApiCallback[*connect.AuthCodeLoginResult](ctx)
+	api.AuthCodeLogin(&connect.AuthCodeLoginArgs{
+		AuthCode: ccResult.Result.AuthCode,
+	}, clCallback)
+
+	var clResult connect.ApiCallbackResult[*connect.AuthCodeLoginResult]
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case clResult = <-clChannel:
+	}
+	if clResult.Error != nil {
+		return "", fmt.Errorf("code-login api error: %w", clResult.Error)
+	}
+	if clResult.Result == nil {
+		return "", fmt.Errorf("empty result from code-login API")
+	}
+	if clResult.Result.Error != nil {
+		return "", fmt.Errorf("code-login rejected: %s", clResult.Result.Error.Message)
+	}
+	if clResult.Result.ByJwt == "" {
+		return "", fmt.Errorf("empty ByJwt in code-login response")
+	}
+	if jwtContainsClientId(clResult.Result.ByJwt) {
+		return "", fmt.Errorf("regression guard: code-login returned a client JWT instead of a network JWT")
+	}
+
+	newJwt := clResult.Result.ByJwt
+
+	// Verify the fresh token works before returning it so the caller never
+	// overwrites the on-disk JWT with a dead token. Uses a lightweight read-only
+	// API endpoint to keep side effects zero (no auth codes, no client rows).
+	req, _ := http.NewRequestWithContext(ctx, "GET", apiUrl+"/transfer/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+newJwt)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fresh token failed verification: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("fresh token rejected by server (HTTP %d)", resp.StatusCode)
+	}
+
+	return newJwt, nil
 }
 
 // runJWTRefresher polls once per hour and refreshes the JWT under two
