@@ -1999,7 +1999,11 @@ func provide(opts docopt.Opts) {
 					if waitErr != nil {
 						return "", connect.Id{}, waitErr
 					}
-					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+					identityKey := "direct"
+					if proxySettings != nil {
+						identityKey = proxySettings.Address
+					}
+					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
 					release()
 					if proxySettings != nil {
 						if err == nil {
@@ -2615,7 +2619,17 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
-func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, returnErr error) {
+	if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+		if err := validateJWTExpiry(entry.ByClientJWT); err == nil &&
+			jwtContainsClientId(entry.ByClientJWT) &&
+			time.Since(entry.MintedAt) < clientJWTMaxAge {
+			if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+				return entry.ByClientJWT, parsedId, nil
+			}
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(err)
@@ -2747,6 +2761,14 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	if err != nil {
 		returnErr = fmt.Errorf("invalid client_id in JWT claims: %w", err)
 		return
+	}
+
+	if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+		ByClientJWT: byClientJwt,
+		ClientID:    clientIdStr,
+		MintedAt:    time.Now(),
+	}); putErr != nil {
+		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
 	}
 
 	return
