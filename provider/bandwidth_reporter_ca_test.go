@@ -157,7 +157,7 @@ func TestVerifyHubChain_AcceptsChainedLeaf(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.cert)
 
-	verify := verifyHubChain(pool)
+	verify := verifyHubChain(pool, "")
 	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leafCert}}
 	if err := verify(cs); err != nil {
 		t.Errorf("expected chained leaf to verify, got: %v", err)
@@ -176,7 +176,7 @@ func TestVerifyHubChain_RejectsForeignCA(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(realCA.cert)
 
-	verify := verifyHubChain(pool)
+	verify := verifyHubChain(pool, "")
 	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leafCert}}
 	err = verify(cs)
 	if err == nil {
@@ -189,7 +189,7 @@ func TestVerifyHubChain_RejectsForeignCA(t *testing.T) {
 
 func TestVerifyHubChain_RejectsNoPeerCertificates(t *testing.T) {
 	pool := x509.NewCertPool()
-	verify := verifyHubChain(pool)
+	verify := verifyHubChain(pool, "")
 	if err := verify(tls.ConnectionState{}); err == nil {
 		t.Error("expected an error when there are no peer certificates")
 	}
@@ -274,17 +274,17 @@ func TestNewClientForURL_LegacyPinDeprecationLoggedOnce(t *testing.T) {
 	_ = os.WriteFile(pinFile, []byte("SHA256:deadbeef\n"), 0600)
 	t.Cleanup(func() { os.Remove(pinFile) })
 
-	loggedLegacyPinDeprecation = false
+	loggedLegacyPinDeprecation.Store(false)
 
 	_ = newClientForURL("https://hub.example.com")
-	if !loggedLegacyPinDeprecation {
+	if !loggedLegacyPinDeprecation.Load() {
 		t.Error("expected deprecation flag set after first legacy-pin client")
 	}
 
-	loggedLegacyPinDeprecation = false
+	loggedLegacyPinDeprecation.Store(false)
 	_ = newClientForURL("https://hub.example.com")
-	if !loggedLegacyPinDeprecation {
+	if !loggedLegacyPinDeprecation.Load() {
 		t.Error("expected deprecation flag set again (package-level, reset between calls)")
 	}
-	loggedLegacyPinDeprecation = false
+	loggedLegacyPinDeprecation.Store(false)
 }

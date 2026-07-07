@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"runtime/metrics"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -228,8 +230,9 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	activeInterval := interval
+	var client *http.Client
 	activeReportURL := ""
+	activeInterval := interval
 	for {
 		select {
 		case <-ctx.Done():
@@ -252,12 +255,13 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 
 		reportURL := resolveReportURL(envReportURL)
 		if reportURL != activeReportURL {
+			client = newClientForURL(reportURL)
+			activeReportURL = reportURL
 			if reportURL == "" {
 				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
 				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, activeInterval, nodeID)
 			}
-			activeReportURL = reportURL
 		}
 		if reportURL == "" {
 			continue
@@ -291,7 +295,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		if hubToken != "" {
 			req.Header.Set("Authorization", "Bearer "+hubToken)
 		}
-		resp, err := newClientForURL(reportURL).Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			tlog("[report] post failed: %v\n", err)
 			continue
@@ -609,7 +613,7 @@ func loadPinnedFPs() map[string]bool {
 	return pins
 }
 
-var loggedLegacyPinDeprecation bool
+var loggedLegacyPinDeprecation atomic.Bool
 
 func newClientForURL(reportURL string) *http.Client {
 	if !strings.HasPrefix(reportURL, "https://") {
@@ -618,13 +622,19 @@ func newClientForURL(reportURL string) *http.Client {
 
 	// CA-based verification
 	if pool, ok := loadHubCAPool(); ok {
+		serverName := ""
+		if u, err := url.Parse(reportURL); err == nil {
+			if host := u.Hostname(); host != "" && net.ParseIP(host) == nil {
+				serverName = host
+			}
+		}
 		return &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					MinVersion:       tls.VersionTLS12,
 					InsecureSkipVerify: true, // we verify via VerifyConnection
-					VerifyConnection: verifyHubChain(pool),
+					VerifyConnection: verifyHubChain(pool, serverName),
 				},
 			},
 		}
@@ -633,8 +643,7 @@ func newClientForURL(reportURL string) *http.Client {
 	// Legacy fingerprint pinning (deprecated)
 	pins := loadPinnedFPs()
 	if len(pins) > 0 {
-		if !loggedLegacyPinDeprecation {
-			loggedLegacyPinDeprecation = true
+		if loggedLegacyPinDeprecation.CompareAndSwap(false, true) {
 			tlog("[hub] hub.pin is deprecated — re-run 'urnet-tools hub link' to switch to CA-based trust\n")
 		}
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -695,7 +704,7 @@ func loadHubCAPool() (*x509.CertPool, bool) {
 	return pool, true
 }
 
-func verifyHubChain(pool *x509.CertPool) func(cs tls.ConnectionState) error {
+func verifyHubChain(pool *x509.CertPool, serverName string) func(cs tls.ConnectionState) error {
 	return func(cs tls.ConnectionState) error {
 		if len(cs.PeerCertificates) == 0 {
 			return fmt.Errorf("no peer certificates")
@@ -709,6 +718,7 @@ func verifyHubChain(pool *x509.CertPool) func(cs tls.ConnectionState) error {
 		opts := x509.VerifyOptions{
 			Roots:         pool,
 			Intermediates: intermediates,
+			DNSName:       serverName,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}
 		if _, err := cs.PeerCertificates[0].Verify(opts); err != nil {

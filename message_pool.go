@@ -331,16 +331,19 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 	b, _ := MessagePoolGetDetailedWithTag(orderedMessagePools[0].size, tag)
 	i := 0
 	for j := 0; j < len(orderedMessagePools); j += 1 {
-		for i < len(b) {
+		for {
 			n, err := r.Read(b[i:])
-			if n == 0 {
+			i += n
+			if err == io.EOF {
 				return b[:i], nil
 			}
 			if err != nil {
 				MessagePoolReturn(b)
 				return nil, err
 			}
-			i += n
+			if i >= len(b) {
+				break
+			}
 		}
 
 		if len(orderedMessagePools) <= j+1 {
@@ -358,13 +361,13 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 	defer MessagePoolReturn(b)
 	for {
 		n, err := r.Read(b)
-		if n == 0 {
+		out = append(out, b[:n]...)
+		if err == io.EOF {
 			return out, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, b[:n]...)
 	}
 }
 
