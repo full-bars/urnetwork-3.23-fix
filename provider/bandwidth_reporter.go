@@ -466,6 +466,29 @@ func filterChangedProxies(prev map[string]proxyStatus, current []proxyStatus) ([
 	return changed, next
 }
 
+// postHeartbeat marshals and POSTs a heartbeat to the hub. Returns true on 2xx.
+func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken string, hb heartbeatReport) bool {
+	body, err := json.Marshal(hb)
+	if err != nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hubToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hubToken)
+	}
+	resp, err := client.Do(req)
+	ok := err == nil && resp.StatusCode/100 == 2
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return ok
+}
+
 // runHeartbeatReporter periodically POSTs a lightweight liveness/rate ping
 // to the hub's /api/heartbeat, on a much shorter cadence than
 // runBandwidthReporter's full /api/report (default 15s vs 5m). It shares
@@ -528,34 +551,40 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 		activeHost := resolveNodeName(host)
 		hb := buildHeartbeat(nodeID, activeHost, startTime)
 		changedProxies, nextProxyStatus := filterChangedProxies(prevProxyStatus, hb.Proxies)
-		hb.Proxies = changedProxies
 
-		body, err := json.Marshal(hb)
-		if err != nil {
-			continue
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if hubToken != "" {
-			req.Header.Set("Authorization", "Bearer "+hubToken)
-		}
-
-		resp, err := client.Do(req)
-		ok := err == nil && resp.StatusCode/100 == 2
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-
-		if ok {
-			prevProxyStatus = nextProxyStatus
-			consecutiveFailures = 0
+		const maxHeartbeatProxies = 200
+		if len(changedProxies) <= maxHeartbeatProxies {
+			hb.Proxies = changedProxies
+			allOK := postHeartbeat(ctx, client, apiURL, hubToken, hb)
+			if allOK {
+				prevProxyStatus = nextProxyStatus
+				consecutiveFailures = 0
+			} else {
+				consecutiveFailures++
+			}
 		} else {
-			consecutiveFailures++
+			allOK := true
+			for i := 0; i < len(changedProxies); i += maxHeartbeatProxies {
+				end := i + maxHeartbeatProxies
+				if end > len(changedProxies) {
+					end = len(changedProxies)
+				}
+				batch := changedProxies[i:end]
+				hb.Proxies = batch
+				if ok := postHeartbeat(ctx, client, apiURL, hubToken, hb); ok {
+					for _, p := range batch {
+						prevProxyStatus[p.ID] = nextProxyStatus[p.ID]
+					}
+				} else {
+					allOK = false
+					break
+				}
+			}
+			if allOK {
+				consecutiveFailures = 0
+			} else {
+				consecutiveFailures++
+			}
 		}
 
 		// A flaky link to the hub (e.g. an outage) shouldn't have every
