@@ -372,6 +372,15 @@ func (r *ProxyReloader) reload() {
 			}
 			tlog("[proxy] drain complete: %s\n", proxyAddr)
 			cancelFn()
+
+			desired, err := currentDesiredProxyAddresses()
+			if err == nil && desired[proxyAddr] {
+				if reloadPath, err := proxyReloadPath(); err == nil {
+					if err := writeReloadTrigger(reloadPath); err == nil {
+						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyAddr)
+					}
+				}
+			}
 		}(cancel, addr)
 	}
 
