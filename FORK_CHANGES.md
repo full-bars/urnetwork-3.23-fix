@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.25.2
+**Current Version**: v3.23.0-fix.25.4
 
 ---
 
@@ -1747,3 +1747,148 @@ The glog→Logger interface migration (#65, PR #69, 2026-06-15) added a wrapper 
 **Fix**: Switched to glog's depth-aware variants (`InfoDepth`/`InfoDepthf`/`WarningDepthf`/`ErrorDepthf`) with `depth=1` to skip the wrapper frame, matching the verbose path's existing convention. Verified via `TestCombine`: log output now shows `message_pool.go:231` instead of `log.go:100`.
 
 **Status**: ✅ Merged `main` (2026-07-05). PR #213. v3.23.0-fix.25.2.
+
+---
+
+## 70. Code Review Findings — Reaper Lock, Heartbeat, Hub Regressions (PR #225)
+
+**Purpose**: Fixes for critical bugs found in a comprehensive code review audit conducted by Opus. Covers provider reliability, data integrity, and hub infrastructure.
+
+### 70a. Reaper Lock Fix (proxy_url_source.go)
+
+The reaper was holding the proxy file lock across serial HTTP probes (up to 8s per dead entry, ~40 candidates on a typical public list). This caused concurrent reloads or fetches to race on `proxy_url.json`, losing blacklist entries and resurrecting dead proxies.
+
+**Fix**: Candidates are now collected under the lock, probed serially outside it, then results applied atomically under re-acquired lock.
+
+### 70b. Heartbeat Correctness (bandwidth_reporter.go)
+
+- **Delta baseline**: Now advances only on POST success — failed sends no longer permanently drop status deltas during hub outages
+- **Body cap**: Raised from 64 KiB to 256 KiB so first heartbeat after restart (with every proxy marked "changed") doesn't 400 on fleets above ~600 proxies
+- **HTTP client**: Cached across ticks (same as heartbeat reporter), eliminating fresh TCP+TLS handshake per report cycle
+- **Data race**: `loggedLegacyPinDeprecation` swapped from `bool` to `atomic.Bool`
+- **Certificate validation**: `verifyHubChain` now takes DNSName from the URL host; IP literals skip DNSName
+
+### 70c. Drain Re-Trigger (proxy_reload.go)
+
+Proxies removed-then-re-added while still draining were staying dead indefinitely. `reload()` skipped draining entries, and drain-complete only called `cancelFn()` with no re-trigger.
+
+**Fix**: Drain-complete now checks if the address is back in the desired set and fires a reload trigger if so.
+
+### 70d. io.Reader Contract (message_pool.go)
+
+`MessagePoolReadAllWithTag` was dropping trailing data on `(n>0, io.EOF)` and treating `(0, nil)` as EOF.
+
+**Fix**: Switched to standard pattern: process bytes first, check EOF/error after.
+
+### 70e. Hub Regressions (hub/main.go)
+
+- **SSE/gzip**: `gzipMiddleware` was wrapping `/api/events` but `gzipResponseWriter` doesn't implement `http.Flusher` — every browser EventSource hit got a 500. Exempted like the rate limiter already does.
+- **Signal shutdown**: `signal.NotifyContext` was capturing SIGTERM/SIGINT but ctx was never wired to the servers. First signal was silently swallowed, `docker stop` waited the full grace period then SIGKILLed. Both TLS and plain-HTTP servers now shut down cleanly.
+
+### 70f. Other Fixes
+
+- `fetchAndMergeProxyURLs` only wrote LastProbe stamps when new proxies were found — on steady-state refreshes, stamps were lost. Tracked a dirty flag instead.
+- `RecordProxyAuthFailure` switched from substring-matching "timeout" to `errors.Is(DeadlineExceeded)` and `net.Error.Timeout()`
+- Snapshot copies use `proxyBandwidthSnapshot` helper instead of `AddSession("snapshot", ...)` hack — latency fields no longer silently zeroed
+- `test_bin` untracked from git and added to gitignore
+
+**Status**: ✅ Merged `main` (2026-07-07). PR #225. v3.23.0-fix.25.4.
+
+---
+
+## 71. Tactical Emoji + Log Visibility Improvements (PR #226)
+
+**Purpose**: Make provider logs scannable at a glance by adding tactical emoji to key log lines, plus additional visibility into contracts, traffic, and JWT health.
+
+### 71a. Tactical Emoji (Phase 1)
+
+14 log lines now carry emoji prefixes for visual scanning:
+
+| Tag | Emoji | Rationale |
+|-----|-------|-----------|
+| `[outage]` | 🚨 | Critical state change |
+| `[eco]` | 🌿🔴🟡🟢 | Memory state transitions (leaf + severity color) |
+| `[proxy] reloaded` | 🔄 | Fleet change event |
+| `[contract] denied` | ⛔ | Contrasts with 🤝 acquired |
+| `[net][s]select` | 🌐 | Proxy control plane comms |
+| `[jwt]` | 🔑 | Auth reliability signal |
+| `[webhook]` | 📡 | Alert infrastucture failure |
+| `[pool]` | 📦 | Startup sizing confirmation |
+| `[traffic]` (per-proxy detail) | 📈 | Traffic detail lines |
+
+### 71b. Contract Aggregates (Phase 2)
+
+Atomic counters in `transfer_contract_manager.go` track contracts acquired, denied, and rolling average utilization. Surfaced on the `[profit]` heartbeat:
+
+```
+💰 [profit] earning=yes rate=2.1 MB/s contracts=8 denied=2 avg_util=72%
+```
+
+Fields only appear when there's data — zero clutter when idle.
+
+### 71c. WebRTC Peer Lifecycle (Phase 3)
+
+`🔗 [signal] peer connected` and `🔗 [signal] peer disconnected` events in `transport_p2p_webrtc.go`. One per P2P session (low frequency).
+
+### 71d. DNS Visibility (Phase 4)
+
+- DNS failure counter (`dns_failures=N`) on `[health]` heartbeat
+- Rate-limited `[doh]` warnings capped at 1 per 5 minutes globally
+- Escalation to 🚨 when failures exceed 100 in a window
+
+### 71e. Traffic Velocity Alerts (Phase 5)
+
+Velocity detection fires when total rate changes 3x+ between health heartbeat ticks (5 minutes):
+
+```
+📈 [traffic] velocity: 3.2x → rx=12.3 MB/s tx=8.7 MB/s (was rx=3.8 MB/s tx=2.1 MB/s)
+📈 [traffic] velocity: 0.3x → rx=1.2 MB/s tx=0.8 MB/s — traffic dropping
+```
+
+Added peak tracking (`peak_rx`/`peak_tx`) to `[traffic]` total line. Client flight markers (`✈️` when transitions 0→>0, `🛬` when >0→0).
+
+### 71f. JWT Visibility (Phase 6)
+
+Startup and periodic JWT health logging:
+
+```
+🔑 [jwt] expires in 12 days
+🔑 [jwt] EXPIRED 3 days ago — refresh needed
+🔑 [jwt] ⚠ expires in 18h — refresh triggered (12 suppressed)
+```
+
+**Files changed**: `provider/main.go`, `provider/proxy_reload.go`, `transfer_contract_manager.go`, `transport_p2p_webrtc.go`, `net_http.go`, `net_http_doh.go`, `audit.go`, `log_throttle.go` (exported NewLogThrottle)
+
+**Status**: ✅ Merged `main` (2026-07-07). PR #226. v3.23.0-fix.25.4.
+
+---
+
+## 72. JWT Refresh Rewrite — Fix Token Species Corruption (PR #227)
+
+**Purpose**: Fix the never-verified JWT self-refresh feature that was silently corrupting on-disk tokens and creating orphan client/device rows on every 7-day cycle.
+
+### 72a. Bug Confirmed (Fable Audit)
+
+Old `refreshJWT()` (`provider/main.go:1504-1535`) called `/network/auth-client` with no `ClientId` in the request body. Server (`server/model/network_client_model.go:140`) unconditionally minted a new client_id + device row on every call (no session-based fallback exists). Each 7-day refresh cycle:
+
+1. Created one orphan client+device row per node
+2. Overwrote the on-disk network JWT with a client JWT (different token species)
+3. Zero live impact on running proxies (proxies independently mint their own client_ids on reconnect)
+
+### 72b. Fix
+
+Rewrite `refreshJWT()` to use `/auth/code-create → /auth/code-login` — the same flow the provider `auth` command uses at initial login. Returns a same-species **network JWT** with zero side effects.
+
+### 72c. Protections
+
+- **`jwtContainsClientId()` regression guard**: Refuses to return a JWT that contains a `client_id` claim. Catches future regressions where the server might return a client JWT instead of a network JWT.
+- **Verification step**: Before returning, hits `GET /transfer/stats` with the new token to verify it's accepted. Caller never overwrites the on-disk JWT with a dead or rejected token.
+- **Verbose logging**: Each step (code-create → code-login → verification) is logged with step N/3 markers for operator visibility.
+
+### 72d. Files Changed
+
+- `api.go` — Added `AuthCodeCreate` types and methods (previously only `AuthCodeLogin` existed in the client)
+- `provider/main.go` — Rewrote `refreshJWT()`, added `jwtContainsClientId()`
+- `provider/jwt_test.go` — Added `TestJWTContainsClientId` (4 cases), added `createFakeJWTWithClaims` helper
+
+**Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4.
