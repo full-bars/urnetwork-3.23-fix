@@ -632,7 +632,7 @@ func handleHeartbeat(s *store) http.HandlerFunc {
 			return
 		}
 		var hb heartbeatReport
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<18))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
@@ -1091,18 +1091,18 @@ func main() {
 		_, port, _ := net.SplitHostPort(tlsListen)
 		mux.HandleFunc("/onboard.sh", handleOnboardScript(port))
 
+		tlsSrv = &http.Server{
+			Addr:    tlsListen,
+			Handler: wrapped,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+					return leafHolder.Load(), nil
+				},
+			},
+		}
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
-			tlsSrv = &http.Server{
-				Addr:    tlsListen,
-				Handler: wrapped,
-				TLSConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
-					GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-						return leafHolder.Load(), nil
-					},
-				},
-			}
 			if err := tlsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintf(os.Stderr, "hub: HTTPS: %v\n", err)
 			}
