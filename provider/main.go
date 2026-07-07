@@ -453,6 +453,20 @@ func parseJWTExpiryTime(byJwt string) *time.Time {
 	return &t
 }
 
+func jwtContainsClientId(byJwt string) bool {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return false
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return false
+	}
+	_, hasClientId := claims["client_id"]
+	return hasClientId
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -1497,41 +1511,103 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	}
 }
 
-// refreshJWT calls AuthNetworkClient with the current JWT and returns a fresh
-// ByClientJwt from the API response. This is the same endpoint used during
-// initial authentication — calling it early extends the token lifetime without
-// any service disruption.
+// refreshJWT renews the provider's network JWT (the same token species originally
+// minted by the auth command and stored at ~/.urnetwork/jwt). It uses the
+// same code-create → code-login flow as initial authentication so it returns
+// a network JWT (no client_id claim) instead of a client JWT.
+//
+// Previous implementation used /network/auth-client which is a client-provisioning
+// endpoint — every call minted a new throwaway client_id + device row and
+// silently corrupted the on-disk token from network JWT to client JWT.
 func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 
-	callback, channel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
+	tlog("🔑 [jwt] refresh → step 1/3: requesting auth code...\n")
 
-	api.AuthNetworkClient(&connect.AuthNetworkClientArgs{
-		Description: "jwt-refresh",
-		DeviceSpec:  "",
-	}, callback)
+	ccCallback, ccChannel := connect.NewBlockingApiCallback[*connect.AuthCodeCreateResult](ctx)
+	api.AuthCodeCreate(&connect.AuthCodeCreateArgs{}, ccCallback)
 
-	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
+	var ccResult connect.ApiCallbackResult[*connect.AuthCodeCreateResult]
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case result = <-channel:
+	case ccResult = <-ccChannel:
 	}
-	if result.Error != nil {
-		return "", fmt.Errorf("api error: %w", result.Error)
+	if ccResult.Error != nil {
+		return "", fmt.Errorf("code-create api error: %w", ccResult.Error)
 	}
-	if result.Result == nil {
-		return "", fmt.Errorf("empty result from auth API")
+	if ccResult.Result == nil {
+		return "", fmt.Errorf("empty result from code-create API")
 	}
-	if result.Result.Error != nil {
-		return "", fmt.Errorf("auth rejected: %s", result.Result.Error.Message)
+	if ccResult.Result.Error != nil {
+		if ccResult.Result.Error.AuthCodeLimitExceeded {
+			return "", fmt.Errorf("auth code limit exceeded: %s", ccResult.Result.Error.Message)
+		}
+		return "", fmt.Errorf("code-create rejected: %s", ccResult.Result.Error.Message)
 	}
-	if result.Result.ByClientJwt == "" {
-		return "", fmt.Errorf("empty ByClientJwt in response")
+	if ccResult.Result.AuthCode == "" {
+		return "", fmt.Errorf("empty auth code in response")
 	}
-	return result.Result.ByClientJwt, nil
+
+	tlog("🔑 [jwt] refresh → step 1/3 ok: auth code received (%d chars)\n", len(ccResult.Result.AuthCode))
+
+	tlog("🔑 [jwt] refresh → step 2/3: exchanging auth code for network JWT...\n")
+
+	clCallback, clChannel := connect.NewBlockingApiCallback[*connect.AuthCodeLoginResult](ctx)
+	api.AuthCodeLogin(&connect.AuthCodeLoginArgs{
+		AuthCode: ccResult.Result.AuthCode,
+	}, clCallback)
+
+	var clResult connect.ApiCallbackResult[*connect.AuthCodeLoginResult]
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case clResult = <-clChannel:
+	}
+	if clResult.Error != nil {
+		return "", fmt.Errorf("code-login api error: %w", clResult.Error)
+	}
+	if clResult.Result == nil {
+		return "", fmt.Errorf("empty result from code-login API")
+	}
+	if clResult.Result.Error != nil {
+		return "", fmt.Errorf("code-login rejected: %s", clResult.Result.Error.Message)
+	}
+	if clResult.Result.ByJwt == "" {
+		return "", fmt.Errorf("empty ByJwt in code-login response")
+	}
+	if jwtContainsClientId(clResult.Result.ByJwt) {
+		return "", fmt.Errorf("regression guard: code-login returned a client JWT instead of a network JWT")
+	}
+
+	newJwt := clResult.Result.ByJwt
+
+	tlog("🔑 [jwt] refresh → step 2/3 ok: network JWT received (%d chars)\n", len(newJwt))
+
+	tlog("🔑 [jwt] refresh → step 3/3: verifying new token against %s/transfer/stats...\n", apiUrl)
+
+	// Verify the fresh token works before returning it so the caller never
+	// overwrites the on-disk JWT with a dead token. Uses a lightweight read-only
+	// API endpoint to keep side effects zero (no auth codes, no client rows).
+	req, err := http.NewRequestWithContext(ctx, "GET", apiUrl+"/transfer/stats", nil)
+	if err != nil {
+		return "", fmt.Errorf("could not build verification request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+newJwt)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fresh token failed verification: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("fresh token rejected by server (HTTP %d)", resp.StatusCode)
+	}
+
+	tlog("🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP %d)\n", resp.StatusCode)
+
+	return newJwt, nil
 }
 
 // runJWTRefresher polls once per hour and refreshes the JWT under two
@@ -1624,20 +1700,20 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 					reason = fmt.Sprintf("expiry fallback triggered (expires in %s, within %s threshold)",
 						formatDuration(time.Until(*exp)), formatDuration(expiryFallbackWindow))
 				}
-				tlog("[jwt] refreshing token — %s\n", reason)
+				tlog("🔑 [jwt] refreshing token — %s\n", reason)
 
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
-					tlog("🔑 [jwt] refresh failed: %v (will retry in 1h)\n", err)
+					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
 				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
-					tlog("[jwt] failed to write refreshed token: %v (will retry in 1h)\n", err)
+					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
 					if err := writeLastRefreshTime(now); err != nil {
-						tlog("[jwt] token refreshed but failed to persist last-refresh timestamp: %v\n", err)
-					} else {
-						tlog("[jwt] token refreshed successfully (next periodic refresh in %s)\n", formatDuration(periodicInterval))
+						tlog("🔑 [jwt] refresh OK but failed to persist last-refresh timestamp: %v\n", err)
 					}
+					tlog("🔑 [jwt] refresh OK — network JWT written to %s (%d bytes, next refresh in %s)\n",
+						jwtPath, len(newJwt), formatDuration(periodicInterval))
 				}
 			}
 		}
