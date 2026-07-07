@@ -627,7 +627,7 @@ func handleHeartbeat(s *store) http.HandlerFunc {
 			return
 		}
 		var hb heartbeatReport
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<18))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
