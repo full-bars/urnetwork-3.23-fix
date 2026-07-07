@@ -4,27 +4,45 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased] — Hub CA Trust System
+## [Unreleased]
+
+### Fixed
+
+**JWT refresh rewrite** (#227): `refreshJWT()` was calling `/network/auth-client` (a client-provisioning endpoint) with no `ClientId`, silently minting orphan client_rows on every 7-day cycle and corrupting the on-disk token from a network JWT to a client JWT. Rewritten to use `/auth/code-create → /auth/code-login` — the same flow initial login uses — returning a same-species network JWT with zero side effects. Added regression guard (`jwtContainsClientId`) and verification step (hits `/transfer/stats` with the new token before overwriting disk).
+
+**Reaper lock regression** (#225): The reaper held the proxy file lock across serial network probes (up to 8s per dead entry), causing races on `proxy_url.json` with concurrent reloads/fetches. Probes now run outside the lock — candidates collected under lock, probed outside, results applied atomically under re-acquired lock.
+
+**Heartbeat correctness** (#225): Delta baseline now advances only on POST success (survives hub outages), body cap raised from 64 KiB to 256 KiB (first heartbeat after restart no longer 400s on fleets above ~600 proxies), HTTP client cached across ticks, data race on `loggedLegacyPinDeprecation` fixed.
+
+**Drain re-trigger** (#225): Proxies removed-then-re-added while draining were staying dead indefinitely. Drain-complete now checks if the address is back in the desired set and fires a reload trigger.
+
+**Hub: SSE/gzip and signal shutdown** (#225): `gzipMiddleware` was wrapping `/api/events`, breaking EventSource. Exempted. `signal.NotifyContext` was never wired to servers — `docker stop` waited full grace then SIGKILLed. Both TLS and plain-HTTP servers now shut down cleanly.
+
+**io.Reader contract in message pool** (#225): `MessagePoolReadAllWithTag` was dropping trailing data and treating `(0, nil)` as EOF. Switched to standard pattern.
 
 ### Added
 
-**Password-derived CA for hub↔provider TLS**: replaces random self-signed certs with a deterministic Ed25519 CA derived from the operator's password using Argon2id (memory-hard KDF). The CA certificate is deterministic — same password+salt always produces byte-identical PEM, surviving hub restarts without re-pinning.
+**Tactical emoji + log visibility** (#226): Emoji prefixes on 14 key log lines (🚨 outage, 🌿🔴/🟡/🟢 eco, 🔄 proxy reload, ⛔ contract denied, 🌐 net select, 🔑 JWT, 📡 webhook, 📦 message pool, 📈 traffic). Contract aggregates (`contracts=N denied=N avg_util=X%`) on `[profit]` heartbeat. WebRTC peer lifecycle events (`🔗 [signal] peer connected/disconnected`). Rate-limited `[doh]` warnings with escalation threshold. Traffic velocity detection (3x+ rate changes between ticks). Peak tracking (`peak_rx`/`peak_tx`). Client flight markers (`✈️`/`🛬`). JWT startup expiry log and throttled 48h warning.
 
-Key changes:
-- `hub/ca.go`: deterministic CA derivation, ECDSA P-256 leaf issuance, leaf rotation
-- `hub/onboard.go`: token-based onboarding flow, `/api/ca-cert` endpoint, `/onboard.sh`
-- `provider/bandwidth_reporter.go`: CA verification replaces TOFU fingerprint pinning
-- Fail-closed default: HTTPS with no trust material = error, not MITM risk
+### Changed
 
-**Onboarding flow**: `urnet-tools hub onboard-cmd` mints a 15-minute token and prints a curl one-liner. Providers run `curl -fsSL http://hub:8080/onboard.sh | sh -s -- TOKEN` to fetch and install the CA cert.
+**Proxy URL refresh default** (#221 carried): `--proxy_url_refresh` default bumped from 15m to 1h to reduce fetch-trigger frequency on large churny lists.
 
-**`-show-password` flag**: retrieve the hub password without parsing files: `urnet-tools hub show-password`
+### Fixed from previous release
 
-**`-mint-onboard-token` flag**: mint tokens without starting the hub server.
+**CA material loss guard** (#224): If `hub.salt` is deleted but `hub.password` survives (or vice versa), cross-consistency check now errors instead of silently regenerating a different CA root.
 
-### Deprecated
+**`hub link --token` forwarding** (#224): Dispatch was missing the `--token` flag, silently falling to manual TOFU flow. Now forwards all remaining args.
 
-**Fingerprint pinning (`hub.pin`)**: still honored for one release with deprecation warning. `hub link`/onboarding now writes `hub_ca.pem` and removes `hub.pin`. Remove the code path entirely in the next release.
+**Platform coverage** (#224): `do_hub_init` missing `has_systemd` guard, IPv6 bare address in onboard-cmd, empty-password rejection, `ca.crt` mid-run deletion survival.
+
+### Added (carried from previous release)
+
+**Password-derived CA for hub↔provider TLS**: replaces random self-signed certs with a deterministic Ed25519 CA derived from the operator's password using Argon2id. Onboarding via `urnet-tools hub onboard-cmd` and `curl | sh`. Token-based, 15-minute window.
+
+### Deprecated (carried from previous release)
+
+**Fingerprint pinning (`hub.pin`)**: still honored for one release with deprecation warning. Remove the code path entirely in the next release.
 
 ---
 

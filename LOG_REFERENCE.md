@@ -459,18 +459,99 @@ A flat `r=` counter that doesn't grow means no sessions are active. A rapidly gr
 ## 🔑 JWT Auto-Refresh
 
 ```
-[jwt] refreshing token — expires in 10h 0m (less than 48h 0m threshold)
-[jwt] refresh failed: api error: ... (will retry in 1h)
-[jwt] token refreshed successfully (next check in 1h)
+[jwt] refreshing token — 7-day periodic refresh due (last refresh 168h0m ago)
+🔑 [jwt] refresh → step 1/3: requesting auth code...
+🔑 [jwt] refresh → step 1/3 ok: auth code received (684 chars)
+🔑 [jwt] refresh → step 2/3: exchanging auth code for network JWT...
+🔑 [jwt] refresh → step 2/3 ok: network JWT received (512 chars)
+🔑 [jwt] refresh → step 3/3: verifying new token against https://api.bringyour.com/transfer/stats...
+🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP 200)
+🔑 [jwt] refresh OK — network JWT written to /root/.urnetwork/jwt (512 bytes, next refresh in 168h0m)
 ```
 
-Fires at most once per month per provider. The provider checks the JWT expiry every hour. When the token is within 48 hours of its `exp` claim (the API issues 30-day tokens), the provider proactively calls the auth API for a replacement and writes it to disk — no restart, no downtime.
+Two triggers (OR logic — either fires a refresh):
+1. **Periodic (7-day)**: Has it been ≥7 days since the last successful refresh? Primary mechanism. Guarantees the token is rotated on a fixed cadence.
+2. **Expiry fallback (48h)**: Is the token within 48 hours of expiring? Safety net if the periodic refresh failed repeatedly.
+
+The refresher uses `/auth/code-create → /auth/code-login` (same flow as initial login). Before overwriting the on-disk JWT, it verifies the new token against `GET /transfer/stats`. A regression guard rejects any response containing a `client_id` claim (catches future regressions).
 
 | Message | Meaning |
 |---|---|
-| `refreshing token` | JWT is close to expiry; initiating a refresh call to the auth API. |
-| `refresh failed` | The API call or disk write failed. Will retry on the next hourly check. |
-| `token refreshed successfully` | A new JWT was obtained and written to `~/.urnetwork/jwt`. The old token remains valid until its original expiry, so there is no disruption. |
+| `step 1/3` | Requesting an auth code from the API. |
+| `step 2/3` | Exchanging the auth code for a fresh network JWT. |
+| `step 3/3` | Verifying the new token works via a read-only stats endpoint. |
+| `refresh OK` | New network JWT written to disk successfully. |
+| `refresh FAILED: ... — keeping existing JWT` | Refresh failed at any step. The existing JWT is preserved. Will retry in 1h. |
+
+## 🔑 JWT Startup Health
+
+```
+🔑 [jwt] expires in 12 days
+🔑 [jwt] EXPIRED 3 days ago — refresh needed
+```
+
+Emitted once at startup. Shows the current JWT's health status.
+
+---
+
+## 🌐 WebRTC Peer Lifecycle
+
+```
+🔗 [signal] peer connected client_id=abc... type=webrtc
+🔗 [signal] peer disconnected client_id=abc... type=webrtc reason=timeout
+```
+
+Fires once per P2P session creation/destruction. Low frequency — one event per peer connection, not per packet.
+
+| Message | Meaning |
+|---|---|
+| `peer connected` | A new WebRTC peer connection was established. |
+| `peer disconnected` | A peer connection was closed or timed out. |
+
+---
+
+## 📈 Traffic Velocity & Peaks
+
+```
+📈 [traffic] velocity: 3.2x → rx=12.3 MB/s tx=8.7 MB/s (was rx=3.8 MB/s tx=2.1 MB/s)
+📈 [traffic] velocity: 0.3x → rx=1.2 MB/s tx=0.8 MB/s — traffic dropping
+📈 [traffic] total rx=6.3 MB/s tx=3.9 MB/s peak_rx=18.4 MB/s peak_tx=7.8 MB/s clients=16
+```
+
+Velocity detection fires when total rate changes 3x+ between 5-minute health heartbeat ticks. Peak tracking records the maximum observed rates since startup.
+
+| Message | Meaning |
+|---|---|
+| `velocity: N.Mx →` | Aggregate rate changed by N.Mx since last tick. Greater than 1 = increase. |
+| `traffic dropping` | Rate decreased below 0.5x of previous — notable decline. |
+| `peak_rx` / `peak_tx` | Highest observed receive/transmit rates in this session. |
+
+---
+
+## ✈️ Client Flight Markers
+
+```
+✈️ [traffic] clients 0→4 (first connect in 5h)
+🛬 [traffic] clients 4→0 (last disconnect in 3m)
+```
+
+Emitted when aggregate client count transitions between zero and non-zero (and vice versa).
+
+---
+
+## 🚨 DNS Health
+
+```
+[doh] ⚠ 5 failures in last 5m
+🚨 [doh] 120 failures in last 5m — possible DNS outage
+```
+
+Rate-limited to 1 per 5 minutes globally. Escalates to 🚨 when failures exceed 100 in a window. Failures also tracked as `dns_failures=N` in the `[health]` heartbeat.
+
+| Message | Meaning |
+|---|---|
+| `⚠ N failures in last 5m` | Moderate DoH resolution failures — investigate if persistent. |
+| `🚨 N failures` | Over 100 failures in 5 minutes — likely DNS outage. |
 
 ---
 
