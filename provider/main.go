@@ -1591,7 +1591,10 @@ func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 	// Verify the fresh token works before returning it so the caller never
 	// overwrites the on-disk JWT with a dead token. Uses a lightweight read-only
 	// API endpoint to keep side effects zero (no auth codes, no client rows).
-	req, _ := http.NewRequestWithContext(ctx, "GET", apiUrl+"/transfer/stats", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiUrl+"/transfer/stats", nil)
+	if err != nil {
+		return "", fmt.Errorf("could not build verification request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+newJwt)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
