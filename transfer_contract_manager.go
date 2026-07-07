@@ -1130,7 +1130,7 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 			ByteCountHumanReadable(allottedByteCount),
 			util,
 			contractKey.Destination.DestinationId)
-		atomic.AddUint64(&contractUtilSum, uint64(util*100))
+		atomic.AddUint64(&contractUtilSum, uint64(util))
 	}
 
 	// Reliable delivery via a per-contract `ControlSync`. The
