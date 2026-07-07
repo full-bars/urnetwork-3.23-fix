@@ -1596,7 +1596,8 @@ func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 		return "", fmt.Errorf("could not build verification request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+newJwt)
-	resp, err := http.DefaultClient.Do(req)
+	verifyClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := verifyClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fresh token failed verification: %w", err)
 	}
