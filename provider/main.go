@@ -1965,10 +1965,11 @@ func provide(opts docopt.Opts) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
-			for {
-				var err error
-				var byClientJwt string
-				var clientId connect.Id
+		for {
+			var err error
+			var byClientJwt string
+			var clientId connect.Id
+			var reused bool
 
 				// Only URL-sourced proxies get the pre-auth SOCKS5 reachability probe.
 				// File/internal lists are operator-curated (paid) endpoints that should
@@ -2003,7 +2004,7 @@ func provide(opts docopt.Opts) {
 					if proxySettings != nil {
 						identityKey = proxySettings.Address
 					}
-					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
+					byClientJwt, clientId, reused, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
 					release()
 					if proxySettings != nil {
 						if err == nil {
@@ -2015,6 +2016,11 @@ func provide(opts docopt.Opts) {
 						globalAuthRateLimiter.ReportResult(err)
 					}
 					if err == nil {
+						if reused {
+							fmt.Printf("♻️ client_id: %s (reused)\n", clientId)
+						} else {
+							fmt.Printf("✨ client_id: %s (new)\n", clientId)
+						}
 						return byClientJwt, clientId, nil
 					}
 				}
@@ -2168,7 +2174,6 @@ func provide(opts docopt.Opts) {
 		// connectClient.Setup(routeManager, contractManager)
 		// go connectClient.Run()
 
-		fmt.Printf("client_id: %s\n", clientId)
 		fmt.Printf("instance_id: %s\n", instanceId)
 
 		auth := &connect.ClientAuth{
@@ -2619,12 +2624,13 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
-func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, returnErr error) {
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	if entry, ok := globalClientJWTStore.Get(identityKey); ok {
 		if err := validateJWTExpiry(entry.ByClientJWT); err == nil &&
 			jwtContainsClientId(entry.ByClientJWT) {
 			if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
-				return entry.ByClientJWT, parsedId, nil
+				reused = true
+				return entry.ByClientJWT, parsedId, true, nil
 			}
 		}
 	}
