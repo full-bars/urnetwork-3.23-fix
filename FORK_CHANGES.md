@@ -1867,7 +1867,7 @@ Startup and periodic JWT health logging:
 
 **Purpose**: Fix the never-verified JWT self-refresh feature that was silently corrupting on-disk tokens and creating orphan client/device rows on every 7-day cycle.
 
-### 72a. Bug Confirmed (Fable Audit)
+### 72a. Bug Confirmed (Code Audit)
 
 Old `refreshJWT()` (`provider/main.go:1504-1535`) called `/network/auth-client` with no `ClientId` in the request body. Server (`server/model/network_client_model.go:140`) unconditionally minted a new client_id + device row on every call (no session-based fallback exists). Each 7-day refresh cycle:
 
