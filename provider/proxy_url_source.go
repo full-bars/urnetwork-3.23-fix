@@ -365,11 +365,23 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 }
 
+// reaperProbeTarget holds a single candidate address and a snapshot of its
+// probe state, collected under the lock then probed outside it.
+type reaperProbeTarget struct {
+	addr  string
+	entry ProxyURLEntry
+}
+
 // runURLProxyReaper iterates the URL cache and re-probes entries whose
 // ProbeOK is false (socks5-only from a previous fetch, or entries added
 // before the probe fields existed). Entries that fail proxyAPIMaxFails
 // consecutive probes are moved to the persistent Blacklist. Runs every
 // proxyReaperInterval. Exits when ctx is cancelled.
+//
+// Probing happens outside the proxy lock so a large batch of dead entries
+// doesn't block concurrent reloads, fetches, or removeDeadProxies calls.
+// The lock is held only while collecting candidates and while applying the
+// results atomically.
 func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 	ticker := time.NewTicker(proxyReaperInterval)
 	defer ticker.Stop()
@@ -381,78 +393,121 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 		case <-ticker.C:
 		}
 
-		release, err := acquireProxyLock()
-		if err != nil {
+		// Collect candidates under the lock, then probe outside it.
+		var candidates []reaperProbeTarget
+		func() {
+			release, err := acquireProxyLock()
+			if err != nil {
+				return
+			}
+			defer release()
+
+			state, err := readProxyURLState()
+			if err != nil {
+				return
+			}
+			for addr, entry := range state.Cache {
+				if entry.ProbeOK {
+					continue
+				}
+				if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
+					continue
+				}
+				candidates = append(candidates, reaperProbeTarget{addr, entry})
+			}
+		}()
+
+		if len(candidates) == 0 {
 			continue
 		}
 
-		state, err := readProxyURLState()
-		if err != nil {
-			release()
-			continue
+		// Probe every candidate outside the lock. Serial probing caps total
+		// cycle time but no longer blocks concurrent proxy operations, which
+		// was the critical problem — a 5-minute stale-lock age window would
+		// let a reload steal the lock mid-cycle and race on proxy_url.json.
+		type probeResultEntry struct {
+			addr   string
+			result probeResult
+		}
+		results := make([]probeResultEntry, 0, len(candidates))
+		for _, c := range candidates {
+			results = append(results, probeResultEntry{
+				addr:   c.addr,
+				result: probeProxy(ctx, c.addr, apiHost, apiPort),
+			})
 		}
 
-		changed := false
-		for addr, entry := range state.Cache {
-			if entry.ProbeOK {
-				continue
+		// Re-acquire the lock and atomically apply all results.
+		func() {
+			release, err := acquireProxyLock()
+			if err != nil {
+				return
 			}
-			// Don't re-probe if recently tested (within one reaper interval)
-			if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
-				continue
+			defer release()
+
+			state, err := readProxyURLState()
+			if err != nil {
+				return
 			}
 
-			result := probeProxy(ctx, addr, apiHost, apiPort)
-			entry.LastProbe = time.Now()
+			changed := false
+			for _, r := range results {
+				entry, ok := state.Cache[r.addr]
+				if !ok {
+					continue // removed by a concurrent writer
+				}
+				if entry.ProbeOK {
+					continue // became reachable between snapshot and probe
+				}
+				entry.LastProbe = time.Now()
 
-			switch result {
-			case probeAPIReachable:
-				entry.ProbeOK = true
-				entry.ProbeFails = 0
-				state.Cache[addr] = entry
-				changed = true
+				switch r.result {
+				case probeAPIReachable:
+					entry.ProbeOK = true
+					entry.ProbeFails = 0
+					state.Cache[r.addr] = entry
+					changed = true
 
-			case probeSocks5Only:
-				entry.ProbeOK = false
-				entry.ProbeFails++
-				state.Cache[addr] = entry
-				if entry.ProbeFails >= proxyAPIMaxFails {
-					if state.Blacklist == nil {
-						state.Blacklist = map[string]time.Time{}
+				case probeSocks5Only:
+					entry.ProbeOK = false
+					entry.ProbeFails++
+					state.Cache[r.addr] = entry
+					if entry.ProbeFails >= proxyAPIMaxFails {
+						if state.Blacklist == nil {
+							state.Blacklist = map[string]time.Time{}
+						}
+						state.Blacklist[r.addr] = time.Now().UTC()
+						delete(state.Cache, r.addr)
+						tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", r.addr, entry.ProbeFails)
 					}
-					state.Blacklist[addr] = time.Now().UTC()
-					delete(state.Cache, addr)
-					tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", addr, entry.ProbeFails)
-				}
-				changed = true
+					changed = true
 
-			case probeDead:
-				entry.ProbeFails++
-				state.Cache[addr] = entry
-				if entry.ProbeFails >= proxyAPIMaxFails {
-					if state.Blacklist == nil {
-						state.Blacklist = map[string]time.Time{}
+				case probeDead:
+					entry.ProbeFails++
+					state.Cache[r.addr] = entry
+					if entry.ProbeFails >= proxyAPIMaxFails {
+						if state.Blacklist == nil {
+							state.Blacklist = map[string]time.Time{}
+						}
+						state.Blacklist[r.addr] = time.Now().UTC()
+						delete(state.Cache, r.addr)
+						tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", r.addr, entry.ProbeFails)
 					}
-					state.Blacklist[addr] = time.Now().UTC()
-					delete(state.Cache, addr)
-					tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", addr, entry.ProbeFails)
-				}
-				changed = true
-			}
-		}
-
-		if changed {
-			if err := writeProxyURLState(state); err != nil {
-				tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
-			}
-			if reloadPath, err := proxyReloadPath(); err == nil {
-				if err := writeReloadTrigger(reloadPath); err != nil {
-					tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
+					changed = true
 				}
 			}
-		}
 
-		release()
+			if changed {
+				if err := writeProxyURLState(state); err != nil {
+					tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
+				}
+				if reloadPath, err := proxyReloadPath(); err == nil {
+					if err := writeReloadTrigger(reloadPath); err != nil {
+						tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
+					}
+				}
+			}
+		}()
 	}
 }
 
