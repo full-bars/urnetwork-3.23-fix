@@ -43,11 +43,6 @@ const DefaultConnectUrl = "wss://connect.bringyour.com"
 
 var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
-// jwtExpiryThrottle throttles JWT expiry warnings to 1 per hour
-var jwtExpiryThrottle = connect.NewLogThrottle(1 * time.Hour)
-
-func shouldLogJwtExpiry() (bool, int64) { return jwtExpiryThrottle.Allow(time.Now()) }
-
 // proxyLaunchCount tracks how many proxy goroutines have passed the stagger
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
 var proxyLaunchCount atomic.Int64
@@ -1258,6 +1253,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	// velocity and peak tracking
 	var prevTotalRx, prevTotalTx uint64
 	var peakRx, peakTx uint64
+	var peakRxElapsed, peakTxElapsed float64 = 1, 1
 	velocityLogged := time.Now()
 
 	for {
@@ -1415,12 +1411,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			}
 		}
 
-		// peak tracking: update high water marks
+		// peak tracking: update high water marks and freeze elapsed at the time of the peak
 		if totalRx > peakRx {
 			peakRx = totalRx
+			peakRxElapsed = elapsed
 		}
 		if totalTx > peakTx {
 			peakTx = totalTx
+			peakTxElapsed = elapsed
 		}
 
 		prevTotalRx = totalRx
@@ -1437,8 +1435,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			activeProxies,
 			fmtBytes(totalBillable),
 			earning,
-			fmtRate(float64(peakRx)/elapsed),
-			fmtRate(float64(peakTx)/elapsed),
+			fmtRate(float64(peakRx)/peakRxElapsed),
+			fmtRate(float64(peakTx)/peakTxElapsed),
 		)
 		// [earn] surfaces utilization: how many up proxies are actually carrying
 		// users (serving) vs sitting idle. Sustained high idle with up>0 means the
@@ -1677,16 +1675,10 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 			exp := parseJWTExpiryTime(byJwt)
 			expiryDue := exp != nil && time.Until(*exp) <= expiryFallbackWindow
 
-			// Emit throttled warning when expiry is within 48h
+			// Emit warning when expiry is within 48h
 			if expiryDue && exp != nil {
-				if ok, suppressed := shouldLogJwtExpiry(); ok {
-					remaining := time.Until(*exp)
-					if suppressed > 0 {
-						tlog("🔑 [jwt] ⚠ expires in %s — refresh triggered (%d suppressed)\n", formatDuration(remaining), suppressed)
-					} else {
-						tlog("🔑 [jwt] ⚠ expires in %s — refresh triggered\n", formatDuration(remaining))
-					}
-				}
+				remaining := time.Until(*exp)
+				tlog("🔑 [jwt] ⚠ expires in %s — refresh triggered\n", formatDuration(remaining))
 			}
 
 			if periodicDue || expiryDue {
@@ -1793,11 +1785,14 @@ func provide(opts docopt.Opts) {
 		if _, err := os.Stat(jwtPath); err == nil {
 			if jwtBytes, err := os.ReadFile(jwtPath); err == nil {
 				if exp := parseJWTExpiryTime(string(jwtBytes)); exp != nil {
-					daysUntil := time.Until(*exp).Hours() / 24
-					if daysUntil > 0 {
+					remaining := time.Until(*exp)
+					daysUntil := remaining.Hours() / 24
+					if daysUntil >= 1 {
 						tlog("🔑 [jwt] expires in %d days\n", int(daysUntil))
+					} else if daysUntil >= 0 {
+						tlog("🔑 [jwt] expires in %s\n", formatDuration(remaining))
 					} else {
-						tlog("🔑 [jwt] EXPIRED %d days ago — refresh needed\n", int(-daysUntil))
+						tlog("🔑 [jwt] EXPIRED %s ago — refresh needed\n", formatDuration(-remaining))
 					}
 				}
 			}
