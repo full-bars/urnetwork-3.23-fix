@@ -1005,6 +1005,7 @@ func main() {
 	mux.HandleFunc("/api/nodes/contracts", handleNodeContracts(s))
 	mux.HandleFunc("/api/nodes/", handleNodes(s))
 	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
 	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/api/events", handleEvents(s))
@@ -1275,6 +1276,7 @@ tr.expandable:hover { background: #1a2332; }
 <div class="nav-item" data-page="proxies" onclick="switchPage('proxies')">Proxies</div>
 <div class="nav-item" data-page="contracts" onclick="switchPage('contracts')">Contracts</div>
 	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
+	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
 </nav>
 <main class="content">
 
@@ -1395,6 +1397,16 @@ tr.expandable:hover { background: #1a2332; }
 <div class="chart-wrap"><div class="chart-box"><div id="contracts-fleet-chart"></div></div></div>
 <div class="table-section-header" style="font-weight:600">PER SERVER &middot; sorted by win rate &middot; click for detail</div>
 <div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+</div>
+
+<!-- ===== BEST PROXIES ===== -->
+<div id="page-best" class="page">
+<div class="page-header">Best Proxies <span style="font-size:12px;color:#475569;font-weight:400">composite score: win% &times; ln(1 + traffic)</span></div>
+<div class="window-pills">
+<label style="font-size:11px;color:#94a3b8;cursor:pointer"><input type="checkbox" id="hide-dead" onchange="loadBestProxies()"> Hide dead</label>
+<span class="info" id="best-info">Loading...</span>
+</div>
+<div class="table-wrap"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Score</th><th class="num">Win%</th><th class="num">Traffic</th><th class="num">Contracts</th><th>Last seen</th><th>Status</th></tr></thead><tbody id="best-body"><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
 </main>
