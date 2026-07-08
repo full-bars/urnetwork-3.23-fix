@@ -4143,6 +4143,8 @@ func proxyRemoveDead(opts docopt.Opts) {
 	authFailMin := int64(0)
 	if af, _ := opts.Int("--auth-failures"); af > 0 {
 		authFailMin = int64(af)
+	} else if degradedDur > 0 {
+		authFailMin = 250
 	}
 
 	type removedProxy struct {
@@ -4180,8 +4182,11 @@ func proxyRemoveDead(opts docopt.Opts) {
 			}
 			degraded = append(degraded, removedProxy{addr: addr, entry: e})
 		}
-		if authFailMin > 0 && e.AuthFailures >= authFailMin {
-			authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
+		if authFailMin > 0 {
+			days := int64(max(1, int(uptime.Hours())/24))
+			if e.AuthFailures >= authFailMin*days {
+				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
+			}
 		}
 	}
 
@@ -4221,7 +4226,7 @@ func proxyRemoveDead(opts docopt.Opts) {
 		printCategory("inactive", inactive)
 		printCategory(fmt.Sprintf("degraded (offline > %s)", formatDuration(degradedDur)), degraded)
 		if authFailMin > 0 {
-			printCategory(fmt.Sprintf("auth-failing (>= %d errors)", authFailMin), authFailing)
+			printCategory(fmt.Sprintf("auth-failing (>= %d/day)", authFailMin), authFailing)
 		}
 		total := len(dead) + len(inactive) + len(degraded) + len(authFailing)
 		fmt.Printf("Would remove %d proxies total.\n", total)
@@ -4252,7 +4257,7 @@ func proxyRemoveDead(opts docopt.Opts) {
 	}
 
 	if len(authFailing) > 0 {
-		printCategory(fmt.Sprintf("auth-failing (>= %d errors)", authFailMin), authFailing)
+		printCategory(fmt.Sprintf("auth-failing (>= %d/day)", authFailMin), authFailing)
 		if autoYes || confirm(fmt.Sprintf("Remove %d auth-failing proxies?", len(authFailing))) {
 			toRemove = append(toRemove, authFailing...)
 		}
