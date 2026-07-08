@@ -4182,7 +4182,7 @@ func proxyRemoveDead(opts docopt.Opts) {
 			}
 			degraded = append(degraded, removedProxy{addr: addr, entry: e})
 		}
-		if authFailMin > 0 {
+		if authFailMin > 0 && e.Health != "up" {
 			days := int64(max(1, int(uptime.Hours())/24))
 			if e.AuthFailures >= authFailMin*days {
 				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
