@@ -135,8 +135,9 @@ The non-token `urnet-tools hub link` flow (without `--token`) uses certificate f
 
 ```bash
 # Auth & Setup
-urnet-tools auth <email> <password>
-urnet-tools update                 # update provider binary
+urnet-tools auth                    # interactive — paste auth code
+urnet-tools auth <auth-code>        # non-interactive
+urnet-tools update                  # update provider binary
 urnet-tools reinstall              # full reinstall
 
 # Proxy Management
