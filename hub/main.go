@@ -1276,7 +1276,6 @@ tr.expandable:hover { background: #1a2332; }
 <div class="nav-item" data-page="proxies" onclick="switchPage('proxies')">Proxies</div>
 <div class="nav-item" data-page="contracts" onclick="switchPage('contracts')">Contracts</div>
 	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
-	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
 </nav>
 <main class="content">
 
