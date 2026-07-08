@@ -8,7 +8,7 @@ on:
       - 'hub/**'
       - '.github/workflows/hub-build.yml'
     tags:
-      - 'hub-v*'
+      - 'hub-docker-v*'
   pull_request:
     branches:
       - main
@@ -66,19 +66,17 @@ jobs:
             ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=match,pattern=hub-v(.*),group=1
+            type=match,pattern=hub-docker-v(.*),group=1
             type=ref,event=pr
             type=sha,format=short
 
       - name: Determine version for build
         id: version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/hub-v* ]]; then
-            VERSION="${GITHUB_REF_NAME#hub-}"
+          if [[ "${{ github.ref }}" == refs/tags/hub-docker-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#hub-docker-}"
           else
-            # Independent of the provider's v3.23.0-fix.X.Y scheme — the hub
-            # versions itself starting at v0.1.0, tagged as hub-vX.Y.Z.
-            VERSION=$(git describe --tags --match 'hub-v*' --abbrev=0 2>/dev/null | sed 's/^hub-//' || true)
+            VERSION=$(git describe --tags --match 'hub-docker-v*' --abbrev=0 2>/dev/null | sed 's/^hub-docker-//' || true)
             VERSION="${VERSION:-v0.1.0-dev}"
           fi
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -97,7 +95,7 @@ jobs:
           cache-to: type=gha,mode=min,scope=hub
 
       - name: Notify Discord on tagged release
-        if: ${{ startsWith(github.ref, 'refs/tags/hub-v') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/hub-docker-v') }}
         env:
           BUILD_NOTIFY: ${{ secrets.BUILD_NOTIFY }}
         run: |
@@ -112,73 +110,9 @@ jobs:
             --arg runUrl "$RUN_URL" \
           '{
             "embeds": [{
-              "title": ("📊 Hub Image Published — " + $version),
+              "title": ("Hub Docker Image Published — " + $version),
               "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:" + $version + "\ndocker pull 3cape/urnetwork-hub:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
               "color": 3447003,
-              "footer": { "text": "URNetwork Release Monitor • Hub" }
+              "footer": { "text": "URNetwork Release Monitor • Hub Docker" }
             }]
           }')" "$BUILD_NOTIFY"
-
-  release:
-    name: Create Hub Binary Release
-    if: ${{ startsWith(github.ref, 'refs/tags/hub-v') }}
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    strategy:
-      matrix:
-        goarch: [amd64, arm64]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Build hub binary
-        run: |
-          VERSION=${GITHUB_REF_NAME:-hub-v0.1.0}
-          GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o urnetwork-hub-${VERSION}-linux-${{ matrix.goarch }} ./hub/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hub-bin-${{ matrix.goarch }}
-          path: urnetwork-hub-*-linux-${{ matrix.goarch }}
-
-  github-release:
-    name: Publish GitHub Release
-    if: ${{ startsWith(github.ref, 'refs/tags/hub-v') }}
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Download amd64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-bin-amd64
-
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-bin-arm64
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            urnetwork-hub-*-linux-amd64
-            urnetwork-hub-*-linux-arm64
-          draft: false
-          prerelease: false
-          generate_release_notes: true
