@@ -14,7 +14,7 @@ require (
 	github.com/quic-go/quic-go v0.59.1
 	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd
 	github.com/wlynxg/anet v0.0.5
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
 	golang.org/x/net v0.55.0
 	golang.org/x/term v0.43.0
