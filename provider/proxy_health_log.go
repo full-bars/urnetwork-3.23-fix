@@ -49,24 +49,24 @@ func parseProxyString(s string) (string, string) {
 func formatStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	var b strings.Builder
 	down := len(r.Dead) + len(r.Degraded)
-	fmt.Fprintf(&b, "=========================================================================\n")
+	fmt.Fprintf(&b, "=======================================================================\n")
 	fmt.Fprintf(&b, " URNETWORK PROXY HEALTH REPORT\n")
 	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, " Up: %d | Down: %d | Dead: %d | Degraded: %d\n", r.Up, down, len(r.Dead), len(r.Degraded))
 	fmt.Fprintf(&b, " Lifetime Recovered: %d | Lifetime Lost: %d\n", r.LifetimeRecovered, r.LifetimeLost)
-	fmt.Fprintf(&b, "=========================================================================\n")
-	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+\n")
-	fmt.Fprintf(&b, "| STATUS   | PROXY ID         | IP ADDRESS                              |\n")
-	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+\n")
+	fmt.Fprintf(&b, "=======================================================================\n")
+	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
+	fmt.Fprintf(&b, "| STATUS   | PROXY ID         | IP ADDRESS                              | AUTH ERRS  |\n")
+	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
 	for _, s := range r.Dead {
 		p, ip := parseProxyString(s)
-		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s |\n", "DEAD", p, ip)
+		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "DEAD", p, ip, "")
 	}
 	for _, s := range r.Degraded {
 		p, ip := parseProxyString(s)
-		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s |\n", "DEGRADED", p, ip)
+		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "DEGRADED", p, ip, "")
 	}
-	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+\n")
+	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
 	return b.String()
 }
 
