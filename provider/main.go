@@ -775,6 +775,7 @@ func auth(opts docopt.Opts) {
 		var loginResult connect.ApiCallbackResult[*connect.AuthLoginWithPasswordResult]
 		select {
 		case <-ctx.Done():
+			tlog("[auth] exiting: signal received during login\n")
 			os.Exit(0)
 		case loginResult = <-loginChannel:
 		}
@@ -814,6 +815,7 @@ func auth(opts docopt.Opts) {
 		var authCodeLoginResult connect.ApiCallbackResult[*connect.AuthCodeLoginResult]
 		select {
 		case <-ctx.Done():
+			tlog("[auth] exiting: signal received during auth-code login\n")
 			os.Exit(0)
 		case authCodeLoginResult = <-authCodeLoginChannel:
 		}
@@ -1805,6 +1807,13 @@ func provide(opts docopt.Opts) {
 	ctx, cancel := context.WithCancel(event.Ctx())
 	defer cancel()
 
+	// Exit-visibility: log when the main context is cancelled so operators
+	// can see why the provider is shutting down.
+	go func() {
+		<-ctx.Done()
+		tlog("[provider] shutting down: main context cancelled\n")
+	}()
+
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
 	// connections without needing a provider restart.
 	go func() {
@@ -2402,15 +2411,24 @@ func provide(opts docopt.Opts) {
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: &Status{},
 		}
-		defer statusServer.Shutdown(ctx)
 
-		go connect.HandleError(func() {
-			defer cancel()
-			err := statusServer.ListenAndServe()
-			if err != nil {
-				fmt.Printf("status error: %s\n", err)
+		go func() {
+			for {
+				err := statusServer.ListenAndServe()
+				if errors.Is(err, http.ErrServerClosed) {
+					return
+				}
+				if err != nil {
+					tlog("[status] error: %v — retrying in 30s\n", err)
+				}
+				select {
+				case <-time.After(30 * time.Second):
+					continue
+				case <-ctx.Done():
+					return
+				}
 			}
-		}, cancel)
+		}()
 	} else {
 		fmt.Printf(
 			"Provider %s started\n",
@@ -2418,9 +2436,10 @@ func provide(opts docopt.Opts) {
 		)
 	}
 
-	wg.Wait()
+		wg.Wait()
 
-	// exit
+	// All goroutines have finished. Log final status before exit.
+	tlog("[provider] exiting\n")
 	os.Exit(0)
 }
 
@@ -2700,6 +2719,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	var authClientResult connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
 	select {
 	case <-ctx.Done():
+		tlog("[auth] exiting: signal received during auth-client request\n")
 		os.Exit(0)
 	case authClientResult = <-authClientChannel:
 	}
