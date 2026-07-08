@@ -97,21 +97,40 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
+// clientIP extracts the real client IP when the hub sits behind a reverse
+// proxy (Caddy, nginx). Prefers X-Forwarded-For, then X-Real-IP, falling
+// back to the TCP remote address.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 // rateLimitMiddleware limits requests to rateLimit per rateWindow per client IP.
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	rl := newRateLimiter(60, time.Minute)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			ip = r.RemoteAddr
-		}
+		ip := clientIP(r)
 		if r.URL.Path == "/api/report" || r.URL.Path == "/api/events" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		if !rl.allow(ip) {
 			w.Header().Set("Retry-After", "60")
-			http.Error(w, "rate limit exceeded", 429)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":"rate limit exceeded"}`))
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -609,9 +628,7 @@ func handleReport(s *store) http.HandlerFunc {
 			return
 		}
 		ns.Timestamp = time.Now().UTC()
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			ns.SourceIP = host
-		}
+		ns.SourceIP = clientIP(r)
 		ns.TLS = r.TLS != nil
 		fmt.Printf("report from %s: %d proxies\n", ns.NodeID, len(ns.Proxies))
 		s.upsert(ns.NodeID, &ns)
@@ -1578,6 +1595,16 @@ function parseSortValue(s) {
   return s;
 }
 function cmpNode(a,b,dir){var pa=parseSortValue(a),pb=parseSortValue(b);if(typeof pa==='number'&&typeof pb==='number')return dir*(pa-pb);return dir*String(a).localeCompare(String(b),undefined,{numeric:true});}
+function reapplySort() {
+  var cols = Object.keys(sortState);
+  if (cols.length === 0) return;
+  var col = cols[0], dir = sortState[col];
+  var tbody = document.querySelector('#node-table tbody');
+  if (!tbody) return;
+  var rows = Array.from(tbody.querySelectorAll('tr.expandable'));
+  rows.sort(function(a,b){return cmpNode(a.cells[getColIndex(col)].textContent.trim(), b.cells[getColIndex(col)].textContent.trim(), dir);});
+  rows.forEach(function(r){tbody.appendChild(r);});
+}
 
 // === Drawer ===
 var drawerNodeId = null, proxyDrawer = {};
@@ -1627,13 +1654,17 @@ function toggleRefresh() { if (document.getElementById('auto-refresh').checked) 
 // its own with native backoff, no custom reconnect logic needed here.
 if (window.EventSource) {
   var liveEvents = new EventSource('/api/events');
-  liveEvents.onmessage = function() { refreshDashboard(); };
+  var sseTimer = null;
+  liveEvents.onmessage = function() {
+    if (sseTimer !== null) return;
+    sseTimer = setTimeout(function() { sseTimer = null; refreshDashboard(); }, 5000);
+  };
 }
 
 function refreshDashboard() {
   if (refreshing) return; refreshing = true;
   var fc = document.getElementById('filter-count'); if (fc) fc.textContent = 'Refreshing\u2026';
-  fetch('/api/nodes').then(function(r){return r.json();}).then(function(nodes){
+  fetch('/api/nodes').then(function(r){if(!r.ok)throw new Error(r.status===429?'rate limited':'error '+r.status);return r.json();}).then(function(nodes){
     var tbody = document.querySelector('#node-table tbody');
     var totalProxies = 0, totalUp = 0, totalDeg = 0, totalDead = 0, totalClients = 0, totalEarning = 0, nodeCount = 0, totalRX = 0, totalTX = 0;
 
@@ -1669,6 +1700,7 @@ function refreshDashboard() {
     document.querySelectorAll('.card')[3].innerHTML = '<div class="label">Earning</div><div class="value">'+(totalUp>0?(totalEarning/totalUp*100).toFixed(1):'0')+'%</div><div class="sub">'+totalEarning+' / '+totalUp+' up</div>';
     document.querySelectorAll('.card')[4].innerHTML = '<div class="label">Active Clients</div><div class="value">'+totalClients+'</div><div class="sub">'+fmtBytes(totalRX)+' RX / '+fmtBytes(totalTX)+' TX</div>';
     applyFilter();
+    reapplySort();
   }).catch(function(e){var fc=document.getElementById('filter-count');if(fc)fc.textContent='Error: '+(e&&e.message||e||'unknown');}).then(function(){refreshing=false;});
 }
 function removeNode(nodeId) {
