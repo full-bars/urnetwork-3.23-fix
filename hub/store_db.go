@@ -117,6 +117,25 @@ CREATE TABLE IF NOT EXISTS proxy_fleet_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_pfd_day ON proxy_fleet_daily(day);
 
+-- Tier 1.5: fleet-wide per-proxy hourly, summed across nodes. Exists so the
+-- dashboard's "all nodes" proxy leaderboard (any window <= 90 days) reads a
+-- pre-aggregated ~6.9k-proxy table instead of GROUP-BY-ing the full
+-- proxy_node_hourly tier-1 table (proxy x node x hour — millions of rows)
+-- on every page load. Pruned on the same retention window as tier 1.
+CREATE TABLE IF NOT EXISTS proxy_fleet_hourly (
+  proxy_id   INTEGER NOT NULL,
+  hour       INTEGER NOT NULL,
+  rx         INTEGER NOT NULL DEFAULT 0,
+  tx         INTEGER NOT NULL DEFAULT 0,
+  bill_rx    INTEGER NOT NULL DEFAULT 0,
+  bill_tx    INTEGER NOT NULL DEFAULT 0,
+  acq        INTEGER NOT NULL DEFAULT 0,
+  denied     INTEGER NOT NULL DEFAULT 0,
+  node_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (proxy_id, hour)
+);
+CREATE INDEX IF NOT EXISTS idx_pfh_hour ON proxy_fleet_hourly(hour);
+
 -- Rollup high-water mark: tier-1 hours <= last_hour have been folded into
 -- tiers 2/3. Single row (id=1).
 CREATE TABLE IF NOT EXISTS rollup_state (
@@ -163,6 +182,38 @@ func openDB(path string) (*sql.DB, error) {
 				fmt.Printf("hub: migration source_ip on nodes: %v\n", err)
 			}
 		}
+	}
+
+	// Migration: backfill proxy_fleet_hourly from existing proxy_node_hourly
+	// history on upgrade. Only runs once — skipped once the table is
+	// non-empty. Async so it doesn't block hub startup on a large existing
+	// database; the "all nodes" dashboard view just serves partial/empty
+	// results for historical hours until it completes.
+	//
+	// Bounded to hour <= now-26h, matching rollupProxyDaily's watermark: the
+	// query path unions proxy_fleet_hourly with a live scan of any
+	// proxy_node_hourly hour not yet rolled up, so backfilling recent hours
+	// here too would double-count them.
+	var fleetHourlyRows int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM proxy_fleet_hourly`).Scan(&fleetHourlyRows); err == nil && fleetHourlyRows == 0 {
+		go func() {
+			start := time.Now()
+			maxHour := nowFunc().Unix()/3600 - 26
+			res, err := db.Exec(`
+				INSERT OR REPLACE INTO proxy_fleet_hourly
+					(proxy_id, hour, rx, tx, bill_rx, bill_tx, acq, denied, node_count)
+				SELECT proxy_id, hour, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+				       SUM(acq), SUM(denied), COUNT(DISTINCT node_id)
+				FROM proxy_node_hourly
+				WHERE hour <= ?
+				GROUP BY proxy_id, hour`, maxHour)
+			if err != nil {
+				fmt.Printf("hub: migration proxy_fleet_hourly backfill: %v\n", err)
+				return
+			}
+			n, _ := res.RowsAffected()
+			fmt.Printf("hub: migration proxy_fleet_hourly backfill: %d rows in %s\n", n, time.Since(start))
+		}()
 	}
 
 	return db, nil
@@ -603,9 +654,10 @@ func envInt(key string, def int) int {
 }
 
 // rollupProxyDaily aggregates proxy_node_hourly rows into proxy_node_daily
-// (upsert-add) and proxy_fleet_daily (full recompute from daily for the
-// affected days). Only hours older than 26h and not yet rolled up are
-// processed; a high-water mark in rollup_state prevents double-counting.
+// (upsert-add), proxy_fleet_hourly (full recompute per hour), and
+// proxy_fleet_daily (full recompute from daily for the affected days). Only
+// hours older than 26h and not yet rolled up are processed; a high-water
+// mark in rollup_state prevents double-counting.
 func (s *store) rollupProxyDaily() (int64, error) {
 	if s.db == nil {
 		return 0, nil
@@ -647,6 +699,20 @@ func (s *store) rollupProxyDaily() (int64, error) {
 		}
 		n, _ := res.RowsAffected()
 		rolled += n
+
+		// Fold this now-complete hour into the fleet-wide (cross-node) view.
+		// Full recompute, not add — hour h's proxy_node_hourly rows are final
+		// once we're past the 26h watermark, so this is idempotent.
+		if _, err := s.db.Exec(`
+			INSERT OR REPLACE INTO proxy_fleet_hourly
+				(proxy_id, hour, rx, tx, bill_rx, bill_tx, acq, denied, node_count)
+			SELECT proxy_id, ?, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+			       SUM(acq), SUM(denied), COUNT(DISTINCT node_id)
+			FROM proxy_node_hourly WHERE hour = ? GROUP BY proxy_id`,
+			h, h,
+		); err != nil {
+			return rolled, err
+		}
 	}
 
 	// Recomputed affected days into proxy_fleet_daily from the now-complete
@@ -715,6 +781,21 @@ func (s *store) pruneProxyHourly() (int64, error) {
 	return res.RowsAffected()
 }
 
+// pruneProxyFleetHourly deletes proxy_fleet_hourly rows older than the
+// retention window. Same cutoff as tier-1 hourly (retainHourlyDays), since
+// fleet_hourly is just an aggregated view of the same data.
+func (s *store) pruneProxyFleetHourly() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoffHour := nowFunc().Unix()/3600 - int64(retainHourlyDays*24)
+	res, err := s.db.Exec(`DELETE FROM proxy_fleet_hourly WHERE hour <= ?`, cutoffHour)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // pruneProxyDaily deletes proxy_node_daily rows older than the retention
 // window. proxy_fleet_daily is never pruned.
 func (s *store) pruneProxyDaily() (int64, error) {
@@ -739,6 +820,7 @@ func (s *store) startRetention(ctx context.Context) {
 	go retentionLoop(ctx, time.Hour, "proxy_snapshots", s.pruneSnapshots)
 	go retentionLoop(ctx, time.Hour, "proxy-daily-rollup", s.rollupProxyDaily)
 	go retentionLoop(ctx, time.Hour, "proxy-hourly-prune", s.pruneProxyHourly)
+	go retentionLoop(ctx, time.Hour, "proxy-fleet-hourly-prune", s.pruneProxyFleetHourly)
 	go retentionLoop(ctx, 24*time.Hour, "node_hourly", s.pruneHourly)
 	go retentionLoop(ctx, 24*time.Hour, "proxy-daily-prune", s.pruneProxyDaily)
 	go retentionLoop(ctx, 24*time.Hour, "nodes", s.pruneNodes)
