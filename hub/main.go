@@ -1174,8 +1174,8 @@ tr.expandable:hover { background: #1a2332; }
 .chart-controls button { background: #1a2332; border: 1px solid #1e293b; color: #94a3b8; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .chart-controls button:hover { background: #1e293b; color: #e2e8f0; }
 .chart-controls button.active { background: #60a5fa; color: #fff; border-color: #60a5fa; }
-.chart-box { background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 16px; }
-.chart-box.compact { padding: 8px; }
+.chart-box { background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 16px; overflow: hidden; }
+.chart-box.compact { padding: 8px; overflow: hidden; }
 .chart-box.compact .u-title { font-size: 12px !important; }
 .charts-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 12px 24px 4px; }
 @media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; padding: 8px 16px 0; } }
@@ -1243,6 +1243,18 @@ tr.expandable:hover { background: #1a2332; }
 <div class="chart-box compact">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Contracts/hr</span><button onclick="resetFleetChart('fleet-contracts')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
 <div id="fleet-contracts" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Throughput Mbps</span><button onclick="resetFleetChart('fleet-mbps')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
+<div id="fleet-mbps" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Bill Ratio %</span><button onclick="resetFleetChart('fleet-billratio')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
+<div id="fleet-billratio" style="height:160px"></div>
+</div>
+<div class="chart-box compact">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:11px;color:#64748b">Contract Win Rate %</span><button onclick="resetFleetChart('fleet-winrate')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Reset zoom</button></div>
+<div id="fleet-winrate" style="height:160px"></div>
 </div>
 </div>
 </div>
@@ -1417,7 +1429,7 @@ function makeChart(el, opts, data) {
   el.innerHTML = '';
   var w = el.clientWidth || 400;
   if (w < 50) w = 400;
-  opts.width = w; opts.height = 120; opts.cursor = { show: true }; opts.legend = { show: true };
+  opts.width = w; opts.height = 150; opts.cursor = { show: true }; opts.legend = { show: true };
   if (!opts.axes) opts.axes = [{ show: false }, { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 55 }];
   var chart = new uPlot(opts, data, el);
   el._uplot = chart;
@@ -1466,6 +1478,17 @@ function loadFleetChart() {
     makeChart(document.getElementById('fleet-clients'), { series: [{}, { label: 'Peak clients', stroke: '#f472b6', fill: 'rgba(244,114,182,0.1)', width: 1.5 }] }, [labels, clients]);
     makeChart(document.getElementById('fleet-nodes'), { series: [{}, { label: 'Reporting nodes', stroke: '#22d3ee', fill: 'rgba(34,211,238,0.1)', width: 1.5 }] }, [labels, nodes]);
     makeChart(document.getElementById('fleet-contracts'), { series: [{}, { label: 'Acquired/hr', stroke: '#4ade80', fill: 'rgba(74,222,128,0.1)', width: 1.5 }, { label: 'Denied/hr', stroke: '#f87171', fill: 'rgba(248,113,113,0.1)', width: 1.5 }] }, [labels, acquired, denied]);
+    var mbps = [], billRatio = [], winRate = [];
+    for (var i = 0; i < rx.length; i++) {
+      var totBytes = (rx[i]||0)+(tx[i]||0); var billBytes = (brx[i]||0)+(btx[i]||0);
+      mbps.push(totBytes > 0 ? (totBytes / 3600 * 8 / 1048576) : 0);
+      billRatio.push(totBytes > 0 ? (billBytes / totBytes * 100) : 0);
+      var a = acquired[i]||0, d = denied[i]||0;
+      winRate.push((a+d) > 0 ? (a/(a+d)*100) : 0);
+    }
+    makeChart(document.getElementById('fleet-mbps'), { series: [{}, { label: 'Mbps', stroke: '#34d399', fill: 'rgba(52,211,153,0.1)', width: 1.5, value: function(u,v){return v.toFixed(1)+' Mbps';} }] }, [labels, mbps]);
+    makeChart(document.getElementById('fleet-billratio'), { series: [{}, { label: 'Bill %', stroke: '#fbbf24', fill: 'rgba(251,191,36,0.1)', width: 1.5, value: function(u,v){return v.toFixed(1)+'%';} }] }, [labels, billRatio]);
+    makeChart(document.getElementById('fleet-winrate'), { series: [{}, { label: 'Win %', stroke: '#818cf8', fill: 'rgba(129,140,248,0.1)', width: 1.5, value: function(u,v){return v.toFixed(1)+'%';} }] }, [labels, winRate]);
   }).catch(function(){});
 }
 
