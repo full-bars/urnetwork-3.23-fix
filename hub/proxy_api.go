@@ -105,7 +105,7 @@ func handleProxiesTop(s *store) http.HandlerFunc {
 						UNION ALL
 						SELECT proxy_id, SUM(rx) AS rx, SUM(tx) AS tx, SUM(bill_rx) AS bill_rx, SUM(bill_tx) AS bill_tx,
 						       SUM(acq) AS acq, SUM(denied) AS denied, COUNT(DISTINCT node_id) AS node_count
-						FROM proxy_node_hourly WHERE hour >= ?
+						FROM proxy_node_hourly INDEXED BY idx_pnh_hour_proxy WHERE hour >= ?
 						GROUP BY proxy_id
 					) t JOIN proxies p ON p.id = t.proxy_id
 					GROUP BY t.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
