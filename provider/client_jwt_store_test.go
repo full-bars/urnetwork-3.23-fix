@@ -95,6 +95,41 @@ func TestClientJWTStorePruneStaleEntries(t *testing.T) {
 	}
 }
 
+func TestClientJWTStoreDelete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client_jwts.json")
+	store := newClientJWTStore(path)
+
+	if err := store.Put("proxy-1", clientJWTEntry{
+		ByClientJWT: "irrelevant",
+		ClientID:    testClientId,
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete("proxy-1"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if _, ok := store.Get("proxy-1"); ok {
+		t.Fatal("expected entry to be gone after Delete")
+	}
+
+	// The eviction must persist to disk, not just the in-memory map.
+	reloaded := newClientJWTStore(path)
+	if _, ok := reloaded.Get("proxy-1"); ok {
+		t.Fatal("expected deletion to survive a reload from disk")
+	}
+}
+
+func TestClientJWTStoreDeleteMissingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client_jwts.json")
+	store := newClientJWTStore(path)
+
+	if err := store.Delete("never-existed"); err != nil {
+		t.Fatalf("Delete of a missing key should be a no-op, got: %v", err)
+	}
+}
+
 func TestClientJWTStoreConcurrentPut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client_jwts.json")
 	store := newClientJWTStore(path)
