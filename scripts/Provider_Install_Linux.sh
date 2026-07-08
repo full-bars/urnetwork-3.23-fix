@@ -29,6 +29,7 @@ show_help ()
     echo "  eco <on|off>            🌿 ECO MODE: GC-tuned for low-RAM systems"
     echo "  lowmode <on|off>        LOW-MEMORY: reduced buffers for max RAM savings"
     echo "  ramlogs <on|off>        RAM LOGS: zero disk I/O logging"
+    echo "  hot-restart <on|off>    🧪 EXPERIMENTAL: reuse client_ids across restarts (off by default, unconfirmed)"
     echo "  optimize                ⚡ OPTIMIZE: apply Golden Fleet OS/kernel limits"
     echo ""
     echo "Proxy Management:"
@@ -1726,6 +1727,34 @@ toggle_lowmode ()
             ;;
         *)
             pr_err "Usage: urnet-tools lowmode <on|off>"
+            exit 1
+            ;;
+    esac
+}
+
+toggle_hotrestart ()
+{
+    mode="$1"
+    case "$mode" in
+        on)
+            confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
+            pr_info "Enabling hot-restart..."
+            pr_info "Experimental: this feature is not yet confirmed reliable across repeated restarts. See the v3.23.0-fix.25.4 release notes before relying on it."
+            override_set_env "URNETWORK_HOT_RESTART" "1"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Hot-restart enabled and service restarted."
+            ;;
+        off)
+            confirm_restart "Disabling hot-restart requires restarting the URNetwork provider."
+            pr_info "Disabling hot-restart..."
+            override_rm_env "URNETWORK_HOT_RESTART"
+            systemctl --user daemon-reload
+            systemctl --user restart urnetwork.service
+            pr_info "Hot-restart disabled and service restarted."
+            ;;
+        *)
+            pr_err "Usage: urnet-tools hot-restart <on|off>"
             exit 1
             ;;
     esac
@@ -3508,6 +3537,11 @@ case "$operation" in
 
     lowmode)
         toggle_lowmode "$@"
+        exit 0
+        ;;
+
+    hot-restart)
+        toggle_hotrestart "$@"
         exit 0
         ;;
 
