@@ -73,13 +73,43 @@ func handleProxiesTop(s *store) http.HandlerFunc {
 					GROUP BY h.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
 					since, node, limit)
 			} else {
+				// The fleet-wide (no node filter) leaderboard reads the
+				// pre-aggregated proxy_fleet_hourly rollup instead of
+				// GROUP-BY-ing the full proxy_node_hourly tier-1 table
+				// (proxy x node x hour — millions of rows fleet-wide) on
+				// every page load. The rollup only covers hours older than
+				// 26h (see rollupProxyDaily), so the most recent tail is
+				// live-aggregated from proxy_node_hourly and unioned in —
+				// a small scan bounded to ~26h regardless of the requested
+				// window.
+				//
+				// The live branch groups by proxy_id only (not proxy_id+hour)
+				// so its node_count is an exact distinct-node count across
+				// the live tail, matching what this endpoint always returned
+				// for windows entirely inside that tail. Only the historical
+				// fleet_hourly portion is hour-bucketed, so summing it with
+				// the live count can over-count nodes that persisted across
+				// many historical hours — the same approximation the
+				// existing proxy_fleet_daily (>90 day) path already makes.
+				recentCutoff := timeNowHour() - 26
+				liveSince := since
+				if liveSince < recentCutoff {
+					liveSince = recentCutoff
+				}
 				rows, err = queryProxiesTop(s, `
-					SELECT p.addr, SUM(h.rx), SUM(h.tx), SUM(h.bill_rx), SUM(h.bill_tx),
-					       SUM(h.acq), SUM(h.denied), COUNT(DISTINCT h.node_id)
-					FROM proxy_node_hourly h JOIN proxies p ON p.id = h.proxy_id
-					WHERE h.hour >= ?
-					GROUP BY h.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
-					since, limit)
+					SELECT p.addr, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+					       SUM(acq), SUM(denied), SUM(node_count)
+					FROM (
+						SELECT proxy_id, rx, tx, bill_rx, bill_tx, acq, denied, node_count
+						FROM proxy_fleet_hourly WHERE hour >= ?
+						UNION ALL
+						SELECT proxy_id, SUM(rx) AS rx, SUM(tx) AS tx, SUM(bill_rx) AS bill_rx, SUM(bill_tx) AS bill_tx,
+						       SUM(acq) AS acq, SUM(denied) AS denied, COUNT(DISTINCT node_id) AS node_count
+						FROM proxy_node_hourly WHERE hour >= ?
+						GROUP BY proxy_id
+					) t JOIN proxies p ON p.id = t.proxy_id
+					GROUP BY t.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
+					since, liveSince, limit)
 			}
 		} else {
 			since := timeNowHour()/24 - int64(hours/24)
@@ -313,6 +343,83 @@ func handleProxiesHistory(s *store) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"series": out})
 		}
+	}
+}
+
+// Best Proxies hall-of-fame.
+// GET /api/proxies/best?limit=200&hide_dead=false
+// Composite score = win% × LN(1 + traffic), min sample (acq+denied) >= 20.
+func handleProxiesBest(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := 200
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 500 {
+				limit = v
+			}
+		}
+		hideDead := r.URL.Query().Get("hide_dead") == "true"
+
+		// Days are the natural aggregation unit for this all-time view.
+		currentDay := timeNowHour() / 24
+		dayCutoff := int64(0) // all time - proxy_fleet_daily is never pruned
+
+		type row struct {
+			Addr    string  `json:"addr"`
+			Traffic uint64  `json:"traffic"`
+			Acq     int64   `json:"acq"`
+			Denied  int64   `json:"denied"`
+			LastDay int64   `json:"last_day"`
+			WinPct  float64 `json:"win_pct"`
+			Score   float64 `json:"score"`
+			Status  string  `json:"status"` // "active" or "dead Nd ago"
+		}
+
+		rows, err := s.db.Query(`
+			SELECT p.addr,
+			       (SUM(f.rx)+SUM(f.tx)) AS traffic,
+			       SUM(f.acq) AS acq, SUM(f.denied) AS denied,
+			       MAX(f.day) AS last_day,
+			       (CAST(SUM(f.acq) AS REAL) / (SUM(f.acq)+SUM(f.denied))) AS win_pct,
+			       (CAST(SUM(f.acq) AS REAL) / (SUM(f.acq)+SUM(f.denied))) * LN(1 + SUM(f.rx)+SUM(f.tx)) AS score
+			FROM proxy_fleet_daily f JOIN proxies p ON p.id = f.proxy_id
+			WHERE f.day >= ?
+			GROUP BY f.proxy_id
+			HAVING (SUM(f.acq)+SUM(f.denied)) >= 20
+			ORDER BY score DESC
+			LIMIT ?`, dayCutoff, limit)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer rows.Close()
+
+		var out []row
+		for rows.Next() {
+			var r row
+			var traffic int64
+			if err := rows.Scan(&r.Addr, &traffic, &r.Acq, &r.Denied, &r.LastDay, &r.WinPct, &r.Score); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			r.Traffic = uint64(traffic)
+			daysAgo := currentDay - r.LastDay
+			if daysAgo <= 2 {
+				r.Status = "active"
+			} else {
+				r.Status = "dead " + strconv.Itoa(int(daysAgo)) + "d ago"
+			}
+			if hideDead && r.Status != "active" {
+				continue
+			}
+			out = append(out, r)
+		}
+
+		if err := rows.Err(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
 	}
 }
 
