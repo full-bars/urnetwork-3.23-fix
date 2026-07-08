@@ -361,7 +361,8 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 
 		// Days are the natural aggregation unit for this all-time view.
 		currentDay := timeNowHour() / 24
-		dayCutoff := int64(0) // all time - proxy_fleet_daily is never pruned
+		dayCutoff := int64(0)     // all time - proxy_fleet_daily is never pruned
+		recentCutoff := timeNowHour() - 26 // last 26h for live last-seen
 
 		type row struct {
 			Addr    string  `json:"addr"`
@@ -376,17 +377,24 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 
 		rows, err := s.db.Query(`
 			SELECT p.addr,
-			       (SUM(f.rx)+SUM(f.tx)) AS traffic,
-			       SUM(f.acq) AS acq, SUM(f.denied) AS denied,
-			       MAX(f.day) AS last_day,
-			       (CAST(SUM(f.acq) AS REAL) / (SUM(f.acq)+SUM(f.denied))) AS win_pct,
-			       (CAST(SUM(f.acq) AS REAL) / (SUM(f.acq)+SUM(f.denied))) * LN(1 + SUM(f.rx)+SUM(f.tx)) AS score
-			FROM proxy_fleet_daily f JOIN proxies p ON p.id = f.proxy_id
-			WHERE f.day >= ?
-			GROUP BY f.proxy_id
-			HAVING (SUM(f.acq)+SUM(f.denied)) >= 20
+			       (COALESCE(SUM(f.rx),0)+COALESCE(SUM(f.tx),0)) AS traffic,
+			       COALESCE(SUM(f.acq),0) AS acq, COALESCE(SUM(f.denied),0) AS denied,
+			       CAST(MAX(COALESCE(f.day, 0), COALESCE(live.last_hour / 24, 0)) AS INTEGER) AS last_day,
+			       (CAST(COALESCE(SUM(f.acq),0) AS REAL) / CASE WHEN (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) = 0 THEN 1 ELSE (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) END) AS win_pct,
+			       (CAST(COALESCE(SUM(f.acq),0) AS REAL) / CASE WHEN (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) = 0 THEN 1 ELSE (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) END) * LN(1 + COALESCE(SUM(f.rx),0)+COALESCE(SUM(f.tx),0)) AS score
+			FROM proxies p
+			LEFT JOIN proxy_fleet_daily f ON f.proxy_id = p.id AND f.day >= ?
+			LEFT JOIN (
+				SELECT proxy_id, MAX(hour) AS last_hour
+				FROM proxy_node_hourly INDEXED BY idx_pnh_hour_proxy
+				WHERE hour >= ?
+				GROUP BY proxy_id
+			) live ON live.proxy_id = p.id
+			WHERE f.proxy_id IS NOT NULL
+			GROUP BY p.id
+			HAVING (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) >= 20
 			ORDER BY score DESC
-			LIMIT ?`, dayCutoff, limit)
+			LIMIT ?`, dayCutoff, recentCutoff, limit)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
