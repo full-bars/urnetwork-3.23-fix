@@ -194,26 +194,37 @@ func openDB(path string) (*sql.DB, error) {
 	// query path unions proxy_fleet_hourly with a live scan of any
 	// proxy_node_hourly hour not yet rolled up, so backfilling recent hours
 	// here too would double-count them.
-	var fleetHourlyRows int64
-	if err := db.QueryRow(`SELECT COUNT(*) FROM proxy_fleet_hourly`).Scan(&fleetHourlyRows); err == nil && fleetHourlyRows == 0 {
-		go func() {
-			start := time.Now()
-			maxHour := nowFunc().Unix()/3600 - 26
-			res, err := db.Exec(`
-				INSERT OR REPLACE INTO proxy_fleet_hourly
-					(proxy_id, hour, rx, tx, bill_rx, bill_tx, acq, denied, node_count)
-				SELECT proxy_id, hour, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
-				       SUM(acq), SUM(denied), COUNT(DISTINCT node_id)
-				FROM proxy_node_hourly
-				WHERE hour <= ?
-				GROUP BY proxy_id, hour`, maxHour)
-			if err != nil {
-				fmt.Printf("hub: migration proxy_fleet_hourly backfill: %v\n", err)
-				return
-			}
-			n, _ := res.RowsAffected()
-			fmt.Printf("hub: migration proxy_fleet_hourly backfill: %d rows in %s\n", n, time.Since(start))
-		}()
+	//
+	// Gated on there being actual source history to backfill (not just on
+	// the destination being empty): a brand-new store has an empty
+	// proxy_node_hourly too, so without this check the goroutine below
+	// spawns unconditionally on every fresh store -- including every test's
+	// throwaway DB -- racing against whatever that test does next against
+	// the same tables (this previously caused intermittent duplicate-row
+	// test failures under -race).
+	maxHour := nowFunc().Unix()/3600 - 26
+	var sourceRows int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM proxy_node_hourly WHERE hour <= ?`, maxHour).Scan(&sourceRows); err == nil && sourceRows > 0 {
+		var fleetHourlyRows int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM proxy_fleet_hourly`).Scan(&fleetHourlyRows); err == nil && fleetHourlyRows == 0 {
+			go func() {
+				start := time.Now()
+				res, err := db.Exec(`
+					INSERT OR REPLACE INTO proxy_fleet_hourly
+						(proxy_id, hour, rx, tx, bill_rx, bill_tx, acq, denied, node_count)
+					SELECT proxy_id, hour, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+					       SUM(acq), SUM(denied), COUNT(DISTINCT node_id)
+					FROM proxy_node_hourly
+					WHERE hour <= ?
+					GROUP BY proxy_id, hour`, maxHour)
+				if err != nil {
+					fmt.Printf("hub: migration proxy_fleet_hourly backfill: %v\n", err)
+					return
+				}
+				n, _ := res.RowsAffected()
+				fmt.Printf("hub: migration proxy_fleet_hourly backfill: %d rows in %s\n", n, time.Since(start))
+			}()
+		}
 	}
 
 	return db, nil
