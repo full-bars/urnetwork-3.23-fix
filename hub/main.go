@@ -30,73 +30,6 @@ import (
 
 var Version string
 
-// Simple per-IP sliding window rate limiter.
-type rateLimiter struct {
-	mu      sync.Mutex
-	clients map[string]*clientRate
-	limit   int           // max requests per window
-	window  time.Duration // sliding window size
-}
-
-type clientRate struct {
-	times []time.Time
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	rl := &rateLimiter{
-		clients: make(map[string]*clientRate),
-		limit:   limit,
-		window:  window,
-	}
-	go func() {
-		for {
-			time.Sleep(5 * time.Minute)
-			rl.mu.Lock()
-			now := time.Now()
-			for ip, cr := range rl.clients {
-				cutoff := now.Add(-rl.window)
-				var kept []time.Time
-				for _, t := range cr.times {
-					if t.After(cutoff) {
-						kept = append(kept, t)
-					}
-				}
-				if len(kept) == 0 {
-					delete(rl.clients, ip)
-				} else {
-					cr.times = kept
-				}
-			}
-			rl.mu.Unlock()
-		}
-	}()
-	return rl
-}
-
-func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	now := time.Now()
-	cr, ok := rl.clients[ip]
-	if !ok {
-		cr = &clientRate{}
-		rl.clients[ip] = cr
-	}
-	cutoff := now.Add(-rl.window)
-	var active []time.Time
-	for _, t := range cr.times {
-		if t.After(cutoff) {
-			active = append(active, t)
-		}
-	}
-	if len(active) >= rl.limit {
-		cr.times = active
-		return false
-	}
-	cr.times = append(active, now)
-	return true
-}
-
 // clientIP extracts the real client IP when the hub sits behind a reverse
 // proxy (Caddy, nginx). Prefers X-Forwarded-For, then X-Real-IP, falling
 // back to the TCP remote address.
@@ -115,26 +48,6 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return ip
-}
-
-// rateLimitMiddleware limits requests to rateLimit per rateWindow per client IP.
-func rateLimitMiddleware(next http.Handler) http.Handler {
-	rl := newRateLimiter(60, time.Minute)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
-		if r.URL.Path == "/api/report" || r.URL.Path == "/api/events" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if !rl.allow(ip) {
-			w.Header().Set("Retry-After", "60")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(429)
-			w.Write([]byte(`{"error":"rate limit exceeded"}`))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // gzipMiddleware transparently compresses responses when the client
@@ -1027,7 +940,7 @@ func main() {
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/api/events", handleEvents(s))
 
-	wrapped := gzipMiddleware(rateLimitMiddleware(mux))
+	wrapped := gzipMiddleware(mux)
 
 	tlsListen := *tlsAddr
 	if tlsListen == "" {
