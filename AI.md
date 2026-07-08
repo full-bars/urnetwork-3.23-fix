@@ -23,9 +23,15 @@ The same script becomes the `urnet-tools` CLI after installation. Full install d
 
 ### Authenticate
 
+You need an **auth code** from the URnetwork website. The provider exchanges it for a JWT.
+
 ```bash
-urnet-tools auth <email> <password>
+urnet-tools auth                    # interactive — paste auth code at prompt
+urnet-tools auth <auth-code>        # non-interactive
+urnet-tools auth <jwt>              # or paste a JWT directly
 ```
+
+Docker deployments can use email/password instead (see [Docker Deployment](docs/Docker-Deployment.md)), which the container exchanges for a JWT internally.
 
 ### Add Proxies
 
