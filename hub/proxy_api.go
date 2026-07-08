@@ -73,13 +73,43 @@ func handleProxiesTop(s *store) http.HandlerFunc {
 					GROUP BY h.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
 					since, node, limit)
 			} else {
+				// The fleet-wide (no node filter) leaderboard reads the
+				// pre-aggregated proxy_fleet_hourly rollup instead of
+				// GROUP-BY-ing the full proxy_node_hourly tier-1 table
+				// (proxy x node x hour — millions of rows fleet-wide) on
+				// every page load. The rollup only covers hours older than
+				// 26h (see rollupProxyDaily), so the most recent tail is
+				// live-aggregated from proxy_node_hourly and unioned in —
+				// a small scan bounded to ~26h regardless of the requested
+				// window.
+				//
+				// The live branch groups by proxy_id only (not proxy_id+hour)
+				// so its node_count is an exact distinct-node count across
+				// the live tail, matching what this endpoint always returned
+				// for windows entirely inside that tail. Only the historical
+				// fleet_hourly portion is hour-bucketed, so summing it with
+				// the live count can over-count nodes that persisted across
+				// many historical hours — the same approximation the
+				// existing proxy_fleet_daily (>90 day) path already makes.
+				recentCutoff := timeNowHour() - 26
+				liveSince := since
+				if liveSince < recentCutoff {
+					liveSince = recentCutoff
+				}
 				rows, err = queryProxiesTop(s, `
-					SELECT p.addr, SUM(h.rx), SUM(h.tx), SUM(h.bill_rx), SUM(h.bill_tx),
-					       SUM(h.acq), SUM(h.denied), COUNT(DISTINCT h.node_id)
-					FROM proxy_node_hourly h JOIN proxies p ON p.id = h.proxy_id
-					WHERE h.hour >= ?
-					GROUP BY h.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
-					since, limit)
+					SELECT p.addr, SUM(rx), SUM(tx), SUM(bill_rx), SUM(bill_tx),
+					       SUM(acq), SUM(denied), SUM(node_count)
+					FROM (
+						SELECT proxy_id, rx, tx, bill_rx, bill_tx, acq, denied, node_count
+						FROM proxy_fleet_hourly WHERE hour >= ?
+						UNION ALL
+						SELECT proxy_id, SUM(rx) AS rx, SUM(tx) AS tx, SUM(bill_rx) AS bill_rx, SUM(bill_tx) AS bill_tx,
+						       SUM(acq) AS acq, SUM(denied) AS denied, COUNT(DISTINCT node_id) AS node_count
+						FROM proxy_node_hourly WHERE hour >= ?
+						GROUP BY proxy_id
+					) t JOIN proxies p ON p.id = t.proxy_id
+					GROUP BY t.proxy_id ORDER BY `+safeOrder(sortCol, order)+` LIMIT ?`,
+					since, liveSince, limit)
 			}
 		} else {
 			since := timeNowHour()/24 - int64(hours/24)
