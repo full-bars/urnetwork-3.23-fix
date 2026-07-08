@@ -24,11 +24,13 @@ const (
 )
 
 func initSHMLogger() {
-	f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// O_APPEND preserves log across restarts so post-mortem analysis is possible.
+	f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to open shm log: %v\n", err)
 		return
 	}
+	f.Write([]byte(fmt.Sprintf("\n--- provider restarted at %s ---\n", time.Now().Format(time.RFC3339))))
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -42,7 +44,7 @@ func initSHMLogger() {
 	var fMu sync.Mutex
 
 	// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
-	fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if impErr != nil {
 		fmt.Fprintf(os.Stderr, "failed to open important shm log: %v\n", impErr)
 		fImp = nil
@@ -157,5 +159,6 @@ func shmLogFatal(code int, format string, args ...any) {
 		f.Close()
 	}
 	os.Stderr.Write([]byte(msg))
+	critLog("FATAL exit=%d: %s", code, fmt.Sprintf(format, args...))
 	os.Exit(code)
 }
