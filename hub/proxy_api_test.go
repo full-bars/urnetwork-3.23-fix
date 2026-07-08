@@ -313,3 +313,148 @@ func TestNodeContractsMissingNode(t *testing.T) {
 		t.Errorf("status = %d, want 400 (missing node)", resp.StatusCode)
 	}
 }
+
+func TestProxiesBestCompositeScore(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Unix() / 3600 / 24
+
+	p1, _ := s.internProxy("10.0.0.1:1080")
+	p2, _ := s.internProxy("10.0.0.2:1080")
+
+	// p1: 90% win rate (90/10 = 100 total, above min sample)
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 90, 10)`, p1, now)
+
+	// p2: 10% win rate (10/90 = 100 total, above min sample)
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 1000000, 0, 10, 90)`, p2, now)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/proxies/best?limit=100")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(rows) < 2 {
+		t.Fatalf("rows = %d, want >= 2", len(rows))
+	}
+	if rows[0]["addr"] != "10.0.0.1:1080" {
+		t.Errorf("top by score = %q, want 10.0.0.1:1080", rows[0]["addr"])
+	}
+}
+
+func TestProxiesBestMinSampleFilter(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Unix() / 3600 / 24
+
+	pSmall, _ := s.internProxy("10.0.0.3:1080")
+	pBoundary, _ := s.internProxy("10.0.0.4:1080")
+
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 1, 0)`, pSmall, now)
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 18, 2)`, pBoundary, now)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/proxies/best?limit=100")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, r := range rows {
+		addr := r["addr"].(string)
+		if addr == "10.0.0.3:1080" {
+			t.Errorf("proxy %s should be excluded (sample < 20)", addr)
+		}
+	}
+	if len(rows) != 1 || rows[0]["addr"] != "10.0.0.4:1080" {
+		t.Errorf("expected only boundary proxy, got %d rows", len(rows))
+	}
+}
+
+func TestProxiesBestDeadStatus(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Unix() / 3600 / 24
+
+	active, _ := s.internProxy("10.0.0.5:1080")
+	dead10, _ := s.internProxy("10.0.0.6:1080")
+
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 20, 5)`, active, now)
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 18, 2)`, dead10, now-10)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/proxies/best?limit=100&hide_dead=false")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, r := range rows {
+		addr := r["addr"].(string)
+		status := r["status"].(string)
+		if addr == "10.0.0.5:1080" && status != "active" {
+			t.Errorf("active proxy status = %q, want active", status)
+		}
+		if addr == "10.0.0.6:1080" && status == "active" {
+			t.Errorf("dead proxy status = %q, should be 'dead Nd ago'", status)
+		}
+	}
+}
+
+func TestProxiesBestHideDeadParam(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Unix() / 3600 / 24
+
+	dead, _ := s.internProxy("10.0.0.7:1080")
+
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 18, 2)`, dead, now-10)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/proxies/best?limit=100&hide_dead=true")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(rows) != 0 {
+		t.Errorf("hide_dead=true returned %d rows, want 0", len(rows))
+	}
+}
