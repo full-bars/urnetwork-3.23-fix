@@ -195,7 +195,14 @@ HUB_URL="%s"
 mkdir -p ~/.urnetwork
 
 echo "Fetching CA certificate..."
-RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null || curl -fsS "http://$(echo "$HUB_URL" | sed 's/https:\/\///'):8080/api/ca-cert?token=$TOKEN")
+RESPONSE=$(curl -fsSk "$HUB_URL/api/ca-cert?token=$TOKEN" 2>/dev/null)
+if [ -z "$RESPONSE" ]; then
+    RESPONSE=$(curl -fsS "http://$(echo "$HUB_URL" | sed 's|^https://||;s|:[0-9]*$||'):8080/api/ca-cert?token=$TOKEN" 2>/dev/null)
+fi
+if [ -z "$RESPONSE" ]; then
+    echo "Primary fetch failed — falling back to direct cert retrieval..."
+    RESPONSE=$(curl -fsSk "$HUB_URL/api/cert" 2>/dev/null)
+fi
 
 CA_PEM=""
 CA_FP=""
