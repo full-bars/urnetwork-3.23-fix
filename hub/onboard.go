@@ -183,7 +183,6 @@ func handleOnboardScript(tlsPort string) http.HandlerFunc {
 }
 
 const onboardScriptTemplate = `#!/bin/sh
-set -e
 if [ -z "$1" ]; then
     echo "Usage: curl -fsSL http://HUB:8080/onboard.sh | sh -s -- TOKEN"
     exit 1
