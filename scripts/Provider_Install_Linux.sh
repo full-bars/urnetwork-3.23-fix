@@ -40,7 +40,7 @@ show_help ()
     echo "  proxy traffic           📈 TRAFFIC: show real-time bandwidth & client session load"
     echo "  proxy refresh           🔄 REFRESH: re-read configs and hot-reload proxies (adds new, removes absent, running proxies untouched)"
     echo "  proxy summary           📊 Show proxy fleet summary (sources, health, counts)"
-    echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead proxies from your config"
+    echo "  proxy remove-dead       💀 CLEANUP: interactively remove dead/degraded/failing proxies"
     echo "  report [<url>|off]      📡 Show or set hub report URL ('report off' to disable)"
     echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"

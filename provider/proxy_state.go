@@ -26,10 +26,11 @@ type ProxyState struct {
 
 // ProxyEntry records the stable ID and last-known health for one proxy.
 type ProxyEntry struct {
-	ID        int    `json:"id"`
-	Health    string `json:"health"`               // "up", "dead", "recently_offline", "offline", "long_offline", "inactive"
-	DownSince string `json:"down_since,omitempty"` // RFC3339, set when not up
-	Source    string `json:"source,omitempty"`     // "file", "internal", or "url" — where this address was first added from
+	ID           int    `json:"id"`
+	Health       string `json:"health"`                  // "up", "dead", "recently_offline", "offline", "long_offline", "inactive"
+	DownSince    string `json:"down_since,omitempty"`    // RFC3339, set when not up
+	Source       string `json:"source,omitempty"`        // "file", "internal", or "url" — where this address was first added from
+	AuthFailures int64  `json:"auth_failures,omitempty"` // cumulutive auth errors this run
 }
 
 func proxyStatePath() (string, error) {
