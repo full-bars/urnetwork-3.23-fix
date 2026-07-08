@@ -1,45 +1,45 @@
-# AI.md — Provider & Hub Deployment Guide for AI Agents
+# AI Guide — URnetwork Provider & Hub
 
-This file is designed to be read by an AI agent (or a human) to quickly understand how to install, configure, and manage the URnetwork provider and hub dashboard. Give this file to your AI and it will be able to deploy everything end-to-end.
+This file is designed for an AI agent to read so it can help users install, configure, and manage the provider and hub. It references the project's existing documentation rather than duplicating it. Give this file to your AI alongside the linked docs below.
+
+## Project Layout
+
+See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout. Quick orientation:
+
+- `provider/` — the traffic-relay binary that serves proxies and earns money
+- `hub/` — standalone dashboard server that collects fleet metrics
+- `scripts/Provider_Install_Linux.sh` — the installer that doubles as the `urnet-tools` CLI
+- `docs/` — user-facing documentation (Installation, Configuration, Proxies, Hub, etc.)
+- `Dockerfile` — provider Docker image
+- `hub/Dockerfile` — hub Docker image
 
 ## Quick Start: Install the Provider
 
-The provider routes traffic through proxies and earns money. It reports to a hub (optional) for fleet monitoring.
-
 ```bash
-# Fresh install (non-Docker, systemd)
 curl -fsSL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- install
-
-# The same script becomes the `urnet-tools` CLI after installation.
-# Location: ~/.local/share/urnetwork-provider/bin/urnet-tools
 ```
 
-### Authentication
+The same script becomes the `urnet-tools` CLI after installation. Full install docs: [docs/Installation.md](docs/Installation.md).
 
-Before the provider can serve traffic, it needs to authenticate:
+### Authenticate
 
 ```bash
 urnet-tools auth <email> <password>
-# Or set env vars for automated deployments:
-# URNETWORK_USER_AUTH=<email> URNETWORK_PASSWORD=<password>
 ```
 
-### Proxy Configuration
-
-The provider needs proxy addresses to serve. Add them with:
+### Add Proxies
 
 ```bash
-# From a text file (one ip:port per line)
-urnet-tools proxy add file /path/to/proxies.txt
-
-# From a URL (socks5 list, refreshed periodically)
-urnet-tools proxy add url https://example.com/proxies.txt
-
-# View current proxy pool
-urnet-tools proxy summary
+urnet-tools proxy add file proxies.txt     # one ip:port per line
+urnet-tools proxy add url https://...      # auto-refreshing URL source
+urnet-tools proxy summary                  # fleet-wide proxy overview
 ```
 
-### Docker Deployment
+Full proxy docs: [docs/Proxy-Management.md](docs/Proxy-Management.md), [docs/Proxy-URL-Sources.md](docs/Proxy-URL-Sources.md).
+
+## Docker Deployment
+
+Full guide: [docs/Docker-Deployment.md](docs/Docker-Deployment.md).
 
 ```bash
 docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
@@ -50,185 +50,227 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
+## Performance Tuning
+
+Full guide: [docs/High-Volume-Performance-Tuning.md](docs/High-Volume-Performance-Tuning.md).
+
+```bash
+urnet-tools turbo v8          # high-throughput profile
+urnet-tools auto on           # auto-tune based on detected RAM
+urnet-tools eco on            # low-memory GC tuning
+urnet-tools optimize          # apply OS kernel limits (ulimit, conntrack, etc.)
+urnet-tools ramlogs on        # redirect logs to /dev/shm (RAM disk)
+```
+
 ## Hub Dashboard
 
-The hub collects reports from providers and shows fleet-wide metrics (proxies, contracts, traffic, earnings). One hub serves many providers.
+Full guides: [docs/Hub-Setup.md](docs/Hub-Setup.md), [docs/Hub-Dashboard.md](docs/Hub-Dashboard.md).
 
-### Install the Hub
+The hub collects reports from providers and shows a web dashboard with fleet metrics (proxies, contracts, traffic, earnings). One hub serves many providers.
+
+### Install
 
 ```bash
 urnet-tools hub install
-# Or with a specific tag:
-urnet-tools hub install -t v3.23.0-fix.25.9
 ```
 
-### Update the Hub
+### Update
 
 ```bash
 urnet-tools hub update
-# Or to a specific version:
-urnet-tools hub update -t v3.23.0-fix.25.9
+urnet-tools hub update -t v3.23.0-fix.25.9    # specific version
 ```
 
-The update stops the hub, backs up the database, downloads the new binary, atomically swaps it, and restarts. Takes ~10-15 seconds.
+The update stops the hub, backs up the database, downloads the new binary, atomically swaps it, and restarts. ~10-15 seconds. Database: `~/.local/share/urnetwork-hub/hub.db` (SQLite, WAL mode).
 
-### Hub Endpoints
+### Dashboard URLs
 
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| 8080 | HTTP | Provider reports, dashboard, onboard script |
-| 8443 | HTTPS | Encrypted provider reports, admin (when TLS configured) |
+- Dashboard: `http://<hub-ip>:8080`
+- TLS dashboard: `https://<hub-ip>:8443`
 
-Dashboard: `http://<hub-ip>:8080`
+Pages: Overview (#overview), Servers (#servers), Proxies (#proxies), Contracts (#contracts), Best Proxies (#best). Each has a unique hash URL that can be bookmarked.
 
-### Hub Data
+## TLS Encryption (Provider → Hub)
 
-The hub stores data in `~/.local/share/urnetwork-hub/hub.db` (SQLite, WAL mode). The database is backed up before every update (`hub.db.bak`).
+Full guide: [docs/Hub-Setup.md](docs/Hub-Setup.md) (TLS section).
 
-## Enabling TLS (Encrypted Provider Reports)
+TLS encrypts reports between providers and the hub using a long-lived CA certificate. The hub certificate (signed by the CA) changes on restarts, but CA trust survives restarts — so providers only need to onboard once.
 
-TLS encrypts reports between providers and the hub using a CA certificate. All providers trust the same CA, and the hub certificate (signed by the CA) changes on restarts — but CA trust survives restarts.
-
-### Onboard Providers to TLS
-
-**Method 1: `curl | sh` one-liner (recommended)**
+### Onboard Providers
 
 On the hub, mint a 15-minute token:
 ```bash
 urnet-tools hub onboard-cmd
 ```
 
-Copy the `curl | sh` command and run it on each provider. Example:
+Run the printed `curl | sh` command on each provider:
 ```bash
 curl -fsSL http://<hub-ip>:8080/onboard.sh | sh -s -- <token>
 ```
 
 This does NOT restart the provider. It writes two files:
-- `~/.urnetwork/hub_ca.pem` — the CA certificate
+- `~/.urnetwork/hub_ca.pem` — the CA certificate (trust anchor)
 - `~/.urnetwork/report_url` — set to `https://<hub-ip>:8443`
 
-The provider picks up the change on its next report tick (every ~5 minutes, no restart needed).
+The provider picks up the change on its next report tick (~5 minutes, no restart needed).
 
-**Method 2: `urnet-tools hub link`**
-
-```bash
-urnet-tools hub link https://<hub-ip>:8443 --token <token>
-```
-
-Note: requires a recent `urnet-tools` version. The `curl | sh` method works on any version.
-
-### Verify TLS Status
+### Verify TLS
 
 In the hub dashboard, TLS-enabled providers show a padlock icon. Or check the API:
-
 ```bash
 curl -s http://<hub>:8080/api/nodes/ | jq '.[] | {node_id, tls}'
 ```
 
 ### Legacy Pin Warning
 
-The non-token `urnet-tools hub link` flow (without `--token`) uses certificate fingerprint pinning (TOFU). This breaks on every hub restart because the hub certificate regenerates. Always use the token-based CA cert flow.
+The non-token `urnet-tools hub link` flow (without `--token`) uses certificate fingerprint pinning. This breaks on every hub restart because the hub certificate regenerates. Always use the token-based CA cert flow (`curl | sh` onboard).
 
-## Common urnet-tools Commands
+## Reference: All urnet-tools Commands
 
 ```bash
-# Provider management
-urnet-tools auth <email> <password>     # Authenticate
-urnet-tools proxy add file <path>       # Add proxies from file
-urnet-tools proxy add url <url>         # Add proxies from URL (auto-refreshes)
-urnet-tools proxy remove <ip:port>      # Remove a proxy
-urnet-tools proxy summary               # Fleet-wide proxy overview
-urnet-tools update                       # Update provider binary
-urnet-tools report <url>                 # Set hub report URL at runtime
+# Auth & Setup
+urnet-tools auth <email> <password>
+urnet-tools update                 # update provider binary
+urnet-tools reinstall              # full reinstall
 
-# Hub management
-urnet-tools hub install                 # Install hub + systemd service
-urnet-tools hub update                  # Update hub binary
-urnet-tools hub link <url> [--token]    # Configure TLS for this provider
-urnet-tools hub onboard-cmd             # Mint a 15-min onboard token
-urnet-tools hub test                    # Test connectivity to hub
-urnet-tools hub show-password           # Show the hub.password (one-time secret)
-urnet-tools hub set <key> <value>       # Configure hub settings
-urnet-tools hub off                     # Stop and disable hub service
-urnet-tools hub unlink                  # Remove TLS config, fall back to HTTP
+# Proxy Management
+urnet-tools proxy add file <path>  # bulk add from file
+urnet-tools proxy add url <url>    # auto-refreshing URL source
+urnet-tools proxy remove <addr>    # remove specific proxy
+urnet-tools proxy remove --match <pattern>  # pattern-based removal
+urnet-tools proxy remove-dead      # interactive dead proxy cleanup
+urnet-tools proxy refresh          # hot-reload proxies (no restart)
+urnet-tools proxy clear            # remove all proxies
+urnet-tools proxy summary          # fleet-wide proxy overview
+urnet-tools proxy health           # dead/degraded proxy list
+urnet-tools proxy traffic          # real-time bandwidth & clients
+
+# Performance
+urnet-tools turbo v4|v8|off        # throughput profile
+urnet-tools auto on|off            # auto-tune profile
+urnet-tools eco on|off             # low-memory GC mode
+urnet-tools lowmode on|off         # reduced buffer allocations
+urnet-tools optimize               # apply Golden Fleet OS limits
+urnet-tools ramlogs on|off         # RAM-disk logging
+
+# Hub
+urnet-tools hub install            # install hub + systemd service
+urnet-tools hub update [-f] [-t <tag>]  # update hub binary
+urnet-tools hub link <url> [--token]    # configure TLS for this provider
+urnet-tools hub onboard-cmd        # mint 15-min onboarding token
+urnet-tools hub test               # test connectivity to hub
+urnet-tools hub show-password      # show hub CA password (one-time secret)
+urnet-tools hub set <key> <value>  # configure hub settings
+urnet-tools hub off                # stop and disable hub
+urnet-tools hub unlink             # remove TLS config, fall back to HTTP
+
+# Reporting
+urnet-tools report [<url>|off]     # set/show/disable hub report URL
+
+# Maintenance
+urnet-tools start|stop|restart|status  # service management
+urnet-tools logs [all|dump|-i]     # stream logs (-i = important only)
+urnet-tools uninstall              # full removal
 
 # Experimental
-urnet-tools hot-restart on|off          # Enable/disable client JWT reuse (experimental)
+urnet-tools hot-restart on|off     # client JWT reuse (default off)
+urnet-tools fast-auth on|off       # bypass auth rate limiter
 ```
+
+## Environment Variables
+
+Full reference: [docs/Configuration.md](docs/Configuration.md).
+
+Key variables:
+| Variable | Purpose |
+|----------|---------|
+| `USER_AUTH` / `PASSWORD` | Email/password auth |
+| `URNETWORK_AUTH_CODE` | JWT auth code (first-run) |
+| `ENABLE_VNSTAT` | Traffic monitor on port 8080 |
+| `URNETWORK_PROFILE` | `auto`, `lowmem`, `eco`, `turbo-v4`, `turbo-v8` |
+| `URNETWORK_REPORT_URL` | Hub URL for bandwidth reports |
+| `URNETWORK_REPORT_INTERVAL` | Report interval (default 5m) |
+| `PROXY_URL` | Live proxy URL feed (comma-separated) |
+| `URNETWORK_HEALTH_INTERVAL` | Health heartbeat interval |
+| `URNETWORK_RAMLOGS` | `1` = log to /dev/shm |
+| `URNETWORK_HOT_RESTART` | `1` = experimental client JWT reuse |
+
+## Hub API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Full HTML dashboard |
+| `POST /api/report` | Bandwidth report from providers |
+| `POST /api/heartbeat` | Lightweight heartbeat |
+| `GET /api/nodes/` | All node summaries (JSON) |
+| `GET /api/nodes/<id>/proxies` | Single node's proxy detail |
+| `POST /api/nodes/remove` | Remove node from dashboard |
+| `GET /api/nodes/contracts` | Per-node contract history |
+| `GET /api/proxies/top` | Top proxies leaderboard |
+| `GET /api/proxies/best` | Best proxies (composite score) |
+| `GET /api/proxies/history` | Per-proxy time series |
+| `GET /api/history` | Fleet-wide hourly rollups |
+| `GET /api/events` | SSE live-update stream |
+| `GET /api/cert` | TLS certificate + fingerprint |
+| `GET /api/ca-cert?token=` | CA cert for onboarding |
+| `GET /onboard.sh` | Onboarding shell script |
 
 ## Release & Versioning
 
-- **Provider releases**: tagged `v3.23.0-fix.X.Y` — includes provider tarball + hub binary. `urnet-tools update` and `urnet-tools hub update` both resolve "latest" to the newest `v*` tag.
-- **Hub Docker-only tags**: tagged `hub-docker-vX.Y.Z` — Docker images only, no binaries.
-- **Release notes**: in `releases/` directory alongside each tag.
+- **Provider releases** tagged `v3.23.0-fix.X.Y` — includes provider tarball + hub binary
+- **Hub Docker tags** tagged `hub-docker-vX.Y.Z` — Docker images only, no binaries
+- `urnet-tools update` and `urnet-tools hub update` resolve "latest" to the newest `v*` tag
+- Release notes in `releases/` directory
 
-## Fleet SSH Access
-
-Server details are in FLEET.md (public IPs, Tailscale IPs, usernames). SSH key: `~/.ssh/id_ed25519`.
-
-Most servers use `user@<public-ip>`. Exceptions:
-- Chicago, Phoenix, Multivortex, AMD, AMD2: `ubuntu@`
-- Vegas: port 24842, `user@`
-
-## Key Files & Directories
+## Key Files
 
 | Path | Purpose |
 |------|---------|
-| `~/.local/share/urnetwork-provider/` | Provider binary, urnet-tools, config |
 | `~/.local/share/urnetwork-provider/bin/urnetwork` | Provider binary |
 | `~/.local/share/urnetwork-provider/bin/urnet-tools` | CLI tool |
 | `~/.local/share/urnetwork-hub/hub.db` | Hub SQLite database |
-| `~/.local/share/urnetwork-hub/hub.db.bak` | Database backup (pre-update) |
-| `~/.urnetwork/hub_ca.pem` | CA certificate for TLS reporting |
+| `~/.urnetwork/hub_ca.pem` | CA cert for TLS reporting |
 | `~/.urnetwork/report_url` | Hub URL this provider reports to |
-| `~/.urnetwork/hub.pin` | Legacy certificate fingerprint pin (remove if using CA) |
+| `~/.urnetwork/hub.pin` | Legacy fingerprint pin (remove if using CA) |
 | `~/.config/systemd/user/urnetwork.service` | Provider systemd unit |
 | `~/.config/systemd/user/urnetwork-hub.service` | Hub systemd unit |
 | `~/.config/systemd/user/urnetwork.service.d/override.conf` | Provider env overrides |
-| `/dev/shm/urnetwork.log` | Provider ramdisk log (ramlogs) |
-| `~/.urnetwork/.client_jwts.json` | Client JWT persistence store (experimental) |
-
-### Important Systemd Commands
-
-```bash
-# Provider
-systemctl --user status urnetwork.service
-systemctl --user restart urnetwork.service
-journalctl --user -u urnetwork.service -f
-
-# Hub
-systemctl --user status urnetwork-hub.service
-systemctl --user restart urnetwork-hub.service
-journalctl --user -u urnetwork-hub.service -f
-```
+| `/dev/shm/urnetwork.log` | Provider ramdisk log (when ramlogs enabled) |
 
 ## Troubleshooting
 
 ### Provider not reporting
-
-1. Check ramlog: `tail -100 /dev/shm/urnetwork.log | grep report`
-2. Check report_url: `cat ~/.urnetwork/report_url`
-3. Test connectivity: `curl http://<hub>:8080/api/nodes/`
-4. Check provider status: `systemctl --user status urnetwork.service`
+1. Check ramlog (if ramlogs enabled): `tail -100 /dev/shm/urnetwork.log | grep report`
+2. Check report URL: `cat ~/.urnetwork/report_url`
+3. Test hub connectivity: `curl http://<hub>:8080/api/nodes/`
+4. Provider logs: `urnet-tools logs -i`
 
 ### TLS errors / padlock missing
+1. Verify CA cert: `ls -la ~/.urnetwork/hub_ca.pem`
+2. Remove legacy pin: `rm -f ~/.urnetwork/hub.pin`
+3. Verify report URL is HTTPS: `cat ~/.urnetwork/report_url`
+4. Re-onboard: run the `curl | sh` onboard script
 
-1. Verify CA cert exists: `ls -la ~/.urnetwork/hub_ca.pem`
-2. Verify no legacy pin: `ls ~/.urnetwork/hub.pin` (should not exist)
-3. Re-onboard: run `curl | sh` onboard script again
-4. Report URL should be HTTPS: `cat ~/.urnetwork/report_url`
+### Hub dashboard slow
+1. Restart hub: `urnet-tools hub update` (or `systemctl --user restart urnetwork-hub.service`)
+2. Database grows with fleet activity (~5GB in ~6 days for a 28-node fleet). The `hub.db.bak` backup doubles usage during updates. Retention policies bound growth (hourly data kept 90 days).
 
-### Hub dashboard slow or errors
+### Hub update stuck / "already at version"
+Use force: `urnet-tools hub update -f -t <tag>`
 
-1. Check hub status: `systemctl --user status urnetwork-hub.service`
-2. Check hub logs: `journalctl --user -u urnetwork-hub.service -n 50`
-3. Restart hub: `urnet-tools hub update` (or `systemctl --user restart urnetwork-hub.service`)
-4. Database size: `ls -lh ~/.local/share/urnetwork-hub/hub.db`
+## Documentation Index
 
-### Hub update fails / "already at version"
-
-Use `--force`: `urnet-tools hub update -f -t <tag>`
-
-### Database very large
-
-The hub SQLite database grows with fleet activity. A 28-node fleet generates ~5.5GB in ~6 days. The `hub.db.bak` file doubles disk usage during updates. Pruning policies (hourly retention, daily rollup) keep growth bounded but the current retention window is 90 days for hourly data.
+| Doc | Covers |
+|-----|--------|
+| [Installation](docs/Installation.md) | Bare-metal install, post-install setup |
+| [Docker Deployment](docs/Docker-Deployment.md) | Docker run, Compose, Watchtower, scaling |
+| [Configuration](docs/Configuration.md) | Complete env var reference, profiles |
+| [Proxy Management](docs/Proxy-Management.md) | Hot-reload, stable slots, dead cleanup |
+| [Proxy URL Sources](docs/Proxy-URL-Sources.md) | Live proxy feeds, dedup, cleanup |
+| [Hub Setup](docs/Hub-Setup.md) | Hub install, TLS, Caddy reverse proxy |
+| [Hub Dashboard](docs/Hub-Dashboard.md) | Dashboard tour, API, data model |
+| [Performance Tuning](docs/High-Volume-Performance-Tuning.md) | Profiles, optimizer, parameters |
+| [Troubleshooting](docs/Troubleshooting.md) | Exit codes, errors, resource issues |
+| [Project Structure](PROJECT_STRUCTURE.md) | Directory layout, architecture |
+| [Log Reference](LOG_REFERENCE.md) | Every log line documented |
+| [Fork Changes](FORK_CHANGES.md) | All ~66 modifications from upstream |
