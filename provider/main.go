@@ -1774,6 +1774,8 @@ func classifyAuthFailureCause(err error) string {
 }
 
 func provide(opts docopt.Opts) {
+	connect.CritLogger = critLog
+
 	port, _ := opts.Int("--port")
 
 	apiUrl, err := opts.String("--api_url")
@@ -1802,6 +1804,8 @@ func provide(opts docopt.Opts) {
 
 	provideStartTime = time.Now()
 	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+	host, _ := os.Hostname()
+	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
 
 	// Log JWT expiry status at startup
 	home, _ := os.UserHomeDir()
@@ -1835,6 +1839,7 @@ func provide(opts docopt.Opts) {
 	go func() {
 		<-ctx.Done()
 		tlog("[provider] shutting down: main context cancelled\n")
+		critLog("SIGNAL: context cancelled — draining goroutines")
 	}()
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
@@ -2492,6 +2497,7 @@ func provide(opts docopt.Opts) {
 
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
+	critLog("PROVIDER EXIT: normal shutdown (code=0)")
 	os.Exit(0)
 }
 
