@@ -44,6 +44,8 @@ show_help ()
     echo "  report [<url>|off]      📡 Show or set hub report URL ('report off' to disable)"
     echo "  fast-auth [on|off]      ⚡ Bypass auth rate limiter without restart (takes effect immediately)"
     echo "  set [<key> [<val>|off]] ⚙️  Show or change runtime tuning overrides (no restart needed)"
+    echo ""
+    echo "Hub:"
     echo "  hub set <http://host:port>  Configure this node to report to a hub (writes systemd override)"
     echo "  hub test [<https://url>]    Test TLS connection to the hub and verify cert/CA fingerprint"
     echo "  hub open-port <port>     Open a port in the local firewall (ufw/firewalld/iptables/nftables)"
