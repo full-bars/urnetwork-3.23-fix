@@ -402,6 +402,7 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 				return
 			}
 			r.Traffic = uint64(traffic)
+			r.WinPct *= 100
 			daysAgo := currentDay - r.LastDay
 			if daysAgo <= 2 {
 				r.Status = "active"
