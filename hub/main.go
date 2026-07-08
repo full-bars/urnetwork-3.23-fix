@@ -1320,7 +1320,7 @@ tr.expandable:hover { background: #1a2332; }
 </div>
 <div id="proxies-charts" style="display:flex;gap:8px;padding:10px 20px;"></div>
 <div class="table-section-header" style="font-weight:600">ACTIVE PROXIES</div>
-<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th class="num">#</th><th>Proxy</th><th class="num">Traffic</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th class="num">Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table id="proxies-active-table"><thead><tr><th class="num">#</th><th onclick="sortProxies('addr')" style="cursor:pointer">Proxy</th><th class="num" onclick="sortProxies('traffic')" style="cursor:pointer">Traffic</th><th class="num" onclick="sortProxies('acq')" style="cursor:pointer">Won</th><th class="num" onclick="sortProxies('denied')" style="cursor:pointer">Denied</th><th class="num" onclick="sortProxies('winPct')" style="cursor:pointer">Win%</th><th class="num" onclick="sortProxies('nodes')" style="cursor:pointer">Nodes</th></tr></thead><tbody id="proxies-active-body"><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 <div class="table-section-header" onclick="toggleIdleProxies()" style="font-weight:600">IDLE PROXIES <span id="idle-count"></span><span style="color:#475569;margin-left:8px;font-weight:400">click to expand</span></div>
 <div id="proxies-idle-wrap" class="hidden"><div class="table-wrap"><table id="proxies-idle-table"><thead><tr><th>Proxy</th><th>Nodes</th><th>Last activity</th></tr></thead><tbody id="proxies-idle-body"></tbody></table></div></div>
 </div>
@@ -1347,7 +1347,7 @@ tr.expandable:hover { background: #1a2332; }
 <label style="font-size:11px;color:#94a3b8;cursor:pointer"><input type="checkbox" id="hide-dead" onchange="loadBestProxies()"> Hide dead</label>
 <span class="info" id="best-info">Loading...</span>
 </div>
-<div class="table-wrap"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Score</th><th class="num">Win%</th><th class="num">Traffic</th><th class="num">Contracts</th><th>Last seen</th><th>Status</th></tr></thead><tbody id="best-body"><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th class="num">#</th><th onclick="sortBest('addr')" style="cursor:pointer">Address</th><th class="num" onclick="sortBest('score')" style="cursor:pointer">Score</th><th class="num" onclick="sortBest('win_pct')" style="cursor:pointer">Win%</th><th class="num" onclick="sortBest('traffic')" style="cursor:pointer">Traffic</th><th class="num" onclick="sortBest('contracts')" style="cursor:pointer">Contracts</th><th onclick="sortBest('last_day')" style="cursor:pointer">Last seen</th><th onclick="sortBest('status')" style="cursor:pointer">Status</th></tr></thead><tbody id="best-body"><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
 </main>
@@ -1395,7 +1395,30 @@ window.addEventListener('hashchange', function() {
 })();
 
 // === Best Proxies ===
-var bestRequestSeq = 0;
+var bestRequestSeq = 0, bestRows = [], bestSortCol = 'score', bestSortDir = -1;
+function sortBest(col) {
+  if (bestSortCol === col) bestSortDir *= -1; else { bestSortCol = col; bestSortDir = -1; }
+  renderBest();
+}
+function renderBest() {
+  var rows = bestRows.slice();
+  rows.sort(function(a,b){
+    var va = a[bestSortCol], vb = b[bestSortCol];
+    if (typeof va === 'number') return bestSortDir * (va - vb);
+    return bestSortDir * String(va).localeCompare(String(vb));
+  });
+  var tbody = document.getElementById('best-body');
+  var html = '';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var cl = r.win_pct >= 80 ? 'g' : r.win_pct >= 60 ? 'y' : 'r';
+    var traffic = r.traffic > 1099511627776 ? (r.traffic/1099511627776).toFixed(1)+'T' : r.traffic > 1073741824 ? (r.traffic/1073741824).toFixed(1)+'G' : r.traffic > 1048576 ? (r.traffic/1048576).toFixed(1)+'M' : r.traffic > 1024 ? (r.traffic/1024).toFixed(1)+'K' : r.traffic;
+    var lastSeen = r.last_day === (Math.floor(Date.now()/86400000)) ? 'today' : ((Math.floor(Date.now()/86400000) - r.last_day) + 'd ago');
+    var statusDot = r.status === 'active' ? '<span class="dot alive" style="background:#22c55e"></span>' : '<span class="dot" style="background:#64748b"></span>';
+    html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
+  }
+  tbody.innerHTML = html || '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>';
+}
 function loadBestProxies() {
   if (!document.getElementById('page-best').classList.contains('active')) return;
   var hideDead = document.getElementById('hide-dead').checked;
@@ -1404,18 +1427,10 @@ function loadBestProxies() {
   var thisSeq = ++bestRequestSeq;
   fetch(url).then(function(r){return r.json();}).then(function(rows){
     if (thisSeq !== bestRequestSeq) return;
-    var tbody = document.getElementById('best-body');
-    if (!rows || rows.length === 0) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>'; document.getElementById('best-info').textContent = '0 proxies'; return; }
-    var html = '';
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      var cl = r.win_pct >= 80 ? 'g' : r.win_pct >= 60 ? 'y' : 'r';
-      var traffic = r.traffic > 1099511627776 ? (r.traffic/1099511627776).toFixed(1)+'T' : r.traffic > 1073741824 ? (r.traffic/1073741824).toFixed(1)+'G' : r.traffic > 1048576 ? (r.traffic/1048576).toFixed(1)+'M' : r.traffic > 1024 ? (r.traffic/1024).toFixed(1)+'K' : r.traffic;
-      var lastSeen = r.last_day === (Math.floor(Date.now()/86400000)) ? 'today' : ((Math.floor(Date.now()/86400000) - r.last_day) + 'd ago');
-      var statusDot = r.status === 'active' ? '<span class="dot alive" style="background:#22c55e"></span>' : '<span class="dot" style="background:#64748b"></span>';
-      html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
-    }
-    tbody.innerHTML = html;
+    if (!rows || rows.length === 0) { bestRows = []; renderBest(); document.getElementById('best-info').textContent = '0 proxies'; return; }
+    // Store with sortable keys including derived fields
+    bestRows = rows.map(function(r){ return { addr: r.addr, score: r.score, win_pct: r.win_pct, traffic: r.traffic, acq: r.acq, denied: r.denied, contracts: (r.acq||0)+(r.denied||0), last_day: r.last_day, status: r.status }; });
+    renderBest();
     document.getElementById('best-info').textContent = rows.length + ' proxies';
   }).catch(function(){
     if (thisSeq !== bestRequestSeq) return;
@@ -1680,7 +1695,35 @@ function setProxiesWindow(w, btn) {
   if (btn) btn.classList.add('on');
   loadProxies();
 }
-var proxiesRequestSeq = 0;
+var proxiesRequestSeq = 0, proxiesRows = [], proxiesSortCol = null, proxiesSortDir = -1;
+function sortProxies(col) {
+  if (proxiesSortCol === col) proxiesSortDir *= -1; else { proxiesSortCol = col; proxiesSortDir = -1; }
+  if (!proxiesRows.length) return;
+  var rows = proxiesRows.slice();
+  rows.sort(function(a,b){
+    var va = a[col], vb = b[col];
+    if (col === 'addr') return proxiesSortDir * String(va).localeCompare(String(vb));
+    if (col === 'winPct') { var wa = (a.acq+a.denied) > 0 ? (a.acq/(a.acq+a.denied)) : 0, wb = (b.acq+b.denied) > 0 ? (b.acq/(b.acq+b.denied)) : 0; return proxiesSortDir * (wa - wb); }
+    return proxiesSortDir * ((va||0) - (vb||0));
+  });
+  proxyRenderTable(rows);
+}
+function proxyRenderTable(rows) {
+  var tbody = document.getElementById('proxies-active-body'), html = '';
+  rows.forEach(function(r,i){
+    var traffic = (r.rx||0)+(r.tx||0), acq = r.acq||0, den = r.denied||0, total = acq+den;
+    var winPct = total > 0 ? (acq/total*100).toFixed(1) : '\u2014';
+    var cl = winPct >= 90 ? 'g' : (winPct >= 70 ? 'y' : 'r');
+    html += '<tr><td class=\"num\">'+(i+1)+'</td><td><span class=\"b\">'+r.addr+'</span></td><td class=\"num\">'+fmtBytes(traffic)+'</td><td class=\"num g\">'+acq+'</td><td class=\"num r\">'+den+'</td><td class=\"num '+cl+'\">'+winPct+(winPct!=='\u2014'?'%':'')+'</td><td class=\"num\">'+(r.nodes||0)+'</td></tr>';
+  });
+  tbody.innerHTML = html;
+  document.getElementById('proxies-info').textContent = rows.length+' active';
+  var idle = rows.filter(function(r){return (r.rx||0)+(r.tx||0)===0&&(r.acq||0)+(r.denied||0)===0;});
+  document.getElementById('idle-count').textContent = ' ('+idle.length+' idle)';
+  var ibody = document.getElementById('proxies-idle-body');
+  if (idle.length===0) { ibody.innerHTML = '<tr><td colspan=\"3\" style=\"text-align:center;color:#475569\">No idle proxies</td></tr>'; }
+  else { var ih=''; idle.forEach(function(r){ih+='<tr><td>'+r.addr+'</td><td class=\"num\">'+(r.nodes||0)+'</td><td class=\"num\">\u2014</td></tr>';}); ibody.innerHTML = ih; }
+}
 function loadProxies() {
   if (!document.getElementById('page-proxies').classList.contains('active')) return;
   var sort = document.getElementById('proxies-sort').value;
@@ -1693,38 +1736,9 @@ function loadProxies() {
     // in flight) has already landed — a slow "all nodes" response must
     // never clobber a faster, more recent one.
     if (thisSeq !== proxiesRequestSeq) return;
-    var tbody = document.getElementById('proxies-active-body');
-    if (!rows || rows.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">No proxy data in this window</td></tr>'; document.getElementById('proxies-info').textContent = '0 proxies'; return; }
-    var totalRX = 0, totalTX = 0, totalAcq = 0, totalDen = 0;
-    rows.forEach(function(r){totalRX+=r.rx;totalTX+=r.tx;totalAcq+=r.acq;totalDen+=r.denied;});
-    document.getElementById('proxies-info').textContent = rows.length+' active';
-    var html = '';
-    rows.forEach(function(r,i){
-      var traffic = r.rx + r.tx;
-      var acq = r.acq || 0, den = r.denied || 0, total = acq + den;
-      var winPct = total > 0 ? (acq/total*100).toFixed(1) : '—';
-      var cl = winPct >= 90 ? 'g' : (winPct >= 70 ? 'y' : 'r');
-      html += '<tr><td class="num">'+(i+1)+'</td>';
-      html += '<td><span class="b">'+r.addr+'</span></td>';
-      html += '<td class="num">'+fmtBytes(traffic)+'</td>';
-      html += '<td class="num g">'+acq+'</td>';
-      html += '<td class="num r">'+den+'</td>';
-      html += '<td class="num '+cl+'">'+winPct+(winPct!=='—'?'%':'')+'</td>';
-      html += '<td class="num">'+(r.nodes||0)+'</td></tr>';
-    });
-    tbody.innerHTML = html;
-
-    // Idle proxies: entries with zero traffic and zero contracts
-    var idle = rows.filter(function(r){return (r.rx+r.tx)===0&&(r.acq||0)+(r.denied||0)===0;});
-    document.getElementById('idle-count').textContent = ' ('+idle.length+' idle)';
-    var ibody = document.getElementById('proxies-idle-body');
-    if (idle.length === 0) {
-      ibody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#475569">No idle proxies</td></tr>';
-    } else {
-      var ihtml = '';
-      idle.forEach(function(r){ihtml+='<tr><td>'+r.addr+'</td><td class="num">'+(r.nodes||0)+'</td><td class="num">—</td></tr>';});
-      ibody.innerHTML = ihtml;
-    }
+    if (!rows || rows.length === 0) { document.getElementById('proxies-active-body').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">No proxy data in this window</td></tr>'; document.getElementById('proxies-info').textContent = '0 proxies'; proxiesRows = []; return; }
+    proxiesRows = rows;
+    proxyRenderTable(rows);
   }).catch(function(){
     if (thisSeq !== proxiesRequestSeq) return;
     document.getElementById('proxies-info').textContent = 'Error loading';
