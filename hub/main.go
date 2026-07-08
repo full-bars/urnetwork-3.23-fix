@@ -1366,12 +1366,21 @@ function switchPage(name) {
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
   document.querySelector('.nav-item[data-page="'+name+'"]').classList.add('active');
   document.getElementById('page-'+name).classList.add('active');
+  if (location.hash !== '#'+name) history.replaceState(null, '', '#'+name);
   if (name === 'overview') loadFleetChart();
   if (name === 'proxies') loadProxies();
   if (name === 'contracts') loadContracts();
   if (name === 'best') loadBestProxies();
   if (name === 'proxies' || name === 'contracts') loadNodeOptions();
 }
+window.addEventListener('hashchange', function() {
+  var page = (location.hash || '#overview').replace('#', '');
+  switchPage(page);
+});
+(function() {
+  var page = (location.hash || '#overview').replace('#', '');
+  switchPage(page);
+})();
 
 // === Best Proxies ===
 var bestRequestSeq = 0;
