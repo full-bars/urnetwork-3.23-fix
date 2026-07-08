@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -456,5 +458,65 @@ func TestProxiesBestHideDeadParam(t *testing.T) {
 
 	if len(rows) != 0 {
 		t.Errorf("hide_dead=true returned %d rows, want 0", len(rows))
+	}
+}
+
+// win_pct must be on a 0-100 scale (matching the pct() convention used
+// elsewhere in the hub, e.g. loadProxies()'s win% column), not the raw
+// 0-1 fraction computed by the SQL query. The frontend's color thresholds
+// (>=80, >=60) and "%" display assume 0-100.
+func TestProxiesBestWinPctIsPercentScale(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Unix() / 3600 / 24
+
+	p, _ := s.internProxy("10.0.0.9:1080")
+	s.db.Exec(`INSERT INTO proxy_fleet_daily (proxy_id, day, rx, tx, acq, denied) VALUES (?, ?, 100, 0, 17, 3)`, p, now)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/proxies/best?limit=100")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	winPct := rows[0]["win_pct"].(float64)
+	if winPct < 50 || winPct > 100 {
+		t.Errorf("win_pct = %v, want ~85 (0-100 scale); got a value that looks like a 0-1 fraction instead", winPct)
+	}
+	if want := 85.0; winPct < want-0.01 || winPct > want+0.01 {
+		t.Errorf("win_pct = %v, want %v", winPct, want)
+	}
+}
+
+// Regression test: each nav item's markup must render exactly once. A prior
+// version of the "Best Proxies" addition accidentally duplicated its
+// nav-item <div>, rendering the button twice in the sidebar.
+func TestDashboardNavItemsNotDuplicated(t *testing.T) {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]interface{}{
+		"Rows": []nodeRow{},
+		"Sum":  summaryRow{},
+	}); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	html := buf.String()
+
+	for _, page := range []string{"overview", "servers", "proxies", "contracts", "best"} {
+		want := `data-page="` + page + `"`
+		if got := strings.Count(html, want); got != 1 {
+			t.Errorf("nav-item for %q rendered %d times in dashboard HTML, want 1", page, got)
+		}
 	}
 }
