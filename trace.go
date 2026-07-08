@@ -44,6 +44,7 @@ func HandleError(do func(), handlers ...any) (r any) {
 				// the context was canceled and raised. this is a standard pattern, do not log
 			} else {
 				DefaultLogger().Warningf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
+				LogCritical("PANIC: %v — check journal / dev/shm for full stack", r)
 			}
 			err, ok := r.(error)
 			if !ok {
