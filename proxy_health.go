@@ -276,6 +276,28 @@ func RecordProxyTransportDrop(index int, err error) {
 	}
 }
 
+// ProxyAuthFailureCount returns the cumulative transport auth-failure count
+// for a proxy index, or 0 if the proxy isn't registered.
+func ProxyAuthFailureCount(index int) int64 {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		return h.failures.AuthFailures.Load()
+	}
+	return 0
+}
+
+// ProxyEverUp reports whether the proxy's transport has come up at least
+// once since it was registered.
+func ProxyEverUp(index int) bool {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		return h.everUp
+	}
+	return false
+}
+
 // UnregisterProxy removes a proxy from the health registry after its goroutine
 // has fully drained. Must be called after the goroutine exits, not at cancel time.
 func UnregisterProxy(id int) {
