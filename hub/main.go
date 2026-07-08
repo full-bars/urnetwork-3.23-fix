@@ -1005,6 +1005,7 @@ func main() {
 	mux.HandleFunc("/api/nodes/contracts", handleNodeContracts(s))
 	mux.HandleFunc("/api/nodes/", handleNodes(s))
 	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
+	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
 	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
 	mux.HandleFunc("/api/history", handleHistory(s))
 	mux.HandleFunc("/api/events", handleEvents(s))
@@ -1274,6 +1275,8 @@ tr.expandable:hover { background: #1a2332; }
 <div class="nav-item" data-page="servers" onclick="switchPage('servers')">Servers</div>
 <div class="nav-item" data-page="proxies" onclick="switchPage('proxies')">Proxies</div>
 <div class="nav-item" data-page="contracts" onclick="switchPage('contracts')">Contracts</div>
+	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
+	<div class="nav-item" data-page="best" onclick="switchPage('best')">Best Proxies</div>
 </nav>
 <main class="content">
 
@@ -1396,6 +1399,16 @@ tr.expandable:hover { background: #1a2332; }
 <div class="table-wrap"><table id="contracts-table"><thead><tr><th>Server</th><th class="num">Won</th><th class="num">Denied</th><th class="num">Win%</th><th style="width:24%">Split</th></tr></thead><tbody id="contracts-body"><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
+<!-- ===== BEST PROXIES ===== -->
+<div id="page-best" class="page">
+<div class="page-header">Best Proxies <span style="font-size:12px;color:#475569;font-weight:400">composite score: win% &times; ln(1 + traffic)</span></div>
+<div class="window-pills">
+<label style="font-size:11px;color:#94a3b8;cursor:pointer"><input type="checkbox" id="hide-dead" onchange="loadBestProxies()"> Hide dead</label>
+<span class="info" id="best-info">Loading...</span>
+</div>
+<div class="table-wrap"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Score</th><th class="num">Win%</th><th class="num">Traffic</th><th class="num">Contracts</th><th>Last seen</th><th>Status</th></tr></thead><tbody id="best-body"><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+</div>
+
 </main>
 </div>
 
@@ -1427,7 +1440,37 @@ function switchPage(name) {
   if (name === 'overview') loadFleetChart();
   if (name === 'proxies') loadProxies();
   if (name === 'contracts') loadContracts();
+  if (name === 'best') loadBestProxies();
   if (name === 'proxies' || name === 'contracts') loadNodeOptions();
+}
+
+// === Best Proxies ===
+var bestRequestSeq = 0;
+function loadBestProxies() {
+  if (!document.getElementById('page-best').classList.contains('active')) return;
+  var hideDead = document.getElementById('hide-dead').checked;
+  var url = '/api/proxies/best?limit=200&hide_dead=' + hideDead;
+  document.getElementById('best-info').textContent = 'Loading...';
+  var thisSeq = ++bestRequestSeq;
+  fetch(url).then(function(r){return r.json();}).then(function(rows){
+    if (thisSeq !== bestRequestSeq) return;
+    var tbody = document.getElementById('best-body');
+    if (!rows || rows.length === 0) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>'; document.getElementById('best-info').textContent = '0 proxies'; return; }
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var cl = r.win_pct >= 80 ? 'g' : r.win_pct >= 60 ? 'y' : 'r';
+      var traffic = r.traffic > 1099511627776 ? (r.traffic/1099511627776).toFixed(1)+'T' : r.traffic > 1073741824 ? (r.traffic/1073741824).toFixed(1)+'G' : r.traffic > 1048576 ? (r.traffic/1048576).toFixed(1)+'M' : r.traffic > 1024 ? (r.traffic/1024).toFixed(1)+'K' : r.traffic;
+      var lastSeen = r.last_day === (Math.floor(Date.now()/86400000)) ? 'today' : ((Math.floor(Date.now()/86400000) - r.last_day) + 'd ago');
+      var statusDot = r.status === 'active' ? '<span class="dot alive" style="background:#22c55e"></span>' : '<span class="dot" style="background:#64748b"></span>';
+      html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+    document.getElementById('best-info').textContent = rows.length + ' proxies';
+  }).catch(function(){
+    if (thisSeq !== bestRequestSeq) return;
+    document.getElementById('best-info').textContent = 'Error loading';
+  });
 }
 
 // === Fleet charts (Overview) ===
@@ -1439,6 +1482,7 @@ function makeChart(el, opts, data) {
   opts.width = w; opts.height = 120; opts.cursor = { show: true }; opts.legend = { show: true };
   if (!opts.axes) opts.axes = [{ show: false }, { stroke: '#64748b', grid: { stroke: '#1e293b', width: 1 }, size: 55 }];
   var chart = new uPlot(opts, data, el);
+  el._uplot = chart;
   fleetCharts.push(chart);
 }
 function resetFleetChart(id) {
@@ -1660,13 +1704,19 @@ function setProxiesWindow(w, btn) {
   if (btn) btn.classList.add('on');
   loadProxies();
 }
+var proxiesRequestSeq = 0;
 function loadProxies() {
   if (!document.getElementById('page-proxies').classList.contains('active')) return;
   var sort = document.getElementById('proxies-sort').value;
   var node = document.getElementById('proxies-node').value;
   var url = '/api/proxies/top?window='+proxiesWindow+'&sort='+sort+'&limit=100'+(node?'&node='+node:'');
   document.getElementById('proxies-info').textContent = 'Loading...';
+  var thisSeq = ++proxiesRequestSeq;
   fetch(url).then(function(r){return r.json();}).then(function(rows){
+    // A newer request (dropdown/window changed again while this one was
+    // in flight) has already landed — a slow "all nodes" response must
+    // never clobber a faster, more recent one.
+    if (thisSeq !== proxiesRequestSeq) return;
     var tbody = document.getElementById('proxies-active-body');
     if (!rows || rows.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">No proxy data in this window</td></tr>'; document.getElementById('proxies-info').textContent = '0 proxies'; return; }
     var totalRX = 0, totalTX = 0, totalAcq = 0, totalDen = 0;
@@ -1699,7 +1749,10 @@ function loadProxies() {
       idle.forEach(function(r){ihtml+='<tr><td>'+r.addr+'</td><td class="num">'+(r.nodes||0)+'</td><td class="num">—</td></tr>';});
       ibody.innerHTML = ihtml;
     }
-  }).catch(function(){document.getElementById('proxies-info').textContent = 'Error loading';});
+  }).catch(function(){
+    if (thisSeq !== proxiesRequestSeq) return;
+    document.getElementById('proxies-info').textContent = 'Error loading';
+  });
 }
 function toggleIdleProxies() {
   document.getElementById('proxies-idle-wrap').classList.toggle('hidden');
