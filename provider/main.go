@@ -616,7 +616,7 @@ Usage:
     provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
     provider proxy remove [<key_address>...] [--all]
     provider proxy remove --match=<pattern> [--yes] [--preview]
-    provider proxy remove-dead [--degraded[=<duration>]] [--source=<source>] [--yes] [--preview]
+    provider proxy remove-dead [--degraded[=<duration>]] [--auth-failures=<N>] [--source=<source>] [--yes] [--preview]
     provider proxy activity
     provider proxy refresh [--force]
     provider proxy add-source <url>
@@ -1509,13 +1509,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			liveHealth := connect.ProxyHealthByAddress()
 			for addr, entry := range state.Proxies {
 				if h, ok := liveHealth[addr]; ok {
-					entry.Health = h.Health
-					if h.DownSince.IsZero() {
-						entry.DownSince = ""
-					} else {
-						entry.DownSince = h.DownSince.Format(time.RFC3339)
-					}
-					state.Proxies[addr] = entry
+				entry.Health = h.Health
+				if h.DownSince.IsZero() {
+					entry.DownSince = ""
+				} else {
+					entry.DownSince = h.DownSince.Format(time.RFC3339)
+				}
+				entry.AuthFailures = h.AuthFailures
+				state.Proxies[addr] = entry
 				} else {
 					delete(state.Proxies, addr)
 				}
@@ -4139,13 +4140,18 @@ func proxyRemoveDead(opts docopt.Opts) {
 		sourceFilter = s
 	}
 
+	authFailMin := int64(0)
+	if af, _ := opts.Int("--auth-failures"); af > 0 {
+		authFailMin = int64(af)
+	}
+
 	type removedProxy struct {
 		addr  string
 		entry ProxyEntry
 	}
 
 	// Collect candidates by category
-	var dead, inactive, degraded []removedProxy
+	var dead, inactive, degraded, authFailing []removedProxy
 	for addr, e := range state.Proxies {
 		// Apply source filter
 		effectiveSource := e.Source
@@ -4174,9 +4180,12 @@ func proxyRemoveDead(opts docopt.Opts) {
 			}
 			degraded = append(degraded, removedProxy{addr: addr, entry: e})
 		}
+		if authFailMin > 0 && e.AuthFailures >= authFailMin {
+			authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
+		}
 	}
 
-	if len(dead) == 0 && len(inactive) == 0 && len(degraded) == 0 {
+	if len(dead) == 0 && len(inactive) == 0 && len(degraded) == 0 && len(authFailing) == 0 {
 		fmt.Println("Nothing to remove.")
 		return
 	}
@@ -4197,7 +4206,11 @@ func proxyRemoveDead(opts docopt.Opts) {
 					ts = fmt.Sprintf(" down_since=%s", formatDuration(time.Since(t).Truncate(time.Second)))
 				}
 			}
-			fmt.Printf("    proxy[%d]  %s%s\n", rp.entry.ID, rp.addr, ts)
+			af := ""
+			if rp.entry.AuthFailures > 0 {
+				af = fmt.Sprintf(" auth_errors=%d", rp.entry.AuthFailures)
+			}
+			fmt.Printf("    proxy[%d]  %s%s%s\n", rp.entry.ID, rp.addr, ts, af)
 		}
 		fmt.Println()
 	}
@@ -4207,7 +4220,10 @@ func proxyRemoveDead(opts docopt.Opts) {
 		printCategory("dead", dead)
 		printCategory("inactive", inactive)
 		printCategory(fmt.Sprintf("degraded (offline > %s)", formatDuration(degradedDur)), degraded)
-		total := len(dead) + len(inactive) + len(degraded)
+		if authFailMin > 0 {
+			printCategory(fmt.Sprintf("auth-failing (>= %d errors)", authFailMin), authFailing)
+		}
+		total := len(dead) + len(inactive) + len(degraded) + len(authFailing)
 		fmt.Printf("Would remove %d proxies total.\n", total)
 		return
 	}
@@ -4232,6 +4248,13 @@ func proxyRemoveDead(opts docopt.Opts) {
 		printCategory(fmt.Sprintf("degraded (offline > %s)", formatDuration(degradedDur)), degraded)
 		if autoYes || confirm(fmt.Sprintf("Remove %d degraded proxies?", len(degraded))) {
 			toRemove = append(toRemove, degraded...)
+		}
+	}
+
+	if len(authFailing) > 0 {
+		printCategory(fmt.Sprintf("auth-failing (>= %d errors)", authFailMin), authFailing)
+		if autoYes || confirm(fmt.Sprintf("Remove %d auth-failing proxies?", len(authFailing))) {
+			toRemove = append(toRemove, authFailing...)
 		}
 	}
 
