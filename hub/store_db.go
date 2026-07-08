@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS proxy_node_hourly (
 );
 CREATE INDEX IF NOT EXISTS idx_pnh_hour ON proxy_node_hourly(hour);
 CREATE INDEX IF NOT EXISTS idx_pnh_proxy ON proxy_node_hourly(proxy_id);
+CREATE INDEX IF NOT EXISTS idx_pnh_hour_proxy ON proxy_node_hourly(hour, proxy_id);
 
 -- Tier 2: per-node per-proxy daily, rolled up from tier 1 as it ages.
 -- day is epoch-days (hour/24).
