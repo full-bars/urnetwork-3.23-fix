@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// clientJWTMaxAge caps how long a stored client JWT is reused before this
-// process mints a fresh one, kept comfortably under the platform's 30-day
-// ClientExpiration so a stale-but-not-yet-rejected JWT is never handed to a
-// caller close to its hard expiry.
-const clientJWTMaxAge = 25 * 24 * time.Hour
-
 // clientJWTStaleAfter prunes entries for proxies that haven't reconnected in
 // this long — mostly relevant to URL-sourced proxies, whose addresses churn
 // as dead entries get evicted and replaced.
@@ -22,6 +16,7 @@ const clientJWTStaleAfter = 30 * 24 * time.Hour
 type clientJWTEntry struct {
 	ByClientJWT string    `json:"by_client_jwt"`
 	ClientID    string    `json:"client_id"`
+	NetworkID   string    `json:"network_id"`
 	MintedAt    time.Time `json:"minted_at"`
 }
 
@@ -93,6 +88,22 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
+	return s.flushLocked()
+}
+
+// Delete evicts key, if present, and flushes the store to disk immediately.
+// Used when a reused client JWT turns out to be rejected server-side (e.g.
+// the client_id was revoked) so the next mint attempt — this process's
+// slow-retry loop, or the next restart — doesn't keep handing out the same
+// poisoned identity.
+func (s *clientJWTStore) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	if _, ok := s.entries[key]; !ok {
+		return nil
+	}
+	delete(s.entries, key)
 	return s.flushLocked()
 }
 
