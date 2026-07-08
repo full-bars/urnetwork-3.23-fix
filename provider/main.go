@@ -462,6 +462,21 @@ func jwtContainsClientId(byJwt string) bool {
 	return hasClientId
 }
 
+// jwtNetworkId extracts the network_id claim from byJwt, if present.
+func jwtNetworkId(byJwt string) (string, bool) {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return "", false
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return "", false
+	}
+	networkId, ok := claims["network_id"].(string)
+	return networkId, ok
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -1954,7 +1969,7 @@ func provide(opts docopt.Opts) {
 			}
 		}
 
-		byClientJwt, clientId, err := func() (string, connect.Id, error) {
+		byClientJwt, clientId, reused, err := func() (string, connect.Id, bool, error) {
 			// Consecutive auth failures (network errors, API timeouts, or token
 			// rejection). After maxAuthFailures the proxy gives up and goes offline
 			// until the next hourly pulse.
@@ -1978,6 +1993,7 @@ func provide(opts docopt.Opts) {
 				var err error
 				var byClientJwt string
 				var clientId connect.Id
+				var reused bool
 
 				// Only URL-sourced proxies get the pre-auth SOCKS5 reachability probe.
 				// File/internal lists are operator-curated (paid) endpoints that should
@@ -2006,9 +2022,13 @@ func provide(opts docopt.Opts) {
 					}
 					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
 					if waitErr != nil {
-						return "", connect.Id{}, waitErr
+						return "", connect.Id{}, false, waitErr
 					}
-					byClientJwt, clientId, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName)
+					identityKey := "direct"
+					if proxySettings != nil {
+						identityKey = proxySettings.Address
+					}
+					byClientJwt, clientId, reused, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
 					release()
 					if proxySettings != nil {
 						if err == nil {
@@ -2020,7 +2040,12 @@ func provide(opts docopt.Opts) {
 						globalAuthRateLimiter.ReportResult(err)
 					}
 					if err == nil {
-						return byClientJwt, clientId, nil
+						if reused {
+							fmt.Printf("♻️ client_id: %s (reused)\n", clientId)
+						} else {
+							fmt.Printf("✨ client_id: %s (new)\n", clientId)
+						}
+						return byClientJwt, clientId, reused, nil
 					}
 				}
 
@@ -2034,7 +2059,7 @@ func provide(opts docopt.Opts) {
 					retryDelay := 30 * time.Second
 					select {
 					case <-proxyCtx.Done():
-						return "", connect.Id{}, proxyCtx.Err()
+						return "", connect.Id{}, false, proxyCtx.Err()
 					case <-time.After(retryDelay):
 						continue
 					}
@@ -2055,7 +2080,7 @@ func provide(opts docopt.Opts) {
 					// full restart (which wipes everyone's 8-12h warmup). Fall back to
 					// a slow, capped retry instead and keep trying.
 					if isURLSourced {
-						return "", connect.Id{}, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
+						return "", connect.Id{}, false, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 					}
 					slowDelay := proxyAuthSlowRetryDelay(authFailures - maxAuthFailures + 1)
 					if proxySettings != nil {
@@ -2070,7 +2095,7 @@ func provide(opts docopt.Opts) {
 					}
 					select {
 					case <-proxyCtx.Done():
-						return "", connect.Id{}, proxyCtx.Err()
+						return "", connect.Id{}, false, proxyCtx.Err()
 					case <-time.After(slowDelay):
 						continue
 					}
@@ -2088,7 +2113,7 @@ func provide(opts docopt.Opts) {
 				}
 				select {
 				case <-proxyCtx.Done():
-					return "", connect.Id{}, proxyCtx.Err()
+					return "", connect.Id{}, false, proxyCtx.Err()
 				case <-time.After(retryDelay):
 				}
 			}
@@ -2140,6 +2165,13 @@ func provide(opts docopt.Opts) {
 			return
 		}
 
+		identityKey := "direct"
+		proxyIndex := 0
+		if proxySettings != nil {
+			identityKey = proxySettings.Address
+			proxyIndex = proxySettings.Index
+		}
+
 		instanceId := connect.NewId()
 
 		clientOob := connect.NewApiOutOfBandControl(proxyCtx, clientStrategy, byClientJwt, apiUrl)
@@ -2173,7 +2205,6 @@ func provide(opts docopt.Opts) {
 		// connectClient.Setup(routeManager, contractManager)
 		// go connectClient.Run()
 
-		fmt.Printf("client_id: %s\n", clientId)
 		fmt.Printf("instance_id: %s\n", instanceId)
 
 		auth := &connect.ClientAuth{
@@ -2184,6 +2215,19 @@ func provide(opts docopt.Opts) {
 		}
 		connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 		// go platformTransport.Run(connectClient.RouteManager())
+
+		if reused {
+			// The reuse path in provideAuth never contacts the server, so a
+			// client_id that was revoked server-side for a reason other than
+			// local JWT expiry would otherwise never be noticed — transport
+			// auth would just keep retrying the same rejected identity
+			// forever. Watch for that specific signature (transport never
+			// authenticates even once, auth failures keep piling up) and
+			// evict the persisted entry so the next mint attempt starts
+			// fresh instead of repeating a dead identity indefinitely.
+			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex)
+		}
+
 		var bw *connect.ProxyBandwidth
 		if proxySettings != nil {
 			bw = connect.RegisterProxyBandwidth(proxySettings.Index)
@@ -2634,7 +2678,7 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
-func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string) (byClientJwt string, clientId connect.Id, returnErr error) {
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(err)
@@ -2658,6 +2702,24 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	if err := validateJWTExpiry(byJwt); err != nil {
 		returnErr = err
 		return
+	}
+
+	// A stored client JWT is only safe to reuse under the network identity
+	// that minted it — otherwise switching accounts (USER_AUTH change, new
+	// ~/.urnetwork/jwt) would silently keep providing under the previous
+	// account. An unscoped network_id claim on either side is treated as a
+	// mismatch (mint fresh) rather than a match, since that's the safer
+	// default for credential reuse.
+	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
+	if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+		if err := validateJWTExpiry(entry.ByClientJWT); err == nil &&
+			jwtContainsClientId(entry.ByClientJWT) &&
+			haveCurrentNetworkId && entry.NetworkID == currentNetworkId {
+			if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+				reused = true
+				return entry.ByClientJWT, parsedId, true, nil
+			}
+		}
 	}
 
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
@@ -2769,7 +2831,51 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		return
 	}
 
+	if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+		ByClientJWT: byClientJwt,
+		ClientID:    clientIdStr,
+		NetworkID:   currentNetworkId,
+		MintedAt:    time.Now(),
+	}); putErr != nil {
+		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
+	}
+
 	return
+}
+
+// revokedIdentityAuthFailureThreshold is how many transport auth failures a
+// reused identity is allowed before it's treated as revoked rather than
+// merely unlucky (network blip, transient API error).
+const revokedIdentityAuthFailureThreshold = 5
+
+// watchReusedIdentityForRevocation polls proxyIndex's transport health and
+// evicts identityKey from the client JWT store if the reused identity keeps
+// failing to authenticate and never once comes up. See the call site for
+// why this can't be detected any other way: the reuse path is intentionally
+// server-round-trip-free, so nothing else observes a server-side rejection.
+func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if connect.ProxyEverUp(proxyIndex) {
+			// Authenticated successfully at least once — the identity is good.
+			return
+		}
+		if connect.ProxyAuthFailureCount(proxyIndex) >= revokedIdentityAuthFailureThreshold {
+			if delErr := globalClientJWTStore.Delete(identityKey); delErr != nil {
+				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", identityKey, delErr)
+			} else {
+				tlog("⚠️ [jwt-store] reused client identity for %s never authenticated after %d transport auth failures — evicted, will mint fresh on next retry/restart\n",
+					identityKey, revokedIdentityAuthFailureThreshold)
+			}
+			return
+		}
+	}
 }
 
 type Status struct {
