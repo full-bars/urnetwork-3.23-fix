@@ -111,7 +111,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("Hub Docker Image Published — " + $version),
-              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:" + $version + "\ndocker pull 3cape/urnetwork-hub:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
+              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:" + $version + "\n```\n```\ndocker pull 3cape/urnetwork-hub:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
               "color": 3447003,
               "footer": { "text": "URNetwork Release Monitor • Hub Docker" }
             }]
