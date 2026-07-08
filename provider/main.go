@@ -462,6 +462,13 @@ func jwtContainsClientId(byJwt string) bool {
 	return hasClientId
 }
 
+// hotRestartEnabled reports whether persisted client JWTs should be reused
+// across process restarts. Opt-in and off by default: `urnet-tools hot-restart
+// on` (Docker: URNETWORK_HOT_RESTART=1). Experimental — see release notes.
+func hotRestartEnabled() bool {
+	return os.Getenv("URNETWORK_HOT_RESTART") == "1"
+}
+
 // jwtNetworkId extracts the network_id claim from byJwt, if present.
 func jwtNetworkId(byJwt string) (string, bool) {
 	parser := gojwt.NewParser()
@@ -2710,12 +2717,25 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// account. An unscoped network_id claim on either side is treated as a
 	// mismatch (mint fresh) rather than a match, since that's the safer
 	// default for credential reuse.
+	//
+	// Hot restart (reuse of persisted client JWTs across process restarts)
+	// is opt-in and defaults off: it's an experimental feature (not yet
+	// confirmed reliable across repeated restarts in live testing) and a
+	// fleet-wide behavior change, so operators choose it explicitly via
+	// `urnet-tools hot-restart on` (Docker: URNETWORK_HOT_RESTART=1) rather
+	// than inheriting it silently from an upgrade.
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
-	if entry, ok := globalClientJWTStore.Get(identityKey); ok {
-		if err := validateJWTExpiry(entry.ByClientJWT); err == nil &&
-			jwtContainsClientId(entry.ByClientJWT) &&
-			haveCurrentNetworkId && entry.NetworkID == currentNetworkId {
-			if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+	if hotRestartEnabled() {
+		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+			if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
+				tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+			} else if !jwtContainsClientId(entry.ByClientJWT) {
+				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+			} else if !haveCurrentNetworkId || entry.NetworkID != currentNetworkId {
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
+				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
+			} else {
 				reused = true
 				return entry.ByClientJWT, parsedId, true, nil
 			}
@@ -2831,13 +2851,15 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		return
 	}
 
-	if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
-		ByClientJWT: byClientJwt,
-		ClientID:    clientIdStr,
-		NetworkID:   currentNetworkId,
-		MintedAt:    time.Now(),
-	}); putErr != nil {
-		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
+	if hotRestartEnabled() {
+		if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+			ByClientJWT: byClientJwt,
+			ClientID:    clientIdStr,
+			NetworkID:   currentNetworkId,
+			MintedAt:    time.Now(),
+		}); putErr != nil {
+			tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
+		}
 	}
 
 	return
