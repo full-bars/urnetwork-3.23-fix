@@ -3620,6 +3620,15 @@ do_session ()
                 exit 1
             fi
 
+            # Scan trailing args for --force/-f (global --force is consumed
+            # before the operation word; the session subcommand sees $3+).
+            shift 2
+            for arg in "$@"; do
+                if [ "$arg" = "--force" ] || [ "$arg" = "-f" ]; then
+                    FORCE=1
+                fi
+            done
+
             printf "Enter passphrase: "
             stty -echo
             read -r pass < /dev/tty
@@ -3649,7 +3658,14 @@ do_session ()
             fi
             new_id="$("$provider_bin" print-network-id "$tmpdir/jwt" 2>/dev/null)"
 
-            if [ -n "$new_id" ] && [ -n "$current_id" ] && [ "$new_id" != "$current_id" ]; then
+            if [ -z "$new_id" ]; then
+                pr_err "Could not extract network_id from the session bundle's JWT."
+                pr_err "The bundle may be corrupted or the JWT is invalid."
+                rm -rf "$tmpdir"
+                exit 1
+            fi
+
+            if [ -n "$current_id" ] && [ "$new_id" != "$current_id" ]; then
                 pr_err "Network ID mismatch."
                 pr_err "  Current account: %s" "$current_id"
                 pr_err "  Session account: %s" "$new_id"
