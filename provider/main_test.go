@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -492,9 +493,12 @@ func TestAtomicWriteFile_RoundTrip(t *testing.T) {
 		t.Fatalf("expected %q, got %q", string(data), string(got))
 	}
 
-	// Verify no .tmp file left behind
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Fatal("expected .tmp file to be cleaned up")
+	// Verify no temp file left behind
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Fatalf("expected no .tmp files, found %s", e.Name())
+		}
 	}
 }
 
