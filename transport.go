@@ -374,13 +374,13 @@ func (self *PlatformTransport) setActiveMode(mode TransportMode) {
 	if changed {
 		self.modeMonitor.NotifyAll()
 	} else if mode != TransportModeNone {
-		// Log at most once per 10s when setActiveMode is called with
-		// the same mode already active — this indicates the run()
-		// loop is spinning on a self-wake feedback loop.
+		// Log at most once per 10s when setActiveMode is called
+		// redundantly (mode unchanged). If spamming, check CPU
+		// for a self-wake feedback loop.
 		now := time.Now()
 		if now.Sub(transportSpuriousSetActiveLogged) > 10*time.Second {
 			transportSpuriousSetActiveLogged = now
-			DefaultLogger().Infof("[transport] setActiveMode spurious call: mode=%v unchanged — likely self-wake loop\n", mode)
+			DefaultLogger().Infof("[transport] redundant setActiveMode(%v) — if frequent, check for 100%% CPU (self-wake loop)\n", mode)
 		}
 	}
 }
@@ -436,8 +436,9 @@ func (self *PlatformTransport) run() {
 		}, self.cancel)
 	}
 
+	lastMode := TransportModeNone
 	for {
-		available, notify := self.modesAvailable()
+		available, _ := self.modesAvailable()
 
 		// descending preference
 		orderedModes := maps.Keys(transportModePreferences)
@@ -450,16 +451,21 @@ func (self *PlatformTransport) run() {
 				return 1
 			}
 		})
+		bestMode := TransportModeNone
 		if 0 < len(orderedModes) {
 			for _, mode := range orderedModes {
 				if available[mode] {
-					self.setActiveMode(mode)
+					bestMode = mode
 					break
 				}
 			}
-		} else {
-			self.setActiveMode(TransportModeNone)
 		}
+		if bestMode != lastMode {
+			self.setActiveMode(bestMode)
+			lastMode = bestMode
+		}
+
+		_, notify := self.activeMode()
 
 		select {
 		case <-notify:
