@@ -2858,15 +2858,16 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		return
 	}
 
-	if hotRestartEnabled() {
-		if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
-			ByClientJWT: byClientJwt,
-			ClientID:    clientIdStr,
-			NetworkID:   currentNetworkId,
-			MintedAt:    time.Now(),
-		}); putErr != nil {
-			tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
-		}
+	// Always persist client JWTs so the store is ready the moment hot-restart
+	// is enabled — no warmup or re-auth cycle needed. The read/reuse path
+	// remains gated on URNETWORK_HOT_RESTART=1.
+	if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+		ByClientJWT: byClientJwt,
+		ClientID:    clientIdStr,
+		NetworkID:   currentNetworkId,
+		MintedAt:    time.Now(),
+	}); putErr != nil {
+		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
 	}
 
 	return
