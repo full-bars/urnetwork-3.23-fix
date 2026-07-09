@@ -1,59 +1,94 @@
 #!/usr/bin/env pwsh
-# Credits: Ar Rakin, Ryan Mello
-# urnet-tools -- URnetwork manager script (also acts as an installation script)
-# GitHub: <https://github.com/urnetwork/connect>
+# urnet-tools: URnetwork provider manager
+# Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
+# Based on: Ar Rakin, Ryan Mello (original)
+# https://github.com/full-bars/urnetwork-3.23-fix
 
 <#
 .SYNOPSIS
-    URnetwork manager and toolkit.
+    URnetwork provider manager and toolkit.
 
 .DESCRIPTION
-    This script helps you manage your URnetwork installation.
+    This script helps you manage your URnetwork provider installation.
+    Manages the provider process, proxy configuration, hub linking, and
+    runtime tuning.
 
 .PARAMETER Command
-    The subcommand to execute. The first positional argument also
-    corresponds to this.
-    Subcommands:
-    * update - Update URnetwork
-    * uninstall - Uninstall URnetwork
-    * reinstall - Reinstall URnetwork
-    * status - Show provider status
-    * start - Start the provider
-    * stop - Stop the provider
-    * version - Show the version of your URnetwork installation
-    * auto-update-enable - Enable auto-updates
-    * auto-update-freq - Change the frequency of auto-update checks
-    * auto-update-disable - Disable auto-updates
-    * auto-start-enable - Enable auto-start
-    * auto-start-disable - Disable auto-start
+    The subcommand to execute (first positional argument).
+    
+    Core Commands:
+      start                       Start the provider
+      stop                        Stop the provider
+      restart                     Restart the provider
+      update                      Upgrade to the latest version
+      status                      Show provider service status
+      version                     Show installed URnetwork version
+      logs [-n <lines>]           Show provider logs (-n to limit lines)
+    
+    Maintenance:
+      uninstall                   Uninstall URnetwork
+      reinstall                   Reinstall URnetwork
+      auto-update-enable          Enable auto-updates
+      auto-update-disable         Disable auto-updates
+      auto-update-freq <day|week|month>
+                                  Change the frequency of auto-update checks
+      auto-start-enable           Enable auto-start on login
+      auto-start-disable          Disable auto-start on login
+    
+    Performance & Tuning:
+      hot-restart <on|off>        Reuse client JWT identities across restarts
+    
+    Proxy & Hub Management:
+      proxy refresh               Re-read configs and hot-reload proxies
+      proxy remove-dead [--degraded] [--auth-failures=<N>] [--yes] [--preview]
+                                  Interactively prune dead/degraded proxies
+      proxy summary               Fleet summary (sources, health, counts)
+      proxy remove --match=<pattern> [--yes] [--preview]
+                                  Remove proxies matching a host pattern
+      proxy exclude [<pattern>] [--remove]
+                                  Exclude patterns from proxy discovery
+      hub link <url> [--token <token>]
+                                  Fetch CA cert and pin the hub's identity
+      hub unlink                  Revert to HTTP (remove pin + CA cert)
+      report [<url>|off]          Show or set hub report URL
+    
+    Run 'urnet-tools.ps1 <command>' without arguments for usage details.
 
 .PARAMETER InstalledPath
-    The path where URnetwork provider was installed. Defaults to %LOCALAPPDATA%\urnetwork\provider on Windows.
+    The path where URnetwork provider was installed. Defaults to
+    %LOCALAPPDATA%\urnetwork\provider on Windows.
+
+.PARAMETER NoConfirm
+    Skip confirmation prompts (use with caution).
 
 .PARAMETER Help
     Show this help and exit.
 
 .EXAMPLE
-    urnet-tools.ps1 update -InstalledPath "C:\Users\You\urnetwork"
-    Runs operation "update" for the given installation path. 
+    urnet-tools.ps1 update
+    Updates URnetwork to the latest version.
 
 .EXAMPLE
-    urnet-tools.ps1 update
-    Updates URnetwork.
+    urnet-tools.ps1 hot-restart on
+    Enables client JWT reuse across restarts.
+
+.EXAMPLE
+    urnet-tools.ps1 hub link https://hub.example.com:8443 --token <token>
+    Links the provider to a hub with an onboard token.
 
 .OUTPUTS
-    String. Installer logs and messages.
+    String. Status messages, logs, and command output.
 
 .INPUTS
     None. Does not take any input.
 
 .LINK
-    https://docs.ur.io/provider
+    https://github.com/full-bars/urnetwork-3.23-fix
 #>
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -527,6 +562,67 @@ switch ($Command) {
             Write-Host "Status: Stopped"
         }
 
+        break
+    }
+
+    "hot-restart" {
+        $mode = if ($SubArgs) { $SubArgs[0] } else { "" }
+        $envVarName = "URNETWORK_HOT_RESTART"
+        $restartNeeded = $false
+
+        switch ($mode) {
+            "on" {
+                Write-Host "Enabling hot-restart (client JWT reuse across restarts)"
+                [Environment]::SetEnvironmentVariable($envVarName, "1",
+                    [System.EnvironmentVariableTarget]::User)
+                $env:URNETWORK_HOT_RESTART = "1"
+                Write-Host "URNETWORK_HOT_RESTART=1 set in user environment."
+                $restartNeeded = $true
+                break
+            }
+            "off" {
+                Write-Host "Disabling hot-restart"
+                [Environment]::SetEnvironmentVariable($envVarName, $null,
+                    [System.EnvironmentVariableTarget]::User)
+                Remove-Item Env:\URNETWORK_HOT_RESTART -ErrorAction SilentlyContinue
+                Write-Host "URNETWORK_HOT_RESTART removed from user environment."
+                $restartNeeded = $true
+                break
+            }
+            "" {
+                # Note: reads persistent registry state (User scope), not the
+                # running provider's live environment — reports what the next
+                # fresh process will see, not the current session.
+                $val = [Environment]::GetEnvironmentVariable($envVarName,
+                    [System.EnvironmentVariableTarget]::User)
+                if ($val -eq "1") {
+                    Write-Host "Hot-restart is enabled."
+                } else {
+                    Write-Host "Hot-restart is off."
+                }
+                break
+            }
+            default {
+                Write-Host "Usage: urnet-tools.ps1 hot-restart <on|off>"
+                Write-Host "       urnet-tools.ps1 hot-restart          (show status)"
+                break
+            }
+        }
+
+        if ($restartNeeded -and -not ($mode -eq "")) {
+            if (-not $NoConfirm) {
+                $yn = Read-Host "Restart provider to apply? [y/N]"
+                if ($yn -ne "y") {
+                    Write-Host "Change applied. Run 'urnet-tools.ps1 restart' when ready."
+                    break
+                }
+            }
+            Write-Host "Restarting provider..."
+            & $MyInvocation.MyCommand.Path stop -NoConfirm
+            Start-Sleep -Seconds 2
+            & $MyInvocation.MyCommand.Path start
+            Write-Host "Provider restarted."
+        }
         break
     }
 
