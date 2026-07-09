@@ -21,6 +21,13 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 		settings.KeepAliveTimeout,
 	)
 
+	if !ipv6Available() {
+		s.SetNetworkTypes([]webrtc.NetworkType{
+			webrtc.NetworkTypeUDP4,
+			webrtc.NetworkTypeTCP4,
+		})
+	}
+
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
 	return api.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
