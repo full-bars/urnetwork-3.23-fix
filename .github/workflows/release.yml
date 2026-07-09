@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
+        goos: [linux, darwin]
         goarch: [amd64, arm64]
     steps:
       - name: Checkout code
@@ -58,13 +58,13 @@ jobs:
       - name: Upload provider artifact
         uses: actions/upload-artifact@v4
         with:
-          name: provider-${{ matrix.goarch }}
+          name: provider-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider
 
       - name: Upload hub artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hub-${{ matrix.goarch }}
+          name: hub-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub
 
   create-release:
@@ -77,42 +77,56 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Download provider amd64 artifact
+      - name: Download provider linux amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: provider-amd64
+          name: provider-linux-amd64
           path: release_tmp/linux/amd64/
 
-      - name: Download provider arm64 artifact
+      - name: Download provider linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: provider-arm64
+          name: provider-linux-arm64
           path: release_tmp/linux/arm64/
 
-      - name: Download hub amd64 artifact
+      - name: Download provider darwin amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: hub-amd64
+          name: provider-darwin-amd64
+          path: release_tmp/darwin/amd64/
+
+      - name: Download provider darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-darwin-arm64
+          path: release_tmp/darwin/arm64/
+
+      - name: Download hub linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-linux-amd64
           path: hub_tmp/amd64/
 
-      - name: Download hub arm64 artifact
+      - name: Download hub linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: hub-arm64
+          name: hub-linux-arm64
           path: hub_tmp/arm64/
 
       - name: Prepare binaries
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
-          # download-artifact@v4 might create subfolders or keep names depending on structure
-          # Ensuring provider binaries are named 'provider' in the correct structure
           find release_tmp -name "provider*" -type f -exec chmod +x {} \;
-          mv release_tmp/linux/amd64/provider-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
-          mv release_tmp/linux/arm64/provider-arm64 release_tmp/linux/arm64/provider 2>/dev/null || true
-          # Stamp hub binaries with version and arch for individual asset upload
+          # Linux providers
+          mv release_tmp/linux/amd64/provider-linux-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
+          mv release_tmp/linux/arm64/provider-linux-arm64 release_tmp/linux/arm64/provider 2>/dev/null || true
+          # Darwin providers
+          mv release_tmp/darwin/amd64/provider-darwin-amd64 release_tmp/darwin/amd64/provider 2>/dev/null || true
+          mv release_tmp/darwin/arm64/provider-darwin-arm64 release_tmp/darwin/arm64/provider 2>/dev/null || true
+          # Stamp hub binaries
           find hub_tmp -name "hub*" -type f -exec chmod +x {} \;
-          mv hub_tmp/amd64/hub-amd64 hub_tmp/amd64/hub 2>/dev/null || true
-          mv hub_tmp/arm64/hub-arm64 hub_tmp/arm64/hub 2>/dev/null || true
+          mv hub_tmp/amd64/hub-linux-amd64 hub_tmp/amd64/hub 2>/dev/null || true
+          mv hub_tmp/arm64/hub-linux-arm64 hub_tmp/arm64/hub 2>/dev/null || true
           cp hub_tmp/amd64/hub urnetwork-hub-${VERSION}-linux-amd64
           cp hub_tmp/arm64/hub urnetwork-hub-${VERSION}-linux-arm64
 
@@ -121,7 +135,7 @@ jobs:
           VERSION=${GITHUB_REF_NAME:-latest}
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp
-          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ urnet-tools
+          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ urnet-tools
           cd ..
 
       - name: Set release body source
@@ -166,7 +180,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("🎉 Release " + $version + " is Live"),
-              "description": ("**Binaries:** linux/amd64, linux/arm64\n\n**Update existing install:**\n```\nurnet-tools update\n```\n\n**Fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- install\n```\n\n[View GitHub Release](" + $releaseUrl + ")"),
+              "description": ("**Binaries:** linux/amd64, linux/arm64, darwin/amd64, darwin/arm64\n\n**Update existing install:**\n```\nurnet-tools update\n```\n\n**Linux fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- install\n```\n**macOS fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install\n```\n\n[View GitHub Release](" + $releaseUrl + ")"),
               "color": 3066993,
               "footer": { "text": "URNetwork Release Monitor • Binaries" }
             }]
