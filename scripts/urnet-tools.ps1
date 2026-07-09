@@ -575,17 +575,24 @@ switch ($Command) {
                 Write-Host "Enabling hot-restart (client JWT reuse across restarts)"
                 [Environment]::SetEnvironmentVariable($envVarName, "1",
                     [System.EnvironmentVariableTarget]::User)
+                $env:URNETWORK_HOT_RESTART = "1"
                 Write-Host "URNETWORK_HOT_RESTART=1 set in user environment."
                 $restartNeeded = $true
+                break
             }
             "off" {
                 Write-Host "Disabling hot-restart"
                 [Environment]::SetEnvironmentVariable($envVarName, $null,
                     [System.EnvironmentVariableTarget]::User)
+                Remove-Item Env:\URNETWORK_HOT_RESTART -ErrorAction SilentlyContinue
                 Write-Host "URNETWORK_HOT_RESTART removed from user environment."
                 $restartNeeded = $true
+                break
             }
             "" {
+                # Note: reads persistent registry state (User scope), not the
+                # running provider's live environment — reports what the next
+                # fresh process will see, not the current session.
                 $val = [Environment]::GetEnvironmentVariable($envVarName,
                     [System.EnvironmentVariableTarget]::User)
                 if ($val -eq "1") {
