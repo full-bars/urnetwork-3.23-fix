@@ -1668,6 +1668,13 @@ toggle_ramlogs ()
             systemctl --user restart urnetwork.service
             pr_info "RAM logging disabled and service restarted."
             ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_RAMLOGS=1' "$override_file" 2>/dev/null; then
+                pr_info "RAM logging is enabled."
+            else
+                pr_info "RAM logging is off."
+            fi
+            ;;
         *)
             pr_err "Usage: urnet-tools ramlogs <on|off>"
             exit 1
@@ -1707,6 +1714,9 @@ detect_mem_limit_mib ()
 toggle_lowmode ()
 {
     mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
     case "$mode" in
         on)
             confirm_restart "Enabling lowmode requires restarting the URNetwork provider."
@@ -1731,6 +1741,15 @@ toggle_lowmode ()
             systemctl --user restart urnetwork.service
             pr_info "Lowmode disabled and service restarted."
             ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=lowmem' "$override_file" 2>/dev/null; then
+                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
+                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+                pr_info "Lowmode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
+            else
+                pr_info "Lowmode is off."
+            fi
+            ;;
         *)
             pr_err "Usage: urnet-tools lowmode <on|off>"
             exit 1
@@ -1741,6 +1760,9 @@ toggle_lowmode ()
 toggle_hotrestart ()
 {
     mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
     case "$mode" in
         on)
             confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
@@ -1759,6 +1781,13 @@ toggle_hotrestart ()
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart disabled and service restarted."
             ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=1' "$override_file" 2>/dev/null; then
+                pr_info "Hot-restart is enabled."
+            else
+                pr_info "Hot-restart is off."
+            fi
+            ;;
         *)
             pr_err "Usage: urnet-tools hot-restart <on|off>"
             exit 1
@@ -1769,6 +1798,9 @@ toggle_hotrestart ()
 toggle_ecomode ()
 {
     mode="$1"
+    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
+    override_file="$override_dir/override.conf"
+
     case "$mode" in
         on)
             confirm_restart "Enabling eco mode requires restarting the URNetwork provider."
@@ -1792,6 +1824,15 @@ toggle_ecomode ()
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Eco mode disabled and service restarted."
+            ;;
+        "")
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=eco' "$override_file" 2>/dev/null; then
+                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
+                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+                pr_info "Eco mode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
+            else
+                pr_info "Eco mode is off."
+            fi
             ;;
         *)
             pr_err "Usage: urnet-tools eco <on|off>"
@@ -3569,6 +3610,20 @@ case "$operation" in
         exit 0
         ;;
 
+    hot)
+        shift
+        case "$1" in
+            restart)
+                shift
+                toggle_hotrestart "$@"
+                exit 0
+                ;;
+            *)
+                pr_err "Usage: urnet-tools hot restart <on|off>"
+                exit 1
+                ;;
+        esac
+        ;;
     hot-restart)
         toggle_hotrestart "$@"
         exit 0
@@ -3609,6 +3664,20 @@ case "$operation" in
         exit 0
         ;;
 
+    fast)
+        shift
+        case "$1" in
+            auth)
+                shift
+                do_fast_auth "$@"
+                exit 0
+                ;;
+            *)
+                pr_err "Usage: urnet-tools fast auth [on|off]"
+                exit 1
+                ;;
+        esac
+        ;;
     fast-auth)
         do_fast_auth "$@"
         exit 0
