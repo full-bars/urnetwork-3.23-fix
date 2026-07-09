@@ -474,3 +474,133 @@ func TestBackoffPacer_ZeroStagger(t *testing.T) {
 		t.Fatal("canceled context with non-zero stagger must return false")
 	}
 }
+
+func TestAtomicWriteFile_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.file")
+
+	data := []byte("hello world")
+	if err := atomicWriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("expected %q, got %q", string(data), string(got))
+	}
+
+	// Verify no .tmp file left behind
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatal("expected .tmp file to be cleaned up")
+	}
+}
+
+func TestAtomicWriteFile_Overwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.file")
+
+	if err := atomicWriteFile(path, []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(path, []byte("second"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "second" {
+		t.Fatalf("expected 'second', got %q", string(got))
+	}
+}
+
+func TestApplyStagedSession_NoMarkerNoop(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	urDir := filepath.Join(dir, ".urnetwork")
+	os.MkdirAll(urDir, 0700)
+
+	// Create a real file that should NOT be touched
+	marker := filepath.Join(urDir, "should-survive")
+	os.WriteFile(marker, []byte("keep me"), 0600)
+
+	applyStagedSession()
+
+	// Verify marker still exists untouched
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Fatal("file was touched despite no staged session")
+	}
+}
+
+func TestApplyStagedSession_AppliesFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	urDir := filepath.Join(dir, ".urnetwork")
+	stagingDir := filepath.Join(urDir, ".session-staging")
+	pending := filepath.Join(urDir, ".session-pending")
+
+	os.MkdirAll(stagingDir, 0700)
+
+	// Write fake identity files into staging
+	os.WriteFile(filepath.Join(stagingDir, "jwt"), []byte("new-jwt"), 0600)
+	os.WriteFile(filepath.Join(stagingDir, ".client_jwts.json"), []byte(`{"x":"y"}`), 0600)
+	os.WriteFile(filepath.Join(stagingDir, ".provider.key"), []byte("new-key"), 0600)
+
+	// Write marker
+	os.WriteFile(pending, []byte("1"), 0600)
+
+	applyStagedSession()
+
+	// Verify files were moved
+	for _, f := range []string{"jwt", ".client_jwts.json", ".provider.key"} {
+		got, err := os.ReadFile(filepath.Join(urDir, f))
+		if err != nil {
+			t.Fatalf("expected %s to exist: %v", f, err)
+		}
+		if len(got) == 0 {
+			t.Fatalf("expected %s to be non-empty", f)
+		}
+	}
+
+	// Verify staging dir and marker are cleaned up
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Fatal("staging dir was not cleaned up")
+	}
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatal("pending marker was not cleaned up")
+	}
+}
+
+func TestJwtNetworkId_Valid(t *testing.T) {
+	// A minimal JWT with a network_id claim (unsigned — ParseUnverified is fine)
+	// {"network_id":"test-network-123"}=eyJ... (pre-encoded)
+	const testJwt = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJuZXR3b3JrX2lkIjoidGVzdC1uZXR3b3JrLTEyMyJ9."
+
+	networkId, ok := jwtNetworkId(testJwt)
+	if !ok {
+		t.Fatal("expected successful extraction")
+	}
+	if networkId != "test-network-123" {
+		t.Fatalf("expected network_id 'test-network-123', got %q", networkId)
+	}
+}
+
+func TestJwtNetworkId_Invalid(t *testing.T) {
+	// Garbage that won't parse as a JWT
+	if _, ok := jwtNetworkId("not-a-jwt"); ok {
+		t.Fatal("expected failure for garbage input")
+	}
+
+	// Empty string
+	if _, ok := jwtNetworkId(""); ok {
+		t.Fatal("expected failure for empty input")
+	}
+}
