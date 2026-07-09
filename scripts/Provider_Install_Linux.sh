@@ -29,8 +29,12 @@ show_help ()
     echo "  eco <on|off>             🌿  ECO MODE GC-tuned for low-RAM systems"
     echo "  lowmode <on|off>         🧊  LOW-MEMORY reduced buffers for max RAM savings"
     echo "  ramlogs <on|off>         📝  RAM LOGS zero disk I/O logging"
-    echo "  hot-restart <on|off>     ♻   EXPERIMENTAL reuse client_ids across restarts"
+    echo "  hot-restart <on|off>     ♻   reuse client_ids across restarts"
     echo "  optimize                 ⚡  Apply Golden Fleet OS/kernel limits"
+    echo ""
+    echo "Session:"
+    echo "  session save <file>      💾  Export identity+proxy state (encrypted)"
+    echo "  session load <file>      📥  Import identity+proxy state, then restart"
     echo ""
     echo "Proxy Management:"
     echo "  auth [<code>]            🔑  Authenticate (omit for interactive paste)"
@@ -3549,6 +3553,185 @@ EOF
     fi
 }
 
+do_session ()
+{
+    action="$1"
+    file="$2"
+    state_dir="$HOME/.urnetwork"
+    staging_dir="$state_dir/.session-staging"
+    provider_bin="$install_path/bin/urnetwork"
+
+    case "$action" in
+        save)
+            if [ -z "$file" ]; then
+                pr_err "Usage: urnet-tools session save <file>"
+                exit 1
+            fi
+
+            pr_info "WARNING: This bundle contains full identity and reputation"
+            pr_info "credentials for this provider's fleet. Treat it like a password."
+            printf "\n"
+
+            printf "Enter encryption passphrase (will NOT echo): "
+            stty -echo
+            read -r pass1 < /dev/tty
+            stty echo
+            printf "\n"
+            printf "Confirm passphrase: "
+            stty -echo
+            read -r pass2 < /dev/tty
+            stty echo
+            printf "\n"
+            if [ "$pass1" != "$pass2" ]; then
+                pr_err "Passphrases do not match."
+                exit 1
+            fi
+
+            files=""
+            for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                if [ -f "$state_dir/$f" ]; then
+                    files="$files $f"
+                fi
+            done
+
+            set -o pipefail
+            if ! tar -czf - -C "$state_dir" $files 2>/dev/null | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$pass1" -out "$file"; then
+                pr_err "Failed to create session bundle."
+                exit 1
+            fi
+            set +o pipefail
+
+            chmod 600 "$file" 2>/dev/null
+            pr_info "Session saved to %s" "$file"
+            ;;
+
+        load)
+            if [ -z "$file" ]; then
+                pr_err "Usage: urnet-tools session load <file>"
+                exit 1
+            fi
+            if [ ! -f "$file" ]; then
+                pr_err "Session file '%s' not found." "$file"
+                exit 1
+            fi
+
+            if [ ! -x "$provider_bin" ]; then
+                pr_err "Provider binary not found at %s. Is it installed?" "$provider_bin"
+                exit 1
+            fi
+
+            # Scan trailing args for --force/-f (global --force is consumed
+            # before the operation word; the session subcommand sees $3+).
+            shift 2
+            for arg in "$@"; do
+                if [ "$arg" = "--force" ] || [ "$arg" = "-f" ]; then
+                    FORCE=1
+                fi
+            done
+
+            printf "Enter passphrase: "
+            stty -echo
+            read -r pass < /dev/tty
+            stty echo
+            printf "\n"
+
+            tmpdir="$state_dir/.session-tmp-$$"
+            mkdir -p "$tmpdir"
+
+            set -o pipefail
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$pass" -in "$file" | tar -xzf - -C "$tmpdir"; then
+                pr_err "Failed to decrypt session bundle (wrong passphrase or corrupt file)."
+                rm -rf "$tmpdir"
+                exit 1
+            fi
+            set +o pipefail
+
+            if [ ! -f "$tmpdir/jwt" ]; then
+                pr_err "Session bundle is missing 'jwt' file. Is this a valid session bundle?"
+                rm -rf "$tmpdir"
+                exit 1
+            fi
+
+            current_id=""
+            if [ -f "$state_dir/jwt" ]; then
+                current_id="$("$provider_bin" print-network-id "$state_dir/jwt" 2>/dev/null)"
+            fi
+            new_id="$("$provider_bin" print-network-id "$tmpdir/jwt" 2>/dev/null)"
+
+            if [ -z "$new_id" ]; then
+                pr_err "Could not extract network_id from the session bundle's JWT."
+                pr_err "The bundle may be corrupted or the JWT is invalid."
+                rm -rf "$tmpdir"
+                exit 1
+            fi
+
+            if [ -n "$current_id" ] && [ "$new_id" != "$current_id" ]; then
+                pr_err "Network ID mismatch."
+                pr_err "  Current account: %s" "$current_id"
+                pr_err "  Session account: %s" "$new_id"
+                pr_err "Session bundles can only be loaded under the same URnetwork account."
+                if [ "$FORCE" != "1" ]; then
+                    rm -rf "$tmpdir"
+                    exit 1
+                fi
+                pr_info "Proceeding anyway (--force)."
+            fi
+
+            backup_dir="$state_dir/.session-backup-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$backup_dir"
+            for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                if [ -f "$state_dir/$f" ]; then
+                    cp "$state_dir/$f" "$backup_dir/$f"
+                fi
+            done
+            pr_info "Backed up current session to %s" "$backup_dir"
+
+            rm -rf "$staging_dir"
+            mkdir -p "$staging_dir"
+            for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                if [ -f "$tmpdir/$f" ]; then
+                    mv "$tmpdir/$f" "$staging_dir/$f"
+                fi
+            done
+            rm -rf "$tmpdir"
+
+            touch "$state_dir/.session-pending"
+
+            # Warn about entries near the 30-day stale cutoff
+            if [ -f "$staging_dir/.client_jwts.json" ]; then
+                mint_count=$(grep -c '"minted_at"' "$staging_dir/.client_jwts.json" 2>/dev/null || echo 0)
+                pr_info "Session contains %s client JWT entries." "$mint_count"
+                pr_info "Note: entries older than 30 days will be automatically pruned"
+                pr_info "on next startup."
+            fi
+
+            printf "\n"
+            while true; do
+                printf "Restart provider now to apply loaded session? (Y/n): "
+                read -r yn < /dev/tty
+                case $yn in
+                    [Nn]*) 
+                        pr_info "Session staged. Run 'urnet-tools restart' when ready."
+                        break
+                        ;;
+                    [Yy]* | "")
+                        pr_info "Restarting urnetwork.service..."
+                        systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+                        pr_info "Service restarted with new session."
+                        break
+                        ;;
+                    *) printf "Please answer yes or no.\n" ;;
+                esac
+            done
+            ;;
+    
+        *)
+            pr_err "Usage: urnet-tools session <save|load> <file>"
+            exit 1
+            ;;
+    esac
+}
+
 case "$operation" in
     install|update|reinstall)
         do_install "$@"
@@ -3685,6 +3868,11 @@ case "$operation" in
 
     set)
         do_set "$@"
+        exit 0
+        ;;
+
+    session)
+        do_session "$@"
         exit 0
         ;;
 
