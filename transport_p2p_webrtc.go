@@ -16,6 +16,32 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+var (
+	ipv6CheckOnce sync.Once
+	ipv6OK        bool
+)
+
+// stunIPv6Addr is an IPv6 address of one of the STUN servers from
+// DefaultWebRtcSettings. Used by ipv6Available to probe whether the host can
+// actually route IPv6 UDP to the internet — some servers have link-local or
+// tunnel IPv6 but no default route, making pion/ICE's IPv6 candidate gathering
+// fail with "network is unreachable" on every STUN attempt.
+const stunIPv6Addr = "[2001:4860:4864:5:8000::1]:19302"
+
+// ipv6Available checks once whether the host can reach an IPv6 STUN server.
+// When it returns false, ICE candidate gathering is restricted to IPv4, saving
+// connection setup time and eliminating log noise on IPv6-unreachable hosts.
+func ipv6Available() bool {
+	ipv6CheckOnce.Do(func() {
+		conn, err := net.DialTimeout("udp6", stunIPv6Addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			ipv6OK = true
+		}
+	})
+	return ipv6OK
+}
+
 type WebRtcConn interface {
 	net.Conn
 	Connected() bool
