@@ -4,6 +4,98 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.25.14] — 2026-07-08
+
+### Added
+
+**Critical event log** (#242): New `~/.urnetwork/events.log` on disk (not RAM) — 1MB capped, auto-rotating file that survives restarts. Captures STARTUP, SIGNAL, PROVIDER EXIT, PANIC, and FATAL events. Provides a permanent forensic trail even when `/dev/shm` logs are wiped by a restart.
+
+**RAM logs survive restarts** (#242): `shmLogPath` and `shmImportantLogPath` now open with `O_APPEND` instead of `O_TRUNC`. Previous run logs are preserved with a `--- provider restarted at ...` separator.
+
+**Panic hook in `connect` package** (#242): `connect.CritLogger` / `connect.LogCritical()` writes recovered panics from any networking goroutine to the disk-based events.log.
+
+**Release notes backlog** (#243): Release notes for v3.23.0-fix.25.6 through 25.13 are now written and committed.
+
+---
+
+## [v3.23.0-fix.25.13]
+
+### Fixed
+
+**Best Proxies fresher last-seen**: UNION scan of `proxy_node_hourly` alongside `proxy_fleet_daily` for today-accurate timestamps.
+
+### Changed
+
+**x/crypto v0.51.0 → v0.52.0**: Resolves 7 critical CVEs.
+
+---
+
+## [v3.23.0-fix.25.12]
+
+### Added
+
+**Sortable dashboard columns**: Best Proxies and Proxies tables support click-to-sort on all columns.
+
+---
+
+## [v3.23.0-fix.25.11]
+
+### Added
+
+**`proxy remove-dead --auth-failures=N`**: Per-address auth failure threshold with 250/day rate limit. Self-healing skip of currently-up proxies.
+
+---
+
+## [v3.23.0-fix.25.10]
+
+### Added
+
+**Hub dashboard charts**: Added Mbps throughput, Billable %, and Contract Win Rate charts. Fixed chart overflow.
+
+**AI.md operations guide**: Comprehensive guide for provider + hub operations.
+
+---
+
+## [v3.23.0-fix.25.9]
+
+### Fixed
+
+**Dash shell compatibility**: Removed `set -e` and added `|| true` guards on `curl` assignments in `onboard.sh`.
+
+---
+
+## [v3.23.0-fix.25.8]
+
+### Added
+
+**Hash-based URL routing**: Dashboard sections now bookmarkable (`#overview`, `#servers`, `#proxies`, `#contracts`, `#best`).
+
+### Fixed
+
+**Onboard script**: HTTP fallback double-port bug, added direct `/api/cert` fallback.
+
+---
+
+## [v3.23.0-fix.25.7]
+
+### Fixed
+
+**SQLite index hint**: Forced `INDEXED BY idx_pnh_hour_proxy` on live-tail scan to prevent query planner from picking the wrong index.
+
+---
+
+## [v3.23.0-fix.25.6]
+
+### Fixed
+
+**Hub dashboard**: SSE debounce to 5s, sort state survives table rebuilds, composite index on `proxy_node_hourly(hour, proxy_id)`, rate limiter removed (Caddy handles it).
+
+### Changed
+
+**CI**: Renamed `hub-v*` Docker tags to `hub-docker-v*` to clarify they are Docker-only.
+
+---
+
 ## [Unreleased]
 
 ### Fixed

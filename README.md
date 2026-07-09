@@ -14,6 +14,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
 | Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
+| Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
 
 ---
 
