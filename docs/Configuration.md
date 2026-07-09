@@ -27,6 +27,15 @@
 | `PROXY_URL_MAX` | unlimited | Caps total proxies sourced from `PROXY_URL`. |
 | `PROXY_DEAD_CLEANUP_SCOPE` | `none` | `none`, `url`, or `all` — which sources the automatic daily dead-proxy cleanup may touch. |
 | `PROXY_DEAD_CLEANUP_INTERVAL` | `24h` | Cadence of the automatic cleanup job, when scope isn't `none`. |
+| `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
+
+## 📝 Critical Event Log
+
+Since v3.23.0-fix.25.14, the provider writes a per-process event log to `~/.urnetwork/events.log` (on disk, not RAM — survives restarts). It records STARTUP, SIGNAL, PROVIDER EXIT, PANIC, and FATAL events. Capped at 1 MiB with automatic rotation.
+
+```bash
+cat ~/.urnetwork/events.log
+```
 
 ## 🎛️ Profile Selection
 
