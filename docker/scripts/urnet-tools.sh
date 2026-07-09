@@ -262,6 +262,134 @@ case "$operation" in
             *) echo "Unknown hub command: $subcmd (try 'link', 'unlink', 'onboard-cmd', 'show-password')"; exit 1 ;;
         esac
         ;;
+    session)
+        subcmd="${1:-}"; shift || true
+        state_dir="/root/.urnetwork"
+        staging_dir="$state_dir/.session-staging"
+        provider_bin="/usr/local/bin/provider"
+
+        case "$subcmd" in
+            save)
+                file="${1:-}"
+                [ -n "${file:-}" ] || { echo "Usage: urnet-tools session save <file>"; exit 1; }
+                [ -t 0 ] || { echo "ERROR: session save requires an interactive TTY (use 'docker exec -it')."; exit 1; }
+
+                echo "WARNING: This bundle contains full identity and reputation"
+                echo "credentials for this provider's fleet. Treat it like a password."
+                echo ""
+
+                printf "Enter encryption passphrase (will NOT echo): "
+                stty -echo 2>/dev/null || true
+                read -r pass1 < /dev/tty
+                stty echo 2>/dev/null || true
+                echo ""
+                printf "Confirm passphrase: "
+                stty -echo 2>/dev/null || true
+                read -r pass2 < /dev/tty
+                stty echo 2>/dev/null || true
+                echo ""
+                [ "$pass1" = "$pass2" ] || { echo "ERROR: Passphrases do not match."; exit 1; }
+
+                files=""
+                for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                    [ -f "$state_dir/$f" ] && files="$files $f"
+                done
+
+                tar -czf - -C "$state_dir" $files 2>/dev/null | \
+                    openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$pass1" -out "$file" || { echo "ERROR: Failed to create session bundle."; exit 1; }
+                chmod 600 "$file" 2>/dev/null || true
+                echo "Session saved to $file"
+                echo "Retrieve with: docker cp <container>:$file ."
+                ;;
+
+            load)
+                file="${1:-}"
+                [ -n "${file:-}" ] || { echo "Usage: urnet-tools session load <file> [--force]"; exit 1; }
+                shift || true
+                _force=0
+                for _a in "$@"; do
+                    [ "$_a" = "--force" ] || [ "$_a" = "-f" ] && _force=1
+                done
+                [ -f "$file" ] || { echo "ERROR: Session file '$file' not found."; exit 1; }
+                [ -x "$provider_bin" ] || { echo "ERROR: Provider binary not found at $provider_bin."; exit 1; }
+                [ -t 0 ] || { echo "ERROR: session load requires an interactive TTY (use 'docker exec -it')."; exit 1; }
+
+                printf "Enter passphrase: "
+                stty -echo 2>/dev/null || true
+                read -r pass < /dev/tty
+                stty echo 2>/dev/null || true
+                echo ""
+
+                tmpdir="$state_dir/.session-tmp-$$"
+                mkdir -p "$tmpdir"
+
+                openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$pass" -in "$file" | \
+                    tar -xzf - -C "$tmpdir" || { echo "ERROR: Failed to decrypt (wrong passphrase or corrupt file)."; rm -rf "$tmpdir"; exit 1; }
+
+                [ -f "$tmpdir/jwt" ] || { echo "ERROR: Bundle is missing 'jwt' file. Not a valid session bundle."; rm -rf "$tmpdir"; exit 1; }
+
+                current_id="$("$provider_bin" print-network-id "$state_dir/jwt" 2>/dev/null || true)"
+                new_id="$("$provider_bin" print-network-id "$tmpdir/jwt" 2>/dev/null || true)"
+
+                [ -n "$new_id" ] || { echo "ERROR: Could not extract network_id from bundle JWT. Bundle may be corrupt."; rm -rf "$tmpdir"; exit 1; }
+
+                if [ -n "$current_id" ] && [ "$new_id" != "$current_id" ]; then
+                    echo "ERROR: Network ID mismatch."
+                    echo "  Current account: $current_id"
+                    echo "  Session account: $new_id"
+                    echo "Session bundles can only be loaded under the same URnetwork account."
+                    [ "$_force" = "1" ] || { rm -rf "$tmpdir"; exit 1; }
+                    echo "Proceeding anyway (--force)."
+                fi
+
+                backup_dir="$state_dir/.session-backup-$(date +%Y%m%d-%H%M%S)"
+                mkdir -p "$backup_dir"
+                for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                    [ -f "$state_dir/$f" ] && cp "$state_dir/$f" "$backup_dir/$f"
+                done
+                echo "Backed up current session to $backup_dir"
+
+                rm -rf "$staging_dir"
+                mkdir -p "$staging_dir"
+                for f in .client_jwts.json jwt jwt_last_refresh .provider.key .provider.cert proxy proxy_url.json proxy.state; do
+                    [ -f "$tmpdir/$f" ] && mv "$tmpdir/$f" "$staging_dir/$f"
+                done
+                rm -rf "$tmpdir"
+                touch "$state_dir/.session-pending"
+
+                if [ -f "$staging_dir/.client_jwts.json" ]; then
+                    _cnt="$(grep -c '"minted_at"' "$staging_dir/.client_jwts.json" 2>/dev/null || echo 0)"
+                    echo "Session contains $_cnt client JWT entries."
+                    echo "Note: entries older than 30 days are auto-pruned on startup."
+                fi
+
+                echo ""
+                printf "Restart provider now to apply loaded session? (Y/n): "
+                read -r yn < /dev/tty
+                case "$yn" in
+                    [Nn]*) echo "Session staged. Restart the container to apply." ;;
+                    *)
+                        echo "Killing provider to trigger restart..."
+                        pkill -f "urnetwork.*provide" 2>/dev/null || true
+                        echo "Provider restarted with new session."
+                        ;;
+        esac
+        ;;
+
+            *)
+                echo "Usage: urnet-tools session <save|load> <file>"
+                echo "  save <file>              Encrypt and export identity+proxy state"
+                echo "  load <file> [--force]    Decrypt and import, then restart"
+                echo ""
+                echo "Save: docker exec -it <container> urnet-tools session save /root/.urnetwork/name.urnsession"
+                echo "      docker cp <container>:/root/.urnetwork/name.urnsession ."
+                echo "Load: docker cp file.urnsession <container>:/root/.urnetwork/"
+                echo "      docker exec -it <container> urnet-tools session load /root/.urnetwork/file.urnsession"
+                exit 1
+                ;;
+        esac
+        ;;
+
     *)
         echo "Operation '$operation' is not supported in Docker or should be handled via 'docker' commands (start/stop/restart)."
         exit 1
