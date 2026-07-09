@@ -484,6 +484,71 @@ func jwtNetworkId(byJwt string) (string, bool) {
 	return networkId, ok
 }
 
+func printNetworkIdCmd(opts docopt.Opts) {
+	filePath, _ := opts.String("<file>")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: cannot read %s: %v\n", filePath, err)
+		os.Exit(1)
+	}
+	byJwt := strings.TrimSpace(string(data))
+	networkId, ok := jwtNetworkId(byJwt)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "ERROR: could not extract network_id from %s\n", filePath)
+		os.Exit(1)
+	}
+	fmt.Println(networkId)
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// applyStagedSession atomically swaps in identity and proxy-list files
+// from ~/.urnetwork/.session-staging/ if a .session-pending marker exists.
+// This is the provider-side counterpart to `urnet-tools session load`:
+// the shell wrapper writes files to staging, and the provider applies
+// them on the next startup so the running process never sees a partial
+// or torn set of files.
+func applyStagedSession() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	urNetworkDir := filepath.Join(home, ".urnetwork")
+	stagingDir := filepath.Join(urNetworkDir, ".session-staging")
+	pending := filepath.Join(urNetworkDir, ".session-pending")
+
+	if _, err := os.Stat(pending); os.IsNotExist(err) {
+		return
+	}
+
+	tlog("[session] applying staged session from %s\n", stagingDir)
+
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		tlog("[session] could not read staging dir: %v\n", err)
+		return
+	}
+	for _, e := range entries {
+		src := filepath.Join(stagingDir, e.Name())
+		dst := filepath.Join(urNetworkDir, e.Name())
+		if err := os.Rename(src, dst); err != nil {
+			tlog("[session] rename %s -> %s failed: %v\n", src, dst, err)
+		}
+	}
+	os.RemoveAll(stagingDir)
+	os.Remove(pending)
+	tlog("[session] staged session applied\n")
+}
+
 func runEcoMemoryMonitor(ctx context.Context) {
 	const (
 		criticalMiB int64 = 150
@@ -624,6 +689,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider logs [-n <lines>]
+    provider print-network-id <file>
 
 Options:
     -h --help                        Show this help and exit.
@@ -715,6 +781,8 @@ Options:
 		provide(opts)
 	} else if logs, _ := opts.Bool("logs"); logs {
 		providerLogs(opts)
+	} else if printNetworkId, _ := opts.Bool("print-network-id"); printNetworkId {
+		printNetworkIdCmd(opts)
 	}
 }
 
@@ -856,7 +924,7 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		if err := os.WriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -1682,7 +1750,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	}
 
 	writeLastRefreshTime := func(t time.Time) error {
-		return os.WriteFile(lastRefreshPath, []byte(strconv.FormatInt(t.Unix(), 10)), 0700)
+		return atomicWriteFile(lastRefreshPath, []byte(strconv.FormatInt(t.Unix(), 10)), 0700)
 	}
 
 	ticker := time.NewTicker(1 * time.Hour)
@@ -1723,7 +1791,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
 					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
-				} else if err := os.WriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
 					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
@@ -1803,6 +1871,13 @@ func provide(opts docopt.Opts) {
 	applyPoolAutoSize(maxMemory)
 
 	provideStartTime = time.Now()
+
+	// Apply a staged session (from `urnet-tools session load`) before
+	// loading any identity or starting transports. The staging dir and
+	// marker file are written by the shell wrapper; the provider's job
+	// is to atomically swap them in on the next startup.
+	applyStagedSession()
+
 	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
 	host, _ := os.Hostname()
 	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
@@ -2544,7 +2619,7 @@ func writeProviderClientKeySeed(seed []byte) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(p, seed, 0600)
+	return atomicWriteFile(p, seed, 0600)
 }
 
 // readProviderTlsCertAndKey loads the sequence-level TLS server cert
@@ -2604,7 +2679,7 @@ func writeProviderTlsCertAndKey(certPem, keyPem []byte) error {
 	out := make([]byte, 0, len(certPem)+len(keyPem))
 	out = append(out, certPem...)
 	out = append(out, keyPem...)
-	return os.WriteFile(p, out, 0600)
+	return atomicWriteFile(p, out, 0600)
 }
 
 // proxyAuthRetryDelay picks the wait before the next auth retry. A 429 means
@@ -4397,7 +4472,7 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 		panic(err)
 	}
 
-	err = os.WriteFile(proxyPath, b, 0700)
+	err = atomicWriteFile(proxyPath, b, 0700)
 	if err != nil {
 		panic(err)
 	}
