@@ -4,7 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
-## [v3.23.0-fix.25.15] — 2026-07-09
+## [v3.23.0-fix.26] — 2026-07-09
+
+### Hot-Restart Enabled by Default
+
+`hotRestartEnabled()` now returns `true` unless `URNETWORK_HOT_RESTART=0` is set. Client JWTs are reused across restarts without any opt-in flag — the write path was already un-gated (v25.15), now the read path follows. Set `=0` to disable.
+
+Platform toggles updated:
+- **Linux**: `hot-restart off` sets `URNETWORK_HOT_RESTART=0` in override.conf
+- **macOS**: `hot-restart off` sets `=0` in launchd plist  
+- **Windows**: `hot-restart off` sets `=0` in user env
+- `hot-restart on` removes the flag (falls back to Go default = true)
 
 ### Added
 
