@@ -4,7 +4,43 @@ All notable changes to this project are documented here.
 
 ---
 
-## [v3.23.0-fix.25.14] — 2026-07-08
+## [v3.23.0-fix.25.15] — 2026-07-09
+
+### Added
+
+**Session save/load** (#250): New `urnet-tools session save <file>` / `session load <file>` commands. Encrypted via `openssl aes-256-cbc -pbkdf2`, bundles all 7 identity and proxy-list files from `~/.urnetwork/`, with password-prompted passphrase. Network ID check on load prevents cross-account transfer.
+
+**`provider print-network-id <file>`** (#250): New hidden CLI subcommand that extracts the `network_id` JWT claim using the existing `gojwt` parser, used by the session load safety gate.
+
+**Atomic file writes** (#250): 6 file paths (`jwt`, `jwt_last_refresh`, `.provider.key`, `.provider.cert`, `proxy`) converted from `os.WriteFile` to `os.CreateTemp` + `os.Rename`. Enables `session save` against a live, traffic-serving provider without torn-file risk.
+
+**`applyStagedSession()`** (#250): New Go function called early in `provide()`. Checks for `~/.urnetwork/.session-pending` marker and atomically swaps files from `.session-staging/` → live directory. This is the mechanism that lets `session load` run safely without stopping the provider.
+
+**macOS native installer** (#252): New `Provider_Install_Mac.sh` — supports `install`, `start/stop/restart/status` (via launchctl), `hot-restart on|off`, `session save|load`, `proxy`, `hub`, `auth`, `logs`. Installs binary to `~/.local/share/urnetwork-provider/`, creates launchd plist with KeepAlive, strips quarantine xattr.
+
+**macOS CI builds** (#252): `release.yml` expanded to build and publish `darwin/amd64` and `darwin/arm64` binaries alongside linux. Release tarball includes `darwin/` directory.
+
+**Windows hot-restart toggle** (#251): `urnet-tools.ps1 hot-restart on|off`. Sets/removes `URNETWORK_HOT_RESTART` as user-level env var, with process-level `$env:URNETWORK_HOT_RESTART` propagation so immediate `Start-Process` restart inherits it. Help text reorganized matching Linux PR #245.
+
+**Docker session save/load** (#253): `session save|load` commands added to `docker/scripts/urnet-tools.sh`. Interactive TTY guard prompts if `-it` is omitted. Restart via `pkill` triggers start script crash loop.
+
+### Fixed
+
+**Passphrase cmdline leak** (#254): All `openssl enc -pass "pass:$var"` invocations changed to `-pass "file:$_pf"` with temp file and immediate cleanup. Passphrase no longer visible in `ps` output.
+
+**Mac installer `$0` fix** (#254): `cp "$0"` replaced with GitHub raw URL download — `cp "$0"` fails silently when invoked via `curl | sh`.
+
+**Atomic writes safety** (#254): `atomicWriteFile` changed from fixed `path + ".tmp"` to `os.CreateTemp(dir, name+".*.tmp")` to avoid temp file collision under concurrent `.provider.key`/`.cert` writers.
+
+**`--force` parsing** (#254): Session load now scans `$3+` for `--force/-f` — previously silently dropped when placed after the file path.
+
+**Bundle JWT validation** (#254): Hard-fail if `print-network-id` returns empty (corrupt bundle JWT) — previously silently bypassed the network_id gate.
+
+### Security
+
+- Session bundles: `openssl aes-256-cbc -pbkdf2`, password-required
+- Network ID safety gate on load prevents cross-account identity transfer
+- Temp files `0600`, cleaned up on both success and error paths
 
 ### Added
 
