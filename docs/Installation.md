@@ -12,7 +12,7 @@ The provider is designed to run as a **non-privileged user service** for maximum
 Install:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh -s -- install
 ```
 
 Uninstall:
@@ -44,10 +44,16 @@ The macOS installer is the equivalent of the Linux installer but uses `launchd` 
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install
 ```
 
-Uninstall:
+Uninstall (manual — macOS uninstall script not yet available):
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
+# Remove binary and service files
+rm -rf ~/.local/share/urnetwork-provider
+launchctl unload ~/Library/LaunchAgents/com.urnetwork.provider.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.urnetwork.provider.plist
+# Remove identity and proxy data (⚠️ deletes all JWTs and proxy state)
+rm -rf ~/.urnetwork
+# Remove PATH additions from ~/.bashrc / ~/.zshrc
 ```
 
 ### What gets installed
@@ -112,6 +118,62 @@ The installation includes the `urnet-tools` suite for management:
 | `urnet-tools ramlogs on/off` | Toggle RAM-disk logging independently. |
 | `urnet-tools update` | Upgrade to the latest version (prompts before restarting the provider). |
 | `urnet-tools update -f` | Non-interactive upgrade: stop, update, and restart the provider with no prompts. Use in scripts/automation. |
+
+## 🪟 Windows Installation
+
+Install via PowerShell (no admin required):
+
+```powershell
+powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 | iex"
+```
+
+Uninstall via PowerShell (no admin required):
+
+```powershell
+powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Win32.ps1 | iex"
+```
+
+### What gets installed
+
+| Component | Location |
+|-----------|----------|
+| Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
+| Management scripts | `%LOCALAPPDATA%\urnetwork\provider\urnet-tools.ps1` + `urnetwork-updater.ps1` |
+| State directory | `%USERPROFILE%\.urnetwork\` |
+| Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
+| PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
+
+### Post-install commands
+
+```powershell
+# Authenticate
+urnetwork auth
+
+# Start in foreground
+urnetwork provide
+
+# Start in background
+urnet-tools.ps1 start
+
+# Manage proxies
+urnet-tools.ps1 proxy add C:\Users\You\proxies.txt
+urnet-tools.ps1 proxy refresh
+urnet-tools.ps1 proxy summary
+
+# View logs
+urnet-tools.ps1 logs
+
+# Hot-restart toggle
+urnet-tools.ps1 hot-restart on
+urnet-tools.ps1 hot-restart off
+
+# Session save/load
+urnet-tools.ps1 session save C:\Users\You\backup.urnsession
+urnet-tools.ps1 session load C:\Users\You\backup.urnsession
+
+# Update
+urnet-tools.ps1 update
+```
 
 ## 📊 System Auditor & Host Optimization
 
