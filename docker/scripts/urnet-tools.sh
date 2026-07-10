@@ -421,12 +421,12 @@ case "$operation" in
         version="$(echo "$release_json" | jq -r '.tag_name // empty')"
         [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
 
-        download_url="$(echo "$release_json" | jq -r '.assets[] | select(.name | contains("linux-'"$arch"'")) | .browser_download_url // empty' | head -n1)"
+        download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
         [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
 
         current_version="unknown"
         if [ -x "$provider_bin" ]; then
-            current_version="$($provider_bin -v 2>/dev/null || echo "unknown")"
+            current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
         fi
         echo "Current version: $current_version"
         echo "Latest version: $version"
