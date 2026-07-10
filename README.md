@@ -39,10 +39,10 @@ Choose your platform:
 
 | Platform | Install | Uninstall |
 |----------|---------|-----------|
-| 🐧 Linux (systemd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh \| sh -s -- install` | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh \| sh` |
-| 🍎 macOS (launchd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh \| sh -s -- install` | (not yet available — remove `~/.local/share/urnetwork-provider` and `~/.urnetwork` manually) |
-| 🪟 Windows (PowerShell) | `powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 \| iex"` | `powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Win32.ps1 \| iex"` |
-| 🐋 Docker | `docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest` | `docker rm -f <container>` + `docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest` |
+| 🐧 Linux (systemd) | [`curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh \| sh -s -- install`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh) | [`curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh \| sh`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh) |
+| 🍎 macOS (launchd) | [`curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh \| sh -s -- install`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh) | manual — see [docs/Installation.md](docs/Installation.md) |
+| 🪟 Windows (PowerShell) | [`irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 \| iex`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1) | [`irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Win32.ps1 \| iex`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Win32.ps1) |
+| 🐋 Docker | `docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest` | `docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest` |
 
 After installation, authenticate and start providing:
 
