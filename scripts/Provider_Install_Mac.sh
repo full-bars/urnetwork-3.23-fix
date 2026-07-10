@@ -200,8 +200,9 @@ do_install() {
     # Remove quarantine attribute
     xattr -d com.apple.quarantine "$provider_bin" 2>/dev/null || true
 
-    # Install this script as the tools wrapper
-    cp "$0" "$install_path/bin/urnet-tools" 2>/dev/null || true
+    # Install the tools wrapper (download from GitHub — curl|sh means $0 isn't a file path)
+    curl -fsSL "$github_raw/scripts/Provider_Install_Mac.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+    chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
 
     # Create launchd plist
     mkdir -p "$(dirname "$plist_path")"
@@ -375,12 +376,17 @@ do_session() {
                 fi
             done
 
+            _pf="$(mktemp /tmp/urnsession-XXXXXX)"
+            printf '%s' "$pass1" > "$_pf"
+            chmod 600 "$_pf"
             set -o pipefail
-            if ! tar -czf - -C "$state_dir" $files 2>/dev/null | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$pass1" -out "$file"; then
+            if ! tar -czf - -C "$state_dir" $files 2>/dev/null | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:$_pf" -out "$file"; then
+                rm -f "$_pf"
                 pr_err "Failed to create session bundle."
                 exit 1
             fi
             set +o pipefail
+            rm -f "$_pf"
 
             chmod 600 "$file" 2>/dev/null
             pr_info "Session saved to %s" "$file"
@@ -418,13 +424,18 @@ do_session() {
             tmpdir="$state_dir/.session-tmp-$$"
             mkdir -p "$tmpdir"
 
+            _pf="$(mktemp /tmp/urnsession-XXXXXX)"
+            printf '%s' "$pass" > "$_pf"
+            chmod 600 "$_pf"
             set -o pipefail
-            if ! openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$pass" -in "$file" | tar -xzf - -C "$tmpdir"; then
-                pr_err "Failed to decrypt session bundle (wrong passphrase or corrupt file)."
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:$_pf" -in "$file" | tar -xzf - -C "$tmpdir"; then
+                rm -f "$_pf"
                 rm -rf "$tmpdir"
+                pr_err "Failed to decrypt session bundle (wrong passphrase or corrupt file)."
                 exit 1
             fi
             set +o pipefail
+            rm -f "$_pf"
 
             if [ ! -f "$tmpdir/jwt" ]; then
                 pr_err "Session bundle is missing 'jwt' file. Is this a valid session bundle?"
