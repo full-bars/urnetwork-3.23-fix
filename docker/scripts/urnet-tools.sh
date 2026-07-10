@@ -295,8 +295,14 @@ case "$operation" in
                     [ -f "$state_dir/$f" ] && files="$files $f"
                 done
 
+                _pf="$(mktemp /tmp/urnsession-XXXXXX)"
+                printf '%s' "$pass1" > "$_pf"
+                chmod 600 "$_pf"
+                set -o pipefail
                 tar -czf - -C "$state_dir" $files 2>/dev/null | \
-                    openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$pass1" -out "$file" || { echo "ERROR: Failed to create session bundle."; exit 1; }
+                    openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:$_pf" -out "$file" || { rm -f "$_pf"; echo "ERROR: Failed to create session bundle."; exit 1; }
+                set +o pipefail
+                rm -f "$_pf"
                 chmod 600 "$file" 2>/dev/null || true
                 echo "Session saved to $file"
                 echo "Retrieve with: docker cp <container>:$file ."
@@ -323,8 +329,14 @@ case "$operation" in
                 tmpdir="$state_dir/.session-tmp-$$"
                 mkdir -p "$tmpdir"
 
-                openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$pass" -in "$file" | \
-                    tar -xzf - -C "$tmpdir" || { echo "ERROR: Failed to decrypt (wrong passphrase or corrupt file)."; rm -rf "$tmpdir"; exit 1; }
+                _pf="$(mktemp /tmp/urnsession-XXXXXX)"
+                printf '%s' "$pass" > "$_pf"
+                chmod 600 "$_pf"
+                set -o pipefail
+                openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:$_pf" -in "$file" | \
+                    tar -xzf - -C "$tmpdir" || { rm -f "$_pf"; rm -rf "$tmpdir"; echo "ERROR: Failed to decrypt (wrong passphrase or corrupt file)."; exit 1; }
+                set +o pipefail
+                rm -f "$_pf"
 
                 [ -f "$tmpdir/jwt" ] || { echo "ERROR: Bundle is missing 'jwt' file. Not a valid session bundle."; rm -rf "$tmpdir"; exit 1; }
 
