@@ -41,7 +41,7 @@ Choose your platform:
 |----------|----------------|
 | 🐧 Linux (systemd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh -s -- install` |
 | 🍎 macOS (launchd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install` |
-| 🪟 Windows (PowerShell) | After installing from GitHub Releases, use `urnet-tools.ps1` in the install directory |
+| 🪟 Windows (PowerShell) | `powershell -c "iwr -Uri https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 -OutFile %TEMP%\installer.ps1; & %TEMP%\installer.ps1"` |
 | 🐋 Docker | `docker run -d --name=urnetwork --pull=always --restart=unless-stopped --cap-add=NET_ADMIN --cap-add=NET_RAW -e BUILD=jwt -v /path/to/proxy.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE` |
 
 After installation, authenticate and start providing:
