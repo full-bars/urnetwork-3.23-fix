@@ -180,26 +180,24 @@ func TestJWTNetworkId(t *testing.T) {
 // must default to off unless explicitly opted into via URNETWORK_HOT_RESTART=1
 // (urnet-tools hot-restart on). Getting this default wrong would silently
 // re-enable an unconfirmed-reliable feature fleet-wide on upgrade.
-func TestHotRestartEnabledDefaultsOff(t *testing.T) {
+func TestHotRestartEnabled(t *testing.T) {
+	// must default to on unless explicitly disabled via URNETWORK_HOT_RESTART=0
 	t.Setenv("URNETWORK_HOT_RESTART", "")
-	if hotRestartEnabled() {
-		t.Error("hotRestartEnabled() = true with unset env var, want false (must default off)")
-	}
-}
-
-func TestHotRestartEnabledTogglesOn(t *testing.T) {
-	t.Setenv("URNETWORK_HOT_RESTART", "1")
 	if !hotRestartEnabled() {
-		t.Error("hotRestartEnabled() = false with URNETWORK_HOT_RESTART=1, want true")
+		t.Error("hotRestartEnabled() = false with URNETWORK_HOT_RESTART='', want true")
 	}
-}
 
-func TestHotRestartEnabledRejectsOtherValues(t *testing.T) {
-	for _, v := range []string{"true", "yes", "on", "0"} {
+	t.Setenv("URNETWORK_HOT_RESTART", "0")
+	if hotRestartEnabled() {
+		t.Error("hotRestartEnabled() = true with URNETWORK_HOT_RESTART=0, want false")
+	}
+
+	// various other inputs (e.g. "1") should leave it enabled
+	for _, v := range []string{"1", "true", "yes", "off"} {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("URNETWORK_HOT_RESTART", v)
-			if hotRestartEnabled() {
-				t.Errorf("hotRestartEnabled() = true with URNETWORK_HOT_RESTART=%q, want false (only \"1\" enables it)", v)
+			if !hotRestartEnabled() {
+				t.Errorf("hotRestartEnabled() = false with URNETWORK_HOT_RESTART=%q, want true (only \"0\" disables it)", v)
 			}
 		})
 	}

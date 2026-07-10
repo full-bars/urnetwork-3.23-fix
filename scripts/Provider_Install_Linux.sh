@@ -1771,8 +1771,7 @@ toggle_hotrestart ()
         on)
             confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
             pr_info "Enabling hot-restart..."
-            pr_info "Experimental: this feature is not yet confirmed reliable across repeated restarts. See the v3.23.0-fix.25.4 release notes before relying on it."
-            override_set_env "URNETWORK_HOT_RESTART" "1"
+            override_rm_env "URNETWORK_HOT_RESTART"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart enabled and service restarted."
@@ -1780,16 +1779,16 @@ toggle_hotrestart ()
         off)
             confirm_restart "Disabling hot-restart requires restarting the URNetwork provider."
             pr_info "Disabling hot-restart..."
-            override_rm_env "URNETWORK_HOT_RESTART"
+            override_set_env "URNETWORK_HOT_RESTART" "0"
             systemctl --user daemon-reload
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=1' "$override_file" 2>/dev/null; then
-                pr_info "Hot-restart is enabled."
-            else
+            if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
                 pr_info "Hot-restart is off."
+            else
+                pr_info "Hot-restart is enabled."
             fi
             ;;
         *)

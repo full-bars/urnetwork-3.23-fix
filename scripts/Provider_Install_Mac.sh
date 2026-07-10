@@ -294,7 +294,7 @@ do_hot_restart() {
     case "$1" in
         on)
             pr_info "Enabling hot-restart (client JWT reuse across restarts)"
-            plist_set_env "URNETWORK_HOT_RESTART" "1"
+            plist_rm_env "URNETWORK_HOT_RESTART"
             if [ "$FORCE" != "1" ]; then
                 printf "Restart provider to apply? [y/N]: "
                 read -r yn < /dev/tty
@@ -309,7 +309,7 @@ do_hot_restart() {
             ;;
         off)
             pr_info "Disabling hot-restart"
-            plist_rm_env "URNETWORK_HOT_RESTART"
+            plist_set_env "URNETWORK_HOT_RESTART" "0"
             if [ "$FORCE" != "1" ]; then
                 printf "Restart provider to apply? [y/N]: "
                 read -r yn < /dev/tty
@@ -323,10 +323,10 @@ do_hot_restart() {
             fi
             ;;
         "")
-            if /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:URNETWORK_HOT_RESTART" "$plist_path" 2>/dev/null | grep -q "1"; then
-                pr_info "Hot-restart is enabled"
-            else
+            if /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:URNETWORK_HOT_RESTART" "$plist_path" 2>/dev/null | grep -q "0"; then
                 pr_info "Hot-restart is off"
+            else
+                pr_info "Hot-restart is enabled"
             fi
             ;;
         *)
