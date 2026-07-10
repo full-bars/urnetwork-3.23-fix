@@ -401,6 +401,70 @@ case "$operation" in
                 ;;
         esac
         ;;
+    update)
+        arch="$(uname -m)"
+        case "$arch" in
+            x86_64) arch="amd64" ;;
+            aarch64) arch="arm64" ;;
+            *) echo "ERROR: unsupported architecture $arch"; exit 1 ;;
+        esac
+
+        provider_bin="/app/urnetwork_${arch}_stable"
+
+        echo "Checking for provider updates..."
+
+        release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
+            echo "ERROR: could not reach GitHub API."
+            exit 1
+        }
+
+        version="$(echo "$release_json" | jq -r '.tag_name // empty')"
+        [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
+
+        download_url="$(echo "$release_json" | jq -r '.assets[] | select(.name | contains("linux-'"$arch"'")) | .browser_download_url // empty' | head -n1)"
+        [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
+
+        current_version="unknown"
+        if [ -x "$provider_bin" ]; then
+            current_version="$($provider_bin -v 2>/dev/null || echo "unknown")"
+        fi
+        echo "Current version: $current_version"
+        echo "Latest version: $version"
+
+        if [ "$current_version" = "$version" ]; then
+            echo "Already at latest version. Nothing to update."
+            exit 0
+        fi
+
+        echo "Downloading $version..."
+        curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
+            echo "ERROR: download failed."
+            exit 1
+        }
+
+        tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
+        tar -xzf /tmp/urnetwork-update.tar.gz -C "$tmpdir" || {
+            echo "ERROR: failed to extract tarball."
+            rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+            exit 1
+        }
+
+        if [ ! -f "$tmpdir/provider" ]; then
+            echo "ERROR: provider binary not found in tarball."
+            ls -la "$tmpdir/" 2>/dev/null || true
+            rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+            exit 1
+        fi
+
+        cp "$tmpdir/provider" "$provider_bin"
+        chmod +x "$provider_bin"
+
+        rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+        echo "Provider binary updated to $version."
+
+        pkill -x "urnetwork_${arch}_stable" 2>/dev/null || true
+        echo "Container will restart the provider with the new version."
+        ;;
 
     *)
         echo "Operation '$operation' is not supported in Docker or should be handled via 'docker' commands (start/stop/restart)."
