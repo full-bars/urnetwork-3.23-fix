@@ -24,6 +24,14 @@ All notable changes to this project are documented here.
 
 **Docker session save/load** (#253): `session save|load` commands added to `docker/scripts/urnet-tools.sh`. Interactive TTY guard prompts if `-it` is omitted. Restart via `pkill` triggers start script crash loop.
 
+**Help text reorganization** (#245): `show_help()` in `Provider_Install_Linux.sh` rewritten with full descriptions, hub commands listed for the first time, `urnet-tools set help` sub-menu, header attribution updated.
+
+**IPv6 STUN auto-detect** (#246): Provider probes IPv6 STUN reachability on startup via `sync.Once`-guarded 100ms UDP dial. If unreachable, restricts ICE candidates to `NetworkTypeUDP4`/`NetworkTypeTCP4` — eliminates "network is unreachable" STUN noise on IPv6-unreachable hosts.
+
+**Transport self-wake loop fix** (#248): Restructured `run()` loop in `transport.go` — `activeMode()` notify channel captured AFTER `setActiveMode()` call, guarded with `lastMode` dedup to skip redundant calls. Eliminates the structural vulnerability that caused a 100% CPU self-wake loop.
+
+**No-arg status toggles** (#247): `eco`/`ramlogs`/`lowmode`/`hot-restart` with no arguments now report current status instead of erroring. Space-separated aliases (`hot restart`) work correctly.
+
 ### Fixed
 
 **Passphrase cmdline leak** (#254): All `openssl enc -pass "pass:$var"` invocations changed to `-pass "file:$_pf"` with temp file and immediate cleanup. Passphrase no longer visible in `ps` output.
