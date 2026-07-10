@@ -12,7 +12,7 @@ The provider is designed to run as a **non-privileged user service** for maximum
 Install:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh -s -- install
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 Uninstall:
@@ -41,7 +41,7 @@ urnet-tools proxy refresh
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 Uninstall (manual — macOS uninstall script not yet available):
