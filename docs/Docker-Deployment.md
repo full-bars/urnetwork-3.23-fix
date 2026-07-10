@@ -389,6 +389,55 @@ urnet-tools report
 urnet-tools report off
 ```
 
+## ♻️ Hot-Restart
+
+Client JWTs are always written to disk on every auth cycle (PR #244). To enable reuse (read path), add `-e URNETWORK_HOT_RESTART=1` at container creation:
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e URNETWORK_HOT_RESTART=1 \
+  -v urfix_config:/root/.urnetwork \
+  -v urfix_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+```
+
+**Status check:**
+```bash
+docker exec urfix sh -c 'echo ${URNETWORK_HOT_RESTART:-off}'
+```
+
+> [!NOTE]
+> Docker env vars are set at container creation time — `-e URNETWORK_HOT_RESTART=1` must be present when the container starts. Add it to a new container or edit your `docker-compose.yml` and recreate.
+
+## 💾 Session Save/Load
+
+Export a provider's full identity state (client JWTs, account JWT, signing keys, proxy lists) as an encrypted, portable bundle for cross-machine transfer.
+
+**Save** (two steps: save inside container, then copy out):
+```bash
+docker exec -it urfix urnet-tools session save /root/.urnetwork/nyc.urnsession
+docker cp urfix:/root/.urnetwork/nyc.urnsession .
+```
+
+**Load** (two steps: copy in, then load inside container):
+```bash
+docker cp atlanta.urnsession urfix:/root/.urnetwork/
+docker exec -it urfix urnet-tools session load /root/.urnetwork/atlanta.urnsession
+```
+
+The load will prompt for the passphrase, check the network_id against the current account, backup existing files, stage the new session, and ask "Restart now? (Y/n)". If yes, it kills the provider process — the container's start script crash loop picks it up with the new identity.
+
+> [!IMPORTANT]
+> Save and load require an interactive TTY (`docker exec -it`, not just `docker exec`). The script will fail with a clear error if `-it` is omitted.
+
 ## 🩺 Viewing Proxy Health
 
 You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.

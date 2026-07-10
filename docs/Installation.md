@@ -33,8 +33,60 @@ urnet-tools proxy refresh
 ```
 
 > [!TIP]
-> **Path Formatting**  
+> **Path Formatting**
 > You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
+
+## 🍎 macOS Installation
+
+The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install
+```
+
+Uninstall:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
+```
+
+### What gets installed
+
+| Component | Location |
+|-----------|----------|
+| Provider binary | `~/.local/share/urnetwork-provider/bin/urnetwork` |
+| launchd plist | `~/Library/LaunchAgents/com.urnetwork.provider.plist` |
+| Logs | `~/Library/Logs/com.urnetwork.provider/stdout.log` + `stderr.log` |
+| State directory | `~/.urnetwork/` (same as Linux) |
+
+### Post-install commands
+
+All `urnet-tools` commands work identically to Linux:
+
+```bash
+# Start/stop
+urnet-tools start
+urnet-tools stop
+urnet-tools restart
+urnet-tools status
+
+# Hot-restart toggle
+urnet-tools hot-restart on
+urnet-tools hot-restart off
+
+# Session save/load
+urnet-tools session save backup.urnsession
+urnet-tools session load backup.urnsession
+
+# Auth and proxy
+urnetwork auth
+urnet-tools proxy add ~/proxies.txt
+urnet-tools proxy refresh
+urnet-tools proxy summary
+```
+
+> [!NOTE]
+> macOS doesn't support `ecoramlogs` or `optimize` commands (those tune Linux kernel parameters). All other commands work natively.
 
 ## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
