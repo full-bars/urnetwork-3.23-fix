@@ -135,9 +135,9 @@ jobs:
           # Darwin providers
           mv release_tmp/darwin/amd64/provider-darwin-amd64 release_tmp/darwin/amd64/provider 2>/dev/null || true
           mv release_tmp/darwin/arm64/provider-darwin-arm64 release_tmp/darwin/arm64/provider 2>/dev/null || true
-          # Windows providers
-          mv release_tmp/windows/amd64/provider-windows-amd64 release_tmp/windows/amd64/provider.exe 2>/dev/null || true
-          mv release_tmp/windows/arm64/provider-windows-arm64 release_tmp/windows/arm64/provider.exe 2>/dev/null || true
+          # Windows providers (downloaded file is named "provider", rename to .exe)
+          cp release_tmp/windows/amd64/provider release_tmp/windows/amd64/provider.exe 2>/dev/null || true
+          cp release_tmp/windows/arm64/provider release_tmp/windows/arm64/provider.exe 2>/dev/null || true
           # Stamp hub binaries
           find hub_tmp -name "hub*" -type f -exec chmod +x {} \;
           mv hub_tmp/amd64/hub-linux-amd64 hub_tmp/amd64/hub 2>/dev/null || true
