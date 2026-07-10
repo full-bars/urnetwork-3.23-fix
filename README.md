@@ -49,6 +49,14 @@ Uninstall:
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
+### 🍎 macOS
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install
+```
+
+Installs with launchd user agent (`~/Library/LaunchAgents/com.urnetwork.provider.plist`) — auto-starts on boot, crash recovery, logs to `~/Library/Logs/com.urnetwork.provider/`. All `urnet-tools` commands work identically to the Linux version.
+
 After installation, source your shell profile and authenticate:
 
 ```bash
@@ -120,6 +128,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 > - `docker exec -it urfix urnet-tools proxy health`
 > - `docker exec -it urfix urnet-tools logs`
 > - `docker exec -it urfix urnet-tools status`
+> - `docker exec -it urfix urnet-tools session save /root/.urnetwork/backup.urnsession`
 
 ---
 
@@ -134,6 +143,9 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
 | `urnet-tools proxy summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
+| `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (Linux/Mac: persistent; Windows: env var; Docker: `-e URNETWORK_HOT_RESTART=1`) |
+| `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
+| `urnet-tools session load <file>` | Import identity+proxy state, then restart |
 | `urnet-tools report <url>` | You want to set or change the hub report URL without restarting |
 | `urnet-tools report` | You want to check which URL the provider is currently reporting to |
 
@@ -201,7 +213,7 @@ See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub
 
 - **Base engine:** UrNetwork v3.23
 - **Language:** Go 1.25, compiled on Alpine
-- **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR
+- **Images:** Multi-arch `linux/amd64` + `linux/arm64`, `darwin/amd64` + `darwin/arm64` via GitHub Actions → GHCR
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
 
 ---
