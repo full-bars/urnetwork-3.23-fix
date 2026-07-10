@@ -391,8 +391,9 @@ urnet-tools report off
 
 ## ♻️ Hot-Restart
 
-Client JWTs are always written to disk on every auth cycle (PR #244). To enable reuse (read path), add `-e URNETWORK_HOT_RESTART=1` at container creation:
+Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle — now the read path follows suit.
 
+**Disabling:**
 ```bash
 docker run -d \
   --name=urfix \
@@ -402,7 +403,7 @@ docker run -d \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
   -e BUILD=jwt \
-  -e URNETWORK_HOT_RESTART=1 \
+  -e URNETWORK_HOT_RESTART=0 \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -411,11 +412,11 @@ docker run -d \
 
 **Status check:**
 ```bash
-docker exec urfix sh -c 'echo ${URNETWORK_HOT_RESTART:-off}'
+docker exec urfix sh -c 'echo ${URNETWORK_HOT_RESTART:-1}'
 ```
 
 > [!NOTE]
-> Docker env vars are set at container creation time — `-e URNETWORK_HOT_RESTART=1` must be present when the container starts. Add it to a new container or edit your `docker-compose.yml` and recreate.
+> To opt out, set `-e URNETWORK_HOT_RESTART=0` at container creation. If you don't set anything, hot-restart is active by default.
 
 ## 💾 Session Save/Load
 

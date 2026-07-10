@@ -143,7 +143,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
 | `urnet-tools proxy summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
-| `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (Linux/Mac: persistent; Windows: env var; Docker: `-e URNETWORK_HOT_RESTART=1`) |
+| `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
 | `urnet-tools report <url>` | You want to set or change the hub report URL without restarting |
