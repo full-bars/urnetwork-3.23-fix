@@ -195,7 +195,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("🎉 Release " + $version + " is Live"),
-              "description": ("**Binaries:** linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64\n\n**Update existing install:**\n```\nurnet-tools update\n```\n\n**Linux fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- install\n```\n**macOS fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install\n```\n\n[View GitHub Release](" + $releaseUrl + ")"),
+              "description": ("**Binaries:** linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64\n\n**Update existing install:**\n```\nurnet-tools update\n```\n\n**Linux fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh\n```\n**macOS fresh install:**\n```\ncurl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Mac.sh | sh\n```\n\n[View GitHub Release](" + $releaseUrl + ")"),
               "color": 3066993,
               "footer": { "text": "URNetwork Release Monitor • Binaries" }
             }]
