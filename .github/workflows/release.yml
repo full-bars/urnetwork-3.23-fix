@@ -145,13 +145,45 @@ jobs:
           cp hub_tmp/amd64/hub urnetwork-hub-${VERSION}-linux-amd64
           cp hub_tmp/arm64/hub urnetwork-hub-${VERSION}-linux-arm64
 
-      - name: Create provider tarball
+      - name: Create provider tarballs
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
+
+          # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp
           tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ windows/ urnet-tools
           cd ..
+
+          # Per-platform tarballs — flat (no subdirs), each with its own script
+          mkdir -p per-platform
+
+          for plat in linux-amd64 linux-arm64; do
+            arch="${plat#linux-}"
+            mkdir -p "per-platform/${plat}"
+            cp "release_tmp/linux/${arch}/provider" "per-platform/${plat}/"
+            cp scripts/Provider_Install_Linux.sh "per-platform/${plat}/urnet-tools"
+            cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
+          done
+
+          for plat in darwin-amd64 darwin-arm64; do
+            arch="${plat#darwin-}"
+            mkdir -p "per-platform/${plat}"
+            cp "release_tmp/darwin/${arch}/provider" "per-platform/${plat}/"
+            cp scripts/Provider_Install_Mac.sh "per-platform/${plat}/urnet-tools"
+            cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
+          done
+
+          for plat in windows-amd64 windows-arm64; do
+            arch="${plat#windows-}"
+            mkdir -p "per-platform/${plat}"
+            cp "release_tmp/windows/${arch}/provider.exe" "per-platform/${plat}/"
+            cp scripts/urnet-tools.ps1 "per-platform/${plat}/"
+            cp scripts/urnetwork-updater.ps1 "per-platform/${plat}/"
+            cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
+          done
+
+          rm -rf per-platform
 
       - name: Set release body source
         id: body_src
