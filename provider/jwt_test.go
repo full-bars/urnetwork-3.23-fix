@@ -176,10 +176,6 @@ func TestJWTNetworkId(t *testing.T) {
 	}
 }
 
-// hot-restart (client JWT reuse across process restarts) is experimental and
-// must default to off unless explicitly opted into via URNETWORK_HOT_RESTART=1
-// (urnet-tools hot-restart on). Getting this default wrong would silently
-// re-enable an unconfirmed-reliable feature fleet-wide on upgrade.
 func TestHotRestartEnabled(t *testing.T) {
 	// must default to on unless explicitly disabled via URNETWORK_HOT_RESTART=0
 	t.Setenv("URNETWORK_HOT_RESTART", "")
