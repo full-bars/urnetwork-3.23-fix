@@ -35,58 +35,28 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 ## ⚡ Quick Start
 
-### 🐧 Linux Service
+Choose your platform:
 
-Run as your normal non-root user:
+| Platform | Install command |
+|----------|----------------|
+| 🐧 Linux (systemd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh -s -- install` |
+| 🍎 macOS (launchd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install` |
+| 🪟 Windows (PowerShell) | After installing from GitHub Releases, use `urnet-tools.ps1` in the install directory |
+| 🐋 Docker | `docker run -d --name=urnetwork --pull=always --restart=unless-stopped --cap-add=NET_ADMIN --cap-add=NET_RAW -e BUILD=jwt -v /path/to/proxy.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE` |
 
-```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh
-```
-
-Uninstall:
-
-```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh | sh
-```
-
-### 🍎 macOS
+After installation, authenticate and start providing:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install
-```
-
-Installs with launchd user agent (`~/Library/LaunchAgents/com.urnetwork.provider.plist`) — auto-starts on boot, crash recovery, logs to `~/Library/Logs/com.urnetwork.provider/`. All `urnet-tools` commands work identically to the Linux version.
-
-After installation, source your shell profile and authenticate:
-
-```bash
-source ~/.bashrc
+# Linux / macOS
 urnetwork auth
-```
-
-Then load your proxy list and start providing:
-
-```bash
 urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh
 urnet-tools auto on
-urnet-tools proxy health
-urnet-tools logs
-```
 
-### 🐋 Docker (Quick Start)
-
-```bash
-docker run -d \
-  --name=urnetwork \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD='jwt' \
-  -v /path/to/your/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE_HERE
+# Windows (PowerShell)
+urnet-tools.ps1 auth
+urnet-tools.ps1 proxy add ~/proxies.txt
+urnet-tools.ps1 proxy refresh
 ```
 
 ### 🐋 Docker (Production-Ready)
