@@ -463,10 +463,9 @@ func jwtContainsClientId(byJwt string) bool {
 }
 
 // hotRestartEnabled reports whether persisted client JWTs should be reused
-// across process restarts. Opt-in and off by default: `urnet-tools hot-restart
-// on` (Docker: URNETWORK_HOT_RESTART=1). Experimental — see release notes.
+// across process restarts. On by default unless URNETWORK_HOT_RESTART=0.
 func hotRestartEnabled() bool {
-	return os.Getenv("URNETWORK_HOT_RESTART") == "1"
+	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }
 
 // jwtNetworkId extracts the network_id claim from byJwt, if present.

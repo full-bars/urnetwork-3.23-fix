@@ -118,7 +118,7 @@ if (-not $IsLinux) {
     $BinarySuffix = ".exe"
 }
 
-$GithubURLBase = "https://api.github.com/repos/urnetwork/connect"
+$GithubURLBase = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
 function Get-Path {
     return [Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::User)
@@ -411,7 +411,7 @@ switch ($Command) {
         Write-Host "Executing installer script of version $Tag"
 
         $TempScriptPath = Join-Path $env:TEMP -ChildPath "urnetwork-installer.ps1"
-        Invoke-RestMethod "https://raw.githubusercontent.com/urnetwork/connect/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
 
         if (!$?) {
             Write-Error "Failed to download the installer script"
@@ -456,7 +456,7 @@ switch ($Command) {
         Write-Host "Executing installer script of version $InstallerTag"
 
         $TempScriptPath = Join-Path $env:TEMP -ChildPath "urnetwork-installer.ps1"
-        Invoke-RestMethod "https://raw.githubusercontent.com/urnetwork/connect/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
 
         if (!$?) {
             Write-Error "Failed to download the installer script"
@@ -573,19 +573,19 @@ switch ($Command) {
         switch ($mode) {
             "on" {
                 Write-Host "Enabling hot-restart (client JWT reuse across restarts)"
-                [Environment]::SetEnvironmentVariable($envVarName, "1",
+                [Environment]::SetEnvironmentVariable($envVarName, $null,
                     [System.EnvironmentVariableTarget]::User)
-                $env:URNETWORK_HOT_RESTART = "1"
-                Write-Host "URNETWORK_HOT_RESTART=1 set in user environment."
+                Remove-Item Env:\URNETWORK_HOT_RESTART -ErrorAction SilentlyContinue
+                Write-Host "URNETWORK_HOT_RESTART removed from user environment."
                 $restartNeeded = $true
                 break
             }
             "off" {
                 Write-Host "Disabling hot-restart"
-                [Environment]::SetEnvironmentVariable($envVarName, $null,
+                [Environment]::SetEnvironmentVariable($envVarName, "0",
                     [System.EnvironmentVariableTarget]::User)
-                Remove-Item Env:\URNETWORK_HOT_RESTART -ErrorAction SilentlyContinue
-                Write-Host "URNETWORK_HOT_RESTART removed from user environment."
+                $env:URNETWORK_HOT_RESTART = "0"
+                Write-Host "URNETWORK_HOT_RESTART=0 set in user environment."
                 $restartNeeded = $true
                 break
             }
@@ -595,10 +595,10 @@ switch ($Command) {
                 # fresh process will see, not the current session.
                 $val = [Environment]::GetEnvironmentVariable($envVarName,
                     [System.EnvironmentVariableTarget]::User)
-                if ($val -eq "1") {
-                    Write-Host "Hot-restart is enabled."
-                } else {
+                if ($val -eq "0") {
                     Write-Host "Hot-restart is off."
+                } else {
+                    Write-Host "Hot-restart is enabled."
                 }
                 break
             }
