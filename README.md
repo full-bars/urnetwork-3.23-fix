@@ -37,12 +37,12 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 Choose your platform:
 
-| Platform | Install command |
-|----------|----------------|
-| 🐧 Linux (systemd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh | sh -s -- install` |
-| 🍎 macOS (launchd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh | sh -s -- install` |
-| 🪟 Windows (PowerShell) | `powershell -c "iwr -Uri https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 -OutFile %TEMP%\installer.ps1; & %TEMP%\installer.ps1"` |
-| 🐋 Docker | `docker run -d --name=urnetwork --pull=always --restart=unless-stopped --cap-add=NET_ADMIN --cap-add=NET_RAW -e BUILD=jwt -v /path/to/proxy.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE` |
+| Platform | Install | Uninstall |
+|----------|---------|-----------|
+| 🐧 Linux (systemd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Linux.sh \| sh -s -- install` | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Linux.sh \| sh` |
+| 🍎 macOS (launchd) | `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Mac.sh \| sh -s -- install` | (not yet available — remove `~/.local/share/urnetwork-provider` and `~/.urnetwork` manually) |
+| 🪟 Windows (PowerShell) | `powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_Win32.ps1 \| iex"` | `powershell -c "irm https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Uninstall_Win32.ps1 \| iex"` |
+| 🐋 Docker | `docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest` | `docker rm -f <container>` + `docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest` |
 
 After installation, authenticate and start providing:
 
