@@ -2,7 +2,9 @@ package main
 
 import (
 	"math"
+	"slices"
 	"testing"
+	"time"
 )
 
 func almostEq(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
@@ -80,5 +82,81 @@ func TestParsePSILine(t *testing.T) {
 	avg10, avg60, err := parsePSISome("some avg10=12.34 avg60=5.60 avg300=1.00 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
 	if err != nil || !almostEq(avg10, 12.34) || !almostEq(avg60, 5.60) {
 		t.Fatalf("got %v %v %v", avg10, avg60, err)
+	}
+}
+
+func TestCleanupIntervalScale(t *testing.T) {
+	if v := cleanupIntervalScale(0); !almostEq(v, 1.0) {
+		t.Fatalf("calm: %v", v)
+	}
+	if v := cleanupIntervalScale(0.8); !almostEq(v, 1.0/6.0) {
+		t.Fatalf("high: %v", v)
+	}
+	if v := cleanupIntervalScale(1.0); !almostEq(v, 1.0/6.0) {
+		t.Fatalf("pinned: %v", v)
+	}
+}
+
+func TestReaperStaleThreshold(t *testing.T) {
+	if v := reaperStaleThreshold(0); v != 3*time.Hour {
+		t.Fatalf("calm: %v", v)
+	}
+	if v := reaperStaleThreshold(0.9); v != time.Hour {
+		t.Fatalf("high: %v", v)
+	}
+}
+
+func TestAimdStep(t *testing.T) {
+	// calm growth, capped by ceiling
+	if v := aimdStep(100, 100, 0.1, 500); v != 125 {
+		t.Fatalf("grow: %v", v)
+	}
+	if v := aimdStep(490, 490, 0.1, 500); v != 500 {
+		t.Fatalf("ceiling: %v", v)
+	}
+	// ceiling 0 = unlimited growth allowed
+	if v := aimdStep(1000, 1000, 0.1, 0); v != 1025 {
+		t.Fatalf("unlimited: %v", v)
+	}
+	// sustained pressure: multiplicative decrease with floor
+	if v := aimdStep(500, 500, 0.8, 500); v != 350 {
+		t.Fatalf("cut: %v", v)
+	}
+	if v := aimdStep(60, 60, 0.8, 500); v != 50 {
+		t.Fatalf("floor: %v", v)
+	}
+	// middle band: hold
+	if v := aimdStep(200, 200, 0.5, 500); v != 200 {
+		t.Fatalf("hold: %v", v)
+	}
+	// never grow past what's actually cached +25 headroom is fine, but
+	// don't run target away from reality when cache is far below target.
+	// NOTE: the brief's own snippet asserted 150 here, which contradicts
+	// both its implementation (cacheSize+aimdIncrement = 100+25 = 125) and
+	// its own inline comment ("track reality when cache lags target" —
+	// i.e. cache+increment, not cache+2*increment). Fixed to 125 to match
+	// the documented/implemented formula; flagged in the task report.
+	if v := aimdStep(400, 100, 0.1, 500); v != 125 {
+		t.Fatalf("target tracks cache+increment when cache lags: %v", v)
+	}
+}
+
+func TestSelectURLProxiesToShed(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "url"},
+		"2.2.2.2:1080": {Health: "dead", Source: "url"},
+		"3.3.3.3:1080": {Health: "offline", Source: "url"},
+		"4.4.4.4:1080": {Health: "up", Source: "url"},
+		"5.5.5.5:1080": {Health: "dead", Source: "file"}, // never shed: not url
+	}}
+	traffic := map[string]uint64{"1.1.1.1:1080": 100, "4.4.4.4:1080": 5}
+	got := selectURLProxiesToShed(state, traffic, 3)
+	want := []string{"2.2.2.2:1080", "3.3.3.3:1080", "4.4.4.4:1080"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	// n larger than pool: return everything url-sourced, still ordered
+	if got := selectURLProxiesToShed(state, traffic, 99); len(got) != 4 {
+		t.Fatalf("overshoot: %v", got)
 	}
 }

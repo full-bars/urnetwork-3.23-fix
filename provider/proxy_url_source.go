@@ -46,6 +46,25 @@ func resolveProxyURLMax(startupMax int) int {
 	return n
 }
 
+// resolveEffectiveProxyURLMax is the admit cap fetch cycles actually use:
+// the configured ceiling, further limited by the AIMD-discovered target
+// once the pool controller has established one. Simplified from the
+// original two-branch design (pressure==0 vs not): the target is only ever
+// non-zero if the controller has run at least once, and a previously
+// learned target remains a valid cap even if self-heal is later toggled
+// off — the controller stops updating it, but it doesn't stop being true.
+func resolveEffectiveProxyURLMax(startupMax int) int {
+	ceiling := resolveProxyURLMax(startupMax)
+	state, err := readProxyURLState()
+	if err != nil || state.TargetPoolSize <= 0 {
+		return ceiling
+	}
+	if ceiling == 0 || state.TargetPoolSize < ceiling {
+		return state.TargetPoolSize
+	}
+	return ceiling
+}
+
 // proxyURLRefreshOverridePath returns ~/.urnetwork/proxy_url_refresh.
 func proxyURLRefreshOverridePath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -471,7 +490,8 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// entries don't accumulate invisibly until the give-up pipeline
 			// evicts them. Without this, the reaper has no exit for proxies
 			// that passed the initial probe then died later.
-			if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperStaleThreshold {
+			staleAfter := reaperStaleThreshold(currentPressure())
+			if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < staleAfter {
 				continue
 			}
 			candidates = append(candidates, reaperProbeTarget{
@@ -664,7 +684,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	}
 
 	// The initial fetch is always allowed (cold-start / starvation escape).
-	fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
+	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
 	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
@@ -695,7 +715,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 				continue
 			}
 			lastFetch = time.Now()
-			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
+			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
 }
@@ -820,47 +840,36 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	return removed
 }
 
-// runProxyURLCleanup runs runProxyURLCleanupOnce on a fixed interval until
-// ctx is cancelled. When scope is "none" or another disabling value the
-// ticker still runs so that runtime toggles (off→on) work live — the
-// loop just skips the cleanup call until scope becomes active again.
+// cleanupTickInterval is the fixed check cadence for runProxyURLCleanup.
+// The actual cleanup cadence is the pressure-scaled effective interval
+// computed each tick (see cleanupIntervalScale); this just bounds how often
+// that effective interval is re-evaluated. Var (not const) so tests can
+// shorten it instead of waiting on the real 15-minute cadence.
+var cleanupTickInterval = 15 * time.Minute
+
+// runProxyURLCleanup runs runProxyURLCleanupOnce on a pressure-scaled
+// interval until ctx is cancelled: cleanup sheds load, so overload is when
+// it should run MORE often, not less (6h base shrinks to 1h at pressure
+// ≥0.8 — see cleanupIntervalScale). Checked every cleanupTickInterval. When
+// scope is "none" or another disabling value the loop still runs so that
+// runtime toggles (off→on) work live — it just skips the cleanup call until
+// scope becomes active again.
 func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration, selfHealEnabled bool) {
-	activeScope := resolveProxyCleanupScope(scope)
-	activeInterval := resolveProxyCleanupInterval(interval)
-
-	ticker := time.NewTicker(activeInterval)
+	lastRun := time.Time{} // zero value ⇒ immediate first pass, same gating as before
+	ticker := time.NewTicker(cleanupTickInterval)
 	defer ticker.Stop()
-
-	// Run once immediately if scope is active. Gated by self-heal too — an
-	// operator who set self-heal off before starting the provider must not
-	// have that first pass run anyway.
-	if resolveSelfHealEnabled(selfHealEnabled) && (activeScope == "url" || activeScope == "all") {
-		runProxyURLCleanupOnce(activeScope)
-	}
-
 	for {
+		effective := time.Duration(float64(resolveProxyCleanupInterval(interval)) * cleanupIntervalScale(currentPressure()))
+		if resolveSelfHealEnabled(selfHealEnabled) && time.Since(lastRun) >= effective {
+			if activeScope := resolveProxyCleanupScope(scope); activeScope == "url" || activeScope == "all" {
+				runProxyURLCleanupOnce(activeScope)
+			}
+			lastRun = time.Now()
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Re-check runtime overrides on every tick
-			if ns := resolveProxyCleanupScope(scope); ns != activeScope {
-				activeScope = ns
-				if activeScope == "url" || activeScope == "all" {
-					tlog("[proxy][url] cleanup scope changed to %s\n", ns)
-				} else {
-					tlog("[proxy][url] cleanup disabled (scope=%s)\n", ns)
-				}
-			}
-			if ni := resolveProxyCleanupInterval(interval); ni != activeInterval {
-				ticker.Stop()
-				ticker = time.NewTicker(ni)
-				activeInterval = ni
-				tlog("[proxy][url] cleanup interval changed to %s\n", ni)
-			}
-			if resolveSelfHealEnabled(selfHealEnabled) && (activeScope == "url" || activeScope == "all") {
-				runProxyURLCleanupOnce(activeScope)
-			}
 		}
 	}
 }

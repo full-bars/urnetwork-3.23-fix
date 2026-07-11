@@ -7,10 +7,13 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // The pressure system converts raw resource signals into one smoothed score
@@ -349,4 +352,246 @@ func getSystemLoad() (load1, load5 float64, err error) {
 		return 0, 0, err
 	}
 	return load1, load5, nil
+}
+
+// The cleanup/reaper/pool-controller constants below implement the
+// inversion: under the old design, load-shedding actuators (cleanup,
+// reaper) ran LESS often under pressure, on the theory that pressure means
+// "back off everything." But cleanup and the reaper are the actuators that
+// SHED load — gating them under pressure is exactly backwards. They now run
+// MORE often as pressure rises. The AIMD pool controller is the same idea
+// applied continuously: discover the sustainable proxy_url pool size per box
+// instead of relying on a single operator-set ceiling.
+const (
+	// AIMD pool controller: additive increase / multiplicative decrease,
+	// TCP-congestion style. The configured proxy_url_max is only a ceiling;
+	// the operating point is discovered per box.
+	aimdIncrement    = 25
+	aimdDecreaseMult = 0.7
+	aimdFloor        = 50
+	aimdGrowBelow    = 0.3  // pressure below this → grow
+	aimdShrinkAbove  = 0.75 // pressure above this (2 consecutive samples) → shrink
+	shedBackoff      = time.Hour
+
+	cleanupScaleStart = 0.3
+	cleanupScaleFull  = 0.8
+	cleanupScaleMin   = 1.0 / 6.0 // 6h base → 1h at full pressure
+
+	reaperStaleCalm = 3 * time.Hour // matches the pre-pressure fixed value
+	reaperStaleHot  = 1 * time.Hour
+)
+
+// cleanupIntervalScale shrinks the cleanup interval as pressure rises —
+// cleanup sheds load, so overload is when it should run MORE often, not
+// less (this inverts the original gate-everything design).
+func cleanupIntervalScale(pressure float64) float64 {
+	t := normalizeRamp(pressure, cleanupScaleStart, cleanupScaleFull)
+	return 1.0 - t*(1.0-cleanupScaleMin)
+}
+
+// reaperStaleThreshold shrinks the once-good re-probe window under pressure:
+// when the box is drowning, finding dead weight faster matters more.
+func reaperStaleThreshold(pressure float64) time.Duration {
+	t := normalizeRamp(pressure, cleanupScaleStart, cleanupScaleFull)
+	return reaperStaleCalm - time.Duration(t*float64(reaperStaleCalm-reaperStaleHot))
+}
+
+// aimdStep computes the next target pool size. cacheSize anchors growth so
+// the target never runs far ahead of what actually exists.
+func aimdStep(target, cacheSize int, pressure float64, ceiling int) int {
+	switch {
+	case pressure > aimdShrinkAbove:
+		next := int(float64(target) * aimdDecreaseMult)
+		if next < aimdFloor {
+			next = aimdFloor
+		}
+		return next
+	case pressure < aimdGrowBelow:
+		base := target
+		if cacheSize+aimdIncrement < base {
+			base = cacheSize + aimdIncrement // track reality when cache lags target
+		} else {
+			base = target + aimdIncrement
+		}
+		if ceiling > 0 && base > ceiling {
+			base = ceiling
+		}
+		return base
+	default:
+		return target
+	}
+}
+
+// selectURLProxiesToShed ranks URL-sourced proxies for removal under
+// sustained pressure: dead first, then degraded tiers, then healthy ones by
+// ascending traffic — shedding an earning proxy is the last resort, and the
+// caller logs each healthy shed individually.
+func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, n int) []string {
+	rank := func(health string) int {
+		switch health {
+		case "dead":
+			return 0
+		case "inactive":
+			return 1
+		case "long_offline":
+			return 2
+		case "offline":
+			return 3
+		case "recently_offline":
+			return 4
+		default: // "up" and anything unknown sheds last
+			return 5
+		}
+	}
+	type cand struct {
+		addr string
+		r    int
+		tx   uint64
+	}
+	var cands []cand
+	for addr, e := range state.Proxies {
+		if e.Source != "url" {
+			continue
+		}
+		cands = append(cands, cand{addr, rank(e.Health), traffic[addr]})
+	}
+	slices.SortFunc(cands, func(a, b cand) int {
+		if a.r != b.r {
+			return a.r - b.r
+		}
+		if a.tx != b.tx {
+			if a.tx < b.tx {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.addr, b.addr)
+	})
+	if n > len(cands) {
+		n = len(cands)
+	}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = cands[i].addr
+	}
+	return out
+}
+
+// poolControlInterval is how often the AIMD pool controller samples
+// pressure and steps the target.
+const poolControlInterval = 5 * time.Minute
+
+// runPoolController runs the AIMD loop: every poolControlInterval it reads
+// pressure, steps the target, persists it, and — on a shrink — sheds the
+// worst URL-sourced proxies down to the new target via the same
+// removeDeadProxies path the cleanup job uses (cache removal, NO blacklist,
+// so shed addresses re-enter through a normal fetch+probe once the box
+// recovers and the target grows back).
+func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled bool) {
+	var highSamples int
+	ticker := time.NewTicker(poolControlInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !resolveSelfHealEnabled(selfHealEnabled) {
+			highSamples = 0
+			continue
+		}
+		pressure := currentPressure()
+		if pressure > aimdShrinkAbove {
+			highSamples++
+		} else {
+			highSamples = 0
+		}
+		// Shrink requires 2 consecutive high samples (10 min sustained);
+		// growth and hold act immediately.
+		effectivePressure := pressure
+		if pressure > aimdShrinkAbove && highSamples < 2 {
+			continue
+		}
+
+		release, err := acquireProxyLock()
+		if err != nil {
+			continue
+		}
+		urlState, err := readProxyURLState()
+		if err != nil {
+			release()
+			continue
+		}
+		cacheSize := len(urlState.Cache)
+		target := urlState.TargetPoolSize
+		if target <= 0 {
+			// First run: start from where we are (bounded by the ceiling).
+			target = cacheSize
+			if ceiling := resolveProxyURLMax(configuredMax); ceiling > 0 && target > ceiling {
+				target = ceiling
+			}
+			if target < aimdFloor {
+				target = aimdFloor
+			}
+		}
+		next := aimdStep(target, cacheSize, effectivePressure, resolveProxyURLMax(configuredMax))
+		if next != urlState.TargetPoolSize {
+			urlState.TargetPoolSize = next
+			if err := writeProxyURLState(urlState); err != nil {
+				tlog("[proxy][pressure] warn: could not persist target: %v\n", err)
+			}
+		}
+		release()
+		if next == target {
+			continue
+		}
+		tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+
+		if next < target {
+			shedPoolToTarget(next)
+			highSamples = 0 // one cut per sustained-high episode; re-arm
+		}
+	}
+}
+
+// shedPoolToTarget removes the worst URL proxies until the live url-sourced
+// count is at most target. Healthy sheds are logged individually — removing
+// an earning proxy is deliberate and visible, never silent.
+func shedPoolToTarget(target int) {
+	state, err := readProxyState()
+	if err != nil {
+		return
+	}
+	urlCount := 0
+	for _, e := range state.Proxies {
+		if e.Source == "url" {
+			urlCount++
+		}
+	}
+	excess := urlCount - target
+	if excess <= 0 {
+		return
+	}
+
+	// Per-proxy traffic for last-resort ranking, keyed by address.
+	traffic := map[string]uint64{}
+	_, _, _, bandwidth, _ := connect.ProxyHealthSnapshot()
+	for key, bw := range bandwidth {
+		_, ip := parseProxyString(key)
+		traffic[ip] += bw.TotalRx.Load() + bw.TotalTx.Load()
+	}
+
+	shed := selectURLProxiesToShed(state, traffic, excess)
+	for _, addr := range shed {
+		if state.Proxies[addr].Health == "up" {
+			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", addr)
+		}
+		globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(shedBackoff))
+	}
+	if err := removeDeadProxies(state, map[string][]string{"url": shed}); err != nil {
+		tlog("[proxy][pressure] warn: shed failed: %v\n", err)
+		return
+	}
+	tlog("[proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
 }
