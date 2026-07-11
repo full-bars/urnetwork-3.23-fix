@@ -705,11 +705,14 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 // floor is kept from the old gate: a near-empty cache (<50) is never
 // stretched, so a fresh box under load still bootstraps.
 func shouldFetchNow(sinceLast, base time.Duration, pressure float64, cacheSize int) bool {
+	// 1s slack absorbs ticker/handler scheduling jitter so a calm box is
+	// never deferred a whole interval by landing microseconds short.
+	const slack = time.Second
 	if cacheSize < 50 {
-		return sinceLast >= base
+		return sinceLast >= base-slack
 	}
 	effective := time.Duration(float64(base) * fetchStretch(pressure))
-	return sinceLast >= effective
+	return sinceLast >= effective-slack
 }
 
 // readURLCacheSize reads the current URL proxy cache size from proxy_url.json.
