@@ -570,7 +570,8 @@ switch ($Command) {
         $file = "$env:USERPROFILE\.urnetwork\proxy_self_heal"
         switch ($mode) {
             "on" {
-                Remove-Item -Path $file -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+                Set-Content -Path $file -Value "on" -NoNewline
                 Write-Host "Self-heal enabled (load gate + auto cleanup active)"
                 break
             }
@@ -580,16 +581,18 @@ switch ($Command) {
                 Write-Host "Self-heal disabled (load gate + auto cleanup turned off)"
                 break
             }
-            "" {
-                if (-not (Test-Path $file) -or (Get-Content $file -Raw).Trim() -ne "off") {
+            { $_ -in "status", "" } {
+                if ((Test-Path $file) -and (Get-Content $file -Raw).Trim() -eq "on") {
                     Write-Host "self-heal: on"
-                } else {
+                } elseif (Test-Path $file) {
                     Write-Host "self-heal: off"
+                } else {
+                    Write-Host "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
                 }
                 break
             }
             default {
-                Write-Host "Usage: urnet-tools.ps1 self-heal <on|off>"
+                Write-Host "Usage: urnet-tools.ps1 self-heal <on|off|status>"
                 break
             }
         }
