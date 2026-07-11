@@ -48,13 +48,16 @@ func resolveProxyURLMax(startupMax int) int {
 
 // resolveEffectiveProxyURLMax is the admit cap fetch cycles actually use:
 // the configured ceiling, further limited by the AIMD-discovered target
-// once the pool controller has established one. Simplified from the
-// original two-branch design (pressure==0 vs not): the target is only ever
-// non-zero if the controller has run at least once, and a previously
-// learned target remains a valid cap even if self-heal is later toggled
-// off — the controller stops updating it, but it doesn't stop being true.
-func resolveEffectiveProxyURLMax(startupMax int) int {
+// once the pool controller has established one. The target only constrains
+// admission while self-heal is enabled; toggling self-heal off restores the
+// configured ceiling immediately — a target discovered under transient
+// pressure is not a durable truth about the box, and an operator who turns
+// self-heal off has asked for stock behavior.
+func resolveEffectiveProxyURLMax(startupMax int, selfHealEnabled bool) int {
 	ceiling := resolveProxyURLMax(startupMax)
+	if !resolveSelfHealEnabled(selfHealEnabled) {
+		return ceiling
+	}
 	state, err := readProxyURLState()
 	if err != nil || state.TargetPoolSize <= 0 {
 		return ceiling
@@ -684,7 +687,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	}
 
 	// The initial fetch is always allowed (cold-start / starvation escape).
-	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
+	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
 	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
@@ -715,7 +718,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 				continue
 			}
 			lastFetch = time.Now()
-			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
+			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
 		}
 	}
 }
