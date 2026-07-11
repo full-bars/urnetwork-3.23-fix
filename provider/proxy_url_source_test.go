@@ -540,6 +540,15 @@ func TestShouldFetchNow(t *testing.T) {
 	if !shouldFetchNow(time.Hour, base, 1.0, 49) {
 		t.Fatal("cache <50 must never be gated")
 	}
+	// scheduling-jitter slack: landing sub-second short of due (ticker fires
+	// one interval after the previous tick, but lastFetch is stamped after
+	// handler latency) must still count as due; clearly-early must not.
+	if !shouldFetchNow(time.Hour-500*time.Millisecond, base, 0, 500) {
+		t.Fatal("within 1s slack of due must fetch")
+	}
+	if shouldFetchNow(time.Hour-2*time.Second, base, 0, 500) {
+		t.Fatal("2s early is beyond slack; must not fetch")
+	}
 }
 
 // TestGetSystemLoad_ParsesProcLoadavg smoke-tests the /proc/loadavg reader.
