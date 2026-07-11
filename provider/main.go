@@ -728,8 +728,8 @@ Options:
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
     --proxy_url_refresh=<dur>        How often to re-fetch --proxy_url sources and add new entries. Also settable via PROXY_URL_REFRESH.
-    --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited. Also settable via PROXY_URL_MAX.
-    --proxy_dead_cleanup_scope=<s>   Automatic daily dead-proxy cleanup scope: none, url, or all. Also settable via PROXY_DEAD_CLEANUP_SCOPE.
+    --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited, defaults to 500. Also settable via PROXY_URL_MAX.
+    --proxy_dead_cleanup_scope=<s>   Automatic dead-proxy cleanup scope: none, url, or all. Defaults to url (URL-sourced only). Also settable via PROXY_DEAD_CLEANUP_SCOPE.
     --proxy_dead_cleanup_interval=<dur>  How often automatic cleanup runs, when scope isn't none. Also settable via PROXY_DEAD_CLEANUP_INTERVAL.
     <url>                            A proxy list URL.
     --match=<pattern>                Case-insensitive substring matched against proxy hosts (never port or
@@ -1992,9 +1992,9 @@ func provide(opts docopt.Opts) {
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
-	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 0)
-	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "none")
-	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 24*time.Hour)
+	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 500)
+	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "url")
+	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 6*time.Hour)
 
 	// Extract API host:port for the reachability probe
 	apiProbeHost := defaultAPIHost
@@ -2738,10 +2738,12 @@ const (
 
 	// proxyURLGiveUpEvictAfterCycles is the lifetime give-up count at which a
 	// URL-sourced address is permanently evicted (see evictProxyURLAddress)
-	// instead of requeued again. proxyURLGiveUpRetryDelay first reaches the
-	// 24h cap at cycle 8, so this allows 3 more cycles at the cap (roughly 3
-	// more days) before giving up on the address for good.
-	proxyURLGiveUpEvictAfterCycles = 10
+	// instead of requeued again. At 4 cycles the doubling backoff reaches 2h
+	// (15min → 30min → 1h → 2h), so a dead proxy is evicted after roughly
+	// 4 hours of wall time. The 24h blacklist cooldown then prevents re-entry;
+	// the blacklist pruner removes it after 24h, and the next URL fetch cycle
+	// re-probes it from scratch (must pass the dual-stage probe to re-enter).
+	proxyURLGiveUpEvictAfterCycles = 4
 )
 
 // proxyURLGiveUpRetryDelay computes the requeue delay for a URL-sourced
