@@ -335,6 +335,93 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestResolveSelfHealEnabled_Override covers the `urnet-tools self-heal
+// on|off` runtime toggle's marker file: absent/empty/anything-but-"off"
+// means enabled, "off" (case-insensitive) means disabled, and the override
+// always wins over the startup value.
+func TestResolveSelfHealEnabled_Override(t *testing.T) {
+	home := withTempHome(t)
+
+	if got := resolveSelfHealEnabled(true); !got {
+		t.Error("no override file: expected startup value true to pass through")
+	}
+	if got := resolveSelfHealEnabled(false); got {
+		t.Error("no override file: expected startup value false to pass through")
+	}
+
+	path := filepath.Join(home, ".urnetwork", "proxy_self_heal")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("off"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSelfHealEnabled(true); got {
+		t.Error("override file = \"off\": expected disabled regardless of startup value")
+	}
+
+	if err := os.WriteFile(path, []byte("OFF\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSelfHealEnabled(true); got {
+		t.Error("override file = \"OFF\": expected case-insensitive match to disable")
+	}
+
+	if err := os.WriteFile(path, []byte("on"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSelfHealEnabled(false); !got {
+		t.Error("override file = \"on\": expected enabled regardless of startup value")
+	}
+}
+
+// TestRunProxyURLCleanup_SelfHealOff_SkipsImmediateCleanup guards the fix
+// to runProxyURLCleanup's startup pass: an operator who wrote the self-heal
+// override file to "off" *before* the provider started must not have that
+// first immediate cleanup call run anyway (it previously only checked
+// activeScope, bypassing the toggle for the one call outside the ticker
+// loop).
+func TestRunProxyURLCleanup_SelfHealOff_SkipsImmediateCleanup(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"4.4.4.4:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{
+		"4.4.4.4:1080": {Health: "dead", Source: "url"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		// selfHealEnabled=false with no override file present: the startup
+		// value alone must suppress the immediate cleanup pass.
+		runProxyURLCleanup(ctx, "url", time.Hour, false)
+		close(done)
+	}()
+	// Give the immediate pass a moment to run (it happens before the
+	// goroutine blocks on the ticker/ctx select), then cancel and wait.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runProxyURLCleanup did not stop after context cancellation")
+	}
+
+	gotURLState, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gotURLState.Cache["4.4.4.4:1080"]; !ok {
+		t.Error("expected dead proxy to survive the immediate cleanup pass when self-heal is off")
+	}
+}
+
 // TestRunURLProxyReaperOnce_DemotesStaleProbeOKEntryOnFailure covers change
 // 5 from the LA1 self-healing plan: without this, a proxy that passed its
 // initial probe then died later was invisible to the reaper forever (only
