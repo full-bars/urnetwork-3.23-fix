@@ -64,6 +64,18 @@ func TestEwmaAsymmetric(t *testing.T) {
 	}
 }
 
+func TestScaledProbeConcurrency(t *testing.T) {
+	if v := scaledProbeConcurrency(0); v != proxyProbeConcurrency {
+		t.Fatalf("calm: %v", v)
+	}
+	if v := scaledProbeConcurrency(0.5); v != proxyProbeConcurrency/2 {
+		t.Fatalf("half: %v", v)
+	}
+	if v := scaledProbeConcurrency(1.0); v != 1 {
+		t.Fatalf("floor: %v", v)
+	}
+}
+
 func TestParsePSILine(t *testing.T) {
 	avg10, avg60, err := parsePSISome("some avg10=12.34 avg60=5.60 avg300=1.00 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
 	if err != nil || !almostEq(avg10, 12.34) || !almostEq(avg60, 5.60) {

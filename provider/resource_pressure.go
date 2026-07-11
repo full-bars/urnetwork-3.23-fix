@@ -317,6 +317,17 @@ func fetchStretch(pressure float64) float64 {
 	return 1.0 + t*(fetchStretchMax-1.0)
 }
 
+// scaledProbeConcurrency shrinks the probe worker pool as pressure rises.
+// Probe bursts are the provider's main self-generated load spike; the floor
+// of 1 keeps the reaper/fetch pipelines draining even at full pressure.
+func scaledProbeConcurrency(pressure float64) int {
+	n := int(math.Round(float64(proxyProbeConcurrency) * (1 - pressure)))
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 // getSystemLoad reads /proc/loadavg and returns the 1-minute and 5-minute
 // load averages. Returns an error on non-Linux systems or parse failure;
 // callers should fail-open (skip gating) when this happens.
