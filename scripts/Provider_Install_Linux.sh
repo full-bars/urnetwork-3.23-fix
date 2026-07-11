@@ -2078,6 +2078,14 @@ do_self_heal ()
             else
                 pr_info "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
             fi
+            if [ -f "$HOME/.urnetwork/pressure_status" ]; then
+                if command -v jq >/dev/null 2>&1; then
+                    pr_info "$(jq -r '"pressure: \(.score) (target_pool=\(.target_pool), updated=\(.updated))"' \
+                        "$HOME/.urnetwork/pressure_status" 2>/dev/null)"
+                else
+                    cat "$HOME/.urnetwork/pressure_status"
+                fi
+            fi
             ;;
         *)
             pr_err "Usage: urnet-tools self-heal [on|off|status]"
