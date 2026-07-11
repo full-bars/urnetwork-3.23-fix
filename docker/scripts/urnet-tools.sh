@@ -245,6 +245,14 @@ case "$operation" in
                 else
                     echo "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
                 fi
+                if [ -f "$HOME/.urnetwork/pressure_status" ]; then
+                    if command -v jq >/dev/null 2>&1; then
+                        jq -r '"pressure: \(.score) (target_pool=\(.target_pool), updated=\(.updated))"' \
+                            "$HOME/.urnetwork/pressure_status" 2>/dev/null
+                    else
+                        cat "$HOME/.urnetwork/pressure_status"
+                    fi
+                fi
                 ;;
             *) echo "Usage: urnet-tools self-heal [on|off|status]"; exit 1 ;;
         esac

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -138,6 +141,25 @@ func TestAimdStep(t *testing.T) {
 	// the documented/implemented formula; flagged in the task report.
 	if v := aimdStep(400, 100, 0.1, 500); v != 125 {
 		t.Fatalf("target tracks cache+increment when cache lags: %v", v)
+	}
+}
+
+func TestWritePressureStatus(t *testing.T) {
+	home := withTempHome(t)
+	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42})
+	b, err := os.ReadFile(filepath.Join(home, ".urnetwork", "pressure_status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Score      float64            `json:"score"`
+		Components map[string]float64 `json:"components"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !almostEq(got.Score, 0.42) || !almostEq(got.Components["psi_mem"], 0.42) {
+		t.Fatalf("got %+v", got)
 	}
 }
 

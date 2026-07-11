@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -282,7 +284,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			smoothed = ewmaUpdate(smoothed, raw)
 		}
 		setPressure(smoothed)
-		writePressureStatus(smoothed, comps) // Task 7; no-op stub until then
+		writePressureStatus(smoothed, comps)
 		if r := pressureRegime(smoothed); r != lastRegime {
 			tlog("[proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
 			lastRegime = r
@@ -300,8 +302,31 @@ func formatComponents(comps map[string]float64) string {
 	return strings.Join(parts, " ")
 }
 
-// writePressureStatus is filled in by the observability task.
-func writePressureStatus(score float64, comps map[string]float64) {}
+// writePressureStatus persists the current score for `urnet-tools self-heal
+// status` and debugging. Best-effort; failures are silent (status is
+// advisory, the atomic is the source of truth).
+func writePressureStatus(score float64, comps map[string]float64) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	var target int
+	if state, err := readProxyURLState(); err == nil {
+		target = state.TargetPoolSize
+	}
+	payload, err := json.Marshal(map[string]any{
+		"score":       score,
+		"components":  comps,
+		"target_pool": target,
+		"updated":     time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return
+	}
+	path := filepath.Join(home, ".urnetwork", "pressure_status")
+	_ = os.MkdirAll(filepath.Dir(path), 0700)
+	_ = os.WriteFile(path, payload, 0600)
+}
 
 // fetchStretchMax is the ceiling on how far pressure can stretch the URL
 // fetch interval (8× base at full pressure).

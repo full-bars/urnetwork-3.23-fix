@@ -589,6 +589,15 @@ switch ($Command) {
                 } else {
                     Write-Host "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
                 }
+                $pressureFile = "$env:USERPROFILE\.urnetwork\pressure_status"
+                if (Test-Path $pressureFile) {
+                    try {
+                        $pressure = Get-Content $pressureFile -Raw | ConvertFrom-Json
+                        Write-Host "pressure: $($pressure.score) (target_pool=$($pressure.target_pool), updated=$($pressure.updated))"
+                    } catch {
+                        Get-Content $pressureFile
+                    }
+                }
                 break
             }
             default {
