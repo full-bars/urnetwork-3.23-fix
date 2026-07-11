@@ -194,7 +194,9 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 		r   probeResult
 	}
 	results := make([]result, len(lines))
-	sem := make(chan struct{}, proxyProbeConcurrency)
+	// Pool is sized once per batch at batch start; a batch in flight keeps
+	// its size even if pressure changes mid-batch.
+	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
 	var wg sync.WaitGroup
 
 	for i, line := range lines {
