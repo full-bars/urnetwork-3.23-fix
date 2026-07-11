@@ -235,10 +235,18 @@ case "$operation" in
     self-heal)
         file="$HOME/.urnetwork/proxy_self_heal"
         case "${1:-}" in
-            on) rm -f "$file"; echo "Self-heal enabled" ;;
+            on) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "on" > "$file"; echo "Self-heal enabled" ;;
             off) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "off" > "$file"; echo "Self-heal disabled" ;;
-            "") [ ! -f "$file" ] || [ "$(cat "$file" 2>/dev/null)" != "off" ] && echo "self-heal: on" || echo "self-heal: off" ;;
-            *) echo "Usage: urnet-tools self-heal [on|off]"; exit 1 ;;
+            status|"")
+                if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "on" ]; then
+                    echo "self-heal: on"
+                elif [ -f "$file" ]; then
+                    echo "self-heal: off"
+                else
+                    echo "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
+                fi
+                ;;
+            *) echo "Usage: urnet-tools self-heal [on|off|status]"; exit 1 ;;
         esac
         ;;
     -v|version)

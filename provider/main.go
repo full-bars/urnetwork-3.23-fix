@@ -1995,7 +1995,9 @@ func provide(opts docopt.Opts) {
 	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 500)
 	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "url")
 	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 6*time.Hour)
-	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") != "0"
+	// Self-heal defaults OFF: the pressure-based load shedding system is opt-in
+	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
+	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
 
 	// Extract API host:port for the reachability probe
 	apiProbeHost := defaultAPIHost
