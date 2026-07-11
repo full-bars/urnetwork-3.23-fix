@@ -190,6 +190,38 @@ func getSystemLoad() (load1, load5 float64, err error) {
 	return load1, load5, nil
 }
 
+// proxySelfHealOverridePath returns ~/.urnetwork/proxy_self_heal, a marker
+// file for the `urnet-tools self-heal on|off` toggle. Absent or "on" means
+// enabled; any other value (typically "off") means disabled. Follows the
+// same pattern as fast_auth.
+func proxySelfHealOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_self_heal"), nil
+}
+
+// resolveSelfHealEnabled reads the runtime override file every call.
+// startupEnabled is the value from URNETWORK_SELF_HEAL at process start;
+// the override file takes precedence when present. Falls back to true if
+// neither source is set (self-heal is on by default).
+func resolveSelfHealEnabled(startupEnabled bool) bool {
+	path, err := proxySelfHealOverridePath()
+	if err != nil {
+		return startupEnabled
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupEnabled
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupEnabled
+	}
+	return !strings.EqualFold(v, "off")
+}
+
 // defaultAPIHost is the default target for the API reachability probe.
 const defaultAPIHost = "api.bringyour.com"
 const defaultAPIPort = 443
@@ -671,7 +703,7 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // Fetches are skipped when the system is under persistent load (both 1m and
 // 5m load averages above 2.0 per core), with a starvation escape so a
 // chronically loaded box still slowly refreshes its cache.
-func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16) {
+func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16, selfHealEnabled bool) {
 	if len(urls) == 0 {
 		return
 	}
@@ -714,15 +746,17 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			// machine. Applies regardless of whether a cap is configured —
 			// an unbounded proxy_url_max (0) is exactly the config where
 			// load protection matters most, so it must not be gated on the
-			// cap being set.
-			cacheSize := readURLCacheSize()
-			load1, load5, loadErr := getSystemLoad()
-			threshold := resolveProxyLoadThreshold(2.0) * float64(runtime.NumCPU())
-			if shouldSkipProxyURLFetch(cacheSize, consecutiveSkips, load1, load5, threshold, loadErr) {
-				consecutiveSkips++
-				tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
-					load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
-				continue
+			// cap being set. Can be disabled via `urnet-tools self-heal off`.
+			if resolveSelfHealEnabled(selfHealEnabled) {
+				cacheSize := readURLCacheSize()
+				load1, load5, loadErr := getSystemLoad()
+				threshold := resolveProxyLoadThreshold(2.0) * float64(runtime.NumCPU())
+				if shouldSkipProxyURLFetch(cacheSize, consecutiveSkips, load1, load5, threshold, loadErr) {
+					consecutiveSkips++
+					tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
+						load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
+					continue
+				}
 			}
 			consecutiveSkips = 0
 			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
@@ -859,7 +893,7 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 // ctx is cancelled. When scope is "none" or another disabling value the
 // ticker still runs so that runtime toggles (off→on) work live — the
 // loop just skips the cleanup call until scope becomes active again.
-func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration) {
+func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration, selfHealEnabled bool) {
 	activeScope := resolveProxyCleanupScope(scope)
 	activeInterval := resolveProxyCleanupInterval(interval)
 
@@ -891,7 +925,7 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 				activeInterval = ni
 				tlog("[proxy][url] cleanup interval changed to %s\n", ni)
 			}
-			if activeScope == "url" || activeScope == "all" {
+			if resolveSelfHealEnabled(selfHealEnabled) && (activeScope == "url" || activeScope == "all") {
 				runProxyURLCleanupOnce(activeScope)
 			}
 		}

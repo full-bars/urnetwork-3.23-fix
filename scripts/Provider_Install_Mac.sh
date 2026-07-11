@@ -20,6 +20,7 @@ show_help() {
     echo ""
     echo "Performance & Tuning:"
     echo "  hot-restart <on|off>      Reuse client JWT identities across restarts"
+    echo "  self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)"
     echo ""
     echo "Session:"
     echo "  session save <file>       Export identity+proxy state (encrypted)"
@@ -650,6 +651,15 @@ case "$operation" in
     status)        do_status ;;
     version)       do_version ;;
     hot-restart)   do_hot_restart "$@" ;;
+    self-heal)
+        file="$HOME/.urnetwork/proxy_self_heal"
+        case "${1:-}" in
+            on) rm -f "$file"; echo "Self-heal enabled" ;;
+            off) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "off" > "$file"; echo "Self-heal disabled" ;;
+            "") [ ! -f "$file" ] || [ "$(cat "$file" 2>/dev/null)" != "off" ] && echo "self-heal: on" || echo "self-heal: off" ;;
+            *) echo "Usage: urnet-tools self-heal [on|off]"; exit 1 ;;
+        esac
+        ;;
     session)       do_session "$@" ;;
     proxy)         do_proxy "$@" ;;
     hub)           do_hub "$@" ;;
