@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,6 +131,63 @@ func resolveProxyCleanupInterval(startupInterval time.Duration) time.Duration {
 		return startupInterval
 	}
 	return d
+}
+
+// proxyLoadThresholdOverridePath returns ~/.urnetwork/proxy_load_threshold,
+// a file an operator can write to set the per-core load threshold for URL
+// fetch gating (e.g. "2.0"). The effective threshold is this value × NumCPU.
+func proxyLoadThresholdOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "proxy_load_threshold"), nil
+}
+
+// resolveProxyLoadThreshold re-reads the per-core load threshold on every
+// call. startupThreshold is the compiled-in default. Returns startupThreshold
+// if the override file doesn't exist, is empty, or holds an unparseable value.
+func resolveProxyLoadThreshold(startupThreshold float64) float64 {
+	path, err := proxyLoadThresholdOverridePath()
+	if err != nil {
+		return startupThreshold
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return startupThreshold
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return startupThreshold
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
+		return startupThreshold
+	}
+	return n
+}
+
+// getSystemLoad reads /proc/loadavg and returns the 1-minute and 5-minute
+// load averages. Returns an error on non-Linux systems or parse failure;
+// callers should fail-open (skip gating) when this happens.
+func getSystemLoad() (load1, load5 float64, err error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, 0, err
+	}
+	parts := strings.Fields(string(data))
+	if len(parts) < 2 {
+		return 0, 0, fmt.Errorf("unexpected /proc/loadavg format: %q", string(data))
+	}
+	load1, err = strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	load5, err = strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	return load1, load5, nil
 }
 
 // defaultAPIHost is the default target for the API reachability probe.
@@ -379,8 +437,9 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 // reaperProbeTarget holds a single candidate address and a snapshot of its
 // probe state, collected under the lock then probed outside it.
 type reaperProbeTarget struct {
-	addr  string
-	entry ProxyURLEntry
+	addr        string
+	entry       ProxyURLEntry
+	wasProbeOK  bool
 }
 
 // runURLProxyReaper iterates the URL cache and re-probes entries whose
@@ -418,13 +477,24 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 				return
 			}
 			for addr, entry := range state.Cache {
-				if entry.ProbeOK {
+				if !entry.ProbeOK {
+					// Unproven or previously-failed proxy: re-probe if due.
+					if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
+						continue
+					}
+					candidates = append(candidates, reaperProbeTarget{addr: addr, entry: entry})
 					continue
 				}
-				if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
+				// Once-good proxy: re-probe only when stale, so dead-but-cached
+				// entries don't accumulate invisibly until the give-up pipeline
+				// evicts them. Without this, the reaper has no exit for proxies
+				// that passed the initial probe then died later.
+				if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperStaleThreshold {
 					continue
 				}
-				candidates = append(candidates, reaperProbeTarget{addr, entry})
+				candidates = append(candidates, reaperProbeTarget{
+					addr: addr, entry: entry, wasProbeOK: true,
+				})
 			}
 		}()
 
@@ -437,14 +507,16 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 		// was the critical problem — a 5-minute stale-lock age window would
 		// let a reload steal the lock mid-cycle and race on proxy_url.json.
 		type probeResultEntry struct {
-			addr   string
-			result probeResult
+			addr        string
+			result      probeResult
+			wasProbeOK  bool
 		}
 		results := make([]probeResultEntry, 0, len(candidates))
 		for _, c := range candidates {
 			results = append(results, probeResultEntry{
-				addr:   c.addr,
-				result: probeProxy(ctx, c.addr, apiHost, apiPort),
+				addr:        c.addr,
+				result:      probeProxy(ctx, c.addr, apiHost, apiPort),
+				wasProbeOK:  c.wasProbeOK,
 			})
 		}
 
@@ -467,9 +539,27 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 				if !ok {
 					continue // removed by a concurrent writer
 				}
-				if entry.ProbeOK {
-					continue // became reachable between snapshot and probe
+				if r.wasProbeOK {
+					// Stale re-probe of a once-good entry: demote on failure,
+					// or refresh timestamp on success.
+					switch r.result {
+					case probeAPIReachable:
+						entry.LastProbe = time.Now()
+						entry.ProbeOK = true
+						entry.ProbeFails = 0
+						state.Cache[r.addr] = entry
+						changed = true
+					case probeSocks5Only, probeDead:
+						entry.LastProbe = time.Now()
+						entry.ProbeOK = false
+						entry.ProbeFails = 1
+						state.Cache[r.addr] = entry
+						tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale re-probe\n", r.addr)
+						changed = true
+					}
+					continue
 				}
+
 				entry.LastProbe = time.Now()
 
 				switch r.result {
@@ -571,6 +661,10 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // merges new entries into the running proxy set. The first fetch runs
 // immediately; subsequent fetches run every refreshInterval. Exits when ctx
 // is cancelled. A no-op if urls is empty.
+//
+// Fetches are skipped when the system is under persistent load (both 1m and
+// 5m load averages above 2.0 per core), with a starvation escape so a
+// chronically loaded box still slowly refreshes its cache.
 func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
@@ -587,7 +681,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		}
 	}
 
+	// The initial fetch is always allowed (cold-start / starvation escape).
 	fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
+
+	var consecutiveSkips int
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
 	ticker := time.NewTicker(activeInterval)
@@ -604,9 +701,48 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 				activeInterval = ni
 				tlog("[proxy][url] refresh interval changed to %s\n", ni)
 			}
+
+			// Load-aware gating: skip the fetch cycle when the system is
+			// persistently overloaded. This prevents adding more work (probe
+			// connections, auth attempts, reload churn) to an already-drowning
+			// machine.
+			//
+			// Starvation escape: never gate when the cache is nearly empty
+			// (< 50 entries) or after 6 consecutive skips (~6h), so a box
+			// that hovers at the threshold forever still slowly refreshes.
+			if maxURL := resolveProxyURLMax(maxTotal); maxURL > 0 {
+				cacheSize := readURLCacheSize()
+				if cacheSize >= 50 && consecutiveSkips < 6 {
+					load1, load5, err := getSystemLoad()
+					perCoreThreshold := resolveProxyLoadThreshold(2.0)
+					threshold := perCoreThreshold * float64(runtime.NumCPU())
+					if err == nil && load1 >= threshold && load5 >= threshold*0.75 {
+						consecutiveSkips++
+						tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
+							load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
+						continue
+					}
+				}
+			}
+			consecutiveSkips = 0
 			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
+}
+
+// readURLCacheSize reads the current URL proxy cache size from proxy_url.json.
+// Returns 0 on error (fetch will not be gated).
+func readURLCacheSize() int {
+	release, err := acquireProxyLock()
+	if err != nil {
+		return 0
+	}
+	defer release()
+	state, err := readProxyURLState()
+	if err != nil {
+		return 0
+	}
+	return len(state.Cache)
 }
 
 // runProxyURLCleanupOnce removes dead/inactive/degraded proxies whose source
@@ -651,10 +787,19 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 			continue
 		}
 
-		// Dead/inactive: always remove (existing behavior).
-		// These never authed (dead) or haven't been seen in 7+ days
-		// (inactive) — no uptime guard needed.
-		if e.Health == "dead" || e.Health == "inactive" {
+		// Dead: apply the same uptime guard as degraded to avoid evicting
+		// proxies that simply haven't authed yet during warmup. The health
+		// system reports "dead" before the first auth completes, so without
+		// this guard the startup cleanup pass would mass-evict warming URL
+		// proxies. Inactive (7+ days unseen) is always safe to remove.
+		if e.Health == "dead" {
+			if uptime > minUptime {
+				addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
+				removed++
+			}
+			continue
+		}
+		if e.Health == "inactive" {
 			addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
 			removed++
 			continue
@@ -691,20 +836,21 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 }
 
 // runProxyURLCleanup runs runProxyURLCleanupOnce on a fixed interval until
-// ctx is cancelled. A no-op (returns immediately without starting a ticker)
-// when scope is "none" or any other disabling value — automatic cleanup is
-// opt-in.
+// ctx is cancelled. When scope is "none" or another disabling value the
+// ticker still runs so that runtime toggles (off→on) work live — the
+// loop just skips the cleanup call until scope becomes active again.
 func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration) {
 	activeScope := resolveProxyCleanupScope(scope)
 	activeInterval := resolveProxyCleanupInterval(interval)
-	if activeScope != "url" && activeScope != "all" {
-		return
-	}
-
-	runProxyURLCleanupOnce(activeScope)
 
 	ticker := time.NewTicker(activeInterval)
 	defer ticker.Stop()
+
+	// Run once immediately if scope is active
+	if activeScope == "url" || activeScope == "all" {
+		runProxyURLCleanupOnce(activeScope)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -713,11 +859,11 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 			// Re-check runtime overrides on every tick
 			if ns := resolveProxyCleanupScope(scope); ns != activeScope {
 				activeScope = ns
-				if activeScope != "url" && activeScope != "all" {
+				if activeScope == "url" || activeScope == "all" {
+					tlog("[proxy][url] cleanup scope changed to %s\n", ns)
+				} else {
 					tlog("[proxy][url] cleanup disabled (scope=%s)\n", ns)
-					return
 				}
-				tlog("[proxy][url] cleanup scope changed to %s\n", ns)
 			}
 			if ni := resolveProxyCleanupInterval(interval); ni != activeInterval {
 				ticker.Stop()
@@ -725,7 +871,9 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 				activeInterval = ni
 				tlog("[proxy][url] cleanup interval changed to %s\n", ni)
 			}
-			runProxyURLCleanupOnce(activeScope)
+			if activeScope == "url" || activeScope == "all" {
+				runProxyURLCleanupOnce(activeScope)
+			}
 		}
 	}
 }
