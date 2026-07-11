@@ -24,9 +24,9 @@
 | `URNETWORK_MESSAGE_POOL_SHARD_COUNT` | `16` | Number of internal mutex shards per message-pool size class. Higher values reduce lock contention at high packet rates. Must be a power of two, 1–256. Set to `1` to disable sharding (pre-v24.35 behavior). Sane values: `8` (moderate), `16` (default), `32` (high-pps tier3+). |
 | `PROXY_URL` | - | Live proxy list URL, fetched and merged on an interval. Comma-separate for multiple sources. See [Proxy URL Sources](Proxy-URL-Sources.md). |
 | `PROXY_URL_REFRESH` | `15m` | How often `PROXY_URL` is re-fetched to add new entries. |
-| `PROXY_URL_MAX` | unlimited | Caps total proxies sourced from `PROXY_URL`. |
-| `PROXY_DEAD_CLEANUP_SCOPE` | `none` | `none`, `url`, or `all` — which sources the automatic daily dead-proxy cleanup may touch. |
-| `PROXY_DEAD_CLEANUP_INTERVAL` | `24h` | Cadence of the automatic cleanup job, when scope isn't `none`. |
+| `PROXY_URL_MAX` | `500` | Caps total proxies sourced from `PROXY_URL`. `0` = unlimited. |
+| `PROXY_DEAD_CLEANUP_SCOPE` | `url` | `none`, `url`, or `all` — which sources the automatic dead-proxy cleanup may touch. |
+| `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope isn't `none` (shrinks under pressure when self-heal is on). |
 | `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default — with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on\|off\|status` (no restart required; the monitor starts sensing within ~30s). |
 | `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
 
