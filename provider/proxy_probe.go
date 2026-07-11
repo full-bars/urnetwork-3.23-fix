@@ -47,15 +47,16 @@ const (
 
 	// proxyBlacklistPruneInterval is how often the blacklist pruner runs.
 	proxyBlacklistPruneInterval = 30 * time.Minute
-
-	// proxyReaperStaleThreshold is the age after which a ProbeOK=true entry
-	// is re-probed by the background reaper. Proxies that passed the initial
-	// dual-stage probe but died later are invisible to the reaper without
-	// this; they would only exit via the slow give-up eviction pipeline.
-	// 3h balances catching dead proxies within the same day against not
-	// re-probing every entry on every 5-minute cycle.
-	proxyReaperStaleThreshold = 3 * time.Hour
 )
+
+// The stale re-probe threshold for ProbeOK=true entries (proxies that
+// passed the initial dual-stage probe but may have died later — without a
+// re-probe window they'd be invisible to the reaper until the slow give-up
+// eviction pipeline caught them) now scales with pressure; see
+// reaperStaleThreshold / reaperStaleCalm / reaperStaleHot in
+// resource_pressure.go. reaperStaleCalm (3h) matches this comment's
+// original fixed value, balancing catching dead proxies within the same day
+// against not re-probing every entry on every 5-minute cycle.
 
 // socks5Greeting is the client's opening message in the SOCKS5 handshake
 // (RFC 1928 §3): version 5, offering exactly one auth method, "no

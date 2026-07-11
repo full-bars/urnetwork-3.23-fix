@@ -46,6 +46,12 @@ type ProxyURLState struct {
 	// Set at runtime via:  urnetwork proxy set degraded-cleanup 24h
 	// Read every cleanup cycle, so changes take effect without restart.
 	DegradedCleanupThreshold string `json:"degraded_cleanup_threshold,omitempty"`
+
+	// TargetPoolSize is the AIMD-discovered operating point for URL-sourced
+	// proxies — grown while pressure is low, cut multiplicatively under
+	// sustained pressure. 0 = controller hasn't run. proxy_url_max remains a
+	// hard ceiling on top of this.
+	TargetPoolSize int `json:"target_pool_size,omitempty"`
 }
 
 // ProxyURLEntry records the auth (if any) for one address fetched from a URL
