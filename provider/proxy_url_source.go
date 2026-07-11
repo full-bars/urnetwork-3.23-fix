@@ -167,29 +167,6 @@ func resolveProxyLoadThreshold(startupThreshold float64) float64 {
 	return n
 }
 
-// getSystemLoad reads /proc/loadavg and returns the 1-minute and 5-minute
-// load averages. Returns an error on non-Linux systems or parse failure;
-// callers should fail-open (skip gating) when this happens.
-func getSystemLoad() (load1, load5 float64, err error) {
-	data, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return 0, 0, err
-	}
-	parts := strings.Fields(string(data))
-	if len(parts) < 2 {
-		return 0, 0, fmt.Errorf("unexpected /proc/loadavg format: %q", string(data))
-	}
-	load1, err = strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 0, 0, err
-	}
-	load5, err = strconv.ParseFloat(parts[1], 64)
-	if err != nil {
-		return 0, 0, err
-	}
-	return load1, load5, nil
-}
-
 // proxySelfHealOverridePath returns ~/.urnetwork/proxy_self_heal, a marker
 // file for the `urnet-tools self-heal on|off` toggle. Absent means the
 // startup default (off unless URNETWORK_SELF_HEAL=1); "on" enables;

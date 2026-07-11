@@ -2568,6 +2568,7 @@ func provide(opts docopt.Opts) {
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
 	go pruneURLProxyBlacklist(ctx)
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
+	go runPressureMonitor(ctx, selfHealEnabled)
 
 	if 0 < port {
 		fmt.Printf(
