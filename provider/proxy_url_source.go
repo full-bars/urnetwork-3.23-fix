@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,40 +130,6 @@ func resolveProxyCleanupInterval(startupInterval time.Duration) time.Duration {
 		return startupInterval
 	}
 	return d
-}
-
-// proxyLoadThresholdOverridePath returns ~/.urnetwork/proxy_load_threshold,
-// a file an operator can write to set the per-core load threshold for URL
-// fetch gating (e.g. "2.0"). The effective threshold is this value × NumCPU.
-func proxyLoadThresholdOverridePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "proxy_load_threshold"), nil
-}
-
-// resolveProxyLoadThreshold re-reads the per-core load threshold on every
-// call. startupThreshold is the compiled-in default. Returns startupThreshold
-// if the override file doesn't exist, is empty, or holds an unparseable value.
-func resolveProxyLoadThreshold(startupThreshold float64) float64 {
-	path, err := proxyLoadThresholdOverridePath()
-	if err != nil {
-		return startupThreshold
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return startupThreshold
-	}
-	v := strings.TrimSpace(string(b))
-	if v == "" {
-		return startupThreshold
-	}
-	n, err := strconv.ParseFloat(v, 64)
-	if err != nil || n <= 0 {
-		return startupThreshold
-	}
-	return n
 }
 
 // proxySelfHealOverridePath returns ~/.urnetwork/proxy_self_heal, a marker
@@ -678,9 +643,10 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // immediately; subsequent fetches run every refreshInterval. Exits when ctx
 // is cancelled. A no-op if urls is empty.
 //
-// Fetches are skipped when the system is under persistent load (both 1m and
-// 5m load averages above 2.0 per core), with a starvation escape so a
-// chronically loaded box still slowly refreshes its cache.
+// The fetch interval stretches proportionally to system pressure (up to 8x
+// at high pressure), so a drowning box adds probe/auth/reload work more
+// slowly instead of stopping dead. A near-empty cache is never stretched,
+// so a fresh box under load still bootstraps.
 func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16, selfHealEnabled bool) {
 	if len(urls) == 0 {
 		return
@@ -699,8 +665,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 
 	// The initial fetch is always allowed (cold-start / starvation escape).
 	fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
-
-	var consecutiveSkips int
+	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
 	ticker := time.NewTicker(activeInterval)
@@ -718,48 +683,33 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 				tlog("[proxy][url] refresh interval changed to %s\n", ni)
 			}
 
-			// Load-aware gating: skip the fetch cycle when the system is
-			// persistently overloaded. This prevents adding more work (probe
-			// connections, auth attempts, reload churn) to an already-drowning
-			// machine. Applies regardless of whether a cap is configured —
-			// an unbounded proxy_url_max (0) is exactly the config where
-			// load protection matters most, so it must not be gated on the
-			// cap being set. Can be disabled via `urnet-tools self-heal off`.
-			if resolveSelfHealEnabled(selfHealEnabled) {
-				cacheSize := readURLCacheSize()
-				load1, load5, loadErr := getSystemLoad()
-				threshold := resolveProxyLoadThreshold(2.0) * float64(runtime.NumCPU())
-				if shouldSkipProxyURLFetch(cacheSize, consecutiveSkips, load1, load5, threshold, loadErr) {
-					consecutiveSkips++
-					tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
-						load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
-					continue
-				}
+			// Pressure-proportional pacing: under load the effective interval
+			// stretches up to 8× so a drowning box adds probe/auth/reload work
+			// more slowly instead of stopping dead (old binary gate).
+			// currentPressure() is 0 when self-heal is off ⇒ no stretching.
+			pressure := currentPressure()
+			cacheSize := readURLCacheSize()
+			if !shouldFetchNow(time.Since(lastFetch), activeInterval, pressure, cacheSize) {
+				tlog("[proxy][url] fetch deferred: pressure=%.2f stretch=%.1fx elapsed=%s cache=%d\n",
+					pressure, fetchStretch(pressure), formatDuration(time.Since(lastFetch)), cacheSize)
+				continue
 			}
-			consecutiveSkips = 0
+			lastFetch = time.Now()
 			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
 }
 
-// shouldSkipProxyURLFetch decides whether a URL fetch cycle should be
-// skipped due to sustained system load. threshold is the absolute load
-// value (already scaled by NumCPU) that load1/load5 are compared against;
-// the 5-minute average only needs to clear 75% of it, so a spike that's
-// already cooling on the longer window doesn't extend the gate.
-//
-// Starvation escape: never gate when the cache is nearly empty (< 50
-// entries) or after 6 consecutive skips (~6h at the default refresh
-// interval), so a box that hovers at the threshold forever still slowly
-// refreshes instead of never fetching again.
-func shouldSkipProxyURLFetch(cacheSize, consecutiveSkips int, load1, load5, threshold float64, loadErr error) bool {
-	if cacheSize < 50 || consecutiveSkips >= 6 {
-		return false
+// shouldFetchNow decides whether enough time has passed since the last URL
+// fetch, given the pressure-stretched effective interval. The starvation
+// floor is kept from the old gate: a near-empty cache (<50) is never
+// stretched, so a fresh box under load still bootstraps.
+func shouldFetchNow(sinceLast, base time.Duration, pressure float64, cacheSize int) bool {
+	if cacheSize < 50 {
+		return sinceLast >= base
 	}
-	if loadErr != nil {
-		return false
-	}
-	return load1 >= threshold && load5 >= threshold*0.75
+	effective := time.Duration(float64(base) * fetchStretch(pressure))
+	return sinceLast >= effective
 }
 
 // readURLCacheSize reads the current URL proxy cache size from proxy_url.json.
