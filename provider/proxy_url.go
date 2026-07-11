@@ -241,6 +241,10 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (a
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
+	if maxTotal > 0 && len(state.Cache) > maxTotal {
+		tlog("[proxy][url] cache over cap: %d entries, maxTotal=%d (new entries will not be added until cleanup prunes stale entries)\n",
+			len(state.Cache), maxTotal)
+	}
 	for _, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
 		if !ok {
