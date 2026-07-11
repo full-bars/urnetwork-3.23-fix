@@ -191,9 +191,9 @@ func getSystemLoad() (load1, load5 float64, err error) {
 }
 
 // proxySelfHealOverridePath returns ~/.urnetwork/proxy_self_heal, a marker
-// file for the `urnet-tools self-heal on|off` toggle. Absent or "on" means
-// enabled; any other value (typically "off") means disabled. Follows the
-// same pattern as fast_auth.
+// file for the `urnet-tools self-heal on|off` toggle. Absent means the
+// startup default (off unless URNETWORK_SELF_HEAL=1); "on" enables;
+// anything else disables. Follows the same pattern as fast_auth.
 func proxySelfHealOverridePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -204,8 +204,9 @@ func proxySelfHealOverridePath() (string, error) {
 
 // resolveSelfHealEnabled reads the runtime override file every call.
 // startupEnabled is the value from URNETWORK_SELF_HEAL at process start;
-// the override file takes precedence when present. Falls back to true if
-// neither source is set (self-heal is on by default).
+// the override file takes precedence when present: "on" enables, any other
+// non-empty value disables. Falls back to startupEnabled (default FALSE —
+// self-heal is opt-in) when the file is absent or empty.
 func resolveSelfHealEnabled(startupEnabled bool) bool {
 	path, err := proxySelfHealOverridePath()
 	if err != nil {
@@ -219,7 +220,7 @@ func resolveSelfHealEnabled(startupEnabled bool) bool {
 	if v == "" {
 		return startupEnabled
 	}
-	return !strings.EqualFold(v, "off")
+	return strings.EqualFold(v, "on")
 }
 
 // defaultAPIHost is the default target for the API reachability probe.

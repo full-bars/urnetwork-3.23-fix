@@ -336,23 +336,38 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 }
 
 // TestResolveSelfHealEnabled_Override covers the `urnet-tools self-heal
-// on|off` runtime toggle's marker file: absent/empty/anything-but-"off"
-// means enabled, "off" (case-insensitive) means disabled, and the override
-// always wins over the startup value.
+// on|off` runtime toggle's marker file: absent/empty means the startup
+// value (default off unless URNETWORK_SELF_HEAL=1) passes through, "on"
+// (case-insensitive) means enabled, and any other non-empty value means
+// disabled — the override always wins over the startup value when present.
 func TestResolveSelfHealEnabled_Override(t *testing.T) {
 	home := withTempHome(t)
 
-	if got := resolveSelfHealEnabled(true); !got {
-		t.Error("no override file: expected startup value true to pass through")
-	}
 	if got := resolveSelfHealEnabled(false); got {
 		t.Error("no override file: expected startup value false to pass through")
+	}
+	if got := resolveSelfHealEnabled(true); !got {
+		t.Error("no override file: expected startup value true to pass through")
 	}
 
 	path := filepath.Join(home, ".urnetwork", "proxy_self_heal")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path, []byte("on"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSelfHealEnabled(false); !got {
+		t.Error("override file = \"on\": expected enabled regardless of startup value")
+	}
+
+	if err := os.WriteFile(path, []byte("ON\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveSelfHealEnabled(false); !got {
+		t.Error("override file = \"ON\": expected case-insensitive match to enable")
+	}
+
 	if err := os.WriteFile(path, []byte("off"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -360,18 +375,18 @@ func TestResolveSelfHealEnabled_Override(t *testing.T) {
 		t.Error("override file = \"off\": expected disabled regardless of startup value")
 	}
 
-	if err := os.WriteFile(path, []byte("OFF\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("garbage"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveSelfHealEnabled(true); got {
-		t.Error("override file = \"OFF\": expected case-insensitive match to disable")
+		t.Error("override file = \"garbage\": expected disabled (only \"on\" enables)")
 	}
 
-	if err := os.WriteFile(path, []byte("on"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(""), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveSelfHealEnabled(false); !got {
-		t.Error("override file = \"on\": expected enabled regardless of startup value")
+	if got := resolveSelfHealEnabled(true); !got {
+		t.Error("override file empty: expected startup value true to pass through")
 	}
 }
 
