@@ -47,6 +47,7 @@ show_help ()
     echo "  proxy remove-dead        💀  Interactively prune dead/degraded/failing"
     echo "  report [<url>|off]       📡  Show or set hub report URL"
     echo "  fast-auth [on|off]       ⚡  Bypass auth rate limiter without restart"
+    echo "  self-heal [on|off]       🏥  Auto-regulate proxies (load gate + cleanup)"
     echo "  set [<k> [<v>|off]]      ⚙   Show or change runtime tuning overrides"
     echo ""
     echo "Hub Management:"
@@ -2055,6 +2056,33 @@ do_report ()
     esac
 }
 
+do_self_heal ()
+{
+    file="$HOME/.urnetwork/proxy_self_heal"
+    case "${1:-}" in
+        on)
+            rm -f "$file"
+            pr_info "Self-heal enabled (load gate + auto cleanup active)"
+            ;;
+        off)
+            mkdir -p "$HOME/.urnetwork"
+            printf '%s\n' "off" > "$file"
+            pr_info "Self-heal disabled (load gate + auto cleanup turned off)"
+            ;;
+        "")
+            if [ ! -f "$file" ] || [ "$(cat "$file" 2>/dev/null)" != "off" ]; then
+                pr_info "self-heal: on"
+            else
+                pr_info "self-heal: off"
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools self-heal [on|off]"
+            exit 1
+            ;;
+    esac
+}
+
 do_fast_auth ()
 {
     file="$HOME/.urnetwork/fast_auth"
@@ -3872,6 +3900,11 @@ case "$operation" in
         ;;
     fast-auth)
         do_fast_auth "$@"
+        exit 0
+        ;;
+
+    self-heal)
+        do_self_heal "$@"
         exit 0
         ;;
 

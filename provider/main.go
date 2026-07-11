@@ -1995,6 +1995,7 @@ func provide(opts docopt.Opts) {
 	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 500)
 	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "url")
 	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 6*time.Hour)
+	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") != "0"
 
 	// Extract API host:port for the reachability probe
 	apiProbeHost := defaultAPIHost
@@ -2561,10 +2562,10 @@ func provide(opts docopt.Opts) {
 	}
 	reloader.StartWatcher(ctx)
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort)
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
 	go pruneURLProxyBlacklist(ctx)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
+	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
 
 	if 0 < port {
 		fmt.Printf(
