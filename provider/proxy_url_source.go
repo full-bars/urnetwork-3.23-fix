@@ -900,8 +900,10 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 	ticker := time.NewTicker(activeInterval)
 	defer ticker.Stop()
 
-	// Run once immediately if scope is active
-	if activeScope == "url" || activeScope == "all" {
+	// Run once immediately if scope is active. Gated by self-heal too — an
+	// operator who set self-heal off before starting the provider must not
+	// have that first pass run anyway.
+	if resolveSelfHealEnabled(selfHealEnabled) && (activeScope == "url" || activeScope == "all") {
 		runProxyURLCleanupOnce(activeScope)
 	}
 
