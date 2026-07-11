@@ -563,3 +563,66 @@ func TestGetSystemLoad_ParsesProcLoadavg(t *testing.T) {
 		t.Errorf("expected non-negative load averages, got load1=%v load5=%v", load1, load5)
 	}
 }
+
+// TestResolveEffectiveProxyURLMax verifies the AIMD-learned TargetPoolSize
+// only caps fetch admission while self-heal is enabled: toggling self-heal
+// off restores the configured ceiling immediately, even with a persisted
+// target on disk.
+func TestResolveEffectiveProxyURLMax(t *testing.T) {
+	home := withTempHome(t)
+	selfHealMarker := filepath.Join(home, ".urnetwork", "proxy_self_heal")
+	writeMarker := func(v string) {
+		if err := os.MkdirAll(filepath.Dir(selfHealMarker), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(selfHealMarker, []byte(v), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// (a) no persisted state at all, self-heal on → plain ceiling
+	writeMarker("on")
+	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
+		t.Fatalf("no state: got %d, want 500", v)
+	}
+
+	// (b) target 50 < ceiling 500, self-heal marker "on" → target wins
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache:          map[string]ProxyURLEntry{},
+		TargetPoolSize: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if v := resolveEffectiveProxyURLMax(500, false); v != 50 {
+		t.Fatalf("self-heal on: got %d, want 50", v)
+	}
+
+	// (c) same persisted target but marker "off" → ceiling restored
+	writeMarker("off")
+	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
+		t.Fatalf("self-heal off must ignore learned target: got %d, want 500", v)
+	}
+
+	// (d) target above the ceiling → ceiling wins
+	writeMarker("on")
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache:          map[string]ProxyURLEntry{},
+		TargetPoolSize: 900,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
+		t.Fatalf("target over ceiling: got %d, want 500", v)
+	}
+
+	// (e) ceiling 0 (unlimited) with target 50, self-heal on → target caps
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache:          map[string]ProxyURLEntry{},
+		TargetPoolSize: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if v := resolveEffectiveProxyURLMax(0, false); v != 50 {
+		t.Fatalf("unlimited ceiling: got %d, want 50", v)
+	}
+}
