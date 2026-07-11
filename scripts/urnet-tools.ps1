@@ -88,7 +88,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -562,6 +562,37 @@ switch ($Command) {
             Write-Host "Status: Stopped"
         }
 
+        break
+    }
+
+    "self-heal" {
+        $mode = if ($SubArgs) { $SubArgs[0] } else { "" }
+        $file = "$env:USERPROFILE\.urnetwork\proxy_self_heal"
+        switch ($mode) {
+            "on" {
+                Remove-Item -Path $file -ErrorAction SilentlyContinue
+                Write-Host "Self-heal enabled (load gate + auto cleanup active)"
+                break
+            }
+            "off" {
+                New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+                Set-Content -Path $file -Value "off" -NoNewline
+                Write-Host "Self-heal disabled (load gate + auto cleanup turned off)"
+                break
+            }
+            "" {
+                if (-not (Test-Path $file) -or (Get-Content $file -Raw).Trim() -ne "off") {
+                    Write-Host "self-heal: on"
+                } else {
+                    Write-Host "self-heal: off"
+                }
+                break
+            }
+            default {
+                Write-Host "Usage: urnet-tools.ps1 self-heal <on|off>"
+                break
+            }
+        }
         break
     }
 

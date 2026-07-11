@@ -232,6 +232,15 @@ case "$operation" in
         [ -x /usr/local/bin/provider ] && /usr/local/bin/provider -v || echo "provider binary not found"
         echo "Status: Running"
         ;;
+    self-heal)
+        file="$HOME/.urnetwork/proxy_self_heal"
+        case "${1:-}" in
+            on) rm -f "$file"; echo "Self-heal enabled" ;;
+            off) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "off" > "$file"; echo "Self-heal disabled" ;;
+            "") [ ! -f "$file" ] || [ "$(cat "$file" 2>/dev/null)" != "off" ] && echo "self-heal: on" || echo "self-heal: off" ;;
+            *) echo "Usage: urnet-tools self-heal [on|off]"; exit 1 ;;
+        esac
+        ;;
     -v|version)
         [ -x /usr/local/bin/provider ] && exec /usr/local/bin/provider -v || { echo "provider binary not found"; exit 1; }
         ;;

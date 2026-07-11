@@ -323,7 +323,7 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0)
+		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0, true)
 		close(done)
 	}()
 
