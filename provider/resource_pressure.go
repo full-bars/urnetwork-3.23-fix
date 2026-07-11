@@ -300,6 +300,23 @@ func formatComponents(comps map[string]float64) string {
 // writePressureStatus is filled in by the observability task.
 func writePressureStatus(score float64, comps map[string]float64) {}
 
+// fetchStretchMax is the ceiling on how far pressure can stretch the URL
+// fetch interval (8× base at full pressure).
+const (
+	fetchStretchStart = 0.3
+	fetchStretchFull  = 0.9
+	fetchStretchMax   = 8.0
+)
+
+// fetchStretch maps pressure to a fetch-interval multiplier: 1× while calm,
+// growing linearly to fetchStretchMax at fetchStretchFull. Replaces the old
+// binary skip-at-threshold gate — a box at moderate pressure now slows down
+// proportionally instead of getting zero or total protection.
+func fetchStretch(pressure float64) float64 {
+	t := normalizeRamp(pressure, fetchStretchStart, fetchStretchFull)
+	return 1.0 + t*(fetchStretchMax-1.0)
+}
+
 // getSystemLoad reads /proc/loadavg and returns the 1-minute and 5-minute
 // load averages. Returns an error on non-Linux systems or parse failure;
 // callers should fail-open (skip gating) when this happens.

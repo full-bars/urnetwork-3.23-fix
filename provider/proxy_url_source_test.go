@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -503,65 +502,43 @@ func TestRunURLProxyReaperOnce_SkipsFreshProbeOKEntry(t *testing.T) {
 	}
 }
 
-// TestShouldSkipProxyURLFetch covers the load-gating decision (change 4).
-// The key regression this guards against: gating must not depend on
-// whether a cap is configured — it was previously wired to only apply when
-// proxy_url_max > 0, silently disabling load protection on exactly the
-// unbounded config where it matters most (LA1's original setup).
-func TestShouldSkipProxyURLFetch(t *testing.T) {
-	cases := []struct {
-		name             string
-		cacheSize        int
-		consecutiveSkips int
-		load1, load5     float64
-		threshold        float64
-		loadErr          error
-		want             bool
-	}{
-		{"sustained overload gates", 200, 0, 3.0, 2.5, 2.0, nil, true},
-		{"under threshold does not gate", 200, 0, 1.0, 0.8, 2.0, nil, false},
-		{"transient spike (5m cool) does not gate", 200, 0, 5.0, 0.8, 2.0, nil, false},
-		{"starvation escape: near-empty cache never gates", 10, 0, 9.0, 9.0, 2.0, nil, false},
-		{"starvation escape: 6 consecutive skips forces a fetch", 200, 6, 9.0, 9.0, 2.0, nil, false},
-		{"fail-open on load read error", 200, 0, 0, 0, 2.0, errors.New("no /proc/loadavg"), false},
+// TestFetchStretch covers the pressure-to-multiplier ramp that replaces the
+// old binary load gate: 1x while calm (below fetchStretchStart), linear
+// growth to fetchStretchMax at fetchStretchFull, clamped above that.
+func TestFetchStretch(t *testing.T) {
+	if v := fetchStretch(0.0); !almostEq(v, 1.0) {
+		t.Fatalf("calm: %v", v)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := shouldSkipProxyURLFetch(c.cacheSize, c.consecutiveSkips, c.load1, c.load5, c.threshold, c.loadErr)
-			if got != c.want {
-				t.Errorf("shouldSkipProxyURLFetch(cache=%d, skips=%d, load1=%.1f, load5=%.1f, threshold=%.1f, err=%v) = %v, want %v",
-					c.cacheSize, c.consecutiveSkips, c.load1, c.load5, c.threshold, c.loadErr, got, c.want)
-			}
-		})
+	if v := fetchStretch(0.3); !almostEq(v, 1.0) {
+		t.Fatalf("threshold edge: %v", v)
+	}
+	if v := fetchStretch(0.6); !almostEq(v, 4.5) { // midpoint of 0.3..0.9 → 1+ (7 * 0.5)
+		t.Fatalf("mid: %v", v)
+	}
+	if v := fetchStretch(1.0); !almostEq(v, 8.0) {
+		t.Fatalf("pinned: %v", v)
 	}
 }
 
-// TestResolveProxyLoadThreshold_Override covers the runtime override file
-// used by `urnet-tools set proxy-load-threshold`.
-func TestResolveProxyLoadThreshold_Override(t *testing.T) {
-	home := withTempHome(t)
-
-	if got := resolveProxyLoadThreshold(2.0); got != 2.0 {
-		t.Errorf("no override file: got %v, want startup default 2.0", got)
+// TestShouldFetchNow covers the pacing decision that replaced the binary
+// skip gate: under pressure the effective interval stretches up to 8x, but
+// a near-empty cache is never stretched (starvation floor).
+func TestShouldFetchNow(t *testing.T) {
+	base := time.Hour
+	// calm: due exactly at base
+	if !shouldFetchNow(time.Hour, base, 0, 500) {
+		t.Fatal("calm+due must fetch")
 	}
-
-	path := filepath.Join(home, ".urnetwork", "proxy_load_threshold")
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
+	// pressured: base elapsed but stretched interval not yet reached
+	if shouldFetchNow(time.Hour, base, 1.0, 500) {
+		t.Fatal("pressure 1.0 stretches to 8h; 1h elapsed must not fetch")
 	}
-	if err := os.WriteFile(path, []byte("3.5\n"), 0600); err != nil {
-		t.Fatal(err)
+	if !shouldFetchNow(8*time.Hour, base, 1.0, 500) {
+		t.Fatal("stretched interval elapsed must fetch")
 	}
-	if got := resolveProxyLoadThreshold(2.0); got != 3.5 {
-		t.Errorf("with override file: got %v, want 3.5", got)
-	}
-
-	// Invalid/non-positive values fall back to the startup default.
-	if err := os.WriteFile(path, []byte("not-a-number"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveProxyLoadThreshold(2.0); got != 2.0 {
-		t.Errorf("with unparseable override: got %v, want fallback 2.0", got)
+	// starvation floor: near-empty cache always fetches when base elapsed
+	if !shouldFetchNow(time.Hour, base, 1.0, 49) {
+		t.Fatal("cache <50 must never be gated")
 	}
 }
 
