@@ -437,9 +437,9 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 // reaperProbeTarget holds a single candidate address and a snapshot of its
 // probe state, collected under the lock then probed outside it.
 type reaperProbeTarget struct {
-	addr        string
-	entry       ProxyURLEntry
-	wasProbeOK  bool
+	addr       string
+	entry      ProxyURLEntry
+	wasProbeOK bool
 }
 
 // runURLProxyReaper iterates the URL cache and re-probes entries whose
@@ -447,11 +447,6 @@ type reaperProbeTarget struct {
 // before the probe fields existed). Entries that fail proxyAPIMaxFails
 // consecutive probes are moved to the persistent Blacklist. Runs every
 // proxyReaperInterval. Exits when ctx is cancelled.
-//
-// Probing happens outside the proxy lock so a large batch of dead entries
-// doesn't block concurrent reloads, fetches, or removeDeadProxies calls.
-// The lock is held only while collecting candidates and while applying the
-// results atomically.
 func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 	ticker := time.NewTicker(proxyReaperInterval)
 	defer ticker.Stop()
@@ -462,154 +457,165 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 			return
 		case <-ticker.C:
 		}
+		runURLProxyReaperOnce(ctx, apiHost, apiPort)
+	}
+}
 
-		// Collect candidates under the lock, then probe outside it.
-		var candidates []reaperProbeTarget
-		func() {
-			release, err := acquireProxyLock()
-			if err != nil {
-				return
-			}
-			defer release()
+// runURLProxyReaperOnce performs a single reaper pass: collect candidates,
+// probe them, apply results. Split out from runURLProxyReaper so it can be
+// exercised directly in tests without waiting on proxyReaperInterval.
+//
+// Probing happens outside the proxy lock so a large batch of dead entries
+// doesn't block concurrent reloads, fetches, or removeDeadProxies calls.
+// The lock is held only while collecting candidates and while applying the
+// results atomically.
+func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) {
+	// Collect candidates under the lock, then probe outside it.
+	var candidates []reaperProbeTarget
+	func() {
+		release, err := acquireProxyLock()
+		if err != nil {
+			return
+		}
+		defer release()
 
-			state, err := readProxyURLState()
-			if err != nil {
-				return
-			}
-			for addr, entry := range state.Cache {
-				if !entry.ProbeOK {
-					// Unproven or previously-failed proxy: re-probe if due.
-					if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
-						continue
-					}
-					candidates = append(candidates, reaperProbeTarget{addr: addr, entry: entry})
+		state, err := readProxyURLState()
+		if err != nil {
+			return
+		}
+		for addr, entry := range state.Cache {
+			if !entry.ProbeOK {
+				// Unproven or previously-failed proxy: re-probe if due.
+				if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
 					continue
 				}
-				// Once-good proxy: re-probe only when stale, so dead-but-cached
-				// entries don't accumulate invisibly until the give-up pipeline
-				// evicts them. Without this, the reaper has no exit for proxies
-				// that passed the initial probe then died later.
-				if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperStaleThreshold {
-					continue
-				}
-				candidates = append(candidates, reaperProbeTarget{
-					addr: addr, entry: entry, wasProbeOK: true,
-				})
+				candidates = append(candidates, reaperProbeTarget{addr: addr, entry: entry})
+				continue
 			}
-		}()
-
-		if len(candidates) == 0 {
-			continue
-		}
-
-		// Probe every candidate outside the lock. Serial probing caps total
-		// cycle time but no longer blocks concurrent proxy operations, which
-		// was the critical problem — a 5-minute stale-lock age window would
-		// let a reload steal the lock mid-cycle and race on proxy_url.json.
-		type probeResultEntry struct {
-			addr        string
-			result      probeResult
-			wasProbeOK  bool
-		}
-		results := make([]probeResultEntry, 0, len(candidates))
-		for _, c := range candidates {
-			results = append(results, probeResultEntry{
-				addr:        c.addr,
-				result:      probeProxy(ctx, c.addr, apiHost, apiPort),
-				wasProbeOK:  c.wasProbeOK,
+			// Once-good proxy: re-probe only when stale, so dead-but-cached
+			// entries don't accumulate invisibly until the give-up pipeline
+			// evicts them. Without this, the reaper has no exit for proxies
+			// that passed the initial probe then died later.
+			if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperStaleThreshold {
+				continue
+			}
+			candidates = append(candidates, reaperProbeTarget{
+				addr: addr, entry: entry, wasProbeOK: true,
 			})
 		}
+	}()
 
-		// Re-acquire the lock and atomically apply all results.
-		func() {
-			release, err := acquireProxyLock()
-			if err != nil {
-				return
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Probe every candidate outside the lock. Serial probing caps total
+	// cycle time but no longer blocks concurrent proxy operations, which
+	// was the critical problem — a 5-minute stale-lock age window would
+	// let a reload steal the lock mid-cycle and race on proxy_url.json.
+	type probeResultEntry struct {
+		addr       string
+		result     probeResult
+		wasProbeOK bool
+	}
+	results := make([]probeResultEntry, 0, len(candidates))
+	for _, c := range candidates {
+		results = append(results, probeResultEntry{
+			addr:       c.addr,
+			result:     probeProxy(ctx, c.addr, apiHost, apiPort),
+			wasProbeOK: c.wasProbeOK,
+		})
+	}
+
+	// Re-acquire the lock and atomically apply all results.
+	func() {
+		release, err := acquireProxyLock()
+		if err != nil {
+			return
+		}
+		defer release()
+
+		state, err := readProxyURLState()
+		if err != nil {
+			return
+		}
+
+		changed := false
+		for _, r := range results {
+			entry, ok := state.Cache[r.addr]
+			if !ok {
+				continue // removed by a concurrent writer
 			}
-			defer release()
-
-			state, err := readProxyURLState()
-			if err != nil {
-				return
-			}
-
-			changed := false
-			for _, r := range results {
-				entry, ok := state.Cache[r.addr]
-				if !ok {
-					continue // removed by a concurrent writer
-				}
-				if r.wasProbeOK {
-					// Stale re-probe of a once-good entry: demote on failure,
-					// or refresh timestamp on success.
-					switch r.result {
-					case probeAPIReachable:
-						entry.LastProbe = time.Now()
-						entry.ProbeOK = true
-						entry.ProbeFails = 0
-						state.Cache[r.addr] = entry
-						changed = true
-					case probeSocks5Only, probeDead:
-						entry.LastProbe = time.Now()
-						entry.ProbeOK = false
-						entry.ProbeFails = 1
-						state.Cache[r.addr] = entry
-						tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale re-probe\n", r.addr)
-						changed = true
-					}
-					continue
-				}
-
-				entry.LastProbe = time.Now()
-
+			if r.wasProbeOK {
+				// Stale re-probe of a once-good entry: demote on failure,
+				// or refresh timestamp on success.
 				switch r.result {
 				case probeAPIReachable:
+					entry.LastProbe = time.Now()
 					entry.ProbeOK = true
 					entry.ProbeFails = 0
 					state.Cache[r.addr] = entry
 					changed = true
-
-				case probeSocks5Only:
+				case probeSocks5Only, probeDead:
+					entry.LastProbe = time.Now()
 					entry.ProbeOK = false
-					entry.ProbeFails++
+					entry.ProbeFails = 1
 					state.Cache[r.addr] = entry
-					if entry.ProbeFails >= proxyAPIMaxFails {
-						if state.Blacklist == nil {
-							state.Blacklist = map[string]time.Time{}
-						}
-						state.Blacklist[r.addr] = time.Now().UTC()
-						delete(state.Cache, r.addr)
-						tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", r.addr, entry.ProbeFails)
-					}
-					changed = true
-
-				case probeDead:
-					entry.ProbeFails++
-					state.Cache[r.addr] = entry
-					if entry.ProbeFails >= proxyAPIMaxFails {
-						if state.Blacklist == nil {
-							state.Blacklist = map[string]time.Time{}
-						}
-						state.Blacklist[r.addr] = time.Now().UTC()
-						delete(state.Cache, r.addr)
-						tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", r.addr, entry.ProbeFails)
-					}
+					tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale re-probe\n", r.addr)
 					changed = true
 				}
+				continue
 			}
 
-			if changed {
-				if err := writeProxyURLState(state); err != nil {
-					tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
-				}
-				if reloadPath, err := proxyReloadPath(); err == nil {
-					if err := writeReloadTrigger(reloadPath); err != nil {
-						tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
+			entry.LastProbe = time.Now()
+
+			switch r.result {
+			case probeAPIReachable:
+				entry.ProbeOK = true
+				entry.ProbeFails = 0
+				state.Cache[r.addr] = entry
+				changed = true
+
+			case probeSocks5Only:
+				entry.ProbeOK = false
+				entry.ProbeFails++
+				state.Cache[r.addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
 					}
+					state.Blacklist[r.addr] = time.Now().UTC()
+					delete(state.Cache, r.addr)
+					tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", r.addr, entry.ProbeFails)
+				}
+				changed = true
+
+			case probeDead:
+				entry.ProbeFails++
+				state.Cache[r.addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
+					}
+					state.Blacklist[r.addr] = time.Now().UTC()
+					delete(state.Cache, r.addr)
+					tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", r.addr, entry.ProbeFails)
+				}
+				changed = true
+			}
+		}
+
+		if changed {
+			if err := writeProxyURLState(state); err != nil {
+				tlog("[proxy][url] reaper: could not write proxy_url.json: %v\n", err)
+			}
+			if reloadPath, err := proxyReloadPath(); err == nil {
+				if err := writeReloadTrigger(reloadPath); err != nil {
+					tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
 				}
 			}
-		}()
-	}
+		}
+	}()
 }
 
 // pruneURLProxyBlacklist removes blacklist entries older than
@@ -705,29 +711,43 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			// Load-aware gating: skip the fetch cycle when the system is
 			// persistently overloaded. This prevents adding more work (probe
 			// connections, auth attempts, reload churn) to an already-drowning
-			// machine.
-			//
-			// Starvation escape: never gate when the cache is nearly empty
-			// (< 50 entries) or after 6 consecutive skips (~6h), so a box
-			// that hovers at the threshold forever still slowly refreshes.
-			if maxURL := resolveProxyURLMax(maxTotal); maxURL > 0 {
-				cacheSize := readURLCacheSize()
-				if cacheSize >= 50 && consecutiveSkips < 6 {
-					load1, load5, err := getSystemLoad()
-					perCoreThreshold := resolveProxyLoadThreshold(2.0)
-					threshold := perCoreThreshold * float64(runtime.NumCPU())
-					if err == nil && load1 >= threshold && load5 >= threshold*0.75 {
-						consecutiveSkips++
-						tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
-							load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
-						continue
-					}
-				}
+			// machine. Applies regardless of whether a cap is configured —
+			// an unbounded proxy_url_max (0) is exactly the config where
+			// load protection matters most, so it must not be gated on the
+			// cap being set.
+			cacheSize := readURLCacheSize()
+			load1, load5, loadErr := getSystemLoad()
+			threshold := resolveProxyLoadThreshold(2.0) * float64(runtime.NumCPU())
+			if shouldSkipProxyURLFetch(cacheSize, consecutiveSkips, load1, load5, threshold, loadErr) {
+				consecutiveSkips++
+				tlog("[proxy][url] fetch skipped: load 1m=%.2f 5m=%.2f (threshold=%.2f, ncpu=%d, skip=%d/%d, cache=%d)\n",
+					load1, load5, threshold, runtime.NumCPU(), consecutiveSkips, 6, cacheSize)
+				continue
 			}
 			consecutiveSkips = 0
 			fetchAndMergeProxyURLs(ctx, urls, resolveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
+}
+
+// shouldSkipProxyURLFetch decides whether a URL fetch cycle should be
+// skipped due to sustained system load. threshold is the absolute load
+// value (already scaled by NumCPU) that load1/load5 are compared against;
+// the 5-minute average only needs to clear 75% of it, so a spike that's
+// already cooling on the longer window doesn't extend the gate.
+//
+// Starvation escape: never gate when the cache is nearly empty (< 50
+// entries) or after 6 consecutive skips (~6h at the default refresh
+// interval), so a box that hovers at the threshold forever still slowly
+// refreshes instead of never fetching again.
+func shouldSkipProxyURLFetch(cacheSize, consecutiveSkips int, load1, load5, threshold float64, loadErr error) bool {
+	if cacheSize < 50 || consecutiveSkips >= 6 {
+		return false
+	}
+	if loadErr != nil {
+		return false
+	}
+	return load1 >= threshold && load5 >= threshold*0.75
 }
 
 // readURLCacheSize reads the current URL proxy cache size from proxy_url.json.

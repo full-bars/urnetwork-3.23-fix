@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -331,5 +332,146 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("runProxyURLFetcher did not stop after context cancellation")
+	}
+}
+
+// TestRunURLProxyReaperOnce_DemotesStaleProbeOKEntryOnFailure covers change
+// 5 from the LA1 self-healing plan: without this, a proxy that passed its
+// initial probe then died later was invisible to the reaper forever (only
+// exit was the slow give-up eviction pipeline). A stale ProbeOK=true entry
+// that now fails its re-probe must be demoted so the normal 3-strikes
+// blacklist path picks it up.
+func TestRunURLProxyReaperOnce_DemotesStaleProbeOKEntryOnFailure(t *testing.T) {
+	withTempHome(t)
+
+	deadAddr := "127.0.0.1:1" // nothing listens here: connection refused, fast
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		deadAddr: {
+			ProbeOK:   true,
+			LastProbe: time.Now().Add(-4 * time.Hour), // older than proxyReaperStaleThreshold (3h)
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "", 0)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := got.Cache[deadAddr]
+	if !ok {
+		t.Fatalf("expected %s to remain in cache after a single failed re-probe (demoted, not yet blacklisted)", deadAddr)
+	}
+	if entry.ProbeOK {
+		t.Error("expected ProbeOK=false after stale re-probe failure")
+	}
+	if entry.ProbeFails != 1 {
+		t.Errorf("expected ProbeFails=1 after first failed re-probe, got %d", entry.ProbeFails)
+	}
+}
+
+// TestRunURLProxyReaperOnce_SkipsFreshProbeOKEntry ensures the reaper only
+// re-probes once-good entries after proxyReaperStaleThreshold, not on every
+// cycle — otherwise every proxy would be re-probed every 5 minutes forever.
+func TestRunURLProxyReaperOnce_SkipsFreshProbeOKEntry(t *testing.T) {
+	withTempHome(t)
+
+	addr := "127.0.0.1:1"
+	fresh := time.Now().Add(-1 * time.Minute)
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, LastProbe: fresh},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "", 0)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := got.Cache[addr]
+	if !entry.ProbeOK {
+		t.Error("fresh ProbeOK=true entry should not have been re-probed/demoted")
+	}
+	if !entry.LastProbe.Equal(fresh) {
+		t.Error("fresh entry's LastProbe should be untouched (reaper should have skipped it, not re-probed)")
+	}
+}
+
+// TestShouldSkipProxyURLFetch covers the load-gating decision (change 4).
+// The key regression this guards against: gating must not depend on
+// whether a cap is configured — it was previously wired to only apply when
+// proxy_url_max > 0, silently disabling load protection on exactly the
+// unbounded config where it matters most (LA1's original setup).
+func TestShouldSkipProxyURLFetch(t *testing.T) {
+	cases := []struct {
+		name             string
+		cacheSize        int
+		consecutiveSkips int
+		load1, load5     float64
+		threshold        float64
+		loadErr          error
+		want             bool
+	}{
+		{"sustained overload gates", 200, 0, 3.0, 2.5, 2.0, nil, true},
+		{"under threshold does not gate", 200, 0, 1.0, 0.8, 2.0, nil, false},
+		{"transient spike (5m cool) does not gate", 200, 0, 5.0, 0.8, 2.0, nil, false},
+		{"starvation escape: near-empty cache never gates", 10, 0, 9.0, 9.0, 2.0, nil, false},
+		{"starvation escape: 6 consecutive skips forces a fetch", 200, 6, 9.0, 9.0, 2.0, nil, false},
+		{"fail-open on load read error", 200, 0, 0, 0, 2.0, errors.New("no /proc/loadavg"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := shouldSkipProxyURLFetch(c.cacheSize, c.consecutiveSkips, c.load1, c.load5, c.threshold, c.loadErr)
+			if got != c.want {
+				t.Errorf("shouldSkipProxyURLFetch(cache=%d, skips=%d, load1=%.1f, load5=%.1f, threshold=%.1f, err=%v) = %v, want %v",
+					c.cacheSize, c.consecutiveSkips, c.load1, c.load5, c.threshold, c.loadErr, got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveProxyLoadThreshold_Override covers the runtime override file
+// used by `urnet-tools set proxy-load-threshold`.
+func TestResolveProxyLoadThreshold_Override(t *testing.T) {
+	home := withTempHome(t)
+
+	if got := resolveProxyLoadThreshold(2.0); got != 2.0 {
+		t.Errorf("no override file: got %v, want startup default 2.0", got)
+	}
+
+	path := filepath.Join(home, ".urnetwork", "proxy_load_threshold")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("3.5\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveProxyLoadThreshold(2.0); got != 3.5 {
+		t.Errorf("with override file: got %v, want 3.5", got)
+	}
+
+	// Invalid/non-positive values fall back to the startup default.
+	if err := os.WriteFile(path, []byte("not-a-number"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveProxyLoadThreshold(2.0); got != 2.0 {
+		t.Errorf("with unparseable override: got %v, want fallback 2.0", got)
+	}
+}
+
+// TestGetSystemLoad_ParsesProcLoadavg smoke-tests the /proc/loadavg reader.
+// Skipped on non-Linux, where the function is expected to fail-open by
+// returning an error.
+func TestGetSystemLoad_ParsesProcLoadavg(t *testing.T) {
+	load1, load5, err := getSystemLoad()
+	if err != nil {
+		t.Skipf("no /proc/loadavg on this platform (expected fail-open behavior): %v", err)
+	}
+	if load1 < 0 || load5 < 0 {
+		t.Errorf("expected non-negative load averages, got load1=%v load5=%v", load1, load5)
 	}
 }
