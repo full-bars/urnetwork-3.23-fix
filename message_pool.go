@@ -58,7 +58,7 @@ const debugTags = false
 const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
 
-var InitialMessagePoolByteCount = mib(1)
+var InitialMessagePoolByteCount = mib(2)
 
 type poolShard struct {
 	mutex        sync.Mutex
@@ -240,8 +240,10 @@ func poolStats(pools []*messagePool) {
 }
 
 func ResizeMessagePools(maxByteCount ByteCount) {
-	for _, pool := range orderedMessagePools() {
-		pool.Resize(int(maxByteCount / ByteCount(pool.size)))
+	pools := orderedMessagePools()
+	poolSizeCount := ByteCount(len(pools))
+	for _, pool := range pools {
+		pool.Resize(int(maxByteCount / poolSizeCount / ByteCount(pool.size)))
 	}
 }
 

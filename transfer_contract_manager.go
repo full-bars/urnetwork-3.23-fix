@@ -323,6 +323,8 @@ func NewContractManager(
 		sendNoContractClientIds:    sendNoContractClientIds,
 		contractStatusCallbacks:    NewCallbackList[*contractStatusCallbackWorker](),
 		localStats:                 NewContractManagerStats(),
+		contractStatsEntries:       map[contractStatsKey]*contractStatsEntry{},
+		contractStatsCallbacks:     NewCallbackList[ContractStatsFunction](),
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 		controlSyncProvideOob:      NewControlSyncOob(ctx, client, "provide-oob"),
 	}
@@ -1170,6 +1172,10 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		if !checkpoint {
 			atomic.AddUint64(&contractUtilSum, uint64(util))
 		}
+	}
+
+	if !checkpoint {
+		self.closeContractStats(contractId)
 	}
 
 	// Reliable delivery via a per-contract `ControlSync`. The
