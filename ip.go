@@ -657,6 +657,9 @@ func (self *LocalUserNat) runShard(shard int) {
 					// no support for this protocol, drop
 					MessagePoolReturn(ipPacket)
 				}
+			default:
+				// no support for this ip version, drop
+				MessagePoolReturn(ipPacket)
 			}
 		}
 	}
@@ -1608,6 +1611,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 						self.bw.RemoveSession(sequence.source)
 					}
 				}
+				MessagePoolReturn(ipPacket)
 				return nil
 			}
 			return sequence
@@ -1905,10 +1909,19 @@ func (self *TcpSequence) Run() {
 					parseWindowScaleOpts := func() (bool, uint32) {
 						opts := sendItem.tcp.options
 						for i := 0; i < len(opts); {
+							kind := opts[i]
+							if kind == 0 {
+								// End of Option List: no length byte, stop
+								break
+							}
+							if kind == 1 {
+								// No-Operation: single byte, no length byte
+								i += 1
+								continue
+							}
 							if i+1 >= len(opts) {
 								break
 							}
-							kind := opts[i]
 							length := opts[i+1]
 							if length < 2 || i+int(length) > len(opts) {
 								break
@@ -2559,7 +2572,12 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 	if self.enableWindowScale {
 		windowScaleBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(windowScaleBytes[0:4], self.windowScale)
-		optsBytes = make([]byte, 3)
+		// options must be padded to a 4-byte boundary to match writeTcpHeader's
+		// data-offset (headerWordCount) computation; make() zero-fills the pad,
+		// which reads as an EOL terminator (kind 0)
+		const optionsByteCount = 3
+		paddedOptionsByteCount := (optionsByteCount + 3) &^ 3
+		optsBytes = make([]byte, paddedOptionsByteCount)
 		optsBytes[0] = 3
 		optsBytes[1] = 3
 		optsBytes[2] = windowScaleBytes[3]
@@ -2577,7 +2595,8 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 	flags := tcpFlagSyn | tcpFlagAck
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), optsBytes)
 
-	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
+	// checksum covers the full segment (header + options), not just the fixed header
+	tcpBytes := packet[ipHeaderByteCount:]
 	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
@@ -2706,7 +2725,8 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), nil)
 	copy(packet[ipHeaderByteCount+tcpHeaderByteCount:], payload)
 
-	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
+	// checksum covers the full segment (header + payload), not just the header
+	tcpBytes := packet[ipHeaderByteCount:]
 	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
