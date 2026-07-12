@@ -25,6 +25,13 @@ func TestNormalizeRamp(t *testing.T) {
 	}
 }
 
+func TestNormalizeRamp_EqualAnchors(t *testing.T) {
+	// lo == hi → returns 0 (degenerate, can't map a range of zero width)
+	if v := normalizeRamp(42, 10, 10); v != 0 {
+		t.Fatalf("equal anchors: got %v", v)
+	}
+}
+
 func TestComputePressure_WorstComponentWins(t *testing.T) {
 	s := pressureSample{
 		PSIMem:       35,   // → 0.5 on the 10..60 ramp
@@ -85,6 +92,13 @@ func TestParsePSILine(t *testing.T) {
 	avg10, avg60, err := parsePSISome("some avg10=12.34 avg60=5.60 avg300=1.00 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
 	if err != nil || !almostEq(avg10, 12.34) || !almostEq(avg60, 5.60) {
 		t.Fatalf("got %v %v %v", avg10, avg60, err)
+	}
+}
+
+func TestParsePSILine_NoSomeLine(t *testing.T) {
+	_, _, err := parsePSISome("full avg10=0.00 avg60=0.00\n")
+	if err == nil {
+		t.Fatalf("expected error for missing 'some' line")
 	}
 }
 
@@ -180,5 +194,105 @@ func TestSelectURLProxiesToShed(t *testing.T) {
 	// n larger than pool: return everything url-sourced, still ordered
 	if got := selectURLProxiesToShed(state, traffic, 99); len(got) != 4 {
 		t.Fatalf("overshoot: %v", got)
+	}
+}
+
+func TestSelectURLProxiesToShed_EmptyState(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	got := selectURLProxiesToShed(state, nil, 5)
+	if len(got) != 0 {
+		t.Fatalf("empty state should return nothing, got %v", got)
+	}
+}
+
+func TestSelectURLProxiesToShed_AllFileSourced(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "dead", Source: "file"},
+		"2.2.2.2:1080": {Health: "dead", Source: "file"},
+	}}
+	got := selectURLProxiesToShed(state, nil, 10)
+	if len(got) != 0 {
+		t.Fatalf("all file-sourced should return nothing, got %v", got)
+	}
+}
+
+func TestSelectURLProxiesToShed_TrafficTieBreaking(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "url"},
+		"2.2.2.2:1080": {Health: "up", Source: "url"},
+		"3.3.3.3:1080": {Health: "up", Source: "url"},
+	}}
+	// same health, no traffic data → sorted by address (lexicographic)
+	got := selectURLProxiesToShed(state, nil, 2)
+	want := []string{"1.1.1.1:1080", "2.2.2.2:1080"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("tie-break by address: got %v want %v", got, want)
+	}
+}
+
+func TestSelectURLProxiesToShed_TrafficOrdering(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "url"},
+		"2.2.2.2:1080": {Health: "up", Source: "url"},
+		"3.3.3.3:1080": {Health: "up", Source: "url"},
+	}}
+	// same health, different traffic → shed lowest-traffic first
+	traffic := map[string]uint64{
+		"1.1.1.1:1080": 1000,
+		"2.2.2.2:1080": 5,
+		"3.3.3.3:1080": 500,
+	}
+	got := selectURLProxiesToShed(state, traffic, 2)
+	want := []string{"2.2.2.2:1080", "3.3.3.3:1080"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("shed lowest-traffic first: got %v want %v", got, want)
+	}
+}
+
+func TestSelectURLProxiesToShed_HealthTierOrdering(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "url"},
+		"2.2.2.2:1080": {Health: "inactive", Source: "url"},
+		"3.3.3.3:1080": {Health: "long_offline", Source: "url"},
+		"4.4.4.4:1080": {Health: "recently_offline", Source: "url"},
+		"5.5.5.5:1080": {Health: "dead", Source: "url"},
+	}}
+	got := selectURLProxiesToShed(state, nil, 5)
+	want := []string{"5.5.5.5:1080", "2.2.2.2:1080", "3.3.3.3:1080", "4.4.4.4:1080", "1.1.1.1:1080"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("health tier ordering: got %v want %v", got, want)
+	}
+}
+
+func TestPressureRegime(t *testing.T) {
+	tests := []struct {
+		score float64
+		want  int
+	}{
+		{0.0, 0},
+		{0.24, 0},
+		{0.25, 1},
+		{0.49, 1},
+		{0.5, 2},
+		{0.74, 2},
+		{0.75, 3},
+		{1.0, 3},
+	}
+	for _, tt := range tests {
+		if got := pressureRegime(tt.score); got != tt.want {
+			t.Errorf("pressureRegime(%v) = %d, want %d", tt.score, got, tt.want)
+		}
+	}
+}
+
+func TestFormatComponents(t *testing.T) {
+	comps := map[string]float64{"psi_mem": 0.5, "load": 0.3}
+	s := formatComponents(comps)
+	if s != "psi_mem=0.50 load=0.30" {
+		t.Fatalf("got %q", s)
+	}
+	// empty map → empty string
+	if s := formatComponents(map[string]float64{}); s != "" {
+		t.Fatalf("empty: got %q", s)
 	}
 }
