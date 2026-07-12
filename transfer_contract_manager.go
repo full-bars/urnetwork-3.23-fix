@@ -156,6 +156,25 @@ func (self *ContractManagerStats) ContractOpenByteCount() ByteCount {
 	return netContractOpenByteCount
 }
 
+func SignStoredContract(settings *ContractManagerSettings, provideSecretKey []byte, storedContractBytes []byte) []byte {
+	mac := hmac.New(sha256.New, provideSecretKey)
+	if time.Now().Before(settings.NetworkEventTimeChangeHmac) {
+		return mac.Sum(storedContractBytes)
+	}
+	mac.Write(storedContractBytes)
+	return mac.Sum(nil)
+}
+
+func VerifyStoredContract(settings *ContractManagerSettings, provideSecretKey []byte, storedContractBytes []byte, storedContractHmac []byte) bool {
+	legacyMac := hmac.New(sha256.New, provideSecretKey)
+	if hmac.Equal(storedContractHmac, legacyMac.Sum(storedContractBytes)) {
+		return true
+	}
+	standardMac := hmac.New(sha256.New, provideSecretKey)
+	standardMac.Write(storedContractBytes)
+	return hmac.Equal(storedContractHmac, standardMac.Sum(nil))
+}
+
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	return DefaultContractManagerSettingsWithBufferSize(defaultTransferBufferSize)
 }
@@ -167,6 +186,10 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 	if err != nil {
 		panic(err)
 	}
+	networkEventTimeChangeHmac, err := time.Parse(time.RFC3339, "2026-09-01T00:00:00Z")
+	if err != nil {
+		panic(err)
+	}
 	return &ContractManagerSettings{
 		SequenceBufferSize:                bufferSize,
 		InitialContractTransferByteCount:  mib(2),
@@ -174,6 +197,7 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 		ContractTransferByteSeqScale:      3,
 
 		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
+		NetworkEventTimeChangeHmac:      networkEventTimeChangeHmac,
 
 		ProvidePingTimeout: 0,
 
@@ -188,6 +212,7 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 func DefaultContractManagerSettingsNoNetworkEvents() *ContractManagerSettings {
 	settings := DefaultContractManagerSettings()
 	settings.NetworkEventTimeEnableContracts = time.Time{}
+	settings.NetworkEventTimeChangeHmac = time.Time{}
 	return settings
 }
 
@@ -204,6 +229,8 @@ type ContractManagerSettings struct {
 	// this can be removed after wide adoption
 	NetworkEventTimeEnableContracts time.Time
 
+	NetworkEventTimeChangeHmac time.Time
+
 	// an active ping to the control fast-tracks any timeouts
 	ProvidePingTimeout time.Duration
 
@@ -218,6 +245,8 @@ type ContractManagerSettings struct {
 	ContractQueueExpireTimeout time.Duration
 
 	ProtocolVersion int
+
+	ContractStatsEpoch time.Duration
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -249,6 +278,11 @@ type ContractManager struct {
 	contractStatusCallbacks *CallbackList[*contractStatusCallbackWorker]
 
 	localStats *ContractManagerStats
+
+	contractStatsLock      sync.Mutex
+	contractStatsEntries   map[contractStatsKey]*contractStatsEntry
+	contractStatsCallbacks *CallbackList[ContractStatsFunction]
+	contractStatsStarted   bool
 
 	controlSyncProvide    *ControlSync
 	controlSyncProvideOob *ControlSyncOob
