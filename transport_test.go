@@ -30,12 +30,12 @@ func TestConnectPumpHost(t *testing.T) {
 
 func TestSetModeAvailableWakesWaiter(t *testing.T) {
 	transport := &PlatformTransport{
-		modeMonitor:    NewMonitor(),
-		availableModes: map[TransportMode]bool{},
+		availableModeMonitor: NewMonitor(),
+		availableModes:       map[TransportMode]bool{},
 	}
 
-	available, notify := transport.modeAvailable(TransportModeH1)
-	assert.Equal(t, false, available)
+	available, notify := transport.modesAvailable()
+	assert.Equal(t, false, available[TransportModeH1])
 
 	woke := make(chan struct{})
 	go func() {
@@ -54,15 +54,15 @@ func TestSetModeAvailableWakesWaiter(t *testing.T) {
 
 func TestSetModeAvailableNoSpuriousWake(t *testing.T) {
 	transport := &PlatformTransport{
-		modeMonitor:    NewMonitor(),
-		availableModes: map[TransportMode]bool{},
+		availableModeMonitor: NewMonitor(),
+		availableModes:       map[TransportMode]bool{},
 	}
 
 	// Set mode to true — should notify.
 	transport.setModeAvailable(TransportModeH1, true)
 
 	// Capture watcher on a channel returned BEFORE the second set.
-	_, notify := transport.modeAvailable(TransportModeH1)
+	_, notify := transport.modesAvailable()
 
 	// Set the mode to the same value — should NOT notify.
 	transport.setModeAvailable(TransportModeH1, true)
@@ -77,8 +77,9 @@ func TestSetModeAvailableNoSpuriousWake(t *testing.T) {
 
 func TestSetActiveModeNoSpuriousWake(t *testing.T) {
 	transport := &PlatformTransport{
-		modeMonitor:    NewMonitor(),
-		availableModes: map[TransportMode]bool{},
+		availableModeMonitor: NewMonitor(),
+		availableModes:       map[TransportMode]bool{},
+		mode:                 NewMonitorValue[TransportMode](TransportModeNone),
 	}
 
 	// Set active mode to H1 — should notify.
@@ -87,7 +88,8 @@ func TestSetActiveModeNoSpuriousWake(t *testing.T) {
 	// Capture watcher on a channel returned BEFORE the second set.
 	_, notify := transport.activeMode()
 
-	// Set the active mode to the same value — should NOT notify.
+	// Set the active mode to the same value — should NOT notify (MonitorValue
+	// handles this internally).
 	transport.setActiveMode(TransportModeH1)
 
 	select {

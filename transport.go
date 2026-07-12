@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -246,11 +247,18 @@ type PlatformTransport struct {
 
 	settings *PlatformTransportSettings
 
-	stateLock      sync.Mutex
-	modeMonitor    *Monitor
-	availableModes map[TransportMode]bool
-	targetMode     TransportMode
-	mode           TransportMode
+	stateLock sync.Mutex
+	// notified when availableModes changes. availableModes is a map, so it
+	// cannot be a MonitorValue; the notify is issued inside the same locked
+	// scope as the mutation (see setModeAvailable)
+	availableModeMonitor *Monitor
+	availableModes       map[TransportMode]bool
+	targetMode           TransportMode
+	// the elected active mode, watched by every transport's mode gate and
+	// inactive-drain watchdog. a MonitorValue so the mutation cannot be
+	// separated from its notification, and so re-electing the same mode does
+	// not wake the election loop's own watchers
+	mode *MonitorValue[TransportMode]
 }
 
 func NewPlatformTransportWithDefaults(
@@ -321,10 +329,10 @@ func NewPlatformTransportWithTargetMode(
 		platformUrl:    platformUrl,
 		auth:           auth,
 		settings:       settings,
-		modeMonitor:    NewMonitor(),
-		availableModes: map[TransportMode]bool{},
-		targetMode:     targetMode,
-		mode:           TransportModeNone,
+		availableModeMonitor: NewMonitor(),
+		availableModes:       map[TransportMode]bool{},
+		targetMode:           targetMode,
+		mode:                 NewMonitorValue[TransportMode](TransportModeNone),
 	}
 	go HandleError(transport.run, cancel)
 	return transport
@@ -340,63 +348,62 @@ func (self *PlatformTransport) SetAuth(auth *ClientAuth) {
 
 func (self *PlatformTransport) setModeAvailable(mode TransportMode, available bool) {
 	self.stateLock.Lock()
-	changed := self.availableModes[mode] != available
-	self.availableModes[mode] = available
-	self.stateLock.Unlock()
-
-	if changed {
-		self.modeMonitor.NotifyAll()
-	}
-}
-
-func (self *PlatformTransport) modeAvailable(mode TransportMode) (bool, chan struct{}) {
-	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
-	return self.availableModes[mode], self.modeMonitor.NotifyChannel()
+	if self.availableModes[mode] == available {
+		return
+	}
+	self.availableModes[mode] = available
+	self.availableModeMonitor.NotifyAll()
 }
 
 func (self *PlatformTransport) modesAvailable() (map[TransportMode]bool, chan struct{}) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
-	return maps.Clone(self.availableModes), self.modeMonitor.NotifyChannel()
+	return maps.Clone(self.availableModes), self.availableModeMonitor.NotifyChannel()
 }
 
-var transportSpuriousSetActiveLogged time.Time
-
 func (self *PlatformTransport) setActiveMode(mode TransportMode) {
-	self.stateLock.Lock()
-	changed := self.mode != mode
-	self.mode = mode
-	self.stateLock.Unlock()
-
-	if changed {
-		self.modeMonitor.NotifyAll()
-	} else if mode != TransportModeNone {
-		// Log at most once per 10s when setActiveMode is called
-		// redundantly (mode unchanged). If spamming, check CPU
-		// for a self-wake feedback loop.
-		now := time.Now()
-		if now.Sub(transportSpuriousSetActiveLogged) > 10*time.Second {
-			transportSpuriousSetActiveLogged = now
-			DefaultLogger().Infof("[transport] redundant setActiveMode(%v) — if frequent, check for 100%% CPU (self-wake loop)\n", mode)
-		}
-	}
+	self.mode.Set(mode)
 }
 
 func (self *PlatformTransport) activeMode() (TransportMode, chan struct{}) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	return self.mode, self.modeMonitor.NotifyChannel()
+	return self.mode.Get()
 }
 
+// transportModePreferences ranks the real transport modes. LOWER IS BETTER (see
+// isBetterMode). TransportModeNone is deliberately NOT a key: modePreference
+// ranks it, and any unknown mode, worse than every real mode. Leaving it out of
+// the table and reading the map directly scored it 0 — better than everything —
+// which is why no mode gate ever parked and the election could not distinguish
+// "no transport" from "the best transport".
+//
+// Two tiers, with a tie inside each:
+//   - the direct modes (h3, h1) are equally preferred. whichever connects first
+//     becomes active and the other does not preempt it; the election is sticky
+//     among equals (see run).
+//   - the packet translation modes (h3dns, h3dnspump) tunnel over dns to stay
+//     reachable where the direct modes are filtered. they are an availability
+//     fallback, so they rank below the direct modes and are equally preferred
+//     among themselves.
 var transportModePreferences = map[TransportMode]int{
-	TransportModeH3DnsPump: 1,
+	TransportModeH3: 1,
+	TransportModeH1: 1,
+
 	TransportModeH3Dns:     2,
-	TransportModeH3:        3,
-	TransportModeH1:        3,
+	TransportModeH3DnsPump: 2,
+}
+
+// modePreferenceNone ranks TransportModeNone — the absence of a transport — and
+// any mode missing from the table as worse than every real mode.
+const modePreferenceNone = math.MaxInt
+
+func modePreference(mode TransportMode) int {
+	if preference, ok := transportModePreferences[mode]; ok {
+		return preference
+	}
+	return modePreferenceNone
 }
 
 func (self *PlatformTransport) run() {
@@ -436,36 +443,44 @@ func (self *PlatformTransport) run() {
 		}, self.cancel)
 	}
 
-	lastMode := TransportModeNone
 	for {
-		available, _ := self.modesAvailable()
+		available, notify := self.modesAvailable()
 
-		// descending preference
+		// descending preference. the comparator must be consistent: the previous
+		// one returned 1 for both (a, b) and (b, a) when the preferences tied
+		// (h3 and h1 do), and `maps.Keys` is randomly ordered, so the election
+		// picked an arbitrary winner among tied modes on every pass — flipping
+		// the active mode and thrashing the gates. break ties on the mode name
 		orderedModes := maps.Keys(transportModePreferences)
 		slices.SortFunc(orderedModes, func(a TransportMode, b TransportMode) int {
-			if a == b {
-				return 0
-			} else if isBetterMode(a, b) {
+			preferenceA := modePreference(a)
+			preferenceB := modePreference(b)
+			if preferenceA < preferenceB {
 				return -1
-			} else {
+			} else if preferenceB < preferenceA {
 				return 1
 			}
+			return strings.Compare(string(a), string(b))
 		})
 		bestMode := TransportModeNone
-		if 0 < len(orderedModes) {
-			for _, mode := range orderedModes {
-				if available[mode] {
-					bestMode = mode
-					break
-				}
+		for _, mode := range orderedModes {
+			if available[mode] {
+				bestMode = mode
+				break
 			}
 		}
-		if bestMode != lastMode {
-			self.setActiveMode(bestMode)
-			lastMode = bestMode
-		}
 
-		_, notify := self.activeMode()
+		// equally preferred modes do not preempt each other: whichever connected
+		// first stays active (h3 and h1 tie, as do h3dns and h3dnspump). the
+		// active mode changes only when something strictly better becomes
+		// available, or when it is no longer available itself — in which case it
+		// falls back to the best that remains, and to TransportModeNone when
+		// nothing does.
+		activeMode := self.mode.Value()
+		if !available[activeMode] || isBetterMode(bestMode, activeMode) {
+			activeMode = bestMode
+		}
+		self.setActiveMode(activeMode)
 
 		select {
 		case <-notify:
@@ -475,9 +490,21 @@ func (self *PlatformTransport) run() {
 	}
 }
 
-// returns true is other is better than current
-func isBetterMode(current TransportMode, other TransportMode) bool {
-	return transportModePreferences[current] < transportModePreferences[other]
+// isBetterMode reports whether mode is strictly preferred over other. Lower
+// preference values are better; TransportModeNone is worse than everything.
+func isBetterMode(mode TransportMode, other TransportMode) bool {
+	return modePreference(mode) < modePreference(other)
+}
+
+// standDown reports whether a transport running mode should stand down because a
+// strictly better mode is currently active, along with the channel that closes
+// when the active mode changes. A transport runs when it is the active mode, or
+// when nothing better than it is active — including at startup, where the active
+// mode is TransportModeNone (worse than every real mode) precisely so that the
+// first transport is admitted and can make itself available.
+func (self *PlatformTransport) standDown(mode TransportMode) (bool, chan struct{}) {
+	activeMode, notify := self.activeMode()
+	return isBetterMode(activeMode, mode), notify
 }
 
 // proxyIndex returns this transport's proxy list index when running behind a
@@ -511,18 +538,17 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	var authErrBackoff time.Duration
 
 	for {
-		// wait until we are back in h1 or worse
+		// stand down while a strictly better mode is active
 		func() {
 			for {
-				mode, notify := self.activeMode()
-				if isBetterMode(TransportModeH1, mode) {
-					select {
-					case <-self.ctx.Done():
-						return
-					case <-notify:
-					}
-				} else {
+				standDown, notify := self.standDown(TransportModeH1)
+				if !standDown {
 					return
+				}
+				select {
+				case <-self.ctx.Done():
+					return
+				case <-notify:
 				}
 			}
 		}()
@@ -1015,18 +1041,17 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 	var authErrBackoff time.Duration
 
 	for {
-		// wait until we are back in the specific pt mode or auto mode
+		// stand down while a strictly better mode is active
 		func() {
 			for {
-				mode, notify := self.activeMode()
-				if isBetterMode(ptMode, mode) {
-					select {
-					case <-self.ctx.Done():
-						return
-					case <-notify:
-					}
-				} else {
+				standDown, notify := self.standDown(ptMode)
+				if !standDown {
 					return
+				}
+				select {
+				case <-self.ctx.Done():
+					return
+				case <-notify:
 				}
 			}
 		}()

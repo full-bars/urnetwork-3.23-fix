@@ -132,46 +132,17 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 
 // cfaaBlockedIp4 reports whether the IPv4 address ip — a network-order
 // (big-endian) uint32, e.g. binary.BigEndian.Uint32(addr.To4()) — falls within
-// any blocked range. It binary-searches the packed, sorted, pairwise-disjoint
-// ranges in the generated cfaaBlockedPrefixData (8 bytes per record: big-endian
-// uint32 lo, then hi) and performs no heap allocation: the table is a read-only
-// string constant read in place.
+// any blocked range. It binary-searches the packed table via the shared
+// zero-allocation search in ip_util.go.
 func cfaaBlockedIp4(ip uint32) bool {
-	// Find the first record whose lo is greater than ip; the only range that can
-	// contain ip is its predecessor (ranges are sorted and disjoint).
-	lo, hi := 0, cfaaBlockedPrefixCount
-	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
-		o := mid << 3
-		rlo := uint32(cfaaBlockedPrefixData[o])<<24 | uint32(cfaaBlockedPrefixData[o+1])<<16 |
-			uint32(cfaaBlockedPrefixData[o+2])<<8 | uint32(cfaaBlockedPrefixData[o+3])
-		if rlo <= ip {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	if lo == 0 {
-		return false
-	}
-	o := (lo - 1) << 3
-	rhi := uint32(cfaaBlockedPrefixData[o+4])<<24 | uint32(cfaaBlockedPrefixData[o+5])<<16 |
-		uint32(cfaaBlockedPrefixData[o+6])<<8 | uint32(cfaaBlockedPrefixData[o+7])
-	return ip <= rhi
-}
-
-// cfaaBe64 reads a big-endian uint64 from s at offset o, allocation-free (string
-// indexing returns a byte without copying).
-func cfaaBe64(s string, o int) uint64 {
-	return uint64(s[o])<<56 | uint64(s[o+1])<<48 | uint64(s[o+2])<<40 | uint64(s[o+3])<<32 |
-		uint64(s[o+4])<<24 | uint64(s[o+5])<<16 | uint64(s[o+6])<<8 | uint64(s[o+7])
+	return searchRange4(cfaaBlockedPrefixData, cfaaBlockedPrefixCount, ip)
 }
 
 // cfaaBlockedIp6 reports whether the IPv6 address ip falls within any blocked
 // range. It decodes ip into its two big-endian uint64 halves and binary-searches
-// the packed table.
+// the packed table (searchRange6, ip_util.go).
 func cfaaBlockedIp6(ip [16]byte) bool {
-	return cfaaSearch6(
+	return searchRange6(
 		cfaaBlockedPrefix6Data,
 		cfaaBlockedPrefix6Count,
 		uint64(ip[0])<<56|uint64(ip[1])<<48|uint64(ip[2])<<40|uint64(ip[3])<<32|
@@ -181,28 +152,3 @@ func cfaaBlockedIp6(ip [16]byte) bool {
 	)
 }
 
-// cfaaSearch6 binary-searches the packed, sorted, pairwise-disjoint IPv6 ranges
-// in data (32 bytes per record: 16-byte big-endian lo, then hi) for the 128-bit
-// address (ipHi, ipLo). It allocates nothing — the 128-bit comparison is the
-// two-word analog of cfaaBlockedIp4.
-func cfaaSearch6(data string, count int, ipHi uint64, ipLo uint64) bool {
-	lo, hi := 0, count
-	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
-		o := mid << 5
-		rloHi := cfaaBe64(data, o)
-		rloLo := cfaaBe64(data, o+8)
-		if rloHi < ipHi || (rloHi == ipHi && rloLo <= ipLo) {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	if lo == 0 {
-		return false
-	}
-	o := (lo - 1) << 5
-	rhiHi := cfaaBe64(data, o+16)
-	rhiLo := cfaaBe64(data, o+24)
-	return ipHi < rhiHi || (ipHi == rhiHi && ipLo <= rhiLo)
-}

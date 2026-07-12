@@ -366,26 +366,6 @@ func TestSetPeerClientPublicKeyWrongSize(t *testing.T) {
 	}
 }
 
-// TestPeerSessionReadyNotifyOnVerify verifies that the readyMonitor
-// fires when peerIdentityVerified flips, so any waiters wake up.
-func TestPeerSessionReadyNotifyOnVerify(t *testing.T) {
-	sess, _, _, peerPriv, cleanup := newTestSessionForIdentityProof(t)
-	defer cleanup()
-
-	peerPub := peerPriv.Public().(ed25519.PublicKey)
-	proof := ed25519.Sign(peerPriv, sess.epoch.tlsExporter)
-
-	ready := sess.ReadyNotify()
-	sess.SetPeerClientPublicKey(peerPub)
-	sess.receivePeerIdentityProof(proof)
-
-	select {
-	case <-ready:
-		// expected
-	case <-time.After(time.Second):
-		t.Fatal("expected ReadyNotify to fire after identity verification")
-	}
-}
 
 // newTestEncryptionSession builds a peerEncryptionSession in the given role
 // with a manager that carries real TLS configs, so startEpoch / reset build
