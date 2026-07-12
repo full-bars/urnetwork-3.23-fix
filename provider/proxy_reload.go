@@ -212,6 +212,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				if seq == lastSeq {
 					continue
 				}
+				tlog("🔄 [proxy] reload trigger: seq %d → %d\n", lastSeq, seq)
 				lastSeq = seq
 				r.reload()
 			}

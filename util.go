@@ -277,7 +277,7 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 				if !ok {
 					return
 				}
-				glog.InfoDepthf(0, "[signal] received %v — shutting down\n", sig)
+				glog.InfoDepthf(0, "[signal] pid=%d received %v — shutting down\n", os.Getpid(), sig)
 				self.Set()
 			}
 		}
