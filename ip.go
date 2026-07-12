@@ -176,6 +176,35 @@ func parseTcpPacket(sourceIp net.IP, destinationIp net.IP, transport []byte, tcp
 	return true
 }
 
+func ParseTcpWindowScaleOpts(opts []byte) (bool, uint32) {
+	for i := 0; i < len(opts); {
+		kind := opts[i]
+		if kind == 0 {
+			break
+		}
+		if kind == 1 {
+			i += 1
+			continue
+		}
+		if i+1 >= len(opts) {
+			break
+		}
+		length := opts[i+1]
+		if length < 2 || i+int(length) > len(opts) {
+			break
+		}
+		if kind == 3 && length >= 3 {
+			shift := uint32(opts[i+2])
+			if 14 < shift {
+				shift = 14
+			}
+			return true, shift
+		}
+		i += int(length)
+	}
+	return false, 0
+}
+
 const (
 	tcpFlagFin = byte(0x01)
 	tcpFlagSyn = byte(0x02)
@@ -1906,45 +1935,7 @@ func (self *TcpSequence) Run() {
 					self.receiveSeq = sendItem.tcp.seq
 					self.receiveSeqAck = sendItem.tcp.seq
 
-					parseWindowScaleOpts := func() (bool, uint32) {
-						opts := sendItem.tcp.options
-						for i := 0; i < len(opts); {
-							kind := opts[i]
-							if kind == 0 {
-								// End of Option List: no length byte, stop
-								break
-							}
-							if kind == 1 {
-								// No-Operation: single byte, no length byte
-								i += 1
-								continue
-							}
-							if i+1 >= len(opts) {
-								break
-							}
-							length := opts[i+1]
-							if length < 2 || i+int(length) > len(opts) {
-								break
-							}
-							if kind == 3 {
-								// Window Scale option: kind=3, length=3, shift count in data
-								if length >= 3 {
-									windowScaleBytes := make([]byte, 4)
-									copy(windowScaleBytes[4-1:4], opts[i+2:i+3])
-									windowScale := min(
-										binary.BigEndian.Uint32(windowScaleBytes[0:4]),
-										// see 2.3  Using the Window Scale Option
-										14,
-									)
-									return true, windowScale
-								}
-							}
-							i += int(length)
-						}
-						return false, 0
-					}
-
-					self.enableWindowScale, self.receiveWindowScale = parseWindowScaleOpts()
+					self.enableWindowScale, self.receiveWindowScale = ParseTcpWindowScaleOpts(sendItem.tcp.options)
 					self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
 					if self.enableWindowScale {
 						// compute the window scale to fit the window size in uint16
