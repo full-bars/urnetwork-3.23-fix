@@ -1919,11 +1919,13 @@ func provide(opts docopt.Opts) {
 	defer cancel()
 
 	// Exit-visibility: log when the main context is cancelled so operators
-	// can see why the provider is shutting down.
+	// can see why the provider is shutting down. Includes a stack trace to
+	// help identify what triggered the context cancellation (signal, panic
+	// recovery in signal handler, or explicit cancel call).
 	go func() {
 		<-ctx.Done()
 		tlog("[provider] shutting down: main context cancelled\n")
-		critLog("SIGNAL: context cancelled — draining goroutines")
+		critLog("SIGNAL: context cancelled — draining goroutines\nstack:\n%s", debug.Stack())
 	}()
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
