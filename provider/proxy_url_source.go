@@ -185,6 +185,11 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		}
 	}
 
+	// Release the lock before writing the reload trigger. If writeReloadTrigger
+	// fires while the lock is still held, the running provider's reload() will
+	// hit lock contention, skip the reload, and never pick up the change because
+	// the sequence number won't change again on the next poll cycle.
+	release()
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		return fmt.Errorf("could not determine reload path: %w", err)
@@ -221,6 +226,10 @@ func evictProxyURLAddress(address string) error {
 		return fmt.Errorf("could not write proxy_url.json: %w", err)
 	}
 
+	// Release the lock before writing the reload trigger (same race as
+	// removeDeadProxies — the reloader cannot pick up a trigger written
+	// while the lock is held).
+	release()
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		return fmt.Errorf("could not determine reload path: %w", err)
