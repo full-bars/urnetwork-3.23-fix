@@ -23,7 +23,6 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 
@@ -532,21 +531,25 @@ func (self *LocalUserNat) runShard(shard int) {
 			return
 		case sendPacket := <-shardCh:
 			ipPacket := sendPacket.packet
-						var udpPacket parsedUdp
+			if len(ipPacket) == 0 {
+				MessagePoolReturn(ipPacket)
+				continue
+			}
+			var udpPacket parsedUdp
 			var tcpPacket parsedTcp
-ipVersion := uint8(ipPacket[0]) >> 4
+			ipVersion := uint8(ipPacket[0]) >> 4
 			switch ipVersion {
 			case 4:
 				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv4(ipPacket)
 				if !ok {
 					MessagePoolReturn(ipPacket)
-					return
+					continue
 				}
 				switch ipProtocol {
 				case IP_PROTOCOL_UDP:
 					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
 						MessagePoolReturn(ipPacket)
-						return
+						continue
 					}
 
 					c := func() bool {
@@ -570,7 +573,7 @@ ipVersion := uint8(ipPacket[0]) >> 4
 				case IP_PROTOCOL_TCP:
 					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
 						MessagePoolReturn(ipPacket)
-						return
+						continue
 					}
 
 					c := func() bool {
@@ -599,13 +602,13 @@ ipVersion := uint8(ipPacket[0]) >> 4
 				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv6(ipPacket)
 				if !ok {
 					MessagePoolReturn(ipPacket)
-					return
+					continue
 				}
 				switch ipProtocol {
 				case IP_PROTOCOL_UDP:
 					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
 						MessagePoolReturn(ipPacket)
-						return
+						continue
 					}
 
 					c := func() bool {
@@ -629,7 +632,7 @@ ipVersion := uint8(ipPacket[0]) >> 4
 				case IP_PROTOCOL_TCP:
 					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
 						MessagePoolReturn(ipPacket)
-						return
+						continue
 					}
 
 					c := func() bool {
@@ -976,7 +979,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 			sourcePort:      sourcePort,
 			destinationIp:   destinationIp,
 			destinationPort: destinationPort,
-			
+
 			userLimited: userLimited{
 				lastActivityTime: time.Now(),
 			},
@@ -1348,7 +1351,7 @@ type StreamState struct {
 	sourcePort      UDPPort
 	destinationIp   net.IP
 	destinationPort UDPPort
-	
+
 	userLimited
 
 	// cached immutable ip path for this stream (see IpPath). The stream
@@ -1755,7 +1758,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 			// FIXME initial window size should be ~4k, set max window size as a 2^amount multiplier of initial size
 			windowSize:  tcpBufferSettings.MinWindowSize,
 			windowScale: 0,
-			
+
 			userLimited: userLimited{
 				lastActivityTime: time.Now(),
 			},
@@ -2522,8 +2525,6 @@ type ConnectionState struct {
 	windowScale        uint32
 	// encodedWindowSize  uint16
 
-
-
 	userLimited
 }
 
@@ -3210,6 +3211,9 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
 }
 
 func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
+	if len(ipPacket) == 0 {
+		return nil, nil, fmt.Errorf("Empty packet.")
+	}
 	ipVersion := uint8(ipPacket[0]) >> 4
 	switch ipVersion {
 	case 4:
