@@ -45,14 +45,14 @@ func TestTransportChecksumIndependent(t *testing.T) {
 
 func TestTcpPacketChecksumCoversPayload(t *testing.T) {
 	cs := &ConnectionState{
-		ipVersion:        4,
-		sourceIp:         net.IPv4(10, 0, 0, 1).To4(),
-		sourcePort:       40000,
-		destinationIp:    net.IPv4(192, 168, 1, 1).To4(),
-		destinationPort:  443,
-		sendSeq:          100,
-		receiveSeq:       200,
-		windowSize:       65535,
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
 		enableWindowScale: false,
 	}
 	packet := cs.tcpPacket([]byte("hello"), 100)
@@ -467,7 +467,10 @@ func TestWriteIpv4RoundTrip(t *testing.T) {
 	if !dstIP.Equal(net.IPv4(192, 168, 1, 1)) {
 		t.Fatalf("dest IP: want 192.168.1.1, got %v", dstIP)
 	}
-	if checksumFinish(checksumAdd(0, packet)) != 0 {
+	// the IPv4 header checksum covers only the 20-byte header, not whatever
+	// follows in the allocated buffer (pool buffers aren't guaranteed zeroed,
+	// so verifying over the full buffer is flaky depending on pool reuse)
+	if checksumFinish(checksumAdd(0, packet[:Ipv4HeaderSizeWithoutExtensions])) != 0 {
 		t.Fatalf("IPv4 checksum verification failed")
 	}
 }
@@ -694,5 +697,654 @@ func TestUdpChecksumNonZero(t *testing.T) {
 
 	if transportChecksum(IP_PROTOCOL_UDP, src, dst, udp) != 0 {
 		t.Fatal("UDP checksum verification failed")
+	}
+}
+
+func TestUdpChecksumZero(t *testing.T) {
+	src := net.IPv4(10, 0, 0, 1)
+	dst := net.IPv4(192, 168, 1, 1)
+	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
+	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
+	binary.BigEndian.PutUint16(udp[0:2], 40000)
+	binary.BigEndian.PutUint16(udp[2:4], 53)
+	binary.BigEndian.PutUint16(udp[4:6], UdpHeaderSize)
+	binary.BigEndian.PutUint16(udp[6:8], 0)
+	defer MessagePoolReturn(packet)
+
+	var udpPkt parsedUdp
+	_, _, _, transport, ok := parseIpv4(packet)
+	if !ok {
+		t.Fatal("parseIpv4 failed")
+	}
+	if !parseUdpPacket(nil, nil, transport, &udpPkt) {
+		t.Fatal("parseUdpPacket failed with zero checksum (RFC 768 allows)")
+	}
+}
+
+func TestConnectionStateFinAck(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:       4,
+		sourceIp:        net.IPv4(10, 0, 0, 1),
+		sourcePort:      40000,
+		destinationIp:   net.IPv4(192, 168, 1, 1),
+		destinationPort: 443,
+		sendSeq:         2000,
+		receiveSeq:      1500,
+		windowSize:      65535,
+	}
+
+	packet, err := cs.FinAck()
+	if err != nil {
+		t.Fatalf("FinAck failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+
+	if tcpBytes[13]&tcpFlagFin == 0 {
+		t.Fatal("FIN flag not set")
+	}
+	if tcpBytes[13]&tcpFlagAck == 0 {
+		t.Fatal("ACK flag not set")
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("FinAck TCP checksum verification failed")
+	}
+}
+
+func TestSynAckIPv6(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         6,
+		sourceIp:          net.ParseIP("2001:db8::1"),
+		sourcePort:        40000,
+		destinationIp:     net.ParseIP("2001:db8::2"),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: true,
+		windowScale:       7,
+	}
+
+	packet, err := cs.SynAck()
+	if err != nil {
+		t.Fatalf("SynAck IPv6 failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	_, srcIP, dstIP, _, ok := parseIpv6(packet)
+	if !ok {
+		t.Fatal("parseIpv6 failed")
+	}
+	if !srcIP.Equal(cs.destinationIp) {
+		t.Fatalf("IPv6 source IP mismatch: %v", srcIP)
+	}
+	if !dstIP.Equal(cs.sourceIp) {
+		t.Fatalf("IPv6 dest IP mismatch: %v", dstIP)
+	}
+
+	if packet[0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("IPv6 SynAck TCP checksum verification failed")
+	}
+
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	actualLen := len(tcpBytes)
+	if dataOffset != actualLen {
+		t.Fatalf("IPv6 SynAck: header claims %d bytes but segment is %d bytes", dataOffset, actualLen)
+	}
+}
+
+func TestConnectionStatePureAckIPv6(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		sourcePort:      40000,
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		destinationPort: 443,
+		sendSeq:         2000,
+		receiveSeq:      1500,
+		windowSize:      65535,
+	}
+
+	packet, err := cs.PureAck()
+	if err != nil {
+		t.Fatalf("PureAck IPv6 failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	if packet[0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if tcpBytes[13]&tcpFlagAck == 0 {
+		t.Fatal("ACK flag not set")
+	}
+	if tcpBytes[13]&tcpFlagSyn != 0 {
+		t.Fatal("SYN flag should not be set on PureAck")
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("IPv6 PureAck TCP checksum verification failed")
+	}
+}
+
+func TestConnectionStateRstAckIPv6(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		sourcePort:      40000,
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		destinationPort: 443,
+		sendSeq:         2000,
+		receiveSeq:      1500,
+		windowSize:      65535,
+	}
+
+	packet, err := cs.RstAck()
+	if err != nil {
+		t.Fatalf("RstAck IPv6 failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	if packet[0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if tcpBytes[13]&tcpFlagRst == 0 {
+		t.Fatal("RST flag not set")
+	}
+	if tcpBytes[13]&tcpFlagAck == 0 {
+		t.Fatal("ACK flag not set")
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("IPv6 RstAck TCP checksum verification failed")
+	}
+}
+
+func TestConnectionStateFinAckIPv6(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		sourcePort:      40000,
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		destinationPort: 443,
+		sendSeq:         2000,
+		receiveSeq:      1500,
+		windowSize:      65535,
+	}
+
+	packet, err := cs.FinAck()
+	if err != nil {
+		t.Fatalf("FinAck IPv6 failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	if packet[0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if tcpBytes[13]&tcpFlagFin == 0 {
+		t.Fatal("FIN flag not set")
+	}
+	if tcpBytes[13]&tcpFlagAck == 0 {
+		t.Fatal("ACK flag not set")
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("IPv6 FinAck TCP checksum verification failed")
+	}
+}
+
+func TestTcpPacketIPv6WithPayload(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         6,
+		sourceIp:          net.ParseIP("2001:db8::1"),
+		sourcePort:        40000,
+		destinationIp:     net.ParseIP("2001:db8::2"),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	payload := []byte("hello ipv6")
+	packet := cs.tcpPacket(payload, 100)
+	defer MessagePoolReturn(packet)
+
+	if packet[0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	_, srcIP, dstIP, _, ok := parseIpv6(packet)
+	if !ok {
+		t.Fatal("parseIpv6 failed")
+	}
+	if !srcIP.Equal(cs.destinationIp) {
+		t.Fatalf("IPv6 source IP mismatch: %v", srcIP)
+	}
+	if !dstIP.Equal(cs.sourceIp) {
+		t.Fatalf("IPv6 dest IP mismatch: %v", dstIP)
+	}
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("IPv6 tcpPacket checksum verification failed")
+	}
+}
+
+func TestSynAckNoWindowScale(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	packet, err := cs.SynAck()
+	if err != nil {
+		t.Fatalf("SynAck (no WS) failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+
+	if tcpBytes[13]&(tcpFlagSyn|tcpFlagAck) != (tcpFlagSyn | tcpFlagAck) {
+		t.Fatal("SYN+ACK flags not set")
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("SynAck (no WS) TCP checksum verification failed")
+	}
+
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	if dataOffset != TcpHeaderSizeWithoutExtensions {
+		t.Fatalf("SynAck (no WS) data offset: want %d, got %d", TcpHeaderSizeWithoutExtensions, dataOffset)
+	}
+}
+
+func TestDataPacketsSinglePacket(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	payload := []byte("small")
+	packets, err := cs.DataPackets(payload, len(payload), 1500)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	if len(packets) != 1 {
+		t.Fatalf("expected 1 packet, got %d", len(packets))
+	}
+	defer MessagePoolReturn(packets[0])
+
+	ipHeaderLen := int(packets[0][0]&0x0f) * 4
+	tcpBytes := packets[0][ipHeaderLen:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("DataPackets single packet checksum failed")
+	}
+}
+
+func TestDataPacketsMultiMtu(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	mtu := 256
+	maxPayloadPerPacket := mtu - Ipv4HeaderSizeWithoutExtensions - TcpHeaderSizeWithoutExtensions
+	payload := make([]byte, maxPayloadPerPacket*3+1)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	packets, err := cs.DataPackets(payload, len(payload), mtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+
+	expectedCount := (len(payload) + maxPayloadPerPacket - 1) / maxPayloadPerPacket
+	if len(packets) != expectedCount {
+		t.Fatalf("expected %d packets for %d bytes at mtu %d, got %d",
+			expectedCount, len(payload), mtu, len(packets))
+	}
+	for i, pkt := range packets {
+		defer MessagePoolReturn(pkt)
+		ipHeaderLen := int(pkt[0]&0x0f) * 4
+		tcpBytes := pkt[ipHeaderLen:]
+		if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+			t.Fatalf("DataPackets packet %d checksum failed", i)
+		}
+	}
+}
+
+func TestDataPacketsExactFit(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	mtu := 256
+	maxPayloadPerPacket := mtu - Ipv4HeaderSizeWithoutExtensions - TcpHeaderSizeWithoutExtensions
+	payload := make([]byte, maxPayloadPerPacket)
+
+	packets, err := cs.DataPackets(payload, len(payload), mtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	if len(packets) != 1 {
+		t.Fatalf("expected 1 packet for exact MTU fit, got %d", len(packets))
+	}
+	defer MessagePoolReturn(packets[0])
+
+	ipHeaderLen := int(packets[0][0]&0x0f) * 4
+	tcpBytes := packets[0][ipHeaderLen:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("DataPackets exact-fit checksum failed")
+	}
+}
+
+func TestDataPacketsIPv6(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         6,
+		sourceIp:          net.ParseIP("2001:db8::1"),
+		sourcePort:        40000,
+		destinationIp:     net.ParseIP("2001:db8::2"),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	payload := make([]byte, 100)
+	packets, err := cs.DataPackets(payload, len(payload), 1500)
+	if err != nil {
+		t.Fatalf("DataPackets IPv6 failed: %v", err)
+	}
+	if len(packets) != 1 {
+		t.Fatalf("expected 1 packet for IPv6, got %d", len(packets))
+	}
+	defer MessagePoolReturn(packets[0])
+
+	if packets[0][0]>>4 != 6 {
+		t.Fatal("not an IPv6 packet")
+	}
+
+	tcpBytes := packets[0][Ipv6HeaderSize:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("DataPackets IPv6 checksum failed")
+	}
+}
+
+func TestTcpPacketEmptyPayload(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	packet := cs.tcpPacket(nil, 100)
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+	if len(tcpBytes) != TcpHeaderSizeWithoutExtensions {
+		t.Fatalf("empty payload tcpPacket: want %d bytes, got %d",
+			TcpHeaderSizeWithoutExtensions, len(tcpBytes))
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("empty payload tcpPacket checksum failed")
+	}
+}
+
+func TestFlowHashUdp(t *testing.T) {
+	src := net.IPv4(10, 0, 0, 1)
+	dst := net.IPv4(192, 168, 1, 1)
+	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
+	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
+	binary.BigEndian.PutUint16(udp[0:2], 40000)
+	binary.BigEndian.PutUint16(udp[2:4], 53)
+	binary.BigEndian.PutUint16(udp[4:6], UdpHeaderSize)
+	binary.BigEndian.PutUint16(udp[6:8], 0)
+	defer MessagePoolReturn(packet)
+
+	h := flowHash(packet)
+	if h == 0 {
+		t.Fatal("flowHash returned 0 for valid UDP packet")
+	}
+	h2 := flowHash(packet)
+	if h != h2 {
+		t.Fatal("flowHash not consistent for UDP")
+	}
+}
+
+func TestTransportChecksumIPv6(t *testing.T) {
+	src := net.ParseIP("2001:db8::1")
+	dst := net.ParseIP("2001:db8::2")
+	transport := make([]byte, TcpHeaderSizeWithoutExtensions)
+
+	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, transport)
+	if cs == 0 {
+		t.Fatal("expected non-zero transport checksum for IPv6 with zeroed transport")
+	}
+
+	cs2 := transportChecksum(IP_PROTOCOL_TCP, src, dst, transport)
+	if cs != cs2 {
+		t.Fatal("transportChecksum IPv6 not consistent")
+	}
+}
+
+func TestParseIpv4TooShort(t *testing.T) {
+	_, _, _, _, ok := parseIpv4(make([]byte, 19))
+	if ok {
+		t.Fatal("expected parseIpv4 to fail on 19-byte buffer")
+	}
+
+	_, _, _, _, ok = parseIpv4(make([]byte, 18))
+	if ok {
+		t.Fatal("expected parseIpv4 to fail on 18-byte buffer")
+	}
+
+	_, _, _, _, ok = parseIpv4(make([]byte, 21))
+	if ok {
+		t.Fatal("expected parseIpv4 to fail on 21-byte with header=24 (bogus ihl)")
+	}
+}
+
+func TestParseIpv4InvalidLength(t *testing.T) {
+	buf := make([]byte, Ipv4HeaderSizeWithoutExtensions+UdpHeaderSize)
+	buf[0] = 0x45
+	binary.BigEndian.PutUint16(buf[2:4], uint16(Ipv4HeaderSizeWithoutExtensions-1))
+	_, _, _, _, ok := parseIpv4(buf)
+	if ok {
+		t.Fatal("expected parseIpv4 to fail when total length < header length")
+	}
+
+	binary.BigEndian.PutUint16(buf[2:4], uint16(Ipv4HeaderSizeWithoutExtensions+UdpHeaderSize+1))
+	_, _, _, _, ok = parseIpv4(buf)
+	if ok {
+		t.Fatal("expected parseIpv4 to fail when total length > buffer length")
+	}
+}
+
+func TestParseIpv6TooShort(t *testing.T) {
+	_, _, _, _, ok := parseIpv6(make([]byte, 39))
+	if ok {
+		t.Fatal("expected parseIpv6 to fail on 39-byte buffer")
+	}
+
+	_, _, _, _, ok = parseIpv6(make([]byte, 0))
+	if ok {
+		t.Fatal("expected parseIpv6 to fail on empty buffer")
+	}
+}
+
+func TestWriteIpv4HeaderTo4Required(t *testing.T) {
+	src := net.IPv4(10, 0, 0, 1)
+	dst := net.IPv4(192, 168, 1, 1)
+
+	packet := make([]byte, Ipv4HeaderSizeWithoutExtensions+UdpHeaderSize)
+	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+
+	if checksumFinish(checksumAdd(0, packet)) != 0 {
+		t.Fatal("IPv4 checksum verification failed with To4() IPs")
+	}
+
+	_, srcIP, dstIP, _, ok := parseIpv4(packet)
+	if !ok {
+		t.Fatal("parseIpv4 failed on header built with To4() IPs")
+	}
+	if !srcIP.Equal(src) {
+		t.Fatalf("source IP mismatch: %v", srcIP)
+	}
+	if !dstIP.Equal(dst) {
+		t.Fatalf("dest IP mismatch: %v", dstIP)
+	}
+}
+
+func TestParseTcpWindowScaleCombined(t *testing.T) {
+	tests := []struct {
+		name      string
+		opts      []byte
+		wantFound bool
+		wantShift uint32
+	}{
+		{"MSS then WS", []byte{2, 4, 0x05, 0xdc, 3, 3, 7}, true, 7},
+		{"SACK permitted then WS", []byte{4, 2, 3, 3, 5}, true, 5},
+		{"NOP NOP MSS WS", []byte{1, 1, 2, 4, 0x05, 0xdc, 3, 3, 7}, true, 7},
+		{"WS at shift=0", []byte{3, 3, 0}, true, 0},
+		{"WS at max=14", []byte{3, 3, 14}, true, 14},
+		{"only unknown opts", []byte{5, 3, 1, 7, 3, 1}, false, 0},
+		{"short WS (len=2)", []byte{3, 2, 7}, false, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			found, shift := ParseTcpWindowScaleOpts(tc.opts)
+			if found != tc.wantFound {
+				t.Fatalf("found: want %v, got %v", tc.wantFound, found)
+			}
+			if shift != tc.wantShift {
+				t.Fatalf("shift: want %d, got %d", tc.wantShift, shift)
+			}
+		})
+	}
+}
+
+func TestFinAckIPv6ChecksumCoverage(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		sourcePort:      40000,
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		destinationPort: 443,
+		sendSeq:         2000,
+		receiveSeq:      1500,
+		windowSize:      65535,
+	}
+
+	packet, err := cs.FinAck()
+	if err != nil {
+		t.Fatalf("FinAck IPv6 failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	tcpBytes := packet[Ipv6HeaderSize:]
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("FinAck IPv6 checksum verification failed")
+	}
+}
+
+func TestSeqNumIncrementAcrossDataPackets(t *testing.T) {
+	cs := &ConnectionState{
+		ipVersion:         4,
+		sourceIp:          net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:        40000,
+		destinationIp:     net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:   443,
+		sendSeq:           100,
+		receiveSeq:        200,
+		windowSize:        65535,
+		enableWindowScale: false,
+	}
+
+	mtu := 256
+	maxPayloadPerPacket := mtu - Ipv4HeaderSizeWithoutExtensions - TcpHeaderSizeWithoutExtensions
+	payload := make([]byte, maxPayloadPerPacket*2)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	packets, err := cs.DataPackets(payload, len(payload), mtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	if len(packets) < 2 {
+		t.Fatalf("expected at least 2 packets, got %d", len(packets))
+	}
+	for _, pkt := range packets {
+		defer MessagePoolReturn(pkt)
+	}
+
+	p0tcp := packets[0][Ipv4HeaderSizeWithoutExtensions:]
+	p1tcp := packets[1][Ipv4HeaderSizeWithoutExtensions:]
+
+	seq0 := binary.BigEndian.Uint32(p0tcp[4:8])
+	seq1 := binary.BigEndian.Uint32(p1tcp[4:8])
+
+	payloadLen0 := len(p0tcp) - TcpHeaderSizeWithoutExtensions
+	expectedSeq1 := seq0 + uint32(payloadLen0)
+	if seq1 != expectedSeq1 {
+		t.Fatalf("seq not incremented by payload length: seq0=%d + payload=%d, got seq1=%d",
+			seq0, payloadLen0, seq1)
 	}
 }
