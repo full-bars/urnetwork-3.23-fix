@@ -686,8 +686,6 @@ type peerEncryptionSession struct {
 	// grows, and both old and new certs stay trusted. Per-peer: survives
 	// handshake resets.
 	trustedPeerCertPems map[string]bool
-
-	readyMonitor *Monitor
 }
 
 func cloneTlsConfig(c *tls.Config) *tls.Config {
@@ -734,7 +732,6 @@ func newPeerEncryptionSession(
 		settings:         settings,
 		clientTlsConfig:  cloneTlsConfig(manager.clientTlsConfig),
 		serverTlsConfig:  cloneTlsConfig(manager.serverTlsConfig),
-		readyMonitor:     NewMonitor(),
 		lastActivityTime: time.Now(),
 	}
 	// Mint a per-session out-of-band peer key fetcher from the settings
@@ -823,20 +820,14 @@ func (self *peerEncryptionSession) startEpoch() {
 // if any, keeps serving its cipher while the new handshake runs in the
 // background, so the rekey is gap-free.
 func (self *peerEncryptionSession) restartHandshake() {
-	restarted := func() bool {
-		self.stateLock.Lock()
-		defer self.stateLock.Unlock()
-		if self.epoch != nil && self.epoch != self.establishedEpoch {
-			// a handshake is already in flight; let it finish rather than
-			// thrash a new one on every send sequence
-			return false
-		}
-		self.buildAndStartEpochWithLock()
-		return true
-	}()
-	if restarted {
-		self.readyMonitor.NotifyAll()
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if self.epoch != nil && self.epoch != self.establishedEpoch {
+		// a handshake is already in flight; let it finish rather than
+		// thrash a new one on every send sequence
+		return
 	}
+	self.buildAndStartEpochWithLock()
 }
 
 // reset starts a fresh handshake epoch when a definitively new handshake must
@@ -845,12 +836,9 @@ func (self *peerEncryptionSession) restartHandshake() {
 // until the new handshake establishes, and wakes subscribers to re-read
 // readiness.
 func (self *peerEncryptionSession) reset() {
-	func() {
-		self.stateLock.Lock()
-		defer self.stateLock.Unlock()
-		self.buildAndStartEpochWithLock()
-	}()
-	self.readyMonitor.NotifyAll()
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.buildAndStartEpochWithLock()
 }
 
 // buildAndStartEpochWithLock builds a fresh in-flight epoch (new in-memory
@@ -1089,10 +1077,8 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 		return
 	}
 	// If this epoch has already been reset out from under us, don't emit
-	// an identity proof bound to a dead handshake — just wake subscribers
-	// so they re-read the (now superseded) state.
+	// an identity proof bound to a dead handshake.
 	if !self.isCurrentEpoch(e) {
-		self.readyMonitor.NotifyAll()
 		return
 	}
 	logTlsHandshake(self.client.log, self.logTag, err)
@@ -1112,11 +1098,6 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 	} else {
 		self.client.log.Errorf("[tls]%s completeHandshake failed: %s\n", self.logTag, err)
 	}
-	// Always notify subscribers — on success (cipher derived; identity exchange
-	// may still need to complete before it's observable) and on failure (cipher
-	// stays nil; subscribers waiting on it must wake and observe the final
-	// state).
-	self.readyMonitor.NotifyAll()
 }
 
 // sendIdentityProofOnce signs the TLS exporter output with the local
@@ -1221,7 +1202,6 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 			self.logTag, len(peerPub), len(exporter), len(payload),
 		)
 	}
-	self.readyMonitor.NotifyAll()
 }
 
 // SetPeerClientPublicKey records the peer's long-lived Ed25519 public
@@ -1461,7 +1441,6 @@ func (self *peerEncryptionSession) receivePeerIdentityProof(payload []byte) {
 		// already have a proof in flight, in a final identity state, or marked
 		// failure because the payload was malformed.
 		self.client.log.V(1).Infof("[tls]%s receivePeerIdentityProof skipped: %s\n", self.logTag, skipReason)
-		self.readyMonitor.NotifyAll()
 		return
 	}
 	self.client.log.V(1).Infof("[tls]%s receivePeerIdentityProof buffered %d-byte proof — attempting verify\n", self.logTag, len(payload))
@@ -1563,14 +1542,6 @@ func (self *peerEncryptionSession) OptimisticallyDeliverHandshake(payload []byte
 	if e := self.currentEpoch(); e != nil && e.transport != nil && !isClosed(e.handshakeDone) {
 		e.transport.Deliver(payload)
 	}
-}
-
-// ReadyNotify returns a channel that closes when the session's ready
-// state changes — that is, when the handshake completes (cipher set) or
-// fails (cipher will stay nil). Single-use; callers re-check `Cipher()`
-// after a notify.
-func (self *peerEncryptionSession) ReadyNotify() chan struct{} {
-	return self.readyMonitor.NotifyChannel()
 }
 
 // Cipher returns the AEAD cipher, or nil if the session can't safely
