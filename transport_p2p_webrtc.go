@@ -127,7 +127,7 @@ func ReceiveSignalsFromClient(client *Client, receiver SignalReceiver) func() {
 }
 
 // ReceiveFunction
-func (self *clientSignalReceiver) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *clientSignalReceiver) Receive(source TransferPath, frames []*protocol.Frame, peer Peer) {
 	for _, frame := range frames {
 		self.handleControlFrame(source, frame)
 	}
