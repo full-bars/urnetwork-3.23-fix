@@ -79,7 +79,8 @@ func acquireProxyLockAt(path string) (func(), error) {
 	}
 	fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
 	f.Close()
-	return func() { os.Remove(path) }, nil
+	var once sync.Once
+	return func() { once.Do(func() { os.Remove(path) }) }, nil
 }
 
 const proxyLockStaleAge = 5 * time.Minute
