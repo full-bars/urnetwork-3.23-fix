@@ -59,6 +59,21 @@ func DetectEffectiveRAMLimitBytes() int64 {
 	return 850 * 1024 * 1024
 }
 
+var memoryShedders = NewCallbackList[func()]()
+
+func AddMemoryShedder(shed func()) func() {
+	callbackId := memoryShedders.Add(shed)
+	return func() {
+		memoryShedders.Remove(callbackId)
+	}
+}
+
+func ShedMemory() {
+	for _, shed := range memoryShedders.Get() {
+		HandleError(shed)
+	}
+}
+
 type Monitor struct {
 	mutex  sync.Mutex
 	notify chan struct{}
