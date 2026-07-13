@@ -237,11 +237,18 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // caps the total cache size; 0 means unlimited. Once the cap is reached,
 // remaining lines in this call are skipped without evicting any existing
 // entry.
-func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (added int) {
+// mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
+// expected to have any api-verified entries first, followed by socks5-only
+// entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
+// how many of the leading entries passed the API-reachability probe and
+// should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
+// or callers that don't track probe results) get ProbeOK=false so the
+// background reaper picks them up for retry.
+func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
-	for _, line := range lines {
+	for i, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
 		if !ok {
 			continue
@@ -258,7 +265,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, maxTotal int) (a
 		if maxTotal > 0 && len(state.Cache) >= maxTotal {
 			break
 		}
-		state.Cache[address] = ProxyURLEntry{User: user, Password: password}
+		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
 		added++
 	}
 	return added

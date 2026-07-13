@@ -159,7 +159,7 @@ func TestMergeProxyURLEntries_AddsNewSkipsExisting(t *testing.T) {
 		"1.2.3.4:1080", // already present, not re-added
 		"5.6.7.8:1080:user:pass",
 		"# comment, skipped",
-	}, 0)
+	}, 0, 0)
 	if added != 1 {
 		t.Fatalf("added: got %d, want 1", added)
 	}
@@ -178,12 +178,31 @@ func TestMergeProxyURLEntries_RespectsMaxTotal(t *testing.T) {
 	added := mergeProxyURLEntries(state, []string{
 		"5.6.7.8:1080",
 		"9.9.9.9:1080",
-	}, 2)
+	}, 0, 2)
 	if added != 1 {
 		t.Fatalf("added: got %d, want 1 (cap of 2 total, 1 already present)", added)
 	}
 	if len(state.Cache) != 2 {
 		t.Fatalf("cache size: got %d, want 2", len(state.Cache))
+	}
+}
+
+func TestMergeProxyURLEntries_SetsProbeOKForApiVerifiedEntries(t *testing.T) {
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
+	// apiOKCount=1: only the first line (api-verified) should get ProbeOK=true;
+	// the rest (socks5-only) must stay ProbeOK=false so the reaper retries them.
+	added := mergeProxyURLEntries(state, []string{
+		"1.2.3.4:1080",
+		"5.6.7.8:1080",
+	}, 1, 0)
+	if added != 2 {
+		t.Fatalf("added: got %d, want 2", added)
+	}
+	if !state.Cache["1.2.3.4:1080"].ProbeOK {
+		t.Error("api-verified entry should have ProbeOK=true")
+	}
+	if state.Cache["5.6.7.8:1080"].ProbeOK {
+		t.Error("socks5-only entry should have ProbeOK=false")
 	}
 }
 
@@ -248,7 +267,7 @@ func TestMergeProxyURLEntries_SkipsBlacklisted(t *testing.T) {
 	added := mergeProxyURLEntries(state, []string{
 		"1.2.3.4:1080", // blacklisted, must be skipped even though not yet cached
 		"5.6.7.8:1080",
-	}, 0)
+	}, 0, 0)
 	if added != 1 {
 		t.Fatalf("added: got %d, want 1", added)
 	}
@@ -279,7 +298,7 @@ func TestMergeProxyURLEntriesSkipsExcludePatterns(t *testing.T) {
 		"DC.DECODO.COM:8002:user:pass",
 		"gate.smartproxy.com:7000",
 	}
-	added := mergeProxyURLEntries(state, lines, 0)
+	added := mergeProxyURLEntries(state, lines, 0, 0)
 	if added != 1 {
 		t.Fatalf("added = %d, want 1 (only the non-excluded proxy)", added)
 	}
