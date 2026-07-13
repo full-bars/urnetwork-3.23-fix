@@ -523,9 +523,13 @@ func (self *WebRtcManager) ReceiveSignal(source TransferPath, frame *protocol.Fr
 	}
 	switch v := message.(type) {
 	case *protocol.ExchangeSignals:
+		streamId, err := IdFromBytes(v.StreamId)
+		if err != nil {
+			return err
+		}
 		key := peerConnKey{
 			PeerId:   source.SourceId,
-			StreamId: Id(v.StreamId),
+			StreamId: streamId,
 		}
 		var conn *peerConn
 		func() {
@@ -678,6 +682,8 @@ func (self *peerConn) Run() {
 		self.setConnected(connected)
 	})
 
+	self.addIceCandidates()
+
 	if self.active {
 		dc, err := self.pc.CreateDataChannel(self.settings.DataChannelLabel, nil)
 		if err != nil {
@@ -761,8 +767,6 @@ func (self *peerConn) ReceiveSignalFromPeer(signal *protocol.ExchangeSignal) err
 			}
 			self.setAnswerSignal(signal)
 			self.sendSignal(signal)
-
-			self.addIceCandidates()
 		}
 	case protocol.SignalType_SdpAnswer:
 		if self.active && self.setAnswerSignal(signal) {
@@ -775,8 +779,6 @@ func (self *peerConn) ReceiveSignalFromPeer(signal *protocol.ExchangeSignal) err
 			if err != nil {
 				return err
 			}
-
-			self.addIceCandidates()
 		}
 	case protocol.SignalType_IceCandidate:
 		var candidate webrtc.ICECandidateInit
