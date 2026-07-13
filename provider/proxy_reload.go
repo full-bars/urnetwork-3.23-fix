@@ -60,6 +60,20 @@ func acquireProxyLock() (func(), error) {
 	return acquireProxyLockAt(path)
 }
 
+// acquireProxyLockWithRetry attempts to acquire the proxy lock with backoff
+func acquireProxyLockWithRetry() (func(), error) {
+	var release func()
+	var err error
+	for i := 0; i < 5; i++ {
+		release, err = acquireProxyLock()
+		if err == nil {
+			return release, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, err
+}
+
 // acquireProxyLockAt is the path-explicit form, for testing.
 func acquireProxyLockAt(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -114,7 +128,12 @@ func writeReloadTrigger(path string) error {
 	return doWriteReloadTrigger(path)
 }
 
+var reloadTriggerMutex sync.Mutex
+
 func doWriteReloadTrigger(path string) error {
+	reloadTriggerMutex.Lock()
+	defer reloadTriggerMutex.Unlock()
+
 	lastReloadTriggerTime.Lock()
 	lastReloadTriggerTime.pending = false
 	lastReloadTriggerTime.ts = time.Now()
