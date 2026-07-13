@@ -1922,15 +1922,30 @@ func provide(opts docopt.Opts) {
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 
-	ctx, cancel := context.WithCancel(event.Ctx())
+	rawCtx, rawCancel := context.WithCancel(event.Ctx())
+	ctx := rawCtx
+	var cancelSource atomic.Value // stores string(debug.Stack()) of the first caller to cancel()
+	cancel := func() {
+		if cancelSource.Load() == nil {
+			cancelSource.Store(string(debug.Stack()))
+		}
+		rawCancel()
+	}
 	defer cancel()
 
-	// Exit-visibility: log when the main context is cancelled so operators
-	// can see why the provider is shutting down.
+	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
+	// function captures a stack trace at the moment it is first invoked. If
+	// cancel() was never called (e.g. the parent event.Ctx() was cancelled
+	// by a signal or panic recovery in SetOnSignals), the shutdown goroutine
+	// reports that instead.
 	go func() {
 		<-ctx.Done()
+		source, _ := cancelSource.Load().(string)
+		if source == "" {
+			source = "context cancelled by parent (signal or event.Set())"
+		}
 		tlog("[provider] shutting down: main context cancelled\n")
-		critLog("SIGNAL: context cancelled — draining goroutines")
+		critLog("SIGNAL: context cancelled — draining goroutines\nsource:\n%s", source)
 	}()
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
