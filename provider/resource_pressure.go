@@ -311,8 +311,12 @@ func writePressureStatus(score float64, comps map[string]float64) {
 		return
 	}
 	var target int
-	if state, err := readProxyURLState(); err == nil {
-		target = state.TargetPoolSize
+	release, err := acquireProxyLockWithRetry()
+	if err == nil {
+		if state, err := readProxyURLState(); err == nil {
+			target = state.TargetPoolSize
+		}
+		release()
 	}
 	payload, err := json.Marshal(map[string]any{
 		"score":       score,
@@ -568,12 +572,11 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 			}
 		}
 		release()
-		if next == target {
-			continue
+		if next != target {
+			tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
 		}
-		tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
 
-		if next < target {
+		if pressure > aimdShrinkAbove {
 			shedPoolToTarget(next)
 			highSamples = 0 // one cut per sustained-high episode; re-arm
 		}
