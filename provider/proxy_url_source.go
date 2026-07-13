@@ -875,7 +875,7 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 	defer ticker.Stop()
 	for {
 		effective := time.Duration(float64(resolveProxyCleanupInterval(interval)) * cleanupIntervalScale(currentPressure()))
-		if resolveSelfHealEnabled(selfHealEnabled) && time.Since(lastRun) >= effective {
+		if time.Since(lastRun) >= effective {
 			if activeScope := resolveProxyCleanupScope(scope); activeScope == "url" || activeScope == "all" {
 				runProxyURLCleanupOnce(activeScope)
 			}
