@@ -185,6 +185,10 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		}
 	}
 
+	// Release the lock before writing the reload trigger so the running
+	// provider's reload() can acquire it. The deferred release is a no-op
+	// (sync.Once idempotent guard in acquireProxyLockAt).
+	release()
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		return fmt.Errorf("could not determine reload path: %w", err)
@@ -221,6 +225,8 @@ func evictProxyURLAddress(address string) error {
 		return fmt.Errorf("could not write proxy_url.json: %w", err)
 	}
 
+	// Release the lock before the trigger (deferred release is idempotent).
+	release()
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		return fmt.Errorf("could not determine reload path: %w", err)

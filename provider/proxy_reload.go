@@ -79,7 +79,8 @@ func acquireProxyLockAt(path string) (func(), error) {
 	}
 	fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
 	f.Close()
-	return func() { os.Remove(path) }, nil
+	var once sync.Once
+	return func() { once.Do(func() { os.Remove(path) }) }, nil
 }
 
 const proxyLockStaleAge = 5 * time.Minute
@@ -212,6 +213,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				if seq == lastSeq {
 					continue
 				}
+				tlog("🔄 [proxy] reload trigger: seq %d → %d\n", lastSeq, seq)
 				lastSeq = seq
 				r.reload()
 			}
