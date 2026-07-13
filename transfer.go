@@ -2805,6 +2805,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 			panic(errors.New("Missing item"))
 		}
 		item.resendTime = time.Now().Add(self.sendBufferSettings.SelectiveAckTimeout)
+		item.sendTime = time.Now()
 		self.resendQueue.Add(item)
 		return
 	}
@@ -3913,6 +3914,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(removedItem.messageByteCount)
 		})
+		removedItem.messagePoolReturn()
 	}
 
 	// replace with the latest value (check both messageId and sequenceNumber)
@@ -3920,6 +3922,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(removedItem.messageByteCount)
 		})
+		removedItem.messagePoolReturn()
 	}
 
 	if sequenceNumber <= self.nextSequenceNumber {
