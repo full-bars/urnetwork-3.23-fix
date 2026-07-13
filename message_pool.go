@@ -247,6 +247,17 @@ func ResizeMessagePools(maxByteCount ByteCount) {
 	}
 }
 
+// ResizeMessagePoolsPerClass applies the given maximum byte count directly as a ceiling
+// for each message pool size class, instead of dividing it across the classes.
+// This preserves the legacy buffer allocation semantics required by the provider.
+func ResizeMessagePoolsPerClass(maxByteCount ByteCount) {
+	pools := orderedMessagePools()
+	for _, pool := range pools {
+		pool.Resize(int(maxByteCount / ByteCount(pool.size)))
+	}
+}
+
+
 func ClearMessagePools() {
 	for _, pool := range orderedMessagePools() {
 		pool.Clear()
