@@ -502,14 +502,23 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 			result      probeResult
 			wasProbeOK  bool
 		}
-		results := make([]probeResultEntry, 0, len(candidates))
-		for _, c := range candidates {
-			results = append(results, probeResultEntry{
-				addr:        c.addr,
-				result:      probeProxy(ctx, c.addr, apiHost, apiPort),
-				wasProbeOK:  c.wasProbeOK,
-			})
+		results := make([]probeResultEntry, len(candidates))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 20) // max 20 concurrent probes
+		for i, c := range candidates {
+			wg.Add(1)
+			go func(i int, c reaperProbeTarget) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				results[i] = probeResultEntry{
+					addr:        c.addr,
+					result:      probeProxy(ctx, c.addr, apiHost, apiPort),
+					wasProbeOK:  c.wasProbeOK,
+				}
+			}(i, c)
 		}
+		wg.Wait()
 
 		// Re-acquire the lock and atomically apply all results.
 		func() {
@@ -529,6 +538,9 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 				entry, ok := state.Cache[r.addr]
 				if !ok {
 					continue // removed by a concurrent writer
+				}
+				if !r.wasProbeOK && entry.ProbeOK {
+					continue // became reachable between snapshot and probe
 				}
 				if r.wasProbeOK {
 					// Stale re-probe of a once-good entry: demote on failure,
