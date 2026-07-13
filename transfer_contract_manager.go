@@ -203,6 +203,8 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 
 		OriginContractLinger: 300 * time.Second,
 
+		ContractStatsEpoch: 60 * time.Second,
+
 		ContractQueueExpireTimeout: 120 * time.Second,
 
 		ProtocolVersion: DefaultProtocolVersion,
