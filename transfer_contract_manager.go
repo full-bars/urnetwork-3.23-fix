@@ -299,6 +299,9 @@ func NewContractManager(
 	client *Client,
 	settings *ContractManagerSettings,
 ) *ContractManager {
+	if settings.ContractStatsEpoch <= 0 {
+		settings.ContractStatsEpoch = 10 * time.Second
+	}
 	// at a minimum
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
@@ -1176,9 +1179,7 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		}
 	}
 
-	if !checkpoint {
-		self.closeContractStats(contractId)
-	}
+	self.closeContractStats(contractId)
 
 	// Reliable delivery via a per-contract `ControlSync`. The
 	// previous implementation called `ClientOob().SendControl(...)`

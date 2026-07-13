@@ -4092,6 +4092,7 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	if item.contractId != nil {
 		receiveContract := self.openReceiveContracts[*item.contractId]
 		receiveContract.ack(item.messageByteCount)
+		self.updateContractStats(receiveContract)
 		provideMode = receiveContract.provideMode
 	} else {
 		// no contract peers are considered in network
@@ -4260,12 +4261,10 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	// the sender may send contracts even if `receiveNoContract` is set locally
 	if item.contractId != nil {
 		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok && receiveContract.update(item.messageByteCount) {
-			self.updateContractStats(receiveContract)
 			return true
 		}
 	} else if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
 		item.contractId = &self.receiveContract.contractId
-		self.updateContractStats(self.receiveContract)
 		return true
 	}
 	// `receiveNoContract` is a mutual configuration
