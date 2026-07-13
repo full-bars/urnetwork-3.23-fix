@@ -95,7 +95,14 @@ func paceMonitor(ctx context.Context) {
 		up, _, _, _, connecting := connect.ProxyHealthSnapshot()
 		total := connect.ProxyHealthCount()
 		if total < 5 {
-			continue
+			tlog("🔥 [pace] ✓ warmup: %d up, %d total (< 5) — done\n", up, total)
+			proxyWarmupDone.Store(true)
+			if reloadPath, err := proxyReloadPath(); err == nil {
+				if err := writeReloadTrigger(reloadPath); err != nil {
+					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+				}
+			}
+			return
 		}
 		pct := float64(up) * 100 / float64(total)
 		connectingN := len(connecting)
@@ -2227,6 +2234,8 @@ func provide(opts docopt.Opts) {
 						if evictErr := evictProxyURLAddress(proxySettings.Address); evictErr != nil {
 							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) could not evict after %d give-ups: %v\n",
 								proxySettings.Index, proxySettings.Address, giveUpCount, evictErr)
+							delay := proxyURLGiveUpRetryDelay(giveUpCount)
+							globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
 						} else {
 							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
 								proxySettings.Index, proxySettings.Address, err, giveUpCount)
@@ -2893,7 +2902,8 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	select {
 	case <-ctx.Done():
 		tlog("[auth] exiting: signal received during auth-client request\n")
-		os.Exit(0)
+		returnErr = ctx.Err()
+		return
 	case authClientResult = <-authClientChannel:
 	}
 
