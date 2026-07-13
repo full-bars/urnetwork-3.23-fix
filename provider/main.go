@@ -1593,16 +1593,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			liveHealth := connect.ProxyHealthByAddress()
 			for addr, entry := range state.Proxies {
 				if h, ok := liveHealth[addr]; ok {
-				entry.Health = h.Health
-				if h.DownSince.IsZero() {
-					entry.DownSince = ""
-				} else {
-					entry.DownSince = h.DownSince.Format(time.RFC3339)
-				}
-				entry.AuthFailures = h.AuthFailures
-				state.Proxies[addr] = entry
-				} else {
-					delete(state.Proxies, addr)
+					entry.Health = h.Health
+					if h.DownSince.IsZero() {
+						entry.DownSince = ""
+					} else {
+						entry.DownSince = h.DownSince.Format(time.RFC3339)
+					}
+					entry.AuthFailures = h.AuthFailures
+					state.Proxies[addr] = entry
 				}
 			}
 			if err := writeProxyState(state); err != nil {
