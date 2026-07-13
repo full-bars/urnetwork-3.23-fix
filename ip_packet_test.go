@@ -257,9 +257,9 @@ func TestParseUdpRoundTrip(t *testing.T) {
 	binary.BigEndian.PutUint16(udp[0:2], 40000)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
 	binary.BigEndian.PutUint16(udp[4:6], uint16(UdpHeaderSize+len(payload)))
+	copy(udp[UdpHeaderSize:], payload)
 	cs := transportChecksum(IP_PROTOCOL_UDP, src, dst, udp)
 	binary.BigEndian.PutUint16(udp[6:8], cs)
-	copy(udp[UdpHeaderSize:], payload)
 	defer MessagePoolReturn(packet)
 
 	var udpPkt parsedUdp

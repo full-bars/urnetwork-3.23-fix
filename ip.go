@@ -1425,6 +1425,9 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 		headerByteCount = Ipv6HeaderSize + UdpHeaderSize
 	}
 
+	if mtu <= headerByteCount {
+		return nil, fmt.Errorf("mtu %d is too small for IP+UDP headers (%d bytes)", mtu, headerByteCount)
+	}
 	packetByteCount := mtu - headerByteCount
 	if n <= packetByteCount {
 		self.singleDataPacket[0] = self.udpPacket(payload[0:n])
@@ -2680,7 +2683,11 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	packetByteCount := mtu - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
+	headerByteCount := ipHeaderByteCount + TcpHeaderSizeWithoutExtensions
+	if mtu <= headerByteCount {
+		return nil, fmt.Errorf("mtu %d is too small for IP+TCP headers (%d bytes)", mtu, headerByteCount)
+	}
+	packetByteCount := mtu - headerByteCount
 	if n <= packetByteCount {
 		pkt := self.tcpPacket(payload[0:n], self.receiveSeq)
 		return [][]byte{pkt}, nil
