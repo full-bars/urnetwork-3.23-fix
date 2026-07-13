@@ -473,7 +473,9 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 					if !entry.LastProbe.IsZero() && time.Since(entry.LastProbe) < proxyReaperInterval {
 						continue
 					}
-					candidates = append(candidates, reaperProbeTarget{addr: addr, entry: entry})
+					candidates = append(candidates, reaperProbeTarget{
+						addr: addr, entry: entry, wasProbeOK: false,
+					})
 					continue
 				}
 				// Once-good proxy: re-probe only when stale, so dead-but-cached
@@ -506,10 +508,13 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 20) // max 20 concurrent probes
 		for i, c := range candidates {
+			if ctx.Err() != nil {
+				break
+			}
+			sem <- struct{}{}
 			wg.Add(1)
 			go func(i int, c reaperProbeTarget) {
 				defer wg.Done()
-				sem <- struct{}{}
 				defer func() { <-sem }()
 				results[i] = probeResultEntry{
 					addr:        c.addr,
@@ -519,6 +524,10 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 			}(i, c)
 		}
 		wg.Wait()
+
+		if ctx.Err() != nil {
+			return // Context cancelled, avoid polluting the cache with shutdown failures
+		}
 
 		// Re-acquire the lock and atomically apply all results.
 		func() {
