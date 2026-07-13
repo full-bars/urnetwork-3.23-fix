@@ -16,7 +16,7 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout. 
 ## Quick Start: Install the Provider
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fsSL https://dl.fullbars.xyz/install.sh | sh
 ```
 
 The same script becomes the `urnet-tools` CLI after installation. Full install docs: [docs/Installation.md](docs/Installation.md).
