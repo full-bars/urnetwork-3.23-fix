@@ -249,6 +249,7 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 
 	if len(multiRouteSelectors) == 0 {
 		// clean up the destination
+		delete(self.destinationMultiRouteSelectors, destination)
 		for _, matchedDestinations := range self.transportMatchedDestinations {
 			delete(matchedDestinations, destination)
 		}
