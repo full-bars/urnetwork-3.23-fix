@@ -146,6 +146,9 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 					-1,
 					Ctx(handleCtx),
 				)
+				if !success {
+					MessagePoolReturn(updatedFrameCopy.MessageBytes)
+				}
 			}()
 			if done {
 				MessagePoolReturn(updatedFrame.MessageBytes)
@@ -158,10 +161,10 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 				// only stop when the context or client is done
 				select {
 				case <-handleCtx.Done():
-					MessagePoolReturn(frame.MessageBytes)
+					MessagePoolReturn(updatedFrame.MessageBytes)
 					return
 				case <-self.client.Done():
-					MessagePoolReturn(frame.MessageBytes)
+					MessagePoolReturn(updatedFrame.MessageBytes)
 					return
 				default:
 				}
@@ -200,6 +203,7 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 	if success {
 		return
 	}
+	MessagePoolReturn(frameCopy.MessageBytes)
 
 	go HandleError(func() {
 		controlSync(frame)

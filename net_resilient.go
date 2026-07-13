@@ -148,7 +148,10 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 							if self.fragment && self.reorder {
 								tcpConn.SetNoDelay(true)
 
-								f, _ := tcpConn.File()
+								f, err := tcpConn.File()
+								if err != nil {
+									return 0, err
+								}
 								fd := SocketHandle(f.Fd())
 
 								nativeTtl := GetSocketTtl(fd)
@@ -203,7 +206,10 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 								tcpConn.SetNoDelay(true)
 
-								f, _ := tcpConn.File()
+								f, err := tcpConn.File()
+								if err != nil {
+									return 0, err
+								}
 								fd := SocketHandle(f.Fd())
 
 								nativeTtl := GetSocketTtl(fd)
