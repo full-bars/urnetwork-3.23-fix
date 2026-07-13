@@ -85,12 +85,12 @@ func (self *PeerManager) handleControlFrame(frame *protocol.Frame) error {
 			changed = self.resetPeers()
 		case *protocol.NetworkPeersUpdate:
 			changed, err = self.updatePeers(v)
-			if err != nil {
-				return err
-			}
 		}
 		if changed {
 			self.peersMonitor.NotifyAll()
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -123,6 +123,15 @@ func (self *PeerManager) updatePeers(update *protocol.NetworkPeersUpdate) (bool,
 			}
 			disconnectTime := time.UnixMilli(int64(*p.DisconnectTime))
 			if t, ok := self.disconnectTimes[clientId]; !ok || !t.Equal(disconnectTime) {
+				if len(self.disconnectTimes) >= 10000 {
+					self.ageOutDisconnectTimesLocked()
+					if len(self.disconnectTimes) >= 10000 {
+						for k := range self.disconnectTimes {
+							delete(self.disconnectTimes, k)
+							break
+						}
+					}
+				}
 				self.disconnectTimes[clientId] = disconnectTime
 				changed = true
 			}
@@ -143,6 +152,15 @@ func (self *PeerManager) updatePeers(update *protocol.NetworkPeersUpdate) (bool,
 	return changed, nil
 }
 
+func (self *PeerManager) ageOutDisconnectTimesLocked() {
+	windowStart := time.Now().Add(-self.peerManagerSettings.DisconnectedPeerWindow)
+	for clientId, disconnectTime := range self.disconnectTimes {
+		if disconnectTime.Before(windowStart) {
+			delete(self.disconnectTimes, clientId)
+		}
+	}
+}
+
 // NetworkPeers enumerates the connected peers and the count of
 // peers disconnected within the disconnected peer window
 func (self *PeerManager) NetworkPeers() (connected []*NetworkPeer, disconnectedCount int) {
@@ -150,12 +168,7 @@ func (self *PeerManager) NetworkPeers() (connected []*NetworkPeer, disconnectedC
 	defer self.stateLock.Unlock()
 
 	// age out disconnect markers older than the window
-	windowStart := time.Now().Add(-self.peerManagerSettings.DisconnectedPeerWindow)
-	for clientId, disconnectTime := range self.disconnectTimes {
-		if disconnectTime.Before(windowStart) {
-			delete(self.disconnectTimes, clientId)
-		}
-	}
+	self.ageOutDisconnectTimesLocked()
 
 	connected = make([]*NetworkPeer, 0, len(self.connectedPeers))
 	for _, networkPeer := range self.connectedPeers {
