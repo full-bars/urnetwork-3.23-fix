@@ -190,6 +190,8 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		IngressSecurityPolicyGenerator: DefaultIngressSecurityPolicyWithStats,
 		EgressSecurityPolicyGenerator:  DefaultEgressSecurityPolicyWithStats,
 
+		EventEpoch: 1 * time.Second,
+
 		RemoteUserNatMultiClientMonitorSettings: *DefaultRemoteUserNatMultiClientMonitorSettings(),
 	}
 }
@@ -282,6 +284,8 @@ type MultiClientSettings struct {
 	// nil resolves to DefaultLogger().
 	Log Logger
 
+	EventEpoch time.Duration
+
 	RemoteUserNatMultiClientMonitorSettings
 }
 
@@ -358,6 +362,10 @@ type receivePacket struct {
 	IpPath      *IpPath
 	Packet      []byte
 	Pooled      bool
+}
+
+type ServerNameLookup interface {
+	ServerNames(ip string) []string
 }
 
 type RemoteUserNatMultiClient struct {

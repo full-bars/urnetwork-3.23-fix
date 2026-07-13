@@ -117,6 +117,21 @@ func safeAck(cb func(error), err error) {
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
 type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode)
+
+type Peer struct {
+	ProvideMode protocol.ProvideMode
+}
+
+type NetworkPeer struct {
+	ClientId       Id
+	ProvideModes   []protocol.ProvideMode
+	ProvideEnabled bool
+	Principal      string
+	Roles          []string
+	DeviceName     string
+	DeviceSpec     string
+}
+
 type ForwardFunction = func(path TransferPath, transferFrameBytes []byte)
 
 func DefaultClientSettings() *ClientSettings {
