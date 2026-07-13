@@ -1179,7 +1179,9 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		}
 	}
 
-	self.closeContractStats(contractId)
+	if !checkpoint {
+		self.closeContractStats(contractId)
+	}
 
 	// Reliable delivery via a per-contract `ControlSync`. The
 	// previous implementation called `ClientOob().SendControl(...)`
