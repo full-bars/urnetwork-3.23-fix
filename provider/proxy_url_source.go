@@ -259,7 +259,7 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 // up enough times (proxyURLGiveUpEvictAfterCycles) that retrying it is no
 // longer worth an auth-rate-limiter slot.
 func evictProxyURLAddress(address string) error {
-	release, err := acquireProxyLock()
+	release, err := acquireProxyLockWithRetry()
 	if err != nil {
 		return fmt.Errorf("could not acquire proxy lock: %w", err)
 	}
@@ -397,22 +397,29 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal)
 		totalAdded += added
 		socks5Count := socks5OnlyCounts[i]
-		// Mark socks5-only entries for reaper retry
-		if socks5Count > 0 {
-			marked := 0
-			for _, addr := range fetched[i] {
-				if entry, ok := state.Cache[addr]; ok {
-					if !entry.ProbeOK {
-						// entry already has ProbeOK=false from merge, but
-						// ensure LastProbe is set so the reaper picks it up
-						entry.LastProbe = time.Now()
-						state.Cache[addr] = entry
-						marked++
-						dirty = true
-					}
-				}
+		markedAPI := 0
+		markedSocks5 := 0
+		for j, line := range fetched[i] {
+			addr, _, _, ok := parseProxyURLLine(line)
+			if !ok {
+				continue
 			}
-			tlog("[proxy][url] %s: %d socks5-only entries marked for reaper\n", url, marked)
+			if entry, exists := state.Cache[addr]; exists {
+				entry.LastProbe = time.Now()
+				if j < len(fetched[i])-socks5Count {
+					entry.ProbeOK = true
+					entry.ProbeFails = 0
+					markedAPI++
+				} else {
+					entry.ProbeOK = false
+					markedSocks5++
+				}
+				state.Cache[addr] = entry
+				dirty = true
+			}
+		}
+		if markedSocks5 > 0 || markedAPI > 0 {
+			tlog("[proxy][url] %s: %d api-ok entries saved, %d socks5-only entries marked for reaper\n", url, markedAPI, markedSocks5)
 		}
 		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
 	}
@@ -515,6 +522,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		addr       string
 		result     probeResult
 		wasProbeOK bool
+		lastProbe  time.Time
 	}
 	results := make([]probeResultEntry, 0, len(candidates))
 	for _, c := range candidates {
@@ -522,12 +530,13 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			addr:       c.addr,
 			result:     probeProxy(ctx, c.addr, apiHost, apiPort),
 			wasProbeOK: c.wasProbeOK,
+			lastProbe:  c.entry.LastProbe,
 		})
 	}
 
 	// Re-acquire the lock and atomically apply all results.
 	func() {
-		release, err := acquireProxyLock()
+		release, err := acquireProxyLockWithRetry()
 		if err != nil {
 			return
 		}
@@ -543,6 +552,9 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			entry, ok := state.Cache[r.addr]
 			if !ok {
 				continue // removed by a concurrent writer
+			}
+			if entry.LastProbe.After(r.lastProbe) {
+				continue // updated by a concurrent fetch or another reaper cycle
 			}
 			if r.wasProbeOK {
 				// Stale re-probe of a once-good entry: demote on failure,
