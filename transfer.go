@@ -4090,10 +4090,13 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	var provideMode protocol.ProvideMode
 
 	if item.contractId != nil {
-		receiveContract := self.openReceiveContracts[*item.contractId]
-		receiveContract.ack(item.messageByteCount)
-		self.updateContractStats(receiveContract)
-		provideMode = receiveContract.provideMode
+		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok {
+			receiveContract.ack(item.messageByteCount)
+			self.updateContractStats(receiveContract)
+			provideMode = receiveContract.provideMode
+		} else {
+			provideMode = protocol.ProvideMode_Network
+		}
 	} else {
 		// no contract peers are considered in network
 		provideMode = protocol.ProvideMode_Network
