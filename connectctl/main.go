@@ -699,18 +699,18 @@ func sink(opts docopt.Opts) {
 	}
 
 	type Receive struct {
-		source      connect.TransferPath
-		frames      []*protocol.Frame
-		provideMode protocol.ProvideMode
+		source connect.TransferPath
+		frames []*protocol.Frame
+		peer   connect.Peer
 	}
 
 	receives := make(chan *Receive)
 
-	client.AddReceiveCallback(func(source connect.TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	client.AddReceiveCallback(func(source connect.TransferPath, frames []*protocol.Frame, peer connect.Peer) {
 		receives <- &Receive{
-			source:      source,
-			frames:      frames,
-			provideMode: provideMode,
+			source: source,
+			frames: frames,
+			peer:   peer,
 		}
 	})
 
@@ -718,7 +718,7 @@ func sink(opts docopt.Opts) {
 	for i := 0; messageCount < 0 || i < messageCount; i += 1 {
 		select {
 		case receive := <-receives:
-			fmt.Printf("[%s %s] %s\n", receive.source, receive.provideMode, receive.frames)
+			fmt.Printf("[%s %s] %s\n", receive.source, receive.peer.ProvideMode, receive.frames)
 		}
 	}
 }
