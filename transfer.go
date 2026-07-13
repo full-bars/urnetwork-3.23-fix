@@ -116,7 +116,7 @@ func safeAck(cb func(error), err error) {
 
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
-type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode)
+type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, peer Peer)
 
 type Peer struct {
 	ProvideMode protocol.ProvideMode
@@ -880,11 +880,11 @@ func (self *Client) SendMultiHop(frame *protocol.Frame, destination MultiHopId, 
 }
 
 // ReceiveFunction
-func (self *Client) receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *Client) receive(source TransferPath, frames []*protocol.Frame, peer Peer) {
 	for _, receiveCallback := range self.receiveCallbacks.Get() {
 		c := func() any {
 			return HandleError(func() {
-				receiveCallback(source, frames, provideMode)
+				receiveCallback(source, frames, peer)
 			})
 		}
 		if self.log.V(2).Enabled() {
@@ -1008,7 +1008,7 @@ func (self *Client) run() {
 					self.receive(
 						SourceId(self.clientId),
 						[]*protocol.Frame{sendPack.Frame},
-						protocol.ProvideMode_Network,
+						Peer{ProvideMode: protocol.ProvideMode_Network},
 					)
 					safeAck(sendPack.AckCallback, nil)
 					MessagePoolReturn(sendPack.Frame.MessageBytes)
@@ -4103,7 +4103,7 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 		item.receiveCallback(
 			self.source,
 			appFrames,
-			provideMode,
+			Peer{ProvideMode: provideMode},
 		)
 	}
 	if item.ack {
