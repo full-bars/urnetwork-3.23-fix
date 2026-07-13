@@ -467,6 +467,16 @@ func (r *ProxyReloader) reload() {
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
 	// goroutine from racing this write and resurrecting removed proxies.
 	proxyStateMu.Lock()
+	if diskState, err := readProxyState(); err == nil {
+		for addr, entry := range r.state.Proxies {
+			if diskEntry, ok := diskState.Proxies[addr]; ok {
+				entry.Health = diskEntry.Health
+				entry.DownSince = diskEntry.DownSince
+				entry.AuthFailures = diskEntry.AuthFailures
+				r.state.Proxies[addr] = entry
+			}
+		}
+	}
 	r.state.NextID = currentProxyIDCounter()
 	if err := writeProxyState(r.state); err != nil {
 		tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)

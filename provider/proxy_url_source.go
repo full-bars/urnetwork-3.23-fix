@@ -579,6 +579,12 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 
 			entry.LastProbe = time.Now()
 
+			liveHealth := connect.ProxyHealthByAddress()
+			isLive := false
+			if h, ok := liveHealth[r.addr]; ok && h.Health == "up" {
+				isLive = true
+			}
+
 			switch r.result {
 			case probeAPIReachable:
 				entry.ProbeOK = true
@@ -586,7 +592,15 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				state.Cache[r.addr] = entry
 				changed = true
 
-			case probeSocks5Only:
+			case probeSocks5Only, probeDead:
+				if isLive {
+					entry.ProbeOK = true
+					entry.ProbeFails = 0
+					state.Cache[r.addr] = entry
+					changed = true
+					break
+				}
+
 				entry.ProbeOK = false
 				entry.ProbeFails++
 				state.Cache[r.addr] = entry
@@ -596,20 +610,11 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					}
 					state.Blacklist[r.addr] = time.Now().UTC()
 					delete(state.Cache, r.addr)
-					tlog("[proxy][url] reaper: blacklisted %s after %d failed probes\n", r.addr, entry.ProbeFails)
-				}
-				changed = true
-
-			case probeDead:
-				entry.ProbeFails++
-				state.Cache[r.addr] = entry
-				if entry.ProbeFails >= proxyAPIMaxFails {
-					if state.Blacklist == nil {
-						state.Blacklist = map[string]time.Time{}
+					reason := "socks5-only"
+					if r.result == probeDead {
+						reason = "dead"
 					}
-					state.Blacklist[r.addr] = time.Now().UTC()
-					delete(state.Cache, r.addr)
-					tlog("[proxy][url] reaper: blacklisted %s (dead, %d fails)\n", r.addr, entry.ProbeFails)
+					tlog("[proxy][url] reaper: blacklisted %s (%s, %d fails)\n", r.addr, reason, entry.ProbeFails)
 				}
 				changed = true
 			}
