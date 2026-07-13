@@ -395,7 +395,7 @@ func TestResolveSelfHealEnabled_Override(t *testing.T) {
 // first immediate cleanup call run anyway (it previously only checked
 // activeScope, bypassing the toggle for the one call outside the ticker
 // loop).
-func TestRunProxyURLCleanup_SelfHealOff_SkipsImmediateCleanup(t *testing.T) {
+func TestRunProxyURLCleanup_UnconditionalImmediateCleanup(t *testing.T) {
 	withTempHome(t)
 
 	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
@@ -412,13 +412,9 @@ func TestRunProxyURLCleanup_SelfHealOff_SkipsImmediateCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		// selfHealEnabled=false with no override file present: the startup
-		// value alone must suppress the immediate cleanup pass.
 		runProxyURLCleanup(ctx, "url", time.Hour, false)
 		close(done)
 	}()
-	// Give the immediate pass a moment to run (it happens before the
-	// goroutine blocks on the ticker/ctx select), then cancel and wait.
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	select {
@@ -431,8 +427,8 @@ func TestRunProxyURLCleanup_SelfHealOff_SkipsImmediateCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := gotURLState.Cache["4.4.4.4:1080"]; !ok {
-		t.Error("expected dead proxy to survive the immediate cleanup pass when self-heal is off")
+	if _, ok := gotURLState.Cache["4.4.4.4:1080"]; ok {
+		t.Error("expected dead proxy to be removed by the unconditional immediate cleanup pass")
 	}
 }
 
