@@ -764,6 +764,10 @@ test_docker_hub_update_message() {
     _output=$(bash "$REPO_ROOT/docker/scripts/urnet-tools.sh" hub update 2>&1) && _ec=0 || _ec=$?
     assert_exit_code "1" "$_ec" "Docker: hub update exits non-zero"
     assert_contains "docker pull" "$_output" "Docker: hub update shows docker pull suggestion"
+    # Regression guard: this used to point at the *provider* image
+    # (urnetwork-3.23-fix) instead of the hub's (urnetwork-3.23-fix-hub),
+    # which would send someone updating the hub to pull the wrong thing.
+    assert_contains "urnetwork-3.23-fix-hub" "$_output" "Docker: hub update pull suggestion references the hub image, not the provider image"
 }
 test_docker_hub_update_message
 
@@ -771,13 +775,19 @@ test_docker_hub_install_message() {
     _output=$(bash "$REPO_ROOT/docker/scripts/urnet-tools.sh" hub install 2>&1) && _ec=0 || _ec=$?
     assert_exit_code "1" "$_ec" "Docker: hub install exits non-zero"
     assert_contains "docker pull" "$_output" "Docker: hub install shows docker pull suggestion"
+    assert_contains "urnetwork-3.23-fix-hub" "$_output" "Docker: hub install pull suggestion references the hub image, not the provider image"
 }
 test_docker_hub_install_message
 
 test_docker_hub_init_message() {
+    # 'init'/'onboard-cmd'/'show-password' are hub-side commands that must
+    # run inside the hub's own container (df7acfd), distinct from
+    # 'update'/'install' above which are about the provider's own image —
+    # so this one points at `docker exec`, not `docker pull`.
     _output=$(bash "$REPO_ROOT/docker/scripts/urnet-tools.sh" hub init 2>&1) && _ec=0 || _ec=$?
     assert_exit_code "1" "$_ec" "Docker: hub init exits non-zero"
-    assert_contains "docker pull" "$_output" "Docker: hub init shows docker pull suggestion"
+    assert_contains "docker exec" "$_output" "Docker: hub init shows docker exec suggestion"
+    assert_contains "mint-onboard-token" "$_output" "Docker: hub init mentions mint-onboard-token"
 }
 test_docker_hub_init_message
 
