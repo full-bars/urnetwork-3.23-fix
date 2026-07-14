@@ -232,7 +232,7 @@ echo "CA fingerprint: $CA_FP"
 
 # Write CA cert with retry. Use a heredoc rather than echo or printf:
 # - echo on BusyBox ash (Alpine) mangles multi-line variables with special chars
-# - printf interprets % sequences in the PEM body when bash history expansion is on
+# - printf interprets %% format sequences in the PEM body when bash history expansion is on
 for _try in 1 2 3; do
     cat > ~/.urnetwork/hub_ca.pem.tmp <<-PEMEOF
 $CA_PEM
