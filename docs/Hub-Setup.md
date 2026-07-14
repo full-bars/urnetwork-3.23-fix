@@ -27,6 +27,9 @@ This downloads the hub binary, installs it as a **systemd user service** (`urnet
 > systemctl --user restart urnetwork-hub.service
 > ```
 
+> [!TIP]
+> On a Linux box you'd rather not manage a systemd service on, `urnet-tools hub install --docker` runs the hub as a Docker container instead — same command, containerized. See [Running the Hub in Docker](#running-the-hub-in-docker-windows--mac--any-host) below. macOS and Windows always use this path (`urnet-tools hub install`, no flag needed) since neither has a native hub binary.
+
 Verify it's up:
 
 ```sh
@@ -131,10 +134,34 @@ urnet-tools hub set https://hub.yourdomain.com
 
 ## Running the Hub in Docker (Windows / Mac / any host)
 
-`urnet-tools hub install` sets the hub up as a systemd user service, which only works on Linux. For Windows and macOS hosts — or any Linux box where you'd rather not manage a systemd service — build and run the hub as a container instead using `hub/Dockerfile`:
+`urnet-tools hub install` sets the hub up as a **systemd user service**, which only works on Linux. On Windows and macOS — which have no native hub binary at all — and optionally on Linux too, `urnet-tools hub install`/`hub update` run the hub as a **Docker container** instead:
 
 ```sh
-# From the repo root
+# Windows / macOS: always Docker (no --docker flag needed)
+urnet-tools hub install
+
+# Linux: opt-in, native systemd is still the default
+urnet-tools hub install --docker
+```
+
+This pulls the prebuilt multi-arch image (`ghcr.io/full-bars/urnetwork-3.23-fix-hub`), runs it as a container named `urnetwork-hub` with a `-p 8080:8080` port mapping and a named `urnetwork-hubdata` volume for `/data`, and writes the chosen tag/port/token to `~/.urnetwork/hub-docker.conf` so `hub update [--docker]` can recreate it without re-specifying flags:
+
+```sh
+urnet-tools hub install [--tag <tag>] [--port <port>] [--token <token>]
+urnet-tools hub update  [--tag <tag>] [-f|--force]
+```
+
+- `--token` sets `URNETWORK_HUB_TOKEN`, the shared secret required on `/api/report` and `/api/nodes/remove`. Without it the hub starts but logs a warning and accepts unauthenticated reports — set this for anything beyond local testing.
+- `hub update` pulls the target image and, unless it's already what's running, stops + removes the old container and recreates it — the named volume (and everything in it) survives.
+- The CA cert and password are generated into the volume on first boot; get the fingerprint via `/api/cert` or mint an onboard token with `docker exec urnetwork-hub /hub -mint-onboard-token -data /data`.
+- This flow doesn't wire up the TLS listener (`URNETWORK_HUB_TLS_ADDR`) or a `docker build` from local source — for either of those, or to build from `hub/Dockerfile` yourself, use the manual commands below.
+
+### Manual Docker commands
+
+If you'd rather run Docker by hand — for TLS, a custom build, or just to see exactly what `urnet-tools hub install --docker` does under the hood:
+
+```sh
+# From the repo root, to build from source instead of pulling
 docker build -f hub/Dockerfile -t urnetwork-hub .
 
 docker run -d \
@@ -146,7 +173,6 @@ docker run -d \
 ```
 
 - `-v hubdata:/data` — named volume holding `hub.db` (and `tls.crt`/`tls.key` if TLS is enabled). Persists across container recreation/updates; back it up with `docker volume` or `docker cp`.
-- `URNETWORK_HUB_TOKEN` — sets the shared secret required on `/api/report` and `/api/nodes/remove`. Without it the hub starts but logs a warning and accepts unauthenticated reports — set this for anything beyond local testing.
 - The image builds `CGO_ENABLED=0` since the hub's SQLite driver (`modernc.org/sqlite`) is pure Go — no gcc/musl needed, keeping the final image just the binary + `ca-certificates` on Alpine.
 
 To enable the built-in TLS listener in the container, publish `8443` and set `URNETWORK_HUB_TLS_ADDR`:
@@ -159,12 +185,6 @@ docker run -d \
   -e URNETWORK_HUB_TOKEN=YOUR_SHARED_SECRET \
   -e URNETWORK_HUB_TLS_ADDR=:8443 \
   urnetwork-hub
-```
-
-The CA cert and password are generated into `/data` on first boot and persist in the volume. Get the CA fingerprint via `/api/cert` or mint an onboard token inside the container:
-
-```sh
-docker exec urnetwork-hub /hub -mint-onboard-token -data /data
 ```
 
 Then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.

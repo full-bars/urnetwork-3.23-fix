@@ -280,7 +280,7 @@ case "$operation" in
                 ;;
             update|install)
                 echo "In Docker, update the hub by pulling a new image:"
-                echo "  docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest"
+                echo "  docker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest"
                 echo "Or re-create the container with the updated image."
                 exit 1
                 ;;
