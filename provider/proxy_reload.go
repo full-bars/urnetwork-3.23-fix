@@ -60,6 +60,20 @@ func acquireProxyLock() (func(), error) {
 	return acquireProxyLockAt(path)
 }
 
+// acquireProxyLockWithRetry attempts to acquire the proxy lock with backoff
+func acquireProxyLockWithRetry() (func(), error) {
+	var release func()
+	var err error
+	for i := 0; i < 5; i++ {
+		release, err = acquireProxyLock()
+		if err == nil {
+			return release, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, err
+}
+
 // acquireProxyLockAt is the path-explicit form, for testing.
 func acquireProxyLockAt(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -115,7 +129,12 @@ func writeReloadTrigger(path string) error {
 	return doWriteReloadTrigger(path)
 }
 
+var reloadTriggerMutex sync.Mutex
+
 func doWriteReloadTrigger(path string) error {
+	reloadTriggerMutex.Lock()
+	defer reloadTriggerMutex.Unlock()
+
 	lastReloadTriggerTime.Lock()
 	lastReloadTriggerTime.pending = false
 	lastReloadTriggerTime.ts = time.Now()
@@ -448,6 +467,16 @@ func (r *ProxyReloader) reload() {
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
 	// goroutine from racing this write and resurrecting removed proxies.
 	proxyStateMu.Lock()
+	if diskState, err := readProxyState(); err == nil {
+		for addr, entry := range r.state.Proxies {
+			if diskEntry, ok := diskState.Proxies[addr]; ok {
+				entry.Health = diskEntry.Health
+				entry.DownSince = diskEntry.DownSince
+				entry.AuthFailures = diskEntry.AuthFailures
+				r.state.Proxies[addr] = entry
+			}
+		}
+	}
 	r.state.NextID = currentProxyIDCounter()
 	if err := writeProxyState(r.state); err != nil {
 		tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)

@@ -50,9 +50,10 @@ type proxyReport struct {
 }
 
 type systemMetrics struct {
-	HeapMiB     uint64 `json:"heap_mib"`
-	SysMiB      uint64 `json:"sys_mib"`
-	Connections int64  `json:"conns"`
+	HeapMiB     uint64  `json:"heap_mib"`
+	SysMiB      uint64  `json:"sys_mib"`
+	Connections int64   `json:"conns"`
+	Pressure    float64 `json:"pressure,omitempty"`
 }
 
 // proxyStatus is the compact per-proxy fields a heartbeat carries — status
@@ -392,6 +393,7 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			HeapMiB:     heapMiB,
 			SysMiB:      sysMiB,
 			Connections: connect.ActiveConnectionCount(),
+			Pressure:    currentPressure(),
 		},
 	}
 }
@@ -671,9 +673,9 @@ func newClientForURL(reportURL string) *http.Client {
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					MinVersion:       tls.VersionTLS12,
+					MinVersion:         tls.VersionTLS12,
 					InsecureSkipVerify: true, // we verify via VerifyConnection
-					VerifyConnection: verifyHubChain(pool, serverName),
+					VerifyConnection:   verifyHubChain(pool, serverName),
 				},
 			},
 		}
