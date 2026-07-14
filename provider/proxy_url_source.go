@@ -298,6 +298,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// we don't hold it across HTTP requests. Only the read-modify-write of
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
+	apiOKCounts := make([]int, len(urls))
 	socks5OnlyCounts := make([]int, len(urls))
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
@@ -311,9 +312,11 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// enters the cache or consumes an auth-rate-limiter slot.
 		apiOK, socks5Only := probeAndFilterProxyURLLines(ctx, lines, apiHost, apiPort)
 		tlog("[proxy][url] probed %s: %d/%d api-reachable, %d socks5-only\n", url, len(apiOK), len(lines), len(socks5Only))
-		// Socks5-only lines are cached with ProbeOK=false so the background
-		// reaper can retry them; they may have had a transient routing issue.
+		// api-reachable lines are cached with ProbeOK=true; socks5-only lines
+		// are cached with ProbeOK=false so the background reaper can retry
+		// them (they may have had a transient routing issue).
 		fetched[i] = append(apiOK, socks5Only...)
+		apiOKCounts[i] = len(apiOK)
 		socks5OnlyCounts[i] = len(socks5Only)
 	}
 
@@ -336,7 +339,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		if fetched[i] == nil {
 			continue
 		}
-		added := mergeProxyURLEntries(state, fetched[i], maxTotal)
+		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal)
 		totalAdded += added
 		socks5Count := socks5OnlyCounts[i]
 		// Mark socks5-only entries for reaper retry
