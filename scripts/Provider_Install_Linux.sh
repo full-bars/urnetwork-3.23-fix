@@ -2321,13 +2321,19 @@ do_hub_docker_update() {
         exit 1
     fi
 
+    # An explicit --tag must win over the persisted conf, but the conf file
+    # is just 'tag=...' shell assignments — sourcing it would silently
+    # clobber $tag if we didn't save the flag value first.
+    _explicit_tag="$tag"
     port="8080"
     token=""
     if [ -f "$hub_docker_conf" ]; then
         # shellcheck disable=SC1090
         . "$hub_docker_conf"
     fi
-    if [ -z "$tag" ]; then
+    if [ -n "$_explicit_tag" ]; then
+        tag="$_explicit_tag"
+    elif [ -z "$tag" ]; then
         tag="latest"
     fi
 
