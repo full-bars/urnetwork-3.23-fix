@@ -60,6 +60,27 @@ func TestResolveReportURL_EmptyOverrideFileFallsBackToEnv(t *testing.T) {
 	}
 }
 
+// TestResolveReportURL_OffSentinelForcesDisabledEvenWithEnvFallback is the
+// counterpart to the blank-file test above: an operator must be able to
+// force reporting off for an already-running process even when
+// URNETWORK_REPORT_URL was set at startup (e.g. via a prior `hub set`), which
+// a blank override file alone can't do since it falls back to envFallback.
+func TestResolveReportURL_OffSentinelForcesDisabledEvenWithEnvFallback(t *testing.T) {
+	home := withTempHome(t)
+
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report_url"), []byte("off\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveReportURL("http://fallback.example.com"); got != "" {
+		t.Fatalf("expected \"off\" sentinel to force-disable reporting, got %q", got)
+	}
+}
+
 // TestResolveReportURL_NoOverrideAndNoEnvIsEmpty confirms reporting stays off
 // by default when neither the override file nor the env var is set, matching
 // pre-existing behavior where a missing URNETWORK_REPORT_URL disabled the
