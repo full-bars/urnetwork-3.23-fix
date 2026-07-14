@@ -109,6 +109,20 @@ func (h *proxyFailureHistory) Reset(address string) {
 	h.mu.Unlock()
 }
 
+// AddressesInBackoff returns addresses still mid-backoff as of now, for
+// merging into a pruning keep-set so their history survives the wait.
+func (h *proxyFailureHistory) AddressesInBackoff(now time.Time) map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]bool, len(h.backoffUntil))
+	for addr, until := range h.backoffUntil {
+		if now.Before(until) {
+			out[addr] = true
+		}
+	}
+	return out
+}
+
 // Prune removes entries for addresses not in keepAddrs, called periodically
 // to prevent unbounded growth from proxies that cycled out of the fleet.
 func (h *proxyFailureHistory) Prune(keepAddrs map[string]bool) {

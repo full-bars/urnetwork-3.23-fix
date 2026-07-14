@@ -1557,14 +1557,9 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
 
-		// Pruning must use the full desired address set (file/internal + URL
-		// cache), not just currently-registered health entries: a proxy that
-		// has given up unregisters immediately on exit
-		// (defer connect.UnregisterProxy(...)), so it would otherwise look
-		// "gone" for its entire wait window before the next requeue, wiping
-		// its give-up/failure history every heartbeat tick and defeating the
-		// escalating backoff.
-		keepAddrs, pruneErr := currentDesiredProxyAddresses()
+		// See desiredAddressesForHistoryPruning for why this isn't just
+		// currently-registered health entries.
+		keepAddrs, pruneErr := desiredAddressesForHistoryPruning()
 		if pruneErr != nil {
 			tlog("[proxy] warning: could not determine desired proxy addresses for history pruning: %v\n", pruneErr)
 			keepAddrs = make(map[string]bool, len(report.Bandwidth))

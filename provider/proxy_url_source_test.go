@@ -311,6 +311,82 @@ func TestCurrentDesiredProxyAddresses_SurvivesGiveUpWaitWindow(t *testing.T) {
 	}
 }
 
+// TestDesiredAddressesForHistoryPruning_KeepsShedAddress reproduces the bug
+// this function fixes: a self-heal shed deletes the address from the URL
+// cache, so currentDesiredProxyAddresses alone would drop it, and the next
+// prune would wipe its history hours before its 1h backoff elapses.
+func TestDesiredAddressesForHistoryPruning_KeepsShedAddress(t *testing.T) {
+	withTempHome(t)
+	t.Cleanup(func() { globalProxyFailureHistory.Reset("5.5.5.5:1080") })
+
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	// Empty cache: the address was already shed (removeDeadProxies deletes
+	// it), so it won't show up via currentDesiredProxyAddresses.
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	globalProxyFailureHistory.SetBackoffUntil("5.5.5.5:1080", time.Now().Add(time.Hour))
+
+	bare, err := currentDesiredProxyAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare["5.5.5.5:1080"] {
+		t.Fatal("sanity check failed: shed address shouldn't appear via currentDesiredProxyAddresses alone")
+	}
+
+	got, err := desiredAddressesForHistoryPruning()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["5.5.5.5:1080"] {
+		t.Fatal("shed address mid-backoff must still be kept, or its history gets pruned before it can return")
+	}
+}
+
+// TestDesiredAddressesForHistoryPruning_DropsAfterBackoffElapses confirms the
+// carve-out doesn't pin an address forever — once its backoff elapses (and
+// it's still absent from the cache/file/internal sources), it's fair game
+// for pruning again, same as any other address that's genuinely gone.
+func TestDesiredAddressesForHistoryPruning_DropsAfterBackoffElapses(t *testing.T) {
+	withTempHome(t)
+	t.Cleanup(func() { globalProxyFailureHistory.Reset("6.6.6.6:1080") })
+
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	globalProxyFailureHistory.SetBackoffUntil("6.6.6.6:1080", time.Now().Add(-time.Hour))
+
+	got, err := desiredAddressesForHistoryPruning()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["6.6.6.6:1080"] {
+		t.Fatal("an address whose backoff already elapsed shouldn't be force-kept")
+	}
+}
+
+// TestDesiredAddressesForHistoryPruning_PropagatesUnderlyingError ensures
+// callers still see a currentDesiredProxyAddresses failure (e.g. an unreadable
+// configured proxy file) instead of it being silently swallowed by the merge.
+func TestDesiredAddressesForHistoryPruning_PropagatesUnderlyingError(t *testing.T) {
+	home := withTempHome(t)
+
+	missingSource := filepath.Join(home, "does-not-exist.txt")
+	if err := writeProxyState(&ProxyState{Source: missingSource, Proxies: map[string]ProxyEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := desiredAddressesForHistoryPruning(); err == nil {
+		t.Fatal("expected an error to propagate when the underlying proxy file source is unreadable")
+	}
+}
+
 func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	withTempHome(t)
 
