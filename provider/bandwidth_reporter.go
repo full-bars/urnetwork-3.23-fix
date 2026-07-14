@@ -84,9 +84,10 @@ type heartbeatReport struct {
 }
 
 // reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
-// can write at any time to set or change the hub target without restarting
-// the provider. It takes precedence over URNETWORK_REPORT_URL, which is read
-// once at process start and otherwise can't be changed without a restart.
+// can write at any time to set, change, or disable (write "off") the hub
+// target without restarting the provider. It takes precedence over
+// URNETWORK_REPORT_URL, which is read once at process start and otherwise
+// can't be changed without a restart.
 func reportURLOverridePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -94,6 +95,13 @@ func reportURLOverridePath() (string, error) {
 	}
 	return filepath.Join(home, ".urnetwork", "report_url"), nil
 }
+
+// reportURLOverrideOff is the literal override-file content that force-
+// disables reporting, distinct from a blank file (which is a no-op that
+// falls back to envFallback — see resolveReportURL). This lets urnet-tools
+// hub off turn reporting off for an already-running process without a
+// restart, the same way hub set/link turn it on.
+const reportURLOverrideOff = "off"
 
 // resolveReportURL re-reads the override file on every call so a change
 // takes effect on the reporter's next tick. envFallback is the value
@@ -103,7 +111,9 @@ func resolveReportURL(envFallback string) string {
 	path, err := reportURLOverridePath()
 	if err == nil {
 		if b, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(b)); v != "" {
+			if v := strings.TrimSpace(string(b)); v == reportURLOverrideOff {
+				return ""
+			} else if v != "" {
 				return v
 			}
 		}
@@ -197,10 +207,10 @@ func resolveAlertWebhook(envFallback string) string {
 
 // runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
 // system metrics to the fleet hub. The target is re-resolved every tick via
-// resolveReportURL, so writing ~/.urnetwork/report_url (or emptying it) turns
-// reporting on, off, or repoints it at a different hub without a restart;
-// envReportURL is only the startup-time fallback used when that file doesn't
-// exist. It is a best-effort telemetry loop: failures are logged but never
+// resolveReportURL, so writing a URL (or "off") to ~/.urnetwork/report_url
+// turns reporting on, off, or repoints it at a different hub without a
+// restart; envReportURL is only the startup-time fallback used when that
+// file doesn't exist or is blank. It is a best-effort telemetry loop: failures are logged but never
 // retried beyond the next tick. The cadence defaults to 5m and is
 // overridable via URNETWORK_REPORT_INTERVAL (min 10s). The 5m default keeps
 // the hub's historical SQLite write volume modest across a large fleet; set a

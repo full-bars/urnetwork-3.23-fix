@@ -55,7 +55,7 @@ show_help ()
     echo "  hub unlink                      ✂   Revert to HTTP (remove pin + CA cert)"
     echo "  hub test [<url>]                🔍  Probe TLS connection, verify certificate"
     echo "  hub set <host:port>             📡  Configure legacy HTTP hub report URL"
-    echo "  hub off                         📴  Stop reporting to hub, restart provider"
+    echo "  hub off                         📴  Stop reporting to hub (no restart)"
     echo "  hub onboard-cmd                 🎫  Mint 15-min join token, print curl|sh line"
     echo "  hub show-password               🔑  Show CA password (printed once after init)"
     echo "  hub open-port <port>            🔓  Open port in firewall"
@@ -2259,57 +2259,45 @@ do_hub () {
                     ;;
             esac
 
-            if [ "$has_systemd" -eq 0 ]; then
-                pr_err "systemd is not available on this system"
-                exit 1
+            # Same ~/.urnetwork/report_url override the provider polls every
+            # report tick (see resolveReportURL in bandwidth_reporter.go) —
+            # matches hub link/unlink, so no restart is needed.
+            report_file="$HOME/.urnetwork/report_url"
+            mkdir -p "$HOME/.urnetwork"
+            printf '%s\n' "$url" > "$report_file.tmp"
+            mv "$report_file.tmp" "$report_file"
+            pr_info "Report URL set to %s" "$url"
+
+            # Clean up any legacy systemd env override from an older
+            # urnet-tools version so a future restart doesn't reintroduce a
+            # stale URL that would otherwise take precedence over a blank
+            # override file.
+            if [ "$has_systemd" -eq 1 ] && [ -f "$hub_conf" ]; then
+                rm -f "$hub_conf"
+                rmdir "$override_dir" 2>/dev/null || true
+                systemctl --user daemon-reload 2>/dev/null || true
             fi
 
-            pr_info "Configuring provider to report to hub: %s" "$url"
-            mkdir -p "$override_dir"
-
-            cat > "$hub_conf" <<EOF
-[Service]
-Environment="URNETWORK_REPORT_URL=$url"
-EOF
-            pr_info "Wrote %s" "$hub_conf"
-
-            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
-
-            if systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
-                pr_info "Restarting urnetwork.service to apply hub URL..."
-                systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
-                pr_info "Provider restarted. It will now report to: %s" "$url"
-            else
-                pr_info "urnetwork.service is not running; hub URL will take effect on next start."
-            fi
+            pr_info "The change takes effect on the next report tick (no restart needed)."
             ;;
 
         off)
-            if [ "$has_systemd" -eq 0 ]; then
-                pr_err "systemd is not available on this system"
-                exit 1
+            # "off" is a sentinel resolveReportURL recognizes as force-disabled,
+            # distinct from a blank/missing file (which is a no-op that falls
+            # back to URNETWORK_REPORT_URL from startup, if any was set).
+            report_file="$HOME/.urnetwork/report_url"
+            mkdir -p "$HOME/.urnetwork"
+            printf '%s\n' "off" > "$report_file.tmp"
+            mv "$report_file.tmp" "$report_file"
+
+            if [ "$has_systemd" -eq 1 ] && [ -f "$hub_conf" ]; then
+                pr_info "Removing legacy hub override: %s" "$hub_conf"
+                rm -f "$hub_conf"
+                rmdir "$override_dir" 2>/dev/null || true
+                systemctl --user daemon-reload 2>/dev/null || true
             fi
 
-            if [ ! -f "$hub_conf" ]; then
-                pr_info "Hub reporting is not configured (no override found at %s)." "$hub_conf"
-                exit 0
-            fi
-
-            pr_info "Removing hub override: %s" "$hub_conf"
-            rm -f "$hub_conf"
-
-            # Clean up empty drop-in dir if nothing else lives there
-            rmdir "$override_dir" 2>/dev/null || true
-
-            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
-
-            if systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
-                pr_info "Restarting urnetwork.service to remove hub URL..."
-                systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
-                pr_info "Hub reporting disabled. Provider restarted."
-            else
-                pr_info "Hub reporting disabled. Change takes effect on next provider start."
-            fi
+            pr_info "Hub reporting disabled. Takes effect on the next report tick (no restart needed)."
             ;;
 
         install)
