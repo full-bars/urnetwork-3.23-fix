@@ -20,6 +20,7 @@ show_help() {
     echo ""
     echo "Performance & Tuning:"
     echo "  hot-restart <on|off>      Reuse client JWT identities across restarts"
+    echo "  self-heal [on|off]        Auto-regulate proxies (load gate + cleanup) (default: off)"
     echo ""
     echo "Session:"
     echo "  session save <file>       Export identity+proxy state (encrypted)"
@@ -650,6 +651,31 @@ case "$operation" in
     status)        do_status ;;
     version)       do_version ;;
     hot-restart)   do_hot_restart "$@" ;;
+    self-heal)
+        file="$HOME/.urnetwork/proxy_self_heal"
+        case "${1:-}" in
+            on) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "on" > "$file"; pr_info "Self-heal enabled" ;;
+            off) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "off" > "$file"; pr_info "Self-heal disabled" ;;
+            status|"")
+                if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "on" ]; then
+                    pr_info "self-heal: on"
+                elif [ -f "$file" ]; then
+                    pr_info "self-heal: off"
+                else
+                    pr_info "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
+                fi
+                if [ -f "$HOME/.urnetwork/pressure_status" ]; then
+                    if command -v jq >/dev/null 2>&1; then
+                        pr_info "$(jq -r '"pressure: \(.score) (target_pool=\(.target_pool), updated=\(.updated))"' \
+                            "$HOME/.urnetwork/pressure_status" 2>/dev/null)"
+                    else
+                        cat "$HOME/.urnetwork/pressure_status"
+                    fi
+                fi
+                ;;
+            *) pr_err "Usage: urnet-tools self-heal [on|off|status]"; exit 1 ;;
+        esac
+        ;;
     session)       do_session "$@" ;;
     proxy)         do_proxy "$@" ;;
     hub)           do_hub "$@" ;;

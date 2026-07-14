@@ -180,8 +180,8 @@ func (g *proxyAdmissionGate) releaseWeightedRandom() bool {
 
 	w := g.waiters[chosen]
 	g.waiters = append(g.waiters[:chosen:chosen], g.waiters[chosen+1:]...)
+	close(w.ready)
 	g.mu.Unlock()
 
-	close(w.ready)
 	return true
 }
