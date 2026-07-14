@@ -32,6 +32,9 @@ show_help() {
     echo "  proxy summary             Fleet summary (sources, health, counts)"
     echo ""
     echo "Hub Management:"
+    echo "  hub install [--tag] [--port] [--token]"
+    echo "                            Deploy the hub as a Docker container"
+    echo "  hub update [--tag] [-f]   Pull latest hub image and recreate container"
     echo "  hub link <url> [--token]  Link to a hub (fetch CA cert)"
     echo "  hub unlink                Revert to HTTP"
     echo "  hub onboard-cmd           Mint 15-min join token, print curl|sh line"
@@ -544,13 +547,156 @@ do_proxy() {
 
 # --- hub ---
 
-do_hub() {
-    if [ ! -x "$provider_bin" ]; then
-        pr_err "Provider binary not found. Is it installed?"
+hub_image="ghcr.io/full-bars/urnetwork-3.23-fix-hub"
+hub_container="urnetwork-hub"
+hub_volume="urnetwork-hubdata"
+hub_docker_conf="$state_dir/hub-docker.conf"
+
+# hub_docker_require: there's no native macOS hub binary (the hub only
+# ships Linux binaries + a multi-arch Docker image — see docs/Hub-Setup.md),
+# so 'hub install'/'hub update' here always run the hub as a container.
+hub_docker_require() {
+    if ! command -v docker > /dev/null; then
+        pr_err "Docker is required to run the hub on macOS (no native binary exists)."
+        pr_err "Install Docker Desktop: https://www.docker.com/products/docker-desktop"
+        exit 1
+    fi
+    if ! docker info > /dev/null 2>&1; then
+        pr_err "Docker is installed but not running. Start Docker Desktop and try again."
+        exit 1
+    fi
+}
+
+# hub_docker_run TAG PORT TOKEN: (re)creates the hub container. Assumes any
+# previous container with the same name has already been removed by the
+# caller (install refuses to overwrite; update stops+removes first).
+hub_docker_run() {
+    _tag="$1" _port="$2" _token="$3"
+    _run_args="-d --name $hub_container --restart unless-stopped -p ${_port}:8080 -v ${hub_volume}:/data"
+    if [ -n "$_token" ]; then
+        _run_args="$_run_args -e URNETWORK_HUB_TOKEN=$_token"
+    fi
+    # shellcheck disable=SC2086
+    docker run $_run_args "$hub_image:$_tag"
+}
+
+do_hub_docker_install() {
+    tag="latest"
+    port="8080"
+    token=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tag) tag="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --token) token="$2"; shift 2 ;;
+            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
+        esac
+    done
+
+    hub_docker_require
+
+    if docker ps -a --format '{{.Names}}' | grep -qx "$hub_container"; then
+        pr_err "Hub container '%s' already exists. Use 'urnet-tools hub update' to upgrade it," "$hub_container"
+        pr_err "or 'docker rm -f %s' to remove it first." "$hub_container"
         exit 1
     fi
 
+    pr_info "Pulling %s:%s..." "$hub_image" "$tag"
+    docker pull "$hub_image:$tag" || { pr_err "docker pull failed"; exit 1; }
+
+    if ! hub_docker_run "$tag" "$port" "$token"; then
+        pr_err "Failed to start hub container"
+        exit 1
+    fi
+
+    mkdir -p "$state_dir"
+    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
+
+    pr_info "Hub container started."
+    pr_info "  Dashboard: http://localhost:%s" "$port"
+    pr_info "  Data:      docker volume '%s' (persists across updates)" "$hub_volume"
+    pr_info ""
+    pr_info "Next steps:"
+    pr_info "  urnet-tools hub link http://<this-host>:%s   # point your providers at the hub" "$port"
+    pr_info "  docker logs -f %s                             # stream hub logs" "$hub_container"
+}
+
+do_hub_docker_update() {
+    tag=""
+    force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tag) tag="$2"; shift 2 ;;
+            -f|--force) force=1; shift ;;
+            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
+        esac
+    done
+
+    hub_docker_require
+
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$hub_container"; then
+        pr_err "No hub container found. Run 'urnet-tools hub install' first."
+        exit 1
+    fi
+
+    port="8080"
+    token=""
+    if [ -f "$hub_docker_conf" ]; then
+        # shellcheck disable=SC1090
+        . "$hub_docker_conf"
+    fi
+    if [ -z "$tag" ]; then
+        tag="latest"
+    fi
+
+    pr_info "Pulling %s:%s..." "$hub_image" "$tag"
+    docker pull "$hub_image:$tag" || { pr_err "docker pull failed"; exit 1; }
+
+    if [ "$force" != "1" ]; then
+        running_image="$(docker inspect --format '{{.Image}}' "$hub_container" 2>/dev/null)"
+        pulled_image="$(docker inspect --format '{{.Id}}' "$hub_image:$tag" 2>/dev/null)"
+        if [ -n "$running_image" ] && [ "$running_image" = "$pulled_image" ]; then
+            pr_info "Hub is already running %s:%s. Nothing to do. Use --force to recreate anyway." "$hub_image" "$tag"
+            return
+        fi
+    fi
+
+    pr_info "Recreating hub container (data volume '%s' is preserved)..." "$hub_volume"
+    docker stop "$hub_container" > /dev/null 2>&1
+    docker rm "$hub_container" > /dev/null 2>&1
+
+    if ! hub_docker_run "$tag" "$port" "$token"; then
+        pr_err "Failed to start hub container"
+        exit 1
+    fi
+
+    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
+    pr_info "Hub updated and running %s:%s." "$hub_image" "$tag"
+}
+
+do_hub() {
     case "$1" in
+        install|update)
+            ;;
+        *)
+            if [ ! -x "$provider_bin" ]; then
+                pr_err "Provider binary not found. Is it installed?"
+                exit 1
+            fi
+            ;;
+    esac
+
+    case "$1" in
+        install)
+            shift
+            do_hub_docker_install "$@"
+            ;;
+
+        update)
+            shift
+            do_hub_docker_update "$@"
+            ;;
+
         link)
             shift
             url="$1"
@@ -621,7 +767,7 @@ do_hub() {
             ;;
 
         *)
-            pr_err "Usage: urnet-tools hub <link|unlink|onboard-cmd>"
+            pr_err "Usage: urnet-tools hub <install|update|link|unlink|onboard-cmd>"
             exit 1
             ;;
     esac
