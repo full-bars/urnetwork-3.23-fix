@@ -49,6 +49,15 @@ const (
 	proxyBlacklistPruneInterval = 30 * time.Minute
 )
 
+// The stale re-probe threshold for ProbeOK=true entries (proxies that
+// passed the initial dual-stage probe but may have died later — without a
+// re-probe window they'd be invisible to the reaper until the slow give-up
+// eviction pipeline caught them) now scales with pressure; see
+// reaperStaleThreshold / reaperStaleCalm / reaperStaleHot in
+// resource_pressure.go. reaperStaleCalm (3h) matches this comment's
+// original fixed value, balancing catching dead proxies within the same day
+// against not re-probing every entry on every 5-minute cycle.
+
 // socks5Greeting is the client's opening message in the SOCKS5 handshake
 // (RFC 1928 §3): version 5, offering exactly one auth method, "no
 // authentication required" (0x00).
@@ -186,7 +195,9 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 		r   probeResult
 	}
 	results := make([]result, len(lines))
-	sem := make(chan struct{}, proxyProbeConcurrency)
+	// Pool is sized once per batch at batch start; a batch in flight keeps
+	// its size even if pressure changes mid-batch.
+	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
 	var wg sync.WaitGroup
 
 	for i, line := range lines {

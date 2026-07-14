@@ -728,8 +728,8 @@ Options:
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
     --proxy_url_refresh=<dur>        How often to re-fetch --proxy_url sources and add new entries. Also settable via PROXY_URL_REFRESH.
-    --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited. Also settable via PROXY_URL_MAX.
-    --proxy_dead_cleanup_scope=<s>   Automatic daily dead-proxy cleanup scope: none, url, or all. Also settable via PROXY_DEAD_CLEANUP_SCOPE.
+    --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited, defaults to 500. Also settable via PROXY_URL_MAX.
+    --proxy_dead_cleanup_scope=<s>   Automatic dead-proxy cleanup scope: none, url, or all. Defaults to url (URL-sourced only). Also settable via PROXY_DEAD_CLEANUP_SCOPE.
     --proxy_dead_cleanup_interval=<dur>  How often automatic cleanup runs, when scope isn't none. Also settable via PROXY_DEAD_CLEANUP_INTERVAL.
     <url>                            A proxy list URL.
     --match=<pattern>                Case-insensitive substring matched against proxy hosts (never port or
@@ -1557,14 +1557,9 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
 
-		// Pruning must use the full desired address set (file/internal + URL
-		// cache), not just currently-registered health entries: a proxy that
-		// has given up unregisters immediately on exit
-		// (defer connect.UnregisterProxy(...)), so it would otherwise look
-		// "gone" for its entire wait window before the next requeue, wiping
-		// its give-up/failure history every heartbeat tick and defeating the
-		// escalating backoff.
-		keepAddrs, pruneErr := currentDesiredProxyAddresses()
+		// See desiredAddressesForHistoryPruning for why this isn't just
+		// currently-registered health entries.
+		keepAddrs, pruneErr := desiredAddressesForHistoryPruning()
 		if pruneErr != nil {
 			tlog("[proxy] warning: could not determine desired proxy addresses for history pruning: %v\n", pruneErr)
 			keepAddrs = make(map[string]bool, len(report.Bandwidth))
@@ -1593,16 +1588,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			liveHealth := connect.ProxyHealthByAddress()
 			for addr, entry := range state.Proxies {
 				if h, ok := liveHealth[addr]; ok {
-				entry.Health = h.Health
-				if h.DownSince.IsZero() {
-					entry.DownSince = ""
-				} else {
-					entry.DownSince = h.DownSince.Format(time.RFC3339)
-				}
-				entry.AuthFailures = h.AuthFailures
-				state.Proxies[addr] = entry
-				} else {
-					delete(state.Proxies, addr)
+					entry.Health = h.Health
+					if h.DownSince.IsZero() {
+						entry.DownSince = ""
+					} else {
+						entry.DownSince = h.DownSince.Format(time.RFC3339)
+					}
+					entry.AuthFailures = h.AuthFailures
+					state.Proxies[addr] = entry
 				}
 			}
 			if err := writeProxyState(state); err != nil {
@@ -1992,9 +1985,12 @@ func provide(opts docopt.Opts) {
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
-	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 0)
-	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "none")
-	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 24*time.Hour)
+	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 500)
+	cleanupScope := resolveString(opts, "--proxy_dead_cleanup_scope", "PROXY_DEAD_CLEANUP_SCOPE", "url")
+	cleanupInterval := resolveDuration(opts, "--proxy_dead_cleanup_interval", "PROXY_DEAD_CLEANUP_INTERVAL", 6*time.Hour)
+	// Self-heal defaults OFF: the pressure-based load shedding system is opt-in
+	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
+	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
 
 	// Extract API host:port for the reachability probe
 	apiProbeHost := defaultAPIHost
@@ -2561,10 +2557,12 @@ func provide(opts docopt.Opts) {
 	}
 	reloader.StartWatcher(ctx)
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort)
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
 	go pruneURLProxyBlacklist(ctx)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
+	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
+	go runPressureMonitor(ctx, selfHealEnabled)
+	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
 
 	if 0 < port {
 		fmt.Printf(
@@ -2738,10 +2736,12 @@ const (
 
 	// proxyURLGiveUpEvictAfterCycles is the lifetime give-up count at which a
 	// URL-sourced address is permanently evicted (see evictProxyURLAddress)
-	// instead of requeued again. proxyURLGiveUpRetryDelay first reaches the
-	// 24h cap at cycle 8, so this allows 3 more cycles at the cap (roughly 3
-	// more days) before giving up on the address for good.
-	proxyURLGiveUpEvictAfterCycles = 10
+	// instead of requeued again. At 4 cycles the doubling backoff reaches 2h
+	// (15min → 30min → 1h → 2h), so a dead proxy is evicted after roughly
+	// 4 hours of wall time. The 24h blacklist cooldown then prevents re-entry;
+	// the blacklist pruner removes it after 24h, and the next URL fetch cycle
+	// re-probes it from scratch (must pass the dual-stage probe to re-enter).
+	proxyURLGiveUpEvictAfterCycles = 4
 )
 
 // proxyURLGiveUpRetryDelay computes the requeue delay for a URL-sourced

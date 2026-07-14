@@ -47,6 +47,7 @@ show_help ()
     echo "  proxy remove-dead        💀  Interactively prune dead/degraded/failing"
     echo "  report [<url>|off]       📡  Show or set hub report URL"
     echo "  fast-auth [on|off]       ⚡  Bypass auth rate limiter without restart"
+    echo "  self-heal [on|off]       🏥  Auto-regulate proxies (load gate + cleanup) (default: off)"
     echo "  set [<k> [<v>|off]]      ⚙   Show or change runtime tuning overrides"
     echo ""
     echo "Hub Management:"
@@ -2055,6 +2056,44 @@ do_report ()
     esac
 }
 
+do_self_heal ()
+{
+    file="$HOME/.urnetwork/proxy_self_heal"
+    case "${1:-}" in
+        on)
+            mkdir -p "$HOME/.urnetwork"
+            printf '%s\n' "on" > "$file"
+            pr_info "Self-heal enabled (load gate + auto cleanup active)"
+            ;;
+        off)
+            mkdir -p "$HOME/.urnetwork"
+            printf '%s\n' "off" > "$file"
+            pr_info "Self-heal disabled (load gate + auto cleanup turned off)"
+            ;;
+        status|"")
+            if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "on" ]; then
+                pr_info "self-heal: on"
+            elif [ -f "$file" ]; then
+                pr_info "self-heal: off"
+            else
+                pr_info "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
+            fi
+            if [ -f "$HOME/.urnetwork/pressure_status" ]; then
+                if command -v jq >/dev/null 2>&1; then
+                    pr_info "$(jq -r '"pressure: \(.score) (target_pool=\(.target_pool), updated=\(.updated))"' \
+                        "$HOME/.urnetwork/pressure_status" 2>/dev/null)"
+                else
+                    cat "$HOME/.urnetwork/pressure_status"
+                fi
+            fi
+            ;;
+        *)
+            pr_err "Usage: urnet-tools self-heal [on|off|status]"
+            exit 1
+            ;;
+    esac
+}
+
 do_fast_auth ()
 {
     file="$HOME/.urnetwork/fast_auth"
@@ -3860,6 +3899,11 @@ case "$operation" in
         ;;
     fast-auth)
         do_fast_auth "$@"
+        exit 0
+        ;;
+
+    self-heal)
+        do_self_heal "$@"
         exit 0
         ;;
 

@@ -88,7 +88,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -562,6 +562,49 @@ switch ($Command) {
             Write-Host "Status: Stopped"
         }
 
+        break
+    }
+
+    "self-heal" {
+        $mode = if ($SubArgs) { $SubArgs[0] } else { "" }
+        $file = "$env:USERPROFILE\.urnetwork\proxy_self_heal"
+        switch ($mode) {
+            "on" {
+                New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+                Set-Content -Path $file -Value "on" -NoNewline
+                Write-Host "Self-heal enabled (load gate + auto cleanup active)"
+                break
+            }
+            "off" {
+                New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+                Set-Content -Path $file -Value "off" -NoNewline
+                Write-Host "Self-heal disabled (load gate + auto cleanup turned off)"
+                break
+            }
+            { $_ -in "status", "" } {
+                if ((Test-Path $file) -and (Get-Content $file -Raw).Trim() -eq "on") {
+                    Write-Host "self-heal: on"
+                } elseif (Test-Path $file) {
+                    Write-Host "self-heal: off"
+                } else {
+                    Write-Host "self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)"
+                }
+                $pressureFile = "$env:USERPROFILE\.urnetwork\pressure_status"
+                if (Test-Path $pressureFile) {
+                    try {
+                        $pressure = Get-Content $pressureFile -Raw | ConvertFrom-Json
+                        Write-Host "pressure: $($pressure.score) (target_pool=$($pressure.target_pool), updated=$($pressure.updated))"
+                    } catch {
+                        Get-Content $pressureFile
+                    }
+                }
+                break
+            }
+            default {
+                Write-Host "Usage: urnet-tools.ps1 self-heal <on|off|status>"
+                break
+            }
+        }
         break
     }
 
