@@ -140,24 +140,49 @@ $VersionPath = Join-Path $InstalledPath -ChildPath "version"
 $InstallDatePath = Join-Path $InstalledPath -ChildPath "date"
 
 function Check-Update {
-    $ReleaseInfo = Invoke-RestMethod -Uri "$GithubURLBase/releases/latest"
+    $ReleaseInfo = $null
+    try {
+        $ReleaseInfo = Invoke-RestMethod -Uri "$GithubURLBase/releases/latest"
+    }
+    catch {}
 
-    if (-not $ReleaseInfo) {
+    $InstalledTag = ([String](Get-Content $VersionPath -Raw)).Trim()
+
+    if ($ReleaseInfo) {
+        $Tag = $ReleaseInfo.tag_name
+        $PublishedAt = [DateTime]$ReleaseInfo.published_at
+        $InstallDate = [DateTime](([String](Get-Content $InstallDatePath -Raw)).Trim())
+
+        if (-not $? -or -not $InstallDate) {
+            Write-Error "Cannot read the installation date file at $InstallDatePath"
+            exit 1
+        }
+
+        if ($InstallDate -ge $PublishedAt) {
+            Write-Host "Installed version is up-to-date ($InstalledTag)"
+            return $null
+        }
+
+        Write-Host "Update available ($Tag)"
+        return $Tag
+    }
+
+    # GitHub API unavailable: fall back to the dl.fullbars.xyz Worker. It only
+    # exposes a tag (no published-date), so compare tags directly instead of
+    # the install-date check used above.
+    Write-Warning "GitHub API unavailable, trying dl.fullbars.xyz fallback..."
+    $Tag = $null
+    try {
+        $Tag = (Invoke-RestMethod -Uri "https://dl.fullbars.xyz/latest-version").Trim()
+    }
+    catch {}
+
+    if (-not $Tag) {
         Write-Error "Failed to fetch release information from GitHub API. Are you sure the version exists and your internet connection is working?"
         exit 1
     }
 
-    $Tag = $ReleaseInfo.tag_name
-    $PublishedAt = [DateTime]$ReleaseInfo.published_at
-    $InstallDate = [DateTime](([String](Get-Content $InstallDatePath -Raw)).Trim())
-    $InstalledTag = ([String](Get-Content $VersionPath -Raw)).Trim()
-
-    if (-not $? -or -not $InstallDate) {
-        Write-Error "Cannot read the installation date file at $InstallDatePath"
-        exit 1
-    }
-
-    if ($InstallDate -ge $PublishedAt) {
+    if ($Tag -eq $InstalledTag) {
         Write-Host "Installed version is up-to-date ($InstalledTag)"
         return $null
     }
@@ -411,6 +436,16 @@ function Invoke-HubDockerRun {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-HotRestartEnabled {
+    # Reads persistent registry state (User scope), matching
+    # provider/main.go's hotRestartEnabled() — on by default unless
+    # explicitly disabled. Single source of truth for the "hot-restart"
+    # command's status branch and this confirmation prompt.
+    $val = [Environment]::GetEnvironmentVariable("URNETWORK_HOT_RESTART",
+        [System.EnvironmentVariableTarget]::User)
+    return $val -ne "0"
+}
+
 function Confirm-ColdRestart {
     $uptime = Get-ProviderUptime
     if ($null -eq $uptime -or $uptime.TotalHours -lt 8) {
@@ -420,6 +455,24 @@ function Confirm-ColdRestart {
     $h = [int]$uptime.TotalHours
     $m = [int]($uptime.TotalMinutes % 60)
     $up = Get-WarmProxyCount
+
+    if (Test-HotRestartEnabled) {
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════════════════════╗"
+        Write-Host "║  WARNING: A WARM RESTART WILL BE ATTEMPTED                   ║"
+        Write-Host "╚══════════════════════════════════════════════════════════════╝"
+        Write-Host ""
+        Write-Host "Provider uptime:  ${h}h ${m}m"
+        Write-Host "Warmed proxies:   $up online"
+        Write-Host ""
+        Write-Host "Hot-restart is enabled — client JWT identities and reputation may"
+        Write-Host "carry over, but this is not guaranteed (binary upgrades, internal"
+        Write-Host "state resets, or other factors can still force a cold restart)."
+        Write-Host ""
+        $answer = Read-Host "Restart the provider? [y/N]"
+        return $answer -eq "y"
+    }
+
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════════════════════╗"
     Write-Host "║  WARNING: COLD RESTART — ALL WARMUP PROGRESS WILL BE LOST    ║"
@@ -681,12 +734,10 @@ switch ($Command) {
                 # Note: reads persistent registry state (User scope), not the
                 # running provider's live environment — reports what the next
                 # fresh process will see, not the current session.
-                $val = [Environment]::GetEnvironmentVariable($envVarName,
-                    [System.EnvironmentVariableTarget]::User)
-                if ($val -eq "0") {
-                    Write-Host "Hot-restart is off."
-                } else {
+                if (Test-HotRestartEnabled) {
                     Write-Host "Hot-restart is enabled."
+                } else {
+                    Write-Host "Hot-restart is off."
                 }
                 break
             }
