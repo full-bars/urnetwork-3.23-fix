@@ -60,8 +60,8 @@ show_help ()
     echo "  hub onboard-cmd                 🎫  Mint 15-min join token, print curl|sh line"
     echo "  hub show-password               🔑  Show CA password (printed once after init)"
     echo "  hub open-port <port>            🔓  Open port in firewall"
-    echo "  hub install                     📦  Install hub binary as systemd user service"
-    echo "  hub update                      ⬆  Update hub binary to latest version"
+    echo "  hub install [--docker]          📦  Install hub as systemd service (or Docker container with --docker)"
+    echo "  hub update [--docker]           ⬆  Update hub to latest version"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall provider"
@@ -2261,9 +2261,169 @@ do_set ()
     pr_info "%s set to %s — takes effect on next provider tick." "$key" "$value"
 }
 
+# --- hub (Docker, opt-in via --docker) ---
+#
+# 'hub install'/'hub update' default to a native systemd binary install
+# (below). --docker runs the hub as a container instead, for operators who'd
+# rather not manage a systemd service — the same containerized path Mac and
+# Windows always use (they have no native hub binary at all).
+
+hub_docker_image="ghcr.io/full-bars/urnetwork-3.23-fix-hub"
+hub_docker_container="urnetwork-hub"
+hub_docker_volume="urnetwork-hubdata"
+hub_docker_conf="$HOME/.urnetwork/hub-docker.conf"
+
+hub_docker_require() {
+    if ! command -v docker > /dev/null; then
+        pr_err "Docker is required for --docker mode."
+        pr_err "Install: https://docs.docker.com/engine/install/"
+        exit 1
+    fi
+    if ! docker info > /dev/null 2>&1; then
+        pr_err "Docker is installed but not running (or this user lacks permission)."
+        exit 1
+    fi
+}
+
+# hub_docker_run TAG PORT TOKEN: (re)creates the hub container. Assumes any
+# previous container with the same name has already been removed by the
+# caller (install refuses to overwrite; update stops+removes first).
+hub_docker_run() {
+    _tag="$1" _port="$2" _token="$3"
+    _run_args="-d --name $hub_docker_container --restart unless-stopped -p ${_port}:8080 -v ${hub_docker_volume}:/data"
+    if [ -n "$_token" ]; then
+        _run_args="$_run_args -e URNETWORK_HUB_TOKEN=$_token"
+    fi
+    # shellcheck disable=SC2086
+    docker run $_run_args "$hub_docker_image:$_tag"
+}
+
+do_hub_docker_install() {
+    tag="latest"
+    port="8080"
+    token=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tag) tag="$2"; shift 2 ;;
+            --port) port="$2"; shift 2 ;;
+            --token) token="$2"; shift 2 ;;
+            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
+        esac
+    done
+
+    hub_docker_require
+
+    if docker ps -a --format '{{.Names}}' | grep -qx "$hub_docker_container"; then
+        pr_err "Hub container '%s' already exists. Use 'urnet-tools hub update --docker' to upgrade it," "$hub_docker_container"
+        pr_err "or 'docker rm -f %s' to remove it first." "$hub_docker_container"
+        exit 1
+    fi
+
+    pr_info "Pulling %s:%s..." "$hub_docker_image" "$tag"
+    docker pull "$hub_docker_image:$tag" || { pr_err "docker pull failed"; exit 1; }
+
+    if ! hub_docker_run "$tag" "$port" "$token"; then
+        pr_err "Failed to start hub container"
+        exit 1
+    fi
+
+    mkdir -p "$HOME/.urnetwork"
+    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
+
+    pr_info "Hub container started."
+    pr_info "  Dashboard: http://localhost:%s" "$port"
+    pr_info "  Data:      docker volume '%s' (persists across updates)" "$hub_docker_volume"
+    pr_info ""
+    pr_info "Next steps:"
+    pr_info "  urnet-tools hub set http://<this-host>:%s   # point your providers at the hub" "$port"
+    pr_info "  docker logs -f %s                            # stream hub logs" "$hub_docker_container"
+}
+
+do_hub_docker_update() {
+    tag=""
+    force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tag) tag="$2"; shift 2 ;;
+            -f|--force) force=1; shift ;;
+            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
+        esac
+    done
+
+    hub_docker_require
+
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$hub_docker_container"; then
+        pr_err "No hub container found. Run 'urnet-tools hub install --docker' first."
+        exit 1
+    fi
+
+    # An explicit --tag must win over the persisted conf, but the conf file
+    # is just 'tag=...' shell assignments — sourcing it would silently
+    # clobber $tag if we didn't save the flag value first.
+    _explicit_tag="$tag"
+    port="8080"
+    token=""
+    if [ -f "$hub_docker_conf" ]; then
+        # shellcheck disable=SC1090
+        . "$hub_docker_conf"
+    fi
+    if [ -n "$_explicit_tag" ]; then
+        tag="$_explicit_tag"
+    elif [ -z "$tag" ]; then
+        tag="latest"
+    fi
+
+    pr_info "Pulling %s:%s..." "$hub_docker_image" "$tag"
+    docker pull "$hub_docker_image:$tag" || { pr_err "docker pull failed"; exit 1; }
+
+    if [ "$force" != "1" ]; then
+        running_image="$(docker inspect --format '{{.Image}}' "$hub_docker_container" 2>/dev/null)"
+        pulled_image="$(docker inspect --format '{{.Id}}' "$hub_docker_image:$tag" 2>/dev/null)"
+        if [ -n "$running_image" ] && [ "$running_image" = "$pulled_image" ]; then
+            pr_info "Hub is already running %s:%s. Nothing to do. Use --force to recreate anyway." "$hub_docker_image" "$tag"
+            return
+        fi
+    fi
+
+    pr_info "Recreating hub container (data volume '%s' is preserved)..." "$hub_docker_volume"
+    docker stop "$hub_docker_container" > /dev/null 2>&1
+    docker rm "$hub_docker_container" > /dev/null 2>&1
+
+    if ! hub_docker_run "$tag" "$port" "$token"; then
+        pr_err "Failed to start hub container"
+        exit 1
+    fi
+
+    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
+    pr_info "Hub updated and running %s:%s." "$hub_docker_image" "$tag"
+}
+
 do_hub () {
     cmd="$1"
     shift || true
+
+    # --docker opt-in: scanned here (rather than in each case arm's own
+    # parsing) so the flag can appear anywhere in the remaining args.
+    if [ "$cmd" = "install" ] || [ "$cmd" = "update" ]; then
+        _hub_docker_mode=0
+        _hub_docker_rest=""
+        for _hub_arg in "$@"; do
+            case "$_hub_arg" in
+                --docker) _hub_docker_mode=1 ;;
+                *) _hub_docker_rest="$_hub_docker_rest $_hub_arg" ;;
+            esac
+        done
+        if [ "$_hub_docker_mode" -eq 1 ]; then
+            if [ "$cmd" = "install" ]; then
+                # shellcheck disable=SC2086
+                do_hub_docker_install $_hub_docker_rest
+            else
+                # shellcheck disable=SC2086
+                do_hub_docker_update $_hub_docker_rest
+            fi
+            return
+        fi
+    fi
 
     override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
     hub_conf="$override_dir/hub.conf"

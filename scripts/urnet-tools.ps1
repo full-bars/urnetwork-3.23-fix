@@ -47,6 +47,9 @@
                                   Remove proxies matching a host pattern
       proxy exclude [<pattern>] [--remove]
                                   Exclude patterns from proxy discovery
+      hub install [--tag] [--port] [--token]
+                                  Deploy the hub as a Docker container
+      hub update [--tag] [-f]     Pull latest hub image and recreate container
       hub link <url> [--token <token>]
                                   Fetch CA cert and pin the hub's identity
       hub unlink                  Revert to HTTP (remove pin + CA cert)
@@ -389,6 +392,48 @@ function Get-WarmProxyCount {
         $up = ($state.proxies.PSObject.Properties.Value | Where-Object { $_.health -eq "up" }).Count
         return $up
     } catch { return 0 }
+}
+
+# --- hub (Docker) ---
+#
+# There's no native Windows hub binary (only Linux binaries + a multi-arch
+# Docker image are published — see docs/Hub-Setup.md), so 'hub install' and
+# 'hub update' always deploy the hub as a container. This is a *separate*
+# container from the one -ContainerName refers to elsewhere in this script
+# (which is the provider container, if the provider itself runs in Docker).
+
+$HubImage = "ghcr.io/full-bars/urnetwork-3.23-fix-hub"
+$HubContainerName = "urnetwork-hub"
+$HubVolumeName = "urnetwork-hubdata"
+
+function Get-HubDockerConfPath {
+    $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
+    return "$homeDir\.urnetwork\hub-docker.conf"
+}
+
+function Test-DockerAvailable {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Write-Error "Docker is required to run the hub (no native Windows hub binary exists)."
+        Write-Error "Install Docker Desktop: https://www.docker.com/products/docker-desktop"
+        exit 1
+    }
+    docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Docker is installed but not running. Start Docker Desktop and try again."
+        exit 1
+    }
+}
+
+function Invoke-HubDockerRun {
+    param([String]$Tag, [String]$Port, [String]$Token)
+    $runArgs = @("run", "-d", "--name", $HubContainerName, "--restart", "unless-stopped",
+        "-p", "${Port}:8080", "-v", "${HubVolumeName}:/data")
+    if ($Token -ne "") {
+        $runArgs += @("-e", "URNETWORK_HUB_TOKEN=$Token")
+    }
+    $runArgs += "${HubImage}:${Tag}"
+    docker @runArgs
+    return $LASTEXITCODE -eq 0
 }
 
 function Test-HotRestartEnabled {
@@ -809,6 +854,103 @@ switch ($Command) {
         }
 
         switch ($hubSubCmd) {
+            "install" {
+                Test-DockerAvailable
+
+                $tag = "latest"; $port = "8080"; $token = ""
+                for ($i = 1; $i -lt $SubArgs.Length; $i++) {
+                    switch ($SubArgs[$i]) {
+                        "--tag"   { $tag = $SubArgs[++$i] }
+                        "--port"  { $port = $SubArgs[++$i] }
+                        "--token" { $token = $SubArgs[++$i] }
+                    }
+                }
+
+                $existingContainers = (docker ps -a --format '{{.Names}}' 2>$null) -split "`n"
+                if ($existingContainers -contains $HubContainerName) {
+                    Write-Error "Hub container '$HubContainerName' already exists. Use 'urnet-tools.ps1 hub update' to upgrade it, or 'docker rm -f $HubContainerName' to remove it first."
+                    break
+                }
+
+                Write-Host "Pulling ${HubImage}:${tag}..."
+                docker pull "${HubImage}:${tag}"
+                if ($LASTEXITCODE -ne 0) { Write-Error "docker pull failed"; break }
+
+                if (-not (Invoke-HubDockerRun -Tag $tag -Port $port -Token $token)) {
+                    Write-Error "Failed to start hub container"
+                    break
+                }
+
+                $confPath = Get-HubDockerConfPath
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path $confPath)
+                Set-Content -Path $confPath -Value "tag=$tag`nport=$port`ntoken=$token"
+
+                Write-Host "Hub container started."
+                Write-Host "  Dashboard: http://localhost:$port"
+                Write-Host "  Data:      docker volume '$HubVolumeName' (persists across updates)"
+                Write-Host ""
+                Write-Host "Next steps:"
+                Write-Host "  urnet-tools.ps1 hub link http://<this-host>:$port   # point your providers at the hub"
+                Write-Host "  docker logs -f $HubContainerName                    # stream hub logs"
+                break
+            }
+
+            "update" {
+                Test-DockerAvailable
+
+                $tag = ""; $force = $false
+                for ($i = 1; $i -lt $SubArgs.Length; $i++) {
+                    switch ($SubArgs[$i]) {
+                        "--tag"   { $tag = $SubArgs[++$i] }
+                        "-f"      { $force = $true }
+                        "--force" { $force = $true }
+                    }
+                }
+
+                $existingContainers = (docker ps -a --format '{{.Names}}' 2>$null) -split "`n"
+                if ($existingContainers -notcontains $HubContainerName) {
+                    Write-Error "No hub container found. Run 'urnet-tools.ps1 hub install' first."
+                    break
+                }
+
+                $confPath = Get-HubDockerConfPath
+                $port = "8080"; $token = ""
+                if (Test-Path $confPath) {
+                    Get-Content $confPath | ForEach-Object {
+                        if ($_ -match '^tag=(.*)$' -and $tag -eq "") { $tag = $Matches[1] }
+                        if ($_ -match '^port=(.*)$') { $port = $Matches[1] }
+                        if ($_ -match '^token=(.*)$') { $token = $Matches[1] }
+                    }
+                }
+                if ($tag -eq "") { $tag = "latest" }
+
+                Write-Host "Pulling ${HubImage}:${tag}..."
+                docker pull "${HubImage}:${tag}"
+                if ($LASTEXITCODE -ne 0) { Write-Error "docker pull failed"; break }
+
+                if (-not $force) {
+                    $runningImage = docker inspect --format '{{.Image}}' $HubContainerName 2>$null
+                    $pulledImage = docker inspect --format '{{.Id}}' "${HubImage}:${tag}" 2>$null
+                    if ($runningImage -and $runningImage -eq $pulledImage) {
+                        Write-Host "Hub is already running ${HubImage}:${tag}. Nothing to do. Use --force to recreate anyway."
+                        break
+                    }
+                }
+
+                Write-Host "Recreating hub container (data volume '$HubVolumeName' is preserved)..."
+                docker stop $HubContainerName *> $null
+                docker rm $HubContainerName *> $null
+
+                if (-not (Invoke-HubDockerRun -Tag $tag -Port $port -Token $token)) {
+                    Write-Error "Failed to start hub container"
+                    break
+                }
+
+                Set-Content -Path $confPath -Value "tag=$tag`nport=$port`ntoken=$token"
+                Write-Host "Hub updated and running ${HubImage}:${tag}."
+                break
+            }
+
             "link" {
                 if ($SubArgs.Length -lt 2) {
                     Write-Host "Usage: hub link <https://hub-host:port> [--token <onboard-token>]"
@@ -961,7 +1103,9 @@ switch ($Command) {
             }
 
             default {
-                Write-Host "Usage: hub link <url> [--token <token>]"
+                Write-Host "Usage: hub install [--tag <tag>] [--port <port>] [--token <token>]"
+                Write-Host "       hub update [--tag <tag>] [-f|--force]"
+                Write-Host "       hub link <url> [--token <token>]"
                 Write-Host "       hub unlink"
                 Write-Host ""
                 Write-Host "Hub-side commands (onboard-cmd, show-password) must be run on the hub machine."
