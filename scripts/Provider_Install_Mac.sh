@@ -56,6 +56,11 @@ pr_info() {
     printf "%s: $fmt\n" "$me" "$@"
 }
 
+pr_warn() {
+    fmt="$1"; shift
+    printf "%s: $fmt\n" "$me" "$@" >&2
+}
+
 # --- paths ---
 
 install_path="$HOME/.local/share/urnetwork-provider"
@@ -147,14 +152,22 @@ do_install() {
 
     pr_info "Fetching release info..."
     release_json="$(curl -fsSL "$release_url" 2>/dev/null)"
-    if [ -z "$release_json" ]; then
-        pr_err "Could not fetch release info from %s" "$release_url"
-        exit 1
+    tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
+
+    # GitHub API failed or rate-limited: for an explicit version we can trust
+    # the caller's tag directly; for "latest" fall back to the dl.fullbars.xyz
+    # Worker, which mirrors GitHub's latest-release tag at the edge.
+    if [ -z "$tag" ]; then
+        if [ "$version" != "latest" ]; then
+            tag="$version"
+        else
+            pr_warn "Trying dl.fullbars.xyz fallback..."
+            tag="$(curl -fsSL "https://dl.fullbars.xyz/latest-version" 2>/dev/null | tr -d '[:space:]')"
+        fi
     fi
 
-    tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
     if [ -z "$tag" ]; then
-        pr_err "Could not parse release tag"
+        pr_err "Could not fetch release info from %s" "$release_url"
         exit 1
     fi
 
@@ -170,11 +183,15 @@ do_install() {
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
-    curl -fsSL "$tarball_url" -o "$tmpdir/provider.tar.gz" || {
-        pr_err "Download failed"
-        rm -rf "$tmpdir"
-        exit 1
-    }
+    if ! curl -fsSL "$tarball_url" -o "$tmpdir/provider.tar.gz"; then
+        mirror_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+        pr_warn "GitHub download failed, trying mirror..."
+        if ! curl -fsSL "$mirror_url" -o "$tmpdir/provider.tar.gz"; then
+            pr_err "Failed to download from both GitHub and mirror"
+            rm -rf "$tmpdir"
+            exit 1
+        fi
+    fi
 
     tar -xzf "$tmpdir/provider.tar.gz" -C "$tmpdir" || {
         pr_err "Extract failed"
