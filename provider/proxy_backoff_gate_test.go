@@ -79,6 +79,32 @@ func TestProxyFailureHistory_Prune_RemovesBackoffForDroppedAddresses(t *testing.
 	}
 }
 
+// TestProxyFailureHistory_AddressesInBackoff_ExcludesElapsedWindows: only
+// still-active windows count, matching Eligible's boundary.
+func TestProxyFailureHistory_AddressesInBackoff_ExcludesElapsedWindows(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := time.Now()
+
+	h.SetBackoffUntil("1.2.3.4:1080", now.Add(time.Hour))  // still in backoff
+	h.SetBackoffUntil("5.6.7.8:1080", now.Add(-time.Hour)) // already elapsed
+	h.SetBackoffUntil("9.9.9.9:1080", now)                 // elapsed exactly at now
+
+	inBackoff := h.AddressesInBackoff(now)
+
+	if !inBackoff["1.2.3.4:1080"] {
+		t.Fatal("an address mid-backoff must be returned")
+	}
+	if inBackoff["5.6.7.8:1080"] {
+		t.Fatal("an address whose backoff already elapsed must NOT be returned")
+	}
+	if inBackoff["9.9.9.9:1080"] {
+		t.Fatal("an address whose backoff elapses exactly at now must NOT be returned (Eligible uses the same !now.Before(until) boundary)")
+	}
+	if len(inBackoff) != 1 {
+		t.Fatalf("expected exactly 1 address still in backoff, got %d: %v", len(inBackoff), inBackoff)
+	}
+}
+
 // TestReload_SkipsURLProxyStillInBackoff is the launch-time enforcement test:
 // a URL-sourced proxy whose give-up backoff window has not elapsed must NOT be
 // relaunched by reload(), even though it is "desired but not running". Before

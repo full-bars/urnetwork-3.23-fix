@@ -328,6 +328,21 @@ func currentDesiredProxyAddresses() (map[string]bool, error) {
 	return addrs, nil
 }
 
+// desiredAddressesForHistoryPruning extends currentDesiredProxyAddresses
+// with in-backoff addresses: a self-heal shed deletes the address from the
+// URL cache (unlike a give-up, which leaves it in place), so without this a
+// shed proxy's history would get pruned before its backoff even elapses.
+func desiredAddressesForHistoryPruning() (map[string]bool, error) {
+	addrs, err := currentDesiredProxyAddresses()
+	if err != nil {
+		return nil, err
+	}
+	for addr := range globalProxyFailureHistory.AddressesInBackoff(time.Now()) {
+		addrs[addr] = true
+	}
+	return addrs, nil
+}
+
 var fetchMu sync.Mutex
 
 // fetchAndMergeProxyURLs fetches every configured source, merges newly
