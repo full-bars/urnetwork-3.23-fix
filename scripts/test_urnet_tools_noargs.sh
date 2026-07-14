@@ -83,7 +83,7 @@ echo "--- Test 4: Pipe installer (sh) with no args defaults to install ---"
 cp "$REPO_ROOT/$ORIG_SCRIPT" "$TEMP_DIR/Provider_Install_Linux.sh"
 chmod +x "$TEMP_DIR/Provider_Install_Linux.sh"
 output=$("$TEMP_DIR/Provider_Install_Linux.sh" 2>&1) || true
-if echo "$output" | grep -q "This Command Triggers a Cold Restart\|Fetching release information for tag:"; then
+if echo "$output" | grep -qE "(Cold|Hot) Restart|Fetching release information for tag:"; then
     echo "  ✅ PASS: Pipe install proceeded past arg parsing (defaulted to install)"
 elif echo "$output" | head -1 | grep -q "Usage:"; then
     echo "  ❌ FAIL: Pipe install showed help instead of defaulting to install"
