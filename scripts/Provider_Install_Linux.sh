@@ -78,7 +78,7 @@ show_help ()
     echo "  -f, --force             Skip confirmation prompts"
     echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
     echo ""
-    echo "Refer to <https://github.com/full-bars/urnetwork-3.23-fix> for more help."
+    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/urnetwork-3.23-fix>"
 }
 
 get_arch ()
@@ -421,8 +421,14 @@ show_version ()
     fi
 
     if [ -z "$latest_version" ]; then
-        pr_err "Could not fetch any information about the latest release"
-        exit 1
+        if latest_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+            latest_version="$(printf "%s" "$latest_version" | tr -d '[:space:]')"
+        fi
+    fi
+
+    if [ -z "$latest_version" ]; then
+        echo "Latest version: (could not check for updates)"
+        return
     fi
 
     if [ "$latest_version" != "$version" ]; then
@@ -1026,6 +1032,13 @@ do_install ()
         version_to_install="$tag"
     fi
 
+    # Fallback: try dl.fullbars.xyz latest-version endpoint
+    if [ -z "$version_to_install" ]; then
+        if worker_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+            version_to_install="$(printf "%s" "$worker_version" | tr -d '[:space:]')"
+        fi
+    fi
+
     if [ -z "$version_to_install" ]; then
         pr_err "Failed to fetch release information for tag: %s" "$tag"
         exit 1
@@ -1104,8 +1117,12 @@ do_install ()
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
         if ! download_asset "$dl_url" "$tarball"; then
-            pr_err "Failed to download $dl_url after multiple attempts and fallbacks"
-            exit 1
+            mirror_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+            pr_warn "GitHub download failed, trying mirror..."
+            if ! download_asset "$mirror_url" "$tarball"; then
+                pr_err "Failed to download from both GitHub and mirror"
+                exit 1
+            fi
         fi
 
         if ! tar -xf "$tarball" 2>/dev/null; then
@@ -1477,9 +1494,16 @@ confirm_restart ()
     if [ "$FORCE" = "1" ]; then
         return 0
     fi
-    printf "\n\e[1;31m🛑 WARNING: This Command Triggers a Cold Restart 🛑\e[0m\n"
-    printf "\e[1m%s\n" "$action"
-    printf "This will instantly drop all active connections and reset your proxy warmup state (which typically requires a minimum of 8-12 hours).\e[0m\n\n"
+
+    if hot_restart_is_enabled; then
+        printf "\n\e[1;33m🔄 WARNING: A Hot Restart Will Be Attempted 🔄\e[0m\n"
+        printf "\e[1m%s\n" "$action"
+        printf "Hot-restart is enabled — client JWT identities and warmup state *may* be preserved, but this is not guaranteed (provider binary upgrades, internal state resets, or other factors can force a cold restart).\e[0m\n\n"
+    else
+        printf "\n\e[1;31m🛑 WARNING: This Command Triggers a Cold Restart 🛑\e[0m\n"
+        printf "\e[1m%s\n" "$action"
+        printf "This will instantly drop all active connections and reset your proxy warmup state (which typically requires a minimum of 8-12 hours).\e[0m\n\n"
+    fi
     
     while true; do
         printf "\e[1mAre you absolutely sure you want to proceed and restart the provider? (y/N): \e[0m"
@@ -1588,6 +1612,20 @@ override_rm_env() {
             rmdir "$override_dir" 2>/dev/null || true
         fi
     fi
+}
+
+# hot_restart_is_enabled
+# Reports whether URNETWORK_HOT_RESTART=0 is NOT set in the override.conf —
+# matches provider/main.go's hotRestartEnabled() (on by default unless
+# explicitly disabled). Single source of truth so confirm_restart() and
+# toggle_hotrestart() can't drift.
+hot_restart_is_enabled() {
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    local override_file="$override_dir/override.conf"
+    if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
+        return 1
+    fi
+    return 0
 }
 
 # firewall_hint PORT [PROTO]
@@ -1765,8 +1803,6 @@ toggle_lowmode ()
 toggle_hotrestart ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1786,10 +1822,10 @@ toggle_hotrestart ()
             pr_info "Hot-restart disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
-                pr_info "Hot-restart is off."
-            else
+            if hot_restart_is_enabled; then
                 pr_info "Hot-restart is enabled."
+            else
+                pr_info "Hot-restart is off."
             fi
             ;;
         *)
@@ -2370,6 +2406,12 @@ do_hub () {
                 fi
 
                 if [ -z "$hub_tag" ]; then
+                    if worker_tag="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+                        hub_tag="$(printf "%s" "$worker_tag" | tr -d '[:space:]')"
+                    fi
+                fi
+
+                if [ -z "$hub_tag" ]; then
                     pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub install"
                     exit 1
                 fi
@@ -2383,9 +2425,13 @@ do_hub () {
             trap 'rm -f "$tmp_hub"' EXIT
 
             if ! download_asset "$hub_dl_url" "$tmp_hub"; then
-                pr_err "Failed to download hub binary from: %s" "$hub_dl_url"
-                pr_err "Make sure this release includes a hub binary asset."
-                exit 1
+                hub_mirror_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+                pr_warn "GitHub download failed, trying mirror..."
+                if ! download_asset "$hub_mirror_url" "$tmp_hub"; then
+                    pr_err "Failed to download hub binary from both GitHub and mirror"
+                    pr_err "Make sure this release includes a hub binary asset."
+                    exit 1
+                fi
             fi
 
             chmod 755 "$tmp_hub"
@@ -2634,6 +2680,12 @@ do_hub_update () {
                 "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
             if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
                 hub_tag="${tag_url##*/}"
+            fi
+        fi
+
+        if [ -z "$hub_tag" ]; then
+            if worker_tag="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+                hub_tag="$(printf "%s" "$worker_tag" | tr -d '[:space:]')"
             fi
         fi
 
@@ -3187,6 +3239,20 @@ do_hub_link () {
     printf '%s\n' "$url" > "$report_file.tmp"
     mv "$report_file.tmp" "$report_file"
     pr_info "Report URL set to %s" "$url"
+
+    # Clean up stale systemd env overrides that could confuse the report URL
+    # after an older urnet-tools version wrote them. The provider reads the
+    # file above at runtime (resolveReportURL), but the env var in the
+    # override file would still take effect on next restart if left behind.
+    if [ "$has_systemd" -eq 1 ]; then
+        override_rm_env "URNETWORK_REPORT_URL"
+        if [ -f "$hub_conf" ]; then
+            rm -f "$hub_conf"
+            rmdir "$override_dir" 2>/dev/null || true
+        fi
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+
     pr_info ""
     pr_info "Success. The provider will now send encrypted reports to %s." "$url"
     pr_info "The change takes effect on the next report tick (no restart needed)."
@@ -3223,6 +3289,13 @@ do_hub_unlink () {
                 pr_info "Report URL is %s (not HTTPS, left unchanged)" "$current"
                 ;;
         esac
+    fi
+
+    # Also clean up any stale URNETWORK_REPORT_URL in systemd overrides so
+    # a future restart doesn't re-enable a URL the operator just unlinked.
+    if [ "$has_systemd" -eq 1 ]; then
+        override_rm_env "URNETWORK_REPORT_URL"
+        systemctl --user daemon-reload 2>/dev/null || true
     fi
 
     pr_info ""

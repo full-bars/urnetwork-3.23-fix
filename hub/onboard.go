@@ -230,17 +230,29 @@ fi
 
 echo "CA fingerprint: $CA_FP"
 
-# Write CA cert. CA_PEM is already the actual PEM text (BEGIN/END markers
-# and base64 body), not a base64-encoded blob of the whole thing — write it
-# directly. Piping it through "base64 -d" is wrong here and dangerous on
-# BusyBox/Alpine specifically: BusyBox's base64 -d silently ignores invalid
-# characters (like the "-----BEGIN CERTIFICATE-----" header) and exits 0
-# with corrupted output instead of failing, so a "|| fallback" pattern would
-# never trigger and hub_ca.pem would end up as garbage on exactly the
-# fork's documented Docker/Alpine deployment target.
-echo "$CA_PEM" > ~/.urnetwork/hub_ca.pem.tmp
+# Write CA cert with retry. Use a heredoc rather than echo or printf:
+# - echo on BusyBox ash (Alpine) mangles multi-line variables with special chars
+# - printf interprets %% format sequences in the PEM body when bash history expansion is on
+for _try in 1 2 3; do
+    cat > ~/.urnetwork/hub_ca.pem.tmp <<-PEMEOF
+$CA_PEM
+PEMEOF
+    # Verify the file has both PEM markers (not just the header)
+    if head -1 ~/.urnetwork/hub_ca.pem.tmp | grep -q "BEGIN CERTIFICATE" && \
+       tail -1 ~/.urnetwork/hub_ca.pem.tmp | grep -q "END CERTIFICATE"; then
+        break
+    fi
+    echo "WARNING: CA cert appears truncated (missing END marker), retrying..."
+    sleep 1
+done
+if ! head -1 ~/.urnetwork/hub_ca.pem.tmp | grep -q "BEGIN CERTIFICATE" || \
+   ! tail -1 ~/.urnetwork/hub_ca.pem.tmp | grep -q "END CERTIFICATE"; then
+    echo "ERROR: Failed to fetch complete CA certificate after 3 attempts"
+    rm -f ~/.urnetwork/hub_ca.pem.tmp
+    exit 1
+fi
+chmod 600 ~/.urnetwork/hub_ca.pem.tmp
 mv ~/.urnetwork/hub_ca.pem.tmp ~/.urnetwork/hub_ca.pem
-chmod 600 ~/.urnetwork/hub_ca.pem
 
 # Set report URL
 echo "$HUB_URL" > ~/.urnetwork/report_url
