@@ -134,28 +134,64 @@ else {
     $GithubURL = "$GithubURLBase/releases/tags/$Version"
 }
 
-$ReleaseInfo = Invoke-RestMethod -Uri "$GithubURL"
+$ReleaseInfo = $null
+try {
+    $ReleaseInfo = Invoke-RestMethod -Uri "$GithubURL"
+}
+catch {}
 
-if (-not $ReleaseInfo) {
-    Write-Error "Failed to fetch release information from GitHub API. Are you sure the version exists and your internet connection is working?"
-    exit 1
+$ReleaseVersion = $null
+$ReleaseDate = $null
+$DownloadURL = $null
+$FileName = $null
+
+if ($ReleaseInfo) {
+    $ReleaseVersion = $ReleaseInfo.tag_name
+    $ReleaseDate = $ReleaseInfo.published_at
+    $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -cmatch "^urnetwork-provider-" }
+    if ($ReleaseAsset) {
+        $DownloadURL = $ReleaseAsset.browser_download_url
+        $FileName = $ReleaseAsset.name
+    }
 }
 
-$ReleaseVersion = $ReleaseInfo.tag_name
-$ReleaseDate = $ReleaseInfo.published_at
-$ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -cmatch "^urnetwork-provider-" }
+# GitHub API failed, was rate-limited, or the release has no matching asset:
+# for an explicit version we already know the tag; for "latest" fall back to
+# the dl.fullbars.xyz Worker, which mirrors GitHub's latest-release tag at
+# the edge. Either way, construct the download URL directly — the release
+# tarball layout is fixed (urnetwork-provider-<tag>.tar.gz).
+if (-not $DownloadURL) {
+    if ($Version -ne "latest") {
+        $ReleaseVersion = $Version
+    }
+    else {
+        Write-Warning "GitHub API unavailable, trying dl.fullbars.xyz fallback..."
+        try {
+            $ReleaseVersion = (Invoke-RestMethod -Uri "https://dl.fullbars.xyz/latest-version").Trim()
+        }
+        catch {}
+    }
 
-if (-not $ReleaseAsset) {
-    Write-Error "Failed to find the release asset. Are you sure the version exists?"
-    exit 1
+    if (-not $ReleaseVersion) {
+        Write-Error "Failed to fetch release information from GitHub API. Are you sure the version exists and your internet connection is working?"
+        exit 1
+    }
+
+    $FileName = "urnetwork-provider-$ReleaseVersion.tar.gz"
+    $DownloadURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
 }
 
-$DownloadURL = $ReleaseAsset.browser_download_url
-$FileName = $ReleaseAsset.name
 $FilePath = Join-Path -Path $env:TEMP -ChildPath $FileName
 
 if (-not $NoRestartDownload -or -not (Test-Path $FilePath)) {
-    Download-File -URL $DownloadURL -Destination $FilePath
+    try {
+        Download-File -URL $DownloadURL -Destination $FilePath
+    }
+    catch {
+        $MirrorURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
+        Write-Warning "GitHub download failed, trying mirror..."
+        Download-File -URL $MirrorURL -Destination $FilePath
+    }
 }
 
 $ExtractPath = Join-Path $env:TEMP -ChildPath "urnetwork-extracted"

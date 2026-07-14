@@ -1495,14 +1495,7 @@ confirm_restart ()
         return 0
     fi
 
-    hot_restart=1
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
-    if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
-        hot_restart=0
-    fi
-
-    if [ "$hot_restart" = "1" ]; then
+    if hot_restart_is_enabled; then
         printf "\n\e[1;33m🔄 WARNING: A Hot Restart Will Be Attempted 🔄\e[0m\n"
         printf "\e[1m%s\n" "$action"
         printf "Hot-restart is enabled — client JWT identities and warmup state *may* be preserved, but this is not guaranteed (provider binary upgrades, internal state resets, or other factors can force a cold restart).\e[0m\n\n"
@@ -1619,6 +1612,20 @@ override_rm_env() {
             rmdir "$override_dir" 2>/dev/null || true
         fi
     fi
+}
+
+# hot_restart_is_enabled
+# Reports whether URNETWORK_HOT_RESTART=0 is NOT set in the override.conf —
+# matches provider/main.go's hotRestartEnabled() (on by default unless
+# explicitly disabled). Single source of truth so confirm_restart() and
+# toggle_hotrestart() can't drift.
+hot_restart_is_enabled() {
+    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
+    local override_file="$override_dir/override.conf"
+    if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
+        return 1
+    fi
+    return 0
 }
 
 # firewall_hint PORT [PROTO]
@@ -1796,8 +1803,6 @@ toggle_lowmode ()
 toggle_hotrestart ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1817,10 +1822,10 @@ toggle_hotrestart ()
             pr_info "Hot-restart disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
-                pr_info "Hot-restart is off."
-            else
+            if hot_restart_is_enabled; then
                 pr_info "Hot-restart is enabled."
+            else
+                pr_info "Hot-restart is off."
             fi
             ;;
         *)
