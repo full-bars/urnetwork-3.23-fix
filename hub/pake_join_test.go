@@ -138,3 +138,67 @@ func TestLoadOrRegisterPakeJoin_ReloadSurvivesRestart(t *testing.T) {
 		t.Fatalf("login failed after simulated hub restart: %v", err)
 	}
 }
+
+func TestPakeLoginHandshake_CorrectPasswordSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ke1Bytes, client, err := pakeClientLoginStep1("correct horse battery staple")
+	if err != nil {
+		t.Fatalf("pakeClientLoginStep1: %v", err)
+	}
+
+	ke2Bytes, serverOutput, err := pakeServerLoginStep1(skm, record, ke1Bytes)
+	if err != nil {
+		t.Fatalf("pakeServerLoginStep1: %v", err)
+	}
+
+	ke3Bytes, clientSessionKey, err := pakeClientLoginFinish(client, ke2Bytes)
+	if err != nil {
+		t.Fatalf("pakeClientLoginFinish: %v", err)
+	}
+
+	serverSessionKey, err := pakeServerLoginFinish(serverOutput, ke3Bytes)
+	if err != nil {
+		t.Fatalf("pakeServerLoginFinish: %v", err)
+	}
+
+	if len(serverSessionKey) == 0 || !bytes.Equal(clientSessionKey, serverSessionKey) {
+		t.Fatal("client and server session keys do not match")
+	}
+}
+
+func TestPakeLoginHandshake_WrongPasswordFails(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ke1Bytes, client, err := pakeClientLoginStep1("totally wrong password")
+	if err != nil {
+		t.Fatalf("pakeClientLoginStep1: %v", err)
+	}
+	ke2Bytes, serverOutput, err := pakeServerLoginStep1(skm, record, ke1Bytes)
+	if err != nil {
+		t.Fatalf("pakeServerLoginStep1: %v", err)
+	}
+	ke3Bytes, _, ke3Err := pakeClientLoginFinish(client, ke2Bytes)
+	if ke3Err != nil {
+		return
+	}
+	if _, err := pakeServerLoginFinish(serverOutput, ke3Bytes); err == nil {
+		t.Fatal("expected pakeServerLoginFinish to reject a wrong-password login")
+	}
+}
