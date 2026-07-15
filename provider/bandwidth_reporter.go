@@ -244,6 +244,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	var client *http.Client
 	activeReportURL := ""
 	activeInterval := interval
+	var activeCACert []byte // nil = not yet read, empty = no CA cert
 	for {
 		select {
 		case <-ctx.Done():
@@ -265,7 +266,9 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		activeHost := resolveNodeName(host)
 
 		reportURL := resolveReportURL(envReportURL)
-		if reportURL != activeReportURL {
+		caCert, _ := loadHubCACert()
+		if reportURL != activeReportURL || !bytes.Equal(caCert, activeCACert) {
+			activeCACert = caCert
 			client = newClientForURL(reportURL)
 			activeReportURL = reportURL
 			if reportURL == "" {
@@ -729,13 +732,21 @@ func hubCACertPath() (string, error) {
 	return filepath.Join(dir, ".urnetwork", "hub_ca.pem"), nil
 }
 
-func loadHubCAPool() (*x509.CertPool, bool) {
+func loadHubCACert() ([]byte, bool) {
 	path, err := hubCACertPath()
 	if err != nil {
 		return nil, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+func loadHubCAPool() (*x509.CertPool, bool) {
+	data, ok := loadHubCACert()
+	if !ok {
 		return nil, false
 	}
 	pool := x509.NewCertPool()
