@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,5 +201,104 @@ func TestPakeLoginHandshake_WrongPasswordFails(t *testing.T) {
 	}
 	if _, err := pakeServerLoginFinish(serverOutput, ke3Bytes); err == nil {
 		t.Fatal("expected pakeServerLoginFinish to reject a wrong-password login")
+	}
+}
+
+func TestPakeLoginHandshake_ConcurrentJoinsDoNotInterfere(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	sessionKeys := make([][]byte, n)
+	errs := make([]error, n)
+	done := make(chan int, n)
+
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer func() { done <- i }()
+
+			ke1Bytes, client, err := pakeClientLoginStep1("correct horse battery staple")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ke2Bytes, serverOutput, err := pakeServerLoginStep1(skm, record, ke1Bytes)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ke3Bytes, clientKey, err := pakeClientLoginFinish(client, ke2Bytes)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			serverKey, err := pakeServerLoginFinish(serverOutput, ke3Bytes)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if !bytes.Equal(clientKey, serverKey) {
+				errs[i] = fmt.Errorf("session key mismatch for goroutine %d", i)
+				return
+			}
+			sessionKeys[i] = serverKey
+		}(i)
+	}
+
+	for i := 0; i < n; i++ {
+		<-done
+	}
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if sessionKeys[i] != nil && sessionKeys[j] != nil && bytes.Equal(sessionKeys[i], sessionKeys[j]) {
+				t.Errorf("goroutines %d and %d derived the same session key — sessions are not independent", i, j)
+			}
+		}
+	}
+}
+
+func TestPakeLoginHandshake_TamperedKE3Rejected(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ke1Bytes, client, err := pakeClientLoginStep1("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke2Bytes, serverOutput, err := pakeServerLoginStep1(skm, record, ke1Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke3Bytes, _, err := pakeClientLoginFinish(client, ke2Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tampered := make([]byte, len(ke3Bytes))
+	copy(tampered, ke3Bytes)
+	tampered[len(tampered)-1] ^= 0xFF
+
+	if _, err := pakeServerLoginFinish(serverOutput, tampered); err == nil {
+		t.Fatal("expected a tampered KE3 to be rejected by pakeServerLoginFinish")
 	}
 }
