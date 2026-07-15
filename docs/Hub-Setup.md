@@ -11,6 +11,22 @@ The Hub is a standalone dashboard binary that aggregates bandwidth and health re
 - `urnet-tools` installed on that machine (comes bundled with a native `urnet-tools` install)
 - Provider nodes that can reach the hub's port over the network (LAN, Tailscale, or public internet)
 
+## Understanding Hub Credentials
+
+The hub uses **four separate credentials** for four separate jobs. They get introduced one at a time later in this guide, which is easy to lose track of — so here's the full picture up front. If you only remember one thing: **providers get a token, humans get a password, and the hub's TLS identity is a third, unrelated thing.**
+
+| Credential | Set via | Protects | Who needs it |
+|---|---|---|---|
+| **`URNETWORK_HUB_TOKEN`** | Env var on hub *and* every provider | Write endpoints: `/api/report`, `/api/heartbeat`, `/api/nodes/remove` | Providers reporting into the hub |
+| **`URNETWORK_HUB_DASHBOARD_PASS`** | Env var on the hub only | The dashboard (`/`) and read-only API: `/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events` | Humans opening the dashboard in a browser |
+| **Hub CA password** (`hub.password` file) | `hub init [--password ...]`, auto-generated if omitted | The TLS handshake itself — lets providers verify the hub's certificate against a CA instead of trusting blindly | The hub, to re-derive the same CA identity if redeployed on a new machine |
+| **Onboard token** | `hub onboard-cmd` / `hub -mint-onboard-token`, expires in 15 min | The CA-cert fetch endpoint, for providers with no credentials yet | Brand-new providers doing zero-touch setup |
+
+> [!TIP]
+> Think of it as two independent axes: **who's authenticating** (a provider vs. a human) times **what layer** (application-level auth vs. TLS transport trust). `URNETWORK_HUB_TOKEN` and `URNETWORK_HUB_DASHBOARD_PASS` are both HTTP-layer credentials but gate completely different routes for completely different audiences — setting one has no effect on the other. The CA password and onboard token are a third, unrelated layer: they secure *that the connection itself* is talking to the real hub, before either of the other two credentials is even checked.
+
+Jump to: [provider auth](#2-point-providers-at-the-hub) · [TLS / CA password](#option-a-password-derived-ca-recommended-for-any-fleet) · [onboard tokens](#zero-touch-onboard-for-new-providers) · [dashboard password](#locking-down-the-dashboard)
+
 ## 1. Install the Hub
 
 On the machine that will host the dashboard:
@@ -128,13 +144,38 @@ urnet-tools hub set https://hub.yourdomain.com
 
 ### Locking Down the Dashboard
 
-By default, the fleet dashboard (`/`) and all read-only API endpoints (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) are open to anyone who can reach the hub's address — no auth required. Set `URNETWORK_HUB_DASHBOARD_PASS` to gate them behind HTTP Basic Auth:
+By default, the fleet dashboard (`/`) and all read-only API endpoints (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) are open to anyone who can reach the hub's address — no auth required. Set `URNETWORK_HUB_DASHBOARD_PASS` to gate them behind HTTP Basic Auth. Any username is accepted; only the password is checked.
+
+> [!NOTE]
+> **This is the same mechanism as Caddy's `basicauth` / nginx's `auth_basic` in Option B above** — same HTTP Basic Auth protocol, same browser-native login prompt. The only difference is *where* it's enforced: `URNETWORK_HUB_DASHBOARD_PASS` checks it inside the hub binary, so you get it without standing up a reverse proxy. If you're already running Caddy/nginx with basic auth in front of the hub, don't also set this — it's an *either/or*, not a layer to stack; setting both just means logging in twice for no added protection.
+
+**Native (systemd) hub install** — there's no `urnet-tools` flag for this yet, so set it via a systemd drop-in the same way `hub init` does for TLS:
 
 ```sh
--e URNETWORK_HUB_DASHBOARD_PASS=your-dashboard-password
+mkdir -p ~/.config/systemd/user/urnetwork-hub.service.d
+cat >> ~/.config/systemd/user/urnetwork-hub.service.d/override.conf <<'EOF'
+[Service]
+Environment="URNETWORK_HUB_DASHBOARD_PASS=your-dashboard-password"
+EOF
+systemctl --user daemon-reload
+systemctl --user restart urnetwork-hub.service
 ```
 
-Any username is accepted — only the password is checked. This is independent of `URNETWORK_HUB_TOKEN`, which protects the provider write endpoints (`/api/report`, `/api/heartbeat`, `/api/nodes/remove`) and is unaffected by this setting. Browsers cache the Basic Auth credential per origin after the first prompt, so the dashboard's own JS (`fetch`, `EventSource`) doesn't need any changes to keep working once you've logged in.
+**Docker hub install**:
+
+```sh
+docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
+  -e URNETWORK_HUB_DASHBOARD_PASS=your-dashboard-password \
+  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+```
+
+> [!NOTE]
+> This is independent of `URNETWORK_HUB_TOKEN` — that still protects the provider write endpoints (`/api/report`, `/api/heartbeat`, `/api/nodes/remove`) and is unaffected by this setting. Setting one does not require or imply the other; you can lock down the dashboard without ever touching `URNETWORK_HUB_TOKEN`, and vice versa.
+
+Once set, opening the dashboard in a browser triggers the standard OS/browser Basic Auth prompt. Browsers cache that credential per origin after the first prompt, so the dashboard's own JS (`fetch`, `EventSource`) keeps working with zero code changes — no `withCredentials` flags or manual header-setting needed, since the browser resends the cached credential automatically on every same-origin request from that page.
+
+> [!WARNING]
+> Basic Auth sends the password on every request, base64-encoded but **not encrypted**, unless the connection is already TLS (Option A/B above). If the hub is only reachable over plain HTTP, anyone on the network path can read the password. Pair this with TLS for anything beyond a private LAN/Tailscale network.
 
 ## 4. Confirm It's Working
 

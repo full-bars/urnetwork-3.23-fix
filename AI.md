@@ -2,6 +2,106 @@
 
 This file is designed for an AI agent to read so it can help users install, configure, and manage the provider and hub. It references the project's existing documentation rather than duplicating it. Give this file to your AI alongside the linked docs below.
 
+## Task: Deploy a Hub and Link a Fleet (Follow These Steps Exactly)
+
+This section is a complete, self-sufficient playbook. If a user asks you to "set up a hub" or "link my fleet to a hub," follow these steps in order — they cover install, security, and linking end to end. Ask the user only for: (1) which machine hosts the hub, (2) native systemd or Docker, (3) whether providers are on the same LAN/Tailscale (HTTP is tolerable) or reachable over the open internet (TLS + dashboard password are not optional).
+
+### Step 0 — Understand the four credentials before touching anything
+
+The hub has four unrelated credentials. Confusing them is the #1 source of mistakes — read this table before running any commands:
+
+| Credential | Env var / flag | Set on | Protects | Do NOT confuse with |
+|---|---|---|---|---|
+| Provider shared secret | `URNETWORK_HUB_TOKEN` | Hub **and** every provider | Write endpoints: `/api/report`, `/api/heartbeat`, `/api/nodes/remove` | The onboard token below — different value, different purpose, despite both being called "token" in different commands |
+| Dashboard password | `URNETWORK_HUB_DASHBOARD_PASS` | Hub only | Dashboard (`/`) and read-only API (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) | `URNETWORK_HUB_TOKEN` — setting this does not protect or require the provider secret, and vice versa |
+| Hub CA password | `hub.password` file (`hub init --password`) | Hub only | The TLS handshake identity — providers verify the hub's cert against this CA | Neither of the above — this never leaves the hub except as a derived public CA cert |
+| Onboard token | Ephemeral, minted by `hub onboard-cmd`, expires in 15 min | Passed as `hub link <url> --token <value>` | One-time CA-cert fetch for a provider with no credentials yet | `URNETWORK_HUB_TOKEN` — this is a short-lived bootstrap credential, not a standing secret |
+
+If you only set one thing, set `URNETWORK_HUB_TOKEN` — everything else is defense in depth on top of it.
+
+### Step 1 — Install the hub
+
+```bash
+# Native (Linux, has systemd) — recommended default
+urnet-tools hub install
+
+# Docker (Windows/macOS always use this path; Linux opt-in with --docker)
+urnet-tools hub install --docker --token <URNETWORK_HUB_TOKEN-value-you-choose>
+```
+
+The native path has **no CLI flag for `URNETWORK_HUB_TOKEN`** — set it via systemd override (see Step 3). The Docker path accepts `--token` directly at install time.
+
+### Step 2 — Secure the transport (TLS via password-derived CA)
+
+Skip this only if the hub and every provider are on a private LAN/Tailscale network you fully trust. Otherwise:
+
+```bash
+# On the hub machine — auto-generates a CA password and turns on TLS on :8443
+urnet-tools hub init
+urnet-tools hub show-password   # save this — only needed again if you redeploy the hub on a new machine
+```
+
+### Step 3 — Set the provider shared secret (`URNETWORK_HUB_TOKEN`)
+
+**Native hub** (no install-time flag exists yet — use a systemd drop-in):
+
+```bash
+mkdir -p ~/.config/systemd/user/urnetwork-hub.service.d
+cat >> ~/.config/systemd/user/urnetwork-hub.service.d/override.conf <<'EOF'
+[Service]
+Environment="URNETWORK_HUB_TOKEN=<choose-a-long-random-value>"
+EOF
+systemctl --user daemon-reload
+systemctl --user restart urnetwork-hub.service
+```
+
+**Docker hub**: pass `--token <value>` to `hub install --docker` (Step 1), or `-e URNETWORK_HUB_TOKEN=<value>` on `docker run` if managing the container by hand.
+
+Then set the **same value** as `URNETWORK_HUB_TOKEN` on every provider (systemd override on `urnetwork.service.d`, or `-e URNETWORK_HUB_TOKEN=<value>` for Docker providers) — this env var is also what a Docker provider uses to auto-authenticate its reports.
+
+### Step 4 — Lock down the dashboard (`URNETWORK_HUB_DASHBOARD_PASS`)
+
+Do this if the dashboard/API port is reachable by anyone other than trusted operators (i.e., basically always, unless it's Tailscale-only).
+
+**Native hub**:
+
+```bash
+cat >> ~/.config/systemd/user/urnetwork-hub.service.d/override.conf <<'EOF'
+Environment="URNETWORK_HUB_DASHBOARD_PASS=<choose-a-password>"
+EOF
+systemctl --user daemon-reload
+systemctl --user restart urnetwork-hub.service
+```
+
+**Docker hub**: `-e URNETWORK_HUB_DASHBOARD_PASS=<choose-a-password>` on `docker run`.
+
+Any username works with this password — it's HTTP Basic Auth, checked with the browser's native login prompt. This is separate from `URNETWORK_HUB_TOKEN` — do not conflate the two when asked "what's the hub password."
+
+### Step 5 — Point every provider at the hub
+
+```bash
+# On each provider, using TLS (recommended — matches Step 2):
+urnet-tools hub onboard-cmd     # run this ON THE HUB, prints a one-liner with a 15-min onboard token
+# then run the printed curl | sh command on each provider — it fetches the CA cert and sets report_url
+
+# Or, plain HTTP (only if you skipped Step 2):
+urnet-tools hub set http://<hub-ip>:8080
+```
+
+Providers pick this up on their next report tick (≤5 min), no restart required.
+
+### Step 6 — Verify
+
+```bash
+# From the hub or any machine with dashboard credentials:
+curl -s -u anyuser:<dashboard-password> https://<hub-ip>:8443/api/nodes/ | jq '.[] | {node_id, tls}'
+
+# Confirm write auth is enforced (should be 401 without the token):
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<hub-ip>:8443/api/report
+```
+
+Open the dashboard in a browser — it should prompt for Basic Auth (Step 4) and show a row per provider within one report cycle, with a padlock icon if TLS (Step 2) is active.
+
 ## Project Layout
 
 See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout. Quick orientation:
@@ -170,6 +270,9 @@ urnet-tools hub show-password      # show hub CA password (one-time secret)
 urnet-tools hub set <key> <value>  # configure hub settings
 urnet-tools hub off                # stop and disable hub
 urnet-tools hub unlink             # remove TLS config, fall back to HTTP
+# No CLI flag yet for URNETWORK_HUB_TOKEN (native) or URNETWORK_HUB_DASHBOARD_PASS
+# — set both via systemd override.conf (native) or `docker run -e` (Docker). See
+# "Task: Deploy a Hub and Link a Fleet" above.
 
 # Reporting
 urnet-tools report [<url>|off]     # set/show/disable hub report URL

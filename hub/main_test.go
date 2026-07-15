@@ -457,29 +457,53 @@ func TestReadRoutesRequireBasicAuthWriteRoutesDoNot(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/report", requireAuth("hub-token", handleReport(s)))
+	mux.HandleFunc("/api/nodes/contracts", requireBasicAuth("dashboard-pass", handleNodeContracts(s)))
+	mux.HandleFunc("/api/nodes/", requireBasicAuth("dashboard-pass", handleNodes(s)))
+	mux.HandleFunc("/api/proxies/top", requireBasicAuth("dashboard-pass", handleProxiesTop(s)))
+	mux.HandleFunc("/api/proxies/best", requireBasicAuth("dashboard-pass", handleProxiesBest(s)))
+	mux.HandleFunc("/api/proxies/history", requireBasicAuth("dashboard-pass", handleProxiesHistory(s)))
 	mux.HandleFunc("/api/history", requireBasicAuth("dashboard-pass", handleHistory(s)))
+	mux.HandleFunc("/api/events", requireBasicAuth("dashboard-pass", handleEvents(s)))
 	mux.HandleFunc("/", requireBasicAuth("dashboard-pass", handleDashboard(s)))
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	// Read route without Basic Auth credentials: rejected.
-	resp, err := http.Get(ts.URL + "/api/history")
-	if err != nil {
-		t.Fatalf("GET /api/history: %v", err)
+	// Every gated read route rejects requests without Basic Auth credentials.
+	gatedRoutes := []string{
+		"/",
+		"/api/nodes/contracts",
+		"/api/nodes/",
+		"/api/proxies/top",
+		"/api/proxies/best",
+		"/api/proxies/history?addr=1.2.3.4:1",
+		"/api/history",
+		"/api/events",
 	}
-	resp.Body.Close()
-	if resp.StatusCode != 401 {
-		t.Errorf("/api/history without auth: status = %d, want 401", resp.StatusCode)
-	}
-
-	// Dashboard without Basic Auth credentials: rejected.
-	resp, err = http.Get(ts.URL + "/")
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 401 {
-		t.Errorf("/ without auth: status = %d, want 401", resp.StatusCode)
+	for _, route := range gatedRoutes {
+		req, _ := http.NewRequest("GET", ts.URL+route, nil)
+		if route == "/api/events" {
+			// SSE handler blocks for the request lifetime; a client-side
+			// timeout stands in for disconnect since auth must reject
+			// before the stream ever opens.
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("GET %s: %v", route, err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != 401 {
+				t.Errorf("%s without auth: status = %d, want 401", route, resp.StatusCode)
+			}
+			continue
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", route, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 401 {
+			t.Errorf("%s without auth: status = %d, want 401", route, resp.StatusCode)
+		}
 	}
 
 	// Write route with only Bearer token (no Basic Auth) still works —
@@ -488,7 +512,7 @@ func TestReadRoutesRequireBasicAuthWriteRoutesDoNot(t *testing.T) {
 	body, _ := json.Marshal(report)
 	req, _ := http.NewRequest("POST", ts.URL+"/api/report", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer hub-token")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /api/report: %v", err)
 	}
