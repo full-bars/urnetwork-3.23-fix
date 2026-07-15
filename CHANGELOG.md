@@ -666,6 +666,7 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
   - TransportBufferSize 1 → 16 (removes in-flight message bottleneck between framer and WebSocket writer)
   - TCP/UDP MaxWindowSize 1 MiB → 4 MiB (removes ~160 Mbps per-connection throughput ceiling at 50ms RTT)
   - applyTier3 now sets actual performance values for `URNETWORK_PROFILE=auto` on 4GiB+ nodes (4 MiB TCP window, 256-depth IP buffers, 4 MiB transfer queues)
+  - Tier 4 Extreme auto profile added for >= 8 GiB nodes (8 MiB windows, 16 MiB queues, 512 seq buf, GOGC 200, contract ramp scale 3)
   - ContractTransferByteSeqScale 4 → 2 (reaches 128 MiB standard contract in 2 sequences instead of 4)
 - **Relaxed client-side auth rate limiter** (`provider/auth_rate_limiter.go`):
   - Default min 1 → 20 req/s, max 10 → 200 req/s, burst 3 → 50

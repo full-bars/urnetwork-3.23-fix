@@ -194,7 +194,7 @@ Key variables:
 | `USER_AUTH` / `PASSWORD` | Email/password auth |
 | `URNETWORK_AUTH_CODE` | JWT auth code (first-run) |
 | `ENABLE_VNSTAT` | Traffic monitor on port 8080 |
-| `URNETWORK_PROFILE` | `auto`, `lowmem`, `eco`, `turbo-v4`, `turbo-v8` |
+| `URNETWORK_PROFILE` | `auto` (tiers: low/balanced/perf/extreme), `lowmem`, `eco`, `turbo-v4`, `turbo-v8` |
 | `URNETWORK_REPORT_URL` | Hub URL for bandwidth reports |
 | `URNETWORK_REPORT_INTERVAL` | Report interval (default 5m) |
 | `PROXY_URL` | Live proxy URL feed (comma-separated) |

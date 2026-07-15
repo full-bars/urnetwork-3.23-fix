@@ -42,7 +42,7 @@ cat ~/.urnetwork/events.log
 
 | Profile | Docker Value | Best For | RAM |
 | :--- | :--- | :--- | :--- |
-| Auto | `URNETWORK_PROFILE=auto` | Recommended zero-config mode | Any |
+| Auto | `URNETWORK_PROFILE=auto` | Recommended zero-config mode (auto-selects Low/Balanced/Perf/Extreme by RAM) | Any |
 | Turbo V8 | `TURBO=v8` or `URNETWORK_PROFILE=turbo-v8` | Maximum throughput, dedicated servers | 16 GiB+ |
 | Turbo V4 | `TURBO=v4` or `URNETWORK_PROFILE=turbo-v4` | High throughput, well-provisioned VPS | 4-16 GiB |
 | Default | unset | General use | 2-4 GiB |
