@@ -126,6 +126,16 @@ Then point providers at the domain instead of an IP:
 urnet-tools hub set https://hub.yourdomain.com
 ```
 
+### Locking Down the Dashboard
+
+By default, the fleet dashboard (`/`) and all read-only API endpoints (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) are open to anyone who can reach the hub's address — no auth required. Set `URNETWORK_HUB_DASHBOARD_PASS` to gate them behind HTTP Basic Auth:
+
+```sh
+-e URNETWORK_HUB_DASHBOARD_PASS=your-dashboard-password
+```
+
+Any username is accepted — only the password is checked. This is independent of `URNETWORK_HUB_TOKEN`, which protects the provider write endpoints (`/api/report`, `/api/heartbeat`, `/api/nodes/remove`) and is unaffected by this setting. Browsers cache the Basic Auth credential per origin after the first prompt, so the dashboard's own JS (`fetch`, `EventSource`) doesn't need any changes to keep working once you've logged in.
+
 ## 4. Confirm It's Working
 
 - Dashboard shows a row per node within one report cycle (up to 5 min) or one heartbeat (15s) after `hub set`.

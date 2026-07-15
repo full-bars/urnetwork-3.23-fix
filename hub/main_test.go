@@ -375,6 +375,141 @@ func TestRequireAuthNoTokenConfiguredAllowsAll(t *testing.T) {
 	}
 }
 
+func TestRequireBasicAuthNoPassConfiguredAllowsAll(t *testing.T) {
+	called := false
+	handler := requireBasicAuth("", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(204)
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if !called {
+		t.Errorf("handler not called when no password configured")
+	}
+	if rec.Code != 204 {
+		t.Errorf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestRequireBasicAuthRejectsMissingCredentials(t *testing.T) {
+	called := false
+	handler := requireBasicAuth("secret-pass", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(204)
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if called {
+		t.Errorf("handler called without credentials")
+	}
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+	if rec.Header().Get("WWW-Authenticate") == "" {
+		t.Errorf("WWW-Authenticate header not set on 401")
+	}
+}
+
+func TestRequireBasicAuthRejectsWrongPassword(t *testing.T) {
+	called := false
+	handler := requireBasicAuth("secret-pass", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(204)
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("anyuser", "wrong-pass")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if called {
+		t.Errorf("handler called with wrong password")
+	}
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestRequireBasicAuthAcceptsAnyUsernameCorrectPassword(t *testing.T) {
+	for _, username := range []string{"admin", "anything-goes", ""} {
+		called := false
+		handler := requireBasicAuth("secret-pass", func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(204)
+		})
+		req := httptest.NewRequest("GET", "/", nil)
+		req.SetBasicAuth(username, "secret-pass")
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if !called {
+			t.Errorf("username %q: handler not called with correct password", username)
+		}
+		if rec.Code != 204 {
+			t.Errorf("username %q: status = %d, want 204", username, rec.Code)
+		}
+	}
+}
+
+func TestReadRoutesRequireBasicAuthWriteRoutesDoNot(t *testing.T) {
+	s := &store{
+		Nodes: make(map[string]*nodeState),
+		rates: make(map[string]*nodeRate),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", requireAuth("hub-token", handleReport(s)))
+	mux.HandleFunc("/api/history", requireBasicAuth("dashboard-pass", handleHistory(s)))
+	mux.HandleFunc("/", requireBasicAuth("dashboard-pass", handleDashboard(s)))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Read route without Basic Auth credentials: rejected.
+	resp, err := http.Get(ts.URL + "/api/history")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("/api/history without auth: status = %d, want 401", resp.StatusCode)
+	}
+
+	// Dashboard without Basic Auth credentials: rejected.
+	resp, err = http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("/ without auth: status = %d, want 401", resp.StatusCode)
+	}
+
+	// Write route with only Bearer token (no Basic Auth) still works —
+	// dashboard password does not gate provider endpoints.
+	report := nodeState{NodeID: "test-node", Host: "test-host"}
+	body, _ := json.Marshal(report)
+	req, _ := http.NewRequest("POST", ts.URL+"/api/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer hub-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/report: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("/api/report with Bearer only: status = %d, want 204", resp.StatusCode)
+	}
+
+	// Read route with correct Basic Auth credentials: allowed.
+	req, _ = http.NewRequest("GET", ts.URL+"/api/history", nil)
+	req.SetBasicAuth("anyuser", "dashboard-pass")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/history with auth: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("/api/history with correct Basic Auth: status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestStoreLoadNonexistent(t *testing.T) {
 	s, err := openStore(t.TempDir())
 	if err != nil {
