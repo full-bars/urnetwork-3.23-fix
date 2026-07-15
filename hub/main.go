@@ -520,6 +520,25 @@ func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireBasicAuth gates the dashboard and read-only API behind HTTP Basic
+// Auth. Any username is accepted — only the password is checked — since the
+// goal is to keep the fleet dashboard from being viewable by anyone who
+// merely knows the hub's address, not to distinguish individual operators.
+func requireBasicAuth(pass string, next http.HandlerFunc) http.HandlerFunc {
+	if pass == "" {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, p, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="urnetwork-hub"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func handleReport(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -914,6 +933,11 @@ func main() {
 		fmt.Println("hub: WARNING URNETWORK_HUB_TOKEN not set — /api/report and /api/nodes/remove are unauthenticated")
 	}
 
+	dashboardPass := os.Getenv("URNETWORK_HUB_DASHBOARD_PASS")
+	if dashboardPass == "" {
+		fmt.Println("hub: WARNING URNETWORK_HUB_DASHBOARD_PASS not set — dashboard and read-only API are unauthenticated")
+	}
+
 	s, err := openStore(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hub: open store: %v\n", err)
@@ -932,13 +956,13 @@ func main() {
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
 	mux.HandleFunc("/api/heartbeat", requireAuth(hubToken, handleHeartbeat(s)))
 	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
-	mux.HandleFunc("/api/nodes/contracts", handleNodeContracts(s))
-	mux.HandleFunc("/api/nodes/", handleNodes(s))
-	mux.HandleFunc("/api/proxies/top", handleProxiesTop(s))
-	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
-	mux.HandleFunc("/api/proxies/history", handleProxiesHistory(s))
-	mux.HandleFunc("/api/history", handleHistory(s))
-	mux.HandleFunc("/api/events", handleEvents(s))
+	mux.HandleFunc("/api/nodes/contracts", requireBasicAuth(dashboardPass, handleNodeContracts(s)))
+	mux.HandleFunc("/api/nodes/", requireBasicAuth(dashboardPass, handleNodes(s)))
+	mux.HandleFunc("/api/proxies/top", requireBasicAuth(dashboardPass, handleProxiesTop(s)))
+	mux.HandleFunc("/api/proxies/best", requireBasicAuth(dashboardPass, handleProxiesBest(s)))
+	mux.HandleFunc("/api/proxies/history", requireBasicAuth(dashboardPass, handleProxiesHistory(s)))
+	mux.HandleFunc("/api/history", requireBasicAuth(dashboardPass, handleHistory(s)))
+	mux.HandleFunc("/api/events", requireBasicAuth(dashboardPass, handleEvents(s)))
 
 	wrapped := gzipMiddleware(mux)
 
@@ -1040,7 +1064,7 @@ func main() {
 		}()
 	}
 
-	mux.HandleFunc("/", handleDashboard(s))
+	mux.HandleFunc("/", requireBasicAuth(dashboardPass, handleDashboard(s)))
 
 	plainSrv := &http.Server{Addr: *addr, Handler: wrapped}
 
