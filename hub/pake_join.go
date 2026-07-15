@@ -97,3 +97,96 @@ func loadOrCreatePakeServerKeys(dataDir string) (*opaque.ServerKeyMaterial, erro
 		OPRFGlobalSeed: oprfSeed,
 	}, nil
 }
+
+// pakeJoinRecord is the on-disk, JSON-serializable form of the single
+// opaque.ClientRecord this hub registers for its "fleet-join" identity.
+type pakeJoinRecord struct {
+	CredentialIdentifierHex string `json:"credential_identifier_hex"`
+	ClientIdentity          string `json:"client_identity"`
+	RegistrationRecordHex   string `json:"registration_record_hex"`
+}
+
+func pakeJoinRecordPath(dataDir string) string {
+	return filepath.Join(dataDir, "hub.pake_record.json")
+}
+
+func loadOrRegisterPakeJoin(dataDir string, skm *opaque.ServerKeyMaterial, password string) (*opaque.ClientRecord, error) {
+	path := pakeJoinRecordPath(dataDir)
+	conf := pakeConfiguration()
+
+	if data, err := os.ReadFile(path); err == nil {
+		var stored pakeJoinRecord
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+
+		server, err := conf.Server()
+		if err != nil {
+			return nil, err
+		}
+		credID, err := hex.DecodeString(stored.CredentialIdentifierHex)
+		if err != nil {
+			return nil, fmt.Errorf("decode credential identifier in %s: %w", path, err)
+		}
+		recordBytes, err := hex.DecodeString(stored.RegistrationRecordHex)
+		if err != nil {
+			return nil, fmt.Errorf("decode registration record in %s: %w", path, err)
+		}
+		record, err := server.Deserialize.RegistrationRecord(recordBytes)
+		if err != nil {
+			return nil, fmt.Errorf("deserialize registration record in %s: %w", path, err)
+		}
+
+		return &opaque.ClientRecord{
+			CredentialIdentifier: credID,
+			ClientIdentity:       []byte(stored.ClientIdentity),
+			RegistrationRecord:   record,
+		}, nil
+	}
+
+	server, err := conf.Server()
+	if err != nil {
+		return nil, err
+	}
+	if err := server.SetKeyMaterial(skm); err != nil {
+		return nil, err
+	}
+	client, err := conf.Client()
+	if err != nil {
+		return nil, err
+	}
+
+	credID := opaque.RandomBytes(32)
+
+	regReq, err := client.RegistrationInit([]byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("RegistrationInit: %w", err)
+	}
+	regResp, err := server.RegistrationResponse(regReq, credID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("RegistrationResponse: %w", err)
+	}
+	record, _, err := client.RegistrationFinalize(regResp, []byte(pakeFleetJoinIdentity), []byte(pakeServerIdentity))
+	if err != nil {
+		return nil, fmt.Errorf("RegistrationFinalize: %w", err)
+	}
+
+	stored := pakeJoinRecord{
+		CredentialIdentifierHex: hex.EncodeToString(credID),
+		ClientIdentity:          pakeFleetJoinIdentity,
+		RegistrationRecordHex:   hex.EncodeToString(record.Serialize()),
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		return nil, fmt.Errorf("marshal join record: %w", err)
+	}
+	if err := writeFileAtomic(path, data, 0600); err != nil {
+		return nil, fmt.Errorf("write %s: %w", path, err)
+	}
+
+	return &opaque.ClientRecord{
+		CredentialIdentifier: credID,
+		ClientIdentity:       []byte(pakeFleetJoinIdentity),
+		RegistrationRecord:   record,
+	}, nil
+}
