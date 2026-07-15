@@ -8,7 +8,7 @@ This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` f
 
 | Profile | `URNETWORK_PROFILE` | RAM | Throughput | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Auto** | `auto` | Any | Optimized | **Recommended.** Dynamically selects Tier based on RAM. |
+| **Auto** | `auto` | Any | Optimized | **Recommended.** Dynamically selects Tier based on RAM (Low, Balanced, Perf, or Extreme). |
 | **Turbo V8** | `turbo-v8` | 16 GiB+ | Maximum | Dedicated servers, max earnings |
 | **Turbo V4** | `turbo-v4` | 4–16 GiB | High | Well-provisioned VPS |
 | *(default)* | *(unset)* | 2–4 GiB | Standard | General use |
@@ -48,43 +48,43 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 ### 📜 Contract & Transfer
 
-| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB |
-| `ContractTransferByteSeqScale` | 4 | 3 | 4 | 4 | 2 | 2 |
-| `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* |
-| `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s |
-| `ResendQueueMaxByteCount` | 2 MiB | 2 MiB | reduced | 2 MiB | 8 MiB | 16 MiB |
-| `ReceiveQueueMaxByteCount` | ~2.5 MiB | ~2.5 MiB | reduced | ~2.5 MiB | 8 MiB | 16 MiB |
-| `MaxResendCount` | unlimited | 16 | 16 | 16 | 16 | 16 |
-| Transfer `SequenceBufferSize` | 16 | 16 | reduced | 16 | 64 | 64 |
+| Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB | 2 MiB |
+| `ContractTransferByteSeqScale` | 4 | 3 | 4 | 4 | 3 | 2 | 3 |
+| `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* | dynamic* |
+| `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s | 60 s |
+| `ResendQueueMaxByteCount` | 2 MiB | 2 MiB | reduced | 2 MiB | 16 MiB | 8 MiB | 16 MiB |
+| `ReceiveQueueMaxByteCount` | ~2.5 MiB | ~2.5 MiB | reduced | ~2.5 MiB | 16 MiB | 8 MiB | 16 MiB |
+| `MaxResendCount` | unlimited | 16 | 16 | 16 | 16 | 16 | 16 |
+| Transfer `SequenceBufferSize` | 16 | 16 | reduced | 16 | 64 | 64 | 64 |
 
 ### 🌐 TCP / IP Layer
 
-| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| TCP `MaxWindowSize` | 1 MiB | 4 MiB (Accordion) | reduced | 4 MiB | 4 MiB | 8 MiB |
-| UDP `MaxWindowSize` | 1 MiB | 4 MiB | reduced | 4 MiB | 4 MiB | 8 MiB |
-| IP `SequenceBufferSize` | 64 | 256 | reduced | 256 | 512 | 512 |
-| Accordion window start | fixed | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB |
-| Accordion idle shrink | none | 30 s | 30 s | 30 s | 30 s | 30 s |
+| Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| TCP `MaxWindowSize` | 1 MiB | 4 MiB (Accordion) | reduced | 4 MiB | 8 MiB | 4 MiB | 8 MiB |
+| UDP `MaxWindowSize` | 1 MiB | 4 MiB | reduced | 4 MiB | 8 MiB | 4 MiB | 8 MiB |
+| IP `SequenceBufferSize` | 64 | 256 | reduced | 256 | 512 | 512 | 512 |
+| Accordion window start | fixed | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB | 4 KiB |
+| Accordion idle shrink | none | 30 s | 30 s | 30 s | 30 s | 30 s | 30 s |
 
 ### 📡 WebRTC
 
-| Parameter | Upstream | Fork default | Turbo V4 | Turbo V8 |
-| :--- | :--- | :--- | :--- | :--- |
-| `ReceiveBufferSize` per peer | 4 MiB | 4 MiB | 8 MiB | 16 MiB |
+| Parameter | Upstream | Fork default | Auto Extreme | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ReceiveBufferSize` per peer | 4 MiB | 4 MiB | 16 MiB | 8 MiB | 16 MiB |
 
 ### 🧠 Memory & GC
 
-| Parameter | Upstream | Fork default | Lowmem | Eco | Turbo V4 | Turbo V8 |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `InitialMessagePoolByteCount` | 1 MiB | auto (RAM/32) | auto | auto | auto | auto |
-| Message pool floor | — | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB |
-| Message pool cap | — | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB |
-| GOGC | 100 | 100 | 100 | 50 (dynamic) | 200 | 200 |
-| GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | unset |
-| RAM logging | off | off | on | off | off | off |
+| Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `InitialMessagePoolByteCount` | 1 MiB | auto (RAM/32) | auto | auto | auto | auto | auto |
+| Message pool floor | — | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB |
+| Message pool cap | — | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB |
+| GOGC | 100 | 100 | 100 | 50 (dynamic) | 200 | 200 | 200 |
+| GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | unset | unset |
+| RAM logging | off | off | on | off | off | off | off |
 
 ---
 
@@ -92,13 +92,14 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 ### 🤖 Auto Profile (`auto`)
 
-The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. For RAM-constrained systems (Low and Balanced tiers), it **automatically enables the dynamic Eco Memory Monitor** to prevent OOMs.
+The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. For RAM-constrained systems (Low and Balanced tiers), it **automatically enables the dynamic Eco Memory Monitor** to prevent OOMs. On machines with **8 GiB+ RAM**, auto selects the **Extreme** tier, which applies the same turbo-v8 settings (8 MiB windows, 16 MiB queues, seq buf 512, GOGC 200) with a contract ramp scale of 3.
 
 | Tier | RAM Range | Contract Floor | IP Buffer | TCP Window | WebRTC Recv | Eco Monitor |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Low** | < 1.2 GiB | 128 KiB | 32 | 128 KiB | 512 KiB | **Enabled** |
 | **Balanced**| 1.2 - 3 GiB | 256 KiB | 128 | 512 KiB | 1 MiB | **Enabled** |
-| **Perf** | > 3 GiB | 2 MiB | 256 | 4 MiB | 4 MiB | Disabled |
+| **Perf** | 3 - 8 GiB | 2 MiB | 256 | 4 MiB | 4 MiB | Disabled |
+| **Extreme** | >= 8 GiB | 2 MiB | 512 | 8 MiB | 16 MiB | Disabled |
 
 **Enabling:**
 ```bash
@@ -128,7 +129,7 @@ The default 1 MiB TCP Accordion window creates a theoretical per-connection thro
 - IP sequence buffer depth: 256 → 512
 - Transfer goroutine buffer depth: 16 → 64
 - WebRTC DataChannel buffer: 4 MiB → 8/16 MiB per peer
-- Contract ramp (`ContractTransferByteSeqScale`): 4 → 2 (full speed in 2 contracts instead of 4)
+- Contract ramp (`ContractTransferByteSeqScale`): 4 → 3 (full speed in 3 contracts instead of 4)
 - GOGC raised to 200, GOMEMLIMIT unset (heap breathes freely on RAM-rich boxes)
 
 **Enabling:**

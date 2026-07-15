@@ -20,6 +20,7 @@ const (
 	Tier1Low         = "lowmem"
 	Tier2Balanced    = "balanced"
 	Tier3Performance = "performance"
+	Tier4Extreme     = "extreme"
 )
 
 // ApplyAutoTuning detects the available system RAM and applies a performance
@@ -41,25 +42,30 @@ func ApplyAutoTuning(cs *ClientSettings, ns *LocalUserNatSettings) bool {
 	switch tier {
 	case Tier1Low:
 		applyTier1(cs, ns, ramLimit)
-		return true // Enable dynamic GC monitoring
+		return true
 	case Tier2Balanced:
 		applyTier2(cs, ns, ramLimit)
-		return true // Enable dynamic GC monitoring
+		return true
 	case Tier3Performance:
 		applyTier3(cs, ns)
+	case Tier4Extreme:
+		applyTier4(cs, ns)
 	}
 
 	return false
 }
 
 func selectTier(ramLimit int64) string {
-	if ramLimit < 1200*1024*1024 { // 1.2 GiB
+	if ramLimit < 1200*1024*1024 {
 		return Tier1Low
 	}
-	if ramLimit < 3000*1024*1024 { // 3 GiB
+	if ramLimit < 3000*1024*1024 {
 		return Tier2Balanced
 	}
-	return Tier3Performance
+	if ramLimit < 8192*1024*1024 {
+		return Tier3Performance
+	}
+	return Tier4Extreme
 }
 
 func applyTier1(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
@@ -127,4 +133,29 @@ func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
 
 	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(4)
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(4)
+}
+
+func applyTier4(cs *ClientSettings, ns *LocalUserNatSettings) {
+	cs.ContractManagerSettings.InitialContractTransferByteCount = mib(2)
+
+	ns.SequenceBufferSize = 512
+	ns.TcpBufferSettings.SequenceBufferSize = 512
+	ns.UdpBufferSettings.SequenceBufferSize = 512
+
+	ns.TcpBufferSettings.MaxWindowSize = uint32(mib(8))
+	ns.UdpBufferSettings.MaxWindowSize = uint32(mib(8))
+
+	cs.WebRtcSettings.ReceiveBufferSize = mib(16)
+
+	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(16)
+	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(16)
+
+	cs.SendBufferSettings.SequenceBufferSize = 64
+	cs.ReceiveBufferSettings.SequenceBufferSize = 64
+
+	cs.ContractManagerSettings.ContractTransferByteSeqScale = 3
+
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(200)
+	}
 }
