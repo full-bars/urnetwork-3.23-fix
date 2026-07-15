@@ -710,6 +710,19 @@ func newClientForURL(reportURL string) *http.Client {
 		}
 	}
 
+	// Try system CA pool (works with Cloudflare Tunnel, Caddy+LE, etc.)
+	if pool, err := x509.SystemCertPool(); err == nil {
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					RootCAs:    pool,
+				},
+			},
+		}
+	}
+
 	// Fail closed - no trust material
 	return &http.Client{
 		Timeout: 10 * time.Second,
@@ -754,6 +767,147 @@ func loadHubCAPool() (*x509.CertPool, bool) {
 		return nil, false
 	}
 	return pool, true
+}
+
+// bootstrapHubCA fetches the hub's CA certificate at provider startup using
+// the hub token, so Docker users can deploy containers already authenticated
+// to their hub without running urnet-tools hub link manually.
+//
+// It tries a certificate-verified fetch first (system trust store) — this is
+// the fully safe path and covers hubs behind Cloudflare Tunnel or Caddy+LE
+// with a publicly-trusted cert; the hub token is never sent over an
+// unverified connection there. Only if that fails (the common case for a
+// direct password-derived CA hub, whose leaf isn't in any public trust store
+// yet) does it fall back to an unverified fetch, which is a TOFU bootstrap:
+// the token is sent before the hub's identity can be confirmed, and a
+// network attacker present at that exact moment could read it or hand back a
+// forged CA cert. That fallback is intentionally kept (it's what makes
+// zero-touch Docker bootstrap possible at all) but is logged loudly so it's
+// never a silent tradeoff — operators who can't accept it on their network
+// should run 'urnet-tools hub link' manually instead, which requires an
+// explicit onboard token rather than the standing fleet-wide hub token.
+//
+// Once the CA cert is written to hub_ca.pem, newClientForURL picks it up for
+// proper chain verification on all subsequent requests.
+func bootstrapHubCA(ctx context.Context, reportURL, hubToken string) {
+	if reportURL == "" || hubToken == "" {
+		return
+	}
+	if !strings.HasPrefix(reportURL, "https://") {
+		return
+	}
+
+	caPath, err := hubCACertPath()
+	if err != nil {
+		tlog("[hub] CA cert path error: %v\n", err)
+		return
+	}
+
+	if _, err := os.Stat(caPath); err == nil {
+		return
+	}
+
+	apiURL, err := url.JoinPath(reportURL, "/api/ca-cert")
+	if err != nil {
+		tlog("[hub] bootstrap URL error: %v\n", err)
+		return
+	}
+
+	tlog("[hub] bootstrapping CA cert from %s\n", apiURL)
+
+	caPEM, ok := fetchHubCACert(ctx, apiURL, hubToken, &http.Client{Timeout: 10 * time.Second})
+	if !ok {
+		tlog("[hub] WARNING: verified CA cert fetch failed (expected for a direct password-derived CA hub) — falling back to an unverified fetch. The hub token will be sent before the hub's identity is confirmed. Only safe if hub and provider share a trusted network at boot; run 'urnet-tools hub link %s' manually instead if you can't accept that.\n", reportURL)
+		insecureClient := &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+		caPEM, ok = fetchHubCACert(ctx, apiURL, hubToken, insecureClient)
+		if !ok {
+			return
+		}
+	}
+
+	if err := writeHubCACertAtomic(caPath, caPEM); err != nil {
+		tlog("[hub] bootstrap CA cert write error: %v\n", err)
+		return
+	}
+
+	tlog("[hub] CA cert installed from hub token bootstrap\n")
+}
+
+// fetchHubCACert performs the actual GET against /api/ca-cert and extracts
+// ca_pem from the response. Errors are logged by the caller (the verified
+// attempt fails silently into the caller's fallback branch; the caller logs
+// once there instead of twice).
+func fetchHubCACert(ctx context.Context, apiURL, hubToken string, client *http.Client) (string, bool) {
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		tlog("[hub] bootstrap request error: %v\n", err)
+		return "", false
+	}
+	req.Header.Set("Authorization", "Bearer "+hubToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		tlog("[hub] bootstrap CA cert rejected: %s — %s\n", resp.Status, strings.TrimSpace(string(body)))
+		return "", false
+	}
+
+	var result struct {
+		CAPEM string `json:"ca_pem"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		tlog("[hub] bootstrap CA cert parse error: %v\n", err)
+		return "", false
+	}
+
+	if result.CAPEM == "" {
+		tlog("[hub] bootstrap CA cert response missing ca_pem\n")
+		return "", false
+	}
+
+	return result.CAPEM, true
+}
+
+// writeHubCACertAtomic writes the CA cert via temp-file-then-rename so a
+// crash or power loss mid-write can never leave a truncated hub_ca.pem on
+// disk — the bootstrap's "skip if the file already exists" check in
+// bootstrapHubCA depends on that file only ever existing in a complete state.
+func writeHubCACertAtomic(caPath, caPEM string) error {
+	dir := filepath.Dir(caPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".hub_ca.pem.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+
+	if _, err := tmp.WriteString(caPEM + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, caPath)
 }
 
 func verifyHubChain(pool *x509.CertPool, serverName string) func(cs tls.ConnectionState) error {

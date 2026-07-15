@@ -1975,6 +1975,8 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
+	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
+
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)

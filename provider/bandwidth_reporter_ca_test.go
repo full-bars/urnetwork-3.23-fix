@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,11 +199,12 @@ func TestVerifyHubChain_RejectsNoPeerCertificates(t *testing.T) {
 	}
 }
 
-// TestNewClientForURL_FailsClosedWithoutTrustMaterial is the core behavior
-// change from the old accept-anything TOFU default: an https:// report URL
-// with no hub_ca.pem and no legacy hub.pin must refuse every connection,
-// not silently fall back to InsecureSkipVerify.
-func TestNewClientForURL_FailsClosedWithoutTrustMaterial(t *testing.T) {
+// TestNewClientForURL_SystemPoolFallback verifies that an https:// report URL
+// with no hub_ca.pem and no legacy hub.pin falls back to the system CA pool
+// (works with Cloudflare Tunnel, Caddy+LE, etc.) instead of failing closed.
+// On systems where x509.SystemCertPool() is unavailable, it falls through to
+// the fail-closed branch.
+func TestNewClientForURL_SystemPoolFallback(t *testing.T) {
 	withTempHome(t)
 
 	client := newClientForURL("https://hub.example.com")
@@ -207,12 +212,27 @@ func TestNewClientForURL_FailsClosedWithoutTrustMaterial(t *testing.T) {
 	if !ok || transport.TLSClientConfig == nil {
 		t.Fatal("expected an *http.Transport with a TLSClientConfig")
 	}
-	verify := transport.TLSClientConfig.VerifyConnection
-	if verify == nil {
-		t.Fatal("expected a VerifyConnection callback in the fail-closed branch")
-	}
-	if err := verify(tls.ConnectionState{}); err == nil {
-		t.Error("expected the fail-closed VerifyConnection to always return an error")
+
+	// If SystemCertPool succeeded, the client uses RootCAs and no
+	// VerifyConnection callback. If it failed, the fail-closed branch
+	// sets a VerifyConnection that always errors.
+	if transport.TLSClientConfig.RootCAs != nil {
+		// System CA pool fallback — no VerifyConnection, just RootCAs
+		if transport.TLSClientConfig.VerifyConnection != nil {
+			t.Error("expected no VerifyConnection when using system CA pool fallback")
+		}
+		if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+			t.Errorf("MinVersion = %v, want TLS 1.2", transport.TLSClientConfig.MinVersion)
+		}
+	} else {
+		// Fail-closed branch on systems without a system CA pool
+		verify := transport.TLSClientConfig.VerifyConnection
+		if verify == nil {
+			t.Fatal("expected a VerifyConnection callback in the fail-closed branch")
+		}
+		if err := verify(tls.ConnectionState{}); err == nil {
+			t.Error("expected the fail-closed VerifyConnection to always return an error")
+		}
 	}
 }
 
@@ -287,4 +307,220 @@ func TestNewClientForURL_LegacyPinDeprecationLoggedOnce(t *testing.T) {
 		t.Error("expected deprecation flag set again (package-level, reset between calls)")
 	}
 	loggedLegacyPinDeprecation.Store(false)
+}
+
+// --- bootstrapHubCA tests ---
+
+// issueLeafWithIPSAN mirrors testCA.issueLeaf but sets an IP SAN rather than
+// a DNS SAN. Standard library TLS hostname verification (used by a plain
+// http.Client with RootCAs, unlike this project's own IP-skipping
+// verifyHubChain) requires an IP SAN to validate connections made to an IP
+// literal like httptest's "127.0.0.1" servers.
+func issueLeafWithIPSAN(t *testing.T, ca *testCA, ip string) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP(ip)},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("create leaf cert: %v", err)
+	}
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal leaf key: %v", err)
+	}
+	tlsCert, err := tls.X509KeyPair(pemEncodeCert(der), pemEncodeKey(keyBytes))
+	if err != nil {
+		t.Fatalf("build tls.Certificate: %v", err)
+	}
+	return tlsCert
+}
+
+func caCertHandler(expectToken, caPEM string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+expectToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"ca_pem": caPEM})
+	}
+}
+
+func TestBootstrapHubCA_SkipsIfCAAlreadyExists(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(dir, "hub_ca.pem")
+	if err := os.WriteFile(caPath, []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	bootstrapHubCA(context.Background(), server.URL, "secret-token")
+
+	if called {
+		t.Error("expected no request when hub_ca.pem already exists")
+	}
+	data, _ := os.ReadFile(caPath)
+	if string(data) != "existing" {
+		t.Error("existing CA file was modified")
+	}
+}
+
+func TestBootstrapHubCA_NoopWithoutTokenOrHTTPS(t *testing.T) {
+	home := withTempHome(t)
+	caPath := filepath.Join(home, ".urnetwork", "hub_ca.pem")
+
+	bootstrapHubCA(context.Background(), "https://hub.example.com", "")
+	if _, err := os.Stat(caPath); err == nil {
+		t.Error("expected no file written with empty token")
+	}
+
+	bootstrapHubCA(context.Background(), "http://hub.example.com", "secret-token")
+	if _, err := os.Stat(caPath); err == nil {
+		t.Error("expected no file written for a plain-HTTP report URL")
+	}
+}
+
+// TestBootstrapHubCA_FallsBackToInsecureWhenNotPubliclyTrusted exercises the
+// realistic case: a self-signed/password-derived-CA hub whose leaf isn't in
+// any system trust store, so the verified attempt fails and bootstrapHubCA
+// falls back to the unverified fetch to still complete the bootstrap.
+func TestBootstrapHubCA_FallsBackToInsecureWhenNotPubliclyTrusted(t *testing.T) {
+	home := withTempHome(t)
+	ca := newTestCA(t)
+
+	server := httptest.NewTLSServer(caCertHandler("secret-token", string(ca.certPEM)))
+	defer server.Close()
+
+	bootstrapHubCA(context.Background(), server.URL, "secret-token")
+
+	caPath := filepath.Join(home, ".urnetwork", "hub_ca.pem")
+	data, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("expected hub_ca.pem to be written via insecure fallback: %v", err)
+	}
+	if !strings.Contains(string(data), "BEGIN CERTIFICATE") {
+		t.Errorf("written CA cert doesn't look like a PEM cert: %s", data)
+	}
+	info, err := os.Stat(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("hub_ca.pem perms = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestBootstrapHubCA_RejectsWrongToken(t *testing.T) {
+	home := withTempHome(t)
+	ca := newTestCA(t)
+	server := httptest.NewTLSServer(caCertHandler("correct-token", string(ca.certPEM)))
+	defer server.Close()
+
+	bootstrapHubCA(context.Background(), server.URL, "wrong-token")
+
+	caPath := filepath.Join(home, ".urnetwork", "hub_ca.pem")
+	if _, err := os.Stat(caPath); err == nil {
+		t.Error("expected no CA cert written when the hub rejects the token")
+	}
+}
+
+func TestBootstrapHubCA_RejectsMissingCAPEMInResponse(t *testing.T) {
+	home := withTempHome(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	bootstrapHubCA(context.Background(), server.URL, "secret-token")
+
+	caPath := filepath.Join(home, ".urnetwork", "hub_ca.pem")
+	if _, err := os.Stat(caPath); err == nil {
+		t.Error("expected no CA cert written when ca_pem is missing from the response")
+	}
+}
+
+// TestFetchHubCACert_SucceedsOverAVerifiedConnection simulates the safe path:
+// a client that already trusts the hub's CA (e.g. via the system pool, for a
+// Caddy+LE/Cloudflare Tunnel hub) fetches ca_pem without ever needing
+// InsecureSkipVerify — the token is protected by real certificate validation.
+func TestFetchHubCACert_SucceedsOverAVerifiedConnection(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueLeafWithIPSAN(t, ca, "127.0.0.1")
+
+	server := httptest.NewUnstartedServer(caCertHandler("secret-token", string(ca.certPEM)))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	server.StartTLS()
+	defer server.Close()
+
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.certPEM)
+	verifiedClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+
+	apiURL, err := url.JoinPath(server.URL, "/api/ca-cert")
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM, ok := fetchHubCACert(context.Background(), apiURL, "secret-token", verifiedClient)
+	if !ok {
+		t.Fatal("expected the verified fetch to succeed against a CA-signed test server")
+	}
+	if caPEM != string(ca.certPEM) {
+		t.Error("returned ca_pem does not match the server's CA cert")
+	}
+}
+
+func TestWriteHubCACertAtomic_WritesCompleteFileWithCorrectPerms(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "hub_ca.pem")
+
+	if err := writeHubCACertAtomic(caPath, "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"); err != nil {
+		t.Fatalf("writeHubCACertAtomic: %v", err)
+	}
+
+	data, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), "\n") {
+		t.Error("expected trailing newline appended to written CA cert")
+	}
+	info, err := os.Stat(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("perms = %v, want 0600", info.Mode().Perm())
+	}
+
+	// No leftover temp file after a successful write.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected exactly one file in %s after write, got %d", dir, len(entries))
+	}
 }

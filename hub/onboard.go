@@ -129,9 +129,23 @@ func appendToFile(path string, data []byte) error {
 	return err
 }
 
-// handleCACert serves GET/POST /api/ca-cert
-func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
+// handleCACert serves GET/POST /api/ca-cert.
+// Authenticates via either:
+//  1. Bearer token matching URNETWORK_HUB_TOKEN (for auto-bootstrap), or
+//  2. ?token= query param matching an onboard token (for first-time setup).
+func handleCACert(dataDir string, ca *hubCA, hubToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Try Bearer auth with the hub token first
+		authHeader := r.Header.Get("Authorization")
+		if hubToken != "" && strings.HasPrefix(authHeader, "Bearer ") {
+			given := strings.TrimPrefix(authHeader, "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(given), []byte(hubToken)) == 1 {
+				serveCACert(w, ca)
+				return
+			}
+		}
+
+		// Fall back to onboard token query param
 		token := r.URL.Query().Get("token")
 		if token == "" {
 			token = r.FormValue("token")
@@ -141,7 +155,6 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 			return
 		}
 		if !validateOnboardToken(dataDir, token, time.Now()) {
-			// Distinguish "token not found" from "token expired"
 			if tokenExists(dataDir, token) {
 				http.Error(w, `{"error":"token expired"}`, 403)
 			} else {
@@ -154,13 +167,17 @@ func handleCACert(dataDir string, ca *hubCA) http.HandlerFunc {
 			tokenPrefix = tokenPrefix[:8]
 		}
 		fmt.Printf("hub: onboard %s... from %s\n", tokenPrefix, r.RemoteAddr)
-		w.Header().Set("Content-Type", "application/json")
-		caFP, _ := ca.caFingerprint()
-		json.NewEncoder(w).Encode(map[string]string{
-			"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
-			"ca_fingerprint": caFP,
-		})
+		serveCACert(w, ca)
 	}
+}
+
+func serveCACert(w http.ResponseWriter, ca *hubCA) {
+	w.Header().Set("Content-Type", "application/json")
+	caFP, _ := ca.caFingerprint()
+	json.NewEncoder(w).Encode(map[string]string{
+		"ca_pem":         strings.TrimSpace(string(ca.certPEM)),
+		"ca_fingerprint": caFP,
+	})
 }
 
 // handleOnboardScript serves GET /onboard.sh

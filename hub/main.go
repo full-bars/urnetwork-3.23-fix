@@ -1039,8 +1039,8 @@ func main() {
 			})
 		})
 
-		// CA cert endpoint for onboarding
-		mux.HandleFunc("/api/ca-cert", handleCACert(*dataDir, ca))
+		// CA cert endpoint for onboarding and token-based auto-bootstrap
+		mux.HandleFunc("/api/ca-cert", handleCACert(*dataDir, ca, hubToken))
 
 		// Onboard script endpoint
 		_, port, _ := net.SplitHostPort(tlsListen)
