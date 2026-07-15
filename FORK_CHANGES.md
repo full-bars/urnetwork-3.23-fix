@@ -162,7 +162,7 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB
   - IP-layer `SequenceBufferSize`: 256 → 512
   - Transfer-layer `SequenceBufferSize`: 16 → 64
   - WebRTC `ReceiveBufferSize`: 2× window per peer
-  - `ContractTransferByteSeqScale`: 4 → 2 (reaches full contract size in 2 contracts)
+  - `ContractTransferByteSeqScale`: 4 → 3 (reaches full contract size in 3 contracts)
   - `GOGC`: 200, no GOMEMLIMIT
 - `toggle_turbomode()` in `Provider_Install_Linux.sh` — `urnet-tools turbo <v4|v8|off>` command
 - `entrypoint.sh` — translates Docker `TURBO=v4/v8` env var to `URNETWORK_PROFILE` before exec
@@ -277,10 +277,11 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB
 **Files Modified**: `provider/main.go`, `util.go`
 
 **Changes**:
-- **`URNETWORK_PROFILE=auto`**: Opt-in profile that selects one of three tiers:
+- **`URNETWORK_PROFILE=auto`**: Opt-in profile that selects one of four tiers:
   - **Tier 1 (Low, <1.2GB)**: 128KB contracts, 32 seq buffers, 128KB TCP window, 512KB WebRTC.
   - **Tier 2 (Balanced, 1.2-3GB)**: 256KB contracts, 128 seq buffers, 512KB TCP window, 1MB WebRTC.
-  - **Tier 3 (Perf, >3GB)**: 2MB contracts, 256 seq buffers, 1MB TCP window, 4MB WebRTC.
+  - **Tier 3 (Perf, 3-8GB)**: 2MB contracts, 256 seq buffers, 4MB TCP window, 4MB WebRTC.
+  - **Tier 4 (Extreme, >=8GB)**: 2MB contracts, 512 seq buffers, 8MB TCP window, 16MB WebRTC, GOGC 200, contract ramp scale 3.
 - **Cgroup Awareness**: `DetectEffectiveRAMLimitBytes()` (moved to `util.go`) correctly reads limits in Docker/K8s environments.
 
 **Status**: ✅ Shipped in fix.14 (unreleased).
@@ -961,6 +962,7 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - **TransportBufferSize**: 1 → 16. Only 1 message was buffered in-flight between the protocol framer and WebSocket writer. This serialized all upstream traffic regardless of available bandwidth. Now matches the transfer buffer depth.
 - **TCP/UDP MaxWindowSize**: 1 MiB → 4 MiB. Removes the ~160 Mbps per-connection throughput ceiling at 50ms RTT. UDP window raised to match.
 - **applyTier3 sets actual performance values**: Previously `URNETWORK_PROFILE=auto` on 4GiB+ boxes left all settings at defaults. Now applies 2 MiB initial contracts, 256-depth IP buffers, 4 MiB TCP window, and 4 MiB transfer queues.
+- **Tier 4 Extreme added for >= 8 GiB**: New `applyTier4` applies turbo-v8-equivalent settings (8 MiB windows, 16 MiB queues, 512 seq buf, GOGC 200) with a contract ramp scale of 3.
 - **ContractTransferByteSeqScale**: 4 → 2. Reaches the 128 MiB standard contract in 2 sequences instead of 4, halving cold-start ramp time. Previously only turbo profiles got this.
 
 **Status**: ✅ Shipped in v3.23.0-fix.24.
@@ -1672,10 +1674,12 @@ Pool budget is divided evenly: `maxCount / shardCount`. Per-shard capacity floor
 
 **Purpose**: Increase `ContractTransferByteSeqScale` from 2 to 3, adding an intermediate ramp step between the 2 MiB initial and 128 MiB standard contract sizes. Reduces the proportion of unused contract allocations on short-lived connections (probes, quick disconnects, unreachable targets).
 
-**Files Modified**: `transfer_contract_manager.go`
+**Files Modified**: `transfer_contract_manager.go`, `provider/main.go`, `tuning.go`
 
 **Changes**:
-- `ContractTransferByteSeqScale`: 2 → 3
+- Fork default `ContractTransferByteSeqScale`: 2 → 3 (`transfer_contract_manager.go`)
+- Turbo V8 `ContractTransferByteSeqScale`: 2 → 3 (`provider/main.go`, `applyTurboSettings`)
+- Auto Extreme (Tier 4) uses scale 3 (`tuning.go`, `applyTier4`)
 
 **Ramp progression**:
 
