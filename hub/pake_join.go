@@ -190,3 +190,74 @@ func loadOrRegisterPakeJoin(dataDir string, skm *opaque.ServerKeyMaterial, passw
 		RegistrationRecord:   record,
 	}, nil
 }
+
+func pakeServerLoginStep1(skm *opaque.ServerKeyMaterial, record *opaque.ClientRecord, ke1Bytes []byte) ([]byte, *opaque.ServerOutput, error) {
+	conf := pakeConfiguration()
+	server, err := conf.Server()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := server.SetKeyMaterial(skm); err != nil {
+		return nil, nil, err
+	}
+
+	ke1, err := server.Deserialize.KE1(ke1Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("deserialize KE1: %w", err)
+	}
+
+	ke2, serverOutput, err := server.GenerateKE2(ke1, record)
+	if err != nil {
+		return nil, nil, fmt.Errorf("GenerateKE2: %w", err)
+	}
+
+	return ke2.Serialize(), serverOutput, nil
+}
+
+func pakeServerLoginFinish(serverOutput *opaque.ServerOutput, ke3Bytes []byte) ([]byte, error) {
+	conf := pakeConfiguration()
+	server, err := conf.Server()
+	if err != nil {
+		return nil, err
+	}
+
+	ke3, err := server.Deserialize.KE3(ke3Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("deserialize KE3: %w", err)
+	}
+
+	if err := server.LoginFinish(ke3, serverOutput.ClientMAC); err != nil {
+		return nil, fmt.Errorf("login rejected: %w", err)
+	}
+
+	return serverOutput.SessionSecret, nil
+}
+
+func pakeClientLoginStep1(password string) ([]byte, *opaque.Client, error) {
+	conf := pakeConfiguration()
+	client, err := conf.Client()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ke1, err := client.GenerateKE1([]byte(password))
+	if err != nil {
+		return nil, nil, fmt.Errorf("GenerateKE1: %w", err)
+	}
+
+	return ke1.Serialize(), client, nil
+}
+
+func pakeClientLoginFinish(client *opaque.Client, ke2Bytes []byte) ([]byte, []byte, error) {
+	ke2, err := client.Deserialize.KE2(ke2Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("deserialize KE2: %w", err)
+	}
+
+	ke3, sessionKey, _, err := client.GenerateKE3(ke2, []byte(pakeFleetJoinIdentity), []byte(pakeServerIdentity))
+	if err != nil {
+		return nil, nil, fmt.Errorf("GenerateKE3: %w", err)
+	}
+
+	return ke3.Serialize(), sessionKey, nil
+}
