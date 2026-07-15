@@ -279,8 +279,8 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	// WebRTC per-peer DataChannel buffer
 	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize) * 2
 
-	// Faster contract ramp: reach StandardContractTransferByteCount in 2 contracts instead of 4
-	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 2
+	// Faster contract ramp: reach StandardContractTransferByteCount in 3 contracts instead of 4
+	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
 	// Let the heap breathe; no GOMEMLIMIT on RAM-rich boxes
 	if os.Getenv("GOGC") == "" {
