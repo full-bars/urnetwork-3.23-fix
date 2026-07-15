@@ -195,11 +195,12 @@ func TestVerifyHubChain_RejectsNoPeerCertificates(t *testing.T) {
 	}
 }
 
-// TestNewClientForURL_FailsClosedWithoutTrustMaterial is the core behavior
-// change from the old accept-anything TOFU default: an https:// report URL
-// with no hub_ca.pem and no legacy hub.pin must refuse every connection,
-// not silently fall back to InsecureSkipVerify.
-func TestNewClientForURL_FailsClosedWithoutTrustMaterial(t *testing.T) {
+// TestNewClientForURL_SystemPoolFallback verifies that an https:// report URL
+// with no hub_ca.pem and no legacy hub.pin falls back to the system CA pool
+// (works with Cloudflare Tunnel, Caddy+LE, etc.) instead of failing closed.
+// On systems where x509.SystemCertPool() is unavailable, it falls through to
+// the fail-closed branch.
+func TestNewClientForURL_SystemPoolFallback(t *testing.T) {
 	withTempHome(t)
 
 	client := newClientForURL("https://hub.example.com")
@@ -207,12 +208,27 @@ func TestNewClientForURL_FailsClosedWithoutTrustMaterial(t *testing.T) {
 	if !ok || transport.TLSClientConfig == nil {
 		t.Fatal("expected an *http.Transport with a TLSClientConfig")
 	}
-	verify := transport.TLSClientConfig.VerifyConnection
-	if verify == nil {
-		t.Fatal("expected a VerifyConnection callback in the fail-closed branch")
-	}
-	if err := verify(tls.ConnectionState{}); err == nil {
-		t.Error("expected the fail-closed VerifyConnection to always return an error")
+
+	// If SystemCertPool succeeded, the client uses RootCAs and no
+	// VerifyConnection callback. If it failed, the fail-closed branch
+	// sets a VerifyConnection that always errors.
+	if transport.TLSClientConfig.RootCAs != nil {
+		// System CA pool fallback — no VerifyConnection, just RootCAs
+		if transport.TLSClientConfig.VerifyConnection != nil {
+			t.Error("expected no VerifyConnection when using system CA pool fallback")
+		}
+		if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+			t.Errorf("MinVersion = %v, want TLS 1.2", transport.TLSClientConfig.MinVersion)
+		}
+	} else {
+		// Fail-closed branch on systems without a system CA pool
+		verify := transport.TLSClientConfig.VerifyConnection
+		if verify == nil {
+			t.Fatal("expected a VerifyConnection callback in the fail-closed branch")
+		}
+		if err := verify(tls.ConnectionState{}); err == nil {
+			t.Error("expected the fail-closed VerifyConnection to always return an error")
+		}
 	}
 }
 

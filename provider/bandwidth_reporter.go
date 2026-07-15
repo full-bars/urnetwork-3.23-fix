@@ -710,6 +710,19 @@ func newClientForURL(reportURL string) *http.Client {
 		}
 	}
 
+	// Try system CA pool (works with Cloudflare Tunnel, Caddy+LE, etc.)
+	if pool, err := x509.SystemCertPool(); err == nil {
+		return &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					RootCAs:    pool,
+				},
+			},
+		}
+	}
+
 	// Fail closed - no trust material
 	return &http.Client{
 		Timeout: 10 * time.Second,
@@ -754,6 +767,99 @@ func loadHubCAPool() (*x509.CertPool, bool) {
 		return nil, false
 	}
 	return pool, true
+}
+
+// bootstrapHubCA fetches the hub's CA certificate at provider startup using
+// the hub token, so Docker users can deploy containers already authenticated
+// to their hub without running urnet-tools hub link manually.
+//
+// Called with InsecureSkipVerify (we don't have the CA cert yet). Once the CA
+// cert is written to hub_ca.pem, newClientForURL picks it up for proper chain
+// verification on all subsequent requests.
+//
+// For hubs behind Cloudflare Tunnel or Caddy+LE (publicly-trusted certs), the
+// CA cert fetch may succeed if the hub serves it. If not, the system CA pool
+// fallback in newClientForURL handles TLS verification transparently.
+func bootstrapHubCA(ctx context.Context, reportURL, hubToken string) {
+	if reportURL == "" || hubToken == "" {
+		return
+	}
+	if !strings.HasPrefix(reportURL, "https://") {
+		return
+	}
+
+	caPath, err := hubCACertPath()
+	if err != nil {
+		tlog("[hub] CA cert path error: %v\n", err)
+		return
+	}
+
+	if _, err := os.Stat(caPath); err == nil {
+		return
+	}
+
+	apiURL, err := url.JoinPath(reportURL, "/api/ca-cert")
+	if err != nil {
+		tlog("[hub] bootstrap URL error: %v\n", err)
+		return
+	}
+
+	tlog("[hub] bootstrapping CA cert from %s\n", apiURL)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		tlog("[hub] bootstrap request error: %v\n", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+hubToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		tlog("[hub] bootstrap CA cert fetch failed: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		tlog("[hub] bootstrap CA cert rejected: %s — %s\n", resp.Status, strings.TrimSpace(string(body)))
+		return
+	}
+
+	var result struct {
+		CAPEM string `json:"ca_pem"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		tlog("[hub] bootstrap CA cert parse error: %v\n", err)
+		return
+	}
+
+	if result.CAPEM == "" {
+		tlog("[hub] bootstrap CA cert response missing ca_pem\n")
+		return
+	}
+
+	dir := filepath.Dir(caPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		tlog("[hub] bootstrap CA cert mkdir error: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(caPath, []byte(result.CAPEM+"\n"), 0600); err != nil {
+		tlog("[hub] bootstrap CA cert write error: %v\n", err)
+		return
+	}
+
+	tlog("[hub] CA cert installed from hub token bootstrap\n")
 }
 
 func verifyHubChain(pool *x509.CertPool, serverName string) func(cs tls.ConnectionState) error {
