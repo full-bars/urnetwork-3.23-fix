@@ -22,7 +22,7 @@ Fires **once per process** at startup when `URNETWORK_PROFILE=auto` is set, rega
 | `[audit] Suboptimal...` | The host OS has low limits (default ulimit or conntrack). This will throttle connections under heavy load. |
 | `[audit] Disk write speed...` | Result of the 1GB cache-busting stress test. |
 | `[audit] Auto-enabling RAM logs...` | The provider decided your disk is too slow and moved logs to `/dev/shm` to protect network performance. |
-| `[tune] auto-profile...` | Confirms which performance tier (Low/Balanced/Perf) was selected based on detected RAM. |
+| `[tune] auto-profile...` | Confirms which performance tier (Low/Balanced/Perf/Extreme) was selected based on detected RAM. |
 
 ---
 
