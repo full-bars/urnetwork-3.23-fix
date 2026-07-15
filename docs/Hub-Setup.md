@@ -27,6 +27,9 @@ The hub uses **four separate credentials** for four separate jobs. They get intr
 
 Jump to: [provider auth](#2-point-providers-at-the-hub) · [TLS / CA password](#option-a-password-derived-ca-recommended-for-any-fleet) · [onboard tokens](#zero-touch-onboard-for-new-providers) · [dashboard password](#locking-down-the-dashboard)
 
+> [!NOTE]
+> A design is in progress to eventually unify these into one root password (with everything else derived from it under the hood, plus a PAKE-based provider join that closes the CA-bootstrap TOFU gap for good). See [Hub v2: Unified Password-Authenticated Auth](Hub-V2-Unified-Auth-Design.md) — not yet implemented, and the four-credential model above remains fully supported regardless of if/when it ships.
+
 ## 1. Install the Hub
 
 On the machine that will host the dashboard:
