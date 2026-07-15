@@ -63,3 +63,78 @@ func TestLoadOrCreatePakeServerKeys_RejectsCorruptFile(t *testing.T) {
 		t.Fatal("expected an error loading a corrupt hub.pake_server.json, got nil")
 	}
 }
+
+func TestLoadOrRegisterPakeJoin_RegistersAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple")
+	if err != nil {
+		t.Fatalf("loadOrRegisterPakeJoin: %v", err)
+	}
+	if record.RegistrationRecord == nil {
+		t.Fatal("expected a non-nil RegistrationRecord")
+	}
+
+	path := filepath.Join(dir, "hub.pake_record.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("expected hub.pake_record.json to be written: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("perms = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestLoadOrRegisterPakeJoin_ReloadSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadOrRegisterPakeJoin(dir, skm, "correct horse battery staple"); err != nil {
+		t.Fatalf("initial registration: %v", err)
+	}
+
+	skm2, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record2, err := loadOrRegisterPakeJoin(dir, skm2, "correct horse battery staple")
+	if err != nil {
+		t.Fatalf("reload after restart: %v", err)
+	}
+
+	conf := pakeConfiguration()
+	server, err := conf.Server()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.SetKeyMaterial(skm2); err != nil {
+		t.Fatal(err)
+	}
+	client, err := conf.Client()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ke1, err := client.GenerateKE1([]byte("correct horse battery staple"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke2, serverOutput, err := server.GenerateKE2(ke1, record2)
+	if err != nil {
+		t.Fatalf("GenerateKE2 after simulated restart: %v", err)
+	}
+	ke3, _, _, err := client.GenerateKE3(ke2, []byte(pakeFleetJoinIdentity), []byte(pakeServerIdentity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.LoginFinish(ke3, serverOutput.ClientMAC); err != nil {
+		t.Fatalf("login failed after simulated hub restart: %v", err)
+	}
+}
