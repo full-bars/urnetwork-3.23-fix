@@ -379,6 +379,7 @@ Use force: `urnet-tools hub update -f -t <tag>`
 | [Proxy URL Sources](docs/Proxy-URL-Sources.md) | Live proxy feeds, dedup, cleanup |
 | [Hub Setup](docs/Hub-Setup.md) | Hub install, TLS, Caddy reverse proxy |
 | [Hub Dashboard](docs/Hub-Dashboard.md) | Dashboard tour, API, data model |
+| [Hub v2 Unified Auth (design spec, not yet implemented)](docs/Hub-V2-Unified-Auth-Design.md) | Proposal to unify the four hub credentials behind one root password via OPAQUE/PAKE |
 | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) | Profiles, optimizer, parameters |
 | [Troubleshooting](docs/Troubleshooting.md) | Exit codes, errors, resource issues |
 | [Project Structure](PROJECT_STRUCTURE.md) | Directory layout, architecture |
