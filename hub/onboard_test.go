@@ -131,7 +131,7 @@ func TestHandleCACert_ValidToken(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/ca-cert?token="+token, nil)
 	w := httptest.NewRecorder()
-	handleCACert(dir, ca)(w, req)
+	handleCACert(dir, ca, "")(w, req)
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
@@ -154,7 +154,7 @@ func TestHandleCACert_InvalidTokenRejected(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/ca-cert?token=bogus", nil)
 	w := httptest.NewRecorder()
-	handleCACert(dir, ca)(w, req)
+	handleCACert(dir, ca, "")(w, req)
 
 	if w.Code != 403 {
 		t.Errorf("status = %d, want 403 for an invalid token", w.Code)
@@ -170,7 +170,7 @@ func TestHandleCACert_MissingTokenRejected(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/ca-cert", nil)
 	w := httptest.NewRecorder()
-	handleCACert(dir, ca)(w, req)
+	handleCACert(dir, ca, "")(w, req)
 
 	if w.Code != 403 {
 		t.Errorf("status = %d, want 403 when no token is supplied", w.Code)
@@ -241,7 +241,7 @@ func TestHandleCACert_TokenNotFoundVsExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := handleCACert(dir, ca)
+	handler := handleCACert(dir, ca, "")
 
 	// No token file at all — "token not found"
 	req := httptest.NewRequest("GET", "/api/ca-cert?token=deadbeef00000000deadbeef00000000deadbeef00000000deadbeef00000000", nil)
@@ -271,6 +271,64 @@ func TestHandleCACert_TokenNotFoundVsExpired(t *testing.T) {
 	}
 }
 
+func TestHandleCACert_BearerTokenAccepted(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := deriveCA("test-password", randomBytes(t, 32))
+	if err != nil {
+		t.Fatalf("deriveCA: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/ca-cert", nil)
+	req.Header.Set("Authorization", "Bearer my-hub-token")
+	w := httptest.NewRecorder()
+	handleCACert(dir, ca, "my-hub-token")(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "BEGIN CERTIFICATE") {
+		t.Errorf("body = %q, want it to contain the CA PEM", w.Body.String())
+	}
+}
+
+func TestHandleCACert_BearerTokenWrong(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := deriveCA("test-password", randomBytes(t, 32))
+	if err != nil {
+		t.Fatalf("deriveCA: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/ca-cert", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+	handleCACert(dir, ca, "my-hub-token")(w, req)
+
+	// Wrong bearer token should fall through to onboard token check, which
+	// also fails (no onboard token file) — expect 403
+	if w.Code != 403 {
+		t.Errorf("status = %d, want 403 for wrong bearer token", w.Code)
+	}
+}
+
+func TestHandleCACert_BearerTokenEmptySkipsAuth(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := deriveCA("test-password", randomBytes(t, 32))
+	if err != nil {
+		t.Fatalf("deriveCA: %v", err)
+	}
+
+	// With an empty hubToken, Bearer auth should be skipped entirely and
+	// fall through to onboard token check — expect 403 (no token param)
+	req := httptest.NewRequest("GET", "/api/ca-cert", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	w := httptest.NewRecorder()
+	handleCACert(dir, ca, "")(w, req)
+
+	if w.Code != 403 {
+		t.Errorf("status = %d, want 403 when hubToken is empty (fallback to onboard)", w.Code)
+	}
+}
+
 func TestHandleCACert_AuditLogsOnSuccess(t *testing.T) {
 	// Can't easily capture fmt.Printf output in test, but verify the call path
 	// doesn't panic — the audit log line is tested indirectly via code review.
@@ -287,7 +345,7 @@ func TestHandleCACert_AuditLogsOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := handleCACert(dir, ca)
+	handler := handleCACert(dir, ca, "")
 	req := httptest.NewRequest("GET", "/api/ca-cert?token="+token, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
