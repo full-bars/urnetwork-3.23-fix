@@ -31,6 +31,8 @@ func initSHMLogger() {
 		return
 	}
 	f.Write([]byte(fmt.Sprintf("\n--- provider restarted at %s ---\n", time.Now().Format(time.RFC3339))))
+	f.Write([]byte(fmt.Sprintf("[ramlogs] Active at %s\n", shmLogPath)))
+	f.Write([]byte(fmt.Sprintf("[ramlogs] View: docker exec <container> tail -f %s\n", shmLogPath)))
 
 	r, w, err := os.Pipe()
 	if err != nil {

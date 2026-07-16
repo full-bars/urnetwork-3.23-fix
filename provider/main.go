@@ -180,6 +180,7 @@ func initSHMLoggerWithHandover() {
 
 func RunStartupAudit() (slowDisk bool, lowSpace bool) {
 	if os.Getenv("URNETWORK_SKIP_AUDIT") == "1" {
+		tlog("[audit] System audit skipped (URNETWORK_SKIP_AUDIT=1)\n")
 		return false, false
 	}
 	tlog("[audit] Running system checks...\n")
