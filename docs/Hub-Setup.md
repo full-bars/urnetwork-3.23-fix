@@ -13,14 +13,15 @@ The Hub is a standalone dashboard binary that aggregates bandwidth and health re
 
 ## Understanding Hub Credentials
 
-The hub uses **four separate credentials** for four separate jobs. They get introduced one at a time later in this guide, which is easy to lose track of — so here's the full picture up front. If you only remember one thing: **providers get a token, humans get a password, and the hub's TLS identity is a third, unrelated thing.**
+The hub uses **five separate credentials** for five separate jobs. They get introduced one at a time later in this guide, which is easy to lose track of — so here's the full picture up front. If you only remember one thing: **providers get a token or a PAKE credential, humans get a password, and the hub's TLS identity is a third, unrelated thing.**
 
 | Credential | Set via | Protects | Who needs it |
 |---|---|---|---|
 | **`URNETWORK_HUB_TOKEN`** | Env var on hub *and* every provider | Write endpoints: `/api/report`, `/api/heartbeat`, `/api/nodes/remove` | Providers reporting into the hub |
 | **`URNETWORK_HUB_DASHBOARD_PASS`** | Env var on the hub only | The dashboard (`/`) and read-only API: `/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events` | Humans opening the dashboard in a browser |
-| **Hub CA password** (`hub.password` file) | `hub init [--password ...]`, auto-generated if omitted | The TLS handshake itself — lets providers verify the hub's certificate against a CA instead of trusting blindly | The hub, to re-derive the same CA identity if redeployed on a new machine |
+| **Hub CA password** (`hub.password` file) | `hub init [--password ...]`, auto-generated if omitted | The TLS handshake itself — lets providers verify the hub's certificate against a CA instead of trusting blindly; also used for PAKE join | The hub, to re-derive the same CA identity if redeployed on a new machine |
 | **Onboard token** | `hub onboard-cmd` / `hub -mint-onboard-token`, expires in 15 min | The CA-cert fetch endpoint, for providers with no credentials yet | Brand-new providers doing zero-touch setup |
+| **PAKE credential** (`~/.urnetwork/hub.credential`) | Derived from the hub CA password via OPAQUE handshake (`hub -hub-join <url>`) | Write endpoints (alternative to `URNETWORK_HUB_TOKEN`) | Per-node, revocable provider credential |
 
 > [!TIP]
 > Think of it as two independent axes: **who's authenticating** (a provider vs. a human) times **what layer** (application-level auth vs. TLS transport trust). `URNETWORK_HUB_TOKEN` and `URNETWORK_HUB_DASHBOARD_PASS` are both HTTP-layer credentials but gate completely different routes for completely different audiences — setting one has no effect on the other. The CA password and onboard token are a third, unrelated layer: they secure *that the connection itself* is talking to the real hub, before either of the other two credentials is even checked.
@@ -65,13 +66,34 @@ URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub install
 
 ## 2. Point Providers at the Hub
 
-On **every provider node** you want to appear on the dashboard:
+On **every provider node** you want to appear on the dashboard, you have three options:
+
+### Option A: HTTP URL (simplest, no auth)
 
 ```sh
 urnet-tools hub set http://HUB_IP:8080
 ```
 
-This writes `~/.urnetwork/report_url`, which the provider re-reads on its next report tick (default every 5 minutes) — no restart needed. Use the same hub URL across your entire fleet; all nodes report to one instance.
+This writes `~/.urnetwork/report_url`, which the provider re-reads on its next report tick (default every 5 minutes) — no restart needed. Use the same hub URL across your entire fleet.
+
+### Option B: PAKE join (password-based, zero shared-secret copy)
+
+If the hub has run `hub init` (has a CA password), you can join without copying a shared `URNETWORK_HUB_TOKEN`:
+
+```sh
+# Read the CA password from the hub's own file (or type/paste it)
+hub -hub-join https://HUB_IP:8443 < ~/.local/share/urnetwork-hub/hub.password
+```
+
+The PAKE handshake proves password knowledge to the hub without sending it over the wire. On success, the hub issues a per-node credential stored in `~/.urnetwork/hub.credential`. This credential works as a Bearer token for `/api/report` and `/api/heartbeat` — no `URNETWORK_HUB_TOKEN` env var needed on the provider.
+
+Re-run `hub -hub-join` to refresh the credential (e.g. if the hub password changed or the credential was revoked).
+
+### Option C: TLS + shared token (most secure, for production fleets)
+
+See [Section 3 (Secure the Connection)](#3-secure-the-connection-recommended) below for the full TLS + onboard token flow.
+
+---
 
 To stop a node from reporting without touching anything else:
 
