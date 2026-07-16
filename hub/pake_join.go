@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -104,15 +105,29 @@ type pakeJoinRecord struct {
 	CredentialIdentifierHex string `json:"credential_identifier_hex"`
 	ClientIdentity          string `json:"client_identity"`
 	RegistrationRecordHex   string `json:"registration_record_hex"`
+	// PasswordHashHex is a SHA-256 hex digest of the CA password this record
+	// was registered against — never the password itself. It lets
+	// loadOrRegisterPakeJoin detect that hub.password has been rotated and
+	// re-register against the new password, instead of silently continuing
+	// to accept the old one forever.
+	PasswordHashHex string `json:"password_hash_hex"`
 }
 
 func pakeJoinRecordPath(dataDir string) string {
 	return filepath.Join(dataDir, "hub.pake_record.json")
 }
 
+// pakePasswordHash returns the SHA-256 hex digest of the CA password, used
+// only to detect password rotation — never to reconstruct the password.
+func pakePasswordHash(password string) string {
+	sum := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(sum[:])
+}
+
 func loadOrRegisterPakeJoin(dataDir string, skm *opaque.ServerKeyMaterial, password string) (*opaque.ClientRecord, error) {
 	path := pakeJoinRecordPath(dataDir)
 	conf := pakeConfiguration()
+	passwordHash := pakePasswordHash(password)
 
 	if data, err := os.ReadFile(path); err == nil {
 		var stored pakeJoinRecord
@@ -120,28 +135,33 @@ func loadOrRegisterPakeJoin(dataDir string, skm *opaque.ServerKeyMaterial, passw
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 
-		server, err := conf.Server()
-		if err != nil {
-			return nil, err
-		}
-		credID, err := hex.DecodeString(stored.CredentialIdentifierHex)
-		if err != nil {
-			return nil, fmt.Errorf("decode credential identifier in %s: %w", path, err)
-		}
-		recordBytes, err := hex.DecodeString(stored.RegistrationRecordHex)
-		if err != nil {
-			return nil, fmt.Errorf("decode registration record in %s: %w", path, err)
-		}
-		record, err := server.Deserialize.RegistrationRecord(recordBytes)
-		if err != nil {
-			return nil, fmt.Errorf("deserialize registration record in %s: %w", path, err)
-		}
+		if stored.PasswordHashHex == passwordHash {
+			server, err := conf.Server()
+			if err != nil {
+				return nil, err
+			}
+			credID, err := hex.DecodeString(stored.CredentialIdentifierHex)
+			if err != nil {
+				return nil, fmt.Errorf("decode credential identifier in %s: %w", path, err)
+			}
+			recordBytes, err := hex.DecodeString(stored.RegistrationRecordHex)
+			if err != nil {
+				return nil, fmt.Errorf("decode registration record in %s: %w", path, err)
+			}
+			record, err := server.Deserialize.RegistrationRecord(recordBytes)
+			if err != nil {
+				return nil, fmt.Errorf("deserialize registration record in %s: %w", path, err)
+			}
 
-		return &opaque.ClientRecord{
-			CredentialIdentifier: credID,
-			ClientIdentity:       []byte(stored.ClientIdentity),
-			RegistrationRecord:   record,
-		}, nil
+			return &opaque.ClientRecord{
+				CredentialIdentifier: credID,
+				ClientIdentity:       []byte(stored.ClientIdentity),
+				RegistrationRecord:   record,
+			}, nil
+		}
+		// CA password has changed since this record was registered — fall
+		// through and re-register against the new password so PAKE join
+		// stays in lockstep with hub.password rotation.
 	}
 
 	server, err := conf.Server()
@@ -175,6 +195,7 @@ func loadOrRegisterPakeJoin(dataDir string, skm *opaque.ServerKeyMaterial, passw
 		CredentialIdentifierHex: hex.EncodeToString(credID),
 		ClientIdentity:          pakeFleetJoinIdentity,
 		RegistrationRecordHex:   hex.EncodeToString(record.Serialize()),
+		PasswordHashHex:         passwordHash,
 	}
 	data, err := json.Marshal(stored)
 	if err != nil {

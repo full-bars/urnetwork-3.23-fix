@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -225,25 +226,34 @@ func openStore(dataDir string) (*store, error) {
 	return s, nil
 }
 
+// hashCredential returns the SHA-256 hex digest of a bearer credential. Only
+// the hash is ever persisted or compared against — the raw session key
+// (unlike an ephemeral AKE key, this one lives on as a long-standing bearer
+// secret) never touches disk or a SQL equality clause in the clear.
+func hashCredential(credentialHex string) string {
+	sum := sha256.Sum256([]byte(credentialHex))
+	return hex.EncodeToString(sum[:])
+}
+
 // storeCredential saves a per-node credential after successful PAKE join.
-// The credential is the hex-encoded session key. Returns the node ID on success.
+// The credential is the hex-encoded session key; only its hash is stored.
 func (s *store) storeCredential(nodeID, credentialHex string) error {
 	if s.db == nil {
 		return nil
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO node_credentials (node_id, credential, created_at)
+		INSERT INTO node_credentials (node_id, credential_hash, created_at)
 		VALUES (?, ?, strftime('%s','now'))
 		ON CONFLICT(node_id) DO UPDATE SET
-			credential = excluded.credential,
+			credential_hash = excluded.credential_hash,
 			created_at = strftime('%s','now'),
 			revoked_at = NULL`,
-		nodeID, credentialHex)
+		nodeID, hashCredential(credentialHex))
 	return err
 }
 
 // validateCredential checks if a credential hex string matches an active (non-revoked)
-// entry for the given node. Returns true if valid.
+// entry for any node. Returns true if valid.
 func (s *store) validateCredential(credentialHex string) (bool, error) {
 	if s.db == nil {
 		return false, nil
@@ -251,7 +261,7 @@ func (s *store) validateCredential(credentialHex string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM node_credentials
-		WHERE credential = ? AND revoked_at IS NULL`, credentialHex).Scan(&count)
+		WHERE credential_hash = ? AND revoked_at IS NULL`, hashCredential(credentialHex)).Scan(&count)
 	return count > 0, err
 }
 
@@ -261,15 +271,6 @@ func (s *store) revokeCredential(nodeID string) error {
 		return nil
 	}
 	_, err := s.db.Exec(`UPDATE node_credentials SET revoked_at = strftime('%s','now') WHERE node_id = ?`, nodeID)
-	return err
-}
-
-// deleteCredential removes a node's credential entirely. Used for node removal cleanup.
-func (s *store) deleteCredential(nodeID string) error {
-	if s.db == nil {
-		return nil
-	}
-	_, err := s.db.Exec(`DELETE FROM node_credentials WHERE node_id = ?`, nodeID)
 	return err
 }
 
@@ -830,6 +831,9 @@ func handleNodeRemove(s *store) http.HandlerFunc {
 		if err := s.deleteFromDB(req.NodeID); err != nil {
 			fmt.Printf("delete %s from db: %v\n", req.NodeID, err)
 		}
+		if err := s.revokeCredential(req.NodeID); err != nil {
+			fmt.Printf("revoke %s PAKE credential: %v\n", req.NodeID, err)
+		}
 		fmt.Printf("removed node %s\n", req.NodeID)
 		w.WriteHeader(204)
 	}
@@ -1039,7 +1043,7 @@ func main() {
 	mux.HandleFunc("/api/history", requireBasicAuth(dashboardPass, handleHistory(s)))
 	mux.HandleFunc("/api/events", requireBasicAuth(dashboardPass, handleEvents(s)))
 
-		// PAKE join endpoints - auto-enabled when hub has a password
+	// PAKE join endpoints - auto-enabled when hub has a password
 	var pakeJoinState *pakeJoinState
 	pwPath := filepath.Join(*dataDir, "hub.password")
 	if _, err := os.Stat(pwPath); err == nil {

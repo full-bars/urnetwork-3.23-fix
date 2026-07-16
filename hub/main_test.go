@@ -801,6 +801,119 @@ func TestRemoveEndpoint(t *testing.T) {
 	}
 }
 
+// --- PAKE credential storage tests ---
+
+func TestStoreCredentialAndValidate(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+
+	if err := s.storeCredential("n1", "deadbeef"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	ok, err := s.validateCredential("deadbeef")
+	if err != nil {
+		t.Fatalf("validateCredential: %v", err)
+	}
+	if !ok {
+		t.Error("validateCredential(correct credential) = false, want true")
+	}
+
+	ok, err = s.validateCredential("wrongcredential")
+	if err != nil {
+		t.Fatalf("validateCredential: %v", err)
+	}
+	if ok {
+		t.Error("validateCredential(wrong credential) = true, want false")
+	}
+}
+
+func TestStoreCredentialPersistsOnlyHash(t *testing.T) {
+	dir := t.TempDir()
+	s, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+
+	if err := s.storeCredential("n1", "deadbeef"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	var stored string
+	if err := s.db.QueryRow(`SELECT credential_hash FROM node_credentials WHERE node_id = ?`, "n1").Scan(&stored); err != nil {
+		t.Fatalf("query stored credential: %v", err)
+	}
+	if stored == "deadbeef" {
+		t.Error("raw credential stored in clear — expected only its hash")
+	}
+	if stored != hashCredential("deadbeef") {
+		t.Errorf("stored value = %q, want hashCredential output %q", stored, hashCredential("deadbeef"))
+	}
+}
+
+func TestRevokeCredentialInvalidatesIt(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+
+	if err := s.storeCredential("n1", "deadbeef"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+	if err := s.revokeCredential("n1"); err != nil {
+		t.Fatalf("revokeCredential: %v", err)
+	}
+
+	ok, err := s.validateCredential("deadbeef")
+	if err != nil {
+		t.Fatalf("validateCredential: %v", err)
+	}
+	if ok {
+		t.Error("validateCredential(revoked credential) = true, want false")
+	}
+}
+
+func TestNodeRemoveRevokesPakeCredential(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+	s.Nodes["n1"] = &nodeState{NodeID: "n1"}
+
+	if err := s.storeCredential("n1", "deadbeef"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes/remove", handleNodeRemove(s))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(removeRequest{NodeID: "n1"})
+	resp, err := http.Post(ts.URL+"/api/nodes/remove", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	ok, err := s.validateCredential("deadbeef")
+	if err != nil {
+		t.Fatalf("validateCredential: %v", err)
+	}
+	if ok {
+		t.Error("node removal did not revoke its PAKE credential — validateCredential still returns true")
+	}
+}
+
 // --- Heartbeat tests ---
 
 func TestStoreHeartbeatUnknownNodeNoop(t *testing.T) {
