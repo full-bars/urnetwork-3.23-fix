@@ -38,6 +38,7 @@ func TestAddrsInPrefix(t *testing.T) {
 func TestAddrGenerator(t *testing.T) {
 	prefix := netip.MustParsePrefix("169.254.0.0/16")
 	g := NewAddrGenerator(prefix)
+	defer g.Close()
 	addr, ok := g.Next()
 	assert.Equal(t, ok, true)
 	assert.Equal(t, addr, netip.MustParseAddr("169.254.0.1"))
