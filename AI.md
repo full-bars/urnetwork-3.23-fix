@@ -11,11 +11,12 @@ This section is a complete, self-sufficient playbook. If a user asks you to "set
 The hub has four unrelated credentials. Confusing them is the #1 source of mistakes — read this table before running any commands:
 
 | Credential | Env var / flag | Set on | Protects | Do NOT confuse with |
-|---|---|---|---|---|
+|---|---|---|---|---|---|
 | Provider shared secret | `URNETWORK_HUB_TOKEN` | Hub **and** every provider | Write endpoints: `/api/report`, `/api/heartbeat`, `/api/nodes/remove` | The onboard token below — different value, different purpose, despite both being called "token" in different commands |
 | Dashboard password | `URNETWORK_HUB_DASHBOARD_PASS` | Hub only | Dashboard (`/`) and read-only API (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) | `URNETWORK_HUB_TOKEN` — setting this does not protect or require the provider secret, and vice versa |
-| Hub CA password | `hub.password` file (`hub init --password`) | Hub only | The TLS handshake identity — providers verify the hub's cert against this CA | Neither of the above — this never leaves the hub except as a derived public CA cert |
+| Hub CA password | `hub.password` file (`hub init --password`) | Hub only | The TLS handshake identity — providers verify the hub's cert against this CA; also used for PAKE join | Neither of the above — this never leaves the hub except as a derived public CA cert |
 | Onboard token | Ephemeral, minted by `hub onboard-cmd`, expires in 15 min | Passed as `hub link <url> --token <value>` | One-time CA-cert fetch for a provider with no credentials yet | `URNETWORK_HUB_TOKEN` — this is a short-lived bootstrap credential, not a standing secret |
+| PAKE credential | Derived from the hub CA password via OPAQUE handshake | Created by `hub -hub-join <url>` | Write endpoints (alternative to `URNETWORK_HUB_TOKEN` — per-node, revocable) | `URNETWORK_HUB_TOKEN` — this is a per-node credential, not a shared fleet secret |
 
 If you only set one thing, set `URNETWORK_HUB_TOKEN` — everything else is defense in depth on top of it.
 
@@ -83,6 +84,13 @@ Any username works with this password — it's HTTP Basic Auth, checked with the
 # On each provider, using TLS (recommended — matches Step 2):
 urnet-tools hub onboard-cmd     # run this ON THE HUB, prints a one-liner with a 15-min onboard token
 # then run the printed curl | sh command on each provider — it fetches the CA cert and sets report_url
+
+# Or, PAKE join (no manual token exchange — proves password knowledge cryptographically):
+hub -hub-join https://<hub-ip>:8443 < hub.password   # reads the CA password from file
+echo "<hub-password>" | hub -hub-join https://<hub-ip>:8443  # or pipe it directly
+# The PAKE handshake authenticates against the hub's root password, derives a per-node
+# credential, and saves it to ~/.urnetwork/hub.credential. No shared secret to copy.
+# The credential is accepted by requireAuth alongside URNETWORK_HUB_TOKEN.
 
 # Or, plain HTTP (only if you skipped Step 2):
 urnet-tools hub set http://<hub-ip>:8080
@@ -270,9 +278,7 @@ urnet-tools hub show-password      # show hub CA password (one-time secret)
 urnet-tools hub set <key> <value>  # configure hub settings
 urnet-tools hub off                # stop and disable hub
 urnet-tools hub unlink             # remove TLS config, fall back to HTTP
-# No CLI flag yet for URNETWORK_HUB_TOKEN (native) or URNETWORK_HUB_DASHBOARD_PASS
-# — set both via systemd override.conf (native) or `docker run -e` (Docker). See
-# "Task: Deploy a Hub and Link a Fleet" above.
+hub -hub-join <url>                # PAKE join: reads password from stdin, saves credential to ~/.urnetwork/hub.credential
 
 # Reporting
 urnet-tools report [<url>|off]     # set/show/disable hub report URL
@@ -323,6 +329,8 @@ Key variables:
 | `GET /api/events` | SSE live-update stream |
 | `GET /api/cert` | TLS certificate + fingerprint |
 | `GET /api/ca-cert?token=` | CA cert for onboarding |
+| `POST /api/join/ke1` | PAKE join step 1 — send KE1, get KE2 (auto-enabled when hub has password, rate limited) |
+| `POST /api/join/ke3` | PAKE join step 2 — send KE3, receive credential |
 | `GET /onboard.sh` | Onboarding shell script |
 
 ## Release & Versioning
@@ -340,6 +348,7 @@ Key variables:
 | `~/.local/share/urnetwork-provider/bin/urnet-tools` | CLI tool |
 | `~/.local/share/urnetwork-hub/hub.db` | Hub SQLite database |
 | `~/.urnetwork/hub_ca.pem` | CA cert for TLS reporting |
+| `~/.urnetwork/hub.credential` | Per-node credential from PAKE join (alternative to `URNETWORK_HUB_TOKEN`) |
 | `~/.urnetwork/report_url` | Hub URL this provider reports to |
 | `~/.urnetwork/hub.pin` | Legacy fingerprint pin (remove if using CA) |
 | `~/.config/systemd/user/urnetwork.service` | Provider systemd unit |
