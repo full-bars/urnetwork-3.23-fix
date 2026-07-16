@@ -678,6 +678,7 @@ Usage:
     provider provide [--port=<port>]
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
+        [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
         [--proxy_url=<proxy_url>...]
@@ -690,7 +691,18 @@ Usage:
     	[--port=<port>]
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
+        [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
+        [-v...]
+    provider wallet set <coldkey_ss58>
+        [--api_url=<api_url>]
+        [-v...]
+    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+        [--api_url=<api_url>]
+        [-v...]
+    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+        [-v...]
+    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -721,6 +733,22 @@ Options:
     				                 password anyways, if you don't specify it using this option.
     -p --port=<port>                 Status server port [default: 0].
     --max-memory=<mem>               Set the maximum amount of memory in bytes, or the suffixes b, kib, mib, gib may be used [This is a soft limit].
+    --wallet=<coldkey_ss58>          Also set the subnet claim wallet at startup, same as provider wallet set.
+                                     A failure is logged and does not block providing.
+    <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
+    --epoch=<epoch>                  Epoch to fetch the subnet pool claim for. Defaults to the last
+                                     finalized epoch, which is the epoch before the current one.
+    --rpc=<rpc_url>                  EVM json-rpc endpoint used to check the payout root on-chain.
+                                     May be repeated; endpoints are tried in order until one answers.
+    --key_file=<key_file>            EVM private key file. When given, claim/bind-head/unbind-head sign
+                                     and submit the transaction (via --rpc); without it, the ready-to-submit
+                                     calldata is printed for the offline/air-gapped snclaim path.
+    --dry-run                        Build and sign the extrinsic but do not submit.
+    --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
+    --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
+                                     The head-bind digest is bound to this address, so it MUST equal the
+                                     snclaim sender, whose mirror must be the hotkey's on-chain coldkey.
+    --contract=<contract>            STSubnet proxy contract address (0x, 20 bytes).
     <key>                            Authentication key
     <proxy_user>                     SOCKS5 user
     <proxy_password>                 SOCKS5 password
@@ -788,6 +816,16 @@ Options:
 		} else if summary, _ := opts.Bool("summary"); summary {
 			proxySummary()
 		}
+	} else if wallet, _ := opts.Bool("wallet"); wallet {
+		if set, _ := opts.Bool("set"); set {
+			walletSet(opts)
+		}
+	} else if claim_, _ := opts.Bool("claim"); claim_ {
+		claim(opts)
+	} else if bindHead_, _ := opts.Bool("bind-head"); bindHead_ {
+		bindHead(opts)
+	} else if unbindHead_, _ := opts.Bool("unbind-head"); unbindHead_ {
+		unbindHead(opts)
 	} else if auth_, _ := opts.Bool("auth"); auth_ {
 		auth(opts)
 	} else if provide_, _ := opts.Bool("provide"); provide_ {
@@ -1940,6 +1978,19 @@ func provide(opts docopt.Opts) {
 		tlog("[provider] shutting down: main context cancelled\n")
 		critLog("SIGNAL: context cancelled — draining goroutines\nsource:\n%s", source)
 	}()
+
+	// subnet claim wallet (sn/PLAN.md 7.3, decision D-2): validate the
+	// ss58 coldkey locally and idempotently register it with the platform
+	// before providing starts. A failure warns and does not block
+	// providing — the wallet may already be set from a previous run, and
+	// the call can be retried any time with `provider wallet set`.
+	if coldkeySs58, walletErr := opts.String("--wallet"); walletErr == nil && coldkeySs58 != "" {
+		walletClientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+		if err := snSetWallet(ctx, walletClientStrategy, apiUrl, coldkeySs58); err != nil {
+			fmt.Printf("subnet wallet not set: %s\n", err)
+			fmt.Printf("continuing to provide. Retry with: provider wallet set <coldkey_ss58>\n")
+		}
+	}
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
 	// connections without needing a provider restart.
