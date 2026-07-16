@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -223,6 +224,54 @@ func openStore(dataDir string) (*store, error) {
 		fmt.Printf("warning: could not load cached state from hub.db: %v\n", err)
 	}
 	return s, nil
+}
+
+// hashCredential returns the SHA-256 hex digest of a bearer credential. Only
+// the hash is ever persisted or compared against — the raw session key
+// (unlike an ephemeral AKE key, this one lives on as a long-standing bearer
+// secret) never touches disk or a SQL equality clause in the clear.
+func hashCredential(credentialHex string) string {
+	sum := sha256.Sum256([]byte(credentialHex))
+	return hex.EncodeToString(sum[:])
+}
+
+// storeCredential saves a per-node credential after successful PAKE join.
+// The credential is the hex-encoded session key; only its hash is stored.
+func (s *store) storeCredential(nodeID, credentialHex string) error {
+	if s.db == nil {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO node_credentials (node_id, credential_hash, created_at)
+		VALUES (?, ?, strftime('%s','now'))
+		ON CONFLICT(node_id) DO UPDATE SET
+			credential_hash = excluded.credential_hash,
+			created_at = strftime('%s','now'),
+			revoked_at = NULL`,
+		nodeID, hashCredential(credentialHex))
+	return err
+}
+
+// validateCredential checks if a credential hex string matches an active (non-revoked)
+// entry for any node. Returns true if valid.
+func (s *store) validateCredential(credentialHex string) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM node_credentials
+		WHERE credential_hash = ? AND revoked_at IS NULL`, hashCredential(credentialHex)).Scan(&count)
+	return count > 0, err
+}
+
+// revokeCredential marks a node's credential as revoked. Used for node removal.
+func (s *store) revokeCredential(nodeID string) error {
+	if s.db == nil {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE node_credentials SET revoked_at = strftime('%s','now') WHERE node_id = ?`, nodeID)
+	return err
 }
 
 func (s *store) upsert(nodeID string, state *nodeState) {
@@ -504,19 +553,35 @@ func nodeColor(ts time.Time) string {
 	return "#ef4444"
 }
 
-func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
-	if token == "" {
+func requireAuth(token string, next http.HandlerFunc, validateV2 func(string) (bool, error)) http.HandlerFunc {
+	if token == "" && validateV2 == nil {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(authHeader, prefix) ||
-			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authHeader, prefix)), []byte(token)) != 1 {
+		if !strings.HasPrefix(authHeader, prefix) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next(w, r)
+		given := strings.TrimPrefix(authHeader, prefix)
+
+		// Check v1 static token first
+		if token != "" && subtle.ConstantTimeCompare([]byte(given), []byte(token)) == 1 {
+			next(w, r)
+			return
+		}
+
+		// Check v2 per-node credential
+		if validateV2 != nil {
+			ok, err := validateV2(given)
+			if err == nil && ok {
+				next(w, r)
+				return
+			}
+		}
+
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}
 }
 
@@ -766,6 +831,9 @@ func handleNodeRemove(s *store) http.HandlerFunc {
 		if err := s.deleteFromDB(req.NodeID); err != nil {
 			fmt.Printf("delete %s from db: %v\n", req.NodeID, err)
 		}
+		if err := s.revokeCredential(req.NodeID); err != nil {
+			fmt.Printf("revoke %s PAKE credential: %v\n", req.NodeID, err)
+		}
 		fmt.Printf("removed node %s\n", req.NodeID)
 		w.WriteHeader(204)
 	}
@@ -877,8 +945,9 @@ func main() {
 	dataDir := flag.String("data", ".", "data directory for hub.json")
 	showPassword := flag.Bool("show-password", false, "print the CA password and exit")
 	doMintOnboardToken := flag.Bool("mint-onboard-token", false, "mint an onboarding token and exit")
-	flag.Parse()
+	hubJoin := flag.String("hub-join", "", "run PAKE join against a hub URL (reads password from stdin)")
 
+	flag.Parse()
 	if *showVersion {
 		v := Version
 		if v == "" {
@@ -928,6 +997,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	if *hubJoin != "" {
+		doHubJoin(*hubJoin)
+		os.Exit(0)
+	}
+
 	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
 	if hubToken == "" {
 		fmt.Println("hub: WARNING URNETWORK_HUB_TOKEN not set — /api/report and /api/nodes/remove are unauthenticated")
@@ -953,9 +1027,14 @@ func main() {
 
 	var tlsSrv *http.Server
 
-	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s)))
-	mux.HandleFunc("/api/heartbeat", requireAuth(hubToken, handleHeartbeat(s)))
-	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s)))
+	// v2 credential validator: checks Bearer token against stored node credentials
+	validateV2 := func(credential string) (bool, error) {
+		return s.validateCredential(credential)
+	}
+
+	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s), validateV2))
+	mux.HandleFunc("/api/heartbeat", requireAuth(hubToken, handleHeartbeat(s), validateV2))
+	mux.HandleFunc("/api/nodes/remove", requireAuth(hubToken, handleNodeRemove(s), validateV2))
 	mux.HandleFunc("/api/nodes/contracts", requireBasicAuth(dashboardPass, handleNodeContracts(s)))
 	mux.HandleFunc("/api/nodes/", requireBasicAuth(dashboardPass, handleNodes(s)))
 	mux.HandleFunc("/api/proxies/top", requireBasicAuth(dashboardPass, handleProxiesTop(s)))
@@ -963,6 +1042,22 @@ func main() {
 	mux.HandleFunc("/api/proxies/history", requireBasicAuth(dashboardPass, handleProxiesHistory(s)))
 	mux.HandleFunc("/api/history", requireBasicAuth(dashboardPass, handleHistory(s)))
 	mux.HandleFunc("/api/events", requireBasicAuth(dashboardPass, handleEvents(s)))
+
+	// PAKE join endpoints - auto-enabled when hub has a password
+	var pakeJoinState *pakeJoinState
+	pwPath := filepath.Join(*dataDir, "hub.password")
+	if _, err := os.Stat(pwPath); err == nil {
+		var err error
+		pakeJoinState, err = initPakeJoinState(*dataDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hub: PAKE init skipped (will use v1 token): %v\n", err)
+		} else {
+			go joinLimiter.cleanupLoop()
+			mux.HandleFunc("/api/join/ke1", joinLimiter.middleware(pakeJoinState.HandleKE1))
+			mux.HandleFunc("/api/join/ke3", joinLimiter.middleware(pakeJoinState.HandleKE3(s)))
+			fmt.Println("hub: PAKE join endpoints enabled at /api/join/ke1, /api/join/ke3")
+		}
+	}
 
 	wrapped := gzipMiddleware(mux)
 
