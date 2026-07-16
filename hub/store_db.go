@@ -143,6 +143,16 @@ CREATE TABLE IF NOT EXISTS rollup_state (
   id        INTEGER PRIMARY KEY CHECK (id = 1),
   last_hour INTEGER NOT NULL
 );
+
+-- Per-node credentials for v2 PAKE-based join.
+-- Each node gets a unique credential derived from the shared session key.
+CREATE TABLE IF NOT EXISTS node_credentials (
+  node_id      TEXT PRIMARY KEY,               -- matches nodes.node_id
+  credential   TEXT NOT NULL,                  -- hex-encoded session key (64 bytes = 128 hex chars)
+  created_at   INTEGER NOT NULL,              -- epoch seconds
+  revoked_at   INTEGER                         -- NULL = active, set on revocation
+);
+CREATE INDEX IF NOT EXISTS idx_node_creds_active ON node_credentials(node_id) WHERE revoked_at IS NULL;
 `
 
 // openDB opens (creating if needed) the hub SQLite database at path with WAL
