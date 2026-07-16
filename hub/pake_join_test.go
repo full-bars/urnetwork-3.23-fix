@@ -270,6 +270,59 @@ func TestPakeLoginHandshake_ConcurrentJoinsDoNotInterfere(t *testing.T) {
 	}
 }
 
+func TestLoadOrRegisterPakeJoin_PasswordRotationReRegisters(t *testing.T) {
+	dir := t.TempDir()
+	skm, err := loadOrCreatePakeServerKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadOrRegisterPakeJoin(dir, skm, "old password"); err != nil {
+		t.Fatalf("initial registration: %v", err)
+	}
+
+	// Simulate the operator rotating hub.password: re-derive against a new
+	// password. Without password-change detection, the stale record would be
+	// silently reloaded and the old password would keep working forever.
+	record, err := loadOrRegisterPakeJoin(dir, skm, "new password")
+	if err != nil {
+		t.Fatalf("re-registration after password rotation: %v", err)
+	}
+
+	// The new password must now succeed.
+	ke1Bytes, client, err := pakeClientLoginStep1("new password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke2Bytes, serverOutput, err := pakeServerLoginStep1(skm, record, ke1Bytes)
+	if err != nil {
+		t.Fatalf("pakeServerLoginStep1 with new password: %v", err)
+	}
+	ke3Bytes, _, err := pakeClientLoginFinish(client, ke2Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pakeServerLoginFinish(serverOutput, ke3Bytes); err != nil {
+		t.Fatalf("login with new password should succeed after rotation: %v", err)
+	}
+
+	// The old password must no longer succeed.
+	ke1Bytes, client, err = pakeClientLoginStep1("old password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke2Bytes, serverOutput, err = pakeServerLoginStep1(skm, record, ke1Bytes)
+	if err != nil {
+		t.Fatalf("pakeServerLoginStep1 should not itself error: %v", err)
+	}
+	ke3Bytes, _, ke3Err := pakeClientLoginFinish(client, ke2Bytes)
+	if ke3Err == nil {
+		if _, err := pakeServerLoginFinish(serverOutput, ke3Bytes); err == nil {
+			t.Fatal("login with old (rotated-away) password should be rejected after re-registration")
+		}
+	}
+}
+
 func TestPakeLoginHandshake_TamperedKE3Rejected(t *testing.T) {
 	dir := t.TempDir()
 	skm, err := loadOrCreatePakeServerKeys(dir)
