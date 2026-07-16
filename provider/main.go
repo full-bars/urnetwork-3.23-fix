@@ -179,6 +179,9 @@ func initSHMLoggerWithHandover() {
 }
 
 func RunStartupAudit() (slowDisk bool, lowSpace bool) {
+	if os.Getenv("URNETWORK_SKIP_AUDIT") == "1" {
+		return false, false
+	}
 	tlog("[audit] Running system checks...\n")
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
