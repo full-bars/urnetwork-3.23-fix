@@ -309,6 +309,7 @@ Key variables:
 | `PROXY_URL` | Live proxy URL feed (comma-separated) |
 | `URNETWORK_HEALTH_INTERVAL` | Health heartbeat interval |
 | `URNETWORK_RAMLOGS` | `1` = log to /dev/shm |
+| `URNETWORK_SKIP_AUDIT` | `1` = skip startup system audit (disk speed, ulimit, conntrack checks) |
 | `URNETWORK_HOT_RESTART` | `1` = experimental client JWT reuse |
 
 ## Hub API Endpoints
