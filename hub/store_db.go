@@ -143,6 +143,21 @@ CREATE TABLE IF NOT EXISTS rollup_state (
   id        INTEGER PRIMARY KEY CHECK (id = 1),
   last_hour INTEGER NOT NULL
 );
+
+-- Per-node credentials for v2 PAKE-based join.
+-- Each node gets a unique credential derived from the shared session key.
+-- Only the SHA-256 hash of the credential is stored, never the raw bearer
+-- secret (see hashCredential in main.go).
+CREATE TABLE IF NOT EXISTS node_credentials (
+  node_id         TEXT PRIMARY KEY,             -- matches nodes.node_id
+  credential_hash TEXT NOT NULL,                -- SHA-256 hex of the credential
+  created_at      INTEGER NOT NULL,             -- epoch seconds
+  revoked_at      INTEGER                       -- NULL = active, set on revocation
+);
+-- validateCredential's hot path (every /api/report, /api/heartbeat request
+-- using a v2 credential) looks up by credential_hash, not node_id — index
+-- the column actually queried.
+CREATE INDEX IF NOT EXISTS idx_node_creds_hash_active ON node_credentials(credential_hash) WHERE revoked_at IS NULL;
 `
 
 // openDB opens (creating if needed) the hub SQLite database at path with WAL
