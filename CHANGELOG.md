@@ -156,7 +156,7 @@ Platform toggles updated:
 
 **Hub CA cert auto-bootstrap** (#281): On startup, `hub init` now checks `URNETWORK_HUB_TOKEN`, `URNETWORK_HUB_TOKEN_FILE`, and `URNETWORK_HUB_TOKEN_STDIN` for a hub token. If present, it fetches the CA cert from `$HUB/ca-cert?token=...` using the token before doing anything else.
 
-**PAKE-based hub join** (`hub -hub-join <url>`): New command that runs the OPAQUE handshake against a hub's join endpoints, reads password from stdin, and saves a per-node credential to `~/.urnetwork/hub.credential`. The credential is accepted by `requireAuth` alongside `URNETWORK_HUB_TOKEN`.
+**PAKE-based hub join** (`hub -hub-join <url>`): New command that runs the OPAQUE handshake against a hub's join endpoints, reads password from stdin, and saves a per-node credential to `~/.urnetwork/hub.credential`. The credential is accepted by `requireAuth` alongside `URNETWORK_HUB_TOKEN`. Credentials are stored hashed (SHA-256), revoked on `/api/nodes/remove`, and re-registration follows `hub.password` rotation. Pending handshakes expire after 2 minutes to bound server memory. The CLI runs the same tested OPAQUE helpers as the unit test suite rather than a separate implementation.
 
 **Auto Tier 4 Extreme** (#280): On hosts with >= 8 GiB RAM, the provider now auto-selects the Tier 4 (extreme) performance profile matching turbo-v8 settings. Manual `tier set 4` overrides remain.
 

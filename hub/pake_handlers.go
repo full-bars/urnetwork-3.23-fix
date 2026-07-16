@@ -16,6 +16,20 @@ import (
 	"github.com/bytemare/opaque"
 )
 
+// pendingLoginTTL bounds how long a KE1 can sit in pakeJoinState.pending
+// waiting for its matching KE3. OPAQUE's KE1 always succeeds regardless of
+// password correctness (failure only surfaces at KE3/LoginFinish), so every
+// join attempt — including ones from a client that never follows up —
+// inserts an entry. Without a TTL, abandoned handshakes accumulate in memory
+// forever; the rate limiter only bounds insertion rate per IP, not total
+// standing memory.
+const pendingLoginTTL = 2 * time.Minute
+
+type pendingLogin struct {
+	output    *opaque.ServerOutput
+	expiresAt time.Time
+}
+
 // pakeJoinState holds the server-side OPAQUE state for the join handshake.
 // Initialized once at startup if a CA password exists.
 type pakeJoinState struct {
@@ -23,7 +37,7 @@ type pakeJoinState struct {
 
 	skm     *opaque.ServerKeyMaterial
 	record  *opaque.ClientRecord
-	pending map[string]*opaque.ServerOutput
+	pending map[string]*pendingLogin
 }
 
 func initPakeJoinState(dataDir string) (*pakeJoinState, error) {
@@ -39,7 +53,37 @@ func initPakeJoinState(dataDir string) (*pakeJoinState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("PAKE register: %w", err)
 	}
-	return &pakeJoinState{skm: skm, record: record, pending: make(map[string]*opaque.ServerOutput)}, nil
+	st := &pakeJoinState{skm: skm, record: record, pending: make(map[string]*pendingLogin)}
+	go st.cleanupPendingLoop()
+	return st, nil
+}
+
+func (st *pakeJoinState) cleanupPendingLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		st.sweepExpiredPending(time.Now())
+	}
+}
+
+// sweepExpiredPending removes pending logins whose TTL has elapsed as of now.
+// Split out from cleanupPendingLoop so it can be exercised directly in tests
+// without waiting on the real ticker.
+func (st *pakeJoinState) sweepExpiredPending(now time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for id, p := range st.pending {
+		if now.After(p.expiresAt) {
+			delete(st.pending, id)
+		}
+	}
+}
+
+// pendingID correlates a KE1 with its later KE3 by hashing the KE1 bytes —
+// this is a correlation key, not a security boundary (the handshake itself
+// is what authenticates), so a cheap prefix hash is sufficient.
+func pendingID(ke1Bytes []byte) string {
+	return hex.EncodeToString(ke1Bytes[:min(16, len(ke1Bytes))])
 }
 
 func (st *pakeJoinState) HandleKE1(w http.ResponseWriter, r *http.Request) {
@@ -47,22 +91,28 @@ func (st *pakeJoinState) HandleKE1(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
-	var req struct{ Ke1 string `json:"ke1"` }
+	var req struct {
+		Ke1 string `json:"ke1"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", 400)
 		return
 	}
 
-	ke1Bytes, _ := hex.DecodeString(req.Ke1)
+	ke1Bytes, err := hex.DecodeString(req.Ke1)
+	if err != nil {
+		http.Error(w, "bad hex in ke1", 400)
+		return
+	}
 	ke2Bytes, serverOutput, err := pakeServerLoginStep1(st.skm, st.record, ke1Bytes)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("KE1 rejected: %v", err), 401)
 		return
 	}
 
-	id := hex.EncodeToString(ke1Bytes[:min(16, len(ke1Bytes))])
+	id := pendingID(ke1Bytes)
 	st.mu.Lock()
-	st.pending[id] = serverOutput
+	st.pending[id] = &pendingLogin{output: serverOutput, expiresAt: time.Now().Add(pendingLoginTTL)}
 	st.mu.Unlock()
 
 	json.NewEncoder(w).Encode(map[string]string{
@@ -87,27 +137,34 @@ func (st *pakeJoinState) HandleKE3(s *store) http.HandlerFunc {
 			return
 		}
 
-		ke1Bytes, _ := hex.DecodeString(req.Ke1)
-		ke3Bytes, _ := hex.DecodeString(req.Ke3)
-		id := hex.EncodeToString(ke1Bytes[:min(16, len(ke1Bytes))])
+		ke1Bytes, err := hex.DecodeString(req.Ke1)
+		if err != nil {
+			http.Error(w, "bad hex in ke1", 400)
+			return
+		}
+		ke3Bytes, err := hex.DecodeString(req.Ke3)
+		if err != nil {
+			http.Error(w, "bad hex in ke3", 400)
+			return
+		}
+		id := pendingID(ke1Bytes)
 
-		st.mu.RLock()
-		serverOutput, ok := st.pending[id]
-		st.mu.RUnlock()
-		if !ok {
-			http.Error(w, "unknown KE1", 400)
+		st.mu.Lock()
+		pending, ok := st.pending[id]
+		if ok {
+			delete(st.pending, id)
+		}
+		st.mu.Unlock()
+		if !ok || time.Now().After(pending.expiresAt) {
+			http.Error(w, "unknown or expired KE1", 400)
 			return
 		}
 
-		sessionKey, err := pakeServerLoginFinish(serverOutput, ke3Bytes)
+		sessionKey, err := pakeServerLoginFinish(pending.output, ke3Bytes)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("KE3 rejected: %v", err), 401)
 			return
 		}
-
-		st.mu.Lock()
-		delete(st.pending, id)
-		st.mu.Unlock()
 
 		credentialHex := hex.EncodeToString(sessionKey)
 		if req.NodeID != "" && s != nil {
@@ -179,7 +236,10 @@ func (rl *joinRateLimiter) cleanupLoop() {
 	}
 }
 
-// doHubJoin is the client-side PAKE join command.
+// doHubJoin is the client-side PAKE join command. It delegates the actual
+// handshake steps to pakeClientLoginStep1/pakeClientLoginFinish (pake_join.go)
+// rather than reimplementing them, so this production entrypoint runs the
+// same code the unit tests exercise.
 func doHubJoin(hubURL string) {
 	passwordBytes, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -200,13 +260,8 @@ func doHubJoin(hubURL string) {
 		}
 	}
 
-	conf := opaque.DefaultConfiguration()
-	client, err := conf.Client()
-	check(err, "create OPAQUE client")
-
-	ke1, err := client.GenerateKE1([]byte(password))
+	ke1Bytes, client, err := pakeClientLoginStep1(password)
 	check(err, "KE1")
-	ke1Bytes := ke1.Serialize()
 
 	resp, err := http.Post(baseURL+"/api/join/ke1", "application/json",
 		bytes.NewReader(mustJSON(map[string]string{"ke1": hex.EncodeToString(ke1Bytes)})))
@@ -217,17 +272,17 @@ func doHubJoin(hubURL string) {
 		fmt.Fprintf(os.Stderr, "hub-join: KE1 rejected: %s\n", strings.TrimSpace(string(body)))
 		os.Exit(1)
 	}
-	var ke1Resp struct{ Ke2 string `json:"ke2"` }
+	var ke1Resp struct {
+		Ke2 string `json:"ke2"`
+	}
 	json.NewDecoder(resp.Body).Decode(&ke1Resp)
 	resp.Body.Close()
 
-	ke2Bytes, _ := hex.DecodeString(ke1Resp.Ke2)
-	ke2Msg, err := client.Deserialize.KE2(ke2Bytes)
-	check(err, "deserialize KE2")
+	ke2Bytes, err := hex.DecodeString(ke1Resp.Ke2)
+	check(err, "decode KE2 hex")
 
-	ke3, sessionKey, _, err := client.GenerateKE3(ke2Msg, []byte("urnetwork-fleet-join"), []byte("urnetwork-hub"))
+	ke3Bytes, sessionKey, err := pakeClientLoginFinish(client, ke2Bytes)
 	check(err, "KE3")
-	ke3Bytes := ke3.Serialize()
 	credentialHex := hex.EncodeToString(sessionKey)
 
 	nodeID := os.Getenv("HOSTNAME")
