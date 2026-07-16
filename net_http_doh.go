@@ -71,8 +71,13 @@ func DefaultDnsResolverSettings() *DnsResolverSettings {
 			{Url: "https://9.9.9.9/dns-query", Format: DohFormatWire},        // Quad9 (RFC 8484)
 			{Url: "https://208.67.222.222/dns-query", Format: DohFormatWire}, // OpenDNS (RFC 8484)
 		},
+		// local plain-dns servers: host-side resolution, and the tunnel resolver
+		// when the local-dns toggle is enabled. Quad9 (9.9.9.9) leads so the OS does
+		// not auto-upgrade the tunnel resolver to encrypted DNS (which would bypass
+		// the UpgradeMux); see the sdk's defaultTunnelDnsServersIpv4
 		LocalDnsIpv4: []string{
-			"1.1.1.1",
+			"9.9.9.9", // Quad9
+			"1.1.1.1", // Cloudflare
 		},
 	}
 }
