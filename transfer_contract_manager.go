@@ -1179,9 +1179,15 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		}
 	}
 
-	if !checkpoint {
-		self.closeContractStats(contractId)
-	}
+	// Unlike the localStats.ContractOpenByteCounts/ContractOpenKeys bookkeeping
+	// above (which legitimately stays untouched on checkpoint — the wire-level
+	// contract may still be reused by a new sequence), the per-contract stats
+	// entry's lifecycle is tied to this sequence's Run() ending, not to the
+	// wire contract's lifecycle. It must always be released here, checkpoint
+	// or not, or it leaks for every contract whose sequence ends via
+	// checkpoint instead of a hard close — which per ReceiveSequence.Run's
+	// defer is the common case, not the exception.
+	self.closeContractStats(contractId)
 
 	// Reliable delivery via a per-contract `ControlSync`. The
 	// previous implementation called `ClientOob().SendControl(...)`
