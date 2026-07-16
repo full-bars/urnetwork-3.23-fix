@@ -152,43 +152,33 @@ Platform toggles updated:
 
 ## [Unreleased]
 
-### Fixed
-
-**JWT refresh rewrite** (#227): `refreshJWT()` was calling `/network/auth-client` (a client-provisioning endpoint) with no `ClientId`, silently minting orphan client_rows on every 7-day cycle and corrupting the on-disk token from a network JWT to a client JWT. Rewritten to use `/auth/code-create → /auth/code-login` — the same flow initial login uses — returning a same-species network JWT with zero side effects. Added regression guard (`jwtContainsClientId`) and verification step (hits `/transfer/stats` with the new token before overwriting disk).
-
-**Reaper lock regression** (#225): The reaper held the proxy file lock across serial network probes (up to 8s per dead entry), causing races on `proxy_url.json` with concurrent reloads/fetches. Probes now run outside the lock — candidates collected under lock, probed outside, results applied atomically under re-acquired lock.
-
-**Heartbeat correctness** (#225): Delta baseline now advances only on POST success (survives hub outages), body cap raised from 64 KiB to 256 KiB (first heartbeat after restart no longer 400s on fleets above ~600 proxies), HTTP client cached across ticks, data race on `loggedLegacyPinDeprecation` fixed.
-
-**Drain re-trigger** (#225): Proxies removed-then-re-added while draining were staying dead indefinitely. Drain-complete now checks if the address is back in the desired set and fires a reload trigger.
-
-**Hub: SSE/gzip and signal shutdown** (#225): `gzipMiddleware` was wrapping `/api/events`, breaking EventSource. Exempted. `signal.NotifyContext` was never wired to servers — `docker stop` waited full grace then SIGKILLed. Both TLS and plain-HTTP servers now shut down cleanly.
-
-**io.Reader contract in message pool** (#225): `MessagePoolReadAllWithTag` was dropping trailing data and treating `(0, nil)` as EOF. Switched to standard pattern.
-
 ### Added
 
-**Tactical emoji + log visibility** (#226): Emoji prefixes on 14 key log lines (🚨 outage, 🌿🔴/🟡/🟢 eco, 🔄 proxy reload, ⛔ contract denied, 🌐 net select, 🔑 JWT, 📡 webhook, 📦 message pool, 📈 traffic). Contract aggregates (`contracts=N denied=N avg_util=X%`) on `[profit]` heartbeat. WebRTC peer lifecycle events (`🔗 [signal] peer connected/disconnected`). Rate-limited `[doh]` warnings with escalation threshold. Traffic velocity detection (3x+ rate changes between ticks). Peak tracking (`peak_rx`/`peak_tx`). Client flight markers (`✈️`/`🛬`). JWT startup expiry log and throttled 48h warning.
+**Hub CA cert auto-bootstrap** (#281): On startup, `hub init` now checks `URNETWORK_HUB_TOKEN`, `URNETWORK_HUB_TOKEN_FILE`, and `URNETWORK_HUB_TOKEN_STDIN` for a hub token. If present, it fetches the CA cert from `$HUB/ca-cert?token=...` using the token before doing anything else.
 
-### Changed
+**PAKE-based hub join** (`hub -hub-join <url>`): New command that runs the OPAQUE handshake against a hub's join endpoints, reads password from stdin, and saves a per-node credential to `~/.urnetwork/hub.credential`. The credential is accepted by `requireAuth` alongside `URNETWORK_HUB_TOKEN`.
 
-**Proxy URL refresh default** (#221 carried): `--proxy_url_refresh` default bumped from 15m to 1h to reduce fetch-trigger frequency on large churny lists.
+**Auto Tier 4 Extreme** (#280): On hosts with >= 8 GiB RAM, the provider now auto-selects the Tier 4 (extreme) performance profile matching turbo-v8 settings. Manual `tier set 4` overrides remain.
 
-### Fixed from previous release
+**Docker-backed hub install/update** (#278): `urnet-tools hub install` and `hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/urnetwork-3.23-fix-hub`). Linux supports `--docker` opt-in. All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` named volume.
 
-**CA material loss guard** (#224): If `hub.salt` is deleted but `hub.password` survives (or vice versa), cross-consistency check now errors instead of silently regenerating a different CA root.
+**HTTP Basic Auth for hub dashboard** (#282): The hub dashboard and read-only API endpoints now accept HTTP Basic Auth via `URNETWORK_HUB_DASHBOARD_PASS`. Separate from `URNETWORK_HUB_TOKEN` (used for write endpoints). Unset = unauthenticated.
 
-**`hub link --token` forwarding** (#224): Dispatch was missing the `--token` flag, silently falling to manual TOFU flow. Now forwards all remaining args.
+### Fixed
 
-**Platform coverage** (#224): `do_hub_init` missing `has_systemd` guard, IPv6 bare address in onboard-cmd, empty-password rejection, `ca.crt` mid-run deletion survival.
+**CA cert live reload** (#279): The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without restarting. Allows CA cert rotation on live hubs.
 
-### Added (carried from previous release)
+**Hot-restart warning fix** (#277): `urnet-tools restart` no longer always shows "cold restart required" — it now reflects actual hot-restart status. Deduped `hotRestartEnabled()` check into a cross-platform helper. Worker download fallback ported from Linux to macOS (`Provider_Install_Mac.sh`) and Windows (`urnet-tools.ps1`) so all three platforms have GitHub rate-limit resilience for binary downloads.
 
-**Password-derived CA for hub↔provider TLS**: replaces random self-signed certs with a deterministic Ed25519 CA derived from the operator's password using Argon2id. Onboarding via `urnet-tools hub onboard-cmd` and `curl | sh`. Token-based, 15-minute window.
+**`--tag` not honored on hub update** (#277): When a persisted config had a tag and `--tag` was passed, the persisted tag took precedence. Fixed so `--tag` always wins.
 
-### Deprecated (carried from previous release)
+**Docker hub update pointed at wrong image** (#277): `hub update` was pulling the provider image instead of the hub image. Fixed to resolve the correct `-hub` image.
 
-**Fingerprint pinning (`hub.pin`)**: still honored for one release with deprecation warning. Remove the code path entirely in the next release.
+**Go vet fix** (#277): Escaped `%` in printf-style comment.
+
+### Known remaining
+
+- **Fingerprint pinning (`hub.pin`)**: Deprecated. To be removed in the next release.
 
 ---
 

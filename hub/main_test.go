@@ -308,7 +308,7 @@ func TestReportEndpointRejectsWrongToken(t *testing.T) {
 		rates: make(map[string]*nodeRate),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s)))
+	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s), nil))
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -336,7 +336,7 @@ func TestReportEndpointAcceptsCorrectToken(t *testing.T) {
 		rates: make(map[string]*nodeRate),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s)))
+	mux.HandleFunc("/api/report", requireAuth("secret-token", handleReport(s), nil))
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -363,7 +363,7 @@ func TestRequireAuthNoTokenConfiguredAllowsAll(t *testing.T) {
 	handler := requireAuth("", func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(204)
-	})
+	}, nil)
 	req := httptest.NewRequest("POST", "/api/report", nil)
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -456,7 +456,7 @@ func TestReadRoutesRequireBasicAuthWriteRoutesDoNot(t *testing.T) {
 		rates: make(map[string]*nodeRate),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/report", requireAuth("hub-token", handleReport(s)))
+	mux.HandleFunc("/api/report", requireAuth("hub-token", handleReport(s), nil))
 	mux.HandleFunc("/api/nodes/contracts", requireBasicAuth("dashboard-pass", handleNodeContracts(s)))
 	mux.HandleFunc("/api/nodes/", requireBasicAuth("dashboard-pass", handleNodes(s)))
 	mux.HandleFunc("/api/proxies/top", requireBasicAuth("dashboard-pass", handleProxiesTop(s)))
@@ -1070,7 +1070,7 @@ func TestHeartbeatEndpointRejectsWrongToken(t *testing.T) {
 	s.upsert("n1", &nodeState{NodeID: "n1", Timestamp: time.Now().UTC(), Proxies: []proxyReport{{TotalRX: 0}}})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/heartbeat", requireAuth("secret-token", handleHeartbeat(s)))
+	mux.HandleFunc("/api/heartbeat", requireAuth("secret-token", handleHeartbeat(s), nil))
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
