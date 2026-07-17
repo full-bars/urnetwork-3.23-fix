@@ -164,6 +164,8 @@ Platform toggles updated:
 
 **HTTP Basic Auth for hub dashboard** (#282): The hub dashboard and read-only API endpoints now accept HTTP Basic Auth via `URNETWORK_HUB_DASHBOARD_PASS`. Separate from `URNETWORK_HUB_TOKEN` (used for write endpoints). Unset = unauthenticated.
 
+**Persisted custom network selection** (#288): New `provider choose_network <api_url> <connect_url>` / `provider choose_network --reset` commands let operators running their own API/connect backend save it to `~/.urnetwork/network.json` instead of repeating `--api_url`/`--connect_url` on every invocation. Resolution order: flag > saved config > hardcoded default. Docker: `UR_API_URL`/`UR_CONNECT_URL` env vars (must be set together), also reachable via `urnet-tools choose_network` (Linux/Docker exec and Windows). Ported from `urfoundation/sn` PR #1.
+
 ### Fixed
 
 **CA cert live reload** (#279): The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without restarting. Allows CA cert rotation on live hubs.

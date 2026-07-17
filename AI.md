@@ -247,6 +247,8 @@ urnet-tools auth                    # interactive — paste auth code
 urnet-tools auth <auth-code>        # non-interactive
 urnet-tools update                  # update provider binary
 urnet-tools reinstall              # full reinstall
+urnet-tools choose_network <api_url> <connect_url>  # save a custom API/connect backend
+urnet-tools choose_network --reset  # clear saved custom network, revert to main network
 
 # Proxy Management
 urnet-tools proxy add file <path>  # bulk add from file
@@ -302,6 +304,7 @@ Key variables:
 |----------|---------|
 | `USER_AUTH` / `PASSWORD` | Email/password auth |
 | `URNETWORK_AUTH_CODE` | JWT auth code (first-run) |
+| `UR_API_URL` / `UR_CONNECT_URL` | Custom API/connect backend (must be set together, Docker only) |
 | `ENABLE_VNSTAT` | Traffic monitor on port 8080 |
 | `URNETWORK_PROFILE` | `auto` (tiers: low/balanced/perf/extreme), `lowmem`, `eco`, `turbo-v4`, `turbo-v8` |
 | `URNETWORK_REPORT_URL` | Hub URL for bandwidth reports |
