@@ -179,6 +179,10 @@ func initSHMLoggerWithHandover() {
 }
 
 func RunStartupAudit() (slowDisk bool, lowSpace bool) {
+	if os.Getenv("URNETWORK_SKIP_AUDIT") == "1" {
+		tlog("[audit] System audit skipped (URNETWORK_SKIP_AUDIT=1)\n")
+		return false, false
+	}
 	tlog("[audit] Running system checks...\n")
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
@@ -1812,6 +1816,16 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 			sinceLastRefresh := time.Since(lastRefreshTime)
 			periodicDue := sinceLastRefresh >= periodicInterval
 
+			// A zero-value lastRefreshTime (no on-disk record yet, e.g. a
+			// fresh node) makes sinceLastRefresh ~2026 years, which
+			// time.Duration silently saturates to its ~292-year int64 max
+			// (2562047h47m16s) rather than overflowing. Report "never"
+			// instead of that nonsensical ceiling value.
+			sinceLastRefreshDesc := formatDuration(sinceLastRefresh)
+			if lastRefreshTime.IsZero() {
+				sinceLastRefreshDesc = "never"
+			}
+
 			exp := parseJWTExpiryTime(byJwt)
 			expiryDue := exp != nil && time.Until(*exp) <= expiryFallbackWindow
 
@@ -1826,9 +1840,9 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				switch {
 				case periodicDue && expiryDue:
 					reason = fmt.Sprintf("7-day periodic refresh due (last refresh %s ago) and within %s of expiry",
-						formatDuration(sinceLastRefresh), formatDuration(expiryFallbackWindow))
+						sinceLastRefreshDesc, formatDuration(expiryFallbackWindow))
 				case periodicDue:
-					reason = fmt.Sprintf("7-day periodic refresh due (last refresh %s ago)", formatDuration(sinceLastRefresh))
+					reason = fmt.Sprintf("7-day periodic refresh due (last refresh %s ago)", sinceLastRefreshDesc)
 				default:
 					reason = fmt.Sprintf("expiry fallback triggered (expires in %s, within %s threshold)",
 						formatDuration(time.Until(*exp)), formatDuration(expiryFallbackWindow))
