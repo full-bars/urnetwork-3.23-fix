@@ -150,8 +150,9 @@ if ($ReleaseInfo) {
     $ReleaseDate = $ReleaseInfo.published_at
     $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -cmatch "^urnetwork-provider-" }
     if ($ReleaseAsset) {
-        $DownloadURL = $ReleaseAsset.browser_download_url
+        $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
+        $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
     }
 }
 
