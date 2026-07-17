@@ -1920,4 +1920,4 @@ Rewrite `refreshJWT()` to use `/auth/code-create → /auth/code-login` — the s
 
 **Status**: Open in PR #288 (branch `feat/choose-network`), not yet merged.
 
-**Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4.
+**Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4. Startup-triggered refresh (fires on first invocation, since no `jwt_last_refresh` file exists yet) confirmed working in production. The 7-day periodic path has not yet been separately observed completing a cycle.
