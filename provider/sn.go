@@ -91,9 +91,10 @@ func snSetWallet(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 // walletSet implements `provider wallet set <coldkey_ss58>`.
 func walletSet(opts docopt.Opts) {
-	apiUrl, err := opts.String("--api_url")
+	apiUrl, err := resolveApiUrl(opts)
 	if err != nil {
-		apiUrl = DefaultApiUrl
+		fmt.Printf("network config error: %s\n", err)
+		os.Exit(1)
 	}
 
 	event := connect.NewEventWithContext(context.Background())
@@ -130,9 +131,10 @@ func walletSet(opts docopt.Opts) {
 // a verified claim is signed and submitted via sn/miner/onchain;
 // otherwise the ready-to-submit calldata is printed for snclaim.
 func claim(opts docopt.Opts) {
-	apiUrl, err := opts.String("--api_url")
+	apiUrl, err := resolveApiUrl(opts)
 	if err != nil {
-		apiUrl = DefaultApiUrl
+		fmt.Printf("network config error: %s\n", err)
+		os.Exit(1)
 	}
 
 	event := connect.NewEventWithContext(context.Background())
