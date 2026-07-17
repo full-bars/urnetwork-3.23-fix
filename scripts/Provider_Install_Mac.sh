@@ -182,15 +182,15 @@ do_install() {
         *)              pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
     esac
 
-    tarball_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
     if ! curl -fsSL "$tarball_url" -o "$tmpdir/provider.tar.gz"; then
-        mirror_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-        pr_warn "GitHub download failed, trying mirror..."
+        pr_warn "Primary download failed, trying GitHub mirror..."
         if ! curl -fsSL "$mirror_url" -o "$tmpdir/provider.tar.gz"; then
-            pr_err "Failed to download from both GitHub and mirror"
+            pr_err "Failed to download from both primary and mirror"
             rm -rf "$tmpdir"
             exit 1
         fi

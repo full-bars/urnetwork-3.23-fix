@@ -453,6 +453,8 @@ case "$operation" in
         download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
         [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
 
+        primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
+
         current_version="unknown"
         if [ -x "$provider_bin" ]; then
             current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
@@ -466,10 +468,13 @@ case "$operation" in
         fi
 
         echo "Downloading $version..."
-        curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
-            echo "ERROR: download failed."
-            exit 1
-        }
+        if ! curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$primary_url"; then
+            echo "Primary download failed, trying GitHub mirror..."
+            curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
+                echo "ERROR: download failed."
+                exit 1
+            }
+        fi
 
         tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
         tar -xzf /tmp/urnetwork-update.tar.gz -C "$tmpdir" || {
