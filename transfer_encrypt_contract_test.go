@@ -160,6 +160,27 @@ func blackholeControlId(ctx context.Context, routeManager *RouteManager) {
 	}()
 }
 
+// resetBackendDegradedState clears the process-global backend-health counters
+// (consecutiveBackendFails / lastBackendFailNano in transport.go) that
+// isBackendDegraded() reads. Those atomics are package-global and are NOT
+// reset between tests, so earlier tests in the package that exercise backend
+// failure paths (auth timeouts, a NoContractClientOob returning an error, etc.)
+// can leave the counter above backendDegradedFailThreshold with a recent
+// timestamp. A contract test that then runs finds isBackendDegraded()==true and
+// SendSequence.updateContract skips CreateContract entirely (transfer.go: "skip
+// when backend is degraded to avoid launching goroutines against a dead API"),
+// so the contract-granting oob is never invoked. TakeContract then blocks
+// forever, the application Send holding packMutex never drains, the shared
+// EncryptedControl carrier starves, and the handshake never completes. That
+// deadlock only appears when this test runs after enough polluting tests
+// (hence "passes alone, times out deep in the suite"). Resetting here makes the
+// test hermetic with respect to that global. Tests run serially (no
+// t.Parallel), so a reset at the top is sufficient.
+func resetBackendDegradedState() {
+	consecutiveBackendFails.Store(0)
+	lastBackendFailNano.Store(0)
+}
+
 // TestSendReceiveEncryptedWithContracts exercises bidirectional encrypted
 // transfer when contracts are required and supplied on demand by a
 // contract-granting oob. The send idle timeout is short so send sequences
@@ -170,6 +191,8 @@ func blackholeControlId(ctx context.Context, routeManager *RouteManager) {
 // exit-flush no longer discards the other's contracts and the handshake
 // completes.
 func TestSendReceiveEncryptedWithContracts(t *testing.T) {
+	resetBackendDegradedState()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -336,7 +359,9 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 	}
 
 	// Wait for the per-peer client cipher to establish in both directions.
-	deadline := time.After(45 * time.Second)
+	// Independent of EncryptionSettings.TlsTimeout above — this is the test's
+	// own outer wait, so it needs the same CI-under-race headroom.
+	deadline := time.After(90 * time.Second)
 	for !(cipherUp(a, bClientId) && cipherUp(b, aClientId)) {
 		select {
 		case <-deadline:
@@ -384,6 +409,8 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 // EncryptionControlUseCompanion contract) and collapsed to three keys per
 // client — this test pins that they stay separated.
 func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
+	resetBackendDegradedState()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -524,7 +551,8 @@ func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
 	// Wait until each client has opened its four distinct send-sequence
 	// contracts. If the companion sessions collapsed, a client would stall at
 	// three (its two server reply carriers sharing one key) and this times out.
-	deadline := time.After(45 * time.Second)
+	// 90s (not 45s) for the same CI-under-race headroom as the deadline above.
+	deadline := time.After(90 * time.Second)
 	for {
 		aKeys := distinctContractKeys(a)
 		bKeys := distinctContractKeys(b)
