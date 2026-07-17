@@ -368,6 +368,12 @@ type ServerNameLookup interface {
 	ServerNames(ip string) []string
 }
 
+type multiClientConfig struct {
+	performanceProfile  *PerformanceProfile
+	localSecurityBypass bool
+	serverNameLookup    ServerNameLookup
+}
+
 type RemoteUserNatMultiClient struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -397,8 +403,11 @@ type RemoteUserNatMultiClient struct {
 	affinityIp6Paths map[Ip6Path]map[Ip6Path]time.Time
 	clientUpdates    map[*multiClientChannel]map[*multiClientChannelUpdate]bool
 
-	performanceProfile  *PerformanceProfile
-	localSecurityBypass bool
+	// config is an immutable snapshot of the rarely-changed routing config
+	// (performance profile + local security bypass). it is rebuilt under
+	// stateLock by the setters and read lock-free by selectWindowTypes, the
+	// affinity selection, and the SendPacket drop path.
+	config atomic.Pointer[multiClientConfig]
 
 	localUserNat      *LocalUserNat
 	localUserNatUnsub func()
@@ -456,9 +465,13 @@ func NewRemoteUserNatMultiClient(
 		affinityIp4Paths:      map[Ip4Path]map[Ip4Path]time.Time{},
 		affinityIp6Paths:      map[Ip6Path]map[Ip6Path]time.Time{},
 		clientUpdates:         map[*multiClientChannel]map[*multiClientChannelUpdate]bool{},
-		performanceProfile:    settings.DefaultPerformanceProfile,
 		localUserNat:          localUserNat,
 	}
+	multiClient.config.Store(&multiClientConfig{
+		performanceProfile:  settings.DefaultPerformanceProfile,
+		localSecurityBypass: false,
+		serverNameLookup:    nil,
+	})
 
 	multiClient.windows[WindowTypeQuality] = newMultiClientWindow(
 		cancelCtx,
@@ -529,7 +542,12 @@ func (self *RemoteUserNatMultiClient) SetPerformanceProfile(performanceProfile *
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
 
-		self.performanceProfile = performanceProfile
+		prev := self.config.Load()
+		self.config.Store(&multiClientConfig{
+			performanceProfile:  performanceProfile,
+			localSecurityBypass: prev.localSecurityBypass,
+			serverNameLookup:    prev.serverNameLookup,
+		})
 	}()
 	for _, window := range self.windows {
 		window.SetPerformanceProfile(performanceProfile)
@@ -541,13 +559,29 @@ func (self *RemoteUserNatMultiClient) SetPerformanceProfile(performanceProfile *
 func (self *RemoteUserNatMultiClient) SetLocalSecurityBypass(localSecurityBypass bool) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	self.localSecurityBypass = localSecurityBypass
+	prev := self.config.Load()
+	self.config.Store(&multiClientConfig{
+		performanceProfile:  prev.performanceProfile,
+		localSecurityBypass: localSecurityBypass,
+		serverNameLookup:    prev.serverNameLookup,
+	})
 }
 
 func (self *RemoteUserNatMultiClient) LocalSecurityBypass() bool {
+	return self.config.Load().localSecurityBypass
+}
+
+// SetServerNameLookup installs (or clears, with nil) the ServerNameLookup used for
+// ServerName-based path affinity. Safe to call at runtime.
+func (self *RemoteUserNatMultiClient) SetServerNameLookup(serverNameLookup ServerNameLookup) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	return self.localSecurityBypass
+	prev := self.config.Load()
+	self.config.Store(&multiClientConfig{
+		performanceProfile:  prev.performanceProfile,
+		localSecurityBypass: prev.localSecurityBypass,
+		serverNameLookup:    serverNameLookup,
+	})
 }
 
 // ordered by choice descending
@@ -560,13 +594,9 @@ func (self *RemoteUserNatMultiClient) selectWindowTypes(sendPacket *parsedPacket
 	}
 
 	var fixedWindowType *WindowType
-	func() {
-		self.stateLock.Lock()
-		defer self.stateLock.Unlock()
-		if self.performanceProfile != nil {
-			fixedWindowType = &self.performanceProfile.WindowType
-		}
-	}()
+	if pp := self.config.Load().performanceProfile; pp != nil {
+		fixedWindowType = &pp.WindowType
+	}
 
 	if fixedWindowType != nil {
 		return []WindowType{*fixedWindowType}
@@ -581,10 +611,11 @@ func (self *RemoteUserNatMultiClient) selectWindowTypes(sendPacket *parsedPacket
 // called with stateLock
 func (self *RemoteUserNatMultiClient) affinityIpPathsWithLock(ipPath *IpPath) (affinityPaths []*IpPath, attach bool) {
 	attach = true
+	config := self.config.Load()
 
 	singleIp := false
-	if self.performanceProfile != nil {
-		singleIp = (self.performanceProfile.WindowSize.FixedWindowSize == 1)
+	if pp := config.performanceProfile; pp != nil {
+		singleIp = (pp.WindowSize.FixedWindowSize == 1)
 	}
 
 	if singleIp {
@@ -593,7 +624,7 @@ func (self *RemoteUserNatMultiClient) affinityIpPathsWithLock(ipPath *IpPath) (a
 		}
 		affinityPaths = append(affinityPaths, singlePath)
 	} else if ipPath.DestinationPort == 80 || ipPath.DestinationPort == 53 || ipPath.DestinationPort == 443 {
-		// for these ports, cycle the path per destination ip, regardless of protocol
+		// for these ports, cycle the path per destination ip/port, regardless of protocol
 		destinationPath := &IpPath{
 			Version:         ipPath.Version,
 			DestinationIp:   ipPath.DestinationIp,
