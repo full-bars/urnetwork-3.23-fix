@@ -224,6 +224,10 @@ case "$operation" in
                 ;;
         esac
         ;;
+    choose_network)
+        [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
+        exec /usr/local/bin/provider choose_network "$@"
+        ;;
     logs)
         [ -x /usr/local/bin/logs ] && exec /usr/local/bin/logs "$@" || { echo "logs tool not found"; exit 1; }
         ;;
