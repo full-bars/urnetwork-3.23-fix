@@ -210,7 +210,11 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
 		s.EncryptionSettings.Encrypt = true
-		s.EncryptionSettings.TlsTimeout = 30 * time.Second
+		// Generous relative to the other 60s wall-clock budgets in this test
+		// (GapTimeout/IdleTimeout above) — under `go test -race ./...` for the
+		// full package, this handshake has occasionally missed a 30s deadline
+		// purely from CI scheduling contention, not a stalled handshake.
+		s.EncryptionSettings.TlsTimeout = 90 * time.Second
 		// Exercise the symmetric (non-companion) EncryptedControl path.
 		s.EncryptionSettings.EncryptionControlUseCompanion = false
 		return s
@@ -417,7 +421,9 @@ func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
 		s.EncryptionSettings.Encrypt = true
-		s.EncryptionSettings.TlsTimeout = 30 * time.Second
+		// See makeSettings above: generous relative to the other 60s budgets
+		// here, to absorb CI scheduling contention under `-race ./...`.
+		s.EncryptionSettings.TlsTimeout = 90 * time.Second
 		// Server reply carriers ride regular (non-companion) contracts. This is
 		// the case that exercises the ContractKey companion split: both server
 		// carriers then share Destination/role/CompanionContract and differ only
