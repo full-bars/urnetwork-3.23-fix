@@ -105,6 +105,51 @@ func TestWriteNetworkConfigRejectsBadUrls(t *testing.T) {
 	}
 }
 
+// TestWriteNetworkConfigRejectsBadUrlsDoesNotCreateDir guards against
+// partial state: URL validation must happen before ~/.urnetwork is
+// created, so a rejected write leaves no directory behind on a fresh
+// install.
+func TestWriteNetworkConfigRejectsBadUrlsDoesNotCreateDir(t *testing.T) {
+	home := withTempHome(t)
+	if err := writeNetworkConfig("ftp://example.com", "wss://example.com"); err == nil {
+		t.Fatalf("writeNetworkConfig: expected error for bad api_url scheme")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".urnetwork")); !os.IsNotExist(err) {
+		t.Fatalf("expected ~/.urnetwork to not be created on rejected write, stat err = %v", err)
+	}
+}
+
+// TestWriteNetworkConfigPermissions matches this repo's convention for
+// other ~/.urnetwork state files (jwt, .provider.key, hub_ca.pem): the
+// directory is 0700 and the file is 0600, since network.json can carry
+// an internal/test-backend hostname a user wouldn't want world-readable.
+func TestWriteNetworkConfigPermissions(t *testing.T) {
+	home := withTempHome(t)
+	if err := writeNetworkConfig("https://example.com", "wss://example.com"); err != nil {
+		t.Fatalf("writeNetworkConfig: unexpected error: %s", err)
+	}
+
+	dirInfo, err := os.Stat(filepath.Join(home, ".urnetwork"))
+	if err != nil {
+		t.Fatalf("stat ~/.urnetwork: unexpected error: %s", err)
+	}
+	if dirInfo.Mode().Perm() != 0700 {
+		t.Errorf("~/.urnetwork perms = %v, want 0700", dirInfo.Mode().Perm())
+	}
+
+	p, err := networkConfigPath()
+	if err != nil {
+		t.Fatalf("networkConfigPath: unexpected error: %s", err)
+	}
+	fileInfo, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat network.json: unexpected error: %s", err)
+	}
+	if fileInfo.Mode().Perm() != 0600 {
+		t.Errorf("network.json perms = %v, want 0600", fileInfo.Mode().Perm())
+	}
+}
+
 func TestResetNetworkConfig(t *testing.T) {
 	withTempHome(t)
 
@@ -175,6 +220,28 @@ func TestResolveApiUrlPrecedence(t *testing.T) {
 	}
 	if got != "https://flag.example.com" {
 		t.Errorf("resolveApiUrl (flag) = %q, want %q", got, "https://flag.example.com")
+	}
+}
+
+// TestResolveApiUrlEmptyFlagOverridesSaved is a characterization test:
+// resolveApiUrl only checks whether the --api_url key parsed as a
+// string without error, so an explicit but empty flag ("--api_url=")
+// is indistinguishable from a real value and silently wins over a
+// saved config, producing an empty apiUrl. This mirrors the upstream
+// sn PR's resolveApiUrl and is not a regression introduced by this
+// port, but it's worth pinning down so a future change to the
+// precedence logic doesn't alter this behavior by accident.
+func TestResolveApiUrlEmptyFlagOverridesSaved(t *testing.T) {
+	withTempHome(t)
+	if err := writeNetworkConfig("https://saved.example.com", "wss://saved.example.com"); err != nil {
+		t.Fatalf("writeNetworkConfig: unexpected error: %s", err)
+	}
+	got, err := resolveApiUrl(docopt.Opts{"--api_url": ""})
+	if err != nil {
+		t.Fatalf("resolveApiUrl: unexpected error: %s", err)
+	}
+	if got != "" {
+		t.Errorf("resolveApiUrl (empty flag) = %q, want empty string (current behavior: empty flag still wins over saved config)", got)
 	}
 }
 

@@ -82,6 +82,27 @@ func_get_architecture() {
     esac
 }
 
+# === Custom Network Selection ===
+# UR_API_URL / UR_CONNECT_URL let operators point the provider at a
+# custom API + connect backend without a custom-built binary, using
+# the `provider choose_network` command. Both must be set together
+# (the binary's choose_network requires both positional args). Saved
+# to ~/.urnetwork/network.json, so — like the JWT — it survives
+# restarts if that directory is on a mounted volume.
+func_choose_network() {
+    if [ -n "$UR_API_URL" ] && [ -n "$UR_CONNECT_URL" ]; then
+        PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_nightly"
+        log "[INFO] Custom network requested: api_url=$UR_API_URL connect_url=$UR_CONNECT_URL"
+        if ! "$PROVIDER_BIN" choose_network "$UR_API_URL" "$UR_CONNECT_URL"; then
+            log "[ERROR] choose_network rejected UR_API_URL/UR_CONNECT_URL — check scheme (http(s):// for UR_API_URL, ws(s):// for UR_CONNECT_URL)"
+            exit 1
+        fi
+    elif [ -n "$UR_API_URL" ] || [ -n "$UR_CONNECT_URL" ]; then
+        log "[ERROR] UR_API_URL and UR_CONNECT_URL must both be set together"
+        exit 1
+    fi
+}
+
 # === Client Identity Reporting ===
 # Fetches the public IP used to build this node's dashboard identity label
 # (node name @ redacted-IP [version]). Always on; no configuration required.
@@ -286,6 +307,10 @@ func_bootstrap() {
     func_ip_checker
     func_start_vnstat
 	func_check_update
+	# choose_network runs after func_check_update: on a fresh nightly
+	# container the urnetwork_${A_SYS_ARCH}_nightly binary doesn't exist
+	# until the update check downloads it.
+	func_choose_network
     # Pass host's actual hostname (if provided) so provider reports correctly on dashboard
     export HOST_HOSTNAME="${HOST_HOSTNAME:-}"
     (
