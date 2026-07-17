@@ -54,6 +54,9 @@
                                   Fetch CA cert and pin the hub's identity
       hub unlink                  Revert to HTTP (remove pin + CA cert)
       report [<url>|off]          Show or set hub report URL
+      choose_network <api_url> <connect_url>
+                                  Save a custom API/connect backend
+      choose_network --reset      Clear saved custom network, revert to main network
     
     Run 'urnet-tools.ps1 <command>' without arguments for usage details.
 
@@ -91,7 +94,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal", "choose_network")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -783,6 +786,19 @@ switch ($Command) {
             default {
                 Write-Host "Usage: proxy [refresh|reload|remove-dead|summary|remove --match=<pat>|exclude [<pat>] [--remove]]"
             }
+        }
+        break
+    }
+
+    "choose_network" {
+        if ($SubArgs -and $SubArgs[0] -eq "--reset") {
+            docker exec $ContainerName provider choose_network --reset
+        }
+        elseif ($SubArgs.Length -eq 2) {
+            docker exec $ContainerName provider choose_network $SubArgs[0] $SubArgs[1]
+        }
+        else {
+            Write-Host "Usage: choose_network <api_url> <connect_url> | choose_network --reset"
         }
         break
     }
