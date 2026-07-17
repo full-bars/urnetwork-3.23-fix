@@ -203,6 +203,8 @@ func DefaultContractManagerSettingsWithBufferSize(bufferSize int) *ContractManag
 
 		OriginContractLinger: 300 * time.Second,
 
+		ContractStatsEpoch: 60 * time.Second,
+
 		ContractQueueExpireTimeout: 120 * time.Second,
 
 		ProtocolVersion: DefaultProtocolVersion,
@@ -297,6 +299,9 @@ func NewContractManager(
 	client *Client,
 	settings *ContractManagerSettings,
 ) *ContractManager {
+	if settings.ContractStatsEpoch <= 0 {
+		settings.ContractStatsEpoch = 10 * time.Second
+	}
 	// at a minimum
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
@@ -323,6 +328,8 @@ func NewContractManager(
 		sendNoContractClientIds:    sendNoContractClientIds,
 		contractStatusCallbacks:    NewCallbackList[*contractStatusCallbackWorker](),
 		localStats:                 NewContractManagerStats(),
+		contractStatsEntries:       map[contractStatsKey]*contractStatsEntry{},
+		contractStatsCallbacks:     NewCallbackList[ContractStatsFunction](),
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 		controlSyncProvideOob:      NewControlSyncOob(ctx, client, "provide-oob"),
 	}
@@ -1171,6 +1178,16 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 			atomic.AddUint64(&contractUtilSum, uint64(util))
 		}
 	}
+
+	// Unlike the localStats.ContractOpenByteCounts/ContractOpenKeys bookkeeping
+	// above (which legitimately stays untouched on checkpoint — the wire-level
+	// contract may still be reused by a new sequence), the per-contract stats
+	// entry's lifecycle is tied to this sequence's Run() ending, not to the
+	// wire contract's lifecycle. It must always be released here, checkpoint
+	// or not, or it leaks for every contract whose sequence ends via
+	// checkpoint instead of a hard close — which per ReceiveSequence.Run's
+	// defer is the common case, not the exception.
+	self.closeContractStats(contractId)
 
 	// Reliable delivery via a per-contract `ControlSync`. The
 	// previous implementation called `ClientOob().SendControl(...)`
