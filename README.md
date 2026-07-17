@@ -15,6 +15,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
 | Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
+| Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
 
 ---
 
@@ -90,6 +91,7 @@ docker run -d \
 - `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
 - `URNETWORK_AUTH_CODE` — Your JWT token (single-use on first run; saved to volume)
 - `PROXY_URL` — Optional live proxy list URL (comma-separated for multiple), additive with the mounted `proxy.txt`. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
+- `UR_API_URL` / `UR_CONNECT_URL` — Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
@@ -118,6 +120,8 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
 | `urnet-tools report <url>` | You want to set or change the hub report URL without restarting |
 | `urnet-tools report` | You want to check which URL the provider is currently reporting to |
+| `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
+| `urnetwork choose_network --reset` | You want to clear a saved custom network and revert to the main network |
 
 > [!TIP]
 > `~/proxies.txt` and `/home/user/proxies.txt` are both valid path formats.

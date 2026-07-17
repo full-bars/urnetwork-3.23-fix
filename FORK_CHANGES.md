@@ -1895,4 +1895,29 @@ Rewrite `refreshJWT()` to use `/auth/code-create → /auth/code-login` — the s
 - `provider/main.go` — Rewrote `refreshJWT()`, added `jwtContainsClientId()`
 - `provider/jwt_test.go` — Added `TestJWTContainsClientId` (4 cases), added `createFakeJWTWithClaims` helper
 
+## 73. Persisted Custom Network Selection (`choose_network`, PR #288)
+
+**Purpose**: Let operators running their own API/connect backend (test networks, private infrastructure) point the provider at it without a custom-built binary or repeating `--api_url`/`--connect_url` on every invocation. Ported from `urfoundation/sn` PR #1 (`miner choose_network`), adapted to this fork's `provider` CLI.
+
+### 73a. CLI
+
+- `provider choose_network <api_url> <connect_url>` — validates (`<api_url>` must be `http`/`https`, `<connect_url>` must be `ws`/`wss`) and saves to `~/.urnetwork/network.json`.
+- `provider choose_network --reset` — clears the saved network, reverting to the hardcoded main-network defaults.
+- Resolution order for `auth`, `provide`, `wallet set`, `claim`: `--api_url`/`--connect_url` flag > saved `network.json` > hardcoded default. Unchanged from upstream if no network is ever chosen.
+
+### 73b. Docker
+
+`UR_API_URL` / `UR_CONNECT_URL` env vars, wired into all three entrypoints (`start_stable.sh`, `start_jwt.sh`, `start_nightly.sh`). Both must be set together — either alone fails the container fast rather than silently running against the wrong backend. Calls `choose_network` once at boot; `nightly` runs it after the update-check step since that build's binary doesn't exist on disk until downloaded. Also wired into `docker/scripts/urnet-tools.sh` (`urnet-tools choose_network ...` via `docker exec`) and `scripts/urnet-tools.ps1` for Windows Docker installs.
+
+### 73c. Files Changed
+
+- `provider/network.go`, `provider/network_cmd.go` (new) — config I/O, URL validation, precedence resolution. Reuses the existing `providerStatePath` helper rather than a new path helper.
+- `provider/main.go`, `provider/sn.go` — `auth`/`provide`/`wallet set`/`claim` migrated to the new resolvers.
+- `provider/network_test.go` (new) — validation, round-trip, precedence, reset, corrupt-config, file-permission, and partial-write-prevention tests.
+- `docker/scripts/start_stable.sh`, `start_jwt.sh`, `start_nightly.sh`, `urnet-tools.sh` — `UR_API_URL`/`UR_CONNECT_URL` wiring.
+- `scripts/urnet-tools.ps1` — Windows Docker wiring.
+- `docs/Configuration.md`, `README.md`, `AI.md` — documented the new command and env vars.
+
+**Status**: Open in PR #288 (branch `feat/choose-network`), not yet merged.
+
 **Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4.
