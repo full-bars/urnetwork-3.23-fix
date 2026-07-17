@@ -8,6 +8,8 @@
 | `USER_AUTH` | - | Your email. Required if `BUILD=stable`. Also used for **self-healing** in `BUILD=jwt` mode to refresh expired tokens. |
 | `PASSWORD` | - | Your password. Required if `BUILD=stable`. Also used for **self-healing** in `BUILD=jwt` mode to refresh expired tokens. |
 | `URNETWORK_AUTH_CODE` | - | First-run auth code for `BUILD=jwt`. Use this instead of passing the code as a trailing command argument. Ignored once a JWT exists in the volume. |
+| `UR_API_URL` | `https://api.bringyour.com` | Custom API URL, for operators running their own backend. Must be set together with `UR_CONNECT_URL`. Applied once at startup via `provider choose_network` and persisted to `~/.urnetwork/network.json`, so it survives restarts if that directory is on a volume — same as the JWT. |
+| `UR_CONNECT_URL` | `wss://connect.bringyour.com` | Custom connect (WebSocket signaling) URL, for operators running their own backend. Must be set together with `UR_API_URL`. See `UR_API_URL`. |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
 | `ENABLE_IP_CHECKER` | `false` | Diagnostic only. Prints your full public IP to container logs on startup via an external script. Distinct from dashboard identity reporting, which sends only a redacted IP. |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Prefer this variable for Docker turbo mode. |

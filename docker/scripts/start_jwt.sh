@@ -56,6 +56,27 @@ func_get_architecture() {
     esac
 }
 
+# === Custom Network Selection ===
+# UR_API_URL / UR_CONNECT_URL let operators point the provider at a
+# custom API + connect backend without a custom-built binary, using
+# the `provider choose_network` command. Both must be set together
+# (the binary's choose_network requires both positional args). Saved
+# to ~/.urnetwork/network.json, so — like the JWT — it survives
+# restarts if that directory is on a mounted volume.
+func_choose_network() {
+    if [ -n "$UR_API_URL" ] && [ -n "$UR_CONNECT_URL" ]; then
+        PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_stable"
+        log "[INFO] Custom network requested: api_url=$UR_API_URL connect_url=$UR_CONNECT_URL"
+        if ! "$PROVIDER_BIN" choose_network "$UR_API_URL" "$UR_CONNECT_URL"; then
+            log "[ERROR] choose_network rejected UR_API_URL/UR_CONNECT_URL — check scheme (http(s):// for UR_API_URL, ws(s):// for UR_CONNECT_URL)"
+            exit 1
+        fi
+    elif [ -n "$UR_API_URL" ] || [ -n "$UR_CONNECT_URL" ]; then
+        log "[ERROR] UR_API_URL and UR_CONNECT_URL must both be set together"
+        exit 1
+    fi
+}
+
 # === Client Identity Reporting ===
 # Fetches the public IP used to build this node's dashboard identity label
 # (node name @ redacted-IP [version]). Always on; no configuration required.
@@ -222,6 +243,7 @@ func_start_provider(){
 # === Bootstrap Sequence ===
 func_bootstrap() {
     func_get_architecture
+    func_choose_network
     func_check_dir
     func_check_proxy
     func_report_identity
