@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/gopacket/layers"
-
 	"github.com/urnetwork/connect/protocol"
 )
 
@@ -63,8 +61,8 @@ func TestUdpSequenceWritePipelineDrainsBuffersOnCancel(t *testing.T) {
 			DestinationId(NewId()),
 			protocol.ProvideMode_Network,
 			4,
-			net.ParseIP("127.0.0.1"), layers.UDPPort(40000),
-			destAddr.IP, layers.UDPPort(destAddr.Port),
+			net.ParseIP("127.0.0.1"), UDPPort(40000),
+			destAddr.IP, UDPPort(destAddr.Port),
 			udpBufferSettings,
 		)
 
@@ -78,8 +76,8 @@ func TestUdpSequenceWritePipelineDrainsBuffersOnCancel(t *testing.T) {
 		// drain them, then cancel immediately - this is the exact window the
 		// fix's drain-on-exit defer covers.
 		for j := 0; j < sendsPerIteration; j += 1 {
-			udp := &layers.UDP{}
-			udp.Payload = []byte("x")
+			udp := &parsedUdp{}
+			udp.payload = []byte("x")
 			ipPacket := MessagePoolGet(2048)
 			sendItem := &UdpSendItem{
 				udp:      udp,
