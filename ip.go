@@ -19,13 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-
 	"golang.org/x/exp/maps"
 
 	// "google.golang.org/protobuf/proto"
-
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -49,6 +45,228 @@ const UdpHeaderSize = 8
 const TcpHeaderSizeWithoutExtensions = 20
 
 const debugVerifyHeaders = false
+
+type IPProtocol uint8
+
+const (
+	IP_PROTOCOL_UDP IPProtocol = 17
+	IP_PROTOCOL_TCP IPProtocol = 6
+)
+
+type UDPPort uint16
+type TCPPort uint16
+
+type parsedUdp struct {
+	sourceIp        net.IP
+	destinationIp   net.IP
+	sourcePort      UDPPort
+	destinationPort UDPPort
+	payload         []byte
+}
+
+type parsedTcp struct {
+	sourceIp        net.IP
+	destinationIp   net.IP
+	sourcePort      TCPPort
+	destinationPort TCPPort
+	fin             bool
+	syn             bool
+	rst             bool
+	psh             bool
+	ack             bool
+	seq             uint32
+	ackNumber       uint32
+	windowSize      uint16
+	options         []byte
+	payload         []byte
+}
+
+func (self *parsedTcp) flagsString() string {
+	flags := []string{}
+	if self.fin {
+		flags = append(flags, "FIN")
+	}
+	if self.syn {
+		flags = append(flags, "SYN")
+	}
+	if self.rst {
+		flags = append(flags, "RST")
+	}
+	if self.psh {
+		flags = append(flags, "PSH")
+	}
+	if self.ack {
+		flags = append(flags, "ACK")
+	}
+	return strings.Join(flags, ", ")
+}
+
+func parseIpv4(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
+	if len(ipPacket) < Ipv4HeaderSizeWithoutExtensions {
+		return
+	}
+	headerByteCount := int(ipPacket[0]&0xf) * 4
+	totalByteCount := int(binary.BigEndian.Uint16(ipPacket[2:4]))
+	if headerByteCount < Ipv4HeaderSizeWithoutExtensions || totalByteCount < headerByteCount || len(ipPacket) < totalByteCount {
+		return
+	}
+	ipProtocol = IPProtocol(ipPacket[9])
+	sourceIp = net.IP(ipPacket[12:16])
+	destinationIp = net.IP(ipPacket[16:20])
+	transport = ipPacket[headerByteCount:totalByteCount]
+	ok = true
+	return
+}
+
+func parseIpv6(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
+	if len(ipPacket) < Ipv6HeaderSize {
+		return
+	}
+	payloadByteCount := int(binary.BigEndian.Uint16(ipPacket[4:6]))
+	if len(ipPacket) < Ipv6HeaderSize+payloadByteCount {
+		return
+	}
+	ipProtocol = IPProtocol(ipPacket[6])
+	sourceIp = net.IP(ipPacket[8:24])
+	destinationIp = net.IP(ipPacket[24:40])
+	transport = ipPacket[Ipv6HeaderSize : Ipv6HeaderSize+payloadByteCount]
+	ok = true
+	return
+}
+
+func parseUdpPacket(sourceIp net.IP, destinationIp net.IP, transport []byte, udp *parsedUdp) bool {
+	if len(transport) < UdpHeaderSize {
+		return false
+	}
+	udpByteCount := int(binary.BigEndian.Uint16(transport[4:6]))
+	if udpByteCount < UdpHeaderSize || len(transport) < udpByteCount {
+		return false
+	}
+	udp.sourceIp = sourceIp
+	udp.destinationIp = destinationIp
+	udp.sourcePort = UDPPort(binary.BigEndian.Uint16(transport[0:2]))
+	udp.destinationPort = UDPPort(binary.BigEndian.Uint16(transport[2:4]))
+	udp.payload = transport[UdpHeaderSize:udpByteCount]
+	return true
+}
+
+func parseTcpPacket(sourceIp net.IP, destinationIp net.IP, transport []byte, tcp *parsedTcp) bool {
+	if len(transport) < TcpHeaderSizeWithoutExtensions {
+		return false
+	}
+	headerByteCount := int(transport[12]>>4) * 4
+	if headerByteCount < TcpHeaderSizeWithoutExtensions || len(transport) < headerByteCount {
+		return false
+	}
+	flags := transport[13]
+	tcp.sourceIp = sourceIp
+	tcp.destinationIp = destinationIp
+	tcp.sourcePort = TCPPort(binary.BigEndian.Uint16(transport[0:2]))
+	tcp.destinationPort = TCPPort(binary.BigEndian.Uint16(transport[2:4]))
+	tcp.seq = binary.BigEndian.Uint32(transport[4:8])
+	tcp.ackNumber = binary.BigEndian.Uint32(transport[8:12])
+	tcp.fin = (flags & 0x01) != 0
+	tcp.syn = (flags & 0x02) != 0
+	tcp.rst = (flags & 0x04) != 0
+	tcp.psh = (flags & 0x08) != 0
+	tcp.ack = (flags & 0x10) != 0
+	tcp.windowSize = binary.BigEndian.Uint16(transport[14:16])
+	tcp.options = transport[TcpHeaderSizeWithoutExtensions:headerByteCount]
+	tcp.payload = transport[headerByteCount:]
+	return true
+}
+
+func ParseTcpWindowScaleOpts(opts []byte) (bool, uint32) {
+	for i := 0; i < len(opts); {
+		kind := opts[i]
+		if kind == 0 {
+			break
+		}
+		if kind == 1 {
+			i += 1
+			continue
+		}
+		if i+1 >= len(opts) {
+			break
+		}
+		length := opts[i+1]
+		if length < 2 || i+int(length) > len(opts) {
+			break
+		}
+		if kind == 3 && length >= 3 {
+			shift := uint32(opts[i+2])
+			if 14 < shift {
+				shift = 14
+			}
+			return true, shift
+		}
+		i += int(length)
+	}
+	return false, 0
+}
+
+const (
+	tcpFlagFin = byte(0x01)
+	tcpFlagSyn = byte(0x02)
+	tcpFlagRst = byte(0x04)
+	tcpFlagPsh = byte(0x08)
+	tcpFlagAck = byte(0x10)
+)
+
+func checksumAdd(sum uint32, b []byte) uint32 {
+	i := 0
+	for ; i+1 < len(b); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(b[i : i+2]))
+	}
+	if i < len(b) {
+		sum += uint32(b[i]) << 8
+	}
+	return sum
+}
+
+func checksumFinish(sum uint32) uint16 {
+	for 0xffff < sum {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+func transportChecksum(protocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP, transport []byte) uint16 {
+	sum := checksumAdd(0, packetSourceIp)
+	sum = checksumAdd(sum, packetDestinationIp)
+	sum += uint32(protocol)
+	sum += uint32(len(transport))
+	return checksumFinish(checksumAdd(sum, transport))
+}
+
+func writeIpv4Header(packet []byte, ipProtocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP) {
+	packet[0] = 0x45
+	packet[1] = 0
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	packet[4] = 0
+	packet[5] = 0
+	packet[6] = 0
+	packet[7] = 0
+	packet[8] = 64
+	packet[9] = byte(ipProtocol)
+	packet[10] = 0
+	packet[11] = 0
+	copy(packet[12:16], packetSourceIp)
+	copy(packet[16:20], packetDestinationIp)
+	binary.BigEndian.PutUint16(packet[10:12], checksumFinish(checksumAdd(0, packet[0:Ipv4HeaderSizeWithoutExtensions])))
+}
+
+func writeIpv6Header(packet []byte, ipProtocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP) {
+	packet[0] = 0x60
+	packet[1] = 0
+	packet[2] = 0
+	packet[3] = 0
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(packet)-Ipv6HeaderSize))
+	packet[6] = byte(ipProtocol)
+	packet[7] = 64
+	copy(packet[8:24], packetSourceIp)
+	copy(packet[24:40], packetDestinationIp)
+}
 
 // send from a raw socket
 // note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
@@ -342,22 +560,32 @@ func (self *LocalUserNat) runShard(shard int) {
 			return
 		case sendPacket := <-shardCh:
 			ipPacket := sendPacket.packet
+			if len(ipPacket) == 0 {
+				MessagePoolReturn(ipPacket)
+				continue
+			}
+			var udpPacket parsedUdp
+			var tcpPacket parsedTcp
 			ipVersion := uint8(ipPacket[0]) >> 4
 			switch ipVersion {
 			case 4:
-				ipv4 := layers.IPv4{}
-				ipv4.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
-				switch ipv4.Protocol {
-				case layers.IPProtocolUDP:
-					udp := layers.UDP{}
-					udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv4(ipPacket)
+				if !ok {
+					MessagePoolReturn(ipPacket)
+					continue
+				}
+				switch ipProtocol {
+				case IP_PROTOCOL_UDP:
+					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
 
 					c := func() bool {
 						success, err := udp4Buffer.send(
 							sendPacket.source,
 							sendPacket.provideMode,
-							&ipv4,
-							&udp,
+							&udpPacket,
 							self.settings.UdpBufferSettings.WriteTimeout,
 							ipPacket,
 						)
@@ -371,16 +599,17 @@ func (self *LocalUserNat) runShard(shard int) {
 					} else {
 						c()
 					}
-				case layers.IPProtocolTCP:
-					tcp := layers.TCP{}
-					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+				case IP_PROTOCOL_TCP:
+					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
 
 					c := func() bool {
 						success, err := tcp4Buffer.send(
 							sendPacket.source,
 							sendPacket.provideMode,
-							&ipv4,
-							&tcp,
+							&tcpPacket,
 							self.settings.TcpBufferSettings.WriteTimeout,
 							ipPacket,
 						)
@@ -399,19 +628,23 @@ func (self *LocalUserNat) runShard(shard int) {
 					MessagePoolReturn(ipPacket)
 				}
 			case 6:
-				ipv6 := layers.IPv6{}
-				ipv6.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
-				switch ipv6.NextHeader {
-				case layers.IPProtocolUDP:
-					udp := layers.UDP{}
-					udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv6(ipPacket)
+				if !ok {
+					MessagePoolReturn(ipPacket)
+					continue
+				}
+				switch ipProtocol {
+				case IP_PROTOCOL_UDP:
+					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
 
 					c := func() bool {
 						success, err := udp6Buffer.send(
 							sendPacket.source,
 							sendPacket.provideMode,
-							&ipv6,
-							&udp,
+							&udpPacket,
 							self.settings.UdpBufferSettings.WriteTimeout,
 							ipPacket,
 						)
@@ -425,16 +658,17 @@ func (self *LocalUserNat) runShard(shard int) {
 					} else {
 						c()
 					}
-				case layers.IPProtocolTCP:
-					tcp := layers.TCP{}
-					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+				case IP_PROTOCOL_TCP:
+					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
 
 					c := func() bool {
 						success, err := tcp6Buffer.send(
 							sendPacket.source,
 							sendPacket.provideMode,
-							&ipv6,
-							&tcp,
+							&tcpPacket,
 							self.settings.TcpBufferSettings.WriteTimeout,
 							ipPacket,
 						)
@@ -452,6 +686,9 @@ func (self *LocalUserNat) runShard(shard int) {
 					// no support for this protocol, drop
 					MessagePoolReturn(ipPacket)
 				}
+			default:
+				// no support for this ip version, drop
+				MessagePoolReturn(ipPacket)
 			}
 		}
 	}
@@ -534,17 +771,17 @@ func NewUdp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Udp4Buffer) send(source TransferPath, provideMode protocol.ProvideMode,
-	ipv4 *layers.IPv4, udp *layers.UDP, timeout time.Duration, ipPacket []byte) (bool, error) {
+	udp *parsedUdp, timeout time.Duration, ipPacket []byte) (bool, error) {
 	bufferId := NewBufferId4(
 		source,
-		ipv4.SrcIP, int(udp.SrcPort),
-		ipv4.DstIP, int(udp.DstPort),
+		udp.sourceIp, int(udp.sourcePort),
+		udp.destinationIp, int(udp.destinationPort),
 	)
 
 	return self.udpSend(
 		bufferId,
-		ipv4.SrcIP,
-		ipv4.DstIP,
+		udp.sourceIp,
+		udp.destinationIp,
 		source,
 		provideMode,
 		4,
@@ -566,17 +803,17 @@ func NewUdp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Udp6Buffer) send(source TransferPath, provideMode protocol.ProvideMode,
-	ipv6 *layers.IPv6, udp *layers.UDP, timeout time.Duration, ipPacket []byte) (bool, error) {
+	udp *parsedUdp, timeout time.Duration, ipPacket []byte) (bool, error) {
 	bufferId := NewBufferId6(
 		source,
-		ipv6.SrcIP, int(udp.SrcPort),
-		ipv6.DstIP, int(udp.DstPort),
+		udp.sourceIp, int(udp.sourcePort),
+		udp.destinationIp, int(udp.destinationPort),
 	)
 
 	return self.udpSend(
 		bufferId,
-		ipv6.SrcIP,
-		ipv6.DstIP,
+		udp.sourceIp,
+		udp.destinationIp,
 		source,
 		provideMode,
 		6,
@@ -623,7 +860,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
 	source TransferPath,
 	provideMode protocol.ProvideMode,
 	ipVersion int,
-	udp *layers.UDP,
+	udp *parsedUdp,
 	timeout time.Duration,
 	ipPacket []byte,
 ) (bool, error) {
@@ -679,9 +916,9 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			provideMode,
 			ipVersion,
 			sourceIpCopy,
-			udp.SrcPort,
+			udp.sourcePort,
 			destinationIpCopy,
-			udp.DstPort,
+			udp.destinationPort,
 			self.udpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
@@ -751,8 +988,8 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	source TransferPath,
 	provideMode protocol.ProvideMode,
 	ipVersion int,
-	sourceIp net.IP, sourcePort layers.UDPPort,
-	destinationIp net.IP, destinationPort layers.UDPPort,
+	sourceIp net.IP, sourcePort UDPPort,
+	destinationIp net.IP, destinationPort UDPPort,
 	udpBufferSettings *UdpBufferSettings) *UdpSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	// e2e-pqe merge: upstream now inlines StreamState in the return below; keep
@@ -774,7 +1011,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 			sourcePort:      sourcePort,
 			destinationIp:   destinationIp,
 			destinationPort: destinationPort,
-			buffer:          gopacket.NewSerializeBufferExpectedSize(128, 2048),
+
 			userLimited: userLimited{
 				lastActivityTime: time.Now(),
 			},
@@ -1087,7 +1324,7 @@ func (self *UdpSequence) Run() {
 			if !ok {
 				return
 			}
-			payload := sendItem.udp.Payload
+			payload := sendItem.udp.payload
 
 			if 0 < len(payload) {
 				writePayload := writePayload{
@@ -1134,7 +1371,7 @@ func (self *UdpSequence) Close() {
 type UdpSendItem struct {
 	source      TransferPath
 	provideMode protocol.ProvideMode
-	udp         *layers.UDP
+	udp         *parsedUdp
 	ipPacket    []byte
 }
 
@@ -1143,10 +1380,10 @@ type StreamState struct {
 	provideMode     protocol.ProvideMode
 	ipVersion       int
 	sourceIp        net.IP
-	sourcePort      layers.UDPPort
+	sourcePort      UDPPort
 	destinationIp   net.IP
-	destinationPort layers.UDPPort
-	buffer          gopacket.SerializeBuffer
+	destinationPort UDPPort
+
 	userLimited
 
 	// cached immutable ip path for this stream (see IpPath). The stream
@@ -1180,92 +1417,79 @@ func (self *StreamState) IpPath() *IpPath {
 // this must only be called from one goroutine
 // this is called from the writer only and does not need to syncrhronize with the reader state
 func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	var headerByteCount int
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolUDP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		headerByteCount = Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolUDP,
-		}
-		headerSize += Ipv6HeaderSize
+		headerByteCount = Ipv6HeaderSize + UdpHeaderSize
 	}
 
-	udp := layers.UDP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
+	if mtu <= headerByteCount {
+		return nil, fmt.Errorf("mtu %d is too small for IP+UDP headers (%d bytes)", mtu, headerByteCount)
 	}
-	udp.SetNetworkLayerForChecksum(ip)
-	headerSize += UdpHeaderSize
-
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
-	}
-
-	if debugVerifyHeaders {
-		buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
-		err := gopacket.SerializeLayers(buffer, options,
-			ip.(gopacket.SerializableLayer),
-			&udp,
-		)
-		if err != nil {
-			return nil, err
-		}
-		packetHeaders := buffer.Bytes()
-		if headerSize != len(packetHeaders) {
-			return nil, errors.New(fmt.Sprintf("Header check failed %d <> %d", headerSize, len(packetHeaders)))
-		}
-	}
-
-	if headerSize+n <= mtu {
-		self.buffer.Clear()
-		err := gopacket.SerializeLayers(self.buffer, options,
-			ip.(gopacket.SerializableLayer),
-			&udp,
-			gopacket.Payload(payload[0:n]),
-		)
-		if err != nil {
-			return nil, err
-		}
-		packet := MessagePoolCopy(self.buffer.Bytes())
-		// reuse the single-packet backing for the common unfragmented case
-		// (see singleDataPacket); the result is consumed before the next call.
-		self.singleDataPacket[0] = packet
+	packetByteCount := mtu - headerByteCount
+	if n <= packetByteCount {
+		self.singleDataPacket[0] = self.udpPacket(payload[0:n])
 		return self.singleDataPacket[:], nil
-	} else {
-		// fragment
-		packetSize := mtu - headerSize
-		packets := make([][]byte, 0, (n+packetSize)/packetSize)
-		for i := 0; i < n; {
-			self.buffer.Clear()
-			j := min(i+packetSize, n)
-			err := gopacket.SerializeLayers(self.buffer, options,
-				ip.(gopacket.SerializableLayer),
-				&udp,
-				gopacket.Payload(payload[i:j]),
-			)
-			if err != nil {
-				return nil, err
-			}
-			packet := MessagePoolCopy(self.buffer.Bytes())
-			packets = append(packets, packet)
-			i = j
-		}
-		return packets, nil
 	}
+	packets := make([][]byte, 0, (n+packetByteCount-1)/packetByteCount)
+	for i := 0; i < n; {
+		j := min(i+packetByteCount, n)
+		packets = append(packets, self.udpPacket(payload[i:j]))
+		i = j
+	}
+	return packets, nil
+}
+
+// builds a udp packet from the stream destination to the stream source
+// into a single pool buffer
+func (self *StreamState) udpPacket(payload []byte) []byte {
+	var ipHeaderByteCount int
+	switch self.ipVersion {
+	case 4:
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
+	case 6:
+		ipHeaderByteCount = Ipv6HeaderSize
+	}
+
+	packet := MessagePoolGet(ipHeaderByteCount + UdpHeaderSize + len(payload))
+	switch self.ipVersion {
+	case 4:
+		writeIpv4Header(packet, IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp)
+	case 6:
+		writeIpv6Header(packet, IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp)
+	}
+
+	udp := packet[ipHeaderByteCount:]
+	binary.BigEndian.PutUint16(udp[0:2], uint16(self.destinationPort))
+	binary.BigEndian.PutUint16(udp[2:4], uint16(self.sourcePort))
+	binary.BigEndian.PutUint16(udp[4:6], uint16(UdpHeaderSize+len(payload)))
+	udp[6] = 0
+	udp[7] = 0
+	copy(udp[UdpHeaderSize:], payload)
+	checksum := transportChecksum(IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp, udp)
+	if checksum == 0 {
+		checksum = 0xffff
+	}
+	binary.BigEndian.PutUint16(udp[6:8], checksum)
+	return packet
+}
+
+func writeTcpHeader(tcp []byte, sourcePort, destinationPort uint16, seq, ackNumber uint32, flags uint8, windowSize uint16, options []byte) {
+	binary.BigEndian.PutUint16(tcp[0:2], sourcePort)
+	binary.BigEndian.PutUint16(tcp[2:4], destinationPort)
+	binary.BigEndian.PutUint32(tcp[4:8], seq)
+	binary.BigEndian.PutUint32(tcp[8:12], ackNumber)
+	headerWordCount := 5 + (len(options)+3)/4
+	tcp[12] = uint8(headerWordCount << 4)
+	tcp[13] = flags
+	binary.BigEndian.PutUint16(tcp[14:16], windowSize)
+	tcp[16] = 0
+	tcp[17] = 0
+	tcp[18] = 0
+	tcp[19] = 0
+	copy(tcp[20:], options)
 }
 
 type TcpBufferSettings struct {
@@ -1309,17 +1533,17 @@ func NewTcp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Tcp4Buffer) send(source TransferPath, provideMode protocol.ProvideMode,
-	ipv4 *layers.IPv4, tcp *layers.TCP, timeout time.Duration, ipPacket []byte) (bool, error) {
+	tcp *parsedTcp, timeout time.Duration, ipPacket []byte) (bool, error) {
 	bufferId := NewBufferId4(
 		source,
-		ipv4.SrcIP, int(tcp.SrcPort),
-		ipv4.DstIP, int(tcp.DstPort),
+		tcp.sourceIp, int(tcp.sourcePort),
+		tcp.destinationIp, int(tcp.destinationPort),
 	)
 
 	return self.tcpSend(
 		bufferId,
-		ipv4.SrcIP,
-		ipv4.DstIP,
+		tcp.sourceIp,
+		tcp.destinationIp,
 		source,
 		provideMode,
 		4,
@@ -1341,17 +1565,17 @@ func NewTcp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Tcp6Buffer) send(source TransferPath, provideMode protocol.ProvideMode,
-	ipv6 *layers.IPv6, tcp *layers.TCP, timeout time.Duration, ipPacket []byte) (bool, error) {
+	tcp *parsedTcp, timeout time.Duration, ipPacket []byte) (bool, error) {
 	bufferId := NewBufferId6(
 		source,
-		ipv6.SrcIP, int(tcp.SrcPort),
-		ipv6.DstIP, int(tcp.DstPort),
+		tcp.sourceIp, int(tcp.sourcePort),
+		tcp.destinationIp, int(tcp.destinationPort),
 	)
 
 	return self.tcpSend(
 		bufferId,
-		ipv6.SrcIP,
-		ipv6.DstIP,
+		tcp.sourceIp,
+		tcp.destinationIp,
 		source,
 		provideMode,
 		6,
@@ -1398,7 +1622,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 	source TransferPath,
 	provideMode protocol.ProvideMode,
 	ipVersion int,
-	tcp *layers.TCP,
+	tcp *parsedTcp,
 	timeout time.Duration,
 	ipPacket []byte,
 ) (bool, error) {
@@ -1407,7 +1631,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 		defer self.mutex.Unlock()
 
 		if sequence, ok := self.sequences[bufferId]; ok {
-			if tcp.RST {
+			if tcp.rst {
 				sequence.Cancel()
 				delete(self.sequences, bufferId)
 				sourceSequences := self.sourceSequences[sequence.source]
@@ -1419,14 +1643,15 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 						self.bw.RemoveSession(sequence.source)
 					}
 				}
+				MessagePoolReturn(ipPacket)
 				return nil
 			}
 			return sequence
 		}
 
-		if !tcp.SYN {
+		if !tcp.syn {
 			MessagePoolReturn(ipPacket)
-			self.log.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
+			self.log.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcp.flagsString())
 			return nil
 		}
 
@@ -1459,9 +1684,9 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 			provideMode,
 			ipVersion,
 			sourceIpCopy,
-			tcp.SrcPort,
+			tcp.sourcePort,
 			destinationIpCopy,
-			tcp.DstPort,
+			tcp.destinationPort,
 			self.tcpBufferSettings,
 		)
 		self.sequences[bufferId] = sequence
@@ -1539,8 +1764,8 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	source TransferPath,
 	provideMode protocol.ProvideMode,
 	ipVersion int,
-	sourceIp net.IP, sourcePort layers.TCPPort,
-	destinationIp net.IP, destinationPort layers.TCPPort,
+	sourceIp net.IP, sourcePort TCPPort,
+	destinationIp net.IP, destinationPort TCPPort,
 	tcpBufferSettings *TcpBufferSettings) *TcpSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
@@ -1569,7 +1794,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 			// FIXME initial window size should be ~4k, set max window size as a 2^amount multiplier of initial size
 			windowSize:  tcpBufferSettings.MinWindowSize,
 			windowScale: 0,
-			buffer:      gopacket.NewSerializeBufferExpectedSize(128, 2048),
+
 			userLimited: userLimited{
 				lastActivityTime: time.Now(),
 			},
@@ -1696,9 +1921,9 @@ func (self *TcpSequence) Run() {
 		case <-self.ctx.Done():
 			return
 		case sendItem := <-self.sendItems:
-			self.log.V(2).Infof("[init]send(%d)\n", len(sendItem.tcp.Payload))
+			self.log.V(2).Infof("[init]send(%d)\n", len(sendItem.tcp.payload))
 			// the first packet must be a syn
-			if sendItem.tcp.SYN {
+			if sendItem.tcp.syn {
 				self.log.V(2).Infof("[init]SYN\n")
 
 				func() {
@@ -1707,31 +1932,14 @@ func (self *TcpSequence) Run() {
 
 					// sendSeq is the next expected sequence number
 					// SYN and FIN consume one
-					self.sendSeq = sendItem.tcp.Seq + 1
+					self.sendSeq = sendItem.tcp.seq + 1
 					// start the send seq at send seq
 					// this is arbitrary, and since there is no transport security risk back to sender is fine
-					self.receiveSeq = sendItem.tcp.Seq
-					self.receiveSeqAck = sendItem.tcp.Seq
+					self.receiveSeq = sendItem.tcp.seq
+					self.receiveSeqAck = sendItem.tcp.seq
 
-					parseWindowScaleOpts := func() (bool, uint32) {
-						for _, opt := range sendItem.tcp.Options {
-							if opt.OptionType == layers.TCPOptionKindWindowScale {
-								// fmt.Printf("[init]OPTION DATA = %v (%d,%d)\n", opt.OptionData, len(opt.OptionData), opt.OptionLength)
-								windowScaleBytes := make([]byte, 4)
-								copy(windowScaleBytes[4-len(opt.OptionData):4], opt.OptionData)
-								windowScale := min(
-									binary.BigEndian.Uint32(windowScaleBytes[0:4]),
-									// see 2.3  Using the Window Scale Option
-									14,
-								)
-								return true, windowScale
-							}
-						}
-						return false, 0
-					}
-
-					self.enableWindowScale, self.receiveWindowScale = parseWindowScaleOpts()
-					self.receiveWindowSize = uint32(sendItem.tcp.Window) << self.receiveWindowScale
+					self.enableWindowScale, self.receiveWindowScale = ParseTcpWindowScaleOpts(sendItem.tcp.options)
+					self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
 					if self.enableWindowScale {
 						// compute the window scale to fit the window size in uint16
 						bits := math.Log2(float64(self.tcpBufferSettings.MaxWindowSize) / float64(math.MaxUint16))
@@ -2146,11 +2354,11 @@ func (self *TcpSequence) Run() {
 			lastActivityTime = time.Now()
 			if self.log.V(2).Enabled() {
 				if "ACK" != tcpFlagsString(sendItem.tcp) {
-					self.log.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
+					self.log.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.payload), tcpFlagsString(sendItem.tcp))
 				}
 			}
 
-			if sendItem.tcp.RST {
+			if sendItem.tcp.rst {
 				// a RST typically appears for a bad TCP segment
 				self.log.V(2).Infof("[r%d]RST\n", sendIter)
 				MessagePoolReturn(sendItem.ipPacket)
@@ -2163,19 +2371,19 @@ func (self *TcpSequence) Run() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
 
-				if self.sendSeq != sendItem.tcp.Seq || sendItem.tcp.SYN {
+				if self.sendSeq != sendItem.tcp.seq || sendItem.tcp.syn {
 					// a retransmit
 					// since the transfer from local to remote is lossless and preserves order,
 					// the packet is already pending. Ignore.
 					drop = true
-				} else if sendItem.tcp.ACK {
+				} else if sendItem.tcp.ack {
 					// acks are reliably delivered (see above)
 					// we do not need to resend receive packets on missing acks
 					// note the window size can be be adjusted at any time for the same receive seq number,
 					// e.g. ->0 then ->full on receiver full
-					if self.receiveSeqAck <= sendItem.tcp.Ack {
-						self.receiveWindowSize = uint32(sendItem.tcp.Window) << self.receiveWindowScale
-						self.receiveSeqAck = sendItem.tcp.Ack
+					if self.receiveSeqAck <= sendItem.tcp.ackNumber {
+						self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
+						self.receiveSeqAck = sendItem.tcp.ackNumber
 						receiveAckCond.Broadcast()
 					}
 				}
@@ -2186,7 +2394,7 @@ func (self *TcpSequence) Run() {
 				continue
 			}
 
-			if sendItem.tcp.FIN {
+			if sendItem.tcp.fin {
 				self.log.V(2).Infof("[r%d]FIN\n", sendIter)
 				func() {
 					self.mutex.Lock()
@@ -2197,7 +2405,7 @@ func (self *TcpSequence) Run() {
 				}()
 			}
 
-			payload := sendItem.tcp.Payload
+			payload := sendItem.tcp.payload
 			if 0 < len(payload) {
 				writePayload := writePayload{
 					payload:  payload,
@@ -2245,7 +2453,7 @@ func (self *TcpSequence) Run() {
 				MessagePoolReturn(sendItem.ipPacket)
 			}
 
-			if sendItem.tcp.FIN {
+			if sendItem.tcp.fin {
 				// flush the write channel to propage the FIN and close the sequence
 				close(writePayloads)
 				fin = true
@@ -2299,7 +2507,7 @@ func (self *TcpSequence) Close() {
 
 type TcpSendItem struct {
 	provideMode protocol.ProvideMode
-	tcp         *layers.TCP
+	tcp         *parsedTcp
 	ipPacket    []byte
 }
 
@@ -2308,9 +2516,9 @@ type ConnectionState struct {
 	provideMode     protocol.ProvideMode
 	ipVersion       int
 	sourceIp        net.IP
-	sourcePort      layers.TCPPort
+	sourcePort      TCPPort
 	destinationIp   net.IP
-	destinationPort layers.TCPPort
+	destinationPort TCPPort
 
 	mutex sync.Mutex
 
@@ -2323,8 +2531,6 @@ type ConnectionState struct {
 	windowSize         uint32
 	windowScale        uint32
 	// encodedWindowSize  uint16
-
-	buffer gopacket.SerializeBuffer
 
 	userLimited
 }
@@ -2348,357 +2554,184 @@ func (self *ConnectionState) encodedWindowSize() uint16 {
 }
 
 func (self *ConnectionState) SynAck() ([]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	var ipHeaderByteCount int
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv6HeaderSize
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	opts := []layers.TCPOption{}
-
+	var optsBytes []byte
 	if self.enableWindowScale {
 		windowScaleBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(windowScaleBytes[0:4], self.windowScale)
-
-		windowScaleOpt := layers.TCPOption{
-			OptionType:   layers.TCPOptionKindWindowScale,
-			OptionLength: 3,
-			// one byte
-			OptionData: windowScaleBytes[3:4],
-		}
-		opts = append(opts, windowScaleOpt)
+		// options must be padded to a 4-byte boundary to match writeTcpHeader's
+		// data-offset (headerWordCount) computation; make() zero-fills the pad,
+		// which reads as an EOL terminator (kind 0)
+		const optionsByteCount = 3
+		paddedOptionsByteCount := (optionsByteCount + 3) &^ 3
+		optsBytes = make([]byte, paddedOptionsByteCount)
+		optsBytes[0] = 3
+		optsBytes[1] = 3
+		optsBytes[2] = windowScaleBytes[3]
 	}
 
-	tcp := layers.TCP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
-		Seq:     self.receiveSeq,
-		Ack:     self.sendSeq,
-		ACK:     true,
-		SYN:     true,
-		Window:  self.encodedWindowSize(),
-		Options: opts,
-	}
-	tcp.SetNetworkLayerForChecksum(ip)
-	headerSize += TcpHeaderSizeWithoutExtensions
-
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
-	}
-
-	self.buffer.Clear()
-	err := gopacket.SerializeLayers(self.buffer, options,
-		ip.(gopacket.SerializableLayer),
-		&tcp,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-	packet := MessagePoolCopy(self.buffer.Bytes())
-	return packet, nil
-}
-
-func (self *ConnectionState) PureAck() ([]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions + len(optsBytes)
+	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv6HeaderSize
+		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	tcp := layers.TCP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
-		Seq:     self.receiveSeq,
-		Ack:     self.sendSeq,
-		ACK:     true,
-		Window:  self.encodedWindowSize(),
-	}
-	tcp.SetNetworkLayerForChecksum(ip)
-	headerSize += TcpHeaderSizeWithoutExtensions
+	flags := tcpFlagSyn | tcpFlagAck
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), optsBytes)
 
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
+	// checksum covers the full segment (header + options), not just the fixed header
+	tcpBytes := packet[ipHeaderByteCount:]
+	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
+
+	return packet, nil
+}
+func (self *ConnectionState) PureAck() ([]byte, error) {
+	var ipHeaderByteCount int
+	switch self.ipVersion {
+	case 4:
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
+	case 6:
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	self.buffer.Clear()
-	err := gopacket.SerializeLayers(self.buffer, options,
-		ip.(gopacket.SerializableLayer),
-		&tcp,
-	)
-
-	if err != nil {
-		return nil, err
+	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
+	switch self.ipVersion {
+	case 4:
+		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+	case 6:
+		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
-	packet := MessagePoolCopy(self.buffer.Bytes())
+
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), nil)
+
+	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
+	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
+
 	return packet, nil
 }
 
 func (self *ConnectionState) FinAck() ([]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	var ipHeaderByteCount int
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv6HeaderSize
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	tcp := layers.TCP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
-		Seq:     self.receiveSeq,
-		Ack:     self.sendSeq,
-		ACK:     true,
-		FIN:     true,
-		Window:  self.encodedWindowSize(),
-	}
-	tcp.SetNetworkLayerForChecksum(ip)
-	headerSize += TcpHeaderSizeWithoutExtensions
-
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
+	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
+	switch self.ipVersion {
+	case 4:
+		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+	case 6:
+		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	self.buffer.Clear()
-	err := gopacket.SerializeLayers(self.buffer, options,
-		ip.(gopacket.SerializableLayer),
-		&tcp,
-	)
+	flags := tcpFlagFin | tcpFlagAck
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), nil)
 
-	if err != nil {
-		return nil, err
-	}
-	packet := MessagePoolCopy(self.buffer.Bytes())
+	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
+	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
+
 	return packet, nil
 }
-
 func (self *ConnectionState) RstAck() ([]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	var ipHeaderByteCount int
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv6HeaderSize
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	tcp := layers.TCP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
-		Seq:     self.receiveSeq,
-		Ack:     self.sendSeq,
-		ACK:     true,
-		RST:     true,
-		Window:  self.encodedWindowSize(),
-	}
-	tcp.SetNetworkLayerForChecksum(ip)
-	headerSize += TcpHeaderSizeWithoutExtensions
-
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
+	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
+	switch self.ipVersion {
+	case 4:
+		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+	case 6:
+		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	self.buffer.Clear()
-	err := gopacket.SerializeLayers(self.buffer, options,
-		ip.(gopacket.SerializableLayer),
-		&tcp,
-	)
+	flags := tcpFlagRst | tcpFlagAck
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), nil)
 
-	if err != nil {
-		return nil, err
-	}
-	packet := MessagePoolCopy(self.buffer.Bytes())
+	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
+	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
+
 	return packet, nil
 }
-
 func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]byte, error) {
-	headerSize := 0
-	var ip gopacket.NetworkLayer
+	var ipHeaderByteCount int
 	switch self.ipVersion {
 	case 4:
-		ip = &layers.IPv4{
-			Version:  4,
-			TTL:      64,
-			SrcIP:    self.destinationIp,
-			DstIP:    self.sourceIp,
-			Protocol: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv4HeaderSizeWithoutExtensions
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
 	case 6:
-		ip = &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			SrcIP:      self.destinationIp,
-			DstIP:      self.sourceIp,
-			NextHeader: layers.IPProtocolTCP,
-		}
-		headerSize += Ipv6HeaderSize
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	tcp := layers.TCP{
-		SrcPort: self.destinationPort,
-		DstPort: self.sourcePort,
-		Seq:     self.receiveSeq,
-		Ack:     self.sendSeq,
-		ACK:     true,
-		Window:  self.encodedWindowSize(),
+	headerByteCount := ipHeaderByteCount + TcpHeaderSizeWithoutExtensions
+	if mtu <= headerByteCount {
+		return nil, fmt.Errorf("mtu %d is too small for IP+TCP headers (%d bytes)", mtu, headerByteCount)
 	}
-	tcp.SetNetworkLayerForChecksum(ip)
-	headerSize += TcpHeaderSizeWithoutExtensions
-
-	options := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
+	packetByteCount := mtu - headerByteCount
+	if n <= packetByteCount {
+		pkt := self.tcpPacket(payload[0:n], self.receiveSeq)
+		return [][]byte{pkt}, nil
 	}
-
-	if debugVerifyHeaders {
-		buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
-		err := gopacket.SerializeLayers(buffer, options,
-			ip.(gopacket.SerializableLayer),
-			&tcp,
-		)
-		if err != nil {
-			return nil, err
-		}
-		packetHeaders := buffer.Bytes()
-		if headerSize != len(packetHeaders) {
-			return nil, errors.New(fmt.Sprintf("Header check failed %d <> %d", headerSize, len(packetHeaders)))
-		}
+	packets := make([][]byte, 0, (n+packetByteCount-1)/packetByteCount)
+	for i := 0; i < n; {
+		j := min(i+packetByteCount, n)
+		packets = append(packets, self.tcpPacket(payload[i:j], self.receiveSeq+uint32(i)))
+		i = j
 	}
-
-	if headerSize+n <= mtu {
-		self.buffer.Clear()
-		err := gopacket.SerializeLayers(self.buffer, options,
-			ip.(gopacket.SerializableLayer),
-			&tcp,
-			gopacket.Payload(payload[0:n]),
-		)
-		if err != nil {
-			return nil, err
-		}
-		packet := MessagePoolCopy(self.buffer.Bytes())
-		return [][]byte{packet}, nil
-	} else {
-		// fragment
-		packetSize := mtu - headerSize
-		packets := [][]byte{}
-		for i := 0; i < n; {
-			self.buffer.Clear()
-			j := min(i+packetSize, n)
-			tcp.Seq = self.receiveSeq + uint32(i)
-			err := gopacket.SerializeLayers(self.buffer, options,
-				ip.(gopacket.SerializableLayer),
-				&tcp,
-				gopacket.Payload(payload[i:j]),
-			)
-			if err != nil {
-				return nil, err
-			}
-			packet := MessagePoolCopy(self.buffer.Bytes())
-			packets = append(packets, packet)
-			i = j
-		}
-		return packets, nil
-	}
+	return packets, nil
 }
 
-func tcpFlagsString(tcp *layers.TCP) string {
-	flags := []string{}
-	if tcp.FIN {
-		flags = append(flags, "FIN")
+func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
+	var ipHeaderByteCount int
+	switch self.ipVersion {
+	case 4:
+		ipHeaderByteCount = Ipv4HeaderSizeWithoutExtensions
+	case 6:
+		ipHeaderByteCount = Ipv6HeaderSize
 	}
-	if tcp.SYN {
-		flags = append(flags, "SYN")
+
+	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions
+	totalLen := ipHeaderByteCount + tcpHeaderByteCount + len(payload)
+	packet := MessagePoolGet(totalLen)
+	switch self.ipVersion {
+	case 4:
+		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+	case 6:
+		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
-	if tcp.RST {
-		flags = append(flags, "RST")
-	}
-	if tcp.PSH {
-		flags = append(flags, "PSH")
-	}
-	if tcp.ACK {
-		flags = append(flags, "ACK")
-	}
-	if tcp.URG {
-		flags = append(flags, "URG")
-	}
-	if tcp.ECE {
-		flags = append(flags, "ECE")
-	}
-	if tcp.CWR {
-		flags = append(flags, "CWR")
-	}
-	if tcp.NS {
-		flags = append(flags, "NS")
-	}
-	return strings.Join(flags, ", ")
+
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), nil)
+	copy(packet[ipHeaderByteCount+tcpHeaderByteCount:], payload)
+
+	// checksum covers the full segment (header + payload), not just the header
+	tcpBytes := packet[ipHeaderByteCount:]
+	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
+
+	return packet
+}
+func tcpFlagsString(tcp *parsedTcp) string {
+	return tcp.flagsString()
 }
 
 func DefaultRemoteUserNatProviderSettings() *RemoteUserNatProviderSettings {
@@ -3196,99 +3229,114 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
 }
 
 func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
+	if len(ipPacket) == 0 {
+		return nil, nil, fmt.Errorf("Empty packet.")
+	}
 	ipVersion := uint8(ipPacket[0]) >> 4
 	switch ipVersion {
 	case 4:
-		ipv4 := layers.IPv4{}
-		ipv4.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
+		ipProtocol4, sourceIp4, destinationIp4, transport, ok := parseIpv4(ipPacket)
+		if !ok {
+			return nil, nil, fmt.Errorf("No support for protocol")
+		}
 
 		// copy the ips so the ip path can be retained independently of the
 		// shared packet buffer (which is recycled after the handoff call). both
 		// copies share one backing allocation instead of one per address.
-		ipBacking := make(net.IP, len(ipv4.SrcIP)+len(ipv4.DstIP))
-		sn := copy(ipBacking, ipv4.SrcIP)
-		copy(ipBacking[sn:], ipv4.DstIP)
+		ipBacking := make(net.IP, len(sourceIp4)+len(destinationIp4))
+		sn := copy(ipBacking, sourceIp4)
+		copy(ipBacking[sn:], destinationIp4)
 		sourceIpCopy := ipBacking[:sn:sn]
 		destinationIpCopy := ipBacking[sn:]
 
-		switch ipv4.Protocol {
-		case layers.IPProtocolUDP:
-			udp := layers.UDP{}
-			udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+		switch ipProtocol4 {
+		case IP_PROTOCOL_UDP:
+			var udpPacket parsedUdp
+			if !parseUdpPacket(sourceIp4, destinationIp4, transport, &udpPacket) {
+				return nil, nil, fmt.Errorf("No support for protocol")
+			}
 
 			return &IpPath{
 				Version:         int(ipVersion),
 				Protocol:        IpProtocolUdp,
 				SourceIp:        sourceIpCopy,
-				SourcePort:      int(udp.SrcPort),
+				SourcePort:      int(udpPacket.sourcePort),
 				DestinationIp:   destinationIpCopy,
-				DestinationPort: int(udp.DstPort),
-			}, udp.Payload, nil
-		case layers.IPProtocolTCP:
-			tcp := layers.TCP{}
-			tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+				DestinationPort: int(udpPacket.destinationPort),
+			}, udpPacket.payload, nil
+		case IP_PROTOCOL_TCP:
+			var tcpPacket parsedTcp
+			if !parseTcpPacket(sourceIp4, destinationIp4, transport, &tcpPacket) {
+				return nil, nil, fmt.Errorf("No support for protocol")
+			}
 
 			return &IpPath{
 				Version:         int(ipVersion),
 				Protocol:        IpProtocolTcp,
 				SourceIp:        sourceIpCopy,
-				SourcePort:      int(tcp.SrcPort),
+				SourcePort:      int(tcpPacket.sourcePort),
 				DestinationIp:   destinationIpCopy,
-				DestinationPort: int(tcp.DstPort),
-				SequenceNumber:  tcp.Seq,
-				Syn:             tcp.SYN,
-				Rst:             tcp.RST,
-				Ack:             tcp.ACK,
-			}, tcp.Payload, nil
+				DestinationPort: int(tcpPacket.destinationPort),
+				SequenceNumber:  tcpPacket.seq,
+				Syn:             tcpPacket.syn,
+				Rst:             tcpPacket.rst,
+				Ack:             tcpPacket.ack,
+			}, tcpPacket.payload, nil
 		default:
 			// no support for this protocol
-			return nil, nil, fmt.Errorf("No support for protocol %d", ipv4.Protocol)
+			return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol4)
 		}
 	case 6:
-		ipv6 := layers.IPv6{}
-		ipv6.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
+		ipProtocol6, sourceIp6, destinationIp6, transport, ok := parseIpv6(ipPacket)
+		if !ok {
+			return nil, nil, fmt.Errorf("No support for protocol")
+		}
 
 		// copy the ips so the ip path can be retained independently of the
 		// shared packet buffer (which is recycled after the handoff call). both
 		// copies share one backing allocation instead of one per address.
-		ipBacking := make(net.IP, len(ipv6.SrcIP)+len(ipv6.DstIP))
-		sn := copy(ipBacking, ipv6.SrcIP)
-		copy(ipBacking[sn:], ipv6.DstIP)
+		ipBacking := make(net.IP, len(sourceIp6)+len(destinationIp6))
+		sn := copy(ipBacking, sourceIp6)
+		copy(ipBacking[sn:], destinationIp6)
 		sourceIpCopy := ipBacking[:sn:sn]
 		destinationIpCopy := ipBacking[sn:]
 
-		switch ipv6.NextHeader {
-		case layers.IPProtocolUDP:
-			udp := layers.UDP{}
-			udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+		switch ipProtocol6 {
+		case IP_PROTOCOL_UDP:
+			var udpPacket parsedUdp
+			if !parseUdpPacket(sourceIp6, destinationIp6, transport, &udpPacket) {
+				return nil, nil, fmt.Errorf("No support for protocol")
+			}
 
 			return &IpPath{
 				Version:         int(ipVersion),
 				Protocol:        IpProtocolUdp,
 				SourceIp:        sourceIpCopy,
-				SourcePort:      int(udp.SrcPort),
+				SourcePort:      int(udpPacket.sourcePort),
 				DestinationIp:   destinationIpCopy,
-				DestinationPort: int(udp.DstPort),
-			}, udp.Payload, nil
-		case layers.IPProtocolTCP:
-			tcp := layers.TCP{}
-			tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+				DestinationPort: int(udpPacket.destinationPort),
+			}, udpPacket.payload, nil
+		case IP_PROTOCOL_TCP:
+			var tcpPacket parsedTcp
+			if !parseTcpPacket(sourceIp6, destinationIp6, transport, &tcpPacket) {
+				return nil, nil, fmt.Errorf("No support for protocol")
+			}
 
 			return &IpPath{
 				Version:         int(ipVersion),
 				Protocol:        IpProtocolTcp,
 				SourceIp:        sourceIpCopy,
-				SourcePort:      int(tcp.SrcPort),
+				SourcePort:      int(tcpPacket.sourcePort),
 				DestinationIp:   destinationIpCopy,
-				DestinationPort: int(tcp.DstPort),
-				SequenceNumber:  tcp.Seq,
-				Syn:             tcp.SYN,
-				Rst:             tcp.RST,
-				Ack:             tcp.ACK,
-			}, tcp.Payload, nil
+				DestinationPort: int(tcpPacket.destinationPort),
+				SequenceNumber:  tcpPacket.seq,
+				Syn:             tcpPacket.syn,
+				Rst:             tcpPacket.rst,
+				Ack:             tcpPacket.ack,
+			}, tcpPacket.payload, nil
 		default:
 			// no support for this protocol
-			return nil, nil, fmt.Errorf("No support for protocol %d", ipv6.NextHeader)
+			return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol6)
 		}
 	default:
 		// no support for this version

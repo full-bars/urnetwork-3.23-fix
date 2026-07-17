@@ -314,7 +314,7 @@ func applyPoolAutoSize(maxMemory connect.ByteCount) {
 	if poolBytes > ceiling {
 		poolBytes = ceiling
 	}
-	connect.ResizeMessagePools(poolBytes)
+	connect.ResizeMessagePoolsPerClass(poolBytes)
 	tlog("📦 [pool] message pool %dMiB (RAM=%dMiB)\n", poolBytes/1024/1024, connect.ByteCount(ram)/1024/1024)
 }
 
@@ -888,7 +888,7 @@ func auth(opts docopt.Opts) {
 		}
 	}
 	if 0 < maxMemory {
-		connect.ResizeMessagePools(maxMemory / 8)
+		connect.ResizeMessagePoolsPerClass(maxMemory / 8)
 		debug.SetMemoryLimit(maxMemory)
 	}
 
@@ -1936,7 +1936,7 @@ func provide(opts docopt.Opts) {
 		}
 	}
 	if 0 < maxMemory {
-		connect.ResizeMessagePools(maxMemory / 8)
+		connect.ResizeMessagePoolsPerClass(maxMemory / 8)
 		debug.SetMemoryLimit(maxMemory)
 	}
 	applyPoolAutoSize(maxMemory)

@@ -58,7 +58,7 @@ const debugTags = false
 const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
 
-var InitialMessagePoolByteCount = mib(1)
+var InitialMessagePoolByteCount = mib(2)
 
 type poolShard struct {
 	mutex        sync.Mutex
@@ -240,10 +240,23 @@ func poolStats(pools []*messagePool) {
 }
 
 func ResizeMessagePools(maxByteCount ByteCount) {
-	for _, pool := range orderedMessagePools() {
+	pools := orderedMessagePools()
+	poolSizeCount := ByteCount(len(pools))
+	for _, pool := range pools {
+		pool.Resize(int(maxByteCount / poolSizeCount / ByteCount(pool.size)))
+	}
+}
+
+// ResizeMessagePoolsPerClass applies the given maximum byte count directly as a ceiling
+// for each message pool size class, instead of dividing it across the classes.
+// This preserves the legacy buffer allocation semantics required by the provider.
+func ResizeMessagePoolsPerClass(maxByteCount ByteCount) {
+	pools := orderedMessagePools()
+	for _, pool := range pools {
 		pool.Resize(int(maxByteCount / ByteCount(pool.size)))
 	}
 }
+
 
 func ClearMessagePools() {
 	for _, pool := range orderedMessagePools() {
