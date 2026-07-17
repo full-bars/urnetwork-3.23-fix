@@ -336,7 +336,9 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 	}
 
 	// Wait for the per-peer client cipher to establish in both directions.
-	deadline := time.After(45 * time.Second)
+	// Independent of EncryptionSettings.TlsTimeout above — this is the test's
+	// own outer wait, so it needs the same CI-under-race headroom.
+	deadline := time.After(90 * time.Second)
 	for !(cipherUp(a, bClientId) && cipherUp(b, aClientId)) {
 		select {
 		case <-deadline:
@@ -524,7 +526,8 @@ func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
 	// Wait until each client has opened its four distinct send-sequence
 	// contracts. If the companion sessions collapsed, a client would stall at
 	// three (its two server reply carriers sharing one key) and this times out.
-	deadline := time.After(45 * time.Second)
+	// 90s (not 45s) for the same CI-under-race headroom as the deadline above.
+	deadline := time.After(90 * time.Second)
 	for {
 		aKeys := distinctContractKeys(a)
 		bKeys := distinctContractKeys(b)
