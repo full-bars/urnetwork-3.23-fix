@@ -23,6 +23,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 | If you want to... | Go here |
 | :--- | :--- |
+| **Start here — pick your skill level** | [🐣 Beginner](docs/guides/beginner.md) · [🧭 Intermediate](docs/guides/intermediate.md) · [🚀 Advanced](docs/guides/advanced.md) |
 | Install on a Linux host as a user-level service | [Installation Guide](docs/Installation.md) |
 | Run one Docker container | [Docker Deployment](docs/Docker-Deployment.md) |
 | Run multiple containers on one host | [Multi-Container Scaling](docs/Multi-Container-Scaling.md) |
