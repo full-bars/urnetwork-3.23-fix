@@ -3,7 +3,12 @@
 This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
 > [!NOTE]
-> This guide is Linux/Docker-focused. Some tuning commands here (`turbo`, `optimize`, `ramlogs`) are Linux-only as of this writing — neither macOS's `urnet-tools` wrapper nor the native Windows `urnet-tools.ps1` implement them. `self-heal` does exist on all three platforms. `GOMEMLIMIT`/`URNETWORK_PROFILE`/`URNETWORK_SELF_HEAL` env vars are read by the provider binary itself regardless of OS, so setting them directly (see [intermediate.md](intermediate.md)) works everywhere the toggle commands don't. See intermediate.md for macOS/Windows install and daily-command coverage.
+> This guide is Linux/Docker-focused because most of its tuning commands aren't implemented on macOS or Windows — but not all for the same reason:
+> - **`optimize`** is genuinely Linux-kernel-specific (sysctl tuning, conntrack kernel module, ZRAM, distro package installs) and has no realistic macOS/Windows equivalent.
+> - **`ramlogs`** depends on `/dev/shm` (Linux's tmpfs convention). Not a kernel limitation exactly, but there's no built-in equivalent on macOS or Windows today.
+> - **`turbo`/`eco`** are *not* kernel-dependent at all — they just persist `URNETWORK_PROFILE`/`GOMEMLIMIT`/`GOGC` env vars via a systemd override and restart. The provider binary reads those same env vars identically on every OS; the wrapper scripts on macOS and Windows simply haven't been extended with the convenience toggle yet. You can get the identical effect today by setting the env var directly (see [intermediate.md](intermediate.md)) before starting the provider.
+>
+> `self-heal` already exists as a real command on all three platforms.
 
 ---
 
