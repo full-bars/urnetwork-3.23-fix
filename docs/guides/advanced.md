@@ -60,13 +60,14 @@ urnetwork auth <auth-code>
 
 ### Hot-reload across the fleet
 
-Proxy changes propagate without restart using the reload trigger file:
+Proxy changes propagate without restart:
 
 ```sh
-urnet-tools proxy reload     # triggers reload on the current node
+urnet-tools proxy add ~/proxies.txt   # or: proxy remove --match=<pattern>
+urnet-tools proxy refresh             # triggers reload on the current node
 ```
 
-The reloader watches `~/.urnetwork/proxy.reload` and applies add/remove diffs from your `proxy` file. Active connections are not interrupted.
+`refresh` writes to the `~/.urnetwork/proxy.reload` trigger file, which the running provider watches and uses to apply add/remove diffs against the current proxy set. Active connections are not interrupted.
 
 ### Automated proxy sources
 
@@ -74,7 +75,7 @@ Instead of a static file, point the provider at a live URL:
 
 ```sh
 export PROXY_URL=https://example.com/proxies.txt
-export PROXY_URL_REFRESH=1800   # refresh every 30 minutes
+export PROXY_URL_REFRESH=30m    # refresh every 30 minutes (Go duration format)
 export PROXY_URL_MAX=500        # max proxies to keep
 ```
 
@@ -102,13 +103,13 @@ Set up a hub server for fleet-wide visibility:
 ```sh
 urnet-tools hub install
 urnet-tools hub init
-urnet-tools hub link --token <token>
+urnet-tools hub onboard-cmd    # mints a one-time onboard token
 ```
 
 Then on each provider node:
 
 ```sh
-urnet-tools hub link <hub-url>
+urnet-tools hub link <https://hub-host:port> --token <onboard-token>
 ```
 
 The hub dashboard (port 8080) shows:
@@ -118,7 +119,7 @@ The hub dashboard (port 8080) shows:
 - Per-proxy drilldown by address
 - Active client sessions
 
-> 💡 Dashboard is accessible at `http://<hub-ip>:8080/cgi-bin/stats`
+> 💡 Dashboard is accessible at `http://<hub-ip>:8080/`
 
 ---
 
@@ -135,16 +136,16 @@ ip:port          # no-auth proxy
 ### Proxy URL sources (live feed)
 
 ```sh
-urnet-tools proxy url set https://example.com/proxies.txt
-urnet-tools proxy url refresh   # force immediate fetch
+export PROXY_URL=https://example.com/proxies.txt
+urnet-tools proxy refresh   # force immediate fetch
 ```
 
 ### Adding/removing proxies
 
-Edit `~/.urnetwork/proxy`, then:
-
 ```sh
-urnet-tools proxy reload
+urnet-tools proxy add ~/proxies.txt
+urnet-tools proxy remove --match=<pattern>
+urnet-tools proxy refresh
 ```
 
 The provider diffs against the current running set and applies only the changes — no restart, no connection drops.
@@ -167,12 +168,12 @@ Override the profile's memory limit with:
 urnetwork provide --max-memory 2GiB
 ```
 
-Or via the Docker env var:
+Or in Docker, set the standard Go `GOMEMLIMIT` env var directly:
 
 ```yaml
 # docker-compose.yml
 environment:
-  - MAX_MEMORY=2GiB
+  - GOMEMLIMIT=2GiB
 ```
 
 ### Eco memory monitor
@@ -246,17 +247,17 @@ tail -f /dev/shm/urnetwork.log
 |---------|-------|
 | Provider won't start | `journalctl -u urnetwork -n 50` or `docker logs urnetwork` |
 | Auth fails | `cat ~/.urnetwork/jwt` — is it present and non-empty? |
-| No traffic flowing | `urnet-tools proxy activity` — are any proxies active? |
+| No traffic flowing | `urnet-tools proxy traffic` — are any proxies active? |
 | Proxies cycling up/down | Look for `[t]auth error` in the RAM log |
 
 ### Fleet-wide checks
 
 ```sh
 # Check the hub dashboard
-curl http://<hub-ip>:8080/cgi-bin/stats
+curl http://<hub-ip>:8080/
 
 # Check a specific node
-ssh user@<node-ip> "urnet-tools summary"
+ssh user@<node-ip> "urnet-tools proxy summary"
 ```
 
 ---

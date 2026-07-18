@@ -61,7 +61,7 @@ Your provider is now running and earning.
 Run this anytime to see your provider's status:
 
 ```sh
-urnet-tools summary
+urnet-tools proxy summary
 ```
 
 You should see something like:

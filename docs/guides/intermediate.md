@@ -43,13 +43,7 @@ The auth code is a one-time token. Your provider JWT is saved to `~/.urnetwork/j
 
 ### 3. Add proxies
 
-The provider needs proxies to manage. Create or edit the proxy file:
-
-```sh
-nano ~/.urnetwork/proxy
-```
-
-Each line is one proxy: `ip:port:username:password`
+The provider needs proxies to manage. Create a text file with one proxy per line:
 
 ```
 104.207.36.213:1081:user1:pass1
@@ -58,11 +52,17 @@ Each line is one proxy: `ip:port:username:password`
 
 > **File format:** `address:port:username:password` or just `address:port` for no-auth proxies.
 
+Then load it:
+
+```sh
+urnet-tools proxy add ~/proxies.txt
+```
+
 ### 4. Start and verify
 
 ```sh
 urnet-tools restart
-urnet-tools summary
+urnet-tools proxy summary
 ```
 
 The summary shows proxy health, clients, and earnings.
@@ -83,17 +83,23 @@ Create a directory for your config:
 mkdir -p ~/.urnetwork
 ```
 
-Create `~/.urnetwork/proxy` with your proxy list (same format as the systemd method above).
-
-Run the container:
+Create `~/proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `BUILD=jwt` and your auth code:
 
 ```sh
 docker run -d \
   --name urnetwork \
   --restart unless-stopped \
   -v ~/.urnetwork:/root/.urnetwork \
-  -e USER_AUTH="<your-auth-code>" \
+  -v ~/proxies.txt:/app/proxies.txt \
+  -e BUILD=jwt \
+  -e URNETWORK_AUTH_CODE="<your-auth-code>" \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+Then load the proxy list:
+
+```sh
+docker exec urnetwork urnet-tools proxy add /app/proxies.txt
 ```
 
 ### 2. Check status
@@ -108,7 +114,7 @@ docker logs -f urnetwork
 docker exec -it urnetwork /bin/sh
 ```
 
-From inside the container, `urnet-tools` is available at `/app/urnet-tools`.
+From inside the container, `urnet-tools` is on `PATH` (symlinked to `/usr/local/bin/urnet-tools`).
 
 ---
 
@@ -118,22 +124,23 @@ These work for both systemd and Docker (prepend `docker exec urnetwork` for Dock
 
 | Command | What it does |
 |---------|-------------|
-| `urnet-tools summary` | Health overview — proxy counts, traffic, earnings |
-| `urnet-tools proxy activity` | Live proxy traffic dashboard, refreshes every 1s |
+| `urnet-tools proxy summary` | Health overview — proxy counts, traffic, earnings |
+| `urnet-tools proxy traffic` | Live proxy traffic snapshot |
 | `urnet-tools status` | Provider process status and uptime |
-| `urnet-tools proxy list` | List all configured proxies with their status |
+| `urnet-tools proxy health` | Per-proxy up/degraded/dead status |
 
 ---
 
 ## 🔄 Hot-reload (changing proxies without restart)
 
-Instead of restarting the provider to apply proxy changes, use hot-reload:
+Instead of restarting the provider to apply proxy changes, add or remove proxies and then refresh:
 
 ```sh
-urnet-tools proxy reload
+urnet-tools proxy add ~/proxies.txt
+urnet-tools proxy refresh
 ```
 
-This reads the `~/.urnetwork/proxy` file and applies add/remove diffs without interrupting active connections.
+This diffs against the currently running proxy set and applies add/remove changes without interrupting active connections.
 
 ---
 
@@ -144,7 +151,6 @@ This reads the `~/.urnetwork/proxy` file and applies add/remove diffs without in
 | `URNETWORK_PROFILE` | Performance profile | `auto`, `turbo-v4`, `turbo-v8`, `eco` |
 | `URNETWORK_HOT_RESTART` | JWT reuse on restart | `1` (default), `0` to disable |
 | `PROXY_URL` | Auto-fetch proxies from a URL | `https://example.com/proxies.txt` |
-| `PROXY_FILE` | Path to proxy list file | `~/.urnetwork/proxy` |
 | `URNETWORK_SELF_HEAL` | Enable pressure-based pool management | `1` to enable (default off) |
 
 ---
