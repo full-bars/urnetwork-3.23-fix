@@ -142,7 +142,7 @@ func_start_vnstat() {
         fi
         vnstatd -d --alwaysadd >/dev/null 2>&1
         log "[INFO] vnstatd started"
-        httpd -f -p 8080 -h /app &
+        mkdir -p /app/www && cp /app/stats /app/www/ && httpd -f -p 8080 -h /app/www &
         log "[INFO] HTTP server started on container port 8080"
     else
         log "[INFO] VNSTAT disabled ..."
