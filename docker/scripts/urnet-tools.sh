@@ -468,9 +468,9 @@ case "$operation" in
         fi
 
         echo "Downloading $version..."
-        if ! curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$primary_url"; then
+        if ! curl -fL --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$primary_url"; then
             echo "Primary download failed, trying GitHub mirror..."
-            curl -L --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
+            curl -fL --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
                 echo "ERROR: download failed."
                 exit 1
             }
