@@ -150,8 +150,9 @@ if ($ReleaseInfo) {
     $ReleaseDate = $ReleaseInfo.published_at
     $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -cmatch "^urnetwork-provider-" }
     if ($ReleaseAsset) {
-        $DownloadURL = $ReleaseAsset.browser_download_url
+        $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
+        $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
     }
 }
 
@@ -178,7 +179,8 @@ if (-not $DownloadURL) {
     }
 
     $FileName = "urnetwork-provider-$ReleaseVersion.tar.gz"
-    $DownloadURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
+    $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
+    $MirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
 }
 
 $FilePath = Join-Path -Path $env:TEMP -ChildPath $FileName
@@ -188,8 +190,7 @@ if (-not $NoRestartDownload -or -not (Test-Path $FilePath)) {
         Download-File -URL $DownloadURL -Destination $FilePath
     }
     catch {
-        $MirrorURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
-        Write-Warning "GitHub download failed, trying mirror..."
+        Write-Warning "Primary download failed, trying GitHub mirror..."
         Download-File -URL $MirrorURL -Destination $FilePath
     }
 }
