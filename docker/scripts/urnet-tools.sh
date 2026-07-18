@@ -468,32 +468,34 @@ case "$operation" in
         fi
 
         echo "Downloading $version..."
-        if ! curl -fL --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$primary_url"; then
+        tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
+        if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
             echo "Primary download failed, trying GitHub mirror..."
-            curl -fL --connect-timeout 30 -o /tmp/urnetwork-update.tar.gz "$download_url" || {
+            curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
                 echo "ERROR: download failed."
+                rm -f "$tarball"
                 exit 1
             }
         fi
 
         tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
-        tar -xzf /tmp/urnetwork-update.tar.gz -C "$tmpdir" || {
+        tar -xzf "$tarball" -C "$tmpdir" || {
             echo "ERROR: failed to extract tarball."
-            rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+            rm -rf "$tmpdir" "$tarball"
             exit 1
         }
 
         if [ ! -f "$tmpdir/provider" ]; then
             echo "ERROR: provider binary not found in tarball."
             ls -la "$tmpdir/" 2>/dev/null || true
-            rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+            rm -rf "$tmpdir" "$tarball"
             exit 1
         fi
 
         cp "$tmpdir/provider" "$provider_bin"
         chmod +x "$provider_bin"
 
-        rm -rf "$tmpdir" /tmp/urnetwork-update.tar.gz
+        rm -rf "$tmpdir" "$tarball"
         echo "Provider binary updated to $version."
 
         pkill -x "urnetwork_${arch}_stable" 2>/dev/null || true
