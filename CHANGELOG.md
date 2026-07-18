@@ -4,6 +4,118 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased] (26.4)
+
+### Added
+
+**Degraded-proxy reaper** (#293): Background reaper runs every 3 minutes during sustained backend outages, ranks degraded proxies by lifetime contribution (traffic + contracts won), and cancels the worst-contributing half every cycle — while always keeping at least half alive so the fleet can detect recovery immediately. `direct`/native mode is permanently exempt. Re-verifies a proxy is still actually degraded immediately before cancelling it, since scoring/sorting thousands of candidates takes real time and the target could have reconnected (or been replaced by hot-reload) in that window.
+
+**GOMEMLIMIT for turbo profiles** (#293): `turbo-v4`/`turbo-v8` now set a memory ceiling (80% of available RAM) when the operator hasn't set `--max-memory`/`GOMEMLIMIT` explicitly — previously `GOGC=200` with no ceiling at all, so nothing capped growth during an outage. Matches the safety net `eco` mode already had.
+
+**`connect.IsDegraded(address)`**: New exported health check used by the reaper's stale-decision recheck; also usable standalone.
+
+### Fixed
+
+**TOCTOU tmpfile vulnerability** (#292): Provider update downloads now use `mktemp`-generated unpredictable paths instead of a hardcoded `/tmp/urnetwork-update.tar.gz`, closing a symlink-race (CWE-377) that could let a local user redirect the extraction to overwrite an arbitrary file. Provider binary installation is now staged and atomically replaced only on full success, with cleanup on any failure path.
+
+**Download reliability** (#291): Provider updates route through `dl.fullbars.xyz` first with automatic GitHub fallback, plus two follow-up fixes in the same window — `curl` now fails on HTTP error responses (a missing `-f` flag meant the GitHub fallback never actually triggered on a bad primary response), and the Windows primary/mirror URL selection logic was corrected. Added `-y`/`-f` flags to skip the interactive confirmation on restart.
+
+**Dashboard contract feed** (#294): Fixed a copy-paste bug where the "Recent Contracts" dashboard feed matched `"[contract] acquired"` twice instead of also matching `"[contract] denied"` — every contract denial was silently invisible in the dashboard. Removed a dead, never-displayed `activeProxies` capture left over from an unfinished feature.
+
+**BusyBox httpd docroot**: Restricted to `/app/www` via symlink across all Docker startup scripts, closing unauthenticated access to the full `/app/` directory on port 8080.
+
+**CI flake** (#290): Fixed a test still using a hardcoded 45s deadline that PR #286 had bumped everywhere else.
+
+### Known gaps not yet in this release
+
+Two previously-scoped fixes remain on unmerged, now-stale branches and need a rebase before merging: the JWT `NetworkId` claim-key bug + `authBytes` message-pool leak in `runH3` (`fix/jwt-networkid-and-authbytes-leak`), and a `.gitignore`/logging/code-quality hardening pass (`fix/gitignore-and-code-quality`).
+
+---
+
+## [v3.23.0-fix.26.3] — 2026-07-16
+
+### Added
+
+**Hub CA cert auto-bootstrap** (#281): On startup, `hub init` now checks `URNETWORK_HUB_TOKEN`, `URNETWORK_HUB_TOKEN_FILE`, and `URNETWORK_HUB_TOKEN_STDIN` for a hub token. If present, it fetches the CA cert from `$HUB/ca-cert?token=...` using the token before doing anything else.
+
+**PAKE-based hub join** (`hub -hub-join <url>`): New command that runs the OPAQUE handshake against a hub's join endpoints, reads password from stdin, and saves a per-node credential to `~/.urnetwork/hub.credential`. The credential is accepted by `requireAuth` alongside `URNETWORK_HUB_TOKEN`. Credentials are stored hashed (SHA-256), revoked on `/api/nodes/remove`, and re-registration follows `hub.password` rotation. Pending handshakes expire after 2 minutes to bound server memory. The CLI runs the same tested OPAQUE helpers as the unit test suite rather than a separate implementation.
+
+**Auto Tier 4 Extreme** (#280): On hosts with >= 8 GiB RAM, the provider now auto-selects the Tier 4 (extreme) performance profile matching turbo-v8 settings. Manual `tier set 4` overrides remain.
+
+**Docker-backed hub install/update** (#278): `urnet-tools hub install` and `hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/urnetwork-3.23-fix-hub`). Linux supports `--docker` opt-in. All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` named volume.
+
+**HTTP Basic Auth for hub dashboard** (#282): The hub dashboard and read-only API endpoints now accept HTTP Basic Auth via `URNETWORK_HUB_DASHBOARD_PASS`. Separate from `URNETWORK_HUB_TOKEN` (used for write endpoints). Unset = unauthenticated.
+
+**Persisted custom network selection** (#288): New `provider choose_network <api_url> <connect_url>` / `provider choose_network --reset` commands let operators running their own API/connect backend save it to `~/.urnetwork/network.json` instead of repeating `--api_url`/`--connect_url` on every invocation. Resolution order: flag > saved config > hardcoded default. Docker: `UR_API_URL`/`UR_CONNECT_URL` env vars (must be set together), also reachable via `urnet-tools choose_network` (Linux/Docker exec and Windows). Ported from `urfoundation/sn` PR #1.
+
+### Fixed
+
+**CA cert live reload** (#279): The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without restarting. Allows CA cert rotation on live hubs.
+
+**Hot-restart warning fix** (#277): `urnet-tools restart` no longer always shows "cold restart required" — it now reflects actual hot-restart status. Deduped `hotRestartEnabled()` check into a cross-platform helper. Worker download fallback ported from Linux to macOS (`Provider_Install_Mac.sh`) and Windows (`urnet-tools.ps1`) so all three platforms have GitHub rate-limit resilience for binary downloads.
+
+**`--tag` not honored on hub update** (#277): When a persisted config had a tag and `--tag` was passed, the persisted tag took precedence. Fixed so `--tag` always wins.
+
+**Docker hub update pointed at wrong image** (#277): `hub update` was pulling the provider image instead of the hub image. Fixed to resolve the correct `-hub` image.
+
+**Go vet fix** (#277): Escaped `%` in printf-style comment.
+
+### Known remaining
+
+- **Fingerprint pinning (`hub.pin`)**: Deprecated. To be removed in the next release.
+
+---
+
+## [v3.23.0-fix.26.2] — 2026-07-14
+
+Release notes: `releases/v3.23.0-fix.26.2.md`
+
+### Added
+
+**Self-Healing Proxy Resource Management** (#259): Two-layer system — always-on fixes (default `proxy_url_max=500`, cleanup scope `"url"`, faster dead give-up, stale re-probe) plus opt-in closed-loop pressure system (`URNETWORK_SELF_HEAL=1` / `urnet-tools self-heal on`). AIMD pool controller grows under calm, sheds worst-first under pressure. Off by default.
+
+**Hub Off/Set live reload** (#276): All four hub commands (`link`/`unlink`/`set`/`off`) now write the same override file the provider polls every report tick — `hub set`/`off` no longer require a restart.
+
+**Subnet Integration Prep (Phases 1–2)** (#272): Pins `urfoundation/sn` crypto/chain packages; backports upstream `Sn*Sync` API methods. Inert until CLI wiring lands.
+
+### Fixed
+
+**ProbeOK Lost on Cache Merge** (#274): Fixed `mergeProxyURLEntries` discarding API-reachability results before caching, letting the reaper blacklist proven-live proxies.
+
+**go-ethereum Dependency Bump** (#275): `github.com/ethereum/go-ethereum` v1.16.7 → v1.17.4, clearing 5 Dependabot alerts.
+
+**Installer Links** (#271): Replaced `raw.githubusercontent.com` installer links with `dl.fullbars.xyz` shortcuts.
+
+---
+
+## [v3.23.0-fix.26.1] — 2026-07-13
+
+Release notes: `releases/v3.23.0-fix.26.1.md`
+
+### Added
+
+**Docker: In-Place Updates** (#255): `urnet-tools update` inside the Docker container allows in-place binary replacements without pulling a new image.
+
+**Official `dl.fullbars.xyz` URLs** (#258): All installation scripts and docs updated to use the new shortened domain.
+
+**Go 1.26 Toolchain & Dependencies** (#267): Compiler bumped from 1.25.x to 1.26.4; core deps bumped (`pion/webrtc`, `quic-go`, `golang.org/x/*`).
+
+**Standardized Repository Templates** (#268, #269): Structured PR and Release templates for consistent technical documentation.
+
+### Fixed
+
+**Upstream Infrastructure Port** (#261): Ported upstream commits `ee7a476` + `83dc999` — Egress interfaces, Memory Budgets, Contract Stats, Peer Management, `ip_assoc.go`.
+
+**Peer API Refactor & Pause Fix** (#262): Ported upstream Peer API changes — `ReceiveFunction` type change and pause behavior fix.
+
+**Upstream 532ee20c Fixes** (#265): Mode election fix, hot-spin CPU fix, connection eviction fix, `MonitorValue` constructs.
+
+**Core Stability & Leak Cleanup** (#266): Fixed memory leaks in transfer pool and route manager (unbound map growth), resolved WebRTC stream ID panic, prevented infinite CPU spin loop during warmup, handled auth context cancellations.
+
+**Hot-Reload Lock Race & Shutdown Diagnostics** (#260): Idempotent lock releases; cancel-time stack trace diagnostics for easier debugging of exit hangs.
+
+---
+
 ## [v3.23.0-fix.26] — 2026-07-09
 
 ### Hot-Restart Enabled by Default
@@ -147,40 +259,6 @@ Platform toggles updated:
 ### Changed
 
 **CI**: Renamed `hub-v*` Docker tags to `hub-docker-v*` to clarify they are Docker-only.
-
----
-
-## [Unreleased]
-
-### Added
-
-**Hub CA cert auto-bootstrap** (#281): On startup, `hub init` now checks `URNETWORK_HUB_TOKEN`, `URNETWORK_HUB_TOKEN_FILE`, and `URNETWORK_HUB_TOKEN_STDIN` for a hub token. If present, it fetches the CA cert from `$HUB/ca-cert?token=...` using the token before doing anything else.
-
-**PAKE-based hub join** (`hub -hub-join <url>`): New command that runs the OPAQUE handshake against a hub's join endpoints, reads password from stdin, and saves a per-node credential to `~/.urnetwork/hub.credential`. The credential is accepted by `requireAuth` alongside `URNETWORK_HUB_TOKEN`. Credentials are stored hashed (SHA-256), revoked on `/api/nodes/remove`, and re-registration follows `hub.password` rotation. Pending handshakes expire after 2 minutes to bound server memory. The CLI runs the same tested OPAQUE helpers as the unit test suite rather than a separate implementation.
-
-**Auto Tier 4 Extreme** (#280): On hosts with >= 8 GiB RAM, the provider now auto-selects the Tier 4 (extreme) performance profile matching turbo-v8 settings. Manual `tier set 4` overrides remain.
-
-**Docker-backed hub install/update** (#278): `urnet-tools hub install` and `hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/urnetwork-3.23-fix-hub`). Linux supports `--docker` opt-in. All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` named volume.
-
-**HTTP Basic Auth for hub dashboard** (#282): The hub dashboard and read-only API endpoints now accept HTTP Basic Auth via `URNETWORK_HUB_DASHBOARD_PASS`. Separate from `URNETWORK_HUB_TOKEN` (used for write endpoints). Unset = unauthenticated.
-
-**Persisted custom network selection** (#288): New `provider choose_network <api_url> <connect_url>` / `provider choose_network --reset` commands let operators running their own API/connect backend save it to `~/.urnetwork/network.json` instead of repeating `--api_url`/`--connect_url` on every invocation. Resolution order: flag > saved config > hardcoded default. Docker: `UR_API_URL`/`UR_CONNECT_URL` env vars (must be set together), also reachable via `urnet-tools choose_network` (Linux/Docker exec and Windows). Ported from `urfoundation/sn` PR #1.
-
-### Fixed
-
-**CA cert live reload** (#279): The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without restarting. Allows CA cert rotation on live hubs.
-
-**Hot-restart warning fix** (#277): `urnet-tools restart` no longer always shows "cold restart required" — it now reflects actual hot-restart status. Deduped `hotRestartEnabled()` check into a cross-platform helper. Worker download fallback ported from Linux to macOS (`Provider_Install_Mac.sh`) and Windows (`urnet-tools.ps1`) so all three platforms have GitHub rate-limit resilience for binary downloads.
-
-**`--tag` not honored on hub update** (#277): When a persisted config had a tag and `--tag` was passed, the persisted tag took precedence. Fixed so `--tag` always wins.
-
-**Docker hub update pointed at wrong image** (#277): `hub update` was pulling the provider image instead of the hub image. Fixed to resolve the correct `-hub` image.
-
-**Go vet fix** (#277): Escaped `%` in printf-style comment.
-
-### Known remaining
-
-- **Fingerprint pinning (`hub.pin`)**: Deprecated. To be removed in the next release.
 
 ---
 
