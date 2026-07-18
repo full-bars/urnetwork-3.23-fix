@@ -121,6 +121,9 @@ The hub dashboard (port 8080) shows:
 
 > 💡 Dashboard is accessible at `http://<hub-ip>:8080/`
 
+> [!WARNING]
+> **Running the hub on the same host as a provider?** The hub defaults to port `:8080`, and a provider's `ENABLE_VNSTAT=true` stats page (on by default) also binds container port `8080`. Colocated on the same machine, whichever starts second fails to bind. Remap one of them — Docker hub: `hub install --docker --port 8081`; Docker provider: publish vnstat on a different host port or set `ENABLE_VNSTAT=false`; bare-metal hub: edit the `-addr :8080` in `~/.config/systemd/user/urnetwork-hub.service` and restart. See [Hub-Dashboard.md](../Hub-Dashboard.md) for details. Separate hosts are unaffected.
+
 ---
 
 ## 🔄 Hot-Reload & Proxy Management
@@ -200,8 +203,8 @@ The message pool free-list is auto-sized to RAM/32 at startup, capped at 256 MiB
 
 | Source | Location | Persists restarts? |
 |--------|----------|-------------------|
-| Health logs | `/dev/shm/urnetwork.log` | Yes (O_APPEND mode) |
-| Important events | `/dev/shm/urnetwork-important.log` | Yes |
+| Health logs | `/dev/shm/urnetwork.log` | Survives process restarts, not host reboots (RAM-backed tmpfs) |
+| Important events | `/dev/shm/urnetwork-important.log` | Survives process restarts, not host reboots (RAM-backed tmpfs) |
 | Critical events | `~/.urnetwork/events.log` | Yes (1MB capped, auto-rotated) |
 | System journal | `journalctl -u urnetwork` | Yes |
 
@@ -246,7 +249,7 @@ tail -f /dev/shm/urnetwork.log
 | Symptom | Check |
 |---------|-------|
 | Provider won't start | `journalctl -u urnetwork -n 50` or `docker logs urnetwork` |
-| Auth fails | `cat ~/.urnetwork/jwt` — is it present and non-empty? |
+| Auth fails | `test -s ~/.urnetwork/jwt && echo present` — is it present and non-empty? (don't `cat` it — it's a credential) |
 | No traffic flowing | `urnet-tools proxy traffic` — are any proxies active? |
 | Proxies cycling up/down | Look for `[t]auth error` in the RAM log |
 

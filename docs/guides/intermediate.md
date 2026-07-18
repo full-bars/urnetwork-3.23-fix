@@ -140,7 +140,7 @@ urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh
 ```
 
-This diffs against the currently running proxy set and applies add/remove changes without interrupting active connections.
+`refresh` writes the reload trigger; the running provider is the one that diffs against the current proxy set, applies the add/remove changes, and revalidates health — without interrupting active connections.
 
 ---
 

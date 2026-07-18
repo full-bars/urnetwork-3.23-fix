@@ -6,9 +6,9 @@ This guide gets you from zero to a running provider in about five minutes. No ja
 
 ## 1️⃣ What you need
 
-- A Linux server (or any computer running Linux) with internet access
+- A computer or server running **Linux, macOS, or Windows** with internet access
 - An **auth code** from the URnetwork team
-- A terminal
+- A terminal (macOS/Linux) or PowerShell (Windows)
 
 That's it.
 
@@ -18,13 +18,22 @@ That's it.
 
 ## 2️⃣ Install the provider
 
-Open a terminal and run this single command:
-
+**Linux:**
 ```sh
 curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
-It will download the provider binary and set it up as a background service.
+**macOS:**
+```sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+```
+
+**Windows (PowerShell, no admin required):**
+```powershell
+powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+```
+
+It will download the provider binary and set it up as a background service (systemd on Linux, launchd on macOS, a Startup entry on Windows).
 
 > ⏳ This takes about 30 seconds. You'll see progress messages as it runs.
 
@@ -32,9 +41,15 @@ It will download the provider binary and set it up as a background service.
 
 ## 3️⃣ Authenticate
 
-Tell the provider who you are by running:
+Tell the provider who you are:
 
+**Linux/macOS:**
 ```sh
+urnetwork auth <your-auth-code>
+```
+
+**Windows:**
+```powershell
 urnetwork auth <your-auth-code>
 ```
 
@@ -46,10 +61,16 @@ Replace `<your-auth-code>` with the code you received from the team.
 
 ## 4️⃣ Start providing
 
-If the install script didn't start the provider automatically, run:
+If the install script didn't start the provider automatically:
 
+**Linux/macOS:**
 ```sh
 urnet-tools restart
+```
+
+**Windows:**
+```powershell
+urnet-tools.ps1 start
 ```
 
 Your provider is now running and earning.
@@ -60,8 +81,14 @@ Your provider is now running and earning.
 
 Run this anytime to see your provider's status:
 
+**Linux/macOS:**
 ```sh
 urnet-tools proxy summary
+```
+
+**Windows:**
+```powershell
+urnet-tools.ps1 proxy summary
 ```
 
 You should see something like:
@@ -77,7 +104,7 @@ Earning:     yes
 
 - **Add your own proxy list** → see the [Intermediate Guide](intermediate.md)
 - **Tune for performance** → see the [Advanced Guide](advanced.md)
-- **Just let it run** → the provider updates itself automatically
+- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools.ps1 auto-update-enable`/`-disable`). On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
 
 ---
 
@@ -85,7 +112,7 @@ Earning:     yes
 
 | Problem | Solution |
 |---------|----------|
-| `curl: command not found` | Install curl (`apt install curl` on Debian/Ubuntu) |
-| `Permission denied` | Make sure you're running as a user with `sudo` access |
+| `curl: command not found` | Install curl (`apt install curl` on Debian/Ubuntu; macOS ships curl by default) |
+| `Permission denied` | Make sure you're running as a user with `sudo` access (Linux) |
 | Auth code fails | Double-check you copied the full code, including the hyphens |
-| Provider won't start | Run `urnet-tools status` to see any error messages |
+| Provider won't start | Run `urnet-tools status` (Windows: `urnet-tools.ps1 status`) to see any error messages |
