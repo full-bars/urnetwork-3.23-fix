@@ -26,9 +26,23 @@ All notable changes to this project are documented here.
 
 **CI flake** (#290): Fixed a test still using a hardcoded 45s deadline that PR #286 had bumped everywhere else.
 
+**JWT NetworkId claim key** (#295): `ParseByJwtUnverified` in `jwt.go` previously read `claims["network_name"]` for both `NetworkName` and `NetworkId` (copy-paste bug). `NetworkId` now correctly reads `claims["network_id"]`. 3 new tests cover valid, missing, and malformed JWT claims.
+
+**authBytes message-pool leak** (#295): `runH3` in `transport.go` was missing the `defer MessagePoolReturn(authBytes)` that `runH1` has, leaking one pool buffer per H3 auth handshake.
+
+**logThrottle consolidation** (#296): Replaced 6 hand-rolled atomic rate-limiters in `transfer.go` with 3 `logThrottle` instances, removing ~50 lines of duplicated `CompareAndSwap`/`Swap` boilerplate. All three call sites (`[c]ping`, `[c]ping err`, `[r]drop`) behave identically.
+
+**Division-by-zero guard** (#296): `contractByteCount()` in `transfer_contract_manager.go` now guards against `ContractTransferByteSeqScale=0` (bad profile override), returning `max(StandardContractTransferByteCount, minByteCount)` instead of panicking.
+
+**Explicit GOGC=100 for tier3** (#296): `applyTier3` in `tuning.go` now calls `debug.SetGCPercent(100)` to match the other three tiers, which already set it explicitly. No behavioral change (100 is Go's default).
+
+**SequencePeerAudit error logging** (#296): `SequencePeerAudit.Complete()` no longer silently swallows `SendControl` errors — the empty `func(...){}` callback was replaced with an `Errorf` that logs the error. Test confirms the log message is emitted without panicking.
+
+**.gitignore hardening** (#296): Added `hub/hub_bin`, `hub.db`, and `prs.json` to prevent accidental commits of build artifacts and local state.
+
 ### Known gaps not yet in this release
 
-Two previously-scoped fixes remain on unmerged, now-stale branches and need a rebase before merging: the JWT `NetworkId` claim-key bug + `authBytes` message-pool leak in `runH3` (`fix/jwt-networkid-and-authbytes-leak`), and a `.gitignore`/logging/code-quality hardening pass (`fix/gitignore-and-code-quality`).
+No open gaps currently tracked for the next release.
 
 ---
 
