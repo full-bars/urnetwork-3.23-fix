@@ -4020,7 +4020,7 @@ func proxyActivity() {
 			}
 			lines := strings.Split(string(buf[:n]), "\n")
 			for _, line := range lines {
-				if strings.Contains(line, "[contract] acquired") || strings.Contains(line, "[contract] acquired") {
+				if strings.Contains(line, "[contract] acquired") || strings.Contains(line, "[contract] denied") {
 					// Extract timestamp and message
 					if idx := strings.Index(line, "[contract]"); idx >= 0 {
 						ts := ""
@@ -4049,16 +4049,12 @@ func proxyActivity() {
 		// Read health state for up/down counts
 		up, connecting, degraded := 0, 0, 0
 		healthDir, ok := proxyHealthDir()
-		var activeProxies []string
 		if ok {
 			if data, err := os.ReadFile(filepath.Join(healthDir, "proxy_health.state")); err == nil {
 				for _, line := range strings.Split(string(data), "\n") {
 					if strings.HasPrefix(line, " Up:") {
 						var down, dead int
 						fmt.Sscanf(line, " Up: %d | Down: %d | Dead: %d | Degraded: %d", &up, &down, &dead, &degraded)
-					}
-					if strings.Contains(line, " RECOVERED ") || strings.Contains(line, " DEGRADED ") {
-						activeProxies = append(activeProxies, line)
 					}
 				}
 			}
