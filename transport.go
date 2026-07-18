@@ -1029,6 +1029,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 	if err != nil {
 		return
 	}
+	defer MessagePoolReturn(authBytes)
 
 	if 0 < initialTimeout {
 		select {
