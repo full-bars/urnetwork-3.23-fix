@@ -307,7 +307,12 @@ test_mirror_fallback_success() {
     assert_file_absent "$tarball_paths_unique" "Mirror fallback: tarball removed after successful update"
 
     provider_bin="$APP_DIR/urnetwork_amd64_stable"
-    [ -x "$provider_bin" ] && echo "  ✅ PASS: Mirror fallback: provider binary installed" || { echo "  ❌ FAIL: Mirror fallback: provider binary missing"; FAILS=$((FAILS + 1)); }
+    if [ -x "$provider_bin" ]; then
+        echo "  ✅ PASS: Mirror fallback: provider binary installed and executable"
+    else
+        echo "  ❌ FAIL: Mirror fallback: provider binary missing at $provider_bin"
+        FAILS=$((FAILS + 1))
+    fi
 
     after="$(snapshot_tmp_artifacts)"
     assert_eq "$before" "$after" "Mirror fallback: no leaked urnetwork-update-* artifacts under /tmp"
