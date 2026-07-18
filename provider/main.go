@@ -286,7 +286,6 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	// Faster contract ramp: reach StandardContractTransferByteCount in 3 contracts instead of 4
 	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
-	// Let the heap breathe; no GOMEMLIMIT on RAM-rich boxes
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(200)
 	}
@@ -1910,6 +1909,184 @@ func classifyAuthFailureCause(err error) string {
 	}
 }
 
+const (
+	degradedReaperTicker      = 3 * time.Minute
+	degradedReaperMinDownTime = 30 * time.Minute
+	degradedReaperKeepPct     = 50
+)
+
+// degradedReaperKeepCount returns how many proxies to keep (ceil rounding).
+// With keepPct=50: 0→1, 1→1, 2→1, 3→2, 4→2, 5→3, 10→5.
+func degradedReaperKeepCount(total int) int {
+	if total <= 0 {
+		return 1
+	}
+	keep := (total*degradedReaperKeepPct + 99) / 100
+	if keep < 1 {
+		return 1
+	}
+	return keep
+}
+
+// scoredDegradedProxy pairs a degraded proxy with its lifetime-contribution
+// score (traffic bytes plus a per-contract bonus). Exported field names kept
+// lowercase-package-local since tests live in the same package.
+type scoredDegradedProxy struct {
+	entry connect.DegradedProxyEntry
+	score uint64
+}
+
+// contractsAcquiredFunc returns the lifetime contracts-acquired count for a
+// proxy index, or 0 if unknown. Lets tests inject a fake without touching the
+// real globalContractMetrics registry.
+type contractsAcquiredFunc func(index int) int64
+
+// liveContractsAcquired adapts the real globalContractMetrics registry to
+// contractsAcquiredFunc. This is what runDegradedProxyReaper uses in
+// production; tests pass their own stub instead.
+func liveContractsAcquired(index int) int64 {
+	m := globalContractMetrics.get(index)
+	if m == nil {
+		return 0
+	}
+	acquired, _ := m.snapshot()
+	return acquired
+}
+
+// scoreDegradedProxies ranks degraded proxies by lifetime contribution
+// (traffic + contracts acquired), ascending — the worst contributors sort
+// first. This is the single source of truth for the ranking: both the live
+// reaper and its tests call this function, so a regression here (e.g. a
+// reversed comparator) is caught by any test that exercises it, instead of
+// silently passing against a second, hand-maintained copy.
+func scoreDegradedProxies(entries []connect.DegradedProxyEntry, getContracts contractsAcquiredFunc) []scoredDegradedProxy {
+	scored := make([]scoredDegradedProxy, len(entries))
+	for i, d := range entries {
+		score := d.TotalRxBytes + d.TotalTxBytes
+		if getContracts != nil {
+			if acquired := getContracts(d.Index); acquired > 0 {
+				score += uint64(acquired) * 1024
+			}
+		}
+		scored[i] = scoredDegradedProxy{entry: d, score: score}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score < scored[j].score
+	})
+	return scored
+}
+
+// selectProxiesToReap picks which degraded proxies to cancel: everyone
+// outside the top `keep` contributors (by score, so the worst-contributing
+// proxies are chosen first), further filtered to those that have been
+// degraded at least minDownTime. scored must already be sorted ascending by
+// score (as scoreDegradedProxies returns it).
+func selectProxiesToReap(scored []scoredDegradedProxy, keep int, minDownTime time.Duration) []connect.DegradedProxyEntry {
+	var toReap []connect.DegradedProxyEntry
+	for i := 0; i < len(scored)-keep; i++ {
+		p := scored[i].entry
+		if p.DownFor < minDownTime {
+			continue
+		}
+		toReap = append(toReap, p)
+	}
+	return toReap
+}
+
+// onlyCancellableProxies filters degraded proxies down to those the reaper
+// can actually act on — i.e. present in proxyCancelMap. Native/"direct" mode
+// is registered in the same health tracking as any proxy (so it can appear
+// in connect.DegradedProxies()) but is deliberately never added to
+// proxyCancelMap (it must be immune to hot-reload deletions) and must never
+// be reaped. Filtering here, before scoring, keeps it from ever consuming a
+// retention or reap slot — it previously could silently no-op after being
+// selected, which both wastes a reap slot and skews the keep/reap split.
+func onlyCancellableProxies(degraded []connect.DegradedProxyEntry, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) []connect.DegradedProxyEntry {
+	proxyCancelMu.Lock()
+	defer proxyCancelMu.Unlock()
+	var out []connect.DegradedProxyEntry
+	for _, d := range degraded {
+		if _, ok := proxyCancelMap[d.Address]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// stillDegradedFunc reports whether a proxy address is degraded right now.
+// Lets tests inject a fake without touching the real connect-package health
+// registry.
+type stillDegradedFunc func(address string) bool
+
+// liveIsDegraded adapts connect.IsDegraded to stillDegradedFunc — what
+// reapProxies uses in production.
+func liveIsDegraded(address string) bool {
+	return connect.IsDegraded(address)
+}
+
+// reapProxies cancels each candidate in toReap, but only after re-verifying
+// — right before pulling the trigger — that it is still actually degraded.
+// Scoring and sorting thousands of proxies takes real wall-clock time; in
+// that window a candidate may have reconnected on its own, or hot-reload may
+// have torn it down and respawned a fresh instance at the same address.
+// Either way the toReap decision was made about an instance that no longer
+// exists in that state, so cancelling now would kill something other than
+// what was actually decided about. isStillDegraded is checked under the same
+// lock as the cancel/delete so nothing can change between the check and the
+// act.
+func reapProxies(toReap []connect.DegradedProxyEntry, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex, isStillDegraded stillDegradedFunc) int64 {
+	var reaped int64
+	for _, p := range toReap {
+		proxyCancelMu.Lock()
+		if !isStillDegraded(p.Address) {
+			proxyCancelMu.Unlock()
+			continue
+		}
+		cancel, ok := proxyCancelMap[p.Address]
+		if ok {
+			cancel()
+			delete(proxyCancelMap, p.Address)
+			reaped++
+		}
+		proxyCancelMu.Unlock()
+	}
+	return reaped
+}
+
+func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
+	ticker := time.NewTicker(degradedReaperTicker)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		degraded := connect.DegradedProxies()
+		if len(degraded) <= 1 {
+			continue
+		}
+
+		cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
+		if len(cancellable) <= 1 {
+			continue
+		}
+
+		scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
+		keep := degradedReaperKeepCount(len(scored))
+		toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
+
+		reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
+
+		if reaped > 0 {
+			tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",
+				reaped, keep, len(scored))
+		}
+	}
+}
+
 func provide(opts docopt.Opts) {
 	connect.CritLogger = critLog
 
@@ -2122,6 +2299,12 @@ func provide(opts docopt.Opts) {
 		applyTurboSettings(clientSettings, localUserNatSettings)
 
 		profile := os.Getenv("URNETWORK_PROFILE")
+
+		if (profile == "turbo-v4" || profile == "turbo-v8") &&
+			os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
+			ramBytes := detectEffectiveRAMLimitBytes()
+			debug.SetMemoryLimit(ramBytes * 80 / 100)
+		}
 		if profile == "eco" || autoEco {
 			startEcoMonitorOnce(ctx)
 		}
@@ -2640,6 +2823,7 @@ func provide(opts docopt.Opts) {
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
 	go runPressureMonitor(ctx, selfHealEnabled)
 	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
+	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
 
 	if 0 < port {
 		fmt.Printf(
