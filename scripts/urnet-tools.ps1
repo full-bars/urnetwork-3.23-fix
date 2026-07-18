@@ -387,6 +387,40 @@ function Get-ProviderUptime {
     } catch { return $null }
 }
 
+function Test-ProviderIsDocker {
+    # Detect deployment model for the *provider* container (-ContainerName):
+    # Docker takes priority when a matching container is running; native
+    # $BinaryPath is the fallback. Same detection the "hub" command already
+    # used inline for the hub container — factored out so "proxy",
+    # "choose_network", "report", and "logs" can use it too instead of
+    # assuming Docker unconditionally.
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    try {
+        $job = Start-Job -ScriptBlock { docker ps -a --format '{{.Names}}' 2>$null }
+        $null = Wait-Job $job -Timeout 5
+        $allContainers = Receive-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force
+
+        $job2 = Start-Job -ScriptBlock { docker ps --format '{{.Names}}' 2>$null }
+        $null = Wait-Job $job2 -Timeout 5
+        $running = Receive-Job $job2 -ErrorAction SilentlyContinue
+        Remove-Job $job2 -Force
+
+        if (($allContainers -split "`n") -contains $ContainerName) {
+            if (($running -split "`n") -contains $ContainerName) {
+                return $true
+            } else {
+                Write-Warning "Container '$ContainerName' exists but is stopped. Start it first: docker start $ContainerName"
+            }
+        }
+    } catch {
+        return $false
+    }
+    return $false
+}
+
 function Get-WarmProxyCount {
     $statePath = "$env:USERPROFILE\.urnetwork\proxy.state"
     if (-not (Test-Path $statePath)) { return 0 }
@@ -769,33 +803,82 @@ switch ($Command) {
     }
 
     "proxy" {
+        $useDocker = Test-ProviderIsDocker
         $proxySubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
+        $rest = if ($SubArgs.Length -gt 1) { $SubArgs[1..($SubArgs.Length - 1)] } else { @() }
         switch ($proxySubCmd) {
-            "refresh" { docker exec $ContainerName provider proxy refresh }
-            "reload"  { docker exec $ContainerName provider proxy refresh }
-            "remove-dead" { docker exec $ContainerName provider proxy remove-dead }
-            "summary" { docker exec $ContainerName provider proxy summary }
+            "add" {
+                if ($useDocker) { docker exec -i $ContainerName provider proxy add @rest } else { & $BinaryPath proxy add @rest }
+            }
+            "clear" {
+                if ($useDocker) { docker exec $ContainerName provider proxy remove --all } else { & $BinaryPath proxy remove --all }
+            }
+            "refresh" {
+                if ($useDocker) { docker exec $ContainerName provider proxy refresh } else { & $BinaryPath proxy refresh }
+            }
+            "reload" {
+                if ($useDocker) { docker exec $ContainerName provider proxy refresh } else { & $BinaryPath proxy refresh }
+            }
+            "remove-dead" {
+                if ($useDocker) { docker exec $ContainerName provider proxy remove-dead } else { & $BinaryPath proxy remove-dead }
+            }
+            "summary" {
+                if ($useDocker) { docker exec $ContainerName provider proxy summary } else { & $BinaryPath proxy summary }
+            }
+            "health" {
+                if ($useDocker) {
+                    docker exec $ContainerName proxy-health
+                } else {
+                    $healthDir = "$env:USERPROFILE\.urnetwork"
+                    $stateFile = Join-Path $healthDir "proxy_health.state"
+                    $logFile = Join-Path $healthDir "proxy_health.log"
+                    if (Test-Path $stateFile) {
+                        Write-Host "== Current proxy health ($stateFile) =="
+                        Get-Content $stateFile
+                    } else {
+                        Write-Host "No snapshot yet at $stateFile (waiting for first heartbeat?)."
+                    }
+                    if (Test-Path $logFile) {
+                        Write-Host ""
+                        Write-Host "== Proxy health events ($logFile) -- Ctrl-C to stop =="
+                        Get-Content $logFile -Tail 20 -Wait
+                    } else {
+                        Write-Host "No event log yet at $logFile."
+                    }
+                }
+            }
+            "traffic" {
+                if ($useDocker) {
+                    docker exec $ContainerName proxy-traffic
+                } else {
+                    $trafficFile = Join-Path "$env:USERPROFILE\.urnetwork" "proxy_traffic.state"
+                    if (Test-Path $trafficFile) {
+                        Get-Content $trafficFile
+                    } else {
+                        Write-Host "No traffic report yet at $trafficFile (waiting for first heartbeat?)."
+                    }
+                }
+            }
             "remove" {
-                $rest = if ($SubArgs.Length -gt 1) { $SubArgs[1..($SubArgs.Length - 1)] } else { @() }
-                docker exec -i $ContainerName provider proxy remove @rest
+                if ($useDocker) { docker exec -i $ContainerName provider proxy remove @rest } else { & $BinaryPath proxy remove @rest }
             }
             "exclude" {
-                $rest = if ($SubArgs.Length -gt 1) { $SubArgs[1..($SubArgs.Length - 1)] } else { @() }
-                docker exec $ContainerName provider proxy exclude @rest
+                if ($useDocker) { docker exec $ContainerName provider proxy exclude @rest } else { & $BinaryPath proxy exclude @rest }
             }
             default {
-                Write-Host "Usage: proxy [refresh|reload|remove-dead|summary|remove --match=<pat>|exclude [<pat>] [--remove]]"
+                Write-Host "Usage: proxy [add <file>|clear|refresh|reload|remove-dead|summary|health|traffic|remove --match=<pat>|exclude [<pat>] [--remove]]"
             }
         }
         break
     }
 
     "choose_network" {
+        $useDocker = Test-ProviderIsDocker
         if ($SubArgs -and $SubArgs[0] -eq "--reset") {
-            docker exec $ContainerName provider choose_network --reset
+            if ($useDocker) { docker exec $ContainerName provider choose_network --reset } else { & $BinaryPath choose_network --reset }
         }
         elseif ($SubArgs.Length -eq 2) {
-            docker exec $ContainerName provider choose_network $SubArgs[0] $SubArgs[1]
+            if ($useDocker) { docker exec $ContainerName provider choose_network $SubArgs[0] $SubArgs[1] } else { & $BinaryPath choose_network $SubArgs[0] $SubArgs[1] }
         }
         else {
             Write-Host "Usage: choose_network <api_url> <connect_url> | choose_network --reset"
@@ -804,9 +887,16 @@ switch ($Command) {
     }
 
     "report" {
+        $useDocker = Test-ProviderIsDocker
         $reportArg = if ($SubArgs) { $SubArgs[0] } else { "" }
+        $reportFile = if ($useDocker) { $null } else { "$env:USERPROFILE\.urnetwork\report_url" }
+
         if ($reportArg -eq "off") {
-            docker exec $ContainerName sh -c 'rm -f "$HOME/.urnetwork/report_url"'
+            if ($useDocker) {
+                docker exec $ContainerName sh -c 'rm -f "$HOME/.urnetwork/report_url"'
+            } else {
+                Remove-Item -Path $reportFile -ErrorAction SilentlyContinue
+            }
             Write-Host "Report URL removed (takes effect on next reporter tick)"
         }
         elseif ($reportArg -ne "") {
@@ -814,18 +904,28 @@ switch ($Command) {
                 Write-Error "Report URL must start with http:// or https://"
                 break
             }
-            $safeUrl = $reportArg -replace "'", "'\"'\"'"
-            docker exec $ContainerName sh -c "echo '$safeUrl' > \"`$HOME/.urnetwork/report_url\""
+            if ($useDocker) {
+                $safeUrl = $reportArg -replace "'", "'\"'\"'"
+                docker exec $ContainerName sh -c "echo '$safeUrl' > \"`$HOME/.urnetwork/report_url\""
+            } else {
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path $reportFile)
+                Set-Content -Path $reportFile -Value $reportArg -NoNewline
+            }
             Write-Host "Report URL set to $reportArg (takes effect on next reporter tick)"
         }
         else {
-            $current = docker exec $ContainerName sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "(not set)"'
+            if ($useDocker) {
+                $current = docker exec $ContainerName sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "(not set)"'
+            } else {
+                $current = if (Test-Path $reportFile) { (Get-Content $reportFile -Raw).Trim() } else { "(not set)" }
+            }
             Write-Host "Report URL: $current"
         }
         break
     }
 
     "logs" {
+        $useDocker = Test-ProviderIsDocker
         $n = "0"
         if ($SubArgs -contains "-n") {
             $nIndex = [array]::IndexOf($SubArgs, "-n")
@@ -833,7 +933,7 @@ switch ($Command) {
                 $n = $SubArgs[$nIndex + 1]
             }
         }
-        docker exec $ContainerName provider logs -n $n
+        if ($useDocker) { docker exec $ContainerName provider logs -n $n } else { & $BinaryPath logs -n $n }
         break
     }
 
@@ -844,30 +944,7 @@ switch ($Command) {
         # binary is the fallback. Both may coexist on the same machine —
         # container detection is scoped to $ContainerName so they don't
         # contaminate each other.
-        $useDocker = $false
-        if (Get-Command docker -ErrorAction SilentlyContinue) {
-            try {
-                $job = Start-Job -ScriptBlock { docker ps -a --format '{{.Names}}' 2>$null }
-                $null = Wait-Job $job -Timeout 5
-                $allContainers = Receive-Job $job -ErrorAction SilentlyContinue
-                Remove-Job $job -Force
-
-                $job2 = Start-Job -ScriptBlock { docker ps --format '{{.Names}}' 2>$null }
-                $null = Wait-Job $job2 -Timeout 5
-                $running = Receive-Job $job2 -ErrorAction SilentlyContinue
-                Remove-Job $job2 -Force
-
-                if (($allContainers -split "`n") -contains $ContainerName) {
-                    if (($running -split "`n") -contains $ContainerName) {
-                        $useDocker = $true
-                    } else {
-                        Write-Warning "Container '$ContainerName' exists but is stopped. Start it first: docker start $ContainerName"
-                    }
-                }
-            } catch {
-                $useDocker = $false
-            }
-        }
+        $useDocker = Test-ProviderIsDocker
 
         switch ($hubSubCmd) {
             "install" {

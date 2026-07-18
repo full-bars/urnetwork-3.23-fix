@@ -2,6 +2,9 @@
 
 This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
+> [!NOTE]
+> This guide is Linux/Docker-focused. Some tuning commands here (`turbo`, `optimize`, `ramlogs`) are Linux-only as of this writing — neither macOS's `urnet-tools` wrapper nor the native Windows `urnet-tools.ps1` implement them. `self-heal` does exist on all three platforms. `GOMEMLIMIT`/`URNETWORK_PROFILE`/`URNETWORK_SELF_HEAL` env vars are read by the provider binary itself regardless of OS, so setting them directly (see [intermediate.md](intermediate.md)) works everywhere the toggle commands don't. See intermediate.md for macOS/Windows install and daily-command coverage.
+
 ---
 
 ## 📋 Contents
@@ -50,7 +53,7 @@ Turbo raises per-connection throughput limits by scaling buffers:
 
 ### Multi-node setup
 
-Each server runs its own provider instance. Standard deployment:
+Each server runs its own provider instance. Standard deployment (Linux shown; see [intermediate.md](intermediate.md) for the macOS/Windows/Docker installers):
 
 ```sh
 # Per server — same steps:
