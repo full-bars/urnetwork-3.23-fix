@@ -286,7 +286,6 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	// Faster contract ramp: reach StandardContractTransferByteCount in 3 contracts instead of 4
 	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
-	// Let the heap breathe; no GOMEMLIMIT on RAM-rich boxes
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(200)
 	}
@@ -1910,6 +1909,58 @@ func classifyAuthFailureCause(err error) string {
 	}
 }
 
+const (
+	degradedReaperTicker      = 3 * time.Minute
+	degradedReaperMinDownTime = 30 * time.Minute
+	degradedReaperKeepPct     = 50
+)
+
+func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
+	ticker := time.NewTicker(degradedReaperTicker)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		degraded := connect.DegradedProxies()
+		if len(degraded) <= 1 {
+			continue
+		}
+
+		keep := len(degraded) * degradedReaperKeepPct / 100
+		if keep < 1 {
+			keep = 1
+		}
+
+		var reaped int64
+
+		for i := keep; i < len(degraded); i++ {
+			p := degraded[i]
+			if p.DownFor < degradedReaperMinDownTime {
+				continue
+			}
+
+			proxyCancelMu.Lock()
+			cancel, ok := proxyCancelMap[p.Address]
+			if ok {
+				cancel()
+				delete(proxyCancelMap, p.Address)
+				reaped++
+			}
+			proxyCancelMu.Unlock()
+		}
+
+		if reaped > 0 {
+			tlog("[reaper] cancelled %d degraded proxies (keeping %d of %d)\n",
+				reaped, keep, len(degraded))
+		}
+	}
+}
+
 func provide(opts docopt.Opts) {
 	connect.CritLogger = critLog
 
@@ -2122,6 +2173,12 @@ func provide(opts docopt.Opts) {
 		applyTurboSettings(clientSettings, localUserNatSettings)
 
 		profile := os.Getenv("URNETWORK_PROFILE")
+
+		if (profile == "turbo-v4" || profile == "turbo-v8") &&
+			os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
+			ramBytes := detectEffectiveRAMLimitBytes()
+			debug.SetMemoryLimit(ramBytes * 80 / 100)
+		}
 		if profile == "eco" || autoEco {
 			startEcoMonitorOnce(ctx)
 		}
@@ -2640,6 +2697,7 @@ func provide(opts docopt.Opts) {
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
 	go runPressureMonitor(ctx, selfHealEnabled)
 	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
+	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
 
 	if 0 < port {
 		fmt.Printf(
