@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	// "runtime/debug"
@@ -25,28 +24,10 @@ import (
 )
 
 var (
-	lastDropErrLogNano     atomic.Int64
-	suppressedDropErrCount atomic.Int64
-	lastPingLogNano        atomic.Int64
-	suppressedPingCount    atomic.Int64
-	lastPingErrLogNano     atomic.Int64
-	suppressedPingErrCount atomic.Int64
+	dropErrLogThrottle   = newLogThrottle(time.Minute)
+	pingLogThrottle      = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
 )
-
-func shouldLogDropErr() (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastDropErrLogNano.Load()
-	if now-last < int64(time.Minute) {
-		suppressedDropErrCount.Add(1)
-		return false, 0
-	}
-	if !lastDropErrLogNano.CompareAndSwap(last, now) {
-		suppressedDropErrCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedDropErrCount.Swap(0)
-	return true, suppressed
-}
 
 /*
 Sends frames to destinations with properties:
@@ -976,7 +957,7 @@ func (self *Client) run() {
 				select {
 				case err := <-ack:
 					if err == nil {
-						if ok, suppressed := suppressPingLog(&lastPingLogNano, &suppressedPingCount); ok {
+						if ok, suppressed := pingLogThrottle.Allow(time.Now()); ok {
 							if suppressed > 0 {
 								self.log.Infof("[c]ping (%d suppressed)\n", suppressed)
 							} else {
@@ -984,7 +965,7 @@ func (self *Client) run() {
 							}
 						}
 					} else {
-						if ok, suppressed := suppressPingLog(&lastPingErrLogNano, &suppressedPingErrCount); ok {
+						if ok, suppressed := pingErrLogThrottle.Allow(time.Now()); ok {
 							if suppressed > 0 {
 								self.log.Infof("[c]ping err = %s (%d suppressed)\n", err, suppressed)
 							} else {
@@ -3691,7 +3672,7 @@ func (self *ReceiveSequence) Run() {
 			} else {
 				err := c()
 				if err != nil {
-					if ok, suppressed := shouldLogDropErr(); ok {
+					if ok, suppressed := dropErrLogThrottle.Allow(time.Now()); ok {
 						if suppressed > 0 {
 							self.log.Infof("[r]drop = %s (%d suppressed)", err, suppressed)
 						} else {
@@ -5064,13 +5045,17 @@ func (self *SequencePeerAudit) Complete() {
 	}
 	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{frame},
-		func(resultFrames []*protocol.Frame, err error) {},
+		func(resultFrames []*protocol.Frame, err error) {
+			if err != nil {
+				self.log.Errorf("[c]audit send error = %s", err)
+			}
+		},
 	)
 	self.peerAudit = nil
 }
 
-// contract frames are not counted towards the message byte count
-// this is required since contracts can be attached post-hoc
+// MessageByteCount returns the total byte count across all frames,
+// including contract frames.
 func MessageByteCount(frames []*protocol.Frame) ByteCount {
 	// messageByteCount := ByteCount(0)
 	// for _, frame := range frames {
@@ -5096,20 +5081,4 @@ func MessageByteCount(frames []*protocol.Frame) ByteCount {
 // 	return messages
 // }
 
-// suppressPingLog rate-limits [c]ping log lines to at most one per 5 minutes,
-// with a suppressed count. Without this, thousands of concurrent connections
-// each pinging every 30s produces ~33 lines/second of [c]ping output.
-func suppressPingLog(lastLogNano *atomic.Int64, suppressedCount *atomic.Int64) (bool, int64) {
-	now := time.Now().UnixNano()
-	last := lastLogNano.Load()
-	if now-last < int64(5*time.Minute) {
-		suppressedCount.Add(1)
-		return false, 0
-	}
-	if !lastLogNano.CompareAndSwap(last, now) {
-		suppressedCount.Add(1)
-		return false, 0
-	}
-	suppressed := suppressedCount.Swap(0)
-	return true, suppressed
-}
+

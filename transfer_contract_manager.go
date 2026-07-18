@@ -1100,13 +1100,17 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 }
 
 func (self *ContractManager) contractByteCount(contractSeqIndex uint64, minByteCount ByteCount) ByteCount {
+	scale := self.settings.ContractTransferByteSeqScale
+	if scale == 0 {
+		return max(self.settings.StandardContractTransferByteCount, minByteCount)
+	}
 	targetByteCount := func() ByteCount {
-		if self.settings.ContractTransferByteSeqScale <= contractSeqIndex {
+		if scale <= contractSeqIndex {
 			return self.settings.StandardContractTransferByteCount
 		} else {
 			// lerp between initial and standard
 			return self.settings.InitialContractTransferByteCount + ByteCount(
-				(contractSeqIndex*uint64(self.settings.StandardContractTransferByteCount-self.settings.InitialContractTransferByteCount))/self.settings.ContractTransferByteSeqScale,
+				(contractSeqIndex*uint64(self.settings.StandardContractTransferByteCount-self.settings.InitialContractTransferByteCount))/scale,
 			)
 		}
 	}()
