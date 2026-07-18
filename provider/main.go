@@ -1915,6 +1915,19 @@ const (
 	degradedReaperKeepPct     = 50
 )
 
+// degradedReaperKeepCount returns how many proxies to keep (ceil rounding).
+// With keepPct=50: 0→1, 1→1, 2→1, 3→2, 4→2, 5→3, 10→5.
+func degradedReaperKeepCount(total int) int {
+	if total <= 0 {
+		return 1
+	}
+	keep := (total*degradedReaperKeepPct + 99) / 100
+	if keep < 1 {
+		return 1
+	}
+	return keep
+}
+
 func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
 	ticker := time.NewTicker(degradedReaperTicker)
 	defer ticker.Stop()
@@ -1949,14 +1962,11 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 			return scored[i].score < scored[j].score
 		})
 
-		keep := (len(scored)*degradedReaperKeepPct + 99) / 100
-		if keep < 1 {
-			keep = 1
-		}
+		keep := degradedReaperKeepCount(len(scored))
 
 		var reaped int64
 
-		for i := keep; i < len(scored); i++ {
+		for i := 0; i < len(scored)-keep; i++ {
 			p := scored[i].entry
 			if p.DownFor < degradedReaperMinDownTime {
 				continue
