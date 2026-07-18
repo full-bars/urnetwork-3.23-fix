@@ -18,7 +18,7 @@ show_help ()
     echo "Core Commands:"
     echo "  start                   Start the provider"
     echo "  stop                    Stop the provider"
-    echo "  restart                 Restart the provider"
+    echo "  restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)"
     echo "  update                  Upgrade to the latest version"
     echo "  status                  Show provider service status"
     echo "  logs [all|dump|-i]      Stream logs (all=from start, dump=save to ~/urlogs.txt, -i=important only)"
@@ -1097,7 +1097,8 @@ do_install ()
         pr_err "Could not resolve 'latest' tag to a specific version. GitHub API might be unreachable."
         exit 1
     fi
-    dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    dl_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     
     pr_info "Downloading: %s" "$dl_url"
     
@@ -1117,10 +1118,9 @@ do_install ()
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
         if ! download_asset "$dl_url" "$tarball"; then
-            mirror_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-            pr_warn "GitHub download failed, trying mirror..."
+            pr_warn "Primary download failed, trying GitHub mirror..."
             if ! download_asset "$mirror_url" "$tarball"; then
-                pr_err "Failed to download from both GitHub and mirror"
+                pr_err "Failed to download from both primary and mirror"
                 exit 1
             fi
         fi
@@ -2577,7 +2577,8 @@ do_hub () {
                 fi
             fi
 
-            hub_dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+            hub_dl_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+            hub_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
             pr_info "Downloading hub binary from: %s" "$hub_dl_url"
 
             mkdir -p "$install_path/bin"
@@ -2585,10 +2586,9 @@ do_hub () {
             trap 'rm -f "$tmp_hub"' EXIT
 
             if ! download_asset "$hub_dl_url" "$tmp_hub"; then
-                hub_mirror_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
-                pr_warn "GitHub download failed, trying mirror..."
+                pr_warn "Primary download failed, trying GitHub mirror..."
                 if ! download_asset "$hub_mirror_url" "$tmp_hub"; then
-                    pr_err "Failed to download hub binary from both GitHub and mirror"
+                    pr_err "Failed to download hub binary from both primary and mirror"
                     pr_err "Make sure this release includes a hub binary asset."
                     exit 1
                 fi
@@ -2934,15 +2934,20 @@ do_hub_update () {
 
     # Step 3: Download new binary to a temp file on the same filesystem
     # so that the final mv is an atomic rename, not a cross-filesystem copy.
-    hub_dl_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+    hub_dl_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
+    hub_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
     pr_info "Downloading hub binary from: %s" "$hub_dl_url"
 
     mkdir -p "$install_path/bin"
     _tmp_hub="${hub_bin}.new"
 
     if ! download_asset "$hub_dl_url" "$_tmp_hub"; then
+        pr_warn "Primary download failed, trying GitHub mirror..."
         rm -f "$_tmp_hub"
-        _restore_and_abort "download" "Failed to download hub binary from: $hub_dl_url"
+        if ! download_asset "$hub_mirror_url" "$_tmp_hub"; then
+            rm -f "$_tmp_hub"
+            _restore_and_abort "download" "Failed to download hub binary from both primary and mirror"
+        fi
     fi
     pr_info "Download complete."
 
@@ -4033,11 +4038,28 @@ case "$operation" in
 		;;
 
     restart)
-		do_restart
-		exit 0
-		;;
+        # Parse -y/-f/--yes/--force flags after the subcommand
+        _restart_force=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -y|--yes|-f|--force)
+                    _restart_force=1
+                    shift
+                    ;;
+                *)
+                    pr_err "Unknown option: %s" "$1"
+                    exit 1
+                    ;;
+            esac
+        done
+        if [ "$_restart_force" = "1" ]; then
+            FORCE=1
+        fi
+        do_restart
+        exit 0
+        ;;
 
-	status)
+    status)
 		show_status
 		exit 0
 		;;
