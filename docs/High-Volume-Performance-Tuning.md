@@ -83,7 +83,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | Message pool floor | — | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB |
 | Message pool cap | — | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB |
 | GOGC | 100 | 100 | 100 | 50 (dynamic) | 200 | 200 | 200 |
-| GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | unset | unset |
+| GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | 80% RAM | 80% RAM |
 | RAM logging | off | off | on | off | off | off | off |
 
 ---
@@ -130,7 +130,7 @@ The default 1 MiB TCP Accordion window creates a theoretical per-connection thro
 - Transfer goroutine buffer depth: 16 → 64
 - WebRTC DataChannel buffer: 4 MiB → 8/16 MiB per peer
 - Contract ramp (`ContractTransferByteSeqScale`): 4 → 3 (full speed in 3 contracts instead of 4)
-- GOGC raised to 200, GOMEMLIMIT unset (heap breathes freely on RAM-rich boxes)
+- GOGC raised to 200, GOMEMLIMIT set to 80% of available RAM as a safety ceiling for RAM-rich boxes (prevents unbounded heap growth during outages without impacting normal throughput)
 
 **Enabling:**
 ```bash
