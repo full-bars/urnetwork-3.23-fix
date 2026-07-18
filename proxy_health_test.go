@@ -1,6 +1,9 @@
 package connect
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // resetProxyHealthForTest clears global registry state between tests.
 func resetProxyHealthForTest() {
@@ -169,5 +172,213 @@ func TestProxyHealthHeartbeatFlappingCountsTwice(t *testing.T) {
 
 	if r.LifetimeRecovered != 2 {
 		t.Fatalf("LifetimeRecovered = %d, want 2 (event semantics)", r.LifetimeRecovered)
+	}
+}
+
+func TestDegradedProxies_EmptyWhenAllUp(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1")
+	markProxyUp(0)
+
+	dps := DegradedProxies()
+	if len(dps) != 0 {
+		t.Fatalf("DegradedProxies = %d, want 0 (all up)", len(dps))
+	}
+}
+
+func TestDegradedProxies_IncludesDegradedOnly(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1") // up
+	RegisterProxy(1, "b:1") // degraded
+	RegisterProxy(2, "c:1") // connecting (never up, never down)
+
+	markProxyUp(0)
+	markProxyUp(1)
+	markProxyDown(1)
+
+	dps := DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1", len(dps))
+	}
+	if dps[0].Address != "b:1" {
+		t.Fatalf("degraded address = %q, want %q", dps[0].Address, "b:1")
+	}
+	if dps[0].DownFor <= 0 {
+		t.Fatal("DownFor should be positive")
+	}
+}
+
+func TestDegradedProxies_ExcludesConnectingAndDead(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1") // connecting (never up)
+	RegisterProxy(1, "b:1") // dead (never up, connecting=false)
+
+	// Set proxy 1 to dead: it was registered with connecting=true,
+	// set connecting=false without ever marking up
+	proxyHealthMu.Lock()
+	if h, ok := proxyHealthByIndex[1]; ok {
+		h.connecting = false
+	}
+	proxyHealthMu.Unlock()
+
+	dps := DegradedProxies()
+	if len(dps) != 0 {
+		t.Fatalf("DegradedProxies = %d, want 0 (no everUp proxies)", len(dps))
+	}
+}
+
+func TestDegradedProxies_BandwidthPopulated(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1")
+	markProxyUp(0)
+
+	bw := RegisterProxyBandwidth(0)
+	bw.TotalRx.Store(1000)
+	bw.TotalTx.Store(2000)
+
+	markProxyDown(0)
+
+	dps := DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1", len(dps))
+	}
+	if dps[0].TotalRxBytes != 1000 {
+		t.Fatalf("TotalRxBytes = %d, want 1000", dps[0].TotalRxBytes)
+	}
+	if dps[0].TotalTxBytes != 2000 {
+		t.Fatalf("TotalTxBytes = %d, want 2000", dps[0].TotalTxBytes)
+	}
+}
+
+func TestDegradedProxies_NilBandwidth(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1")
+	markProxyUp(0)
+	markProxyDown(0)
+
+	// Don't call RegisterProxyBandwidth — bw stays nil
+	dps := DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1", len(dps))
+	}
+	if dps[0].TotalRxBytes != 0 || dps[0].TotalTxBytes != 0 {
+		t.Fatalf("expected zero bandwidth when bw is nil, got rx=%d tx=%d",
+			dps[0].TotalRxBytes, dps[0].TotalTxBytes)
+	}
+}
+
+func TestDegradedProxies_DownSinceStamped(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1")
+	markProxyUp(0)
+	markProxyDown(0)
+
+	dps := DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1", len(dps))
+	}
+	if dps[0].DownFor <= 0 {
+		t.Fatal("DownFor should be positive after markProxyDown")
+	}
+}
+
+func TestDegradedProxies_NotSorted(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(0, "a:1") // will be degraded last
+	RegisterProxy(1, "b:1") // will be degraded first
+
+	markProxyUp(0)
+	markProxyUp(1)
+	markProxyDown(1)
+
+	time.Sleep(time.Millisecond)
+
+	markProxyDown(0)
+
+	dps := DegradedProxies()
+	if len(dps) != 2 {
+		t.Fatalf("DegradedProxies = %d, want 2", len(dps))
+	}
+	// Should NOT be sorted — order is from map iteration
+	// Just verify both addresses are present
+	addrs := map[string]bool{}
+	for _, d := range dps {
+		addrs[d.Address] = true
+	}
+	if !addrs["a:1"] || !addrs["b:1"] {
+		t.Fatal("both degraded addresses should be present")
+	}
+}
+
+func TestIsDegraded_TrueWhenDegraded(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(10, "degraded:1")
+	markProxyUp(10)
+	markProxyDown(10)
+
+	if !IsDegraded("degraded:1") {
+		t.Fatal("expected degraded:1 to be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenCurrentlyUp(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(11, "up:1")
+	markProxyUp(11)
+
+	if IsDegraded("up:1") {
+		t.Fatal("expected up:1 (currentlyUp) to not be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenUnregistered(t *testing.T) {
+	resetProxyHealthForTest()
+
+	if IsDegraded("nonexistent:1") {
+		t.Fatal("expected an unregistered address to not be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenRecoveredAfterDown(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(12, "recovered:1")
+	markProxyUp(12)
+	markProxyDown(12)
+
+	if !IsDegraded("recovered:1") {
+		t.Fatal("expected recovered:1 to be degraded before recovery")
+	}
+
+	markProxyUp(12)
+	if IsDegraded("recovered:1") {
+		t.Fatal("expected recovered:1 to no longer be degraded after reconnecting")
+	}
+}
+
+func TestIsDegraded_FalseWhileRespawnConnecting(t *testing.T) {
+	// This is the scenario CodeRabbit flagged: RegisterProxy reuses the
+	// existing *proxyHealth struct for an index rather than resetting it, so
+	// a freshly respawned instance inherits its predecessor's stale everUp/
+	// downSince fields. Without the `connecting` check, IsDegraded would
+	// report a brand-new instance as "degraded" before it had ever attempted
+	// to connect — exactly the gap that let the reaper cancel a replacement
+	// instance instead of the stuck one a decision was actually made about.
+	resetProxyHealthForTest()
+	RegisterProxy(13, "respawn:1")
+	markProxyUp(13)
+	markProxyDown(13)
+
+	if !IsDegraded("respawn:1") {
+		t.Fatal("expected respawn:1 to be degraded before respawn")
+	}
+
+	// Simulate hot-reload tearing down and respawning a fresh instance at
+	// the same index/address: RegisterProxy sets connecting=true and reuses
+	// the struct, leaving everUp/downSince stale until the new instance
+	// reports its own first transition.
+	RegisterProxy(13, "respawn:1")
+
+	if IsDegraded("respawn:1") {
+		t.Fatal("expected respawn:1 to not be degraded while the respawned instance is still connecting")
 	}
 }
