@@ -516,9 +516,11 @@ func degradedTierFromDuration(d time.Duration) string {
 }
 
 type DegradedProxyEntry struct {
-	Index   int
-	Address string
-	DownFor time.Duration
+	Index        int
+	Address      string
+	DownFor      time.Duration
+	TotalRxBytes uint64
+	TotalTxBytes uint64
 }
 
 func DegradedProxies() []DegradedProxyEntry {
@@ -529,17 +531,18 @@ func DegradedProxies() []DegradedProxyEntry {
 	var result []DegradedProxyEntry
 	for idx, h := range proxyHealthByIndex {
 		if h.everUp && !h.currentlyUp && !h.downSince.IsZero() {
-			result = append(result, DegradedProxyEntry{
+			entry := DegradedProxyEntry{
 				Index:   idx,
 				Address: h.address,
 				DownFor: now.Sub(h.downSince),
-			})
+			}
+			if h.bw != nil {
+				entry.TotalRxBytes = h.bw.TotalRx.Load()
+				entry.TotalTxBytes = h.bw.TotalTx.Load()
+			}
+			result = append(result, entry)
 		}
 	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].DownFor > result[j].DownFor
-	})
 
 	return result
 }

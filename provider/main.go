@@ -1931,15 +1931,33 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 			continue
 		}
 
-		keep := len(degraded) * degradedReaperKeepPct / 100
+		type scoredEntry struct {
+			entry  connect.DegradedProxyEntry
+			score  uint64
+		}
+		scored := make([]scoredEntry, len(degraded))
+		for i, d := range degraded {
+			score := d.TotalRxBytes + d.TotalTxBytes
+			if m := globalContractMetrics.get(d.Index); m != nil {
+				acquired, _ := m.snapshot()
+				score += uint64(acquired) * 1024
+			}
+			scored[i] = scoredEntry{entry: d, score: score}
+		}
+
+		sort.SliceStable(scored, func(i, j int) bool {
+			return scored[i].score < scored[j].score
+		})
+
+		keep := (len(scored)*degradedReaperKeepPct + 99) / 100
 		if keep < 1 {
 			keep = 1
 		}
 
 		var reaped int64
 
-		for i := keep; i < len(degraded); i++ {
-			p := degraded[i]
+		for i := keep; i < len(scored); i++ {
+			p := scored[i].entry
 			if p.DownFor < degradedReaperMinDownTime {
 				continue
 			}
@@ -1955,8 +1973,8 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 		}
 
 		if reaped > 0 {
-			tlog("[reaper] cancelled %d degraded proxies (keeping %d of %d)\n",
-				reaped, keep, len(degraded))
+			tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",
+				reaped, keep, len(scored))
 		}
 	}
 }
