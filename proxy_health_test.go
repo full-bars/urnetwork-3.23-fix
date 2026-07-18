@@ -309,3 +309,76 @@ func TestDegradedProxies_NotSorted(t *testing.T) {
 		t.Fatal("both degraded addresses should be present")
 	}
 }
+
+func TestIsDegraded_TrueWhenDegraded(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(10, "degraded:1")
+	markProxyUp(10)
+	markProxyDown(10)
+
+	if !IsDegraded("degraded:1") {
+		t.Fatal("expected degraded:1 to be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenCurrentlyUp(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(11, "up:1")
+	markProxyUp(11)
+
+	if IsDegraded("up:1") {
+		t.Fatal("expected up:1 (currentlyUp) to not be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenUnregistered(t *testing.T) {
+	resetProxyHealthForTest()
+
+	if IsDegraded("nonexistent:1") {
+		t.Fatal("expected an unregistered address to not be reported as degraded")
+	}
+}
+
+func TestIsDegraded_FalseWhenRecoveredAfterDown(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(12, "recovered:1")
+	markProxyUp(12)
+	markProxyDown(12)
+
+	if !IsDegraded("recovered:1") {
+		t.Fatal("expected recovered:1 to be degraded before recovery")
+	}
+
+	markProxyUp(12)
+	if IsDegraded("recovered:1") {
+		t.Fatal("expected recovered:1 to no longer be degraded after reconnecting")
+	}
+}
+
+func TestIsDegraded_FalseWhileRespawnConnecting(t *testing.T) {
+	// This is the scenario CodeRabbit flagged: RegisterProxy reuses the
+	// existing *proxyHealth struct for an index rather than resetting it, so
+	// a freshly respawned instance inherits its predecessor's stale everUp/
+	// downSince fields. Without the `connecting` check, IsDegraded would
+	// report a brand-new instance as "degraded" before it had ever attempted
+	// to connect — exactly the gap that let the reaper cancel a replacement
+	// instance instead of the stuck one a decision was actually made about.
+	resetProxyHealthForTest()
+	RegisterProxy(13, "respawn:1")
+	markProxyUp(13)
+	markProxyDown(13)
+
+	if !IsDegraded("respawn:1") {
+		t.Fatal("expected respawn:1 to be degraded before respawn")
+	}
+
+	// Simulate hot-reload tearing down and respawning a fresh instance at
+	// the same index/address: RegisterProxy sets connecting=true and reuses
+	// the struct, leaving everUp/downSince stale until the new instance
+	// reports its own first transition.
+	RegisterProxy(13, "respawn:1")
+
+	if IsDegraded("respawn:1") {
+		t.Fatal("expected respawn:1 to not be degraded while the respawned instance is still connecting")
+	}
+}

@@ -1993,6 +1993,66 @@ func selectProxiesToReap(scored []scoredDegradedProxy, keep int, minDownTime tim
 	return toReap
 }
 
+// onlyCancellableProxies filters degraded proxies down to those the reaper
+// can actually act on — i.e. present in proxyCancelMap. Native/"direct" mode
+// is registered in the same health tracking as any proxy (so it can appear
+// in connect.DegradedProxies()) but is deliberately never added to
+// proxyCancelMap (it must be immune to hot-reload deletions) and must never
+// be reaped. Filtering here, before scoring, keeps it from ever consuming a
+// retention or reap slot — it previously could silently no-op after being
+// selected, which both wastes a reap slot and skews the keep/reap split.
+func onlyCancellableProxies(degraded []connect.DegradedProxyEntry, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) []connect.DegradedProxyEntry {
+	proxyCancelMu.Lock()
+	defer proxyCancelMu.Unlock()
+	var out []connect.DegradedProxyEntry
+	for _, d := range degraded {
+		if _, ok := proxyCancelMap[d.Address]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// stillDegradedFunc reports whether a proxy address is degraded right now.
+// Lets tests inject a fake without touching the real connect-package health
+// registry.
+type stillDegradedFunc func(address string) bool
+
+// liveIsDegraded adapts connect.IsDegraded to stillDegradedFunc — what
+// reapProxies uses in production.
+func liveIsDegraded(address string) bool {
+	return connect.IsDegraded(address)
+}
+
+// reapProxies cancels each candidate in toReap, but only after re-verifying
+// — right before pulling the trigger — that it is still actually degraded.
+// Scoring and sorting thousands of proxies takes real wall-clock time; in
+// that window a candidate may have reconnected on its own, or hot-reload may
+// have torn it down and respawned a fresh instance at the same address.
+// Either way the toReap decision was made about an instance that no longer
+// exists in that state, so cancelling now would kill something other than
+// what was actually decided about. isStillDegraded is checked under the same
+// lock as the cancel/delete so nothing can change between the check and the
+// act.
+func reapProxies(toReap []connect.DegradedProxyEntry, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex, isStillDegraded stillDegradedFunc) int64 {
+	var reaped int64
+	for _, p := range toReap {
+		proxyCancelMu.Lock()
+		if !isStillDegraded(p.Address) {
+			proxyCancelMu.Unlock()
+			continue
+		}
+		cancel, ok := proxyCancelMap[p.Address]
+		if ok {
+			cancel()
+			delete(proxyCancelMap, p.Address)
+			reaped++
+		}
+		proxyCancelMu.Unlock()
+	}
+	return reaped
+}
+
 func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
 	ticker := time.NewTicker(degradedReaperTicker)
 	defer ticker.Stop()
@@ -2009,21 +2069,16 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 			continue
 		}
 
-		scored := scoreDegradedProxies(degraded, liveContractsAcquired)
+		cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
+		if len(cancellable) <= 1 {
+			continue
+		}
+
+		scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
 		keep := degradedReaperKeepCount(len(scored))
 		toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
 
-		var reaped int64
-		for _, p := range toReap {
-			proxyCancelMu.Lock()
-			cancel, ok := proxyCancelMap[p.Address]
-			if ok {
-				cancel()
-				delete(proxyCancelMap, p.Address)
-				reaped++
-			}
-			proxyCancelMu.Unlock()
-		}
+		reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
 
 		if reaped > 0 {
 			tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",

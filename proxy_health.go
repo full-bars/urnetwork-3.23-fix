@@ -523,6 +523,26 @@ type DegradedProxyEntry struct {
 	TotalTxBytes uint64
 }
 
+// IsDegraded reports whether the proxy at address is degraded right now.
+// Mirrors DegradedProxies()'s predicate, plus excludes an instance that is
+// mid-connect: RegisterProxy sets connecting=true on every (re)registration
+// and reuses the existing *proxyHealth struct for that index rather than
+// resetting it, so a freshly respawned instance inherits its predecessor's
+// stale everUp/downSince fields until it reports its own first up/down
+// transition. Without the connecting check, a brand-new instance would read
+// as "degraded" before it had ever attempted to connect. Callers use this to
+// re-verify a proxy is still the same stuck instance a decision was made
+// about moments earlier, not a since-recovered or since-replaced one.
+func IsDegraded(address string) bool {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	h, ok := proxyHealthByAddr[address]
+	if !ok {
+		return false
+	}
+	return h.everUp && !h.currentlyUp && !h.downSince.IsZero() && !h.connecting
+}
+
 func DegradedProxies() []DegradedProxyEntry {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()

@@ -239,15 +239,7 @@ func TestDegradedReaper_MissingCancelEntry(t *testing.T) {
 	}
 	var cancelMu sync.Mutex
 
-	var reaped int
-	for _, p := range toReap {
-		cancelMu.Lock()
-		if cancel, ok := cancelMap[p.Address]; ok {
-			cancel()
-			reaped++
-		}
-		cancelMu.Unlock()
-	}
+	reaped := reapProxies(toReap, cancelMap, &cancelMu, alwaysDegraded)
 
 	if reaped != 1 {
 		t.Fatalf("expected 1 reaped (missing entry silently skipped), got %d", reaped)
@@ -293,12 +285,9 @@ func TestDegradedReaper_LargeScale(t *testing.T) {
 	}
 
 	var cancelMu sync.Mutex
-	for _, p := range toReap {
-		cancelMu.Lock()
-		if cancel, ok := cancelMap[p.Address]; ok {
-			cancel()
-		}
-		cancelMu.Unlock()
+	reapedCount := reapProxies(toReap, cancelMap, &cancelMu, alwaysDegraded)
+	if reapedCount != 2000 {
+		t.Fatalf("expected reapProxies to report 2000 reaped, got %d", reapedCount)
 	}
 
 	callMu.Lock()
@@ -346,5 +335,138 @@ func TestDegradedReaper_LiveContractsAcquiredMissingIndexReturnsZero(t *testing.
 	got := liveContractsAcquired(999999)
 	if got != 0 {
 		t.Fatalf("liveContractsAcquired for unregistered index = %d, want 0", got)
+	}
+}
+
+// alwaysDegraded is a stillDegradedFunc stub for tests that exercise
+// reapProxies but aren't specifically testing the recheck behavior.
+func alwaysDegraded(string) bool { return true }
+
+func TestOnlyCancellableProxies_ExcludesDirect(t *testing.T) {
+	// "direct" (native mode) is registered in the same health tracking as any
+	// proxy and can appear in connect.DegradedProxies(), but is deliberately
+	// never added to proxyCancelMap (must be immune to hot-reload deletions)
+	// and must never be reaped.
+	degraded := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "direct", TotalRxBytes: 999999999}, // best contributor by traffic
+		{Index: 1, Address: "proxy1:1", TotalRxBytes: 10},
+		{Index: 2, Address: "proxy2:1", TotalRxBytes: 20},
+	}
+	cancelMap := map[string]context.CancelFunc{
+		"proxy1:1": func() {},
+		"proxy2:1": func() {},
+		// deliberately no entry for "direct"
+	}
+	var cancelMu sync.Mutex
+
+	cancellable := onlyCancellableProxies(degraded, cancelMap, &cancelMu)
+
+	if len(cancellable) != 2 {
+		t.Fatalf("expected 2 cancellable proxies, got %d", len(cancellable))
+	}
+	for _, p := range cancellable {
+		if p.Address == "direct" {
+			t.Fatal("direct must never be included in the cancellable set")
+		}
+	}
+}
+
+func TestOnlyCancellableProxies_EmptyWhenNoneCancellable(t *testing.T) {
+	degraded := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "direct", TotalRxBytes: 10},
+	}
+	cancelMap := map[string]context.CancelFunc{}
+	var cancelMu sync.Mutex
+
+	cancellable := onlyCancellableProxies(degraded, cancelMap, &cancelMu)
+
+	if len(cancellable) != 0 {
+		t.Fatalf("expected 0 cancellable proxies, got %d", len(cancellable))
+	}
+}
+
+func TestDirectNeverReachesReapDecision_EndToEnd(t *testing.T) {
+	// Full pipeline check: even though "direct" is the worst-ish contributor
+	// by score in a naive read, it must never appear in toReap because
+	// onlyCancellableProxies removes it before scoring ever happens.
+	degraded := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "direct", TotalRxBytes: 0, DownFor: time.Hour}, // worst score, oldest down
+		{Index: 1, Address: "proxy1:1", TotalRxBytes: 10, DownFor: time.Hour},
+		{Index: 2, Address: "proxy2:1", TotalRxBytes: 20, DownFor: time.Hour},
+	}
+	cancelMap := map[string]context.CancelFunc{
+		"proxy1:1": func() {},
+		"proxy2:1": func() {},
+	}
+	var cancelMu sync.Mutex
+
+	cancellable := onlyCancellableProxies(degraded, cancelMap, &cancelMu)
+	scored := scoreDegradedProxies(cancellable, nil)
+	keep := degradedReaperKeepCount(len(scored))
+	toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
+
+	for _, p := range toReap {
+		if p.Address == "direct" {
+			t.Fatal("direct must never be selected for reaping")
+		}
+	}
+}
+
+func TestReapProxies_SkipsProxyThatRecoveredSinceDecision(t *testing.T) {
+	toReap := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "recovered:1"},
+		{Index: 1, Address: "still_down:1"},
+	}
+	var cancelled []string
+	cancelMap := map[string]context.CancelFunc{
+		"recovered:1":  func() { cancelled = append(cancelled, "recovered:1") },
+		"still_down:1": func() { cancelled = append(cancelled, "still_down:1") },
+	}
+	var cancelMu sync.Mutex
+
+	// Simulate "recovered:1" having reconnected in the gap between the
+	// scoring pass and this cancel pass — exactly the race CodeRabbit
+	// flagged. isStillDegraded must be re-checked right before cancelling,
+	// not assumed from the (by-then-stale) toReap decision.
+	isStillDegraded := func(addr string) bool {
+		return addr != "recovered:1"
+	}
+
+	reaped := reapProxies(toReap, cancelMap, &cancelMu, isStillDegraded)
+
+	if reaped != 1 {
+		t.Fatalf("expected 1 reaped (recovered proxy skipped), got %d", reaped)
+	}
+	if len(cancelled) != 1 || cancelled[0] != "still_down:1" {
+		t.Fatalf("expected only still_down:1 to be cancelled, got %v", cancelled)
+	}
+	if _, ok := cancelMap["recovered:1"]; !ok {
+		t.Fatal("recovered:1's cancel map entry must not be deleted — it was never actually cancelled")
+	}
+	if _, ok := cancelMap["still_down:1"]; ok {
+		t.Fatal("still_down:1's cancel map entry should have been deleted after cancelling")
+	}
+}
+
+func TestReapProxies_CancelsAndDeletesWhenStillDegraded(t *testing.T) {
+	toReap := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "stuck:1"},
+	}
+	called := false
+	cancelMap := map[string]context.CancelFunc{
+		"stuck:1": func() { called = true },
+	}
+	var cancelMu sync.Mutex
+
+	reaped := reapProxies(toReap, cancelMap, &cancelMu, alwaysDegraded)
+
+	if reaped != 1 {
+		t.Fatalf("expected 1 reaped, got %d", reaped)
+	}
+	if !called {
+		t.Fatal("expected cancel to be called")
+	}
+	if _, ok := cancelMap["stuck:1"]; ok {
+		t.Fatal("expected cancel map entry to be deleted after reaping")
 	}
 }
