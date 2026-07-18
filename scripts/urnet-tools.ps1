@@ -94,7 +94,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal", "choose_network")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal", "choose_network", "report")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -905,8 +905,8 @@ switch ($Command) {
                 break
             }
             if ($useDocker) {
-                $safeUrl = $reportArg -replace "'", "'\"'\"'"
-                docker exec $ContainerName sh -c "echo '$safeUrl' > \"`$HOME/.urnetwork/report_url\""
+                $safeUrl = $reportArg -replace "'", "'`"'`"'"
+                docker exec $ContainerName sh -c "echo '$safeUrl' > `"`$HOME/.urnetwork/report_url`""
             } else {
                 $null = New-Item -ItemType Directory -Force -Path (Split-Path $reportFile)
                 Set-Content -Path $reportFile -Value $reportArg -NoNewline
