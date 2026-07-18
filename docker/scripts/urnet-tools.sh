@@ -492,8 +492,18 @@ case "$operation" in
             exit 1
         fi
 
-        cp "$tmpdir/provider" "$provider_bin"
-        chmod +x "$provider_bin"
+        staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
+            rm -rf "$tmpdir" "$tarball"
+            exit 1
+        }
+        if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
+            rm -rf "$tmpdir" "$tarball" "$staged_provider"
+            exit 1
+        fi
+        if ! mv -f "$staged_provider" "$provider_bin"; then
+            rm -rf "$tmpdir" "$tarball" "$staged_provider"
+            exit 1
+        fi
 
         rm -rf "$tmpdir" "$tarball"
         echo "Provider binary updated to $version."
