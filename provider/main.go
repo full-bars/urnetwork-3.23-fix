@@ -1928,6 +1928,71 @@ func degradedReaperKeepCount(total int) int {
 	return keep
 }
 
+// scoredDegradedProxy pairs a degraded proxy with its lifetime-contribution
+// score (traffic bytes plus a per-contract bonus). Exported field names kept
+// lowercase-package-local since tests live in the same package.
+type scoredDegradedProxy struct {
+	entry connect.DegradedProxyEntry
+	score uint64
+}
+
+// contractsAcquiredFunc returns the lifetime contracts-acquired count for a
+// proxy index, or 0 if unknown. Lets tests inject a fake without touching the
+// real globalContractMetrics registry.
+type contractsAcquiredFunc func(index int) int64
+
+// liveContractsAcquired adapts the real globalContractMetrics registry to
+// contractsAcquiredFunc. This is what runDegradedProxyReaper uses in
+// production; tests pass their own stub instead.
+func liveContractsAcquired(index int) int64 {
+	m := globalContractMetrics.get(index)
+	if m == nil {
+		return 0
+	}
+	acquired, _ := m.snapshot()
+	return acquired
+}
+
+// scoreDegradedProxies ranks degraded proxies by lifetime contribution
+// (traffic + contracts acquired), ascending — the worst contributors sort
+// first. This is the single source of truth for the ranking: both the live
+// reaper and its tests call this function, so a regression here (e.g. a
+// reversed comparator) is caught by any test that exercises it, instead of
+// silently passing against a second, hand-maintained copy.
+func scoreDegradedProxies(entries []connect.DegradedProxyEntry, getContracts contractsAcquiredFunc) []scoredDegradedProxy {
+	scored := make([]scoredDegradedProxy, len(entries))
+	for i, d := range entries {
+		score := d.TotalRxBytes + d.TotalTxBytes
+		if getContracts != nil {
+			if acquired := getContracts(d.Index); acquired > 0 {
+				score += uint64(acquired) * 1024
+			}
+		}
+		scored[i] = scoredDegradedProxy{entry: d, score: score}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score < scored[j].score
+	})
+	return scored
+}
+
+// selectProxiesToReap picks which degraded proxies to cancel: everyone
+// outside the top `keep` contributors (by score, so the worst-contributing
+// proxies are chosen first), further filtered to those that have been
+// degraded at least minDownTime. scored must already be sorted ascending by
+// score (as scoreDegradedProxies returns it).
+func selectProxiesToReap(scored []scoredDegradedProxy, keep int, minDownTime time.Duration) []connect.DegradedProxyEntry {
+	var toReap []connect.DegradedProxyEntry
+	for i := 0; i < len(scored)-keep; i++ {
+		p := scored[i].entry
+		if p.DownFor < minDownTime {
+			continue
+		}
+		toReap = append(toReap, p)
+	}
+	return toReap
+}
+
 func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
 	ticker := time.NewTicker(degradedReaperTicker)
 	defer ticker.Stop()
@@ -1944,34 +2009,12 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 			continue
 		}
 
-		type scoredEntry struct {
-			entry  connect.DegradedProxyEntry
-			score  uint64
-		}
-		scored := make([]scoredEntry, len(degraded))
-		for i, d := range degraded {
-			score := d.TotalRxBytes + d.TotalTxBytes
-			if m := globalContractMetrics.get(d.Index); m != nil {
-				acquired, _ := m.snapshot()
-				score += uint64(acquired) * 1024
-			}
-			scored[i] = scoredEntry{entry: d, score: score}
-		}
-
-		sort.SliceStable(scored, func(i, j int) bool {
-			return scored[i].score < scored[j].score
-		})
-
+		scored := scoreDegradedProxies(degraded, liveContractsAcquired)
 		keep := degradedReaperKeepCount(len(scored))
+		toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
 
 		var reaped int64
-
-		for i := 0; i < len(scored)-keep; i++ {
-			p := scored[i].entry
-			if p.DownFor < degradedReaperMinDownTime {
-				continue
-			}
-
+		for _, p := range toReap {
 			proxyCancelMu.Lock()
 			cancel, ok := proxyCancelMap[p.Address]
 			if ok {
