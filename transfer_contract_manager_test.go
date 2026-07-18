@@ -228,3 +228,85 @@ func TestCheckpointContractDoesNotCloseOpenContract(t *testing.T) {
 	assert.Equal(t, true, stillOpen)
 	assert.Equal(t, initialCloseCount, finalCloseCount)
 }
+
+// TestContractByteCount_ZeroScaleDoesNotPanic is a regression test for a
+// division-by-zero guard: contractByteCount divides by
+// ContractTransferByteSeqScale when computing the lerp between the initial
+// and standard contract sizes. If that setting is ever misconfigured to 0
+// (e.g. a bad profile override), the guard must return a safe fallback
+// instead of panicking.
+func TestContractByteCount_ZeroScaleDoesNotPanic(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	cm.settings.ContractTransferByteSeqScale = 0
+
+	var result ByteCount
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("contractByteCount panicked with ContractTransferByteSeqScale=0: %v", r)
+			}
+		}()
+		result = cm.contractByteCount(0, 0)
+	}()
+
+	assert.Equal(t, cm.settings.StandardContractTransferByteCount, result)
+}
+
+// TestContractByteCount_ZeroScaleRespectsMinByteCount confirms the zero-scale
+// fallback still honors minByteCount, matching the non-zero-scale path's
+// behavior (both return max(targetByteCount, minByteCount)).
+func TestContractByteCount_ZeroScaleRespectsMinByteCount(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	cm.settings.ContractTransferByteSeqScale = 0
+	largeMin := cm.settings.StandardContractTransferByteCount * 10
+
+	result := cm.contractByteCount(0, largeMin)
+
+	assert.Equal(t, largeMin, result)
+}
+
+// TestSequencePeerAuditComplete_LogsSendErrorWithoutPanicking is a regression
+// test for SequencePeerAudit.Complete()'s SendControl callback, which used to
+// silently swallow the error (func(...){}) and now logs it. NoContractClientOob
+// always invokes its callback with a non-nil error ("Not supported."), so any
+// client built with it (the standard test fixture throughout this file)
+// exercises the new error branch on every Complete() call — this confirms
+// that branch doesn't panic and that Complete() still resets peerAudit to nil
+// as before, i.e. the logging addition didn't change Complete()'s contract.
+func TestSequencePeerAuditComplete_LogsSendErrorWithoutPanicking(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+
+	source := DestinationId(NewId())
+	audit := NewSequencePeerAudit(client, source, time.Minute)
+
+	audit.Update(func(pa *PeerAudit) {
+		pa.SendByteCount += 1024
+		pa.SendCount += 1
+	})
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Complete() panicked when SendControl's callback received an error: %v", r)
+			}
+		}()
+		audit.Complete()
+	}()
+
+	if audit.peerAudit != nil {
+		t.Fatal("expected peerAudit to be reset to nil after Complete()")
+	}
+}
