@@ -17,3 +17,6 @@ docs/superpowers/
 .claude/
 test_bin
 hub/hub
+hub/hub_bin
+hub.db
+prs.json

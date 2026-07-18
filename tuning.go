@@ -133,6 +133,9 @@ func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
 
 	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(4)
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(4)
+
+	// GOGC: 100 (Go default, made explicit for consistency across tiers)
+	debug.SetGCPercent(100)
 }
 
 func applyTier4(cs *ClientSettings, ns *LocalUserNatSettings) {
