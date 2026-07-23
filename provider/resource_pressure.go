@@ -311,9 +311,13 @@ func pressureRegime(score float64) int {
 }
 
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
-// the score, publishes it, and logs on regime changes. When self-heal is
-// off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
-// on at runtime starts sensing within one interval.
+// the score, and publishes it. Sampling is always on — the proportional
+// throttles that read currentPressure() (fetch stretch, probe scaling,
+// cleanup/reaper cadence, AIMD growth) are zero-impact when the box is
+// calm, so there's no reason to blind them by default. self-heal now only
+// gates pool shrink/shed (see runPoolController) — the one actuator that
+// can remove a healthy proxy — logged here for operator visibility, but it
+// no longer affects whether this loop samples.
 func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// Log the active sensor set once at startup.
 	first := collectPressureSample()
@@ -335,11 +339,6 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		}
-		if !resolveSelfHealEnabled(selfHealEnabled) {
-			smoothed = 0
-			setPressure(0)
-			continue
 		}
 		sample := collectPressureSample()
 		raw, comps := computePressure(sample)
@@ -369,7 +368,10 @@ func formatComponents(comps map[string]float64) string {
 
 // writePressureStatus persists the current score for `urnet-tools self-heal
 // status` and debugging. Best-effort; failures are silent (status is
-// advisory, the atomic is the source of truth).
+// advisory, the atomics are the source of truth). Includes churn alongside
+// pressure so an operator can see what the pool controller would do —
+// specifically whether churn is currently blocking growth — regardless of
+// whether self-heal itself is on.
 func writePressureStatus(score float64, comps map[string]float64) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -386,6 +388,7 @@ func writePressureStatus(score float64, comps map[string]float64) {
 	payload, err := json.Marshal(map[string]any{
 		"score":       score,
 		"components":  comps,
+		"churn":       currentChurn(),
 		"target_pool": target,
 		"updated":     time.Now().UTC().Format(time.RFC3339),
 	})

@@ -177,6 +177,27 @@ func TestWritePressureStatus(t *testing.T) {
 	}
 }
 
+func TestWritePressureStatus_IncludesChurn(t *testing.T) {
+	home := withTempHome(t)
+	setChurn(0.35)
+	defer setChurn(0)
+	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42})
+	b, err := os.ReadFile(filepath.Join(home, ".urnetwork", "pressure_status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Score float64 `json:"score"`
+		Churn float64 `json:"churn"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !almostEq(got.Score, 0.42) || !almostEq(got.Churn, 0.35) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestSelectURLProxiesToShed(t *testing.T) {
 	state := &ProxyState{Proxies: map[string]ProxyEntry{
 		"1.1.1.1:1080": {Health: "up", Source: "url"},
