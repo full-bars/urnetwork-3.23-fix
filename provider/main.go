@@ -2053,37 +2053,57 @@ func reapProxies(toReap []connect.DegradedProxyEntry, proxyCancelMap map[string]
 	return reaped
 }
 
+// runDegradedProxyReaperTick performs one reaper pass and folds this tick's
+// reap count into the churn EWMA (see resource_pressure.go), returning the
+// updated smoothed value. Split out from runDegradedProxyReaper so a single
+// tick can be exercised directly in tests without waiting on
+// degradedReaperTicker. Churn is recorded on every tick, including ones
+// where the reap path short-circuits with zero reaped — a calm tick must
+// still decay the EWMA toward 0, not leave it stuck at its last value.
+func runDegradedProxyReaperTick(proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex, churnSmoothed float64) float64 {
+	degraded := connect.DegradedProxies()
+	var reaped int64
+	if len(degraded) > 1 {
+		cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
+		if len(cancellable) > 1 {
+			scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
+			keep := degradedReaperKeepCount(len(scored))
+			toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
+			reaped = reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
+			if reaped > 0 {
+				tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",
+					reaped, keep, len(scored))
+			}
+		}
+	}
+
+	proxyCancelMu.Lock()
+	total := len(proxyCancelMap)
+	proxyCancelMu.Unlock()
+
+	next := stepChurn(churnSmoothed, int(reaped), total)
+	setChurn(next)
+	churnSampleCount.Add(1)
+
+	if churnRegimeChanged(int32(pressureRegime(next))) {
+		tlog("[proxy][churn] %.3f (reaped=%d pool=%d)\n", next, reaped, total)
+	}
+
+	return next
+}
+
 func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
 	ticker := time.NewTicker(degradedReaperTicker)
 	defer ticker.Stop()
 
+	var churnSmoothed float64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-
-		degraded := connect.DegradedProxies()
-		if len(degraded) <= 1 {
-			continue
-		}
-
-		cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
-		if len(cancellable) <= 1 {
-			continue
-		}
-
-		scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
-		keep := degradedReaperKeepCount(len(scored))
-		toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
-
-		reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
-
-		if reaped > 0 {
-			tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",
-				reaped, keep, len(scored))
-		}
+		churnSmoothed = runDegradedProxyReaperTick(proxyCancelMap, proxyCancelMu, churnSmoothed)
 	}
 }
 

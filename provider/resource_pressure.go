@@ -89,7 +89,19 @@ const churnWarmupSamples = 2
 var (
 	globalChurn      atomic.Uint64
 	churnSampleCount atomic.Int32
+	lastChurnRegime  atomic.Int32
 )
+
+func init() {
+	lastChurnRegime.Store(-1)
+}
+
+// churnRegimeChanged reports whether r differs from the last recorded
+// regime and atomically updates the record. Safe for concurrent callers,
+// though in practice only the reaper goroutine calls this.
+func churnRegimeChanged(r int32) bool {
+	return lastChurnRegime.Swap(r) != r
+}
 
 func currentChurn() float64 { return math.Float64frombits(globalChurn.Load()) }
 func setChurn(v float64)    { globalChurn.Store(math.Float64bits(v)) }

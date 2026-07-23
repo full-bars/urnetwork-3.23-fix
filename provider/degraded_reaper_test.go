@@ -448,6 +448,48 @@ func TestReapProxies_SkipsProxyThatRecoveredSinceDecision(t *testing.T) {
 	}
 }
 
+func TestRunDegradedProxyReaperTick_RecordsChurnEvenWhenCalm(t *testing.T) {
+	churnSampleCount.Store(0)
+	defer churnSampleCount.Store(0)
+
+	// This test's fresh binary has nothing registered in the real
+	// connect.DegradedProxies() registry, so len(degraded) <= 1 and the
+	// reap path short-circuits with reaped=0 — the point of this test is
+	// that churn bookkeeping still runs on that path (a calm tick must
+	// still decay the EWMA, not skip the update entirely).
+	cancelMap := map[string]context.CancelFunc{"p:1": func() {}}
+	var cancelMu sync.Mutex
+
+	next := runDegradedProxyReaperTick(cancelMap, &cancelMu, 0.2)
+
+	if !almostEq(next, 0.18) {
+		t.Fatalf("calm tick must decay churn toward 0 (0.2 -> 0.18): got %v", next)
+	}
+	if churnWarmedUp() {
+		t.Fatal("one tick must not be warmed up yet")
+	}
+	if v := currentChurn(); !almostEq(v, next) {
+		t.Fatalf("currentChurn() must reflect the published value: got %v, want %v", v, next)
+	}
+}
+
+func TestRunDegradedProxyReaperTick_TwoTicksWarmUp(t *testing.T) {
+	churnSampleCount.Store(0)
+	defer churnSampleCount.Store(0)
+
+	cancelMap := map[string]context.CancelFunc{"p:1": func() {}}
+	var cancelMu sync.Mutex
+
+	smoothed := runDegradedProxyReaperTick(cancelMap, &cancelMu, 0)
+	if churnWarmedUp() {
+		t.Fatal("must not be warmed up after 1 tick")
+	}
+	runDegradedProxyReaperTick(cancelMap, &cancelMu, smoothed)
+	if !churnWarmedUp() {
+		t.Fatal("must be warmed up after 2 ticks")
+	}
+}
+
 func TestReapProxies_CancelsAndDeletesWhenStillDegraded(t *testing.T) {
 	toReap := []connect.DegradedProxyEntry{
 		{Index: 0, Address: "stuck:1"},

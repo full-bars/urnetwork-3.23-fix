@@ -347,3 +347,18 @@ func TestCurrentChurn_ReflectsSetChurn(t *testing.T) {
 	}
 	setChurn(0)
 }
+
+func TestChurnRegimeChanged(t *testing.T) {
+	lastChurnRegime.Store(-1) // force first call to report changed
+	defer lastChurnRegime.Store(-1)
+
+	if !churnRegimeChanged(0) {
+		t.Fatal("first call must report changed")
+	}
+	if churnRegimeChanged(0) {
+		t.Fatal("same regime twice must report unchanged")
+	}
+	if !churnRegimeChanged(1) {
+		t.Fatal("regime bump must report changed")
+	}
+}
