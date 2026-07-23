@@ -398,7 +398,7 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0, true)
+		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0)
 		close(done)
 	}()
 
@@ -488,7 +488,7 @@ func TestRunProxyURLCleanup_UnconditionalImmediateCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runProxyURLCleanup(ctx, "url", time.Hour, false)
+		runProxyURLCleanup(ctx, "url", time.Hour)
 		close(done)
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -641,60 +641,43 @@ func TestGetSystemLoad_ParsesProcLoadavg(t *testing.T) {
 // off restores the configured ceiling immediately, even with a persisted
 // target on disk.
 func TestResolveEffectiveProxyURLMax(t *testing.T) {
-	home := withTempHome(t)
-	selfHealMarker := filepath.Join(home, ".urnetwork", "proxy_self_heal")
-	writeMarker := func(v string) {
-		if err := os.MkdirAll(filepath.Dir(selfHealMarker), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(selfHealMarker, []byte(v), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	withTempHome(t)
 
-	// (a) no persisted state at all, self-heal on → plain ceiling
-	writeMarker("on")
-	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
+	// (a) no persisted state at all → plain ceiling
+	if v := resolveEffectiveProxyURLMax(500); v != 500 {
 		t.Fatalf("no state: got %d, want 500", v)
 	}
 
-	// (b) target 50 < ceiling 500, self-heal marker "on" → target wins
+	// (b) target 50 < ceiling 500 → target wins
 	if err := writeProxyURLState(&ProxyURLState{
 		Cache:          map[string]ProxyURLEntry{},
 		TargetPoolSize: 50,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if v := resolveEffectiveProxyURLMax(500, false); v != 50 {
-		t.Fatalf("self-heal on: got %d, want 50", v)
+	if v := resolveEffectiveProxyURLMax(500); v != 50 {
+		t.Fatalf("target below ceiling: got %d, want 50", v)
 	}
 
-	// (c) same persisted target but marker "off" → ceiling restored
-	writeMarker("off")
-	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
-		t.Fatalf("self-heal off must ignore learned target: got %d, want 500", v)
-	}
-
-	// (d) target above the ceiling → ceiling wins
-	writeMarker("on")
+	// (c) target above the ceiling → ceiling wins
 	if err := writeProxyURLState(&ProxyURLState{
 		Cache:          map[string]ProxyURLEntry{},
 		TargetPoolSize: 900,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if v := resolveEffectiveProxyURLMax(500, false); v != 500 {
+	if v := resolveEffectiveProxyURLMax(500); v != 500 {
 		t.Fatalf("target over ceiling: got %d, want 500", v)
 	}
 
-	// (e) ceiling 0 (unlimited) with target 50, self-heal on → target caps
+	// (d) ceiling 0 (unlimited) with target 50 → target caps
 	if err := writeProxyURLState(&ProxyURLState{
 		Cache:          map[string]ProxyURLEntry{},
 		TargetPoolSize: 50,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if v := resolveEffectiveProxyURLMax(0, false); v != 50 {
+	if v := resolveEffectiveProxyURLMax(0); v != 50 {
 		t.Fatalf("unlimited ceiling: got %d, want 50", v)
 	}
 }

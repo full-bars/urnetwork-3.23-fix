@@ -2837,10 +2837,10 @@ func provide(opts docopt.Opts) {
 	}
 	reloader.StartWatcher(ctx)
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
+	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort)
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
 	go pruneURLProxyBlacklist(ctx)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
+	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval)
 	go runPressureMonitor(ctx, selfHealEnabled)
 	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
 	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)

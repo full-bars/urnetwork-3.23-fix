@@ -48,16 +48,11 @@ func resolveProxyURLMax(startupMax int) int {
 
 // resolveEffectiveProxyURLMax is the admit cap fetch cycles actually use:
 // the configured ceiling, further limited by the AIMD-discovered target
-// once the pool controller has established one. The target only constrains
-// admission while self-heal is enabled; toggling self-heal off restores the
-// configured ceiling immediately — a target discovered under transient
-// pressure is not a durable truth about the box, and an operator who turns
-// self-heal off has asked for stock behavior.
-func resolveEffectiveProxyURLMax(startupMax int, selfHealEnabled bool) int {
+// once the pool controller has established one. Unconditional — capping
+// admission below the ceiling never removes an existing proxy, so unlike
+// pool shrink/shed this doesn't need to be opt-in.
+func resolveEffectiveProxyURLMax(startupMax int) int {
 	ceiling := resolveProxyURLMax(startupMax)
-	if !resolveSelfHealEnabled(selfHealEnabled) {
-		return ceiling
-	}
 	state, err := readProxyURLState()
 	if err != nil || state.TargetPoolSize <= 0 {
 		return ceiling
@@ -702,7 +697,7 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // at high pressure), so a drowning box adds probe/auth/reload work more
 // slowly instead of stopping dead. A near-empty cache is never stretched,
 // so a fresh box under load still bootstraps.
-func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16, selfHealEnabled bool) {
+func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
 	}
@@ -719,7 +714,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	}
 
 	// The initial fetch is always allowed (cold-start / starvation escape).
-	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
+	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
 	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
@@ -750,7 +745,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 				continue
 			}
 			lastFetch = time.Now()
-			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
+			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal), apiHost, apiPort)
 		}
 	}
 }
@@ -889,7 +884,7 @@ var cleanupTickInterval = 15 * time.Minute
 // scope is "none" or another disabling value the loop still runs so that
 // runtime toggles (off→on) work live — it just skips the cleanup call until
 // scope becomes active again.
-func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration, selfHealEnabled bool) {
+func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duration) {
 	lastRun := time.Time{} // zero value ⇒ immediate first pass, same gating as before
 	ticker := time.NewTicker(cleanupTickInterval)
 	defer ticker.Stop()
