@@ -247,7 +247,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	}
 	assert.Equal(t, nil, err)
 
-	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, clientReceivePacket, DefaultIngressSecurityPolicy(), contractStatus, nil, settings)
+	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, clientReceivePacket, DefaultIngressSecurityPolicy(), contractStatus, func(contractStatsEvents []*ContractStatsEvent) {}, func() {}, nil, settings)
 	assert.Equal(t, nil, err)
 
 	cancelCtxs := []context.Context{}
@@ -349,7 +349,7 @@ func TestMultiClientChannelSendNackCoalesceDoesNotLeak(t *testing.T) {
 		DestinationStats:               DestinationStats{EstimatedBytesPerSecond: 0, Tier: 0},
 	}
 
-	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, clientReceivePacket, DefaultIngressSecurityPolicy(), contractStatus, nil, settings)
+	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, clientReceivePacket, DefaultIngressSecurityPolicy(), contractStatus, func(contractStatsEvents []*ContractStatsEvent) {}, func() {}, nil, settings)
 	assert.Equal(t, nil, err)
 
 	clientChannel.addSendNack(ByteCount(1))
