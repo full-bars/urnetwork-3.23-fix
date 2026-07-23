@@ -160,3 +160,30 @@ func TestMultiClientNetworkAllowDirectAuto(t *testing.T) {
 	assert.Equal(t, true, pp.AllowDirect)
 	assert.Equal(t, WindowTypeAuto, pp.WindowType)
 }
+
+// TestMultiClientNetworkAllowDirectNilProfileStaysAuto verifies that forcing
+// AllowDirect on with no profile set at all (DefaultPerformanceProfile nil)
+// fabricates an auto profile, not a fixed WindowTypeQuality one — forcing
+// direct mode must not pin the window as a side effect.
+func TestMultiClientNetworkAllowDirectNilProfileStaysAuto(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	settings := DefaultMultiClientSettings()
+	multiClient := NewRemoteUserNatMultiClient(
+		ctx,
+		&testingEmptyMultiClientGenerator{},
+		func(source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
+		},
+		protocol.ProvideMode_Network,
+		settings,
+	)
+	defer multiClient.Close()
+
+	pp := multiClient.config.Load().performanceProfile
+	assert.Equal(t, true, pp != nil)
+	assert.Equal(t, true, pp.AllowDirect)
+	assert.Equal(t, WindowTypeAuto, pp.WindowType)
+	_, _, ok := pp.FixedWindow()
+	assert.Equal(t, false, ok)
+}
