@@ -73,8 +73,13 @@ func (self WindowType) RankMode() string {
 }
 
 const (
-	WindowTypeQuality WindowType = 0
-	WindowTypeSpeed   WindowType = 1
+	// WindowTypeAuto is the zero value: no fixed window type. A nil
+	// performance profile and a profile with `WindowTypeAuto` mean the same
+	// thing — traffic balances across the window types and each window uses
+	// its own default size settings (the profile `WindowSize` is ignored).
+	WindowTypeAuto    WindowType = 0
+	WindowTypeQuality WindowType = 1
+	WindowTypeSpeed   WindowType = 2
 )
 
 // for each `NewClientArgs`,
@@ -269,6 +274,17 @@ type MultiClientSettings struct {
 
 	DefaultPerformanceProfile *PerformanceProfile
 
+	// OverrideAllowDirect, when set, hard-overrides direct mode
+	// (`AllowDirect`) no matter what performance profile is set, in either
+	// direction, superseding the same-network force. Cloud hosted clients
+	// set false because a direct connection would leak that the client is
+	// hosted and where it is hosted: the host addresses appear in the
+	// direct connection setup. true forces direct mode on regardless of
+	// the profile. When unset, a trusted same-network peer connection
+	// (provide mode Network) forces direct mode on; otherwise the
+	// profile's own `AllowDirect` applies.
+	OverrideAllowDirect *bool
+
 	// used when reconnect scale is not set in a custom performance profile
 	DefaultReconnectScale float64
 	// used when ulimit is not set in a custom performance profile
@@ -329,12 +345,30 @@ func (self *WindowSizeSettings) Validate() error {
 	return nil
 }
 
-// not setting a performance profile will use the default "auto" mode
-// which balances traffic across multiple window types with an internal set of profiles
+// not setting a performance profile, or setting one with `WindowTypeAuto`,
+// uses the default "auto" mode which balances traffic across multiple window
+// types with an internal set of profiles. In auto mode `WindowSize` is
+// ignored; the orthogonal settings (`AllowDirect`,
+// `PostQuantumEncryption`) still apply.
 type PerformanceProfile struct {
 	WindowType  WindowType
 	WindowSize  WindowSizeSettings
 	AllowDirect bool
+	// enable the per-peer e2e encryption sessions (post-quantum key
+	// exchange) on the window clients. Opportunistic: a provider that does
+	// not support the sessions falls back to plaintext at this layer.
+	PostQuantumEncryption bool
+}
+
+// FixedWindow returns the fixed window type and size when the profile fixes
+// one. ok is false when the profile is nil or auto — the equivalent cases
+// where each window uses its own default size settings and the profile
+// `WindowSize` is ignored.
+func (self *PerformanceProfile) FixedWindow() (windowType WindowType, windowSize WindowSizeSettings, ok bool) {
+	if self == nil || self.WindowType == WindowTypeAuto {
+		return WindowTypeAuto, WindowSizeSettings{}, false
+	}
+	return self.WindowType, self.WindowSize, true
 }
 
 func (self *PerformanceProfile) Validate() error {
@@ -468,7 +502,7 @@ func NewRemoteUserNatMultiClient(
 		localUserNat:          localUserNat,
 	}
 	multiClient.config.Store(&multiClientConfig{
-		performanceProfile:  settings.DefaultPerformanceProfile,
+		performanceProfile:  multiClient.overrideAllowDirect(settings.DefaultPerformanceProfile),
 		localSecurityBypass: false,
 		serverNameLookup:    nil,
 	})
@@ -529,8 +563,99 @@ func (self *RemoteUserNatMultiClient) AddContractStatusCallback(contractStatusCa
 	}
 }
 
-// the performance profile will take effect at the next `resize` iteration
+// AddContractStatsCallback registers a listener for the epoch contract stats
+// events of all the window clients (see `ContractManager.AddContractStatsCallback`)
+func (self *RemoteUserNatMultiClient) AddContractStatsCallback(contractStatsCallback ContractStatsFunction) func() {
+	subs := []func(){}
+	for _, window := range self.windows {
+		sub := window.AddContractStatsCallback(contractStatsCallback)
+		subs = append(subs, sub)
+	}
+	return func() {
+		for _, sub := range subs {
+			sub()
+		}
+	}
+}
+
+// AddPeerIdentityChangeCallback registers a listener fired whenever any
+// window client's established + identity-verified peer set may have changed
+// (see `EncryptionSessionManager.AddPeerIdentityChangeCallback`). Consumers
+// re-read `PeerIdentities`.
+func (self *RemoteUserNatMultiClient) AddPeerIdentityChangeCallback(callback func()) func() {
+	subs := []func(){}
+	for _, window := range self.windows {
+		sub := window.AddPeerIdentityChangeCallback(callback)
+		subs = append(subs, sub)
+	}
+	return func() {
+		for _, sub := range subs {
+			sub()
+		}
+	}
+}
+
+// PeerIdentities returns the peers with an established, identity-verified
+// e2e session across all window clients, deduplicated by peer id.
+func (self *RemoteUserNatMultiClient) PeerIdentities() []*PeerIdentity {
+	byPeer := map[Id]*PeerIdentity{}
+	for _, window := range self.windows {
+		for _, clientChannel := range window.unorderedClients() {
+			for _, peerIdentity := range clientChannel.client.EncryptionSessionManager().PeerIdentities() {
+				if _, ok := byPeer[peerIdentity.PeerId]; !ok {
+					byPeer[peerIdentity.PeerId] = peerIdentity
+				}
+			}
+		}
+	}
+	out := make([]*PeerIdentity, 0, len(byPeer))
+	for _, peerIdentity := range byPeer {
+		out = append(out, peerIdentity)
+	}
+	return out
+}
+
+// overrideAllowDirect applies the allow-direct override chain to the
+// profile. A trusted same-network peer connection (provide mode Network)
+// always enables direct mode, superseding the profile, so the connection can
+// upgrade to a direct p2p stream. An explicit `settings.OverrideAllowDirect`
+// then supersedes everything — false is the cloud-hosted hard limit (a
+// direct connection would leak that the client is hosted and where), true
+// forces direct mode on regardless of the profile.
+func (self *RemoteUserNatMultiClient) overrideAllowDirect(performanceProfile *PerformanceProfile) *PerformanceProfile {
+	if self.provideMode == protocol.ProvideMode_Network {
+		performanceProfile = forceAllowDirect(performanceProfile, true)
+	}
+	if self.settings.OverrideAllowDirect != nil {
+		performanceProfile = forceAllowDirect(performanceProfile, *self.settings.OverrideAllowDirect)
+	}
+	return performanceProfile
+}
+
+// forceAllowDirect returns a profile with `AllowDirect` forced to the value,
+// fabricating a profile when forcing on with none set. The input profile is
+// never mutated in place.
+func forceAllowDirect(performanceProfile *PerformanceProfile, allowDirect bool) *PerformanceProfile {
+	if performanceProfile == nil {
+		if !allowDirect {
+			// direct mode is already off with no profile
+			return nil
+		}
+		return &PerformanceProfile{
+			WindowType:  WindowTypeAuto,
+			AllowDirect: true,
+		}
+	}
+	if performanceProfile.AllowDirect == allowDirect {
+		return performanceProfile
+	}
+	overridden := *performanceProfile
+	overridden.AllowDirect = allowDirect
+	return &overridden
+}
+
 func (self *RemoteUserNatMultiClient) SetPerformanceProfile(performanceProfile *PerformanceProfile) {
+	performanceProfile = self.overrideAllowDirect(performanceProfile)
 	if performanceProfile != nil {
 		err := performanceProfile.Validate()
 		if err != nil {
@@ -593,13 +718,8 @@ func (self *RemoteUserNatMultiClient) selectWindowTypes(sendPacket *parsedPacket
 		return []WindowType{WindowTypeQuality}
 	}
 
-	var fixedWindowType *WindowType
-	if pp := self.config.Load().performanceProfile; pp != nil {
-		fixedWindowType = &pp.WindowType
-	}
-
-	if fixedWindowType != nil {
-		return []WindowType{*fixedWindowType}
+	if windowType, _, ok := self.config.Load().performanceProfile.FixedWindow(); ok {
+		return []WindowType{windowType}
 	} else {
 		if sendPacket.ipPath.DestinationPort == 443 {
 			return []WindowType{WindowTypeQuality, WindowTypeSpeed}
@@ -614,8 +734,8 @@ func (self *RemoteUserNatMultiClient) affinityIpPathsWithLock(ipPath *IpPath) (a
 	config := self.config.Load()
 
 	singleIp := false
-	if pp := config.performanceProfile; pp != nil {
-		singleIp = (pp.WindowSize.FixedWindowSize == 1)
+	if _, windowSize, ok := config.performanceProfile.FixedWindow(); ok {
+		singleIp = (windowSize.FixedWindowSize == 1)
 	}
 
 	if singleIp {
@@ -1771,6 +1891,9 @@ type multiClientWindow struct {
 	monitor *RemoteUserNatMultiClientMonitor
 
 	contractStatusCallbacks *CallbackList[*contractStatusCallbackWorker]
+	contractStatsCallbacks  *CallbackList[ContractStatsFunction]
+	// relayed from every window client's encryption session manager
+	peerIdentityChangeCallbacks *CallbackList[func()]
 
 	stateLock          sync.Mutex
 	clients            map[Id]*multiClientChannel
@@ -1803,6 +1926,8 @@ func newMultiClientWindow(
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
 		monitor:                     NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
 		contractStatusCallbacks:     NewCallbackList[*contractStatusCallbackWorker](),
+		contractStatsCallbacks:      NewCallbackList[ContractStatsFunction](),
+		peerIdentityChangeCallbacks: NewCallbackList[func()](),
 		clients:                     map[Id]*multiClientChannel{},
 		generatorMonitor:            NewMonitor(),
 		resizeMonitor:               NewMonitor(),
@@ -1826,6 +1951,38 @@ func (self *multiClientWindow) AddContractStatusCallback(contractStatusCallback 
 func (self *multiClientWindow) contractStatus(contractStatus *ContractStatus) {
 	for _, contractStatusCallback := range self.contractStatusCallbacks.Get() {
 		contractStatusCallback.Dispatch(contractStatus)
+	}
+}
+
+func (self *multiClientWindow) AddContractStatsCallback(contractStatsCallback ContractStatsFunction) func() {
+	callbackId := self.contractStatsCallbacks.Add(contractStatsCallback)
+	return func() {
+		self.contractStatsCallbacks.Remove(callbackId)
+	}
+}
+
+// registered on every window client's contract manager.
+// the manager's epoch worker calls this off the packet paths
+func (self *multiClientWindow) contractStats(contractStatsEvents []*ContractStatsEvent) {
+	for _, contractStatsCallback := range self.contractStatsCallbacks.Get() {
+		HandleError(func() {
+			contractStatsCallback(contractStatsEvents)
+		})
+	}
+}
+
+func (self *multiClientWindow) AddPeerIdentityChangeCallback(callback func()) func() {
+	callbackId := self.peerIdentityChangeCallbacks.Add(callback)
+	return func() {
+		self.peerIdentityChangeCallbacks.Remove(callbackId)
+	}
+}
+
+// registered on every window client's encryption session manager
+// (and fired once more when a window client is removed)
+func (self *multiClientWindow) peerIdentityChanged() {
+	for _, callback := range self.peerIdentityChangeCallbacks.Get() {
+		HandleError(callback)
 	}
 }
 
@@ -1946,9 +2103,9 @@ func (self *multiClientWindow) resize() {
 		func() {
 			self.stateLock.Lock()
 			defer self.stateLock.Unlock()
-			if self.performanceProfile != nil {
-				fixedWindowType = &self.performanceProfile.WindowType
-				windowSize = self.performanceProfile.WindowSize
+			if profileWindowType, profileWindowSize, ok := self.performanceProfile.FixedWindow(); ok {
+				fixedWindowType = &profileWindowType
+				windowSize = profileWindowSize
 			} else {
 				windowSize = self.settings.WindowSizes[self.windowType]
 			}
@@ -2299,6 +2456,8 @@ func (self *multiClientWindow) expand(
 				self.clientReceivePacketCallback,
 				self.ingressSecurityPolicy,
 				self.contractStatus,
+				self.contractStats,
+				self.peerIdentityChanged,
 				self.performanceProfile,
 				self.settings,
 			)
@@ -2446,8 +2605,8 @@ func (self *multiClientWindow) OrderedClients() []*multiClientChannel {
 	func() {
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
-		if self.performanceProfile != nil {
-			windowSize = self.performanceProfile.WindowSize
+		if _, profileWindowSize, ok := self.performanceProfile.FixedWindow(); ok {
+			windowSize = profileWindowSize
 		} else {
 			windowSize = self.settings.WindowSizes[self.windowType]
 		}
@@ -2754,6 +2913,8 @@ func newMultiClientChannel(
 	clientReceivePacketCallback clientReceivePacketFunction,
 	ingressSecurityPolicy SecurityPolicy,
 	contractStatusCallback ContractStatusFunction,
+	contractStatsCallback ContractStatsFunction,
+	peerIdentityChangeCallback func(),
 	performanceProfile *PerformanceProfile,
 	settings *MultiClientSettings,
 ) (*multiClientChannel, error) {
@@ -2761,6 +2922,15 @@ func newMultiClientChannel(
 
 	clientSettings := generator.NewClientSettings()
 	clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
+	if performanceProfile != nil && performanceProfile.PostQuantumEncryption {
+		// pqe: opportunistic per-peer e2e sessions (post-quantum key
+		// exchange). A provider without session support falls back to
+		// plaintext at this layer.
+		if clientSettings.EncryptionSettings == nil {
+			clientSettings.EncryptionSettings = DefaultEncryptionSettings()
+		}
+		clientSettings.EncryptionSettings.Encrypt = true
+	}
 
 	client, err := generator.NewClient(
 		cancelCtx,
@@ -2772,6 +2942,8 @@ func newMultiClientChannel(
 		return nil, err
 	}
 	contractStatusSub := client.ContractManager().AddContractStatusCallback(contractStatusCallback)
+	contractStatsSub := client.ContractManager().AddContractStatsCallback(contractStatsCallback)
+	peerIdentitySub := client.EncryptionSessionManager().AddPeerIdentityChangeCallback(peerIdentityChangeCallback)
 	go HandleError(func() {
 		select {
 		case <-cancelCtx.Done():
@@ -2779,6 +2951,10 @@ func newMultiClientChannel(
 		}
 		client.Cancel()
 		contractStatusSub()
+		contractStatsSub()
+		peerIdentitySub()
+		// the removed client's established peers leave the aggregate set
+		peerIdentityChangeCallback()
 		generator.RemoveClientWithArgs(client, &args.MultiClientGeneratorClientArgs)
 	}, cancel)
 
