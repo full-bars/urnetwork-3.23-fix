@@ -694,7 +694,7 @@ switch ($Command) {
                 if (Test-Path $pressureFile) {
                     try {
                         $pressure = Get-Content $pressureFile -Raw | ConvertFrom-Json
-                        Write-Host "pressure: $($pressure.score) (target_pool=$($pressure.target_pool), updated=$($pressure.updated))"
+                        Write-Host "pressure: $($pressure.score) churn: $($pressure.churn) (target_pool=$($pressure.target_pool), updated=$($pressure.updated))"
                     } catch {
                         Get-Content $pressureFile
                     }

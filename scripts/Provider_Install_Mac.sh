@@ -835,7 +835,7 @@ case "$operation" in
                 fi
                 if [ -f "$HOME/.urnetwork/pressure_status" ]; then
                     if command -v jq >/dev/null 2>&1; then
-                        pr_info "$(jq -r '"pressure: \(.score) (target_pool=\(.target_pool), updated=\(.updated))"' \
+                        pr_info "$(jq -r '"pressure: \(.score) churn: \(.churn) (target_pool=\(.target_pool), updated=\(.updated))"' \
                             "$HOME/.urnetwork/pressure_status" 2>/dev/null)"
                     else
                         cat "$HOME/.urnetwork/pressure_status"
