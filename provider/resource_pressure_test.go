@@ -383,3 +383,39 @@ func TestChurnRegimeChanged(t *testing.T) {
 		t.Fatal("regime bump must report changed")
 	}
 }
+
+// TestPoolControllerGating documents the gating logic runPoolController
+// uses to decide which branch of aimdStep to take, expressed as a pure
+// helper so the decision itself is unit-testable without spinning up the
+// ticker loop. See runPoolController in resource_pressure.go for the
+// integration.
+func TestPoolControllerGating(t *testing.T) {
+	tests := []struct {
+		name           string
+		pressure       float64
+		churn          float64
+		churnWarm      bool
+		poolShedOn     bool
+		wantGrow       bool
+		wantShrinkable bool
+	}{
+		{"calm, no churn, shed off: grows", 0.1, 0.0, true, false, true, false},
+		{"calm, high churn, warmed up: growth blocked", 0.1, 0.5, true, false, false, false},
+		{"calm, high churn, not warmed up: growth allowed (fail-open during warmup)", 0.1, 0.5, false, false, true, false},
+		{"hot, shed off: never shrinks", 0.9, 0.0, true, false, false, false},
+		{"hot, shed on: shrinkable", 0.9, 0.0, true, true, false, true},
+		{"mid-band: holds regardless of shed/churn", 0.5, 0.0, true, true, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			grow := tt.pressure < aimdGrowBelow && (!tt.churnWarm || tt.churn < churnGrowBelow)
+			shrinkable := tt.poolShedOn && tt.pressure > aimdShrinkAbove
+			if grow != tt.wantGrow {
+				t.Errorf("grow: got %v, want %v", grow, tt.wantGrow)
+			}
+			if shrinkable != tt.wantShrinkable {
+				t.Errorf("shrinkable: got %v, want %v", shrinkable, tt.wantShrinkable)
+			}
+		})
+	}
+}

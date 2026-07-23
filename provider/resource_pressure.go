@@ -578,12 +578,15 @@ func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, n int)
 // pressure and steps the target.
 const poolControlInterval = 5 * time.Minute
 
-// runPoolController runs the AIMD loop: every poolControlInterval it reads
-// pressure, steps the target, persists it, and — on a shrink — sheds the
-// worst URL-sourced proxies down to the new target via the same
-// removeDeadProxies path the cleanup job uses (cache removal, NO blacklist,
-// so shed addresses re-enter through a normal fetch+probe once the box
-// recovers and the target grows back).
+// runPoolController runs the AIMD loop every poolControlInterval. Growth
+// and hold are always-on: neither ever removes a proxy, so — like the
+// proportional throttles — there's no reason to gate them behind
+// self-heal. Growth additionally requires churn to be low (or not yet
+// warmed up): a calm box shouldn't add more proxies while the degraded
+// reaper is actively cutting a meaningful slice of the fleet every tick,
+// or new arrivals just get fed to the same grinder. Shrink+shed is the
+// only branch gated by self-heal, because it's the only one that can
+// remove a currently-healthy proxy — see shedPoolToTarget below.
 func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled bool) {
 	var highSamples int
 	ticker := time.NewTicker(poolControlInterval)
@@ -594,21 +597,34 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 			return
 		case <-ticker.C:
 		}
-		if !resolveSelfHealEnabled(selfHealEnabled) {
-			highSamples = 0
-			continue
-		}
+
 		pressure := currentPressure()
-		if pressure > aimdShrinkAbove {
+		churn := currentChurn()
+		shedEnabled := resolveSelfHealEnabled(selfHealEnabled)
+
+		wantGrow := pressure < aimdGrowBelow && (!churnWarmedUp() || churn < churnGrowBelow)
+		wantShrink := shedEnabled && pressure > aimdShrinkAbove
+
+		if wantShrink {
 			highSamples++
 		} else {
 			highSamples = 0
 		}
 		// Shrink requires 2 consecutive high samples (10 min sustained);
-		// growth and hold act immediately.
-		effectivePressure := pressure
-		if pressure > aimdShrinkAbove && highSamples < 2 {
-			continue
+		// growth and hold act immediately. aimdStep's own signature only
+		// understands raw pressure thresholds, so translate the gated
+		// intent (wantGrow/wantShrink) into a pressure value that lands in
+		// the branch we've decided on, without changing aimdStep itself.
+		var effectivePressure float64
+		switch {
+		case wantShrink && highSamples >= 2:
+			effectivePressure = pressure // let aimdStep see the real (high) pressure
+		case wantShrink:
+			continue // sustained-high dwell not yet met; wait for the next tick
+		case wantGrow:
+			effectivePressure = pressure // let aimdStep see the real (low) pressure
+		default:
+			effectivePressure = aimdGrowBelow // pin to the hold band: not < grow, not > shrink
 		}
 
 		release, err := acquireProxyLock()
@@ -641,10 +657,10 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		}
 		release()
 		if next != target {
-			tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+			tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f churn=%.2f)\n", target, next, pressure, churn)
 		}
 
-		if pressure > aimdShrinkAbove {
+		if wantShrink && highSamples >= 2 {
 			shedPoolToTarget(next)
 			highSamples = 0 // one cut per sustained-high episode; re-arm
 		}
