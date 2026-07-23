@@ -296,3 +296,54 @@ func TestFormatComponents(t *testing.T) {
 		t.Fatalf("empty: got %q", s)
 	}
 }
+
+func TestChurnRaw(t *testing.T) {
+	if v := churnRaw(5, 100); !almostEq(v, 0.05) {
+		t.Fatalf("5/100: got %v", v)
+	}
+	if v := churnRaw(0, 100); v != 0 {
+		t.Fatalf("zero reaped: got %v", v)
+	}
+	if v := churnRaw(150, 100); v != 1 {
+		t.Fatalf("clamped at 1: got %v", v)
+	}
+	if v := churnRaw(5, 0); v != 0 {
+		t.Fatalf("no tracked proxies fails open to 0: got %v", v)
+	}
+}
+
+func TestStepChurn(t *testing.T) {
+	// rise fast: prev 0, one tick reaps 10% of tracked proxies -> alpha 0.5 rise
+	if v := stepChurn(0, 10, 100); !almostEq(v, 0.05) {
+		t.Fatalf("rise: got %v", v)
+	}
+	// decay slow: prev 0.2, a calm tick (0 reaped) -> alpha 0.1 decay
+	if v := stepChurn(0.2, 0, 100); !almostEq(v, 0.18) {
+		t.Fatalf("decay: got %v", v)
+	}
+}
+
+func TestChurnWarmup(t *testing.T) {
+	churnSampleCount.Store(0)
+	defer churnSampleCount.Store(0)
+
+	if churnWarmedUp() {
+		t.Fatal("fresh process must not be warmed up")
+	}
+	churnSampleCount.Add(1)
+	if churnWarmedUp() {
+		t.Fatal("one sample must not be warmed up")
+	}
+	churnSampleCount.Add(1)
+	if !churnWarmedUp() {
+		t.Fatal("two samples must be warmed up")
+	}
+}
+
+func TestCurrentChurn_ReflectsSetChurn(t *testing.T) {
+	setChurn(0.42)
+	if v := currentChurn(); !almostEq(v, 0.42) {
+		t.Fatalf("got %v, want 0.42", v)
+	}
+	setChurn(0)
+}

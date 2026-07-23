@@ -67,6 +67,59 @@ var globalPressure atomic.Uint64
 func currentPressure() float64 { return math.Float64frombits(globalPressure.Load()) }
 func setPressure(v float64)    { globalPressure.Store(math.Float64bits(v)) }
 
+// churnGrowBelow gates AIMD growth on fleet churn, not just host pressure:
+// even a calm box shouldn't add more proxies while the degraded reaper is
+// actively cutting a meaningful slice of the fleet every tick — new
+// arrivals would just degrade and get cut on the next pass. 0.10 means
+// "more than 10% of tracked proxies reaped in one 3-minute tick" blocks
+// growth. Judgment call, not a measured constant — revisit if this proves
+// too strict or too loose in production.
+const churnGrowBelow = 0.10
+
+// churnWarmupSamples is how many reaper ticks (3min each) must land before
+// the churn signal is trusted to block growth. A freshly started provider
+// has no reap history yet — treating that as "high churn" would wrongly
+// hold back day-one growth. Judgment call, not measured.
+const churnWarmupSamples = 2
+
+// globalChurn holds the smoothed fraction of tracked proxies the degraded
+// reaper cut on its most recent tick, published the same way as
+// globalPressure. churnSampleCount tracks how many reaper ticks have
+// contributed to it, for the warm-up guard.
+var (
+	globalChurn      atomic.Uint64
+	churnSampleCount atomic.Int32
+)
+
+func currentChurn() float64 { return math.Float64frombits(globalChurn.Load()) }
+func setChurn(v float64)    { globalChurn.Store(math.Float64bits(v)) }
+
+// churnWarmedUp reports whether enough reaper ticks have landed to trust
+// the churn signal for gating pool growth.
+func churnWarmedUp() bool { return churnSampleCount.Load() >= churnWarmupSamples }
+
+// churnRaw is the fraction of tracked proxies the degraded reaper cut in
+// one tick, clamped to [0,1]. total<=0 (nothing tracked yet) reads as 0 —
+// fail-open, matching how computePressure treats missing sensors.
+func churnRaw(reaped, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	raw := float64(reaped) / float64(total)
+	if raw > 1 {
+		return 1
+	}
+	return raw
+}
+
+// stepChurn folds one reaper tick's raw churn ratio into the smoothed score
+// using the same asymmetric EWMA as pressure (fast rise, slow decay) — a
+// sudden reap spike should immediately hold back growth, but a single calm
+// tick shouldn't erase the memory of recent churn.
+func stepChurn(prevSmoothed float64, reaped, total int) float64 {
+	return ewmaUpdate(prevSmoothed, churnRaw(reaped, total))
+}
+
 // pressureSample is one raw reading of every sensor. Zero values mean "no
 // data" and normalize to zero pressure (fail-open).
 type pressureSample struct {
