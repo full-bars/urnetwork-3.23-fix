@@ -29,8 +29,8 @@
 | `PROXY_URL_REFRESH` | `15m` | How often `PROXY_URL` is re-fetched to add new entries. |
 | `PROXY_URL_MAX` | `500` | Caps total proxies sourced from `PROXY_URL`. `0` = unlimited. |
 | `PROXY_DEAD_CLEANUP_SCOPE` | `url` | `none`, `url`, or `all` — which sources the automatic dead-proxy cleanup may touch. |
-| `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope isn't `none` (shrinks under pressure when self-heal is on). |
-| `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default — with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on\|off\|status` (no restart required; the monitor starts sensing within ~30s). |
+| `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope isn't `none` (shrinks under pressure unconditionally — no longer gated by self-heal). |
+| `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to let the AIMD pool controller shed (remove) currently-healthy proxies under sustained pressure. Off by default. Pressure sampling, URL-fetch pacing, probe concurrency scaling, cleanup/reaper cadence, and AIMD pool *growth* are always on regardless of this flag — none of those can remove a healthy proxy, so there's nothing to opt into. Toggle at runtime with `urnet-tools self-heal on\|off\|status`. |
 | `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
 
 ## 📝 Critical Event Log
@@ -66,23 +66,60 @@ You can view the full list of dead and degraded proxies, as well as a live event
 
 ## 🩹 Pressure system (self-heal)
 
-`URNETWORK_SELF_HEAL=1` (or `urnet-tools self-heal on` at runtime) turns on a resource-pressure monitor that scales several actuators proportionally instead of gating them on/off. It's off by default.
+A resource-pressure monitor is always running — it scales several actuators
+proportionally instead of gating them on/off, and none of that requires
+`URNETWORK_SELF_HEAL`. The flag only controls one thing: whether the AIMD
+pool controller is allowed to shed (remove) currently-healthy proxies when
+pressure stays high. It's off by default.
 
-**Sensors** (sampled every 30s, worst-of-N combined, then smoothed with an asymmetric EWMA — fast to react, slow to relax):
+**Sensors** (sampled every 30s, worst-of-N combined, then smoothed with an
+asymmetric EWMA — fast to react, slow to relax):
 - `/proc/pressure/memory` and `/proc/pressure/cpu` (PSI `some avg60`), where available
 - `MemAvailable / MemTotal` from `/proc/meminfo`
 - `loadavg1` per core (fallback where PSI is unavailable)
 - Self-signals: goroutine count and heap fraction of the configured `max-memory` soft limit
 
-These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicted blowout (heap ≥90% of the soft limit, or ≥25,000 goroutines) pins the score to `1.0` immediately, bypassing smoothing.
+These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicted
+blowout (heap ≥90% of the soft limit, or ≥25,000 goroutines) pins the score to
+`1.0` immediately, bypassing smoothing.
 
-**Actuators**, all driven off that one score:
-- URL-fetch pacing stretches from 1× to 8× the configured interval as pressure rises (replaces the old binary skip-at-threshold gate)
+A second signal, `churn`, tracks how large a fraction of tracked proxies the
+degraded-proxy reaper cut on its most recent 3-minute tick, smoothed the same
+way as pressure but sampled on the reaper's own cadence rather than the 30s
+pressure loop — a fast-decaying host-resource signal and a slower fleet-quality
+signal are kept separate rather than blended into one number.
+
+**Actuators, always on regardless of `URNETWORK_SELF_HEAL`:**
+- URL-fetch pacing stretches from 1× to 8× the configured interval as pressure
+  rises (replaces the old binary skip-at-threshold gate)
 - Proxy probe concurrency scales down toward a floor of 1 worker
-- The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
-- An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
+- The dead-proxy cleanup job and the reaper's stale re-probe window both run
+  *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup
+  and the reaper shed load, so pressure is exactly when they should run harder,
+  not less
+- An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in
+  `proxy_url.json`) every 5 minutes: +25 proxies when calm and churn is low
+  (or the churn signal hasn't warmed up yet — a fresh restart isn't treated
+  as "high churn"). A calm box won't grow the pool while the reaper is actively
+  cutting a meaningful slice of the fleet every tick, since new arrivals would
+  just get fed to the same grinder. This growth cap, and the fetch-admission
+  cap it feeds, apply unconditionally.
 
-Check current state with `urnet-tools self-heal status`, which prints the on/off toggle plus the live score, per-component breakdown, and target pool size from `~/.urnetwork/pressure_status`. The same score is included as `pressure` in bandwidth hub reports.
+**The one actuator gated by `URNETWORK_SELF_HEAL`:** after two consecutive
+high-pressure samples (10 min sustained), the pool controller shrinks
+`TargetPoolSize` (×0.7, floor 50, capped by `PROXY_URL_MAX`) and evicts the
+worst URL-sourced proxies to match — dead, then degraded tiers, then healthy
+ones by ascending traffic, with a 1h re-admission backoff. This is the only
+actuator that removes a currently-healthy proxy, which is why it stays opt-in
+behind the flag while everything above it doesn't.
+
+Check current state with `urnet-tools self-heal status`, which prints the
+on/off toggle plus the live pressure score, churn score, per-component
+breakdown, and target pool size from `~/.urnetwork/pressure_status`. The
+pressure score is included as `pressure` in bandwidth hub reports.
 
 > [!NOTE]
-> The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core, etc.) are properties of what each metric means — e.g. "a box stalled on memory 60% of the time is exhausted" holds regardless of core count or RAM size. They are not per-server capacity tuning knobs.
+> The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core,
+> etc.) are properties of what each metric means — e.g. "a box stalled on
+> memory 60% of the time is exhausted" holds regardless of core count or RAM
+> size. They are not per-server capacity tuning knobs.
