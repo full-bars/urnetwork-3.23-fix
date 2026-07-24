@@ -181,6 +181,13 @@ func_start_provider(){
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
         if "$PROVIDER_BIN" provide; then
+            if [ -f /tmp/urnetwork-update-pending ]; then
+                rm -f /tmp/urnetwork-update-pending
+                log "[INFO] Binary updated — restarting provider."
+                failures=0
+                reauth_attempts=0
+                continue
+            fi
             log "[INFO] UrNetwork exited cleanly."
             break
         fi
