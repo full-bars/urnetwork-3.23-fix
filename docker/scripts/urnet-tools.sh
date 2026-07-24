@@ -207,6 +207,104 @@ hub_unlink() {
     echo "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
 }
 
+# === Update Logic ===
+do_update() {
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64) arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        *) echo "ERROR: unsupported architecture $arch"; exit 1 ;;
+    esac
+
+    provider_bin="/app/urnetwork_${arch}_stable"
+
+    echo "Checking for provider updates..."
+
+    release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
+        echo "ERROR: could not reach GitHub API."
+        exit 1
+    }
+
+    version="$(echo "$release_json" | jq -r '.tag_name // empty')"
+    [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
+
+    download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
+    [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
+
+    primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
+
+    current_version="unknown"
+    if [ -x "$provider_bin" ]; then
+        current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
+    fi
+    echo "Current version: $current_version"
+    echo "Latest version: $version"
+
+    if [ "$current_version" = "$version" ]; then
+        echo "Already at latest version. Nothing to update."
+        exit 0
+    fi
+
+    echo "Downloading $version..."
+    tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
+    if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
+        echo "Primary download failed, trying GitHub mirror..."
+        curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
+            echo "ERROR: download failed."
+            rm -f "$tarball"
+            exit 1
+        }
+    fi
+
+    tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
+    tar -xzf "$tarball" -C "$tmpdir" || {
+        echo "ERROR: failed to extract tarball."
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    }
+
+    if [ ! -f "$tmpdir/provider" ]; then
+        echo "ERROR: provider binary not found in tarball."
+        ls -la "$tmpdir/" 2>/dev/null || true
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    fi
+
+    staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    }
+    if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
+        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        exit 1
+    fi
+    if ! mv -f "$staged_provider" "$provider_bin"; then
+        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        exit 1
+    fi
+
+    rm -rf "$tmpdir" "$tarball"
+    echo "Provider binary updated to $version."
+
+    touch /tmp/urnetwork-update-pending
+
+    pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
+    rc=$?
+    case $rc in
+        0) echo "Provider process terminated." ;;
+        1) echo "No running provider process found — nothing to terminate." ;;
+        *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
+    esac
+
+    if pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; then
+        echo "ERROR: provider process is still running after termination attempt."
+        rm -f /tmp/urnetwork-update-pending
+        exit 1
+    fi
+
+    echo "Startup loop will respawn provider with the new binary."
+}
+
 case "$operation" in
     proxy)
         subcmd="${1:-}"
@@ -430,101 +528,55 @@ case "$operation" in
                 ;;
         esac
         ;;
+    idle-update)
+        threshold=1024
+        window=600
+        skip_confirm=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --threshold) threshold="$2"; shift 2 ;;
+                --window) window="$2"; shift 2 ;;
+                -y|-f) skip_confirm=1; shift ;;
+                *) echo "Unknown option: $1"; exit 1 ;;
+            esac
+        done
+
+        health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
+        rate_file="$health_dir/billable_rate"
+
+        echo "Waiting for billable traffic to drop below ${threshold} B/s for ${window}s..."
+        quiet=0
+        while true; do
+            rate=0
+            if [ -f "$rate_file" ]; then
+                content="$(cat "$rate_file" 2>/dev/null || echo "0")"
+                case "$content" in
+                    ''|*[!0-9]*) rate=0 ;;
+                    *) rate="$content" ;;
+                esac
+            fi
+
+            if [ "$rate" -lt "$threshold" ]; then
+                quiet=$((quiet + 10))
+                echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
+                if [ "$quiet" -ge "$window" ]; then
+                    echo ""
+                    echo "Traffic has been quiet for ${window}s. Proceeding with update."
+                    break
+                fi
+            else
+                quiet=0
+                echo "  rate=${rate} B/s — traffic detected, resetting quiet timer"
+            fi
+
+            sleep 10
+        done
+
+        do_update
+        ;;
+
     update)
-        arch="$(uname -m)"
-        case "$arch" in
-            x86_64) arch="amd64" ;;
-            aarch64) arch="arm64" ;;
-            *) echo "ERROR: unsupported architecture $arch"; exit 1 ;;
-        esac
-
-        provider_bin="/app/urnetwork_${arch}_stable"
-
-        echo "Checking for provider updates..."
-
-        release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
-            echo "ERROR: could not reach GitHub API."
-            exit 1
-        }
-
-        version="$(echo "$release_json" | jq -r '.tag_name // empty')"
-        [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
-
-        download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
-        [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
-
-        primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
-
-        current_version="unknown"
-        if [ -x "$provider_bin" ]; then
-            current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
-        fi
-        echo "Current version: $current_version"
-        echo "Latest version: $version"
-
-        if [ "$current_version" = "$version" ]; then
-            echo "Already at latest version. Nothing to update."
-            exit 0
-        fi
-
-        echo "Downloading $version..."
-        tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
-        if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
-            echo "Primary download failed, trying GitHub mirror..."
-            curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
-                echo "ERROR: download failed."
-                rm -f "$tarball"
-                exit 1
-            }
-        fi
-
-        tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
-        tar -xzf "$tarball" -C "$tmpdir" || {
-            echo "ERROR: failed to extract tarball."
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        }
-
-        if [ ! -f "$tmpdir/provider" ]; then
-            echo "ERROR: provider binary not found in tarball."
-            ls -la "$tmpdir/" 2>/dev/null || true
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        fi
-
-        staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        }
-        if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
-            rm -rf "$tmpdir" "$tarball" "$staged_provider"
-            exit 1
-        fi
-        if ! mv -f "$staged_provider" "$provider_bin"; then
-            rm -rf "$tmpdir" "$tarball" "$staged_provider"
-            exit 1
-        fi
-
-        rm -rf "$tmpdir" "$tarball"
-        echo "Provider binary updated to $version."
-
-        touch /tmp/urnetwork-update-pending
-
-        pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
-        rc=$?
-        case $rc in
-            0) echo "Provider process terminated." ;;
-            1) echo "No running provider process found — nothing to terminate." ;;
-            *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
-        esac
-
-        if pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; then
-            echo "ERROR: provider process is still running after termination attempt."
-            rm -f /tmp/urnetwork-update-pending
-            exit 1
-        fi
-
-        echo "Startup loop will respawn provider with the new binary."
+        do_update
         ;;
 
     *)
