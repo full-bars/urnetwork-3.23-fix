@@ -508,8 +508,23 @@ case "$operation" in
         rm -rf "$tmpdir" "$tarball"
         echo "Provider binary updated to $version."
 
-        pkill -x "urnetwork_${arch}_stable" 2>/dev/null || true
-        echo "Container will restart the provider with the new version."
+        touch /tmp/urnetwork-update-pending
+
+        pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
+        rc=$?
+        case $rc in
+            0) echo "Provider process terminated." ;;
+            1) echo "No running provider process found — nothing to terminate." ;;
+            *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
+        esac
+
+        if pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; then
+            echo "ERROR: provider process is still running after termination attempt."
+            rm -f /tmp/urnetwork-update-pending
+            exit 1
+        fi
+
+        echo "Startup loop will respawn provider with the new binary."
         ;;
 
     *)

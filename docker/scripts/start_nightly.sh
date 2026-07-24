@@ -189,7 +189,14 @@ func_check_update() {
         return 0
     else
         log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
-        pkill -x "urnetwork_${A_SYS_ARCH}_nightly" 2>/dev/null || log "No provider to kill"
+
+        touch /tmp/urnetwork-update-pending
+
+        if pkill -f "^/app/urnetwork_${A_SYS_ARCH}_nightly provide" 2>/dev/null; then
+            log "[INFO] Provider process terminated."
+        else
+            log "[INFO] No running provider process found."
+        fi
         mkdir -p "$TMP_DIR"
         ARCHIVE="$TMP_DIR/urnetwork-provider_${LATEST_VERSION}.tar.gz"
         curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
@@ -263,6 +270,12 @@ func_start_provider(){
         # Capture the real exit code (set -e safe; bare `provide` would abort the loop on crash)
         if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
         if [ "$code" -eq 0 ]; then
+            if [ -f /tmp/urnetwork-update-pending ]; then
+                rm -f /tmp/urnetwork-update-pending
+                log "[INFO] Binary updated — restarting provider."
+                failures=0
+                continue
+            fi
             log " [INFO] UrNetwork exited cleanly."
             break
         fi
