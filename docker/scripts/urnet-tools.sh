@@ -555,6 +555,7 @@ case "$operation" in
         rate_file="$health_dir/billable_rate"
 
         echo "Waiting for billable traffic to drop below ${threshold} B/s for ${window}s..."
+        echo "  Polling ${rate_file} every 10s..."
         quiet=0
         while true; do
             rate=0
@@ -564,6 +565,8 @@ case "$operation" in
                     ''|*[!0-9]*) rate=0 ;;
                     *) rate="$content" ;;
                 esac
+            else
+                echo "  billable_rate not found — assuming 0 B/s (provider may be idle)"
             fi
 
             if [ "$rate" -lt "$threshold" ]; then
@@ -571,7 +574,11 @@ case "$operation" in
                 echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
                 if [ "$quiet" -ge "$window" ]; then
                     echo ""
-                    echo "Traffic has been quiet for ${window}s. Proceeding with update."
+                    echo "=== Idle threshold met ==="
+                    echo "  Final rate: ${rate} B/s"
+                    echo "  Quiet window: ${window}s"
+                    echo "  Proceeding with update..."
+                    do_update
                     break
                 fi
             else
@@ -581,8 +588,6 @@ case "$operation" in
 
             sleep 10
         done
-
-        do_update
         ;;
 
     update)
