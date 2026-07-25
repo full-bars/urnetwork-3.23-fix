@@ -1386,8 +1386,7 @@ func runBillableRateWriter(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var prevBillable uint64
-	var prevSet bool
+	prevBillable := make(map[string]uint64)
 	prevTickTime := time.Now()
 
 	tlog("[billable_rate] writer started (interval=%s)\n", interval)
@@ -1401,43 +1400,46 @@ func runBillableRateWriter(ctx context.Context) {
 		}
 
 		if connect.ProxyHealthCount() == 0 {
-			prevSet = false
+			for k := range prevBillable {
+				delete(prevBillable, k)
+			}
 			writeRate(0)
 			continue
 		}
 
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 		if len(bw) == 0 {
-			prevSet = false
+			for k := range prevBillable {
+				delete(prevBillable, k)
+			}
 			writeRate(0)
 			continue
 		}
 
-		var billable uint64
-		for _, p := range bw {
-			billable += p.BillableRx.Load() + p.BillableTx.Load()
+		var totalDelta uint64
+		for key, p := range bw {
+			cur := p.BillableRx.Load() + p.BillableTx.Load()
+			if prev, ok := prevBillable[key]; ok {
+				if cur >= prev {
+					totalDelta += cur - prev
+				}
+			}
+			prevBillable[key] = cur
+		}
+		for k := range prevBillable {
+			if _, ok := bw[k]; !ok {
+				delete(prevBillable, k)
+			}
 		}
 
 		now := time.Now()
-		if !prevSet {
-			prevBillable = billable
-			prevTickTime = now
-			prevSet = true
-			continue
-		}
-
 		elapsed := now.Sub(prevTickTime).Seconds()
 		if elapsed < 1 {
 			elapsed = 1
 		}
-		var delta uint64
-		if billable >= prevBillable {
-			delta = billable - prevBillable
-		}
-		prevBillable = billable
 		prevTickTime = now
 
-		rate := uint64(float64(delta) / elapsed)
+		rate := uint64(float64(totalDelta) / elapsed)
 		writeRate(rate)
 	}
 }
