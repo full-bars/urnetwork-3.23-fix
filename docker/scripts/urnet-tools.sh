@@ -303,6 +303,7 @@ do_update() {
     fi
 
     echo "Startup loop will respawn provider with the new binary."
+    exit 0
 }
 
 case "$operation" in
