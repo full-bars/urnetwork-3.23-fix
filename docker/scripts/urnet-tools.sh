@@ -559,6 +559,7 @@ case "$operation" in
         quiet=0
         while true; do
             rate=0
+            rate_known=1
             if [ -f "$rate_file" ]; then
                 content="$(cat "$rate_file" 2>/dev/null || echo "0")"
                 case "$content" in
@@ -566,10 +567,11 @@ case "$operation" in
                     *) rate="$content" ;;
                 esac
             else
-                echo "  billable_rate not found — assuming 0 B/s (provider may be idle)"
+                rate_known=0
+                echo "  billable_rate not found — running provider predates idle-update; treating as traffic detected, not idle"
             fi
 
-            if [ "$rate" -lt "$threshold" ]; then
+            if [ "$rate_known" -eq 1 ] && [ "$rate" -lt "$threshold" ]; then
                 quiet=$((quiet + 10))
                 echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
                 if [ "$quiet" -ge "$window" ]; then
@@ -582,15 +584,22 @@ case "$operation" in
                     for i in 1 2 3 4 5 6 7 8 9 10; do
                         sleep 1
                         vrate=0
+                        vrate_known=1
                         if [ -f "$rate_file" ]; then
                             content="$(cat "$rate_file" 2>/dev/null || echo "0")"
                             case "$content" in
                                 ''|*[!0-9]*) vrate=0 ;;
                                 *) vrate="$content" ;;
                             esac
+                        else
+                            vrate_known=0
                         fi
-                        if [ "$vrate" -ge "$threshold" ]; then
-                            echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                        if [ "$vrate_known" -eq 0 ] || [ "$vrate" -ge "$threshold" ]; then
+                            if [ "$vrate_known" -eq 0 ]; then
+                                echo "  billable_rate disappeared during verification — going back to 10s polling"
+                            else
+                                echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                            fi
                             verify_failed=1
                             break
                         fi
@@ -604,7 +613,9 @@ case "$operation" in
                 fi
             else
                 quiet=0
-                echo "  rate=${rate} B/s — traffic detected, resetting quiet timer"
+                if [ "$rate_known" -eq 1 ]; then
+                    echo "  rate=${rate} B/s — traffic detected, resetting quiet timer"
+                fi
             fi
 
             sleep 10
