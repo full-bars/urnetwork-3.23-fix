@@ -287,8 +287,8 @@ do_update() {
     echo "Provider binary updated to $version."
 
     marker_dir="$HOME/.urnetwork"
-    mkdir -p "$marker_dir"
-    touch "$marker_dir/update-pending"
+    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; exit 1; }
+    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; exit 1; }
 
     rc=0
     pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
@@ -571,7 +571,7 @@ case "$operation" in
                 echo "  billable_rate not found — running provider predates idle-update; treating as traffic detected, not idle"
             fi
 
-            if { [ "$rate_known" -eq 1 ] && [ "$rate" -lt "$threshold" ]; } || [ "$window" -eq 0 ]; then
+            if { [ "$rate_known" -eq 1 ] && [ "$rate" -le "$threshold" ]; } || [ "$window" -eq 0 ]; then
                 quiet=$((quiet + 10))
                 echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
                 if [ "$quiet" -ge "$window" ]; then
@@ -614,6 +614,8 @@ case "$operation" in
                         echo ""
                         do_update
                         break
+                    else
+                        quiet=0
                     fi
                 fi
             else
