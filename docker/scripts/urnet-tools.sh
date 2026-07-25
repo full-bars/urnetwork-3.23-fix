@@ -290,8 +290,8 @@ do_update() {
     mkdir -p "$marker_dir"
     touch "$marker_dir/update-pending"
 
-    pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
-    rc=$?
+    rc=0
+    pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
     case $rc in
         0) echo "Provider process terminated." ;;
         1) echo "No running provider process found — nothing to terminate." ;;
@@ -571,7 +571,7 @@ case "$operation" in
                 echo "  billable_rate not found — running provider predates idle-update; treating as traffic detected, not idle"
             fi
 
-            if [ "$rate_known" -eq 1 ] && [ "$rate" -lt "$threshold" ]; then
+            if { [ "$rate_known" -eq 1 ] && [ "$rate" -lt "$threshold" ]; } || [ "$window" -eq 0 ]; then
                 quiet=$((quiet + 10))
                 echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
                 if [ "$quiet" -ge "$window" ]; then
@@ -579,31 +579,36 @@ case "$operation" in
                     echo "=== Idle threshold met ==="
                     echo "  Final rate: ${rate} B/s"
                     echo "  Quiet window: ${window}s"
-                    echo "  Verifying sustained quiet (1s polling for 10s)..."
-                    verify_failed=0
-                    for i in 1 2 3 4 5 6 7 8 9 10; do
-                        sleep 1
-                        vrate=0
-                        vrate_known=1
-                        if [ -f "$rate_file" ]; then
-                            content="$(cat "$rate_file" 2>/dev/null || echo "0")"
-                            case "$content" in
-                                ''|*[!0-9]*) vrate=0 ;;
-                                *) vrate="$content" ;;
-                            esac
-                        else
-                            vrate_known=0
-                        fi
-                        if [ "$vrate_known" -eq 0 ] || [ "$vrate" -ge "$threshold" ]; then
-                            if [ "$vrate_known" -eq 0 ]; then
-                                echo "  billable_rate disappeared during verification — going back to 10s polling"
+                    if [ "$window" -eq 0 ]; then
+                        echo "  Skipping verification (window=0 — immediate update requested)."
+                        verify_failed=0
+                    else
+                        echo "  Verifying sustained quiet (1s polling for 10s)..."
+                        verify_failed=0
+                        for i in 1 2 3 4 5 6 7 8 9 10; do
+                            sleep 1
+                            vrate=0
+                            vrate_known=1
+                            if [ -f "$rate_file" ]; then
+                                content="$(cat "$rate_file" 2>/dev/null || echo "0")"
+                                case "$content" in
+                                    ''|*[!0-9]*) vrate=0 ;;
+                                    *) vrate="$content" ;;
+                                esac
                             else
-                                echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                                vrate_known=0
                             fi
-                            verify_failed=1
-                            break
-                        fi
-                    done
+                            if [ "$vrate_known" -eq 0 ] || [ "$vrate" -ge "$threshold" ]; then
+                                if [ "$vrate_known" -eq 0 ]; then
+                                    echo "  billable_rate disappeared during verification — going back to 10s polling"
+                                else
+                                    echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                                fi
+                                verify_failed=1
+                                break
+                            fi
+                        done
+                    fi
                     if [ "$verify_failed" -eq 0 ]; then
                         echo "  Verification passed — proceeding with update..."
                         echo ""
