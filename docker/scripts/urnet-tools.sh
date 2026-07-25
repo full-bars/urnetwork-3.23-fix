@@ -286,7 +286,9 @@ do_update() {
     rm -rf "$tmpdir" "$tarball"
     echo "Provider binary updated to $version."
 
-    touch /tmp/urnetwork-update-pending
+    marker_dir="$HOME/.urnetwork"
+    mkdir -p "$marker_dir"
+    touch "$marker_dir/update-pending"
 
     pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
     rc=$?
@@ -296,11 +298,17 @@ do_update() {
         *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
     esac
 
-    if pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; then
-        echo "ERROR: provider process is still running after termination attempt."
-        rm -f /tmp/urnetwork-update-pending
-        exit 1
-    fi
+    shutdown_timeout=15
+    waited=0
+    while pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; do
+        if [ "$waited" -ge "$shutdown_timeout" ]; then
+            echo "ERROR: provider process still running ${shutdown_timeout}s after termination attempt."
+            rm -f "$marker_dir/update-pending"
+            exit 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
 
     echo "Startup loop will respawn provider with the new binary."
     exit 0
@@ -532,15 +540,16 @@ case "$operation" in
     idle-update)
         threshold=1024
         window=600
-        skip_confirm=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --threshold) threshold="$2"; shift 2 ;;
                 --window) window="$2"; shift 2 ;;
-                -y|-f) skip_confirm=1; shift ;;
                 *) echo "Unknown option: $1"; exit 1 ;;
             esac
         done
+
+        case "$threshold" in ''|*[!0-9]*) echo "ERROR: --threshold must be a non-negative integer"; exit 1 ;; esac
+        case "$window" in ''|*[!0-9]*) echo "ERROR: --window must be a non-negative integer"; exit 1 ;; esac
 
         health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
         rate_file="$health_dir/billable_rate"
