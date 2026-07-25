@@ -187,7 +187,13 @@ cat > "$MOCKBIN/pkill" <<'EOF'
 exit 1
 EOF
 
-chmod +x "$MOCKBIN"/curl "$MOCKBIN"/jq "$MOCKBIN"/tar "$MOCKBIN"/uname "$MOCKBIN"/pkill
+cat > "$MOCKBIN/pgrep" <<'EOF'
+#!/bin/bash
+# Real pgrep exits non-zero when no process matches; harmless for our mocks.
+exit 1
+EOF
+
+chmod +x "$MOCKBIN"/curl "$MOCKBIN"/jq "$MOCKBIN"/tar "$MOCKBIN"/uname "$MOCKBIN"/pkill "$MOCKBIN"/pgrep
 
 CURL_LOG="$TEMP_DIR/curl.log"
 
@@ -443,6 +449,91 @@ test_tarball_name_is_unpredictable() {
     fi
 }
 test_tarball_name_is_unpredictable
+
+# ============================================================================
+# SECTION 7: idle-update with --window 0 — proceeds immediately
+# ============================================================================
+echo ""
+echo "=== SECTION 7: idle-update --window 0 (no monitoring wait) ==="
+
+run_idle_update() {
+    out="$(
+        MOCK_VERSION="${MOCK_VERSION:-}" \
+        MOCK_DOWNLOAD_URL="${MOCK_DOWNLOAD_URL:-}" \
+        MOCK_PRIMARY_FAIL="${MOCK_PRIMARY_FAIL:-0}" \
+        MOCK_MIRROR_FAIL="${MOCK_MIRROR_FAIL:-0}" \
+        MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
+        MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
+        MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
+        CURL_LOG="$CURL_LOG" \
+        PATH="$MOCKBIN:$PATH" \
+        bash "$SCRIPT_COPY" idle-update --window 0 2>&1
+    )" || ec=$?
+    ec="${ec:-0}"
+}
+
+test_idle_update_window_zero() {
+    reset_fixture
+    MOCK_VERSION="v9.9.9-idle-1"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-1/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    run_idle_update
+
+    assert_exit_code "0" "$ec" "idle-update --window 0: exits 0"
+    assert_matches "$out" "Waiting for billable traffic" "idle-update --window 0: shows monitoring header"
+    assert_matches "$out" "quiet.*need 0s" "idle-update --window 0: reports need 0s"
+    assert_matches "$out" "Provider binary updated" "idle-update --window 0: update completed"
+
+    provider_bin="$APP_DIR/urnetwork_amd64_stable"
+    if [ -x "$provider_bin" ]; then
+        echo "  ✅ PASS: idle-update --window 0: provider binary installed"
+    else
+        echo "  ❌ FAIL: idle-update --window 0: provider binary missing"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_idle_update_window_zero
+
+# ============================================================================
+# SECTION 8: idle-update with custom threshold and rate file
+# ============================================================================
+echo ""
+echo "=== SECTION 8: idle-update with custom threshold and billable_rate file ==="
+
+test_idle_update_custom_threshold() {
+    reset_fixture
+
+    HEALTH_DIR="$TEMP_DIR/health"
+    mkdir -p "$HEALTH_DIR"
+    printf '50\n' > "$HEALTH_DIR/billable_rate"
+
+    MOCK_VERSION="v9.9.9-idle-2"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-2/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    out="$(
+        MOCK_VERSION="${MOCK_VERSION:-}" \
+        MOCK_DOWNLOAD_URL="${MOCK_DOWNLOAD_URL:-}" \
+        MOCK_PRIMARY_FAIL="${MOCK_PRIMARY_FAIL:-0}" \
+        MOCK_MIRROR_FAIL="${MOCK_MIRROR_FAIL:-0}" \
+        MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
+        MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
+        MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
+        CURL_LOG="$CURL_LOG" \
+        URNETWORK_PROXY_HEALTH_DIR="$HEALTH_DIR" \
+        PATH="$MOCKBIN:$PATH" \
+        bash "$SCRIPT_COPY" idle-update --threshold 100 --window 0 2>&1
+    )" || ec=$?
+    ec="${ec:-0}"
+
+    assert_exit_code "0" "$ec" "idle-update custom threshold: exits 0"
+    assert_matches "$out" "50 B/s.*quiet" "idle-update custom: reads billable_rate = 50 B/s"
+    assert_matches "$out" "Provider binary updated" "idle-update custom: update completed"
+
+    rm -rf "$HEALTH_DIR"
+}
+test_idle_update_custom_threshold
 
 # ============================================================================
 echo ""
