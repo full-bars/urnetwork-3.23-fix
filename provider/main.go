@@ -1390,9 +1390,12 @@ func runBillableRateWriter(ctx context.Context) {
 	var prevSet bool
 	prevTickTime := time.Now()
 
+	tlog("[billable_rate] writer started (interval=%s)\n", interval)
+
 	for {
 		select {
 		case <-ctx.Done():
+			tlog("[billable_rate] writer stopped\n")
 			return
 		case <-ticker.C:
 		}
