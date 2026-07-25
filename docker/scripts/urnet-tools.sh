@@ -538,8 +538,8 @@ case "$operation" in
         esac
         ;;
     idle-update)
-        threshold=1024
-        window=600
+        threshold=5120
+        window=300
         while [ $# -gt 0 ]; do
             case "$1" in
                 --threshold) threshold="$2"; shift 2 ;;
@@ -577,9 +577,30 @@ case "$operation" in
                     echo "=== Idle threshold met ==="
                     echo "  Final rate: ${rate} B/s"
                     echo "  Quiet window: ${window}s"
-                    echo "  Proceeding with update..."
-                    do_update
-                    break
+                    echo "  Verifying sustained quiet (1s polling for 10s)..."
+                    verify_failed=0
+                    for i in 1 2 3 4 5 6 7 8 9 10; do
+                        sleep 1
+                        vrate=0
+                        if [ -f "$rate_file" ]; then
+                            content="$(cat "$rate_file" 2>/dev/null || echo "0")"
+                            case "$content" in
+                                ''|*[!0-9]*) vrate=0 ;;
+                                *) vrate="$content" ;;
+                            esac
+                        fi
+                        if [ "$vrate" -ge "$threshold" ]; then
+                            echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                            verify_failed=1
+                            break
+                        fi
+                    done
+                    if [ "$verify_failed" -eq 0 ]; then
+                        echo "  Verification passed — proceeding with update..."
+                        echo ""
+                        do_update
+                        break
+                    fi
                 fi
             else
                 quiet=0
