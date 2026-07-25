@@ -1448,9 +1448,12 @@ func writeRate(rate uint64) {
 	tmp := path + ".tmp"
 	content := strconv.FormatUint(rate, 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		tlog("[billable_rate] warn: write failed: %v\n", err)
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		tlog("[billable_rate] warn: rename failed: %v\n", err)
+	}
 }
 
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
