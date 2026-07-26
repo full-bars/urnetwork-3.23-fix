@@ -63,7 +63,7 @@ Each server runs its own provider instance. Standard deployment (Linux shown; se
 ```sh
 # Per server — same steps:
 curl -fSsL https://dl.fullbars.xyz/install.sh | sh
-urnetwork auth <auth-code>
+urnetwork auth
 ```
 
 ### Hot-reload across the fleet
