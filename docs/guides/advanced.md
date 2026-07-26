@@ -244,7 +244,7 @@ tail -f /dev/shm/urnetwork.log
 
 | Symptom | Likely cause | Check |
 |---------|-------------|-------|
-| `up=0` for all proxies | API/auth unreachable | `curl https://api.bringyour.com/` — is the API reachable? |
+| `up=0` for all proxies | API/auth unreachable | `curl https://api.bringyour.com/hello` — is the API reachable? |
 | Proxies stuck "degraded" | Transport connections failing | `[t]auth` log entries, network/firewall |
 | Some proxies showing "auth still failing" | Those proxy IPs can't reach the API | Test from the proxy's network |
 | High error count in `[net][s]select` | Proxy endpoint unreachable or slow | Probe the proxy directly: `curl -x socks5://ip:port https://example.com` |
