@@ -195,13 +195,14 @@ environment:
 
 When `URNETWORK_PROFILE=eco` is set, the provider runs a dynamic GC pressure monitor that adjusts GOGC based on available memory:
 
-| Available RAM | GOGC |
-|---------------|------|
-| > 450 MiB | 50 (normal) |
-| 150-300 MiB | 25 (pressure) |
-| < 150 MiB | 10 (critical) |
+| Available RAM | GOGC | State |
+|---------------|------|-------|
+| >= 450 MiB | 50 | Normal |
+| 301-449 MiB | *holds previous* | Hysteresis (no transition) |
+| 151-300 MiB | 25 | Pressure |
+| <= 150 MiB | 10 | Critical (+ forced GC per tick) |
 
-Recovers with hysteresis when pressure clears.
+The hysteresis zone prevents oscillation — the state doesn't flip on every fluctuation. When pressure clears past 450 MiB, Normal resumes.
 
 ### Message pool sizing
 
@@ -243,7 +244,7 @@ tail -f /dev/shm/urnetwork.log
 
 | Symptom | Likely cause | Check |
 |---------|-------------|-------|
-| `up=0` for all proxies | API/auth unreachable | `curl https://api.bringyour.com/hello` |
+| `up=0` for all proxies | API/auth unreachable | `curl https://api.bringyour.com/` — is the API reachable? |
 | Proxies stuck "degraded" | Transport connections failing | `[t]auth` log entries, network/firewall |
 | Some proxies showing "auth still failing" | Those proxy IPs can't reach the API | Test from the proxy's network |
 | High error count in `[net][s]select` | Proxy endpoint unreachable or slow | Probe the proxy directly: `curl -x socks5://ip:port https://example.com` |
@@ -252,9 +253,9 @@ tail -f /dev/shm/urnetwork.log
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Heap growing during outage | All proxies hold buffers while retrying | Fixed in 26.4: GOMEMLIMIT + reaper |
-| Process using 100% swap | Heap exceeds physical RAM | Lower profile (`eco`), or set `--max-memory` |
-| High goroutine count | Many proxies each with ~14 goroutines | The reaper (26.4) kills worst-performing degraded proxies |
+| Heap growing during outage | All proxies hold buffers while retrying | Fixed in 26.4: GOMEMLIMIT + reaper. If still OOMing, you have too many proxies for the box — deploy fewer |
+| Process using 100% swap | Heap exceeds physical RAM | Lower profile (`eco`), set `--max-memory`, or deploy fewer proxies |
+| High goroutine count | Many proxies each with ~14 goroutines | The reaper (26.4) kills worst-performing degraded proxies. If still overloaded, deploy fewer proxies |
 
 ### Network issues
 
