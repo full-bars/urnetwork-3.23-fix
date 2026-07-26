@@ -44,7 +44,13 @@ This creates:
 urnetwork auth
 ```
 
-The command will prompt you to paste your auth code. The auth code is a one-time token. Your provider JWT is saved to `~/.urnetwork/jwt` and is valid for ~30 days. Hot-restart is enabled by default, so JWT reuse across restarts happens automatically.
+You can also pass the auth code directly:
+
+```sh
+urnetwork auth <your-auth-code>
+```
+
+The auth code is a one-time token. Your provider JWT is saved to `~/.urnetwork/jwt` and is valid for ~30 days. Hot-restart is enabled by default, so JWT reuse across restarts happens automatically.
 
 ### 3. Add proxies
 
@@ -93,7 +99,13 @@ This is the same installer as Linux but uses `launchd` instead of `systemd`. It 
 urnetwork auth
 ```
 
-The command will prompt you to paste your auth code. Same behavior as Linux — JWT saved to `~/.urnetwork/jwt`, hot-restart on by default.
+You can also pass the auth code directly:
+
+```sh
+urnetwork auth <your-auth-code>
+```
+
+Same behavior as Linux — JWT saved to `~/.urnetwork/jwt`, hot-restart on by default.
 
 ### 3. Add proxies
 
@@ -132,6 +144,12 @@ No admin rights required. This installs:
 
 ```powershell
 urnetwork auth
+```
+
+You can also pass the auth code directly:
+
+```powershell
+urnetwork auth <your-auth-code>
 ```
 
 ### 3. Add proxies

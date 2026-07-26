@@ -51,6 +51,12 @@ urnetwork auth
 
 The command will prompt you to paste your auth code. Paste it and press Enter. The code won't appear on screen as you type/paste.
 
+You can also pass the auth code directly:
+
+```sh
+urnetwork auth <your-auth-code>
+```
+
 > [!NOTE]
 > If you already have a JWT on file, you'll be asked whether to overwrite it — type `y` and press Enter.
 
