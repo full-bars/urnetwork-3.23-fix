@@ -77,7 +77,17 @@ journalctl --user -fu urnetwork-hub.service
 > Fix — remap one of the two:
 > - Docker hub: `urnet-tools hub install --docker --port 8081` (or `docker run -p 8081:8080 ...`)
 > - Docker provider: publish vnstat on a different host port, e.g. `-p 8081:8080`, or set `ENABLE_VNSTAT=false` if you don't need it on that node
-> - Bare-metal hub: no install-time flag exists yet — edit `~/.config/systemd/user/urnetwork-hub.service`'s `ExecStart` line to `-addr :8081`, then `systemctl --user daemon-reload && systemctl --user restart urnetwork-hub.service` (and use `:8081` in every `hub set`/`hub link` afterward)
+> - Bare-metal hub: no install-time flag exists yet — use a systemd drop-in so the override survives a future `hub install` re-run (which regenerates the unit file):
+>   ```sh
+>   systemctl --user edit urnetwork-hub.service
+>   ```
+>   In the editor, add (matching the binary and data paths from the generated unit — check `systemctl --user cat urnetwork-hub.service` if yours differ):
+>   ```ini
+>   [Service]
+>   ExecStart=
+>   ExecStart=%h/.local/share/urnetwork-provider/bin/urnetwork-hub -addr :8081 -data %h/.local/share/urnetwork-hub
+>   ```
+>   Then `systemctl --user daemon-reload && systemctl --user restart urnetwork-hub.service` (and use `:8081` in every `hub set`/`hub link` afterward)
 >
 > Providers and the hub on separate hosts are unaffected — this only bites when they share a machine.
 

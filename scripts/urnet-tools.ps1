@@ -820,7 +820,7 @@ switch ($Command) {
                 if ($useDocker) { docker exec $ContainerName provider proxy refresh } else { & $BinaryPath proxy refresh }
             }
             "remove-dead" {
-                if ($useDocker) { docker exec $ContainerName provider proxy remove-dead } else { & $BinaryPath proxy remove-dead }
+                if ($useDocker) { docker exec $ContainerName provider proxy remove-dead @rest } else { & $BinaryPath proxy remove-dead @rest }
             }
             "summary" {
                 if ($useDocker) { docker exec $ContainerName provider proxy summary } else { & $BinaryPath proxy summary }

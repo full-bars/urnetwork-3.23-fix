@@ -130,7 +130,7 @@ The hub dashboard (port 8080) shows:
 > 💡 Dashboard is accessible at `http://<hub-ip>:8080/`
 
 > [!WARNING]
-> **Running the hub on the same host as a provider?** The hub defaults to port `:8080`, and a provider's `ENABLE_VNSTAT=true` stats page (on by default) also binds container port `8080`. Colocated on the same machine, whichever starts second fails to bind. Remap one of them — Docker hub: `hub install --docker --port 8081`; Docker provider: publish vnstat on a different host port or set `ENABLE_VNSTAT=false`; bare-metal hub: edit the `-addr :8080` in `~/.config/systemd/user/urnetwork-hub.service` and restart. See [Hub-Dashboard.md](../Hub-Dashboard.md) for details. Separate hosts are unaffected.
+> **Running the hub on the same host as a provider?** The hub defaults to port `:8080`, and a provider's `ENABLE_VNSTAT=true` stats page (on by default) also binds container port `8080`. Colocated on the same machine, whichever starts second fails to bind. Remap one of them — Docker hub: `hub install --docker --port 8081`; Docker provider: publish vnstat on a different host port or set `ENABLE_VNSTAT=false`; bare-metal hub: use a `systemctl --user edit urnetwork-hub.service` drop-in to override `-addr :8080` rather than editing the generated unit directly (a future `hub install` will regenerate it). See [Hub-Dashboard.md](../Hub-Dashboard.md) for the exact drop-in. Separate hosts are unaffected.
 
 ---
 

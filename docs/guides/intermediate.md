@@ -152,13 +152,15 @@ Auto-update is enabled by default on install (`urnet-tools.ps1 auto-update-enabl
 
 ## 🐋 Option D: Docker Install
 
-Works the same way on Linux, macOS, and Windows — anywhere Docker runs. The example below uses Linux/macOS shell syntax; on Windows PowerShell, swap `~/.urnetwork` for a path like `C:\Users\You\.urnetwork` in the `-v` flags.
+Works the same way on Linux, macOS, and Windows — anywhere Docker runs.
 
 ### 1. Run the container
 
 ```sh
 docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
+
+**Linux/macOS:**
 
 Create a directory for your config:
 
@@ -179,7 +181,28 @@ docker run -d \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-Then load the proxy list:
+**Windows (PowerShell):**
+
+Create a directory for your config:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.urnetwork"
+```
+
+Create `$env:USERPROFILE\proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `BUILD=jwt` and your auth code — PowerShell needs backtick line continuations instead of `\`, and Windows-style volume paths:
+
+```powershell
+docker run -d `
+  --name urnetwork `
+  --restart unless-stopped `
+  -v "$env:USERPROFILE\.urnetwork:/root/.urnetwork" `
+  -v "$env:USERPROFILE\proxies.txt:/app/proxies.txt" `
+  -e BUILD=jwt `
+  -e URNETWORK_AUTH_CODE="<your-auth-code>" `
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+Then load the proxy list (same command on every OS):
 
 ```sh
 docker exec urnetwork urnet-tools proxy add /app/proxies.txt
