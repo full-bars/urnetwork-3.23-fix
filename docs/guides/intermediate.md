@@ -7,9 +7,12 @@ This guide walks you through a complete provider setup with explanations at each
 ## 📋 Before you start
 
 You need:
-- A Linux, macOS, or Windows machine (2 GiB RAM minimum, 4+ GiB recommended) — `sudo`/admin isn't required for any of the native installers
-- An **auth code** from the URnetwork team
-- Optional: a list of SOCKS5 proxies you want the provider to manage
+- A Linux, macOS, or Windows machine with a **wired ethernet connection** — the provider relays traffic in real time, so connection quality matters more than raw CPU/RAM. Avoid wireless backhaul, VPNs on the provider machine, carrier-grade NAT, or anything that adds latency or jitter between the provider and the peers it serves.
+- An **auth code** (generate one from the [web dashboard](https://app.ur.network), the [ur.io site](https://ur.io/), or the URnetwork mobile app)
+- Optional: a list of SOCKS5 proxies you want the provider to manage. Resource needs scale with proxy count — for very large proxy pools, allocate more RAM accordingly.
+
+> [!TIP]
+> **Common latency sources to eliminate:** Home routers doing double-NAT, Wi-Fi extenders, ISP-level CGNAT, oversubscribed shared bandwidth. If you can plug directly into a publicly-routed port on a decent ISP, that's ideal.
 
 ### Which install method should you choose?
 
@@ -38,18 +41,18 @@ This creates:
 ### 2. Authenticate
 
 ```sh
-urnetwork auth <your-auth-code>
+urnetwork auth
 ```
 
-The auth code is a one-time token. Your provider JWT is saved to `~/.urnetwork/jwt` and is valid for ~30 days. Hot-restart is enabled by default, so JWT reuse across restarts happens automatically.
+The command will prompt you to paste your auth code. The auth code is a one-time token. Your provider JWT is saved to `~/.urnetwork/jwt` and is valid for ~30 days. Hot-restart is enabled by default, so JWT reuse across restarts happens automatically.
 
 ### 3. Add proxies
 
 The provider needs proxies to manage. Create a text file with one proxy per line:
 
 ```
-104.207.36.213:1081:user1:pass1
-216.26.233.32:1081:user2:pass2
+192.0.2.45:1081:proxyuser:proxypass
+198.51.100.78:1081:anotheruser:anotherpass
 ```
 
 > **File format:** `address:port:username:password` or just `address:port` for no-auth proxies.
@@ -63,7 +66,7 @@ urnet-tools proxy add ~/proxies.txt
 ### 4. Start and verify
 
 ```sh
-urnet-tools restart
+urnet-tools start
 urnet-tools proxy summary
 ```
 
@@ -87,10 +90,10 @@ This is the same installer as Linux but uses `launchd` instead of `systemd`. It 
 ### 2. Authenticate
 
 ```sh
-urnetwork auth <your-auth-code>
+urnetwork auth
 ```
 
-Same behavior as Linux — JWT saved to `~/.urnetwork/jwt`, hot-restart on by default.
+The command will prompt you to paste your auth code. Same behavior as Linux — JWT saved to `~/.urnetwork/jwt`, hot-restart on by default.
 
 ### 3. Add proxies
 
@@ -103,7 +106,7 @@ Same file format as the systemd method above. macOS's `urnet-tools` wrapper is a
 ### 4. Start and verify
 
 ```sh
-urnet-tools restart
+urnet-tools start
 urnet-tools proxy summary
 ```
 
@@ -128,7 +131,7 @@ No admin rights required. This installs:
 ### 2. Authenticate
 
 ```powershell
-urnetwork auth <your-auth-code>
+urnetwork auth
 ```
 
 ### 3. Add proxies
@@ -136,17 +139,17 @@ urnetwork auth <your-auth-code>
 Same file format as the systemd method above, using a Windows path:
 
 ```powershell
-urnet-tools.ps1 proxy add C:\Users\You\proxies.txt
+urnet-tools proxy add C:\Users\You\proxies.txt
 ```
 
 ### 4. Start and verify
 
 ```powershell
-urnet-tools.ps1 start
-urnet-tools.ps1 proxy summary
+urnet-tools start
+urnet-tools proxy summary
 ```
 
-Auto-update is enabled by default on install (`urnet-tools.ps1 auto-update-enable` / `auto-update-disable` to control it). Stream logs with `urnet-tools.ps1 logs`.
+Auto-update is enabled by default on install (`urnet-tools auto-update-enable` / `auto-update-disable` to control it). Stream logs with `urnet-tools logs`.
 
 ---
 
@@ -202,7 +205,7 @@ docker run -d `
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-Then load the proxy list (same command on every OS):
+The provider will find and load the proxy file automatically on startup. If you need to add proxies after the container is already running, use:
 
 ```sh
 docker exec urnetwork urnet-tools proxy add /app/proxies.txt
@@ -226,7 +229,7 @@ From inside the container, `urnet-tools` is on `PATH` (symlinked to `/usr/local/
 
 ## 📊 Daily commands
 
-These work on Linux as-is, on Windows with a `.ps1` suffix (e.g. `urnet-tools.ps1 proxy summary`), and on Docker prefixed with `docker exec urnetwork`. On macOS, `proxy summary` and `status` work the same way, but `proxy traffic` and `proxy health` aren't implemented in the wrapper — call the provider binary's `proxy summary` for the closest equivalent, or see the note in step 3 above for calling the binary directly.
+These work on all platforms. On Docker, prefix with `docker exec urnetwork`. On macOS, `proxy summary` and `status` work the same way, but `proxy traffic` and `proxy health` aren't implemented in the wrapper — call the provider binary's `proxy summary` for the closest equivalent, or see the note in step 3 above for calling the binary directly.
 
 | Command | What it does |
 |---------|-------------|
@@ -252,7 +255,7 @@ urnet-tools proxy refresh
 
 ## ⚙️ Key environment variables
 
-Set these before starting the provider — `export VAR=value` on Linux/macOS, `$env:VAR = "value"` in PowerShell before running `urnet-tools.ps1 start`, or `-e VAR=value` on `docker run`. On Linux, `urnet-tools` also has toggle commands for some of these (`turbo`, `eco`, `self-heal`) that write the value to a systemd override so it survives restarts without re-exporting.
+Set these before starting the provider — `export VAR=value` on Linux/macOS, `$env:VAR = "value"` in PowerShell, or `-e VAR=value` on `docker run`. On Linux, `urnet-tools` also has toggle commands for some of these (`turbo`, `eco`, `self-heal`) that write the value to a systemd override so it survives restarts without re-exporting.
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
@@ -267,7 +270,7 @@ Set these before starting the provider — `export VAR=value` on Linux/macOS, `$
 
 ```sh
 urnet-tools proxy health         # Linux/Docker
-urnet-tools.ps1 proxy health     # Windows
+urnet-tools proxy health     # all platforms
 ```
 
 Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts. Not available through the macOS wrapper — see the note in step 3 of Option B.
@@ -278,20 +281,18 @@ Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss co
 
 **How do I update?**
 ```sh
-urnet-tools update       # Linux/macOS
-urnet-tools.ps1 update   # Windows
+urnet-tools update
 ```
 
 **How do I stop the provider?**
 ```sh
-urnet-tools stop         # Linux/macOS
-urnet-tools.ps1 stop     # Windows
+urnet-tools stop
 ```
 
 **Where are the logs?**
 - Systemd (Linux): `journalctl -u urnetwork -n 100 -f`
 - launchd (macOS): `~/Library/Logs/com.urnetwork.provider/stdout.log` + `stderr.log`
-- Windows: `urnet-tools.ps1 logs`
+- Windows: `urnet-tools logs`
 - Docker: `docker logs -f urnetwork`
 - RAM logs, Linux/Docker only (survive process restarts, not host reboots — `/dev/shm` is tmpfs): `/dev/shm/urnetwork.log`
 - Events (persist across restarts): `~/.urnetwork/events.log`
