@@ -71,6 +71,26 @@ journalctl --user -fu urnetwork-hub.service
 > [!NOTE]
 > `hub install` writes a systemd drop-in that persists across reboots. The hub database lives at `~/.local/share/urnetwork-hub/hub.db`.
 
+> [!WARNING]
+> **Port 8080 conflict with `ENABLE_VNSTAT`.** The hub defaults to `:8080` (bare-metal `hub install` hardcodes `-addr :8080` with no port flag; Docker's `hub install --docker` and `docker run` default to `-p 8080:8080`). The provider's own `ENABLE_VNSTAT=true` traffic page (on by default in the Docker images) also binds container port 8080. If you colocate a provider and the hub **on the same host**, whichever starts second fails to bind and won't come up.
+>
+> Fix — remap one of the two:
+> - Docker hub: `urnet-tools hub install --docker --port 8081` (or `docker run -p 8081:8080 ...`)
+> - Docker provider: publish vnstat on a different host port, e.g. `-p 8081:8080`, or set `ENABLE_VNSTAT=false` if you don't need it on that node
+> - Bare-metal hub: no install-time flag exists yet — use a systemd drop-in so the override survives a future `hub install` re-run (which regenerates the unit file):
+>   ```sh
+>   systemctl --user edit urnetwork-hub.service
+>   ```
+>   In the editor, add (matching the binary and data paths from the generated unit — check `systemctl --user cat urnetwork-hub.service` if yours differ):
+>   ```ini
+>   [Service]
+>   ExecStart=
+>   ExecStart=%h/.local/share/urnetwork-provider/bin/urnetwork-hub -addr :8081 -data %h/.local/share/urnetwork-hub
+>   ```
+>   Then `systemctl --user daemon-reload && systemctl --user restart urnetwork-hub.service` (and use `:8081` in every `hub set`/`hub link` afterward)
+>
+> Providers and the hub on separate hosts are unaffected — this only bites when they share a machine.
+
 #### TLS Hub Setup (Built-in HTTPS)
 
 The hub has built-in TLS with self-signed cert and trust-on-first-use pinning — no reverse proxy needed:
