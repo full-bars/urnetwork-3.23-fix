@@ -45,7 +45,7 @@ Turbo raises per-connection throughput limits by scaling buffers:
 | Parameter | Default | Turbo V4 | Turbo V8 |
 |-----------|---------|----------|----------|
 | TCP MaxWindowSize | 4 MiB | 4 MiB | 8 MiB |
-| ResendQueueMaxByteCount | 2 MiB | 8 MiB | 16 MiB |
+| ResendQueueMaxByteCount | 4 MiB | 8 MiB | 16 MiB |
 | WebRTC ReceiveBufferSize | 4 MiB | 8 MiB | 16 MiB |
 | GOGC | 100 | 200 | 200 |
 | GOMEMLIMIT | unset | 80% RAM | 80% RAM |
@@ -75,7 +75,7 @@ urnetwork auth                       # interactive, prompts for code
 Proxy changes propagate without restart:
 
 ```sh
-urnet-tools proxy add ~/proxies.txt   # or: proxy remove --match=<pattern>
+urnet-tools proxy add ~/proxies.txt   # or: proxy clear to remove all
 urnet-tools proxy refresh             # triggers reload on the current node
 ```
 
@@ -159,7 +159,7 @@ urnet-tools proxy refresh   # force immediate fetch
 
 ```sh
 urnet-tools proxy add ~/proxies.txt
-urnet-tools proxy remove --match=<pattern>
+urnet-tools proxy clear               # removes all proxies
 urnet-tools proxy refresh
 ```
 

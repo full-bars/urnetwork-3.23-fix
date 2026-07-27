@@ -214,12 +214,12 @@ case "$operation" in
         case "$subcmd" in
             health)  [ -x /usr/local/bin/proxy-health ] && exec /usr/local/bin/proxy-health || { echo "proxy-health not found"; exit 1; } ;;
             traffic) [ -x /usr/local/bin/proxy-traffic ] && exec /usr/local/bin/proxy-traffic || { echo "proxy-traffic not found"; exit 1; } ;;
-            add|clear|refresh|remove-dead|remove|exclude)
+            add|clear|refresh|remove-dead|remove|exclude|summary)
                 [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
                 exec /usr/local/bin/provider proxy "$subcmd" "$@"
                 ;;
             *)
-                echo "Unknown proxy command: $subcmd (Try 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', or 'exclude')"
+                echo "Unknown proxy command: $subcmd (Try 'summary', 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', or 'exclude')"
                 exit 1
                 ;;
         esac
