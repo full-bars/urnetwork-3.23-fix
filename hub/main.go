@@ -1250,6 +1250,12 @@ func main() {
 					return leafHolder.Load(), nil
 				},
 			},
+			// ReadHeaderTimeout/IdleTimeout guard against Slowloris-style
+			// connection exhaustion (dribbled headers, or opened-and-idle
+			// connections). WriteTimeout is deliberately left unset — it
+			// would kill the long-lived /api/events SSE stream.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
@@ -1261,7 +1267,12 @@ func main() {
 
 	mux.HandleFunc("/", requireBasicAuth(dashboardPass, handleDashboard(s)))
 
-	plainSrv := &http.Server{Addr: *addr, Handler: wrapped}
+	plainSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           wrapped,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
 		<-ctx.Done()
