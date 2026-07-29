@@ -1739,8 +1739,9 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 		ipPacket:    ipPacket,
 	}
 	if sequence := initSequence(); sequence == nil {
-		// sequence does not exist and not a syn packet, drop
-		MessagePoolReturn(ipPacket)
+		// initSequence already returns ipPacket to the pool itself on both
+		// of its nil-returning paths (RST-cancel, non-SYN drop) — freeing it
+		// again here would double-return a possibly still-shared buffer.
 		return false, nil
 	} else {
 		// send() only enqueues ipPacket into sendItems on success — free it
