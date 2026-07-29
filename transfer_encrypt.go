@@ -21,6 +21,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect/protocol"
@@ -269,11 +270,20 @@ func (t *sequenceTlsTransport) SetDeadline(time.Time) error      { return nil }
 func (t *sequenceTlsTransport) SetReadDeadline(time.Time) error  { return nil }
 func (t *sequenceTlsTransport) SetWriteDeadline(time.Time) error { return nil }
 
+// sequenceCipherMaxSeals bounds how many messages a single sequenceCipher
+// will seal before ShouldRekey reports true. NIST SP 800-38D caps random
+// 96-bit-nonce GCM at 2^32 invocations per key before collision probability
+// becomes unacceptable; this triggers a background rekey (see
+// peerEncryptionSession.restartHandshake) at a small fraction of that so a
+// long-lived, high-throughput session never gets close to the real limit.
+const sequenceCipherMaxSeals = 1 << 28
+
 // sequenceCipher is the AEAD used to outer-wrap a whole TransferFrame after
 // the per-peer TLS handshake completes. Nonce is random per-message and
 // prepended to the ciphertext.
 type sequenceCipher struct {
-	aead cipher.AEAD
+	aead      cipher.AEAD
+	sealCount atomic.Uint64
 }
 
 func newSequenceCipher(tlsConn *tls.Conn) (*sequenceCipher, error) {
@@ -303,7 +313,16 @@ func (c *sequenceCipher) Seal(plaintext []byte) ([]byte, error) {
 	}
 	out := make([]byte, sequenceTlsAeadNonceSize, sequenceTlsAeadNonceSize+len(plaintext)+c.aead.Overhead())
 	copy(out, nonce)
+	c.sealCount.Add(1)
 	return c.aead.Seal(out, nonce, plaintext, nil), nil
+}
+
+// ShouldRekey reports whether this cipher has sealed enough messages that
+// callers should trigger a fresh handshake epoch (see
+// peerEncryptionSession.restartHandshake) rather than keep sealing under the
+// same key indefinitely. See sequenceCipherMaxSeals.
+func (c *sequenceCipher) ShouldRekey() bool {
+	return sequenceCipherMaxSeals <= c.sealCount.Load()
 }
 
 func (c *sequenceCipher) Open(ciphertext []byte) ([]byte, error) {
