@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -41,8 +42,8 @@ var trustedProxyNets []*net.IPNet
 
 func setTrustedProxies(csv string) {
 	trustedProxyNets = nil
-	for _, entry := range strings.Split(csv, ",") {
-		entry = strings.TrimSpace(entry)
+	for _, rawEntry := range strings.Split(csv, ",") {
+		entry := strings.TrimSpace(rawEntry)
 		if entry == "" {
 			continue
 		}
@@ -57,7 +58,9 @@ func setTrustedProxies(csv string) {
 		}
 		_, ipNet, err := net.ParseCIDR(entry)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "hub: ignoring invalid URNETWORK_HUB_TRUSTED_PROXIES entry %q: %v\n", entry, err)
+			// Log the operator's original entry, not the CIDR-mask-appended
+			// rewrite, so an invalid value is easy to match against config.
+			fmt.Fprintf(os.Stderr, "hub: ignoring invalid URNETWORK_HUB_TRUSTED_PROXIES entry %q: %v\n", strings.TrimSpace(rawEntry), err)
 			continue
 		}
 		trustedProxyNets = append(trustedProxyNets, ipNet)
@@ -96,7 +99,7 @@ func clientIP(r *http.Request) string {
 			return strings.TrimSpace(parts[len(parts)-1])
 		}
 		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return xri
+			return strings.TrimSpace(xri)
 		}
 	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -312,15 +315,15 @@ func (s *store) storeCredential(nodeID, credentialHex string) error {
 // credential only proves "some registered node" — callers MUST check the
 // returned node_id against the node_id acted upon in the request, or a
 // compromised node can act on behalf of any other node.
-func (s *store) validateCredential(credentialHex string) (bool, string, error) {
+func (s *store) validateCredential(ctx context.Context, credentialHex string) (bool, string, error) {
 	if s.db == nil {
 		return false, "", nil
 	}
 	var nodeID string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT node_id FROM node_credentials
 		WHERE credential_hash = ? AND revoked_at IS NULL`, hashCredential(credentialHex)).Scan(&nodeID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, "", nil
 	}
 	if err != nil {
@@ -633,7 +636,7 @@ func authNodeID(r *http.Request) (string, bool) {
 	return id, ok
 }
 
-func requireAuth(token string, next http.HandlerFunc, validateV2 func(string) (bool, string, error)) http.HandlerFunc {
+func requireAuth(token string, next http.HandlerFunc, validateV2 func(context.Context, string) (bool, string, error)) http.HandlerFunc {
 	if token == "" && validateV2 == nil {
 		return next
 	}
@@ -654,7 +657,7 @@ func requireAuth(token string, next http.HandlerFunc, validateV2 func(string) (b
 
 		// Check v2 per-node credential
 		if validateV2 != nil {
-			ok, nodeID, err := validateV2(given)
+			ok, nodeID, err := validateV2(r.Context(), given)
 			if err == nil && ok {
 				r = r.WithContext(context.WithValue(r.Context(), ctxAuthNodeID, nodeID))
 				next(w, r)
@@ -1128,8 +1131,8 @@ func main() {
 	// v2 credential validator: checks Bearer token against stored node credentials,
 	// returning the node_id it was issued to so requireAuth can bind the request
 	// to that node.
-	validateV2 := func(credential string) (bool, string, error) {
-		return s.validateCredential(credential)
+	validateV2 := func(ctx context.Context, credential string) (bool, string, error) {
+		return s.validateCredential(ctx, credential)
 	}
 
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s), validateV2))
