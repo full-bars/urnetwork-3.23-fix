@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -814,7 +815,7 @@ func TestStoreCredentialAndValidate(t *testing.T) {
 		t.Fatalf("storeCredential: %v", err)
 	}
 
-	ok, err := s.validateCredential("deadbeef")
+	ok, _, err := s.validateCredential("deadbeef")
 	if err != nil {
 		t.Fatalf("validateCredential: %v", err)
 	}
@@ -822,7 +823,7 @@ func TestStoreCredentialAndValidate(t *testing.T) {
 		t.Error("validateCredential(correct credential) = false, want true")
 	}
 
-	ok, err = s.validateCredential("wrongcredential")
+	ok, _, err = s.validateCredential("wrongcredential")
 	if err != nil {
 		t.Fatalf("validateCredential: %v", err)
 	}
@@ -869,7 +870,7 @@ func TestRevokeCredentialInvalidatesIt(t *testing.T) {
 		t.Fatalf("revokeCredential: %v", err)
 	}
 
-	ok, err := s.validateCredential("deadbeef")
+	ok, _, err := s.validateCredential("deadbeef")
 	if err != nil {
 		t.Fatalf("validateCredential: %v", err)
 	}
@@ -905,7 +906,7 @@ func TestNodeRemoveRevokesPakeCredential(t *testing.T) {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
-	ok, err := s.validateCredential("deadbeef")
+	ok, _, err := s.validateCredential("deadbeef")
 	if err != nil {
 		t.Fatalf("validateCredential: %v", err)
 	}
@@ -1310,4 +1311,174 @@ func TestHandleHeartbeatDoesNotPublishOnUnknownNode(t *testing.T) {
 	}
 }
 
+// --- v2 credential node-binding tests (a compromised/malicious node's
+// credential must only authorize actions on its own node_id) ---
 
+func TestValidateCredentialReturnsOwningNodeID(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+
+	if err := s.storeCredential("n1", "deadbeef"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	ok, nodeID, err := s.validateCredential("deadbeef")
+	if err != nil {
+		t.Fatalf("validateCredential: %v", err)
+	}
+	if !ok || nodeID != "n1" {
+		t.Errorf("validateCredential(deadbeef) = (%v, %q), want (true, \"n1\")", ok, nodeID)
+	}
+}
+
+func TestNodeRemoveRejectsCredentialForDifferentNode(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+	s.Nodes = map[string]*nodeState{
+		"n1": {NodeID: "n1"},
+		"n2": {NodeID: "n2"},
+	}
+	s.rates = make(map[string]*nodeRate)
+
+	if err := s.storeCredential("n1", "n1cred"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	validateV2 := func(credential string) (bool, string, error) {
+		return s.validateCredential(credential)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes/remove", requireAuth("", handleNodeRemove(s), validateV2))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// n1's credential trying to remove n2 must be forbidden.
+	body, _ := json.Marshal(removeRequest{NodeID: "n2"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/nodes/remove", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer n1cred")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if s.Nodes["n2"] == nil {
+		t.Errorf("n2 was removed using n1's credential")
+	}
+
+	// n1's credential removing n1 itself must still be allowed.
+	body, _ = json.Marshal(removeRequest{NodeID: "n1"})
+	req, _ = http.NewRequest("POST", ts.URL+"/api/nodes/remove", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer n1cred")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if s.Nodes["n1"] != nil {
+		t.Errorf("n1 was not removed using its own credential")
+	}
+}
+
+func TestHandleReportRejectsCredentialForDifferentNode(t *testing.T) {
+	s, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer s.db.Close()
+	s.Nodes = make(map[string]*nodeState)
+	s.rates = make(map[string]*nodeRate)
+	s.broadcast = newBroadcaster()
+
+	if err := s.storeCredential("n1", "n1cred"); err != nil {
+		t.Fatalf("storeCredential: %v", err)
+	}
+
+	validateV2 := func(credential string) (bool, string, error) {
+		return s.validateCredential(credential)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/report", requireAuth("", handleReport(s), validateV2))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(nodeState{NodeID: "n2"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer n1cred")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if s.Nodes["n2"] != nil {
+		t.Errorf("n2 report was applied using n1's credential")
+	}
+}
+
+// --- clientIP / X-Forwarded-For trust tests ---
+
+func TestClientIPIgnoresXFFFromUntrustedPeer(t *testing.T) {
+	setTrustedProxies("")
+	req := &http.Request{
+		Header:     http.Header{"X-Forwarded-For": []string{"1.2.3.4"}},
+		RemoteAddr: "9.9.9.9:1234",
+	}
+	if got := clientIP(req); got != "9.9.9.9" {
+		t.Errorf("clientIP = %q, want %q (untrusted peer's XFF must be ignored)", got, "9.9.9.9")
+	}
+}
+
+func TestClientIPHonorsXFFFromTrustedPeer(t *testing.T) {
+	setTrustedProxies("127.0.0.1/32")
+	defer setTrustedProxies("")
+	req := &http.Request{
+		Header:     http.Header{"X-Forwarded-For": []string{"1.2.3.4, 127.0.0.1"}},
+		RemoteAddr: "127.0.0.1:1234",
+	}
+	if got := clientIP(req); got != "127.0.0.1" {
+		t.Errorf("clientIP = %q, want rightmost XFF entry %q", got, "127.0.0.1")
+	}
+}
+
+// --- onboard.sh Host-header injection guard ---
+
+func TestOnboardScriptRejectsInvalidHost(t *testing.T) {
+	handler := handleOnboardScript("")
+	req := httptest.NewRequest("GET", "/onboard.sh", nil)
+	req.Host = "evil$(id).example.com"
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 for shell-metacharacter Host header", w.Code)
+	}
+}
+
+func TestOnboardScriptAcceptsValidHost(t *testing.T) {
+	handler := handleOnboardScript("")
+	req := httptest.NewRequest("GET", "/onboard.sh", nil)
+	req.Host = "hub.example.com"
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200 for a normal hostname", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `HUB_URL="https://hub.example.com"`) {
+		t.Errorf("script body missing expected HUB_URL, got: %s", w.Body.String())
+	}
+}
