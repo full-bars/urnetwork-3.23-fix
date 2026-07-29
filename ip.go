@@ -962,10 +962,21 @@ func (self *UdpBuffer[BufferId]) udpSend(
 	}
 	sequence := initSequence(nil)
 	if success, err := sequence.send(sendItem, timeout); err == nil {
+		// send() only enqueues ipPacket into sendItems on success — on every
+		// drop path (idle-close, full channel, timeout) ownership never
+		// transferred, so the caller (runShard) never sees a reason to
+		// return it to the pool. Free it here or it leaks on backpressure.
+		if !success {
+			MessagePoolReturn(ipPacket)
+		}
 		return success, nil
 	} else {
-		// sequence closed
-		return initSequence(sequence).send(sendItem, timeout)
+		// sequence closed, retry against a fresh one
+		success, err := initSequence(sequence).send(sendItem, timeout)
+		if !success {
+			MessagePoolReturn(ipPacket)
+		}
+		return success, err
 	}
 }
 
@@ -1729,9 +1740,16 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 	}
 	if sequence := initSequence(); sequence == nil {
 		// sequence does not exist and not a syn packet, drop
+		MessagePoolReturn(ipPacket)
 		return false, nil
 	} else {
-		return sequence.send(sendItem, timeout)
+		// send() only enqueues ipPacket into sendItems on success — free it
+		// here on every drop path or it leaks on backpressure.
+		success, err := sequence.send(sendItem, timeout)
+		if !success {
+			MessagePoolReturn(ipPacket)
+		}
+		return success, err
 	}
 }
 
