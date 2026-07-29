@@ -239,7 +239,12 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	}
 
 	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// A plain `defer ticker.Stop()` binds the ticker *value* at defer time;
+	// once the loop below reassigns `ticker` to a new one on an interval
+	// change, that defer only ever stops the original, now-discarded
+	// ticker, leaking the live one. Deferring a closure reads the current
+	// value of `ticker` when the function actually returns.
+	defer func() { ticker.Stop() }()
 
 	var client *http.Client
 	activeReportURL := ""
@@ -529,7 +534,10 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 	}
 
 	ticker := time.NewTicker(baseInterval)
-	defer ticker.Stop()
+	// See the comment on the equivalent defer above: a plain
+	// `defer ticker.Stop()` would only ever stop this original ticker, not
+	// any reassigned below on an interval change.
+	defer func() { ticker.Stop() }()
 
 	// The client is cached across ticks and only rebuilt when the target
 	// hub URL changes, so a 15s heartbeat cadence doesn't pay a fresh

@@ -366,7 +366,12 @@ func (self *transferQueueMaxHeap[T]) Len() int {
 }
 
 func (self *transferQueueMaxHeap[T]) Less(i int, j int) bool {
-	return 0 <= self.cmp(self.orderedItems[i], self.orderedItems[j])
+	// Must be a strict less-than: sort.Interface requires Less(i,j) and
+	// Less(j,i) to both be false on equal keys. The previous `0 <=` made
+	// both true simultaneously on ties, which doesn't break heap
+	// correctness but makes heap.up/heap.down walk further than necessary
+	// on equal keys instead of stopping early.
+	return 0 < self.cmp(self.orderedItems[i], self.orderedItems[j])
 }
 
 func (self *transferQueueMaxHeap[T]) Swap(i int, j int) {

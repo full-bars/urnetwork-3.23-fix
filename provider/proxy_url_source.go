@@ -724,7 +724,12 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
 	ticker := time.NewTicker(activeInterval)
-	defer ticker.Stop()
+	// A plain `defer ticker.Stop()` binds the ticker *value* at defer time;
+	// once the loop below reassigns `ticker` on an interval change, that
+	// defer only ever stops the original, now-discarded ticker. Deferring a
+	// closure reads the current value of `ticker` when the function
+	// actually returns.
+	defer func() { ticker.Stop() }()
 	for {
 		select {
 		case <-ctx.Done():

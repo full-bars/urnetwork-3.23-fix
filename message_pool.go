@@ -196,9 +196,15 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 		newMessagePool(65536, int(InitialMessagePoolByteCount/ByteCount(65536))),
 	}
 
-	go HandleError(func() {
-		poolStats(pools)
-	})
+	if debugTags {
+		// poolStats' per-tag breakdown is only meaningful when debugTags
+		// assigns real caller tags; with it off every allocation is tag 0,
+		// so this would otherwise log 5 near-empty Infof lines every 60s in
+		// production for no diagnostic value.
+		go HandleError(func() {
+			poolStats(pools)
+		})
+	}
 
 	return pools
 })
