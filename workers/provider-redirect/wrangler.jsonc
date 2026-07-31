@@ -1,0 +1,8 @@
+{
+  "name": "provider-redirect",
+  "main": "src/index.js",
+  "compatibility_date": "2025-02-04",
+  "routes": [
+    { "pattern": "provider.fullbars.xyz/*", "zone_name": "fullbars.xyz" }
+  ]
+}
