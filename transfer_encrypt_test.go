@@ -2,6 +2,8 @@ package connect
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -637,5 +639,61 @@ func TestAcquireForSendRestartPolicy(t *testing.T) {
 				t.Fatal("server AcquireForSend must never restart the handshake")
 			}
 		})
+	}
+}
+
+func newTestSequenceCipher(t *testing.T) *sequenceCipher {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand.Read key: %v", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("aes.NewCipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM: %v", err)
+	}
+	return &sequenceCipher{aead: aead}
+}
+
+// TestSequenceCipherSealSelfDecrypts is a basic sanity check that Seal/Open
+// round-trip, independent of the rekey-cap bookkeeping below.
+func TestSequenceCipherSealSelfDecrypts(t *testing.T) {
+	c := newTestSequenceCipher(t)
+	plaintext := []byte("hello world")
+	ciphertext, err := c.Seal(plaintext)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	opened, err := c.Open(ciphertext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if string(opened) != string(plaintext) {
+		t.Fatalf("Open() = %q, want %q", opened, plaintext)
+	}
+}
+
+// TestSequenceCipherShouldRekey guards the fix bounding the number of
+// messages sealed under one AEAD key: NIST SP 800-38D caps random 96-bit
+// nonce GCM at 2^32 invocations/key before nonce-collision probability
+// becomes unacceptable, and this fork previously had no cap or rekey trigger
+// at all (see sequenceCipherMaxSeals). Rather than actually seal 2^28
+// messages, this drives the counter directly to the boundary.
+func TestSequenceCipherShouldRekey(t *testing.T) {
+	c := newTestSequenceCipher(t)
+
+	c.sealCount.Store(sequenceCipherMaxSeals - 1)
+	if c.ShouldRekey() {
+		t.Fatal("ShouldRekey() = true one seal below the cap, want false")
+	}
+	if _, err := c.Seal([]byte("x")); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if !c.ShouldRekey() {
+		t.Fatal("ShouldRekey() = false at the cap, want true")
 	}
 }
