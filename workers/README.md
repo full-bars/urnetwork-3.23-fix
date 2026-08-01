@@ -57,7 +57,7 @@ Workers use the classic `addEventListener('fetch', ...)` service-worker format (
 the live deployments). Deploy with `wrangler deploy` from each worker directory, or via the
 Cloudflare API. Update a script via:
 
-```
+```http
 PUT /accounts/{account_id}/workers/scripts/{script_name}
 Content-Type: application/javascript   # raw body, not JSON
 ```

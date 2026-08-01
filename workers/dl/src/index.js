@@ -38,7 +38,10 @@ case "$os" in
     ;;
 esac
 echo "Detected $os -> $script"
-curl -fsSL "$script" | sh -s -- "$@"
+tmp="$(mktemp)" || exit 1
+trap 'rm -f "$tmp"' 0 1 2 15
+curl -fsSL "$script" -o "$tmp" || { echo "download failed" >&2; exit 1; }
+sh "$tmp" "$@"
 `;
 
 const LANDING_PAGE = `<!doctype html>
