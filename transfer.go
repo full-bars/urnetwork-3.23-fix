@@ -2925,6 +2925,12 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 	if err != nil {
 		return fmt.Errorf("outer wrap seal: %w", err)
 	}
+	if cipher.ShouldRekey() {
+		// bound the number of messages sealed under one AEAD key (see
+		// sequenceCipherMaxSeals); non-disruptive, established cipher keeps
+		// serving until the new epoch's handshake completes
+		self.session.restartHandshake()
+	}
 	// Carry the wrapping session's role + companion as the destination's
 	// decrypt hint; the destination routes to its complement role / matching
 	// companion session.
@@ -3643,6 +3649,11 @@ func (self *ReceiveSequence) Run() {
 				ciphertext, sealErr := cipher.Seal(transferFrameBytes)
 				if sealErr != nil {
 					return fmt.Errorf("ack outer wrap seal: %w", sealErr)
+				}
+				if cipher.ShouldRekey() {
+					// bound the number of messages sealed under one AEAD key
+					// (see sequenceCipherMaxSeals); non-disruptive
+					self.session.restartHandshake()
 				}
 				// Carry our receive session's role + companion as the peer's
 				// decrypt hint (it routes to the complement of our role / the

@@ -1417,9 +1417,12 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 
 						if 0 < len(abandonedClients) {
 							if rstPacket, ok := ipOosRst(update.ipPath); ok {
+								// Send takes ownership of parsedPacket.packet, so a bare
+								// aliased slice would be an N-way double-return the moment
+								// ipOosRst's buffer becomes pool-backed. Share it explicitly.
 								for _, abandonedClient := range abandonedClients {
 									abandonedClient.Send(&parsedPacket{
-										packet: rstPacket,
+										packet: MessagePoolShareReadOnly(rstPacket),
 										ipPath: update.ipPath,
 									}, 0)
 								}
@@ -1621,9 +1624,12 @@ func (self *RemoteUserNatMultiClient) clientReceivePacket(
 	})
 	if 0 < len(abandonedClients) {
 		if rstPacket, ok := ipOosRst(ipPath); ok {
+			// Send takes ownership of parsedPacket.packet, so a bare aliased
+			// slice would be an N-way double-return the moment ipOosRst's
+			// buffer becomes pool-backed. Share it explicitly.
 			for _, abandonedClient := range abandonedClients {
 				abandonedClient.Send(&parsedPacket{
-					packet: rstPacket,
+					packet: MessagePoolShareReadOnly(rstPacket),
 					ipPath: ipPath,
 				}, 0)
 			}
@@ -1685,6 +1691,7 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 						receivePackets = race.clientStates[client].packets
 						for _, p := range receivePackets {
 							if p.Pooled {
+								p.Pooled = false
 								returnPackets = append(returnPackets, p)
 							}
 						}
@@ -1696,6 +1703,7 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 						abandonedClients = append(abandonedClients, abandonedClient)
 						for _, p := range abandonedState.packets {
 							if p.Pooled {
+								p.Pooled = false
 								returnPackets = append(returnPackets, p)
 							}
 						}
@@ -1706,9 +1714,12 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 		})
 		if 0 < len(abandonedClients) {
 			if rstPacket, ok := ipOosRst(ipPath); ok {
+				// Send takes ownership of parsedPacket.packet, so a bare aliased
+				// slice would be an N-way double-return the moment ipOosRst's
+				// buffer becomes pool-backed. Share it explicitly.
 				for _, abandonedClient := range abandonedClients {
 					abandonedClient.Send(&parsedPacket{
-						packet: rstPacket,
+						packet: MessagePoolShareReadOnly(rstPacket),
 						ipPath: ipPath,
 					}, 0)
 				}
@@ -3120,6 +3131,15 @@ func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, 
 			opts...,
 		)
 		if err != nil {
+			// Treat like a failed send for pool-ownership purposes: on the
+			// legacy (non-raw) path, frame.MessageBytes is a distinct pooled
+			// wrapper allocated by ipPacketToProviderFrame above, not an
+			// alias of parsedPacket.packet — an error here would otherwise
+			// leak it on every send failure (e.g. continuous errors during
+			// a client outage drain the pool).
+			if !frame.Raw {
+				MessagePoolReturn(frame.MessageBytes)
+			}
 			return success, err
 		}
 		if success {
