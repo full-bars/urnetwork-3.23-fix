@@ -553,6 +553,23 @@ case "$operation" in
         case "$threshold" in ''|*[!0-9]*) echo "ERROR: --threshold must be a non-negative integer"; exit 1 ;; esac
         case "$window" in ''|*[!0-9]*) echo "ERROR: --window must be a non-negative integer"; exit 1 ;; esac
 
+        # Bash's [ -gt / -le ] only handle signed 64-bit integers; billable_rate
+        # is a Go uint64 and could exceed that range.
+        in_int64_range() {
+            v="$1"
+            len=${#v}
+            if [ "$len" -gt 19 ]; then
+                return 1
+            elif [ "$len" -eq 19 ] && [ "$v" \> "9223372036854775807" ]; then
+                return 1
+            fi
+            return 0
+        }
+        if ! in_int64_range "$threshold"; then
+            echo "ERROR: --threshold is out of range"
+            exit 1
+        fi
+
         health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
         rate_file="$health_dir/billable_rate"
 
@@ -565,8 +582,8 @@ case "$operation" in
             if [ -f "$rate_file" ]; then
                 content="$(cat "$rate_file" 2>/dev/null || echo "0")"
                 case "$content" in
-                    ''|*[!0-9]*) rate=0 ;;
-                    *) rate="$content" ;;
+                    ''|*[!0-9]*) rate_known=0 ;;
+                    *) if in_int64_range "$content"; then rate="$content"; else rate_known=0; fi ;;
                 esac
             else
                 rate_known=0
@@ -602,7 +619,7 @@ case "$operation" in
                                 content="$(cat "$rate_file" 2>/dev/null)" || vrate_known=0
                                 case "$content" in
                                     ''|*[!0-9]*) vrate_known=0 ;;
-                                    *) vrate="$content" ;;
+                                    *) if in_int64_range "$content"; then vrate="$content"; else vrate_known=0; fi ;;
                                 esac
                             else
                                 vrate_known=0
