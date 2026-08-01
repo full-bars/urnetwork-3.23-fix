@@ -39,8 +39,23 @@ async function getLatestVersion(ctx) {
   return response;
 }
 
+const FORWARD_REQUEST_HEADERS = ['range', 'if-none-match', 'if-modified-since'];
+
 async function proxyRelease(request, url) {
   const githubUrl = `${GITHUB_DL}${url.pathname}${url.search}`;
-  const resp = await fetch(githubUrl, { method: request.method, headers: request.headers });
+
+  const forwardHeaders = new Headers();
+  for (const name of FORWARD_REQUEST_HEADERS) {
+    const value = request.headers.get(name);
+    if (value) forwardHeaders.set(name, value);
+  }
+  forwardHeaders.set('User-Agent', 'fullbars-dl-worker');
+
+  let resp;
+  try {
+    resp = await fetch(githubUrl, { method: request.method, headers: forwardHeaders });
+  } catch (err) {
+    return new Response('failed', { status: 502 });
+  }
   return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
 }

@@ -12,9 +12,9 @@ addEventListener("fetch", event => {
     postal: cf.postalCode,
     timezone: cf.timezone,
     colo: cf.colo,
-    edgeLatency: cf.clientTcpRtt ? cf.clientTcpRtt + "ms" : null
+    edgeLatency: (cf.clientTcpRtt || cf.clientQuicRtt) ? (cf.clientTcpRtt || cf.clientQuicRtt) + "ms" : null
   };
   event.respondWith(new Response(JSON.stringify(data, null, 2), {
-    headers: { "content-type": "application/json" }
+    headers: { "content-type": "application/json", "Cache-Control": "no-store" }
   }));
 });
