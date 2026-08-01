@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,13 @@ import (
 const (
 	onboardTokenTTL = 15 * time.Minute
 )
+
+// validHostname matches a bare hostname or IPv4 address: letters, digits, dots,
+// and hyphens only. r.Host is client-controlled and gets interpolated into a
+// double-quoted shell variable in onboardScriptTemplate, so anything outside
+// this set (in particular `$`, `(`, `)`, which Go's Host-header validation
+// permits) must be rejected rather than passed through.
+var validHostname = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
 
 var tokenFileMu sync.Mutex
 
@@ -189,6 +197,10 @@ func handleOnboardScript(tlsPort string) http.HandlerFunc {
 		// and append tlsPort explicitly, rather than falling back to the
 		// request's own host:port when tlsPort happens to be "443".
 		hostOnly := strings.Split(r.Host, ":")[0]
+		if !validHostname.MatchString(hostOnly) {
+			http.Error(w, `{"error":"invalid host"}`, 400)
+			return
+		}
 		httpsURL := fmt.Sprintf("https://%s", hostOnly)
 		if tlsPort != "" && tlsPort != "443" {
 			httpsURL = fmt.Sprintf("https://%s:%s", hostOnly, tlsPort)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -91,7 +92,7 @@ func TestHandleKE1AndKE3_FullHandshakeSucceeds(t *testing.T) {
 		t.Error("returned credential does not match the client's derived session key")
 	}
 
-	ok, err := s.validateCredential(ke3Resp.Credential)
+	ok, _, err := s.validateCredential(context.Background(), ke3Resp.Credential)
 	if err != nil {
 		t.Fatalf("validateCredential: %v", err)
 	}
