@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -31,18 +32,75 @@ import (
 
 var Version string
 
-// clientIP extracts the real client IP when the hub sits behind a reverse
-// proxy (Caddy, nginx). Prefers X-Forwarded-For, then X-Real-IP, falling
-// back to the TCP remote address.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+// trustedProxyNets holds the CIDR ranges (from URNETWORK_HUB_TRUSTED_PROXIES)
+// that clientIP will accept X-Forwarded-For/X-Real-IP from. Left empty by
+// default, which means "trust nothing" — X-Forwarded-For is otherwise
+// entirely attacker-controlled (any client can send it) and is the sole key
+// for the PAKE join rate limiter, so honoring it unconditionally lets an
+// attacker put a fresh value on every request and never hit the limit.
+var trustedProxyNets []*net.IPNet
+
+func setTrustedProxies(csv string) {
+	trustedProxyNets = nil
+	for _, rawEntry := range strings.Split(csv, ",") {
+		entry := strings.TrimSpace(rawEntry)
+		if entry == "" {
+			continue
 		}
-		return xff
+		if !strings.Contains(entry, "/") {
+			if ip := net.ParseIP(entry); ip != nil {
+				bits := 32
+				if ip.To4() == nil {
+					bits = 128
+				}
+				entry = fmt.Sprintf("%s/%d", entry, bits)
+			}
+		}
+		_, ipNet, err := net.ParseCIDR(entry)
+		if err != nil {
+			// Log the operator's original entry, not the CIDR-mask-appended
+			// rewrite, so an invalid value is easy to match against config.
+			fmt.Fprintf(os.Stderr, "hub: ignoring invalid URNETWORK_HUB_TRUSTED_PROXIES entry %q: %v\n", strings.TrimSpace(rawEntry), err)
+			continue
+		}
+		trustedProxyNets = append(trustedProxyNets, ipNet)
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+}
+
+func remoteIPTrusted(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range trustedProxyNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP extracts the real client IP when the hub sits behind a reverse
+// proxy (Caddy, nginx). X-Forwarded-For/X-Real-IP are only honored when the
+// direct TCP peer (r.RemoteAddr) is in trustedProxyNets — otherwise a client
+// can forge either header directly and spoof its apparent identity, which
+// matters both for the dashboard's SourceIP display and, more seriously, for
+// rate-limiting keyed on this value (see checkJoinRateLimit).
+func clientIP(r *http.Request) string {
+	if remoteIPTrusted(r.RemoteAddr) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Rightmost entry is the one the trusted proxy itself appended;
+			// entries to its left may be attacker-supplied.
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
 	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -252,17 +310,26 @@ func (s *store) storeCredential(nodeID, credentialHex string) error {
 	return err
 }
 
-// validateCredential checks if a credential hex string matches an active (non-revoked)
-// entry for any node. Returns true if valid.
-func (s *store) validateCredential(credentialHex string) (bool, error) {
+// validateCredential checks if a credential hex string matches an active
+// (non-revoked) entry, and if so returns the node_id it was issued to. A v2
+// credential only proves "some registered node" — callers MUST check the
+// returned node_id against the node_id acted upon in the request, or a
+// compromised node can act on behalf of any other node.
+func (s *store) validateCredential(ctx context.Context, credentialHex string) (bool, string, error) {
 	if s.db == nil {
-		return false, nil
+		return false, "", nil
 	}
-	var count int
-	err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM node_credentials
-		WHERE credential_hash = ? AND revoked_at IS NULL`, hashCredential(credentialHex)).Scan(&count)
-	return count > 0, err
+	var nodeID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT node_id FROM node_credentials
+		WHERE credential_hash = ? AND revoked_at IS NULL`, hashCredential(credentialHex)).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return true, nodeID, nil
 }
 
 // revokeCredential marks a node's credential as revoked. Used for node removal.
@@ -553,7 +620,23 @@ func nodeColor(ts time.Time) string {
 	return "#ef4444"
 }
 
-func requireAuth(token string, next http.HandlerFunc, validateV2 func(string) (bool, error)) http.HandlerFunc {
+// ctxAuthNodeID carries the node_id a v2 credential was issued to, so
+// handlers can reject requests whose body targets a different node_id. Only
+// set for v2 (per-node) auth; a v1 static token is treated as admin and
+// grants unrestricted access, matching prior behavior.
+type ctxKey int
+
+const ctxAuthNodeID ctxKey = iota
+
+// authNodeID returns the node_id bound to this request by a v2 credential,
+// and whether one was set at all (false for v1 static-token/admin requests,
+// which are unrestricted).
+func authNodeID(r *http.Request) (string, bool) {
+	id, ok := r.Context().Value(ctxAuthNodeID).(string)
+	return id, ok
+}
+
+func requireAuth(token string, next http.HandlerFunc, validateV2 func(context.Context, string) (bool, string, error)) http.HandlerFunc {
 	if token == "" && validateV2 == nil {
 		return next
 	}
@@ -574,8 +657,9 @@ func requireAuth(token string, next http.HandlerFunc, validateV2 func(string) (b
 
 		// Check v2 per-node credential
 		if validateV2 != nil {
-			ok, err := validateV2(given)
+			ok, nodeID, err := validateV2(r.Context(), given)
 			if err == nil && ok {
+				r = r.WithContext(context.WithValue(r.Context(), ctxAuthNodeID, nodeID))
 				next(w, r)
 				return
 			}
@@ -624,6 +708,10 @@ func handleReport(s *store) http.HandlerFunc {
 			http.Error(w, "missing node_id", 400)
 			return
 		}
+		if authID, restricted := authNodeID(r); restricted && authID != ns.NodeID {
+			http.Error(w, "forbidden: credential does not match node_id", 403)
+			return
+		}
 		ns.Timestamp = time.Now().UTC()
 		ns.SourceIP = clientIP(r)
 		ns.TLS = r.TLS != nil
@@ -657,6 +745,10 @@ func handleHeartbeat(s *store) http.HandlerFunc {
 		}
 		if hb.NodeID == "" {
 			http.Error(w, "missing node_id", 400)
+			return
+		}
+		if authID, restricted := authNodeID(r); restricted && authID != hb.NodeID {
+			http.Error(w, "forbidden: credential does not match node_id", 403)
 			return
 		}
 		hb.Timestamp = time.Now().UTC()
@@ -820,6 +912,10 @@ func handleNodeRemove(s *store) http.HandlerFunc {
 		}
 		if req.NodeID == "" {
 			http.Error(w, "missing node_id", 400)
+			return
+		}
+		if authID, restricted := authNodeID(r); restricted && authID != req.NodeID {
+			http.Error(w, "forbidden: credential does not match node_id", 403)
 			return
 		}
 		s.mu.Lock()
@@ -1007,6 +1103,11 @@ func main() {
 		fmt.Println("hub: WARNING URNETWORK_HUB_TOKEN not set — /api/report and /api/nodes/remove are unauthenticated")
 	}
 
+	// Comma-separated list of reverse-proxy IPs/CIDRs (e.g. "127.0.0.1,10.0.0.0/8")
+	// allowed to set X-Forwarded-For/X-Real-IP. Unset means no proxy is trusted
+	// and clientIP always falls back to the raw TCP peer address.
+	setTrustedProxies(os.Getenv("URNETWORK_HUB_TRUSTED_PROXIES"))
+
 	dashboardPass := os.Getenv("URNETWORK_HUB_DASHBOARD_PASS")
 	if dashboardPass == "" {
 		fmt.Println("hub: WARNING URNETWORK_HUB_DASHBOARD_PASS not set — dashboard and read-only API are unauthenticated")
@@ -1027,9 +1128,11 @@ func main() {
 
 	var tlsSrv *http.Server
 
-	// v2 credential validator: checks Bearer token against stored node credentials
-	validateV2 := func(credential string) (bool, error) {
-		return s.validateCredential(credential)
+	// v2 credential validator: checks Bearer token against stored node credentials,
+	// returning the node_id it was issued to so requireAuth can bind the request
+	// to that node.
+	validateV2 := func(ctx context.Context, credential string) (bool, string, error) {
+		return s.validateCredential(ctx, credential)
 	}
 
 	mux.HandleFunc("/api/report", requireAuth(hubToken, handleReport(s), validateV2))
@@ -1150,6 +1253,12 @@ func main() {
 					return leafHolder.Load(), nil
 				},
 			},
+			// ReadHeaderTimeout/IdleTimeout guard against Slowloris-style
+			// connection exhaustion (dribbled headers, or opened-and-idle
+			// connections). WriteTimeout is deliberately left unset — it
+			// would kill the long-lived /api/events SSE stream.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
 		go func() {
 			fmt.Printf("hub: HTTPS listening on %s\n", tlsListen)
@@ -1161,7 +1270,12 @@ func main() {
 
 	mux.HandleFunc("/", requireBasicAuth(dashboardPass, handleDashboard(s)))
 
-	plainSrv := &http.Server{Addr: *addr, Handler: wrapped}
+	plainSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           wrapped,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
 		<-ctx.Done()
