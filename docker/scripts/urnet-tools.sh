@@ -278,17 +278,19 @@ do_update() {
         rm -rf "$tmpdir" "$tarball" "$staged_provider"
         exit 1
     fi
+
+    marker_dir="$HOME/.urnetwork"
+    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
+    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
+
     if ! mv -f "$staged_provider" "$provider_bin"; then
+        rm -f "$marker_dir/update-pending"
         rm -rf "$tmpdir" "$tarball" "$staged_provider"
         exit 1
     fi
 
     rm -rf "$tmpdir" "$tarball"
     echo "Provider binary updated to $version."
-
-    marker_dir="$HOME/.urnetwork"
-    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; exit 1; }
-    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; exit 1; }
 
     rc=0
     pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
@@ -585,20 +587,27 @@ case "$operation" in
                     else
                         echo "  Verifying sustained quiet (1s polling for 10s)..."
                         verify_failed=0
+                        fresh_seen=0
+                        last_mtime=""
+                        if [ -f "$rate_file" ]; then
+                            last_mtime="$(stat -c %Y "$rate_file" 2>/dev/null)"
+                        fi
                         for i in 1 2 3 4 5 6 7 8 9 10; do
                             sleep 1
                             vrate=0
                             vrate_known=1
+                            cur_mtime=""
                             if [ -f "$rate_file" ]; then
-                                content="$(cat "$rate_file" 2>/dev/null || echo "0")"
+                                cur_mtime="$(stat -c %Y "$rate_file" 2>/dev/null)"
+                                content="$(cat "$rate_file" 2>/dev/null)" || vrate_known=0
                                 case "$content" in
-                                    ''|*[!0-9]*) vrate=0 ;;
+                                    ''|*[!0-9]*) vrate_known=0 ;;
                                     *) vrate="$content" ;;
                                 esac
                             else
                                 vrate_known=0
                             fi
-                            if [ "$vrate_known" -eq 0 ] || [ "$vrate" -ge "$threshold" ]; then
+                            if [ "$vrate_known" -eq 0 ] || [ "$vrate" -gt "$threshold" ]; then
                                 if [ "$vrate_known" -eq 0 ]; then
                                     echo "  billable_rate disappeared during verification — going back to 10s polling"
                                 else
@@ -607,7 +616,15 @@ case "$operation" in
                                 verify_failed=1
                                 break
                             fi
+                            if [ -n "$cur_mtime" ] && [ "$cur_mtime" != "$last_mtime" ]; then
+                                fresh_seen=1
+                                last_mtime="$cur_mtime"
+                            fi
                         done
+                        if [ "$verify_failed" -eq 0 ] && [ "$fresh_seen" -eq 0 ]; then
+                            echo "  No fresh billable_rate sample observed during verification window — going back to 10s polling"
+                            verify_failed=1
+                        fi
                     fi
                     if [ "$verify_failed" -eq 0 ]; then
                         echo "  Verification passed — proceeding with update..."
