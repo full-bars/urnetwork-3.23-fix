@@ -498,4 +498,30 @@ docker run -d \
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
 
+## ⏳ Idle Update
+
+As of `v3.23.0-fix.26.5`, `urnet-tools idle-update` lets you apply a pending provider update without interrupting active client sessions — it waits for a quiet traffic window before swapping the binary, instead of updating immediately and cutting off whatever's in flight:
+
+```sh
+docker exec -it <container> urnet-tools idle-update
+```
+
+It polls `billable_rate` every 10s and waits until traffic stays at or below a threshold for a sustained window, then double-checks with 1s polling for 10s before actually applying the update — so a brief lull doesn't trigger an update while traffic is still fluctuating.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--threshold <bytes/sec>` | `5120` (5 KiB/s) | Traffic at or below this is considered "quiet". |
+| `--window <seconds>` | `300` (5 min) | How long traffic must stay quiet before updating. |
+
+```sh
+# Wait for a 10-minute quiet window under 10 KiB/s
+docker exec -it <container> urnet-tools idle-update --window 600 --threshold 10240
+
+# Skip waiting entirely and update immediately
+docker exec -it <container> urnet-tools idle-update --window 0
+```
+
+> [!NOTE]
+> If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update — it fails closed.
+
 For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
