@@ -2192,7 +2192,7 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 
 ---
 
-## 93. Ramlog Redirect Scoped to `provide` (PR #306)
+## 93. Ramlog Redirect Scoped to `provide`/`auth-provide` (PR #306)
 
 **Purpose**: Found while validating entry #92 on a live Detroit test container. `URNETWORK_RAMLOGS=1` does a process-wide file-descriptor `dup2` of stdout/stderr into `/dev/shm/urnetwork.log` — but it applied to *every* invocation of the binary, not just the long-running `provide` process. Running a one-shot CLI subcommand via `docker exec` (`proxy remove-dead --preview`, `proxy summary`, `--version`, etc.) against a container with ramlogs enabled produced zero visible output: the results silently went into the ramlog file instead of the caller's terminal.
 
