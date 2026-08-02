@@ -164,6 +164,21 @@ Then point providers at the domain instead of an IP:
 urnet-tools hub set https://hub.yourdomain.com
 ```
 
+#### Trusting the reverse proxy's forwarded IP
+
+As of `v3.23.0-fix.26.5`, the hub ignores `X-Forwarded-For`/`X-Real-IP` by default — every client IP shown on the dashboard, and used for PAKE join rate-limiting, is the direct TCP peer instead. That's correct with no reverse proxy in front, but behind Caddy/nginx it means every request appears to come from the proxy's own IP, collapsing the join rate limiter's per-attacker key into one shared bucket.
+
+Set `URNETWORK_HUB_TRUSTED_PROXIES` to a comma-separated list of IPs or CIDRs (e.g. `127.0.0.1,::1` for a proxy on the same host) to have the hub honor the forwarded header **only** when the direct connection comes from one of those addresses:
+
+```sh
+docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
+  -e URNETWORK_HUB_TRUSTED_PROXIES=127.0.0.1,::1 \
+  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+```
+
+> [!WARNING]
+> Don't set this to a broad range like `0.0.0.0/0`. Without a reverse proxy in front, `X-Forwarded-For` is entirely attacker-controlled — any client can send it — so trusting it from an untrusted peer lets an attacker spoof their apparent IP and evade the join rate limiter entirely. Only list the reverse proxy's own address(es).
+
 ### Locking Down the Dashboard
 
 By default, the fleet dashboard (`/`) and all read-only API endpoints (`/api/nodes/*`, `/api/proxies/*`, `/api/history`, `/api/events`) are open to anyone who can reach the hub's address — no auth required. Set `URNETWORK_HUB_DASHBOARD_PASS` to gate them behind HTTP Basic Auth. Any username is accepted; only the password is checked.

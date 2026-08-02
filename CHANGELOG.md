@@ -6,6 +6,32 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [v3.23.0-fix.26.5] — 2026-08-02
+
+### Added
+
+**`urnet-tools idle-update`** (#301): Waits for billable traffic to drop below a threshold (default 5 KiB/s, `--threshold`) and stay there for a sustained window (default 5 min, `--window`) — verified with a second, tighter polling pass — before applying a pending provider update, instead of updating immediately and cutting off active sessions. `--window 0` updates immediately. Fails closed if `billable_rate` isn't available yet, and rejects `--threshold`/`--window`/rate values outside Bash's signed-int64 range.
+
+**Cloudflare Worker sources versioned in-repo** (#304): `dl`, `dl-fullbars`, `geo`, and `provider-redirect` — previously dashboard-only or partially untracked — now live under `workers/` with their `wrangler.jsonc` configs and a `workers/README.md`. Deploys remain manual (`wrangler deploy`); nothing is wired into CI.
+
+**`URNETWORK_HUB_TRUSTED_PROXIES`** (#302): New hub env var. `X-Forwarded-For`/`X-Real-IP` are now only honored from configured trusted proxy IPs/CIDRs — previously trusted unconditionally from any client, letting an attacker spoof their apparent IP and evade PAKE join rate-limiting entirely. Without this env var set, a hub behind a reverse proxy now sees the proxy's own IP for every request (collapsing rate-limiting into one shared bucket) instead of trusting an unverified header — set it to the proxy's address to restore correct per-client behavior.
+
+**Upstream a2b144c port** (#298): `WindowType`/`OverrideAllowDirect`/PQE/peer-identity support ported from upstream `urnetwork/connect`.
+
+**Tiered setup guides** (#297): Beginner/intermediate/advanced installation documentation.
+
+### Fixed
+
+**`proxy.state` ghost-entry accumulation** (#305): `ProxyReloader.reload()` in `proxy_reload.go` only pruned `proxy.state` for addresses that were both currently running and no longer desired. A dead/offline proxy's goroutine has usually already exited by the time it's removed (e.g. via `proxy remove-dead`), so it was never in the "running" set and its state entry was never deleted — accumulating forever and getting re-reported as removable on every subsequent `remove-dead` run. Confirmed on a production node: 722 proxies correctly removed from config/live fleet, but `proxy.state` retained 857 entries, 711 of which existed nowhere else. `reload()` now reconciles `proxy.state` against the full desired set (config/file + URL cache) instead. Guards against a related edge case: if `proxy_url.json` fails to read mid-cycle, the prune pass is skipped rather than deleting state for still-desired URL proxies over a transient error.
+
+**Pooled-buffer leaks on backpressure/error** (#303): `tcpSend` could double-return a pooled packet on certain nil-sequence paths in `ip.go`. UDP backpressure drops and RST-buffer sharing are now leak-free under load; GCM seal count is capped per key.
+
+**Node-bound hub credentials** (#302): v2 node credentials are now bound to their owning node — a valid credential for one node can no longer act on another node's data via `/api/report`, `/api/heartbeat`, or `/api/nodes/remove`. `onboard.sh`'s Host header is validated before being interpolated into the generated install script.
+
+**Docker in-place update process handling** (#299): The update path now kills the correct process and respawns it properly.
+
+**Cloudflare Worker hardening** (#304): `dl-fullbars`'s GitHub proxy now allowlists outbound headers instead of forwarding everything from the client; the `curl | sh` install dispatcher fails the install if the script download fails instead of silently running an empty script; `geo` worker's RTT fields use explicit null checks and the response is marked `Cache-Control: no-store`.
+
 ## [v3.23.0-fix.26.4] — 2026-07-18
 
 ### Added
