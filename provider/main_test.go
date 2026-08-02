@@ -631,6 +631,14 @@ func TestIsLongRunningSubcommand(t *testing.T) {
 		{[]string{"provider", "auth"}, false},
 		{[]string{"provider"}, false},
 		{[]string{}, false},
+		// -h/--help/--version terminate via docopt before provide/auth-provide
+		// ever actually runs long — must not trigger the redirect, or the
+		// terminating output itself goes silent.
+		{[]string{"provider", "provide", "--help"}, false},
+		{[]string{"provider", "provide", "-h"}, false},
+		{[]string{"provider", "provide", "--version"}, false},
+		{[]string{"provider", "auth-provide", "--help"}, false},
+		{[]string{"provider", "provide", "--port=8080", "--help"}, false},
 	}
 	for _, c := range cases {
 		os.Args = c.args
