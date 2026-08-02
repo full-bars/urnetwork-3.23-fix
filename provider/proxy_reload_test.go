@@ -518,3 +518,52 @@ func TestDoWriteReloadTrigger_IncrementsSequence(t *testing.T) {
 	}
 	// Confirm doWriteReloadTrigger bypasses debounce (no suppression)
 }
+
+// TestRunReloadReconciler_FiresOnInterval is a regression test for a fleet
+// incident: a mass-failure event (a transient backend outage) can leave a
+// batch of still-desired proxies stuck out of the running set with no future
+// event scheduled to bring them back, since reload() only runs on an
+// explicit trigger. Confirmed live: ~3300 proxies sat recently_offline for
+// ~20+ hours on a production node until an unrelated add-source call forced
+// a reload. runReloadReconciler is the safety net — it must fire a reload
+// trigger on its own cadence regardless of whether anything else requested
+// one, and must stop cleanly when its context is cancelled.
+func TestRunReloadReconciler_FiresOnInterval(t *testing.T) {
+	withTempHome(t)
+	lastReloadTriggerTime.ts = time.Time{}
+
+	origInterval := reconciliationReloadInterval
+	reconciliationReloadInterval = 20 * time.Millisecond
+	t.Cleanup(func() { reconciliationReloadInterval = origInterval })
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runReloadReconciler(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		seq, _ := readReloadSeq(reloadPath)
+		if seq >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected runReloadReconciler to write at least one reload trigger before the deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected runReloadReconciler to return promptly after context cancellation")
+	}
+}
