@@ -2189,3 +2189,15 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 - `provider/proxy_reload_test.go` — `TestReload_PrunesGhostStateEntries_NotRunningNotDesired`, `TestReload_PreservesBackoffURLProxyState`, `TestReload_SkipsPruneOnURLCacheReadFailure`.
 
 **Status**: ✅ Merged `main` (2026-08-02). PR #305. v3.23.0-fix.26.5. Validated on a live test deployment (500 URL-sourced proxies): an explicit `remove-dead` run pruned exactly 14/14 with zero left behind, and a spontaneous give-up/eviction cycle was separately observed pruning 7 stale entries on its own before `remove-dead` was ever invoked.
+
+---
+
+## 93. Ramlog Redirect Scoped to `provide` (PR #306)
+
+**Purpose**: Found while validating entry #92 on a live Detroit test container. `URNETWORK_RAMLOGS=1` does a process-wide file-descriptor `dup2` of stdout/stderr into `/dev/shm/urnetwork.log` — but it applied to *every* invocation of the binary, not just the long-running `provide` process. Running a one-shot CLI subcommand via `docker exec` (`proxy remove-dead --preview`, `proxy summary`, `--version`, etc.) against a container with ramlogs enabled produced zero visible output: the results silently went into the ramlog file instead of the caller's terminal.
+
+**Fix**: New `isLongRunningSubcommand()` in `provider/main.go` checks `os.Args[1]` for `provide`/`auth-provide`, excluding `-h`/`--help`/`--version` (this check runs from `init()`, before `docopt.ParseArgs` gets a chance to handle those flags and exit — without the exclusion, `provide --help` would have had its usage text redirected too). Gates all three redirect call sites: `initGlog()`'s direct path, the auto-profile slow-disk-benchmark path (which also skipped running `RunStartupAudit()` for one-shot commands as an unrelated latency win), and the auto-detected handover path. `shmlog_linux.go`'s `initSHMLogger()` also now prints a short "[ramlogs] output redirected to ..." notice to the pre-redirect stdout, before the `dup2` — visible on `docker logs`/journald for the `provide` process itself, or the caller's terminal for a one-shot command in the rare case ramlogs got enabled some other way.
+
+**Files Changed**: `provider/main.go`, `provider/main_test.go` (`TestIsLongRunningSubcommand`), `provider/shmlog_linux.go`
+
+**Status**: ✅ Merged `main` (2026-08-02). PR #306. v3.23.0-fix.26.5.
