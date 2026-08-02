@@ -1918,29 +1918,272 @@ Rewrite `refreshJWT()` to use `/auth/code-create → /auth/code-login` — the s
 - `scripts/urnet-tools.ps1` — Windows Docker wiring.
 - `docs/Configuration.md`, `README.md`, `AI.md` — documented the new command and env vars.
 
-**Status**: Open in PR #288 (branch `feat/choose-network`), not yet merged.
-
-**Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4. Startup-triggered refresh (fires on first invocation, since no `jwt_last_refresh` file exists yet) confirmed working in production. The 7-day periodic path has not yet been separately observed completing a cycle.
+**Status**: ✅ Merged `main` (2026-07-17). PR #288. v3.23.0-fix.26.3.
 
 ---
 
-## 74. proxy.state Ghost-Entry Pruning (PR #305)
+## 74. Disk-Based Critical Event Log + RAM-Log Restart Persistence (PR #242)
+
+**Purpose**: `/dev/shm` ramlogs are wiped on every restart, so a crash that took the process down with it left zero forensic trail. Needed a log that survives the event that necessitated looking at it.
+
+**Change**:
+- New `~/.urnetwork/events.log` — 1MB capped, auto-rotating, lives on disk (not RAM). Captures `STARTUP`, `SIGNAL`, `PROVIDER EXIT`, `PANIC`, and `FATAL` events specifically — not general chatter.
+- `connect.CritLogger`/`connect.LogCritical()` (new, in the root `connect` package) lets any networking goroutine write a recovered panic to this disk-based log, not just `provider/`.
+- `shmLogPath`/`shmImportantLogPath` (the RAM logs) switched from `O_TRUNC` to `O_APPEND` — a restart no longer wipes the previous run's tail. A `--- provider restarted at ... ---` separator marks the boundary, which is also what `shmlog_linux.go`'s current ghost-fix-adjacent notice printing (see entry #92) builds on.
+
+**Files Changed**: `critlogger.go`, `provider/critlog.go`, `provider/main.go`, `provider/shmlog_linux.go`, `trace.go`
+
+**Status**: ✅ Merged `main` (2026-07-08). PR #242. v3.23.0-fix.26.
+
+---
+
+## 75. Help Text Reorganization + No-Arg Status Toggles (PR #245, #247)
+
+**Purpose**: `Provider_Install_Linux.sh`'s `--help` output hadn't been touched since the script was much smaller; hub commands weren't documented at all, and running a toggle command (`eco`, `ramlogs`, `lowmode`, `hot-restart`) with no argument errored instead of reporting current status.
+
+**Change**: `show_help()` rewritten with full descriptions and a `urnet-tools set help` sub-menu; hub commands documented for the first time. `eco`/`ramlogs`/`lowmode`/`hot-restart` invoked with no args now print current status; space-separated aliases (`hot restart`) work the same as the hyphenated form.
+
+**Files Changed**: `scripts/Provider_Install_Linux.sh`, `scripts/test_help_text.sh`
+
+**Status**: ✅ Merged `main` (2026-07-09). PR #245, #247. v3.23.0-fix.26.
+
+---
+
+## 76. IPv6 STUN Auto-Detect (PR #246)
+
+**Purpose**: On hosts with no real IPv6 connectivity (common on cheap VPS/NAT setups), ICE candidate gathering wasted time and log noise trying IPv6 STUN reachability on every connection attempt.
+
+**Change**: Provider probes IPv6 STUN reachability once at startup via a `sync.Once`-guarded 100ms UDP dial. If unreachable, ICE candidates are restricted to `NetworkTypeUDP4`/`NetworkTypeTCP4` for the process lifetime, eliminating repeated "network is unreachable" STUN noise.
+
+**Files Changed**: `transport_p2p_webrtc.go`, `transport_p2p_webrtc_pc.go`
+
+**Status**: ✅ Merged `main` (2026-07-10). PR #246. v3.23.0-fix.26.
+
+---
+
+## 77. Transport Self-Wake CPU Loop — Structural Fix (PR #248)
+
+**Purpose**: Follow-up to the 100% CPU bug from PR #191. That fix addressed the symptom; this addresses the actual structural hazard so no future code change inside the mode-selection loop can reintroduce it.
+
+**Root Cause**: `run()` in `transport.go` captured the mode-change notify channel *before* calling `setActiveMode()`. If `setActiveMode()`'s `NotifyAll()` fired (which it always does on a mode change, and could on redundant calls), it closed the very channel `select` was about to block on — an already-closed channel wakes `select` instantly, so the loop spun at 100% CPU with zero actual work to do.
+
+**Fix**:
+```go
+// Before: notify captured early, self-triggered close causes spin
+available, notify := self.modesAvailable()
+self.setActiveMode(mode)
+select { case <-notify: }
+
+// After: channel captured AFTER mode-selection work, redundant calls skipped
+available, _ := self.modesAvailable()
+if bestMode != lastMode {
+    self.setActiveMode(bestMode)
+    lastMode = bestMode
+}
+_, notify := self.activeMode()
+select { case <-notify: }
+```
+Zero added latency (still wakes on the next real notification) and structurally eliminates the self-wake regardless of what future code runs inside the loop. Diagnostic log reworded from "spurious call... likely self-wake loop" to "redundant setActiveMode(h1) — if frequent, check for 100% CPU (self-wake loop)" for operator clarity.
+
+**Files Changed**: `transport.go`
+
+**Status**: ✅ Merged `main` (2026-07-09). PR #248. v3.23.0-fix.26.
+
+---
+
+## 78. Session Save/Load — Cross-Platform Identity Transfer (PR #250, #251, #252, #253, #254)
+
+**Purpose**: Let an operator move a provider's full identity + proxy configuration (JWT, keys, cert, proxy list) to a different machine without re-authenticating (auth codes are single-use).
+
+**Change**:
+- **Core** (`provider/main.go`, PR #250): `urnet-tools session save <file>` / `session load <file>` — bundles all 7 identity/proxy-list files from `~/.urnetwork/`, encrypted via `openssl aes-256-cbc -pbkdf2` with a prompted passphrase. `provider print-network-id <file>` (new hidden CLI subcommand) extracts the bundle's `network_id` JWT claim so `session load` can refuse to import a bundle from a different account. 6 file paths converted from `os.WriteFile` to atomic `os.CreateTemp`+`os.Rename` so `session save` is safe to run against a live, traffic-serving provider. `applyStagedSession()` runs early in `provide()`, checking for a `.session-pending` marker and atomically swapping staged files into the live directory — this is what lets `session load` work without stopping the provider first.
+- **macOS** (`scripts/Provider_Install_Mac.sh`, PR #252): New native installer — `install`, `start/stop/restart/status` via `launchctl`, `hot-restart on|off`, `session save|load`, `proxy`, `hub`, `auth`, `logs`. Installs to `~/.local/share/urnetwork-provider/`, launchd plist with `KeepAlive`, strips the quarantine xattr. `release.yml` expanded to build/publish `darwin/amd64` and `darwin/arm64`.
+- **Windows** (`scripts/urnet-tools.ps1`, PR #251): `hot-restart on|off` toggle with process-level `$env:` propagation so an immediate restart inherits the setting without a fresh shell.
+- **Docker** (`docker/scripts/urnet-tools.sh`, PR #253): `session save|load` added, with an interactive-TTY guard that prompts if `-it` was omitted from `docker exec`. Restart is via `pkill`, relying on the start script's crash-loop restart.
+- **Security hardening** (PR #254, same-week follow-up): `openssl enc -pass "pass:$var"` (visible in `ps` output) replaced with `-pass "file:$_pf"` using a temp file cleaned up immediately after. macOS installer's `cp "$0"` (fails silently under `curl | sh`, since `$0` isn't a real file path in that invocation) replaced with a GitHub raw URL download. `atomicWriteFile`'s fixed `path + ".tmp"` changed to `os.CreateTemp(dir, name+".*.tmp")` to avoid collisions under concurrent `.provider.key`/`.cert` writers. `session load --force` parsing fixed to scan all args after the file path instead of only the immediate next one. Bundle load now hard-fails if `print-network-id` returns empty (corrupt bundle JWT) instead of silently bypassing the network-ID safety gate.
+
+**Files Changed**: `provider/main.go`, `provider/main_test.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `scripts/urnet-tools.ps1`, `docker/scripts/urnet-tools.sh`
+
+**Status**: ✅ Merged `main` (2026-07-09 – 2026-07-10). PR #250, #251, #252, #253, #254. v3.23.0-fix.26.
+
+---
+
+## 79. Docker In-Place Updates (PR #255)
+
+**Purpose**: Updating a Docker-deployed provider previously meant pulling a new image and recreating the container (via Watchtower or manually). `urnet-tools update` inside the running container allows an in-place binary replacement without touching the image.
+
+**Files Changed**: `docker/scripts/urnet-tools.sh`
+
+**Status**: ✅ Merged `main` (2026-07-10). PR #255. v3.23.0-fix.26.1.
+
+---
+
+## 80. Hot-Reload Lock Race + Shutdown Diagnostics (PR #260)
+
+**Purpose**: Investigation of a live incident on a fleet node where `provider proxy remove --match=decodo --yes` caused the running provider to die with exit code 0, and separately, where config changes from the CLI were sometimes silently never picked up.
+
+**Bug #1 — lock-file race silently dropped hot-reloads (confirmed root cause)**: `removeDeadProxies()` and `evictProxyURLAddress()` in `proxy_url_source.go` acquire `~/.urnetwork/proxy.lock`, modify config, and write the reload trigger — all before their deferred `release()` runs (Go's `defer` fires after `return` evaluates, so the trigger was written *while the lock was still held*). The running provider's own `reload()` tries to acquire that same lock; if the CLI still holds it, `acquireProxyLock()` errors and `reload()` bails out early. Since the trigger's sequence number was already bumped, the watcher's next poll sees no change and never retries — the config change is lost silently, with no error surfaced anywhere. **Fix**: call `release()` explicitly before `writeReloadTrigger()` in both functions.
+
+**Bug #2 — provider exit during hot-reload, root cause undetermined, diagnostics added**: Log analysis showed *all* ~2000 proxies received `context canceled` during the incident, not just the ~200 targeted by `--match` — including the native/direct proxy, whose context (`nativeCtx`) is explicitly wired to be immune to hot-reload deletions. That's only possible if the **main context** itself was cancelled, not individual proxy contexts, but the expected `[provider] shutting down: main context cancelled` / `[signal] received` log lines were never seen (likely never flushed before exit). Added `debug.Stack()` capture on `ctx.Done()` in `main.go` and PID in the `[signal]` log in `util.go` so a repeat occurrence is diagnosable. Root cause of *why* the main context was cancelled remains open.
+
+**Also added**: `🔄 [proxy] reload trigger: seq N → M` log line at trigger-detection time in the watcher goroutine — previously there was no log signal for when a reload was triggered vs. when it completed.
+
+**Files Changed**: `provider/proxy_url_source.go`, `provider/proxy_reload.go`, `provider/main.go`, `util.go`
+
+**Status**: ✅ Merged `main` (2026-07-13). PR #260. v3.23.0-fix.26.1.
+
+---
+
+## 81. Self-Healing Proxy Resource Management (PR #259)
+
+**Purpose**: A production meltdown where thousands of dead-but-still-desired proxies caused a huge goroutine pile-up and days of sustained 100% CPU. Two layers: always-on correctness fixes (apply regardless of any toggle) and an opt-in closed-loop pressure-response system.
+
+**Always-on fixes** (independent of any toggle):
+- `proxy_url_max` now defaults to 500 (was unlimited).
+- Cleanup `cleanup_scope` defaults to `"url"` (was `"none"`), base interval 6h (was 24h), with an uptime guard so proxies still warming up (report "dead" before their first successful auth) are never mass-evicted at startup.
+- Dead URL-sourced proxies now give up and get evicted after 4 backoff cycles (~4h) instead of 10 (~6 days).
+- The reaper now re-probes stale `ProbeOK=true` entries after 3h, demoting once-good-now-dead proxies into the existing 3-strikes blacklist path — previously a proxy that went good→dead after its last successful probe could sit in the cache indefinitely, invisible to cleanup.
+
+**Opt-in pressure system** (`URNETWORK_SELF_HEAL=1` / `urnet-tools self-heal on`, **default off**): A monitor goroutine samples every 30s and publishes a smoothed [0,1] pressure score from `/proc/pressure/{memory,cpu}` (self-normalizing across core counts), `MemAvailable/MemTotal`, loadavg fallback, and self-signals (goroutine count, heap vs. `max-memory`). Actuators respond proportionally instead of via binary gates: URL fetch interval stretches 1×–8× with pressure (floor: a cache under 50 entries is never stretched), probe concurrency scales 50→1 workers, and cleanup/reaper cadence *shrinks* under pressure (they shed load, so overload is exactly when they should run harder). An AIMD-controlled `TargetPoolSize` (persisted to `proxy_url.json`) grows +25 while calm and cuts ×0.7 after sustained high pressure (floor 50, ceiling `proxy_url_max`); shrinks shed worst-first (dead → degraded tiers → healthy by ascending traffic) through the normal cache-removal path with a 1h re-admission backoff — shed proxies are never blacklisted, so they re-enter through a normal fetch+probe once the box recovers. The old static `proxy_load_threshold` gate and its skip-counter are removed entirely, replaced by this system.
+
+**Files Changed**: `docker/scripts/urnet-tools.sh`, `docs/Configuration.md`, `provider/bandwidth_reporter.go`, `provider/main.go`, `provider/proxy_admission_gate.go`, `provider/proxy_failure_history.go`, `provider/proxy_probe.go`, `provider/proxy_reload.go`, `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/resource_pressure.go` (new), `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `scripts/urnet-tools.ps1`
+
+**Status**: ✅ Merged `main` (2026-07-14). PR #259. v3.23.0-fix.26.2.
+
+---
+
+## 82. Upstream Infrastructure Ports — Egress, Memory Budget, Contract Stats, Peer API, 532ee20c (PR #261, #262, #265, #266)
+
+**Purpose**: Pull forward a batch of upstream `urnetwork/connect` infrastructure changes: new egress-interface abstraction, per-connection memory budgets, contract statistics tracking, a `ReceiveFunction` type change + pause-behavior fix in the Peer API, and a further upstream commit (`532ee20c`) fixing a transport mode-election bug, a hot-spin CPU issue, and a connection-eviction bug.
+
+**Files Changed**: `egress.go`, `egress_net.go`, `egress_other.go`, `egress_windows.go`, `ip_assoc.go`, `ip_remote_multi_client.go`, `memory_budget.go`, `transfer.go`, `transfer_contract_manager.go`, `transfer_contract_stats.go`, `transfer_memory_budget.go`, `transfer_peer_manager.go`, `transport_p2p_webrtc.go`, `ip_block_action.go`, `ip_security_cfaa.go`, `transfer_control.go`, `transfer_encrypt.go`, `transport.go`, `provider/main.go`, `net_resilient.go`, `transfer_route_manager.go`, plus generated `protocol/*.pb.go` and matching test files.
+
+**Status**: ✅ Merged `main` (2026-07-12 – 2026-07-13). PR #261, #262, #265, #266. v3.23.0-fix.26.1.
+
+---
+
+## 83. Go 1.26 Toolchain Bump + Repository Templates (PR #267, #268, #269)
+
+**Purpose**: Housekeeping. Compiler bumped 1.25.x → 1.26.4 (`Dockerfile`, `go.mod`/`go.sum`, both CI workflows, `hub/Dockerfile`); core deps bumped (`pion/webrtc`, `quic-go`, `golang.org/x/*`). Standardized `.github/PULL_REQUEST_TEMPLATE.md` and `.github/RELEASE_TEMPLATE.md` added for consistent PR/release documentation going forward — the templates this very document's release notes now follow.
+
+**Status**: ✅ Merged `main` (2026-07-13). PR #267, #268, #269. v3.23.0-fix.26.1.
+
+---
+
+## 84. Subnet (`sn`) Integration — Phase 1–3, Dormant (PR #272)
+
+**Purpose**: Prep work for eventual Bittensor subnet integration. Pins `urfoundation/sn` crypto/chain packages and backports upstream `Sn*Sync` API methods. Inert — no CLI wiring lands in this PR, so behavior is unchanged until a future PR actually calls into it.
+
+**Files Changed**: `api_verify.go`, `go.mod`, `go.sum`, `sn_deps.go` (new)
+
+**Status**: ✅ Merged `main` (2026-07-13). PR #272. v3.23.0-fix.26.2.
+
+---
+
+## 85. proxy_url Cache Merge ProbeOK Regression + go-ethereum Bump (PR #274, #275)
+
+**Purpose**: `mergeProxyURLEntries` was unconditionally setting `ProbeOK=false` on merge, even for addresses that had just passed the dual-stage API-reachability probe — discarding that result before it ever reached the cache. Net effect: the background reaper could blacklist proxies that had just been proven live, since it only sees `ProbeOK` from the cache, not the fresher in-memory probe result. Fixed to preserve the probe result through the merge. Separately, `github.com/ethereum/go-ethereum` bumped v1.16.7 → v1.17.4, clearing 5 Dependabot alerts.
+
+**Files Changed**: `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/proxy_url_test.go`, `go.mod`, `go.sum`
+
+**Status**: ✅ Merged `main` (2026-07-14). PR #274, #275. v3.23.0-fix.26.2.
+
+---
+
+## 86. Hub Off/Set Live Reload (PR #276)
+
+**Purpose**: `hub off`/`hub set` previously required a provider restart to take effect. All four hub commands (`link`/`unlink`/`set`/`off`) now write the same override file the provider already polls every report tick, so the change is picked up live.
+
+**Files Changed**: `provider/bandwidth_reporter.go`, `provider/bandwidth_reporter_test.go`, `scripts/Provider_Install_Linux.sh`
+
+**Status**: ✅ Merged `main` (2026-07-14). PR #276. v3.23.0-fix.26.2.
+
+---
+
+## 87. Hot-Restart Status Display Fix + Docker-Backed Hub Install (Mac/Windows) (PR #277, #278)
+
+**Purpose**:
+- `urnet-tools restart` always printed "cold restart required" regardless of actual hot-restart status — deduped the `hotRestartEnabled()` check into a shared cross-platform helper so the message reflects reality. The GitHub-rate-limit-resilient worker-download fallback (previously Linux-only) was also ported to macOS (`Provider_Install_Mac.sh`) and Windows (`urnet-tools.ps1`). Also fixed: a persisted `--tag` config silently overriding an explicitly-passed `--tag` flag on `hub update` (should be the reverse), and `hub update` on Docker resolving the *provider* image instead of the `-hub` image.
+- `urnet-tools hub install`/`hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/urnetwork-3.23-fix-hub`) since neither platform has a native hub binary. Linux gets this as an opt-in `--docker` flag (native systemd remains the Linux default). All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` volume.
+
+**Files Changed**: `hub/onboard.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `scripts/Provider_Install_Win32.ps1`, `scripts/urnet-tools.ps1`, `docker/scripts/urnet-tools.sh`, `docs/Hub-Setup.md`
+
+**Status**: ✅ Merged `main` (2026-07-14 – 2026-07-15). PR #277, #278. v3.23.0-fix.26.3.
+
+---
+
+## 88. Hub CA Cert Auto-Bootstrap + Live Reload + Dashboard Basic Auth (PR #279, #281, #282)
+
+**Purpose**:
+- `hub init` now checks `URNETWORK_HUB_TOKEN`/`URNETWORK_HUB_TOKEN_FILE`/`URNETWORK_HUB_TOKEN_STDIN` on startup and, if present, fetches the CA cert from `$HUB/ca-cert?token=...` automatically before doing anything else — removes a manual bootstrap step for new hub deployments.
+- The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without a restart, enabling live CA rotation.
+- New `URNETWORK_HUB_DASHBOARD_PASS` env var gates the dashboard (`/`) and read-only API endpoints behind HTTP Basic Auth. Independent of `URNETWORK_HUB_TOKEN` (which still protects the write endpoints) — see [docs/Hub-Setup.md](docs/Hub-Setup.md#locking-down-the-dashboard).
+
+**Files Changed**: `hub/main.go`, `hub/onboard.go`, `hub/onboard_test.go`, `hub/main_test.go`, `provider/bandwidth_reporter.go`, `provider/bandwidth_reporter_ca_test.go`, `docs/Hub-Setup.md`
+
+**Status**: ✅ Merged `main` (2026-07-15). PR #279, #281, #282. v3.23.0-fix.26.3.
+
+---
+
+## 89. Auto Tier 4 (Extreme) Profile (PR #280)
+
+**Purpose**: On hosts with ≥8 GiB RAM, the provider now auto-selects a Tier 4 "extreme" performance profile matching `turbo-v8` settings, instead of requiring an operator to discover and manually opt into `tier set 4`. Manual override remains available.
+
+**Files Changed**: `provider/main.go`, `tuning.go`
+
+**Status**: ✅ Merged `main` (2026-07-15). PR #280. v3.23.0-fix.26.3.
+
+---
+
+## 90. Outage Memory Safety — GOMEMLIMIT + Degraded-Proxy Reaper (PR #293)
+
+**Purpose**: During a sustained backend/auth outage, every proxy degrades and holds onto its ~14 goroutines and turbo-v8 buffer allocations indefinitely (the slow auth retry loop never exits) — observed at 4,001 degraded proxies × ~375KB ≈ 1.5 GiB baseline heap, with no ceiling to stop further growth.
+
+**Fix 1 — GOMEMLIMIT for turbo profiles**: `turbo-v4`/`turbo-v8` previously set `GOGC=200` with no `GOMEMLIMIT` at all — the GC wouldn't act until the heap hit 2× the live set, and `resource_pressure.go`'s heap-pressure sensor was blind without a limit to measure against. Now turbo profiles set `GOMEMLIMIT` to 80% of available RAM whenever the operator hasn't explicitly set `--max-memory`/`GOMEMLIMIT`, matching the safety net `eco` mode already had.
+
+**Fix 2 — degraded-proxy timeout reaper**: A background reaper runs every 3 minutes, ranks degraded proxies by lifetime contribution (`TotalRx+TotalTx` from `ProxyBandwidth` plus contracts won from `globalContractMetrics`, ascending), and cancels the `proxyCtx` of the bottom 50% if they've been degraded for more than 30 minutes — ceil-rounded so 3 proxies keeps 2, not 1. Cancelling `proxyCtx` triggers the full cleanup path (`connectClient.Close()`, buffer release, goroutine exit). Runs unconditionally (not gated on the self-heal toggle) as a structural safety floor; the 30-minute grace period lets transient blips self-heal before being killed, and ranking by contribution rather than raw downtime means the best-performing degraded proxies are always the ones kept retrying.
+
+**Files Changed**: `provider/main.go`, `proxy_health.go`, `provider/degraded_reaper_test.go`, `proxy_health_test.go`
+
+**Status**: ✅ Merged `main` (2026-07-18). PR #293. v3.23.0-fix.26.4.
+
+---
+
+## 91. Download Reliability, TOCTOU Fix, and Misc v26.4 Correctness Fixes (PR #291, #292, #294, #295, #296)
+
+**Purpose**: A batch of smaller fixes shipped alongside the outage-safety work in entry #90.
+
+**Change**:
+- **Download reliability** (#291): Provider updates route through `dl.fullbars.xyz` first with automatic GitHub fallback; `-y`/`-f` flags added to skip the interactive restart confirmation.
+- **TOCTOU tmpfile vulnerability** (#292): Update downloads switched from a hardcoded `/tmp/urnetwork-update.tar.gz` to an `mktemp`-generated unpredictable path, closing a symlink-race (CWE-377) that could let a local user redirect the extraction to overwrite an arbitrary file. Binary installation now stages and atomically replaces only on full success.
+- **Dashboard contract feed typo** (#294): "Recent Contracts" matched `"[contract] acquired"` twice instead of also matching `"[contract] denied"` — every denial was invisible on the dashboard.
+- **JWT NetworkId claim key** (#295): `ParseByJwtUnverified` read `claims["network_name"]` for both `NetworkName` and `NetworkId` (copy-paste bug) — `NetworkId` now correctly reads `claims["network_id"]`.
+- **authBytes pool leak** (#295): `runH3` in `transport.go` was missing the `defer MessagePoolReturn(authBytes)` that `runH1` already had, leaking one pool buffer per H3 auth handshake.
+- **Division-by-zero guard, logThrottle consolidation, .gitignore hardening** (#296): `contractByteCount()` guards against `ContractTransferByteSeqScale=0`; 6 hand-rolled rate-limiters in `transfer.go` consolidated into 3 `logThrottle` instances; `hub/hub_bin`, `hub.db`, `prs.json` added to `.gitignore`.
+
+**Files Changed**: `docker/scripts/urnet-tools.sh`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `scripts/Provider_Install_Win32.ps1`, `provider/main.go`, `jwt.go`, `jwt_test.go`, `transport.go`, `.gitignore`, `transfer.go`, `transfer_contract_manager.go`
+
+**Status**: ✅ Merged `main` (2026-07-18). PR #291, #292, #294, #295, #296. v3.23.0-fix.26.4.
+
+---
+
+## 92. proxy.state Ghost-Entry Pruning (PR #305)
 
 **Purpose**: Fix a production incident where `proxy.state` accumulated entries for proxies that had been removed from the config/source but never got pruned from state, growing without bound and causing `proxy remove-dead` to re-report the same removals forever.
 
-### 74a. Root Cause
+### 92a. Root Cause
 
 `ProxyReloader.reload()` in `provider/proxy_reload.go` computed `removed` as `running ∖ desiredSet` — the set of addresses that were both currently running (present in the live `cancelMap`) and no longer desired. Only those addresses had their `state.Proxies` entry deleted. A dead/offline proxy's goroutine has usually already exited by the time an operator runs `proxy remove-dead` against it, so it was never in `running` to begin with — its ghost entry in `proxy.state` was never reachable by the existing prune logic, regardless of how many times `remove-dead` "removed" it.
 
 Confirmed on a production node (v3.23.0-fix.26.4): `remove-dead` correctly shrank the config from ~1020 to 298 servers and live auth-failure churn stopped, but `proxy.state` retained 857 entries, 711 of which existed in neither the config nor the running set.
 
-### 74b. Fix
+### 92b. Fix
 
 After `desiredSet` is fully computed (config/file source merged with the URL cache), `reload()` now prunes `state.Proxies` to exactly that set, in addition to the existing running-diff removal loop (which still handles draining active sessions gracefully). Safe for URL-sourced proxies mid give-up-backoff, since `mergeProxyURLCache` keeps them in the URL cache — and therefore `desiredSet` — for their whole backoff window; only explicit eviction/blacklisting removes them.
 
 A follow-up review finding was addressed before merge: if `proxy_url.json` fails to read for a given reload cycle (corrupt file, transient I/O — not the normal "no URL sources configured" case, which returns an empty cache with no error), `desiredSet` would silently exclude every URL-sourced address for that cycle. The prune pass now tracks whether the URL cache loaded successfully and skips pruning entirely if it didn't, so a transient read failure can't wipe state for still-desired URL proxies.
 
-### 74c. Files Changed
+### 92c. Files Changed
 
 - `provider/proxy_reload.go` — desired-set-wide prune pass, `urlCacheLoaded` guard, `pruned` count in the reload summary log line.
 - `provider/proxy_reload_test.go` — `TestReload_PrunesGhostStateEntries_NotRunningNotDesired`, `TestReload_PreservesBackoffURLProxyState`, `TestReload_SkipsPruneOnURLCacheReadFailure`.
