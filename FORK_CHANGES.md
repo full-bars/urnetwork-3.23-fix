@@ -2201,3 +2201,17 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 **Files Changed**: `provider/main.go`, `provider/main_test.go` (`TestIsLongRunningSubcommand`), `provider/shmlog_linux.go`
 
 **Status**: ✅ Merged `main` (2026-08-02). PR #306. v3.23.0-fix.26.5.
+
+---
+
+## 94. Hourly Reload Reconciler — Self-Heal Safety Net (PR #309)
+
+**Purpose**: `ProxyReloader.reload()` only ever runs on an explicit trigger (add-source, remove-dead, proxy refresh, URL fetch merge, reaper change). A mass-failure event (e.g. a transient backend outage) can leave a batch of still-desired proxies stuck out of the running set with no future event scheduled to bring them back.
+
+**Root Cause**: Confirmed live on ATL2 via `~/.urnetwork/proxy_health.log` (a persistent transition log, unaffected by ramlog rotation): a mass degrade event at 06:37 UTC caused ~2,500 proxies to flip to `DEGRADED` simultaneously (direct count from the health log at that timestamp). The vast majority recovered within ~40 minutes on their own. A persistent subset then logged **zero further activity for the next ~22 hours** — no new degrade, no recovery — until an unrelated operator action (adding 3 URL sources) forced a reload the following morning, at which point `reload()`'s own log line reported `+3341 added` in a single cycle. (The ~3300 figure in the original incident report was an independent estimate from a live `proxy summary` snapshot taken during triage, not derived from `proxy_health.log` — the ~2,500 degrade count, the reload's `+3341`, and that ~3300 estimate are three different snapshots/methodologies and shouldn't be read as the same measurement, though they're consistent with one large persistent cluster.) The exact mechanism by which those specific goroutines left the running set wasn't conclusively identified (operator-curated/internal proxies are coded to never give up on auth failure and retry in-place instead — see `main.go:2566-2569` — so this isn't the same path as the URL-sourced give-up/eviction flow), but the *outcome* — `running` silently drifting below `desired` with nothing to reconcile it — is independent of the exact cause and needed a fix regardless.
+
+**Fix**: New `runReloadReconciler` (`provider/proxy_reload.go`) — a background goroutine that calls `writeReloadTrigger` once an hour, unconditionally. It goes through the same trigger-file path every other caller uses (`StartWatcher` polls and calls `reload()` on a sequence-number change) rather than calling `reload()` directly, relying on `writeReloadTrigger`'s existing serialization/debounce/coalescing — it doesn't add a new locking mechanism, and a concurrent caller can still produce a trailing duplicate trigger the same way any two existing callers could, which is harmless (an extra `reload()` cycle is a no-op when nothing changed). Deliberately cheap when nothing is wrong: if `running` already matches `desired`, `reload()` just logs `+0 added, -0 removed` and returns. Not gated behind `URNETWORK_SELF_HEAL` (unlike the pressure-proportional fetch/cleanup-interval scaling from entry #81) — same tier as `runDegradedProxyReaper`, which is also unconditional by design: safety nets in this codebase are built to not throttle themselves during exactly the conditions they exist to catch.
+
+**Files Changed**: `provider/proxy_reload.go`, `provider/proxy_reload_test.go` (`TestRunReloadReconciler_FiresOnInterval`), `provider/main.go` (wired into `provide()`'s startup goroutine list)
+
+**Status**: ✅ Merged `main` (2026-08-02). PR #309. v3.23.0-fix.26.5.
