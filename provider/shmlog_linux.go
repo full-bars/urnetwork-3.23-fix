@@ -34,6 +34,18 @@ func initSHMLogger() {
 	f.Write([]byte(fmt.Sprintf("[ramlogs] Active at %s\n", shmLogPath)))
 	f.Write([]byte(fmt.Sprintf("[ramlogs] View: docker exec <container> tail -f %s\n", shmLogPath)))
 
+	// Print the same notice to the pre-redirect stdout/stderr, before the
+	// dup2 below severs them from wherever they currently flow. For the
+	// long-running `provide` process that's docker logs / journald; for a
+	// one-shot CLI subcommand (e.g. `docker exec <container> ... proxy
+	// remove-dead --preview`) it's the caller's own terminal. Without this,
+	// URNETWORK_RAMLOGS=1 makes every invocation of the binary — not just
+	// `provide` — go completely silent from the caller's point of view,
+	// since the redirect applies process-wide, not just to the long-running
+	// command.
+	fmt.Fprintf(os.Stdout, "[ramlogs] output redirected to %s\n", shmLogPath)
+	fmt.Fprintf(os.Stdout, "[ramlogs] view with: docker exec <container> tail -f %s\n", shmLogPath)
+
 	r, w, err := os.Pipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create pipe: %v\n", err)
