@@ -32,6 +32,8 @@ All notable changes to this project are documented here.
 
 **Cloudflare Worker hardening** (#304): `dl-fullbars`'s GitHub proxy now allowlists outbound headers instead of forwarding everything from the client; the `curl | sh` install dispatcher fails the install if the script download fails instead of silently running an empty script; `geo` worker's RTT fields use explicit null checks and the response is marked `Cache-Control: no-store`.
 
+**Ramlog redirect scoped to `provide`/`auth-provide`** (#306): `URNETWORK_RAMLOGS=1` redirected stdout/stderr into `/dev/shm/urnetwork.log` for every invocation of the binary, not just the long-running `provide` process — one-shot CLI subcommands run via `docker exec` (`proxy remove-dead --preview`, `proxy summary`, etc.) produced no visible output at all. Found while validating the `proxy.state` fix on a live test container. Now scoped to `provide`/`auth-provide` only.
+
 ## [v3.23.0-fix.26.4] — 2026-07-18
 
 ### Added
