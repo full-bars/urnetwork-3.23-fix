@@ -291,8 +291,10 @@ func (r *ProxyReloader) reload() {
 		sourceOf[s.Address] = primarySource
 	}
 
+	urlCacheLoaded := true
 	if urlState, err := readProxyURLState(); err != nil {
 		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		urlCacheLoaded = false
 	} else {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
@@ -473,12 +475,24 @@ func (r *ProxyReloader) reload() {
 	// URL proxies in give-up backoff: mergeProxyURLCache keeps them in
 	// desiredSet for the duration of their backoff window (only eviction/
 	// blacklist removes them from the cache), so they are never pruned here.
+	//
+	// Gated on urlCacheLoaded: if proxy_url.json failed to read this cycle,
+	// desiredSet is missing every URL-sourced address (transient I/O error,
+	// not "no URL sources configured" — that case returns an empty cache
+	// with no error). Pruning against an incomplete desiredSet would wipe
+	// ID/health history for every still-desired URL proxy, including ones
+	// mid give-up-backoff. Skip the pass entirely until the cache is
+	// readable again; the next reload will catch up.
 	pruned := 0
-	for addr := range r.state.Proxies {
-		if _, ok := desiredSet[addr]; !ok {
-			delete(r.state.Proxies, addr)
-			pruned++
+	if urlCacheLoaded {
+		for addr := range r.state.Proxies {
+			if _, ok := desiredSet[addr]; !ok {
+				delete(r.state.Proxies, addr)
+				pruned++
+			}
 		}
+	} else {
+		tlog("[proxy] skipping state prune this cycle: proxy_url.json unavailable\n")
 	}
 
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
