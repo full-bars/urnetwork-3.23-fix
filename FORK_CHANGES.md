@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.25.4
+**Current Version**: v3.23.0-fix.26.5
 
 ---
 
@@ -1921,3 +1921,28 @@ Rewrite `refreshJWT()` to use `/auth/code-create → /auth/code-login` — the s
 **Status**: Open in PR #288 (branch `feat/choose-network`), not yet merged.
 
 **Status**: ✅ Merged `main` (2026-07-07). PR #227. v3.23.0-fix.25.4. Startup-triggered refresh (fires on first invocation, since no `jwt_last_refresh` file exists yet) confirmed working in production. The 7-day periodic path has not yet been separately observed completing a cycle.
+
+---
+
+## 74. proxy.state Ghost-Entry Pruning (PR #305)
+
+**Purpose**: Fix a production incident where `proxy.state` accumulated entries for proxies that had been removed from the config/source but never got pruned from state, growing without bound and causing `proxy remove-dead` to re-report the same removals forever.
+
+### 74a. Root Cause
+
+`ProxyReloader.reload()` in `provider/proxy_reload.go` computed `removed` as `running ∖ desiredSet` — the set of addresses that were both currently running (present in the live `cancelMap`) and no longer desired. Only those addresses had their `state.Proxies` entry deleted. A dead/offline proxy's goroutine has usually already exited by the time an operator runs `proxy remove-dead` against it, so it was never in `running` to begin with — its ghost entry in `proxy.state` was never reachable by the existing prune logic, regardless of how many times `remove-dead` "removed" it.
+
+Confirmed on a production node (v3.23.0-fix.26.4): `remove-dead` correctly shrank the config from ~1020 to 298 servers and live auth-failure churn stopped, but `proxy.state` retained 857 entries, 711 of which existed in neither the config nor the running set.
+
+### 74b. Fix
+
+After `desiredSet` is fully computed (config/file source merged with the URL cache), `reload()` now prunes `state.Proxies` to exactly that set, in addition to the existing running-diff removal loop (which still handles draining active sessions gracefully). Safe for URL-sourced proxies mid give-up-backoff, since `mergeProxyURLCache` keeps them in the URL cache — and therefore `desiredSet` — for their whole backoff window; only explicit eviction/blacklisting removes them.
+
+A follow-up review finding was addressed before merge: if `proxy_url.json` fails to read for a given reload cycle (corrupt file, transient I/O — not the normal "no URL sources configured" case, which returns an empty cache with no error), `desiredSet` would silently exclude every URL-sourced address for that cycle. The prune pass now tracks whether the URL cache loaded successfully and skips pruning entirely if it didn't, so a transient read failure can't wipe state for still-desired URL proxies.
+
+### 74c. Files Changed
+
+- `provider/proxy_reload.go` — desired-set-wide prune pass, `urlCacheLoaded` guard, `pruned` count in the reload summary log line.
+- `provider/proxy_reload_test.go` — `TestReload_PrunesGhostStateEntries_NotRunningNotDesired`, `TestReload_PreservesBackoffURLProxyState`, `TestReload_SkipsPruneOnURLCacheReadFailure`.
+
+**Status**: ✅ Merged `main` (2026-08-02). PR #305. v3.23.0-fix.26.5. Validated on a live test deployment (500 URL-sourced proxies): an explicit `remove-dead` run pruned exactly 14/14 with zero left behind, and a spontaneous give-up/eviction cycle was separately observed pruning 7 stale entries on its own before `remove-dead` was ever invoked.
