@@ -2937,6 +2937,7 @@ func provide(opts docopt.Opts) {
 	go runPressureMonitor(ctx, selfHealEnabled)
 	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
 	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
+	go runReloadReconciler(ctx)
 
 	if 0 < port {
 		fmt.Printf(
