@@ -530,16 +530,15 @@ func TestDoWriteReloadTrigger_IncrementsSequence(t *testing.T) {
 // one, and must stop cleanly when its context is cancelled.
 func TestRunReloadReconciler_FiresOnInterval(t *testing.T) {
 	withTempHome(t)
+
+	lastReloadTriggerTime.Lock()
+	origTs := lastReloadTriggerTime.ts
+	origPending := lastReloadTriggerTime.pending
 	lastReloadTriggerTime.ts = time.Time{}
+	lastReloadTriggerTime.Unlock()
 
 	origInterval := reconciliationReloadInterval
 	reconciliationReloadInterval = 20 * time.Millisecond
-	t.Cleanup(func() { reconciliationReloadInterval = origInterval })
-
-	reloadPath, err := proxyReloadPath()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -547,6 +546,29 @@ func TestRunReloadReconciler_FiresOnInterval(t *testing.T) {
 		runReloadReconciler(ctx)
 		close(done)
 	}()
+
+	// Registered after the goroutine starts so it always runs, including on
+	// a t.Fatal from the polling loop below — otherwise the reconciler
+	// goroutine would leak and the debounce state would stay mutated for
+	// later tests.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("expected runReloadReconciler to return promptly after context cancellation")
+		}
+		reconciliationReloadInterval = origInterval
+		lastReloadTriggerTime.Lock()
+		lastReloadTriggerTime.ts = origTs
+		lastReloadTriggerTime.pending = origPending
+		lastReloadTriggerTime.Unlock()
+	})
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -558,12 +580,5 @@ func TestRunReloadReconciler_FiresOnInterval(t *testing.T) {
 			t.Fatal("expected runReloadReconciler to write at least one reload trigger before the deadline")
 		}
 		time.Sleep(5 * time.Millisecond)
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected runReloadReconciler to return promptly after context cancellation")
 	}
 }
