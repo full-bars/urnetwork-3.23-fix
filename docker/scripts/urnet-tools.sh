@@ -569,6 +569,10 @@ case "$operation" in
             echo "ERROR: --threshold is out of range"
             exit 1
         fi
+        if ! in_int64_range "$window"; then
+            echo "ERROR: --window is out of range"
+            exit 1
+        fi
 
         health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
         rate_file="$health_dir/billable_rate"
