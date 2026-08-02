@@ -156,8 +156,25 @@ func init() {
 // whether stdout/stderr should be redirected into the ramlog: doing so for
 // one-shot commands left them producing no visible output to the caller at
 // all, since the redirect is process-wide, not scoped to `provide`.
+//
+// -h/--help/--version are excluded even on `provide`/`auth-provide`: this
+// runs from init(), before docopt.ParseArgs gets a chance to handle those
+// flags and exit, so a terminating invocation like `provide --help` would
+// otherwise have its usage/version text redirected into the ramlog too.
 func isLongRunningSubcommand() bool {
-	return len(os.Args) > 1 && (os.Args[1] == "provide" || os.Args[1] == "auth-provide")
+	if len(os.Args) < 2 {
+		return false
+	}
+	if os.Args[1] != "provide" && os.Args[1] != "auth-provide" {
+		return false
+	}
+	for _, arg := range os.Args[2:] {
+		switch arg {
+		case "-h", "--help", "--version":
+			return false
+		}
+	}
+	return true
 }
 
 func initGlog() {
@@ -657,7 +674,7 @@ func main() {
 	// If in auto mode and RAM logs aren't already explicitly on, we audit the disk speed
 	// BEFORE initializing the logger. This allows us to auto-enable it.
 	autoRamLogTriggered := false
-	if profile == "auto" {
+	if profile == "auto" && isLongRunningSubcommand() {
 		manualRamLogs := (ramlogs == "1")
 		slowDisk, _ := RunStartupAudit()
 		if slowDisk && !manualRamLogs {
