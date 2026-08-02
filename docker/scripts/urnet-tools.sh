@@ -207,6 +207,115 @@ hub_unlink() {
     echo "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
 }
 
+# === Update Logic ===
+do_update() {
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64) arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        *) echo "ERROR: unsupported architecture $arch"; exit 1 ;;
+    esac
+
+    provider_bin="/app/urnetwork_${arch}_stable"
+
+    echo "Checking for provider updates..."
+
+    release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
+        echo "ERROR: could not reach GitHub API."
+        exit 1
+    }
+
+    version="$(echo "$release_json" | jq -r '.tag_name // empty')"
+    [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
+
+    download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
+    [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
+
+    primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
+
+    current_version="unknown"
+    if [ -x "$provider_bin" ]; then
+        current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
+    fi
+    echo "Current version: $current_version"
+    echo "Latest version: $version"
+
+    if [ "$current_version" = "$version" ]; then
+        echo "Already at latest version. Nothing to update."
+        exit 0
+    fi
+
+    echo "Downloading $version..."
+    tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
+    if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
+        echo "Primary download failed, trying GitHub mirror..."
+        curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
+            echo "ERROR: download failed."
+            rm -f "$tarball"
+            exit 1
+        }
+    fi
+
+    tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
+    tar -xzf "$tarball" -C "$tmpdir" || {
+        echo "ERROR: failed to extract tarball."
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    }
+
+    if [ ! -f "$tmpdir/provider" ]; then
+        echo "ERROR: provider binary not found in tarball."
+        ls -la "$tmpdir/" 2>/dev/null || true
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    fi
+
+    staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
+        rm -rf "$tmpdir" "$tarball"
+        exit 1
+    }
+    if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
+        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        exit 1
+    fi
+
+    marker_dir="$HOME/.urnetwork"
+    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
+    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
+
+    if ! mv -f "$staged_provider" "$provider_bin"; then
+        rm -f "$marker_dir/update-pending"
+        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        exit 1
+    fi
+
+    rm -rf "$tmpdir" "$tarball"
+    echo "Provider binary updated to $version."
+
+    rc=0
+    pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
+    case $rc in
+        0) echo "Provider process terminated." ;;
+        1) echo "No running provider process found — nothing to terminate." ;;
+        *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
+    esac
+
+    shutdown_timeout=15
+    waited=0
+    while pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; do
+        if [ "$waited" -ge "$shutdown_timeout" ]; then
+            echo "ERROR: provider process still running ${shutdown_timeout}s after termination attempt."
+            rm -f "$marker_dir/update-pending"
+            exit 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    echo "Startup loop will respawn provider with the new binary."
+    exit 0
+}
+
 case "$operation" in
     proxy)
         subcmd="${1:-}"
@@ -430,101 +539,136 @@ case "$operation" in
                 ;;
         esac
         ;;
+    idle-update)
+        threshold=5120
+        window=300
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --threshold) threshold="$2"; shift 2 ;;
+                --window) window="$2"; shift 2 ;;
+                *) echo "Unknown option: $1"; exit 1 ;;
+            esac
+        done
+
+        case "$threshold" in ''|*[!0-9]*) echo "ERROR: --threshold must be a non-negative integer"; exit 1 ;; esac
+        case "$window" in ''|*[!0-9]*) echo "ERROR: --window must be a non-negative integer"; exit 1 ;; esac
+
+        # Bash's [ -gt / -le ] only handle signed 64-bit integers; billable_rate
+        # is a Go uint64 and could exceed that range.
+        in_int64_range() {
+            v="$1"
+            len=${#v}
+            if [ "$len" -gt 19 ]; then
+                return 1
+            elif [ "$len" -eq 19 ] && [ "$v" \> "9223372036854775807" ]; then
+                return 1
+            fi
+            return 0
+        }
+        if ! in_int64_range "$threshold"; then
+            echo "ERROR: --threshold is out of range"
+            exit 1
+        fi
+        if ! in_int64_range "$window"; then
+            echo "ERROR: --window is out of range"
+            exit 1
+        fi
+
+        health_dir="${URNETWORK_PROXY_HEALTH_DIR:-$HOME/.urnetwork}"
+        rate_file="$health_dir/billable_rate"
+
+        echo "Waiting for billable traffic to drop below ${threshold} B/s for ${window}s..."
+        echo "  Polling ${rate_file} every 10s..."
+        quiet=0
+        while true; do
+            rate=0
+            rate_known=1
+            if [ -f "$rate_file" ]; then
+                content="$(cat "$rate_file" 2>/dev/null || echo "0")"
+                case "$content" in
+                    ''|*[!0-9]*) rate_known=0 ;;
+                    *) if in_int64_range "$content"; then rate="$content"; else rate_known=0; fi ;;
+                esac
+            else
+                rate_known=0
+                echo "  billable_rate not found — running provider predates idle-update; treating as traffic detected, not idle"
+            fi
+
+            if { [ "$rate_known" -eq 1 ] && [ "$rate" -le "$threshold" ]; } || [ "$window" -eq 0 ]; then
+                quiet=$((quiet + 10))
+                echo "  rate=${rate} B/s — ${quiet}s of quiet (need ${window}s)"
+                if [ "$quiet" -ge "$window" ]; then
+                    echo ""
+                    echo "=== Idle threshold met ==="
+                    echo "  Final rate: ${rate} B/s"
+                    echo "  Quiet window: ${window}s"
+                    if [ "$window" -eq 0 ]; then
+                        echo "  Skipping verification (window=0 — immediate update requested)."
+                        verify_failed=0
+                    else
+                        echo "  Verifying sustained quiet (1s polling for 10s)..."
+                        verify_failed=0
+                        fresh_seen=0
+                        last_mtime=""
+                        if [ -f "$rate_file" ]; then
+                            last_mtime="$(stat -c %Y "$rate_file" 2>/dev/null)"
+                        fi
+                        for i in 1 2 3 4 5 6 7 8 9 10; do
+                            sleep 1
+                            vrate=0
+                            vrate_known=1
+                            cur_mtime=""
+                            if [ -f "$rate_file" ]; then
+                                cur_mtime="$(stat -c %Y "$rate_file" 2>/dev/null)"
+                                content="$(cat "$rate_file" 2>/dev/null)" || vrate_known=0
+                                case "$content" in
+                                    ''|*[!0-9]*) vrate_known=0 ;;
+                                    *) if in_int64_range "$content"; then vrate="$content"; else vrate_known=0; fi ;;
+                                esac
+                            else
+                                vrate_known=0
+                            fi
+                            if [ "$vrate_known" -eq 0 ] || [ "$vrate" -gt "$threshold" ]; then
+                                if [ "$vrate_known" -eq 0 ]; then
+                                    echo "  billable_rate disappeared during verification — going back to 10s polling"
+                                else
+                                    echo "  Traffic resumed (${vrate} B/s) during verification — going back to 10s polling"
+                                fi
+                                verify_failed=1
+                                break
+                            fi
+                            if [ -n "$cur_mtime" ] && [ "$cur_mtime" != "$last_mtime" ]; then
+                                fresh_seen=1
+                                last_mtime="$cur_mtime"
+                            fi
+                        done
+                        if [ "$verify_failed" -eq 0 ] && [ "$fresh_seen" -eq 0 ]; then
+                            echo "  No fresh billable_rate sample observed during verification window — going back to 10s polling"
+                            verify_failed=1
+                        fi
+                    fi
+                    if [ "$verify_failed" -eq 0 ]; then
+                        echo "  Verification passed — proceeding with update..."
+                        echo ""
+                        do_update
+                        break
+                    else
+                        quiet=0
+                    fi
+                fi
+            else
+                quiet=0
+                if [ "$rate_known" -eq 1 ]; then
+                    echo "  rate=${rate} B/s — traffic detected, resetting quiet timer"
+                fi
+            fi
+
+            sleep 10
+        done
+        ;;
+
     update)
-        arch="$(uname -m)"
-        case "$arch" in
-            x86_64) arch="amd64" ;;
-            aarch64) arch="arm64" ;;
-            *) echo "ERROR: unsupported architecture $arch"; exit 1 ;;
-        esac
-
-        provider_bin="/app/urnetwork_${arch}_stable"
-
-        echo "Checking for provider updates..."
-
-        release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
-            echo "ERROR: could not reach GitHub API."
-            exit 1
-        }
-
-        version="$(echo "$release_json" | jq -r '.tag_name // empty')"
-        [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
-
-        download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
-        [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
-
-        primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
-
-        current_version="unknown"
-        if [ -x "$provider_bin" ]; then
-            current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
-        fi
-        echo "Current version: $current_version"
-        echo "Latest version: $version"
-
-        if [ "$current_version" = "$version" ]; then
-            echo "Already at latest version. Nothing to update."
-            exit 0
-        fi
-
-        echo "Downloading $version..."
-        tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
-        if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
-            echo "Primary download failed, trying GitHub mirror..."
-            curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
-                echo "ERROR: download failed."
-                rm -f "$tarball"
-                exit 1
-            }
-        fi
-
-        tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
-        tar -xzf "$tarball" -C "$tmpdir" || {
-            echo "ERROR: failed to extract tarball."
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        }
-
-        if [ ! -f "$tmpdir/provider" ]; then
-            echo "ERROR: provider binary not found in tarball."
-            ls -la "$tmpdir/" 2>/dev/null || true
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        fi
-
-        staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
-            rm -rf "$tmpdir" "$tarball"
-            exit 1
-        }
-        if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
-            rm -rf "$tmpdir" "$tarball" "$staged_provider"
-            exit 1
-        fi
-        if ! mv -f "$staged_provider" "$provider_bin"; then
-            rm -rf "$tmpdir" "$tarball" "$staged_provider"
-            exit 1
-        fi
-
-        rm -rf "$tmpdir" "$tarball"
-        echo "Provider binary updated to $version."
-
-        touch /tmp/urnetwork-update-pending
-
-        pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null
-        rc=$?
-        case $rc in
-            0) echo "Provider process terminated." ;;
-            1) echo "No running provider process found — nothing to terminate." ;;
-            *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
-        esac
-
-        if pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; then
-            echo "ERROR: provider process is still running after termination attempt."
-            rm -f /tmp/urnetwork-update-pending
-            exit 1
-        fi
-
-        echo "Startup loop will respawn provider with the new binary."
+        do_update
         ;;
 
     *)

@@ -1378,6 +1378,89 @@ func runProfitHeartbeat(ctx context.Context) {
 	}
 }
 
+// runBillableRateWriter writes the aggregate billable traffic rate (bytes/sec)
+// to ~/.urnetwork/billable_rate every 10 seconds. Used by urnet-tools
+// idle-update to detect traffic lulls before applying updates.
+func runBillableRateWriter(ctx context.Context) {
+	const interval = 10 * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	prevBillable := make(map[string]uint64)
+	prevTickTime := time.Now()
+
+	tlog("[billable_rate] writer started (interval=%s)\n", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			tlog("[billable_rate] writer stopped\n")
+			return
+		case <-ticker.C:
+		}
+
+		if connect.ProxyHealthCount() == 0 {
+			for k := range prevBillable {
+				delete(prevBillable, k)
+			}
+			writeRate(0)
+			continue
+		}
+
+		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+		if len(bw) == 0 {
+			for k := range prevBillable {
+				delete(prevBillable, k)
+			}
+			writeRate(0)
+			continue
+		}
+
+		var totalDelta uint64
+		for key, p := range bw {
+			cur := p.BillableRx.Load() + p.BillableTx.Load()
+			if prev, ok := prevBillable[key]; ok {
+				if cur >= prev {
+					totalDelta += cur - prev
+				}
+			}
+			prevBillable[key] = cur
+		}
+		for k := range prevBillable {
+			if _, ok := bw[k]; !ok {
+				delete(prevBillable, k)
+			}
+		}
+
+		now := time.Now()
+		elapsed := now.Sub(prevTickTime).Seconds()
+		if elapsed < 1 {
+			elapsed = 1
+		}
+		prevTickTime = now
+
+		rate := uint64(float64(totalDelta) / elapsed)
+		writeRate(rate)
+	}
+}
+
+func writeRate(rate uint64) {
+	dir, ok := proxyHealthDir()
+	if !ok {
+		return
+	}
+	path := filepath.Join(dir, "billable_rate")
+	tmp := path + ".tmp"
+	content := strconv.FormatUint(rate, 10) + "\n"
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		tlog("[billable_rate] warn: write failed: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		tlog("[billable_rate] warn: rename failed: %v\n", err)
+	}
+}
+
 // runHealthHeartbeat logs a [health] line at a regular interval with runtime
 // memory stats and uptime. Interval is configurable via URNETWORK_HEALTH_INTERVAL
 // (e.g. "10m", "1h"); defaults to 5 minutes. Minimum 1 minute.
@@ -2236,6 +2319,7 @@ func provide(opts docopt.Opts) {
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
 	go runProfitHeartbeat(ctx)
+	go runBillableRateWriter(ctx)
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)

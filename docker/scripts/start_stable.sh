@@ -218,8 +218,8 @@ func_start_provider(){
         # Capture the real exit code (set -e safe; avoids the `|| true` that pinned code to 0)
         if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
         if [ "$code" -eq 0 ]; then
-            if [ -f /tmp/urnetwork-update-pending ]; then
-                rm -f /tmp/urnetwork-update-pending
+            if [ -f "$HOME/.urnetwork/update-pending" ]; then
+                rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
                 failures=0
                 continue
