@@ -232,6 +232,127 @@ func TestReload_WarmupGate_DefersThenLaunchesURLProxies(t *testing.T) {
 	}
 }
 
+// TestReload_PrunesGhostStateEntries_NotRunningNotDesired is a regression
+// test for the LA2 ghost-proxy incident: a proxy that is both no longer
+// running (already offline before this reload — never in cancelMap) and no
+// longer desired (removed from the source, e.g. by `proxy remove-dead`)
+// must be pruned from proxy.state. Before this fix, reload()'s prune only
+// covered addresses in running-but-not-desired, so an already-dead address
+// removed from the source was never in `running` to begin with and its
+// ghost entry in state.Proxies was never deleted — it accumulated forever
+// and was re-reported by every subsequent `remove-dead` run.
+func TestReload_PrunesGhostStateEntries_NotRunningNotDesired(t *testing.T) {
+	withTempHome(t)
+
+	tmpFile := t.TempDir() + "/proxy.txt"
+	if err := os.WriteFile(tmpFile, []byte("1.1.1.1:1080:alice:secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {ID: 1, Health: "up"},               // still desired — must survive
+		"9.8.7.6:1080": {ID: 2, Health: "recently_offline"}, // removed from source, never running — must be pruned
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  tmpFile,
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	reloader.reload()
+
+	after, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.Proxies["9.8.7.6:1080"]; ok {
+		t.Fatal("ghost entry (not running, not desired) should have been pruned from proxy.state")
+	}
+	if _, ok := after.Proxies["1.1.1.1:1080"]; !ok {
+		t.Fatal("still-desired proxy's state entry must survive reload")
+	}
+}
+
+// TestReload_PreservesBackoffURLProxyState verifies the ghost-prune added
+// above does not delete state entries for URL-sourced proxies that are
+// mid give-up-backoff: such a proxy is not running (its goroutine already
+// exited on give-up) but IS still desired, because mergeProxyURLCache keeps
+// it in the URL cache until it is explicitly evicted. Pruning must key off
+// desiredSet, not the running set, or this case would wipe ID/health
+// history for every proxy currently backing off.
+func TestReload_PreservesBackoffURLProxyState(t *testing.T) {
+	withTempHome(t)
+
+	addr := "5.6.7.8:1080"
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		addr: {ID: 7, Health: "dead", Source: "url"},
+	}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put the address in backoff so reload() must not relaunch it — it
+	// stays absent from `running` for this whole reload, same as a
+	// give-up'd proxy in production.
+	globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(time.Hour))
+	t.Cleanup(func() { globalProxyFailureHistory.Reset(addr) })
+
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  "",
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	reloader.reload()
+
+	cancelMapMu.Lock()
+	_, launched := reloader.cancelMap[addr]
+	cancelMapMu.Unlock()
+	if launched {
+		t.Fatal("test setup invalid: address in backoff should not have been launched")
+	}
+
+	after, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.Proxies[addr]; !ok {
+		t.Fatal("state entry for a URL proxy in give-up backoff must survive reload (still desired via URL cache)")
+	}
+}
+
 func TestWriteReloadTrigger_DebounceSuppressesRapidWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "proxy.reload")
