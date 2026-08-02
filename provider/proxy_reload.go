@@ -205,6 +205,45 @@ func (r *ProxyReloader) isDraining(addr string) bool {
 	return ok
 }
 
+// reconciliationReloadInterval is how often runReloadReconciler forces a
+// reload cycle regardless of whether anything is known to have changed. This
+// is a belt-and-suspenders safety net, not the primary reload path — normal
+// add/remove/refresh operations already trigger their own immediate reload.
+var reconciliationReloadInterval = time.Hour
+
+// runReloadReconciler periodically writes a reload trigger so reload() runs
+// on a fixed cadence even if nothing explicitly requested one. Root cause: a
+// mass-failure event (e.g. a transient backend outage) can leave a batch of
+// still-desired proxies absent from the running set with no future event
+// scheduled to bring them back — reload() only ever runs on an explicit
+// trigger (add-source, remove-dead, proxy refresh, URL fetch merge, reaper
+// change), so if none of those happen to fire afterward, the gap persists
+// indefinitely. Confirmed on a live fleet node: ~3300 proxies sat
+// recently_offline for ~20+ hours after a single API blip, and all recovered
+// instantly the moment an unrelated add-source call forced a reload.
+// This is deliberately cheap to run even when nothing is wrong: if running
+// already matches desired, reload() logs "+0 added, -0 removed" and returns.
+func runReloadReconciler(ctx context.Context) {
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		tlog("[proxy] warning: could not determine reload path for reconciler: %v\n", err)
+		return
+	}
+
+	ticker := time.NewTicker(reconciliationReloadInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := writeReloadTrigger(reloadPath); err != nil {
+				tlog("[proxy] warn: reconciliation reload trigger write failed: %v\n", err)
+			}
+		}
+	}
+}
+
 // StartWatcher launches the background goroutine that polls the reload trigger
 // file every 2 seconds and triggers reload() when its sequence number changes.
 func (r *ProxyReloader) StartWatcher(ctx context.Context) {
