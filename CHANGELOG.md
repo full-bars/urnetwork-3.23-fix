@@ -34,6 +34,8 @@ All notable changes to this project are documented here.
 
 **Ramlog redirect scoped to `provide`/`auth-provide`** (#306): `URNETWORK_RAMLOGS=1` redirected stdout/stderr into `/dev/shm/urnetwork.log` for every invocation of the binary, not just the long-running `provide` process — one-shot CLI subcommands run via `docker exec` (`proxy remove-dead --preview`, `proxy summary`, etc.) produced no visible output at all. Found while validating the `proxy.state` fix on a live test container. Now scoped to `provide`/`auth-provide` only.
 
+**Hourly reload reconciler** (#309): `reload()` in `provider/proxy_reload.go` only ran on an explicit trigger (add-source, remove-dead, proxy refresh, URL fetch merge, reaper change). A mass-failure event could leave still-desired proxies stuck out of the running set with no future trigger to bring them back. Confirmed on a production node via `proxy_health.log`: a mass degrade event mostly self-recovered within an hour, but a persistent subset (~3300 proxies) sat idle for ~22 hours until an unrelated `add-source` call forced a reload. New `runReloadReconciler` fires a reload trigger every hour unconditionally as a safety net — cheap no-op when nothing is actually wrong, not gated behind `URNETWORK_SELF_HEAL`.
+
 ## [v3.23.0-fix.26.4] — 2026-07-18
 
 ### Added
