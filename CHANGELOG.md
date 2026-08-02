@@ -14,7 +14,7 @@ All notable changes to this project are documented here.
 
 **Cloudflare Worker sources versioned in-repo** (#304): `dl`, `dl-fullbars`, `geo`, and `provider-redirect` — previously dashboard-only or partially untracked — now live under `workers/` with their `wrangler.jsonc` configs and a `workers/README.md`. Deploys remain manual (`wrangler deploy`); nothing is wired into CI.
 
-**`URNETWORK_HUB_TRUSTED_PROXIES`** (#302): New hub env var. `X-Forwarded-For`/`X-Real-IP` are only honored from configured trusted proxy IPs/CIDRs — previously ignored entirely (direct TCP peer was always used), which collapsed PAKE join rate-limiting into one shared bucket when the hub sat behind a reverse proxy.
+**`URNETWORK_HUB_TRUSTED_PROXIES`** (#302): New hub env var. `X-Forwarded-For`/`X-Real-IP` are now only honored from configured trusted proxy IPs/CIDRs — previously trusted unconditionally from any client, letting an attacker spoof their apparent IP and evade PAKE join rate-limiting entirely. Without this env var set, a hub behind a reverse proxy now sees the proxy's own IP for every request (collapsing rate-limiting into one shared bucket) instead of trusting an unverified header — set it to the proxy's address to restore correct per-client behavior.
 
 **Upstream a2b144c port** (#298): `WindowType`/`OverrideAllowDirect`/PQE/peer-identity support ported from upstream `urnetwork/connect`.
 
