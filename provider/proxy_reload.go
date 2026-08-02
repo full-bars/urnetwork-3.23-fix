@@ -291,8 +291,10 @@ func (r *ProxyReloader) reload() {
 		sourceOf[s.Address] = primarySource
 	}
 
+	urlCacheLoaded := true
 	if urlState, err := readProxyURLState(); err != nil {
 		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
+		urlCacheLoaded = false
 	} else {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
@@ -464,6 +466,35 @@ func (r *ProxyReloader) reload() {
 		})
 	}
 
+	// Reconcile state.Proxies against the full desired set (not just the
+	// running-but-undesired diff handled above). A dead/offline proxy's
+	// goroutine has already exited by the time it's removed from the source
+	// (e.g. `proxy remove-dead`), so it was never in `running` and never
+	// went through the removal loop above — without this pass its state
+	// entry would never be pruned, accumulating forever. This is safe for
+	// URL proxies in give-up backoff: mergeProxyURLCache keeps them in
+	// desiredSet for the duration of their backoff window (only eviction/
+	// blacklist removes them from the cache), so they are never pruned here.
+	//
+	// Gated on urlCacheLoaded: if proxy_url.json failed to read this cycle,
+	// desiredSet is missing every URL-sourced address (transient I/O error,
+	// not "no URL sources configured" — that case returns an empty cache
+	// with no error). Pruning against an incomplete desiredSet would wipe
+	// ID/health history for every still-desired URL proxy, including ones
+	// mid give-up-backoff. Skip the pass entirely until the cache is
+	// readable again; the next reload will catch up.
+	pruned := 0
+	if urlCacheLoaded {
+		for addr := range r.state.Proxies {
+			if _, ok := desiredSet[addr]; !ok {
+				delete(r.state.Proxies, addr)
+				pruned++
+			}
+		}
+	} else {
+		tlog("[proxy] skipping state prune this cycle: proxy_url.json unavailable\n")
+	}
+
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
 	// goroutine from racing this write and resurrecting removed proxies.
 	proxyStateMu.Lock()
@@ -485,6 +516,9 @@ func (r *ProxyReloader) reload() {
 
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
+	if pruned > 0 {
+		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)
+	}
 	if deferredTotal > 0 {
 		tlog("🔄 [proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
 			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
