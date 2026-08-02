@@ -190,7 +190,8 @@ func_check_update() {
     else
         log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
 
-        touch /tmp/urnetwork-update-pending
+        mkdir -p "$HOME/.urnetwork"
+        touch "$HOME/.urnetwork/update-pending"
 
         if pkill -f "^/app/urnetwork_${A_SYS_ARCH}_nightly provide" 2>/dev/null; then
             log "[INFO] Provider process terminated."
@@ -270,8 +271,8 @@ func_start_provider(){
         # Capture the real exit code (set -e safe; bare `provide` would abort the loop on crash)
         if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
         if [ "$code" -eq 0 ]; then
-            if [ -f /tmp/urnetwork-update-pending ]; then
-                rm -f /tmp/urnetwork-update-pending
+            if [ -f "$HOME/.urnetwork/update-pending" ]; then
+                rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
                 failures=0
                 continue
