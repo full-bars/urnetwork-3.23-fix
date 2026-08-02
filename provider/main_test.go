@@ -608,3 +608,34 @@ func TestJwtNetworkId_Invalid(t *testing.T) {
 		t.Fatal("expected failure for empty input")
 	}
 }
+
+// TestIsLongRunningSubcommand is a regression test for a bug where
+// URNETWORK_RAMLOGS=1 redirected stdout/stderr into the ramlog for every
+// invocation of the binary, not just the long-running `provide` process —
+// leaving one-shot CLI subcommands like `proxy remove-dead --preview` (run
+// via `docker exec <container> ...`) producing no visible output at all to
+// the caller. Only `provide`/`auth-provide` should trigger the redirect.
+func TestIsLongRunningSubcommand(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"provider", "provide"}, true},
+		{[]string{"provider", "auth-provide"}, true},
+		{[]string{"provider", "provide", "--port=8080"}, true},
+		{[]string{"provider", "proxy", "remove-dead", "--preview"}, false},
+		{[]string{"provider", "proxy", "summary"}, false},
+		{[]string{"provider", "auth"}, false},
+		{[]string{"provider"}, false},
+		{[]string{}, false},
+	}
+	for _, c := range cases {
+		os.Args = c.args
+		if got := isLongRunningSubcommand(); got != c.want {
+			t.Errorf("isLongRunningSubcommand() with args %v = %v, want %v", c.args, got, c.want)
+		}
+	}
+}

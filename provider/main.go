@@ -150,6 +150,16 @@ func init() {
 	// initPprof()
 }
 
+// isLongRunningSubcommand reports whether os.Args invokes the long-running
+// provide (or auth-provide) command, as opposed to a one-shot CLI
+// subcommand like `proxy remove-dead` or `proxy summary`. Used to decide
+// whether stdout/stderr should be redirected into the ramlog: doing so for
+// one-shot commands left them producing no visible output to the caller at
+// all, since the redirect is process-wide, not scoped to `provide`.
+func isLongRunningSubcommand() bool {
+	return len(os.Args) > 1 && (os.Args[1] == "provide" || os.Args[1] == "auth-provide")
+}
+
 func initGlog() {
 	flag.Set("logtostderr", "true")
 	flag.Set("stderrthreshold", "INFO")
@@ -159,9 +169,10 @@ func initGlog() {
 
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS") == "1"
-	if profile == "lowmem" || profile == "eco" || ramlogs {
+	if (profile == "lowmem" || profile == "eco" || ramlogs) && isLongRunningSubcommand() {
 		// If explicitly requested via profile or env, just start it.
 		// Auto-detection handover is handled in main() with a countdown.
+		// One-shot CLI subcommands print directly to the terminal instead.
 		initSHMLogger()
 	}
 }
@@ -654,15 +665,16 @@ func main() {
 			os.Setenv("URNETWORK_RAMLOGS", "1")
 			autoRamLogTriggered = true
 		}
-	} else if len(os.Args) > 1 && (os.Args[1] == "provide" || os.Args[1] == "auth-provide") {
+	} else if isLongRunningSubcommand() {
 		// Even if not in auto, run audit for visibility
 		RunStartupAudit()
 	}
 
 	initGlog()
 
-	// If auto-tuner enabled RAM logs, perform the countdown handover now
-	if autoRamLogTriggered {
+	// If auto-tuner enabled RAM logs, perform the countdown handover now.
+	// Only for the long-running provide process — see isLongRunningSubcommand.
+	if autoRamLogTriggered && isLongRunningSubcommand() {
 		initSHMLoggerWithHandover()
 	}
 
@@ -2944,7 +2956,7 @@ func provide(opts docopt.Opts) {
 		)
 	}
 
-		wg.Wait()
+	wg.Wait()
 
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
