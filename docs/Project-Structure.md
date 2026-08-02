@@ -3,7 +3,7 @@
 ```
 urnetwork-3.23-fix/
 ├── *.go                          # Core network stack (root package)
-├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.25)
+├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.26)
 ├── Dockerfile                    # Alpine multi-arch provider image
 ├── CHANGELOG.md                  # Version history with per-release notes
 ├── FORK_CHANGES.md               # Delta summary vs upstream urnetwork/connect
@@ -44,8 +44,15 @@ urnetwork-3.23-fix/
 │   └── test.sh
 │
 ├── docker/                       # Docker startup scripts
-│   ├── scripts/                  # start_jwt.sh, start_stable.sh, start_nightly.sh
+│   ├── scripts/                  # start_jwt.sh, start_stable.sh, start_nightly.sh, urnet-tools.sh
 │   └── ...                       # Selected by BUILD env var at container start
+│
+├── workers/                      # Cloudflare Worker sources (dl.fullbars.xyz + friends)
+│   ├── dl/                       # Script proxy + install.fullbars.xyz smart dispatcher/landing page
+│   ├── dl-fullbars/               # latest-version + releases/download GitHub release mirror
+│   ├── geo/                       # geo.fullbars.xyz — client geo/RTT info endpoint
+│   ├── provider-redirect/         # provider.fullbars.xyz -> GitHub 301 redirect
+│   └── README.md                  # Routes, deploy notes, wrangler usage
 │
 ├── scripts/                      # Installer and test scripts
 │   ├── Provider_Install_Linux.sh # One-command provider install for Linux
@@ -66,6 +73,7 @@ urnetwork-3.23-fix/
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md
+│   ├── Proxy-URL-Sources.md
 │   ├── Traffic-Amplification.md
 │   ├── Troubleshooting.md
 │   └── design/                   # Internal design docs (proxy health, hot-reload, bandwidth)
