@@ -110,6 +110,13 @@ func parseIpv4(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destina
 	if headerByteCount < Ipv4HeaderSizeWithoutExtensions || totalByteCount < headerByteCount || len(ipPacket) < totalByteCount {
 		return
 	}
+	// fragments are not reassembled: a non-first fragment has no transport
+	// header and a first fragment has a truncated payload, so either would
+	// misparse payload bytes as transport fields. one 16 bit load covers mf
+	// plus the whole offset field (0x3fff); df and the reserved bit pass.
+	if binary.BigEndian.Uint16(ipPacket[6:8])&0x3fff != 0 {
+		return
+	}
 	ipProtocol = IPProtocol(ipPacket[9])
 	sourceIp = net.IP(ipPacket[12:16])
 	destinationIp = net.IP(ipPacket[16:20])
