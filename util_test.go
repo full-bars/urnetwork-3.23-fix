@@ -13,6 +13,66 @@ import (
 	"github.com/go-playground/assert/v2"
 )
 
+func TestResetOrCreateTimerCreatesAndFires(t *testing.T) {
+	var timer *time.Timer
+	if timer != nil {
+		t.Fatalf("expected nil timer before first call")
+	}
+
+	c := resetOrCreateTimer(&timer, 10*time.Millisecond)
+	if timer == nil {
+		t.Fatalf("expected resetOrCreateTimer to allocate a timer")
+	}
+
+	select {
+	case <-c:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timer did not fire")
+	}
+}
+
+func TestResetOrCreateTimerReusesUnderlyingTimer(t *testing.T) {
+	var timer *time.Timer
+
+	resetOrCreateTimer(&timer, 5*time.Second)
+	first := timer
+	if first == nil {
+		t.Fatalf("expected resetOrCreateTimer to allocate a timer")
+	}
+
+	// A second call before the first fires must reuse (Reset), not
+	// reallocate, the same *time.Timer.
+	c := resetOrCreateTimer(&timer, 10*time.Millisecond)
+	if timer != first {
+		t.Fatalf("expected resetOrCreateTimer to reuse the existing timer")
+	}
+
+	select {
+	case <-c:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("reset timer did not fire with the shortened duration")
+	}
+}
+
+func TestResetOrCreateTimerRepeatedResetsFireEachTime(t *testing.T) {
+	// Mirrors runSctpProgressWatchdog's polling loop: the same timer
+	// pointer is repeatedly reset to a short interval and must fire every
+	// time, in order, with no leaked or stale channel values.
+	var timer *time.Timer
+	for i := 0; i < 20; i += 1 {
+		start := time.Now()
+		c := resetOrCreateTimer(&timer, 5*time.Millisecond)
+		select {
+		case fired := <-c:
+			if fired.Before(start) {
+				t.Fatalf("iteration %d: fire time %v is before reset time %v", i, fired, start)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("iteration %d: timer did not fire", i)
+		}
+	}
+}
+
 func TestMonitor(t *testing.T) {
 	timeout := 1 * time.Second
 
