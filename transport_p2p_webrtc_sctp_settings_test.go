@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-playground/assert/v2"
+	"github.com/pion/webrtc/v4"
 )
 
 func TestDefaultWebRtcSettingsSctpTuning(t *testing.T) {
@@ -129,3 +130,120 @@ func TestWebRtcWithSctpProgressWatchdogEnabledPassesRealTraffic(t *testing.T) {
 		t.Fatalf("timed out waiting for data; watchdog may have torn down a healthy connection")
 	}
 }
+
+func TestWebRtcSctpProgressNilPeerConnection(t *testing.T) {
+	// A nil *webrtc.PeerConnection must be reported as "no signal", never
+	// dereferenced.
+	bufferedAmount, bytesReceived, ok := webRtcSctpProgress(nil)
+	assert.Equal(t, ok, false)
+	assert.Equal(t, bufferedAmount, 0)
+	assert.Equal(t, bytesReceived, uint64(0))
+}
+
+func TestWebRtcSctpProgressFreshPeerConnection(t *testing.T) {
+	// NewPeerConnection always allocates a non-nil SCTPTransport, but no
+	// association exists until negotiation completes, so stats report zero
+	// rather than being unavailable.
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	assert.Equal(t, err, nil)
+	defer pc.Close()
+
+	bufferedAmount, bytesReceived, ok := webRtcSctpProgress(pc)
+	assert.Equal(t, ok, true)
+	assert.Equal(t, bufferedAmount, 0)
+	assert.Equal(t, bytesReceived, uint64(0))
+}
+
+func TestCreateWebRtcPeerConnectionAppliesSctpCwndCAStep(t *testing.T) {
+	// SetSCTPCwndCAStep is only wired up when the setting is non-zero
+	// (`0 < settings.SctpCwndCAStep`); both branches must still produce a
+	// usable PeerConnection.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for _, cwndCAStep := range []uint32{0, 4 * 1200} {
+		settings := DefaultWebRtcSettings()
+		settings.SctpCwndCAStep = cwndCAStep
+
+		pc, err := createWebRtcPeerConnection(ctx, true, settings)
+		assert.Equal(t, err, nil)
+		if pc == nil {
+			t.Fatalf("createWebRtcPeerConnection(cwndCAStep=%d) returned a nil PeerConnection", cwndCAStep)
+		}
+		pc.Close()
+	}
+}
+
+func TestSctpProgressWatchdogNoCancelWhenBufferedAmountZero(t *testing.T) {
+	// The watchdog only starts sampling once BufferedAmount is non-zero. On
+	// a PeerConnection whose SCTP association never forms, BufferedAmount
+	// stays at 0, so noting outbound activity must not cancel the
+	// connection even after the no-progress timeout elapses.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	assert.Equal(t, err, nil)
+	defer pc.Close()
+
+	settings := DefaultWebRtcSettings()
+	settings.SctpNoProgressTimeout = 50 * time.Millisecond
+
+	conn := &peerConn{
+		ctx:              ctx,
+		cancel:           cancel,
+		log:              loggerOrDefault(nil),
+		settings:         settings,
+		pc:               pc,
+		outboundProgress: make(chan struct{}, 1),
+	}
+
+	conn.noteOutboundSctpActivity()
+
+	select {
+	case <-ctx.Done():
+		t.Fatalf("watchdog canceled the connection despite zero buffered amount")
+	case <-time.After(5 * settings.SctpNoProgressTimeout):
+	}
+}
+
+func TestNoteOutboundSctpActivityCoalescesWithoutBlocking(t *testing.T) {
+	// outboundProgress is a capacity-1 coalescing channel: repeated signals
+	// before the watchdog drains it must never block the writer (Write
+	// itself calls noteOutboundSctpActivity synchronously).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	settings := DefaultWebRtcSettings()
+	settings.SctpNoProgressTimeout = 0 // keep the watchdog goroutine from starting/draining
+
+	conn := &peerConn{
+		ctx:              ctx,
+		cancel:           cancel,
+		log:              loggerOrDefault(nil),
+		settings:         settings,
+		outboundProgress: make(chan struct{}, 1),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i += 1 {
+			conn.noteOutboundSctpActivity()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("noteOutboundSctpActivity blocked despite a disabled (undrained) watchdog")
+	}
+}
+
+// Note: a scenario where the SCTP association genuinely stalls while ICE
+// consent remains healthy (e.g. one-way packet loss to a still-live peer) is
+// intentionally not simulated here. Locally closing a peer's
+// *webrtc.PeerConnection immediately errors and aborts the SCTP association
+// on both sides ("dtls fatal: conn is closed"), which drives BufferedAmount
+// back to 0 and would make such a test pass or fail based on pion's internal
+// teardown ordering rather than the watchdog logic itself.
