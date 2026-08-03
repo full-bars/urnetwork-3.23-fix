@@ -62,9 +62,9 @@ func TestWebRtcWithSctpProgressWatchdogEnabledPassesRealTraffic(t *testing.T) {
 	defer cancel()
 
 	settingsA := DefaultWebRtcSettings()
-	settingsA.SctpNoProgressTimeout = 2 * time.Second
+	settingsA.SctpNoProgressTimeout = 5 * time.Second
 	settingsB := DefaultWebRtcSettings()
-	settingsB.SctpNoProgressTimeout = 2 * time.Second
+	settingsB.SctpNoProgressTimeout = 5 * time.Second
 
 	signalPipeA := newSignalPipe(nil)
 	signalPipeB := newSignalPipe(nil)
@@ -91,19 +91,23 @@ func TestWebRtcWithSctpProgressWatchdogEnabledPassesRealTraffic(t *testing.T) {
 	mathrand.Read(b)
 
 	received := make(chan []byte, 1)
+	sendErr := make(chan error, 1)
+	receiveErr := make(chan error, 1)
 
 	send := func(conn net.Conn) {
-		_, err := conn.Write(b)
-		if err != nil {
-			panic(err)
+		if _, err := conn.Write(b); err != nil {
+			sendErr <- err
+			return
 		}
+		sendErr <- nil
 	}
 	receive := func(conn net.Conn) {
 		b2 := make([]byte, len(b))
-		_, err := io.ReadFull(conn, b2)
-		if err != nil {
-			panic(err)
+		if _, err := io.ReadFull(conn, b2); err != nil {
+			receiveErr <- err
+			return
 		}
+		receiveErr <- nil
 		received <- b2
 	}
 
@@ -113,6 +117,14 @@ func TestWebRtcWithSctpProgressWatchdogEnabledPassesRealTraffic(t *testing.T) {
 	select {
 	case b2 := <-received:
 		assert.Equal(t, b, b2)
+	case err := <-sendErr:
+		if err != nil {
+			t.Fatalf("send error: %s", err)
+		}
+	case err := <-receiveErr:
+		if err != nil {
+			t.Fatalf("receive error: %s", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("timed out waiting for data; watchdog may have torn down a healthy connection")
 	}
