@@ -15,6 +15,9 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 	s.DetachDataChannels()
 	s.SetSCTPMaxReceiveBufferSize( /*16 * 1024 * 1024*/ uint32(settings.ReceiveBufferSize))
 	s.SetReceiveMTU( /*16384*/ uint(settings.ReceiveMtu))
+	if 0 < settings.SctpCwndCAStep {
+		s.SetSCTPCwndCAStep(settings.SctpCwndCAStep)
+	}
 	s.SetICETimeouts(
 		settings.DisconnectedTimeout,
 		settings.FailedTimeout,
@@ -40,4 +43,19 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 
 func detachWithDeadline(dc *webrtc.DataChannel) (datachannel.ReadWriteCloserDeadliner, error) {
 	return dc.DetachWithDeadline()
+}
+
+// webRtcSctpProgress returns the native association signals used by the lazy
+// no-progress watchdog. BytesReceived counts all SCTP packets read from DTLS,
+// including SACKs; BufferedAmount covers pending plus in-flight user data.
+func webRtcSctpProgress(pc *webrtc.PeerConnection) (bufferedAmount int, bytesReceived uint64, ok bool) {
+	if pc == nil {
+		return
+	}
+	sctp := pc.SCTP()
+	if sctp == nil {
+		return
+	}
+	stats := sctp.Stats()
+	return sctp.BufferedAmount(), stats.BytesReceived, true
 }

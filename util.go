@@ -21,6 +21,19 @@ import (
 	mathrand "math/rand"
 )
 
+// resetOrCreateTimer lazily creates a timer and otherwise reuses it. Go 1.23+
+// guarantees Reset cannot expose a stale value from the previous setting, so
+// callers only need to serialize access to the timer and Stop it when a
+// non-timer select arm wins.
+func resetOrCreateTimer(timer **time.Timer, timeout time.Duration) <-chan time.Time {
+	if *timer == nil {
+		*timer = time.NewTimer(timeout)
+	} else {
+		(*timer).Reset(timeout)
+	}
+	return (*timer).C
+}
+
 // DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func DetectEffectiveRAMLimitBytes() int64 {
