@@ -33,12 +33,14 @@ func TestSecurityPolicyStatsCollectorBoundsDestinationCount(t *testing.T) {
 		t.Fatalf("expected SecurityPolicyResultAllow to have recorded destinations")
 	}
 
-	// Capacity is capped at securityPolicyStatsMaxDestinationsPerResult,
-	// which includes the overflow bucket, regardless of how many distinct
-	// destinations were fed in.
-	if len(destinationCounts) > securityPolicyStatsMaxDestinationsPerResult {
+	// The bound is exact, not just an upper limit: the (securityPolicyStats-
+	// MaxDestinationsPerResult - 1)th unique destination fills the last real
+	// slot, and every unique destination after that — 50 extra plus the one
+	// that would have been the 1024th real slot, 51 in total — collapses
+	// into the single overflow bucket. Map size is therefore exactly the cap.
+	if len(destinationCounts) != securityPolicyStatsMaxDestinationsPerResult {
 		t.Fatalf(
-			"expected at most %d distinct destinations, got %d",
+			"expected exactly %d distinct destinations, got %d",
 			securityPolicyStatsMaxDestinationsPerResult,
 			len(destinationCounts),
 		)
@@ -48,16 +50,21 @@ func TestSecurityPolicyStatsCollectorBoundsDestinationCount(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected an overflow bucket once the cap was exceeded")
 	}
-	if overflowCount == 0 {
-		t.Fatalf("expected the overflow bucket to have accumulated counts")
+	const expectedOverflowCount = 51
+	if overflowCount != expectedOverflowCount {
+		t.Fatalf("expected overflow bucket count %d, got %d", expectedOverflowCount, overflowCount)
 	}
 }
 
-// An unrecognized result value must not bypass the bound by opening a new,
-// uncapped bucket keyed by an arbitrary integer.
+// Two distinct unrecognized result values must not bypass the bound by each
+// opening their own uncapped bucket keyed by an arbitrary integer — both
+// have to remap into, and accumulate together under, the single unknown
+// bucket.
 func TestSecurityPolicyStatsCollectorUnknownResultSharesOneBucket(t *testing.T) {
 	collector := DefaultSecurityPolicyStatsCollector()
 
+	// Neither 99 nor 100 is one of the three declared results.
+	unsupportedResults := []SecurityPolicyResult{99, 100}
 	for i := 0; i < 10; i++ {
 		ipPath := &IpPath{
 			Version:         4,
@@ -67,16 +74,26 @@ func TestSecurityPolicyStatsCollectorUnknownResultSharesOneBucket(t *testing.T) 
 			DestinationIp:   net.IPv4(1, 1, 1, byte(i)),
 			DestinationPort: 443 + i,
 		}
-		// SecurityPolicyResult(99) is not one of the three declared results.
-		collector.AddDestination(ipPath, SecurityPolicyResult(99), 1)
+		collector.AddDestination(ipPath, unsupportedResults[i%len(unsupportedResults)], 1)
 	}
 
 	stats := collector.Stats(false)
-	if _, ok := stats[SecurityPolicyResult(99)]; ok {
-		t.Fatalf("expected result(99) to be remapped, not stored under its own key")
+	for _, result := range unsupportedResults {
+		if _, ok := stats[result]; ok {
+			t.Fatalf("expected result(%d) to be remapped, not stored under its own key", result)
+		}
 	}
-	if _, ok := stats[securityPolicyStatsUnknownResult]; !ok {
+
+	unknownCounts, ok := stats[securityPolicyStatsUnknownResult]
+	if !ok {
 		t.Fatalf("expected all unrecognized results to share securityPolicyStatsUnknownResult")
+	}
+	var total uint64
+	for _, count := range unknownCounts {
+		total += count
+	}
+	if total != 10 {
+		t.Fatalf("expected both unsupported results' counts to accumulate together, got total %d", total)
 	}
 }
 
