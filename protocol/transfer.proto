@@ -205,6 +205,37 @@ message StreamReset {
     repeated StreamOpen streams = 1;
 }
 
+// a network peer: a connected top-level client in the same network and its
+// identity metadata. When `disconnect_time` is set, this entry is a
+// disconnect marker for a recently disconnected peer.
+message NetworkPeer {
+    // ulid
+    bytes client_id = 1;
+    // the peer's enabled provide modes
+    repeated ProvideMode provide_modes = 2;
+    // identity principal assigned at client creation
+    string principal = 3;
+    // roles assigned at client creation
+    repeated string roles = 4;
+    string device_name = 5;
+    string device_spec = 6;
+    // unix milliseconds. Set when the peer recently disconnected;
+    // the receiver ages the marker out locally
+    optional uint64 disconnect_time = 7;
+}
+
+// control message. Marks the start of a complete network peers list;
+// the receiver clears its peer state. The complete list follows as
+// `NetworkPeersUpdate` messages.
+message NetworkPeersReset {
+}
+
+// control message. Upserts peers (and disconnect markers) into the
+// receiver's peer state.
+message NetworkPeersUpdate {
+    repeated NetworkPeer peers = 1;
+}
+
 
 enum SignalType {
     // reset means clear all previous signals for the transfer peer pair
@@ -220,6 +251,10 @@ message ExchangeSignals {
     bytes stream_id = 1;
     bool reset_signals = 2;
     repeated ExchangeSignal signals = 3;
+    // Per-PeerConnection sender generation. This disambiguates a delayed
+    // initial WaitingForSdpOffer from a newly restarted passive association.
+    // Older peers omit/ignore it and retain the legacy compatibility path.
+    bytes sender_generation_id = 4;
 }
 
 // signals are sent in real time to the destination of the peer pair
