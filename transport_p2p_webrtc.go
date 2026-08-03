@@ -390,11 +390,28 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 		// FIXME
 		// SendBufferSize: mib(1),
 
-		ReceiveBufferSize:   mib(4),
-		ReceiveMtu:          kib(4),
+		ReceiveBufferSize: mib(4),
+		// Pion's receive MTU is a per-packet demux buffer, not the SCTP
+		// receive window. Its SCTP path MTU stays below Ethernet's 1500-byte
+		// packet size, so the former 4 KiB value only enlarged persistent and
+		// scratch buffers with no effect on the actual window.
+		ReceiveMtu:          ByteCount(1500),
 		DisconnectedTimeout: 30 * time.Second,
 		FailedTimeout:       30 * time.Second,
 		KeepAliveTimeout:    1 * time.Second,
+
+		// Pion's Reno-style congestion avoidance otherwise adds one ~1.2 KiB
+		// MTU only after a complete cwnd is acknowledged. On a measured 50 ms
+		// path with independent wireless loss, recovery from a 20-50 KiB
+		// window took seconds and held throughput below 1 MiB/s. Four MTUs
+		// retains loss response and a zero minimum, while making recovery
+		// competitive.
+		SctpCwndCAStep: 4 * 1200,
+		// ICE consent can remain healthy while the SCTP/data plane is
+		// half-open. Once a write leaves unacknowledged SCTP bytes, require a
+		// reverse SCTP packet within this bound or rebuild the association.
+		// The worker is lazy and has no idle timer/radio wakeups.
+		SctpNoProgressTimeout: 10 * time.Second,
 
 		DataChannelLabel: "data",
 		IceServerUrls: []string{
@@ -421,6 +438,16 @@ type WebRtcSettings struct {
 	DisconnectedTimeout time.Duration
 	FailedTimeout       time.Duration
 	KeepAliveTimeout    time.Duration
+
+	// SCTP congestion controls are byte counts. Zero retains Pion's RFC-style
+	// default. CwndCAStep changes only additive recovery, not the loss
+	// response or minimum window.
+	SctpCwndCAStep uint32
+	// SctpNoProgressTimeout bounds a half-open data plane after outbound
+	// activity. Zero disables the watchdog. It observes reverse SCTP
+	// packets, not application callbacks, so transfer send/receive/forward
+	// callbacks retain their synchronous backpressure semantics.
+	SctpNoProgressTimeout time.Duration
 
 	DataChannelLabel string
 
@@ -634,6 +661,9 @@ type peerConn struct {
 
 	readDeadline  time.Time
 	writeDeadline time.Time
+
+	outboundProgress  chan struct{}
+	progressWatchOnce sync.Once
 }
 
 func newPeerConn(ctx context.Context, key peerConnKey, sourceId Id, active bool, signalSender SignalSender, settings *WebRtcSettings) (*peerConn, error) {
@@ -657,6 +687,7 @@ func newPeerConn(ctx context.Context, key peerConnKey, sourceId Id, active bool,
 		pc:                 pc,
 		connectedCallbacks: NewCallbackList[func(connected bool)](),
 		connMonitor:        NewMonitor(),
+		outboundProgress:   make(chan struct{}, 1),
 	}
 	return conn, nil
 }
@@ -997,7 +1028,93 @@ func (self *peerConn) Write(b []byte) (n int, err error) {
 	}
 	c.SetWriteDeadline(deadline)
 	n, err = c.Write(b)
+	if 0 < n {
+		self.noteOutboundSctpActivity()
+	}
 	return
+}
+
+func (self *peerConn) noteOutboundSctpActivity() {
+	if self.settings.SctpNoProgressTimeout <= 0 {
+		return
+	}
+	self.progressWatchOnce.Do(func() {
+		go HandleError(self.runSctpProgressWatchdog, self.cancel)
+	})
+	select {
+	case self.outboundProgress <- struct{}{}:
+	default:
+	}
+}
+
+// runSctpProgressWatchdog closes a half-open data plane that ICE consent
+// cannot see. Pion's reliable SCTP association retries indefinitely; if the
+// remote SCTP endpoint disappears while its ICE agent/socket still answers,
+// PeerConnection remains "connected" and a small first write after an idle
+// period can otherwise sit unacknowledged forever.
+//
+// The worker starts only after the first successful application write. It has
+// no idle ticker: while the SCTP buffered amount is zero it waits on the
+// coalescing outbound-activity channel. With data outstanding, any reverse
+// SCTP packet (normally a SACK) refreshes the deadline. This observes
+// transport progress without putting a timeout around intentional transfer
+// callback backpressure.
+func (self *peerConn) runSctpProgressWatchdog() {
+	timeout := self.settings.SctpNoProgressTimeout
+	sampleInterval := min(250*time.Millisecond, timeout/4)
+	if sampleInterval <= 0 {
+		sampleInterval = time.Millisecond
+	}
+	var sampleTimer *time.Timer
+	defer func() {
+		if sampleTimer != nil {
+			sampleTimer.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-self.ctx.Done():
+			return
+		case <-self.outboundProgress:
+		}
+
+		bufferedAmount, lastReceived, ok := webRtcSctpProgress(self.pc)
+		if !ok {
+			continue
+		}
+		lastProgress := time.Now()
+		for 0 < bufferedAmount {
+			remaining := timeout - time.Since(lastProgress)
+			if remaining <= 0 {
+				self.log.Infof(
+					"[peerconn]SCTP no progress for %s with %d bytes buffered; reconnecting\n",
+					timeout,
+					bufferedAmount,
+				)
+				self.cancel()
+				return
+			}
+
+			sample := min(sampleInterval, remaining)
+			sampleC := resetOrCreateTimer(&sampleTimer, sample)
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-sampleC:
+			}
+
+			var received uint64
+			bufferedAmount, received, ok = webRtcSctpProgress(self.pc)
+			if !ok {
+				break
+			}
+			if received != lastReceived {
+				lastReceived = received
+				lastProgress = time.Now()
+			}
+		}
+	}
 }
 
 // LocalAddr returns the local network address, if known.
