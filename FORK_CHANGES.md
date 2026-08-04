@@ -2264,3 +2264,88 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 **Tests**: 4 new — bound holds at 1050 distinct destinations fed in, unknown results share one bucket, zero-count no-op, overflow destination `String()`.
 
 **Status**: ✅ Merged `main` (2026-08-03). PR #314. v3.23.0-fix.26.6.
+
+---
+
+## 99. Root Package Dependency Surface Reduction — `sn_deps.go` Deleted (PR #315)
+
+**Purpose**: Remove the go-ethereum/AWS/Azure/zkVM tree from the root `connect` library package. `sn_deps.go` was four blank imports of `urfoundation/sn` packages predating real callers — its own comment said to remove it once callers imported them directly, and `provider/sn.go` (lines 38-41) now does exactly that. While the blank-import shim lived, `go mod why github.com/ethereum/go-ethereum` routed through the root `connect` package, dragging ~50 heavy dependencies (ethereum, AWS SDK, Azure SDK, gnark, c-kzg, ZK zkVM, DataDog zstd) into every consumer of the library (extender, connectctl, the Rust VPN client bindings).
+
+**Fix**: `git rm sn_deps.go`. Nothing else — provider still has its real imports.
+
+**Effect**: Root package 471 → 370 transitive deps; heavy deps 50 → 0; `go mod why go-ethereum` now routes via `connect/provider`, not `connect`. Provider binary size unchanged (27,016,488 B before/after — expected; the win is the library graph, not the binary). `go.mod`/`go.sum` byte-identical.
+
+**Files Modified**: `sn_deps.go` (deleted)
+
+**Status**: ✅ Merged `main` (2026-08-04). PR #315. v3.23.0-fix.26.7.
+
+---
+
+## 100. Connecting Guard in All Degraded Predicates + Dead Counters Removed (PR #316)
+
+**Purpose**: Close the one-predicate gap left by the `IsDegraded()` fix. `RegisterProxy` reuses the existing `*proxyHealth` struct on re-registration and sets `connecting = true` without resetting the predecessor's `everUp`/`downSince` — so a freshly respawned instance inherits its dead predecessor's state. `IsDegraded()` carried the `!connecting` guard (10-line rationale comment); `DegradedProxies()` and `ProxyHealthByAddress()` had the identical predicate without it.
+
+**Impact of the gap**: `DegradedProxies()` (feeds the URL-reaper at `provider/main.go:2179`) counted a mid-connect instance as degraded, skewing the keep/reap split (mitigated only because `reapProxies` re-verifies). `ProxyHealthByAddress()` was unmitigated — it writes `proxy.state`'s `Health` field (`provider/main.go:1749`) and the URL-source reaper's `isLive` (`provider/proxy_url_source.go:597`); a respawning proxy read as a degraded tier from the stale predecessor `downSince`, and the `isLive` check could demote or evict a proxy that was simply reconnecting.
+
+**Fix**:
+- `DegradedProxies()`: added `&& !h.connecting` to match `IsDegraded()`.
+- `ProxyHealthByAddress()`: converted to a switch with `connecting` checked before `everUp`, mirroring the `IsDegraded()` guard.
+- `ProxyHealthSnapshot()`: deleted dead `total`/`bwCount` counters (incremented, never read).
+
+Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that would wipe lifetime recovery stats and is a larger behavioral change.
+
+**Tests**: 3 new (`TestDegradedProxiesExcludesConnecting`, `TestProxyHealthByAddressReportsConnectingOnRespawn`, `TestProxyHealthByAddressUpWinsOverConnecting`) + 5 follow-ups locking in dead/connecting/degraded tiers.
+
+**Files Modified**: `proxy_health.go`, `proxy_health_test.go`
+
+**Status**: ✅ Merged `main` (2026-08-04). PR #316. v3.23.0-fix.26.7.
+
+---
+
+## 101. Connecting-State Bound at One Pulse Cycle (PR #320, #322)
+
+**Purpose**: Bound the `connecting` state, which #316 made visible but left unbounded. `connecting` is cleared only by `markProxyUp`/`markProxyDown` (`transport.go:743-752`), and neither fires on a failed dial — both are tied to an established WebSocket. So a proxy that respawned and never reconnected reported `"connecting"` indefinitely: you could not distinguish "respawned 2s ago" from "respawned 6h ago and never came back" by reading the state file.
+
+**Fix**:
+- `RegisterProxy` stamps `connectingSince = time.Now()`.
+- New `connectingActive(now)` helper — `connecting` is treated as active only within `connectingStaleAfter`; zero-value (pre-bound or `RegisterProxyBandwidth`-init) counts as active so the bound doesn't retroactively break existing behavior.
+- All six call sites (snapshot, heartbeat, `ProxyHealthByAddress`, `DegradedProxies`, `IsDegraded`, `NewlyDead`) use `connectingActive()`; a stale-connecting proxy falls back to a degraded tier computed from the stale `downSince`.
+- `connectingStaleAfter` = **65 minutes** — one hourly retry pulse plus margin, explicitly coupled to the provider's `deadConfirmDelay` (`provider/main.go`, same value, comments cross-reference each other so one cannot change without the other). The original 15-minute value (in #320) was rejected as too aggressive: it made never-connected proxies read `dead` well inside the ~1h staging window that `docs/Proxy-Management.md` promises operators. Both clocks now agree.
+
+**Behavioral note (verified)**: `NewlyDead` was latently dead code before #320 — its clause read `!h.connecting`, which was never false for never-up proxies, so the path could not fire. An API-equivalent test fails at pre-#320 `cb6794b` (`expected 1 NewlyDead event, got 0`) and passes at main. Now that `connectingActive()` goes false at 65m and `confirmDead` gates at 65m, it fires once per proxy that genuinely never connected within a full pulse cycle. Blast radius: one `DEAD` row in `proxy_health.log` (`provider/proxy_health_log.go:161`); nothing alerts on it.
+
+**Tests**: 2 new — `TestNeverUpProxyReadsDeadAfterConnectingStale`, `TestNewlyDeadFiresForNeverUpProxyAfterConnectingStale` (backdate `connectingSince` symbolically, no sleeps). Plus the 3 from #320 (`TestConnectingStateExpiresToDegraded`, `TestDegradedProxiesIncludesStaleConnecting`, `TestConnectingStateResetsOnUpAndDown`).
+
+**Files Modified**: `proxy_health.go`, `proxy_health_test.go`
+
+**Status**: ✅ Merged `main` (2026-08-04). PR #320, #322. v3.23.0-fix.26.7.
+
+---
+
+## 102. Status Server Timeouts + `hub-join` Client Hardening (PR #317, #321)
+
+**Purpose**: Two timeout/robustness gaps in the provider's HTTP surface. (1) The provider's status server was constructed with only `Addr`/`Handler` — no `ReadHeaderTimeout`, so a Slowloris-style dribbled-header client could hold connections open indefinitely on an exposed port. (2) Both `hub-join` PAKE round-trips used bare `http.Post(...)` — `http.DefaultClient`, no timeout, no context — so a blackholed hub wedged the CLI forever with no output; the same defect class already fixed once (2026-07-07 `refreshJWT` hang).
+
+**Fix**:
+- Status server: `ReadHeaderTimeout: 10s`, `IdleTimeout: 120s`, matching the hub's configuration (`hub/main.go`); `WriteTimeout` deliberately unset so the SSE stream is not killed.
+- `hub-join`: one shared `http.Client{Timeout: 30s}`, both POSTs replaced, `signal.NotifyContext` so Ctrl-C aborts a wedged join; the previously-discarded KE2 response decode error is now checked and reported as a parse error instead of a confusing hex failure two lines later.
+- #321 (same-night hotfix): CodeRabbit test-gen landed after #317 merged and generated `pake_handlers_test.go` against the pre-#317 `doHubJoin(hubURL)` signature, breaking the hub test package build on `main`; all call sites updated to the context signature.
+
+**Files Modified**: `provider/main.go`, `hub/pake_handlers.go`, `hub/pake_handlers_test.go`
+
+**Status**: ✅ Merged `main` (2026-08-04). PR #317, #321. v3.23.0-fix.26.7.
+
+---
+
+## 103. `go vet` Cleanliness — Unreachable Returns in `connectctl` (PR #318)
+
+**Purpose**: `go vet ./...` reported 12 `unreachable code` findings, all the same pattern in `connectctl/main.go`: `panic(err); return` — the `return` after `panic` is dead. A permanently-dirty vet means a genuinely new finding in real code gets lost in the noise.
+
+**Fix**: Deleted the 12 bare `return` statements following `panic(err)`. The `panic` calls themselves are untouched — `connectctl` is a developer CLI where panicking is intended behavior; converting to returned errors is a separate decision.
+
+**Result**: `go vet ./...` fully clean — first time in the fork's history (0 findings repo-wide).
+
+**Files Modified**: `connectctl/main.go`
+
+**Status**: ✅ Merged `main` (2026-08-04). PR #318. v3.23.0-fix.26.7.
+

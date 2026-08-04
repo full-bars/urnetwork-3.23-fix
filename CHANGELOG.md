@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [v3.23.0-fix.26.7] — 2026-08-04
+
+### Fixed
+
+**Root package dependency surface reduced** (#315): `sn_deps.go` deleted. The file was four blank imports of `urfoundation/sn` packages whose own comment said to remove them once real callers existed — `provider/sn.go` now imports all four directly. While it lived, it forced the go-ethereum/cloud-SDK tree into the root `connect` library package: every consumer (extender, connectctl, bindings) compiled and linked the entire Ethereum + AWS/Azure + ZK toolchain. After deletion the root package drops from 471 to 370 transitive dependencies, and `go mod why go-ethereum` routes via `provider` instead of `connect`; library consumers no longer pay for what only the provider binary uses.
+
+**`connecting` guard missing from two of three degraded predicates** (#316): `IsDegraded()` had the guard, `DegradedProxies()` and `ProxyHealthByAddress()` did not. `RegisterProxy` reuses the existing health struct on respawn, setting `connecting = true` without resetting the predecessor's `everUp`/`downSince`, so a proxy that was simply reconnecting read as a degraded tier — and the URL-source reaper's `isLive` check could demote or evict it mid-respawn. All three predicates now agree on the guard, and the dead `total`/`bwCount` counters in `ProxyHealthSnapshot()` were removed.
+
+**Stale `connecting` state now bounded at one pulse cycle** (#320, #322): `connecting` is cleared only by `markProxyUp`/`markProxyDown`, neither of which fires on a failed dial, so a proxy that respawned and never reconnected reported `"connecting"` indefinitely. `RegisterProxy` now stamps `connectingSince`, and past the bound the state falls back to a degraded tier so a hung respawn reads differently from a fresh one. The bound is 65 minutes, one hourly retry pulse plus margin, explicitly coupled to the provider's `deadConfirmDelay` and the ~1h staging window the docs promise operators — a never-connected proxy only reads as `dead` after a full pulse cycle, not during normal deployment ramp. This also switched on a latently dead path: `NewlyDead` previously could never fire for never-up proxies (its `!connecting` clause was never false), and now logs one `DEAD` row to `proxy_health.log` per proxy that genuinely never connected within a pulse cycle; nothing alerts on that row.
+
+**Status server timeouts** (#317): The provider's status HTTP server had no timeouts; a dribbled-header client could hold connections open indefinitely on the exposed port. `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s` now match the hub's configuration, with `WriteTimeout` deliberately unset so the SSE stream is not killed.
+
+**`hub-join` client hardening** (#317): Both PAKE join round-trips used `http.DefaultClient` — no timeout, no context — so a blackholed hub wedged the CLI forever with no output. They now share a 30s-timeout client with contexts, so Ctrl-C aborts a wedged join and a hung hub fails cleanly; the discarded KE2 response decode error is now checked and reported. A same-night hotfix (#321) repaired the test call sites after the PAKE signature churn.
+
+**`go vet ./...` fully clean** (#318): 12 unreachable `return` statements after `panic(err)` removed from `connectctl/main.go` (connectctl is a developer CLI where panicking is intended; the panic calls themselves are unchanged). Vet now reports zero findings repo-wide, the first time in the fork's history, so genuinely new findings can no longer hide in the noise.
+
 ## [v3.23.0-fix.26.6] — 2026-08-03
 
 ### Fixed
