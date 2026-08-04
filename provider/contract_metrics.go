@@ -8,22 +8,72 @@ import (
 	"github.com/urnetwork/connect"
 )
 
-const contractBucketSeconds = 10
-const contractBucketCount = 960 // covers ~160 min at 10s buckets
-
+// contractBucket counts contract outcomes within one fixed-width time bucket.
+// epoch is the bucket index (unix seconds / widthSeconds); 0 means never written.
 type contractBucket struct {
-	acquired int64
-	denied   int64
+	epoch    int32
+	acquired int32
+	denied   int32
 }
+
+// contractRing is a fixed-width circular buffer of contract counts. Buckets are
+// written in strictly increasing epoch order, so walking backwards from pos
+// yields strictly decreasing epochs — that is what lets window() stop at the
+// first out-of-range bucket instead of scanning the whole ring.
+type contractRing struct {
+	widthSeconds int64
+	buckets      []contractBucket
+	pos          int
+}
+
+func newContractRing(widthSeconds int64, count int) *contractRing {
+	return &contractRing{widthSeconds: widthSeconds, buckets: make([]contractBucket, count)}
+}
+
+func (r *contractRing) add(now int64, acquired bool) {
+	epoch := int32(now / r.widthSeconds)
+	if r.buckets[r.pos].epoch != epoch {
+		r.pos = (r.pos + 1) % len(r.buckets)
+		r.buckets[r.pos] = contractBucket{epoch: epoch}
+	}
+	if acquired {
+		r.buckets[r.pos].acquired++
+	} else {
+		r.buckets[r.pos].denied++
+	}
+}
+
+func (r *contractRing) window(now int64, d time.Duration) (acquired, denied int64) {
+	minEpoch := int32((now - int64(d/time.Second)) / r.widthSeconds)
+	for i := 0; i < len(r.buckets); i++ {
+		b := r.buckets[(r.pos-i+len(r.buckets))%len(r.buckets)]
+		if b.epoch == 0 || b.epoch < minEpoch {
+			break
+		}
+		acquired += int64(b.acquired)
+		denied += int64(b.denied)
+	}
+	return acquired, denied
+}
+
+// Two rings, so the 24h window is real:
+//   - fine: 10s x 420 = 70 min, covers the 15m and 1h windows.
+//   - coarse: 10min x 144 = 24h, covers the 24h window.
+//
+// A single ring long enough for 24h would be 8,640 buckets (104 KB per proxy);
+// the two-tier split keeps the per-proxy footprint at 420x12 + 144x12 = 6.7 KB.
+const contractFineWidth, contractFineCount = 10, 420
+const contractCoarseWidth, contractCoarseCount = 600, 144
 
 type proxyContractMetrics struct {
 	Acquired atomic.Int64
 	Denied   atomic.Int64
 
-	mu          sync.Mutex
-	buckets     [contractBucketCount]contractBucket
-	bucketPos   int
-	bucketEpoch int64
+	mu     sync.Mutex
+	fine   *contractRing // nil until first add, nil once retired
+	coarse *contractRing // nil until first add, nil once retired
+
+	unsubscribe func() // contract status callback removal; called on retire
 }
 
 func (m *proxyContractMetrics) add(acquired bool) {
@@ -35,40 +85,26 @@ func (m *proxyContractMetrics) add(acquired bool) {
 
 	now := time.Now().Unix()
 	m.mu.Lock()
-	epoch := now / contractBucketSeconds
-	if epoch != m.bucketEpoch {
-		m.bucketEpoch = epoch
-		m.bucketPos = (m.bucketPos + 1) % contractBucketCount
-		m.buckets[m.bucketPos] = contractBucket{}
+	defer m.mu.Unlock()
+	if m.fine == nil {
+		m.fine = newContractRing(contractFineWidth, contractFineCount)
+		m.coarse = newContractRing(contractCoarseWidth, contractCoarseCount)
 	}
-	if acquired {
-		m.buckets[m.bucketPos].acquired++
-	} else {
-		m.buckets[m.bucketPos].denied++
-	}
-	m.mu.Unlock()
+	m.fine.add(now, acquired)
+	m.coarse.add(now, acquired)
 }
 
 func (m *proxyContractMetrics) window(d time.Duration) (acquired, denied int64) {
-	cutoff := time.Now().Add(-d).Unix()
-	needed := int(d.Seconds() / contractBucketSeconds)
-	if needed > contractBucketCount {
-		needed = contractBucketCount
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	epoch := m.bucketEpoch
-	for i := 0; i < needed; i++ {
-		idx := (m.bucketPos - i + contractBucketCount) % contractBucketCount
-		bucketEpoch := epoch - int64(i)
-		if bucketEpoch*contractBucketSeconds < cutoff {
-			break
-		}
-		acquired += m.buckets[idx].acquired
-		denied += m.buckets[idx].denied
+	ring := m.fine
+	if d.Seconds() > float64(contractFineWidth*contractFineCount) {
+		ring = m.coarse
 	}
-	return acquired, denied
+	if ring == nil {
+		return 0, 0
+	}
+	return ring.window(time.Now().Unix(), d)
 }
 
 func (m *proxyContractMetrics) snapshot() (acquired, denied int64) {
@@ -138,10 +174,33 @@ func (r *contractMetricsRegistry) windowTotals(d time.Duration) (acquired, denie
 	return acquired, denied
 }
 
+// retire releases a proxy's bucket rings while keeping the registry entry and
+// lifetime totals. The entry itself must NOT be deleted: liveContractsAcquired
+// feeds the degraded-proxy reaper's lifetime-contribution score, and a returning
+// proxy reuses the same stable ID — a deleted entry would make a proven good
+// proxy look like a zero contributor and a prime reaper candidate.
+func (r *contractMetricsRegistry) retire(index int) {
+	m := r.get(index)
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.fine, m.coarse = nil, nil
+	unsubscribe := m.unsubscribe
+	m.unsubscribe = nil
+	m.mu.Unlock()
+	if unsubscribe != nil {
+		unsubscribe()
+	}
+}
+
 func registerContractCallback(index int, client *connect.Client) {
 	metrics := globalContractMetrics.getOrCreate(index)
-	client.ContractManager().AddContractStatusCallback(func(cs *connect.ContractStatus) {
+	unsubscribe := client.ContractManager().AddContractStatusCallback(func(cs *connect.ContractStatus) {
 		acquired := cs.Error == nil
 		metrics.add(acquired)
 	})
+	metrics.mu.Lock()
+	metrics.unsubscribe = unsubscribe
+	metrics.mu.Unlock()
 }

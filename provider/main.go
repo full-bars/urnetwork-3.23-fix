@@ -2899,6 +2899,7 @@ func provide(opts docopt.Opts) {
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
+				defer globalContractMetrics.retire(stableID)
 				defer proxyCancel()
 
 				staggerMs := 150
