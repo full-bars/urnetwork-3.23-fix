@@ -647,3 +647,184 @@ func TestConnectingStateResetsOnUpAndDown(t *testing.T) {
 		t.Fatal("expected connecting/connectingSince cleared after markProxyDown")
 	}
 }
+
+func TestNeverUpProxyReadsDeadAfterConnectingStale(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(60, "never-up:1")
+
+	// Fresh connecting: reads as connecting, not dead.
+	if s, ok := ProxyHealthByAddress()["never-up:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting while fresh, got %q", s.Health)
+	}
+
+	// Backdate connectingSince past the stale threshold. This is the behavior
+	// #320 introduced: a never-up proxy whose connecting state goes stale falls
+	// through to "dead" instead of reporting "connecting" forever. Whether that
+	// is a regression depends on connectingStaleAfter vs deadConfirmDelay; this
+	// test locks in the mechanical behavior only.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[60].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	if s, ok := ProxyHealthByAddress()["never-up:1"]; !ok || s.Health != "dead" {
+		t.Fatalf("expected dead once connecting stale, got %q", s.Health)
+	}
+}
+
+func TestNewlyDeadFiresForNeverUpProxyAfterConnectingStale(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(61, "never-up-newly-dead:1")
+
+	// First heartbeat establishes the baseline; fresh connecting means no
+	// NewlyDead yet.
+	r := ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 0 {
+		t.Fatalf("expected no NewlyDead while connecting fresh, got %d", len(r.NewlyDead))
+	}
+
+	// Backdate past the stale threshold, then confirm dead: the never-up
+	// proxy's stale connecting no longer shields it, so NewlyDead fires.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[61].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	r = ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 1 {
+		t.Fatalf("expected 1 NewlyDead event, got %d", len(r.NewlyDead))
+	}
+	if r.NewlyDead[0].Index != 61 {
+		t.Fatalf("NewlyDead index = %d, want 61", r.NewlyDead[0].Index)
+	}
+
+	// deadLogged pins the event: a later heartbeat must not re-emit it.
+	r = ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 0 {
+		t.Fatalf("expected no repeated NewlyDead event, got %+v", r.NewlyDead)
+	}
+}
+
+func TestRespawnedEverUpProxyNotDegradedWhileConnecting(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(62, "respawn-everup:1")
+	markProxyUp(62)
+	markProxyDown(62)
+	RegisterProxy(62, "respawn-everup:1")
+
+	// Previously up, now respawning: the inherited everUp must not classify it
+	// as degraded while its fresh connection attempt is still running.
+	r := ProxyHealthHeartbeat(true)
+	want := "proxy[62] (respawn-everup:1)"
+	for _, e := range r.Degraded {
+		if e == want {
+			t.Fatalf("respawned proxy reported degraded while connecting: %q", e)
+		}
+	}
+	for _, e := range r.Dead {
+		if e == want {
+			t.Fatalf("respawned proxy reported dead while connecting: %q", e)
+		}
+	}
+	if r.Up != 0 {
+		t.Fatalf("Up = %d, want 0", r.Up)
+	}
+
+	// Same precedence applies to the snapshot: it must list the proxy as
+	// connecting, not dead or degraded.
+	_, dead, degraded, _, connecting := ProxyHealthSnapshot()
+	for _, e := range dead {
+		if e == want {
+			t.Fatalf("snapshot listed respawning proxy as dead: %q", e)
+		}
+	}
+	for _, e := range degraded {
+		if e == want {
+			t.Fatalf("snapshot listed respawning proxy as degraded: %q", e)
+		}
+	}
+	found := false
+	for _, e := range connecting {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("snapshot did not list respawning proxy as connecting: %v", connecting)
+	}
+}
+
+// TestConnectingStaleAfterIsOneHourlyPulseCycle pins the exact constant value
+// this PR changed (15m -> 65m). connectingStaleAfter must keep matching the
+// provider's deadConfirmDelay (provider/main.go) per the doc comment above the
+// constant, so a silent regression back to 15m (or any other drift) fails loudly.
+func TestConnectingStaleAfterIsOneHourlyPulseCycle(t *testing.T) {
+	if connectingStaleAfter != 65*time.Minute {
+		t.Fatalf("connectingStaleAfter = %v, want 65m", connectingStaleAfter)
+	}
+}
+
+// TestConnectingRemainsActiveBeyondOldFifteenMinuteBound is a regression test
+// for the behavior this PR restores: at 20 minutes old, a never-up proxy's
+// connecting state would have gone stale under the previous 15-minute bound,
+// but must stay "connecting" (not dead/degraded) under the current 65-minute
+// bound, since it's still well within a single hourly retry pulse.
+func TestConnectingRemainsActiveBeyondOldFifteenMinuteBound(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(70, "beyond-old-bound:1")
+
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[70].connectingSince = time.Now().Add(-20 * time.Minute)
+	proxyHealthMu.Unlock()
+
+	if s, ok := ProxyHealthByAddress()["beyond-old-bound:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting at 20m under the 65m bound, got %q", s.Health)
+	}
+	if IsDegraded("beyond-old-bound:1") {
+		t.Fatal("expected not degraded at 20m under the 65m bound")
+	}
+	for _, e := range DegradedProxies() {
+		if e.Index == 70 {
+			t.Fatal("expected proxy not to appear in DegradedProxies at 20m under the 65m bound")
+		}
+	}
+}
+
+// TestConnectingActiveBoundary exercises connectingActive's strict "<" cutoff
+// right at, just before, and just after connectingStaleAfter, so the boundary
+// behavior around the new 65-minute value is locked in precisely.
+func TestConnectingActiveBoundary(t *testing.T) {
+	now := time.Now()
+
+	justBefore := &proxyHealth{connecting: true, connectingSince: now.Add(-(connectingStaleAfter - time.Second))}
+	if !justBefore.connectingActive(now) {
+		t.Fatal("expected connectingActive true just before the connectingStaleAfter boundary")
+	}
+
+	atBoundary := &proxyHealth{connecting: true, connectingSince: now.Add(-connectingStaleAfter)}
+	if atBoundary.connectingActive(now) {
+		t.Fatal("expected connectingActive false exactly at the connectingStaleAfter boundary")
+	}
+
+	justAfter := &proxyHealth{connecting: true, connectingSince: now.Add(-(connectingStaleAfter + time.Second))}
+	if justAfter.connectingActive(now) {
+		t.Fatal("expected connectingActive false just after the connectingStaleAfter boundary")
+	}
+}
+
+// TestConnectingActiveFalseWhenNotConnecting ensures connectingActive short-
+// circuits on h.connecting regardless of how connectingSince is set.
+func TestConnectingActiveFalseWhenNotConnecting(t *testing.T) {
+	h := &proxyHealth{connecting: false, connectingSince: time.Now()}
+	if h.connectingActive(time.Now()) {
+		t.Fatal("expected connectingActive false when connecting is false, regardless of connectingSince")
+	}
+}
+
+// TestConnectingActiveTrueWhenNeverStamped covers the never-stamped
+// (zero-value connectingSince) fallback: pre-bound state or a bandwidth-only
+// init via RegisterProxyBandwidth must not be retroactively treated as stale.
+func TestConnectingActiveTrueWhenNeverStamped(t *testing.T) {
+	h := &proxyHealth{connecting: true}
+	if !h.connectingActive(time.Now()) {
+		t.Fatal("expected connectingActive true when connectingSince has never been stamped")
+	}
+}
