@@ -416,8 +416,8 @@ func TestProxyHealthByAddressReportsConnectingOnRespawn(t *testing.T) {
 	markProxyDown(21)
 
 	status := ProxyHealthByAddress()
-	if s, ok := status["respawn-addr:2"]; !ok || s.Health == "connecting" || s.Health == "up" || s.Health == "dead" {
-		t.Fatalf("expected a degraded tier before respawn, got %q", s.Health)
+	if s, ok := status["respawn-addr:2"]; !ok || s.Health != "recently_offline" {
+		t.Fatalf("expected recently_offline before respawn, got %q", s.Health)
 	}
 
 	RegisterProxy(21, "respawn-addr:2")
