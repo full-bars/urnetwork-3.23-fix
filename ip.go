@@ -897,14 +897,16 @@ func (self *UdpBuffer[BufferId]) udpSend(
 		if 0 < self.udpBufferSettings.UserLimit {
 			if sourceSequences := self.sourceSequences[source]; self.udpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.udpBufferSettings.UserLimit, func(sequence *UdpSequence) bool {
-					self.log.V(1).Infof(
-						"[lnr]udp limit source %s->%s\n",
-						source,
-						net.JoinHostPort(
-							sequence.destinationIp.String(),
-							strconv.Itoa(int(sequence.destinationPort)),
-						),
-					)
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof(
+							"[lnr]udp limit source %s->%s\n",
+							source,
+							net.JoinHostPort(
+								sequence.destinationIp.String(),
+								strconv.Itoa(int(sequence.destinationPort)),
+							),
+						)
+					}
 					return true
 				})
 			}
@@ -1210,9 +1212,13 @@ func (self *UdpSequence) Run() {
 					n, err := socket.Write(payload[i:])
 
 					if err == nil {
-						self.log.V(2).Infof("[f%d]udp forward %d\n", sendIter, n)
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]udp forward %d\n", sendIter, n)
+						}
 					} else {
-						self.log.V(1).Infof("[f%d]udp forward %d error = %s", sendIter, n, err)
+						if v := self.log.V(1); v.Enabled() {
+							v.Infof("[f%d]udp forward %d error = %s", sendIter, n, err)
+						}
 					}
 
 					if 0 < n {
@@ -1220,7 +1226,9 @@ func (self *UdpSequence) Run() {
 
 						j := i
 						i += n
-						self.log.V(2).Infof("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						}
 					}
 
 					if err != nil {
@@ -1288,7 +1296,9 @@ func (self *UdpSequence) Run() {
 			n, err := socket.Read(buffer)
 
 			if err != nil {
-				self.log.V(1).Infof("[f%d]udp receive err = %s\n", forwardIter, err)
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[f%d]udp receive err = %s\n", forwardIter, err)
+				}
 			}
 
 			if 0 < n {
@@ -1300,10 +1310,14 @@ func (self *UdpSequence) Run() {
 					return
 				}
 				if 1 < len(packets) {
-					self.log.V(2).Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
+					if v := self.log.V(2); v.Enabled() {
+						v.Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
+					}
 				}
 				for _, packet := range packets {
-					self.log.V(1).Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
+					}
 					select {
 					case <-self.ctx.Done():
 						MessagePoolReturn(packet)
@@ -1316,7 +1330,9 @@ func (self *UdpSequence) Run() {
 				if err == io.EOF {
 					return
 				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					self.log.V(1).Infof("[f%d]timeout\n", forwardIter)
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[f%d]timeout\n", forwardIter)
+					}
 					return
 				} else {
 					// some other error
@@ -1669,21 +1685,25 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 
 		if !tcp.syn {
 			MessagePoolReturn(ipPacket)
-			self.log.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcp.flagsString())
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[lnr]tcp drop no syn (%s)\n", tcp.flagsString())
+			}
 			return nil
 		}
 
 		if 0 < self.tcpBufferSettings.UserLimit {
 			if sourceSequences := self.sourceSequences[source]; self.tcpBufferSettings.UserLimit < len(sourceSequences) {
 				applyLruUserLimit(maps.Values(sourceSequences), self.tcpBufferSettings.UserLimit, func(sequence *TcpSequence) bool {
-					self.log.V(1).Infof(
-						"[lnr]tcp limit source %s->%s\n",
-						source,
-						net.JoinHostPort(
-							sequence.destinationIp.String(),
-							strconv.Itoa(int(sequence.destinationPort)),
-						),
-					)
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof(
+							"[lnr]tcp limit source %s->%s\n",
+							source,
+							net.JoinHostPort(
+								sequence.destinationIp.String(),
+								strconv.Itoa(int(sequence.destinationPort)),
+							),
+						)
+					}
 					return true
 				})
 			}
@@ -2103,9 +2123,13 @@ func (self *TcpSequence) Run() {
 					n, err := socket.Write(payload[i:])
 
 					if err == nil {
-						self.log.V(2).Infof("[f%d]tcp forward %d\n", sendIter, n)
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]tcp forward %d\n", sendIter, n)
+						}
 					} else {
-						self.log.V(1).Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
+						if v := self.log.V(1); v.Enabled() {
+							v.Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
+						}
 					}
 
 					if 0 < n {
@@ -2121,7 +2145,9 @@ func (self *TcpSequence) Run() {
 
 						j := i
 						i += n
-						self.log.V(2).Infof("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+						}
 					}
 
 					if err != nil {
@@ -2209,7 +2235,9 @@ func (self *TcpSequence) Run() {
 			n, err := socket.Read(buffer)
 
 			if err != nil {
-				self.log.V(1).Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
+				}
 			}
 
 			if 0 < n {
@@ -2230,7 +2258,9 @@ func (self *TcpSequence) Run() {
 					}
 
 					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
-						self.log.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]tcp receive window wait\n", forwardIter)
+						}
 						receiveAckCond.Wait()
 						select {
 						case <-self.ctx.Done():
@@ -2246,9 +2276,13 @@ func (self *TcpSequence) Run() {
 					}
 
 					if 1 < len(packets) {
-						self.log.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
+						}
 					}
-					self.log.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+					if v := self.log.V(2); v.Enabled() {
+						v.Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+					}
 
 					self.receiveSeq += uint32(n)
 
