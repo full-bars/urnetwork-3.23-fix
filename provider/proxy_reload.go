@@ -496,6 +496,7 @@ func (r *ProxyReloader) reload() {
 		go connect.HandleError(func() {
 			defer r.wg.Done()
 			defer connect.UnregisterProxy(stableID)
+			defer globalContractMetrics.retire(stableID)
 			defer proxyCancel()
 
 			if !backoffPacer(staggerPos, reloadStaggerMs, time.Now(), proxyCtx) {
