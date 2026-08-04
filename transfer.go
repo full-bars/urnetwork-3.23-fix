@@ -1038,14 +1038,18 @@ func (self *Client) run() {
 			continue
 		}
 		if path.IsStream() {
-			self.log.V(1).Infof("[cr] %s cannot route message with stream\n", self.clientTag)
+			if v := self.log.V(1); v.Enabled() {
+				v.Infof("[cr] %s cannot route message with stream\n", self.clientTag)
+			}
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
 
 		source := path.SourceMask()
 
-		self.log.V(1).Infof("[cr] %s %s<-%s s(%s)\n", self.clientTag, path.DestinationId, path.SourceId, path.StreamId)
+		if v := self.log.V(1); v.Enabled() {
+			v.Infof("[cr] %s %s<-%s s(%s)\n", self.clientTag, path.DestinationId, path.SourceId, path.StreamId)
+		}
 
 		if path.DestinationId == self.clientId {
 			// the transports have typically not parsed the full `TransferFrame`
@@ -1097,7 +1101,9 @@ func (self *Client) run() {
 				unwrappedTransferFrameBytes, decryptRole, decryptCompanion, err := self.unwrapFrame(
 					path.SourceId, transferFrame.GetSessionRole(), transferFrame.SessionCompanion, transferFrame.EncryptedTransferFrame)
 				if err != nil {
-					self.log.V(1).Infof("[cr]unwrap err = %s\n", err)
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[cr]unwrap err = %s\n", err)
+					}
 					MessagePoolReturn(transferFrameBytes)
 					continue
 				}
@@ -1117,7 +1123,9 @@ func (self *Client) run() {
 				// in flight or a routing/sender bug. Drop and audit.
 				unwrappedPath, err := TransferPathFromProtobuf(unwrappedTransferFrame.TransferPath)
 				if err != nil || unwrappedPath != path {
-					self.log.V(1).Infof("[cr] %s outer/inner TransferPath mismatch from %s\n", self.clientTag, path.SourceId)
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[cr] %s outer/inner TransferPath mismatch from %s\n", self.clientTag, path.SourceId)
+					}
 					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
@@ -2684,7 +2692,9 @@ func (self *SendSequence) sendWithSetContract(
 	} else {
 		err = c()
 		if err != nil {
-			self.log.V(1).Infof("[s]drop = %s", err)
+			if v := self.log.V(1); v.Enabled() {
+				v.Infof("[s]drop = %s", err)
+			}
 		}
 	}
 
@@ -2704,7 +2714,9 @@ func (self *SendSequence) sendWithSetContract(
 }
 
 func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
-	self.log.V(1).Infof("[s]set head %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	if v := self.log.V(1); v.Enabled() {
+		v.Infof("[s]set head %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	}
 
 	var transferFrame protocol.TransferFrame
 	err := ProtoUnmarshal(item.transferFrameBytes, &transferFrame)
@@ -2757,7 +2769,9 @@ func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 
 /*
 func (self *SendSequence) setTag(item *sendItem) ([]byte, error) {
-	self.log.V(1).Infof("[s]set tag %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	if v := self.log.V(1); v.Enabled() {
+		v.Infof("[s]set tag %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	}
 
 	var transferFrame protocol.TransferFrame
 	err := proto.Unmarshal(item.transferFrameBytes, &transferFrame)
@@ -2791,7 +2805,9 @@ func (self *SendSequence) setTag(item *sendItem) ([]byte, error) {
 func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol.Tag) {
 	item := self.resendQueue.GetByMessageId(messageId)
 	if item == nil {
-		self.log.V(1).Infof("[s]ack miss %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+		if v := self.log.V(1); v.Enabled() {
+			v.Infof("[s]ack miss %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+		}
 		// message not pending ack
 		return
 	}
@@ -2801,7 +2817,9 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 	}
 
 	if selective {
-		self.log.V(1).Infof("[s]ack selective %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+		if v := self.log.V(1); v.Enabled() {
+			v.Infof("[s]ack selective %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+		}
 		removed := self.resendQueue.RemoveByMessageId(messageId)
 		if removed == nil {
 			panic(errors.New("Missing item"))
@@ -2812,7 +2830,9 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		return
 	}
 
-	self.log.V(1).Infof("[s]ack %d %s->%s...%s s(%s)\n", item.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	if v := self.log.V(1); v.Enabled() {
+		v.Infof("[s]ack %d %s->%s...%s s(%s)\n", item.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+	}
 
 	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
@@ -2820,7 +2840,9 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 	for ; i < len(self.sendItems); i += 1 {
 		implicitItem := self.sendItems[i]
 		if item.sequenceNumber < implicitItem.sequenceNumber {
-			self.log.V(2).Infof("[s]ack %d <> %d/%d (stop) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber-1, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[s]ack %d <> %d/%d (stop) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber-1, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			}
 			break
 		}
 
@@ -2903,15 +2925,17 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		cipher = self.session.Cipher()
 	}
 	if cipher == nil {
-		self.log.V(2).Infof(
-			"[s]%s->%s s(%s) write plaintext %d bytes (forceUnwrapped=%t, session=%t, cipher=nil)\n",
-			self.client.ClientTag(),
-			self.destination.DestinationId,
-			self.destination.StreamId,
-			len(transferFrameBytes),
-			forceUnwrapped,
-			self.session != nil,
-		)
+		if v := self.log.V(2); v.Enabled() {
+			v.Infof(
+				"[s]%s->%s s(%s) write plaintext %d bytes (forceUnwrapped=%t, session=%t, cipher=nil)\n",
+				self.client.ClientTag(),
+				self.destination.DestinationId,
+				self.destination.StreamId,
+				len(transferFrameBytes),
+				forceUnwrapped,
+				self.session != nil,
+			)
+		}
 		bytes := transferFrameBytes
 		if DebugTransferCopyOnWrite {
 			bytes = MessagePoolCopy(transferFrameBytes)
@@ -2938,13 +2962,15 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 	if err != nil {
 		return fmt.Errorf("outer wrap marshal: %w", err)
 	}
-	self.log.V(2).Infof(
-		"[s]%s->%s s(%s) write wrapped %d -> %d bytes\n",
-		self.client.ClientTag(),
-		self.destination.DestinationId,
-		self.destination.StreamId,
-		len(transferFrameBytes), len(wrapped),
-	)
+	if v := self.log.V(2); v.Enabled() {
+		v.Infof(
+			"[s]%s->%s s(%s) write wrapped %d -> %d bytes\n",
+			self.client.ClientTag(),
+			self.destination.DestinationId,
+			self.destination.StreamId,
+			len(transferFrameBytes), len(wrapped),
+		)
+	}
 	defer MessagePoolReturn(wrapped)
 	return writer.Write(self.ctx, MessagePoolShareReadOnly(wrapped), self.sendBufferSettings.WriteTimeout)
 }
@@ -3249,7 +3275,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 				// drop older sequences for source
 				// this case happens when a client closes a sequence, then opens a new one,
 				// before messages from the first are received
-				self.log.V(2).Infof("[r]drop older sequence %s < %s\n", receivePack.SequenceId, headReceiveSequenceId.SequenceId)
+				if v := self.log.V(2); v.Enabled() {
+					v.Infof("[r]drop older sequence %s < %s\n", receivePack.SequenceId, headReceiveSequenceId.SequenceId)
+				}
 				MessagePoolReturn(receivePack.TransferFrameBytes)
 				return nil
 			} else {
@@ -3257,7 +3285,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 				if headReceiveSequenceId.SequenceId == receivePack.SequenceId {
 					panic(fmt.Errorf("[r]upgrade older sequence %s = %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId))
 				}
-				self.log.V(2).Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
+				if v := self.log.V(2); v.Enabled() {
+					v.Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
+				}
 				headReceiveSequence := self.receiveSequences[headReceiveSequenceId]
 				headReceiveSequence.Cancel()
 				// wait for exit to ensure receives are correctly ordered across sequence versions
@@ -3266,7 +3296,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			}
 		}
 
-		self.log.V(2).Infof("[r]new sequence %s\n", receivePack.SequenceId)
+		if v := self.log.V(2); v.Enabled() {
+			v.Infof("[r]new sequence %s\n", receivePack.SequenceId)
+		}
 
 		receiveSequence = NewReceiveSequence(
 			self.ctx,
