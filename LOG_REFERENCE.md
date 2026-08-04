@@ -244,7 +244,7 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
 - A real-time bandwidth and concurrent session load tracker is mirrored to `proxy_traffic.state` (default `~/.urnetwork`).
 
-#### `proxy_health.log` row format
+### `proxy_health.log` row format
 
 `proxy_health.log` receives one append-line per proxy state transition (complete, uncapped; rotated to `proxy_health.log.1` at 20 MB, one generation kept):
 
@@ -277,7 +277,7 @@ An hourly retry sweep is performed to wake stalled transports. This marker logs 
 | `down` | Sum of `dead` + `degraded` proxies. |
 | `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
 | `degraded` | Proxies that worked before but are currently down. |
-| `connecting` | Proxies registered and still establishing their first WebSocket. A never-connected proxy counts as `connecting` only until its `connectingStaleAfter` window expires (65 minutes, one hourly pulse cycle); past that it falls to `dead`. |
+| `connecting` | Proxies registered and still establishing their first WebSocket. A never-connected proxy counts as `connecting` only until its `connectingStaleAfter` window expires (65 minutes, one hourly pulse interval plus margin); past that it falls to `dead`. |
 
 ---
 
@@ -487,7 +487,7 @@ Using 1000 proxy servers:
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
 
-#### `proxy.state` reconciliation
+### `proxy.state` reconciliation
 
 ```
 [proxy] pruned 711 stale proxy.state entries (no longer desired)
@@ -558,19 +558,19 @@ Emitted once at startup. Shows the current JWT's health status.
 ## 🤝 Hub Bootstrap & CA Cert
 
 ```
-[hub] bootstrapping CA cert from http://hub-server:8080/api/ca-cert
+[hub] bootstrapping CA cert from https://hub-server:8443/api/ca-cert
 [hub] CA cert installed from hub token bootstrap
 [hub] WARNING: verified CA cert fetch failed (expected for a direct password-derived CA hub) — falling back to an unverified fetch. The hub token will be sent before the hub's identity is confirmed. Only safe if hub and provider share a trusted network at boot; run 'urnet-tools hub link <url>' manually instead if you can't accept that.
 [hub] bootstrap URL error: failed to parse report URL
 ```
 
-Fires once at startup when `URNETWORK_REPORT_URL` is set and the hub has a CA. The provider fetches the hub's CA certificate over HTTPS so subsequent report/heartbeat POSTs can verify the hub's identity instead of trusting it blindly.
+Fires once at startup when `URNETWORK_REPORT_URL` starts with `https://` and the hub has a CA. The provider fetches the hub's CA certificate over HTTPS so subsequent report/heartbeat POSTs can verify the hub's identity instead of trusting it blindly. Plain-`http://` report URLs skip this bootstrap entirely (there is nothing to verify).
 
 | Message | Meaning |
 |---|---|
 | `bootstrapping CA cert from <url>` | The provider is fetching the hub's cert from `<hub>/api/ca-cert`. |
 | `CA cert installed from hub token bootstrap` | The fetched cert was written to the hub CA store; future hub traffic is verified. |
-| `WARNING: verified CA cert fetch failed ...` | **Security-relevant.** The verified fetch failed (normal for a direct password-derived CA hub that hasn't been linked yet) and the provider fell back to an *unverified* fetch, so the hub token will be sent before the hub's identity is confirmed. Only acceptable when the hub and provider share a trusted network at boot. If you can't accept that, run `urnet-tools hub link <url>` manually instead. |
+| `WARNING: verified CA cert fetch failed ...` | **Security-relevant.** The verified fetch failed (normal for a direct password-derived CA hub that hasn't been linked yet) and the provider fell back to an *unverified* TLS fetch, so the hub token will be sent before the hub's identity is confirmed. Only acceptable when the hub and provider share a trusted network at boot. If you can't accept that, run `urnet-tools hub link <url>` manually instead. |
 | `bootstrap URL error` / `bootstrap request error` / `CA cert write error` | The bootstrap attempt failed at the named step; the provider continues without a verified hub cert. |
 
 ---
@@ -589,7 +589,7 @@ Fires once per P2P session creation/destruction. Low frequency — one event per
 | `peer connected` | A new WebRTC peer connection was established. |
 | `peer disconnected` | A peer connection was closed or timed out. |
 
-#### SCTP progress watchdog
+### SCTP progress watchdog
 
 ```
 [peerconn]SCTP no progress for 10s with 524288 bytes buffered; reconnecting
