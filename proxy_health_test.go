@@ -696,3 +696,80 @@ func TestNewlyDeadFiresForNeverUpProxyAfterConnectingStale(t *testing.T) {
 		t.Fatalf("NewlyDead index = %d, want 61", r.NewlyDead[0].Index)
 	}
 }
+
+// TestConnectingStaleAfterIsOneHourlyPulseCycle pins the exact constant value
+// this PR changed (15m -> 65m). connectingStaleAfter must keep matching the
+// provider's deadConfirmDelay (provider/main.go) per the doc comment above the
+// constant, so a silent regression back to 15m (or any other drift) fails loudly.
+func TestConnectingStaleAfterIsOneHourlyPulseCycle(t *testing.T) {
+	if connectingStaleAfter != 65*time.Minute {
+		t.Fatalf("connectingStaleAfter = %v, want 65m", connectingStaleAfter)
+	}
+}
+
+// TestConnectingRemainsActiveBeyondOldFifteenMinuteBound is a regression test
+// for the behavior this PR restores: at 20 minutes old, a never-up proxy's
+// connecting state would have gone stale under the previous 15-minute bound,
+// but must stay "connecting" (not dead/degraded) under the current 65-minute
+// bound, since it's still well within a single hourly retry pulse.
+func TestConnectingRemainsActiveBeyondOldFifteenMinuteBound(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(70, "beyond-old-bound:1")
+
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[70].connectingSince = time.Now().Add(-20 * time.Minute)
+	proxyHealthMu.Unlock()
+
+	if s, ok := ProxyHealthByAddress()["beyond-old-bound:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting at 20m under the 65m bound, got %q", s.Health)
+	}
+	if IsDegraded("beyond-old-bound:1") {
+		t.Fatal("expected not degraded at 20m under the 65m bound")
+	}
+	for _, e := range DegradedProxies() {
+		if e.Index == 70 {
+			t.Fatal("expected proxy not to appear in DegradedProxies at 20m under the 65m bound")
+		}
+	}
+}
+
+// TestConnectingActiveBoundary exercises connectingActive's strict "<" cutoff
+// right at, just before, and just after connectingStaleAfter, so the boundary
+// behavior around the new 65-minute value is locked in precisely.
+func TestConnectingActiveBoundary(t *testing.T) {
+	now := time.Now()
+
+	justBefore := &proxyHealth{connecting: true, connectingSince: now.Add(-(connectingStaleAfter - time.Second))}
+	if !justBefore.connectingActive(now) {
+		t.Fatal("expected connectingActive true just before the connectingStaleAfter boundary")
+	}
+
+	atBoundary := &proxyHealth{connecting: true, connectingSince: now.Add(-connectingStaleAfter)}
+	if atBoundary.connectingActive(now) {
+		t.Fatal("expected connectingActive false exactly at the connectingStaleAfter boundary")
+	}
+
+	justAfter := &proxyHealth{connecting: true, connectingSince: now.Add(-(connectingStaleAfter + time.Second))}
+	if justAfter.connectingActive(now) {
+		t.Fatal("expected connectingActive false just after the connectingStaleAfter boundary")
+	}
+}
+
+// TestConnectingActiveFalseWhenNotConnecting ensures connectingActive short-
+// circuits on h.connecting regardless of how connectingSince is set.
+func TestConnectingActiveFalseWhenNotConnecting(t *testing.T) {
+	h := &proxyHealth{connecting: false, connectingSince: time.Now()}
+	if h.connectingActive(time.Now()) {
+		t.Fatal("expected connectingActive false when connecting is false, regardless of connectingSince")
+	}
+}
+
+// TestConnectingActiveTrueWhenNeverStamped covers the never-stamped
+// (zero-value connectingSince) fallback: pre-bound state or a bandwidth-only
+// init via RegisterProxyBandwidth must not be retroactively treated as stale.
+func TestConnectingActiveTrueWhenNeverStamped(t *testing.T) {
+	h := &proxyHealth{connecting: true}
+	if !h.connectingActive(time.Now()) {
+		t.Fatal("expected connectingActive true when connectingSince has never been stamped")
+	}
+}
