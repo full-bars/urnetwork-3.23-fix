@@ -647,3 +647,52 @@ func TestConnectingStateResetsOnUpAndDown(t *testing.T) {
 		t.Fatal("expected connecting/connectingSince cleared after markProxyDown")
 	}
 }
+
+func TestNeverUpProxyReadsDeadAfterConnectingStale(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(60, "never-up:1")
+
+	// Fresh connecting: reads as connecting, not dead.
+	if s, ok := ProxyHealthByAddress()["never-up:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting while fresh, got %q", s.Health)
+	}
+
+	// Backdate connectingSince past the stale threshold. This is the behavior
+	// #320 introduced: a never-up proxy whose connecting state goes stale falls
+	// through to "dead" instead of reporting "connecting" forever. Whether that
+	// is a regression depends on connectingStaleAfter vs deadConfirmDelay; this
+	// test locks in the mechanical behavior only.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[60].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	if s, ok := ProxyHealthByAddress()["never-up:1"]; !ok || s.Health != "dead" {
+		t.Fatalf("expected dead once connecting stale, got %q", s.Health)
+	}
+}
+
+func TestNewlyDeadFiresForNeverUpProxyAfterConnectingStale(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(61, "never-up-newly-dead:1")
+
+	// First heartbeat establishes the baseline; fresh connecting means no
+	// NewlyDead yet.
+	r := ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 0 {
+		t.Fatalf("expected no NewlyDead while connecting fresh, got %d", len(r.NewlyDead))
+	}
+
+	// Backdate past the stale threshold, then confirm dead: the never-up
+	// proxy's stale connecting no longer shields it, so NewlyDead fires.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[61].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	r = ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 1 {
+		t.Fatalf("expected 1 NewlyDead event, got %d", len(r.NewlyDead))
+	}
+	if r.NewlyDead[0].Index != 61 {
+		t.Fatalf("NewlyDead index = %d, want 61", r.NewlyDead[0].Index)
+	}
+}

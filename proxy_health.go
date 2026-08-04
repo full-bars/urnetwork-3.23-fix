@@ -116,18 +116,18 @@ type ProxyFailureCounters struct {
 // proxyHealth tracks one proxy's platform-transport liveness for the
 // [health][proxies] report. See docs/design/dead-proxy-health-report.md.
 type proxyHealth struct {
-	address        string
-	currentlyUp    bool
-	everUp         bool
-	connecting     bool      // registered and still trying to establish first WebSocket
+	address         string
+	currentlyUp     bool
+	everUp          bool
+	connecting      bool      // registered and still trying to establish first WebSocket
 	connectingSince time.Time // when connecting was last set true (bounds stale connecting)
-	downSince      time.Time // when currentlyUp last went false (for recovery latency)
-	lastSeenUp     bool      // currentlyUp as of the previous heartbeat (baseline)
-	deadLogged     bool      // a confirmed-dead event has been emitted for this proxy
-	bw             *ProxyBandwidth
-	failures       ProxyFailureCounters
-	lastError      string
-	lastErrorAt    time.Time // when lastError was recorded (so a stale error reads as such)
+	downSince       time.Time // when currentlyUp last went false (for recovery latency)
+	lastSeenUp      bool      // currentlyUp as of the previous heartbeat (baseline)
+	deadLogged      bool      // a confirmed-dead event has been emitted for this proxy
+	bw              *ProxyBandwidth
+	failures        ProxyFailureCounters
+	lastError       string
+	lastErrorAt     time.Time // when lastError was recorded (so a stale error reads as such)
 }
 
 // connectingStaleAfter bounds the connecting state. connecting is cleared only
@@ -136,7 +136,14 @@ type proxyHealth struct {
 // forever. After this duration the state falls back to a degraded tier (computed
 // from the stale downSince), making a hung respawn distinguishable from a fresh
 // one and actionable during an outage.
-const connectingStaleAfter = 15 * time.Minute
+//
+// This is one hourly pulse cycle, matching the provider's deadConfirmDelay
+// (provider/main.go): both are 65 minutes, one hourly retry pulse plus margin,
+// so a never-connected proxy only reads as "dead" once a full pulse cycle has
+// passed and the startup ramp is not mislabeled. The docs promise operators a
+// ~1h staging window (docs/Proxy-Management.md). If one constant changes, the
+// other must too.
+const connectingStaleAfter = 65 * time.Minute
 
 // connectingActive reports whether the proxy is still in a fresh connecting
 // window (true) or its connecting state has gone stale (false). A stale
