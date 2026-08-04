@@ -13,7 +13,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
@@ -83,39 +83,41 @@ jobs:
                 echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
 
                 AI_SUMMARY="*AI Summary unavailable.*"
-                if [ -n "$GEMINI_API_KEY" ]; then
+                if [ -n "$DEEPSEEK_API_KEY" ]; then
                   PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
                   TRUNCATED_DIFF="${PR_DIFF:0:60000}"
                   JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
-                    "contents": [{
-                      "parts": [{
-                        "text": ("You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.\n\nDiff:\n" + $diff)
-                      }]
+                    "model": "deepseek-v4-flash",
+                    "messages": [{
+                      "role": "user",
+                      "content": ("You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.\n\nDiff:\n" + $diff)
                     }],
-                    "generationConfig": { "temperature": 0.2 }
+                    "temperature": 0.2,
+                    "max_tokens": 1500
                   }')
 
-                  GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
                     -d "$JSON_PAYLOAD" \
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    "https://api.deepseek.com/chat/completions")
 
                   # Debug: log first 200 chars of response
-                  echo "[DEBUG] Gemini response (first 200 chars): ${GEMINI_RESPONSE:0:200}"
+                  echo "[DEBUG] DeepSeek response (first 200 chars): ${DEEPSEEK_RESPONSE:0:200}"
 
                   # Check for API errors first
-                  API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                  API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
                   if [ -n "$API_ERROR" ]; then
                     AI_SUMMARY="*API Error: $API_ERROR*"
-                    echo "[ERROR] Gemini API error: $API_ERROR"
+                    echo "[ERROR] DeepSeek API error: $API_ERROR"
                   else
-                    RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                    RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
                     if [ -n "$RAW_SUMMARY" ]; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                       echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
                     else
                       # Log raw response for debugging when jq extraction fails
                       echo "[ERROR] Failed to extract summary from response. Full response:"
-                      echo "$GEMINI_RESPONSE" | jq . 2>/dev/null || echo "$GEMINI_RESPONSE"
+                      echo "$DEEPSEEK_RESPONSE" | jq . 2>/dev/null || echo "$DEEPSEEK_RESPONSE"
                       AI_SUMMARY="*Error: Unexpected API response format* (check workflow logs)"
                     fi
                   fi
@@ -199,7 +201,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
@@ -256,25 +258,27 @@ jobs:
                 echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
 
                 AI_SUMMARY=""
-                if [ -n "$GEMINI_API_KEY" ]; then
+                if [ -n "$DEEPSEEK_API_KEY" ]; then
                   COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
                   RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
                   TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
                   if [ -n "$TRUNCATED_DIFF" ]; then
                     JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
-                      "contents": [{
-                        "parts": [{
-                          "text": ("You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and breaking changes. Skip pleasantries.\n\nDiff:\n" + $diff)
-                        }]
+                      "model": "deepseek-v4-flash",
+                      "messages": [{
+                        "role": "user",
+                        "content": ("You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and breaking changes. Skip pleasantries.\n\nDiff:\n" + $diff)
                       }],
-                      "generationConfig": { "temperature": 0.2 }
+                      "temperature": 0.2,
+                      "max_tokens": 1000
                     }')
-                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
                       -d "$JSON_PAYLOAD" \
-                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
-                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                      "https://api.deepseek.com/chat/completions")
+                    API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
                     if [ -z "$API_ERROR" ]; then
-                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
                       [ -n "$RAW_SUMMARY" ] && AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                     fi
                   fi
@@ -399,7 +403,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           BUILD_REPO="urnetwork/build"
           UPSTREAM_REPO="urnetwork/connect"
@@ -506,28 +510,30 @@ jobs:
             SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
 
             AI_SUMMARY=""
-            if [ -n "$GEMINI_API_KEY" ]; then
+            if [ -n "$DEEPSEEK_API_KEY" ]; then
               RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
               TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
               if [ -n "$TRUNCATED_DIFF" ]; then
                 JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
-                  "contents": [{
-                    "parts": [{
-                      "text": ("You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes. Skip introductory pleasantries.\n\nDiff:\n" + $diff)
-                    }]
+                  "model": "deepseek-v4-flash",
+                  "messages": [{
+                    "role": "user",
+                    "content": ("You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes. Skip introductory pleasantries.\n\nDiff:\n" + $diff)
                   }],
-                  "generationConfig": { "temperature": 0.2 }
+                  "temperature": 0.2,
+                  "max_tokens": 1500
                 }')
 
-                GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
                   -d "$JSON_PAYLOAD" \
-                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                  "https://api.deepseek.com/chat/completions")
 
-                API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
                 if [ -n "$API_ERROR" ]; then
-                  echo "[ERROR] Gemini API error: $API_ERROR"
+                  echo "[ERROR] DeepSeek API error: $API_ERROR"
                 else
-                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                  RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
                   if [ -n "$RAW_SUMMARY" ]; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                     echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
