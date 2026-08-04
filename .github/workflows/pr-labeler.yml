@@ -49,34 +49,63 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUM: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          # Strip an optional scope, e.g. "fix(hub): ..." -> "fix"
-          prefix="${PR_TITLE%%:*}"
-          prefix="${prefix%%(*}"
-          prefix="$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          # Labels this job owns. Anything outside this set is never touched:
+          # area:* is owned by the `area` job, and security/needs-fleet-deploy
+          # are applied by hand and must survive a re-run.
+          MANAGED="fix feat docs chore perf style refactor test ci upstream-port"
 
-          case "$prefix" in
-            fix|feat|docs|chore|perf|style|refactor|test|ci) type_label="$prefix" ;;
-            *)
-              echo "No conventional-commit prefix in title; skipping type label."
-              type_label=""
-              ;;
-          esac
+          # Match the whole Conventional Commits header rather than just the
+          # text before the first colon: <type>[(scope)][!]: <description>.
+          # Anchoring the trailing ": <description>" is what makes a bare "fix"
+          # or "fix :" fall through unlabelled, and the optional `!` is what
+          # keeps a breaking-change title like "fix!: ..." from being skipped.
+          # Regex must live in a variable: bash cannot parse these parens
+          # inline inside [[ =~ ]].
+          re='^(fix|feat|docs|chore|perf|style|refactor|test|ci)(\([^)]+\))?!?:[[:space:]].+$'
+          shopt -s nocasematch
+          if [[ "$PR_TITLE" =~ $re ]]; then
+            type_label="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+          else
+            echo "No conventional-commit header in title; skipping type label."
+            type_label=""
+          fi
+          shopt -u nocasematch
 
-          labels=""
-          [ -n "$type_label" ] && labels="$type_label"
+          want=""
+          [ -n "$type_label" ] && want="$type_label"
 
           # Porting from upstream is a recurring category worth filtering on.
           if printf '%s' "$PR_TITLE" | grep -qi 'upstream'; then
-            labels="${labels:+$labels,}upstream-port"
+            want="${want:+$want }upstream-port"
           fi
 
-          if [ -z "$labels" ]; then
-            echo "Nothing to label."
+          # This job also runs on `edited`, so a retitled PR must lose the label
+          # it no longer earns. Without this, "fix: x" retitled to "feat: x"
+          # keeps `fix` and gains `feat`. Only managed labels are ever removed.
+          current="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name')"
+
+          add=""
+          for l in $want; do
+            printf '%s\n' "$current" | grep -qx "$l" || add="${add:+$add,}$l"
+          done
+
+          remove=""
+          for l in $MANAGED; do
+            printf '%s\n' "$current" | grep -qx "$l" || continue
+            printf '%s ' $want | grep -qw "$l" && continue
+            remove="${remove:+$remove,}$l"
+          done
+
+          if [ -z "$add" ] && [ -z "$remove" ]; then
+            echo "Labels already correct; nothing to do."
             exit 0
           fi
 
-          echo "Applying: $labels"
-          gh pr edit "$PR_NUM" --repo "$REPO" --add-label "$labels"
+          echo "add=[${add:-none}] remove=[${remove:-none}]"
+          gh pr edit "$PR_NUM" --repo "$REPO" \
+            ${add:+--add-label "$add"} \
+            ${remove:+--remove-label "$remove"}
