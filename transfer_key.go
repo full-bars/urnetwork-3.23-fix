@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sync"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 

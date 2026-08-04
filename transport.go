@@ -324,11 +324,11 @@ func NewPlatformTransportWithTargetMode(
 		// 		cancel()
 		// 	}
 		// },
-		clientStrategy: clientStrategy,
-		routeManager:   routeManager,
-		platformUrl:    platformUrl,
-		auth:           auth,
-		settings:       settings,
+		clientStrategy:       clientStrategy,
+		routeManager:         routeManager,
+		platformUrl:          platformUrl,
+		auth:                 auth,
+		settings:             settings,
 		availableModeMonitor: NewMonitor(),
 		availableModes:       map[TransportMode]bool{},
 		targetMode:           targetMode,

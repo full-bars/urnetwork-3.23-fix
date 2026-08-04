@@ -361,7 +361,7 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 
 		// Days are the natural aggregation unit for this all-time view.
 		currentDay := timeNowHour() / 24
-		dayCutoff := int64(0)     // all time - proxy_fleet_daily is never pruned
+		dayCutoff := int64(0)              // all time - proxy_fleet_daily is never pruned
 		recentCutoff := timeNowHour() - 26 // last 26h for live last-seen
 
 		type row struct {

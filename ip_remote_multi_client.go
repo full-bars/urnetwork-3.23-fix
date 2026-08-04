@@ -18,7 +18,6 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 

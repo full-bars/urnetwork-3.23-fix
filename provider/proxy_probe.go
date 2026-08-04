@@ -67,10 +67,10 @@ var socks5Greeting = []byte{0x05, 0x01, 0x00}
 // Format: VER(1) CMD(1) RSV(1) ATYP(1) DST.ADDR(4) DST.PORT(2)
 func socks5ConnectV4(ip net.IP, port uint16) []byte {
 	frame := make([]byte, 10)
-	frame[0] = 0x05          // VER
-	frame[1] = 0x01          // CMD = CONNECT
-	frame[2] = 0x00          // RSV
-	frame[3] = 0x01          // ATYP = IPv4
+	frame[0] = 0x05 // VER
+	frame[1] = 0x01 // CMD = CONNECT
+	frame[2] = 0x00 // RSV
+	frame[3] = 0x01 // ATYP = IPv4
 	copy(frame[4:8], ip.To4())
 	binary.BigEndian.PutUint16(frame[8:10], port)
 	return frame
@@ -79,10 +79,10 @@ func socks5ConnectV4(ip net.IP, port uint16) []byte {
 // apiProbeAddr caches the resolved IP for api.bringyour.com so each probe
 // doesn't trigger a fresh DNS lookup through every proxy.
 var apiProbeAddr struct {
-	mu    sync.Mutex
-	ip    net.IP
-	port  uint16
-	host  string
+	mu   sync.Mutex
+	ip   net.IP
+	port uint16
+	host string
 }
 
 func resolveAPIProbeAddr(host string, port uint16) (net.IP, uint16) {

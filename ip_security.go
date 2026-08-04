@@ -373,5 +373,3 @@ func (self *SecurityPolicyStatsCollector) Stats(reset bool) SecurityPolicyStats 
 	}
 	return resultDestinationCounts
 }
-
-

@@ -4,7 +4,6 @@ import (
 	"os"
 	"runtime/debug"
 	"sync/atomic"
-
 )
 
 // ApplyAutoTuning runs once per proxy server, but the auto-profile summary is a
