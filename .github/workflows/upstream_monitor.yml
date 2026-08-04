@@ -88,14 +88,20 @@ jobs:
                 AI_SUMMARY=""
                 PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
                 TRUNCATED_DIFF="${PR_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.
-
+                PROMPT="You are an expert Go developer. Summarize this pull request diff in under 150 words. Cover architectural changes, performance impact, and potential breaking changes to routing or encryption.
+                
+                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] otherwise
+                Add a one-line justification after the verdict.
+                
                 Diff:
-                ${TRUNCATED_DIFF}"
+                                ${TRUNCATED_DIFF}"
 
                 # Tier 1: opencode-go gateway (via opencode CLI)
                 if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                  OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                  OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                   RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
                   if [ -n "$RAW_SUMMARY" ]; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -169,6 +175,18 @@ jobs:
                   AI_SUMMARY="*AI Summary unavailable.*"
                 fi
 
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=16711680
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
                 if [ -n "$DISCORD_WEBHOOK" ]; then
                   DISCORD_JSON=$(jq -n \
                     --arg url "$PR_URL" \
@@ -177,12 +195,13 @@ jobs:
                     --arg avatar "$PR_AVATAR" \
                     --arg summary "$AI_SUMMARY" \
                     --arg files "$MATCHED_FILES" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
                   '{
                     "embeds": [{
                       "title": "🚨 Upstream PR Modifies Critical Files",
                       "url": $url,
                       "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author + "\n\n**Modified Files:**\n" + $files + "\n\n**🤖 AI Summary:**\n>>> " + $summary),
-                      "color": 16711680,
+                      "color": $verdictColor,
                       "thumbnail": { "url": $avatar },
                       "footer": { "text": "URNetwork Upstream Monitor • Critical Files" }
                     }]
@@ -311,15 +330,21 @@ jobs:
                 COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
                 RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
                 TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and potential breaking changes to routing or encryption. Skip pleasantries.
-
+                PROMPT="You are an expert Go developer. Summarize this commit diff in under 100 words. Cover architectural changes, performance impact, and potential breaking changes to routing or encryption.
+                
+                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] otherwise
+                Add a one-line justification after the verdict.
+                
                 Diff:
-                ${TRUNCATED_DIFF}"
+                                ${TRUNCATED_DIFF}"
 
                 if [ -n "$TRUNCATED_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                     RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
                     if [ -n "$RAW_SUMMARY" ]; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -386,6 +411,18 @@ jobs:
                   fi
                 fi
 
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=65280
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
                 if [ -n "$DISCORD_WEBHOOK" ]; then
                   DISCORD_JSON=$(jq -n \
                     --arg url "$COMMIT_URL" \
@@ -394,12 +431,13 @@ jobs:
                     --arg author "$COMMIT_AUTHOR" \
                     --arg files "$MATCHED_FILES" \
                     --arg summary "$AI_SUMMARY" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
                   '{
                     "embeds": [{
                       "title": "✅ Upstream Commit to Main (Critical Files)",
                       "url": $url,
                       "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Summary:**\n" + $summary else "" end)),
-                      "color": 65280,
+                      "color": $verdictColor,
                       "footer": { "text": "URNetwork Upstream Monitor • Merged" }
                     }]
                   }')
@@ -618,15 +656,21 @@ jobs:
             AI_SUMMARY=""
             RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
             TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes (routing, encryption, contracts). Skip introductory pleasantries.
-
+            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Cover architecture changes, performance impact, and provider-impacting changes (routing, encryption, contracts).
+            
+            Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+            - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+            - [WATCH] for behavior changes worth tracking
+            - [NO ACTION] otherwise
+            Add a one-line justification after the verdict.
+            
             Diff:
-            ${TRUNCATED_DIFF}"
+                        ${TRUNCATED_DIFF}"
 
             if [ -n "$TRUNCATED_DIFF" ]; then
               # Tier 1: opencode-go gateway (via opencode CLI)
               if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                 RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
                 if [ -n "$RAW_SUMMARY" ]; then
                   AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -813,15 +857,21 @@ jobs:
                 AI_SUMMARY=""
                 RAW_DIFF=$(curl -sL "https://github.com/${SN_REPO}/commit/${COMMIT_SHA}.diff" 2>/dev/null || echo "")
                 TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Summarize in under 120 words what changed and assess impact on portability: does any of this affect contract handling, routing, encryption, proxy management, or the provider binary itself? Flag anything the 3.23-fix production fork should port or watch. Skip pleasantries.
-
+                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Summarize in under 120 words what changed and whether it affects contract handling, routing, encryption, proxy management, or the provider binary.
+                
+                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] otherwise
+                Add a one-line justification after the verdict.
+                
                 Diff:
-                ${TRUNCATED_DIFF}"
+                                ${TRUNCATED_DIFF}"
 
                 if [ -n "$TRUNCATED_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                     RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
                     if [ -n "$RAW_SUMMARY" ]; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -888,6 +938,18 @@ jobs:
                   fi
                 fi
 
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=16753920
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
                 if [ -n "$DISCORD_WEBHOOK" ]; then
                   DISCORD_JSON=$(jq -n \
                     --arg url "$COMMIT_URL" \
@@ -896,12 +958,13 @@ jobs:
                     --arg author "$COMMIT_AUTHOR" \
                     --arg files "$MATCHED_FILES" \
                     --arg summary "$AI_SUMMARY" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
                   '{
                     "embeds": [{
                       "title": "🛰️ urfoundation/sn Committed to Provider-Relevant Files",
                       "url": $url,
                       "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Portability Assessment:**\n" + $summary else "" end)),
-                      "color": 16753920,
+                      "color": $verdictColor,
                       "footer": { "text": "URNetwork Upstream Monitor • SN Repo" }
                     }]
                   }')
