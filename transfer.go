@@ -24,9 +24,9 @@ import (
 )
 
 var (
-	dropErrLogThrottle   = newLogThrottle(time.Minute)
-	pingLogThrottle      = newLogThrottle(5 * time.Minute)
-	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
+	dropErrLogThrottle = newLogThrottle(time.Minute)
+	pingLogThrottle    = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle = newLogThrottle(5 * time.Minute)
 )
 
 /*
@@ -172,12 +172,12 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		AckBufferSize:       DefaultTransferBufferSize,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
-		WriteTimeout:              15 * time.Second,
-		ResendQueueMaxByteCount:   MemoryScaledByteCount(mib(4), kib(256)),
-		ResendQueueMinByteCount:   kib(256),
-		ContractFillFraction:      0.7,
-		ProtocolVersion:           DefaultProtocolVersion,
-		MaxResendCount:            16,
+		WriteTimeout:            15 * time.Second,
+		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(4), kib(256)),
+		ResendQueueMinByteCount: kib(256),
+		ContractFillFraction:    0.7,
+		ProtocolVersion:         DefaultProtocolVersion,
+		MaxResendCount:          16,
 	}
 }
 
@@ -194,12 +194,12 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
 		// this includes transport reconnections
-		WriteTimeout:               15 * time.Second,
-		ReceiveQueueMaxByteCount:   MemoryScaledByteCount(mib(2)+kib(512), kib(320)),
-		ReceiveQueueMinByteCount:   kib(320),
-		AllowLegacyNack:            true,
-		MaxOpenReceiveContract:     4,
-		ProtocolVersion:            DefaultProtocolVersion,
+		WriteTimeout:             15 * time.Second,
+		ReceiveQueueMaxByteCount: MemoryScaledByteCount(mib(2)+kib(512), kib(320)),
+		ReceiveQueueMinByteCount: kib(320),
+		AllowLegacyNack:          true,
+		MaxOpenReceiveContract:   4,
+		ProtocolVersion:          DefaultProtocolVersion,
 	}
 }
 
@@ -5091,5 +5091,3 @@ func MessageByteCount(frames []*protocol.Frame) ByteCount {
 // 	}
 // 	return messages
 // }
-
-

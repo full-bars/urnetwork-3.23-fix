@@ -104,8 +104,8 @@ func TestIssueLeaf_WrongCAFails(t *testing.T) {
 	pool.AppendCertsFromPEM(ca2.certPEM)
 
 	opts := x509.VerifyOptions{
-		Roots:         pool,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	if _, err := leafCert.Verify(opts); err == nil {
 		t.Error("wrong CA should not verify")

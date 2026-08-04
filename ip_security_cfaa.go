@@ -151,4 +151,3 @@ func cfaaBlockedIp6(ip [16]byte) bool {
 			uint64(ip[12])<<24|uint64(ip[13])<<16|uint64(ip[14])<<8|uint64(ip[15]),
 	)
 }
-

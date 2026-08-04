@@ -30,7 +30,7 @@ func capProxyList(items []string, cap int) string {
 			shortItems = append(shortItems, item)
 		}
 	}
-	
+
 	if len(shortItems) <= cap {
 		return strings.Join(shortItems, ", ")
 	}

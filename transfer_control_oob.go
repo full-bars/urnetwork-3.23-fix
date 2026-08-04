@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 

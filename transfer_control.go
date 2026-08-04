@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 

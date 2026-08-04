@@ -26,16 +26,16 @@ import (
 )
 
 const (
-	caSubjectCN      = "urnetwork-hub-ca"
-	caNotBefore      = "2026-01-01T00:00:00Z"
-	caValidYears     = 100
-	leafValidHours   = 48
+	caSubjectCN       = "urnetwork-hub-ca"
+	caNotBefore       = "2026-01-01T00:00:00Z"
+	caValidYears      = 100
+	leafValidHours    = 48
 	leafRotationHours = 24
-	argonTime        = 3
-	argonMemory      = 64 * 1024 // 64 MiB
-	argonThreads     = 4
-	argonKeyLen      = 32
-	leafSANMax       = 64
+	argonTime         = 3
+	argonMemory       = 64 * 1024 // 64 MiB
+	argonThreads      = 4
+	argonKeyLen       = 32
+	leafSANMax        = 64
 )
 
 type hubCA struct {

@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/crypto/sha3"
 	"golang.org/x/net/dns/dnsmessage"
-
 )
 
 // "whodis" protocol refers to a suite of pre-authentication packet translation techniques
