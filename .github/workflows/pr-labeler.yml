@@ -65,7 +65,7 @@ jobs:
           # keeps a breaking-change title like "fix!: ..." from being skipped.
           # Regex must live in a variable: bash cannot parse these parens
           # inline inside [[ =~ ]].
-          re='^(fix|feat|docs|chore|perf|style|refactor|test|ci)(\([^)]+\))?!?:[[:space:]].+$'
+          re='^(fix|feat|docs|chore|perf|style|refactor|test|ci)(\([^)]+\))?!?:[[:space:]]+[^[:space:]].*$'
           shopt -s nocasematch
           if [[ "$PR_TITLE" =~ $re ]]; then
             type_label="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
