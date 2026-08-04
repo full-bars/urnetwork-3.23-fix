@@ -81,18 +81,35 @@ jobs:
       - name: Check hot-path verbose logging guards
         run: |
           # Tier-1 hot-path files must not grow new unguarded V(n).Inf* calls.
-          # Baseline 58 = the sanctioned Tier-2 sites (per-connection/per-handshake)
-          # that Task 17 deliberately leaves unguarded; anything above that is a
-          # new per-packet/per-message site that must be wrapped. A future Tier-2
-          # sweep PR must update this baseline.
-          expected=58
-          found=$(grep -nE '^[^/]*\.V\([0-9]\)\.Inf' ip.go transfer.go ip_remote_multi_client.go | wc -l)
-          if [ "$found" -gt "$expected" ]; then
-            echo "unguarded V(n).Inf* in a hot-path file (expected $expected sanctioned Tier-2 sites, found $found):"
-            grep -nE '^[^/]*\.V\([0-9]\)\.Inf' ip.go transfer.go ip_remote_multi_client.go | tail -n +$((expected + 1))
-            echo "wrap new sites with 'if v := log.V(n); v.Enabled()'"
-            exit 1
-          fi
+          # Every unguarded call must carry a format string from the checked-in
+          # allowlist (.github/verbose_log_allowlist.txt) — the sanctioned
+          # Tier-2 per-connection/per-handshake sites that Task 17 deliberately
+          # leaves unguarded. A call whose format string is not allowlisted is a
+          # new per-packet/per-message site and fails the build. Guarding a
+          # sanctioned site is allowed (the allowlist only shrinks). A Tier-2
+          # sweep PR must regenerate the allowlist.
+          python3 - <<'PYEOF'
+          import re, sys
+          sanctioned = set()
+          for line in open('.github/verbose_log_allowlist.txt'):
+              line = line.strip()
+              if line and not line.startswith('#'):
+                  sanctioned.add(line)
+          bad = []
+          for f in ('ip.go', 'transfer.go', 'ip_remote_multi_client.go'):
+              src = open(f).read()
+              for m in re.finditer(r'(?m)^[^/]*\.V\(\d\)\.Inf\w*\(', src):
+                  fm = re.search(r'"(?:[^"\\]|\\.)*"', src[m.end():], re.DOTALL)
+                  fmt = fm.group(0) if fm else '<no format string>'
+                  if fmt not in sanctioned:
+                      line_no = src.count('\n', 0, m.start()) + 1
+                      bad.append(f'{f}:{line_no} {fmt[:90]}')
+          if bad:
+              print('unguarded V(n).Inf* with a non-allowlisted format string:')
+              print('\n'.join(bad))
+              print("wrap with 'if v := log.V(n); v.Enabled()' or extend the allowlist (Tier-2 sweep only)")
+              sys.exit(1)
+          PYEOF
 
       - name: Run Installer Script Tests
         run: |
