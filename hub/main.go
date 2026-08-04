@@ -1094,7 +1094,9 @@ func main() {
 	}
 
 	if *hubJoin != "" {
-		doHubJoin(*hubJoin)
+		joinCtx, joinCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer joinCancel()
+		doHubJoin(joinCtx, *hubJoin)
 		os.Exit(0)
 	}
 
