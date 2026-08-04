@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 func TestContractRingGapDoesNotLeakStaleCounts(t *testing.T) {
@@ -260,5 +263,168 @@ func TestRegistryConcurrentAddAndRetire(t *testing.T) {
 		if r.get(i) == nil {
 			t.Fatalf("entry %d vanished under concurrency", i)
 		}
+	}
+}
+
+// newTestConnectClient builds a minimal *connect.Client suitable for wiring a
+// real ContractManager without any network I/O, mirroring the pattern used by
+// the connect package's own tests (transfer_contract_manager_test.go).
+func newTestConnectClient(t *testing.T) *connect.Client {
+	t.Helper()
+	client := connect.NewClient(context.Background(), connect.NewId(), connect.NewNoContractClientOob(), connect.DefaultClientSettings())
+	t.Cleanup(client.Cancel)
+	return client
+}
+
+func TestRegisterContractCallbackWiresAndRetires(t *testing.T) {
+	// Use indices far outside any real proxy range so this test cannot collide
+	// with other tests sharing the global registry.
+	const index = -900001
+	client := newTestConnectClient(t)
+
+	teardown := registerContractCallback(index, client)
+	if teardown == nil {
+		t.Fatal("registerContractCallback returned a nil teardown func")
+	}
+
+	m := globalContractMetrics.get(index)
+	if m == nil {
+		t.Fatal("registerContractCallback did not create a metrics entry")
+	}
+	m.mu.Lock()
+	ownerGen := m.generation
+	hasUnsub := m.unsubscribe != nil
+	m.mu.Unlock()
+	if ownerGen == 0 {
+		t.Fatal("registerContractCallback did not bump the generation")
+	}
+	if !hasUnsub {
+		t.Fatal("registerContractCallback did not store the callback's unsubscribe")
+	}
+
+	teardown()
+
+	m.mu.Lock()
+	genAfter := m.generation
+	unsubAfter := m.unsubscribe
+	ringsNil := m.fine == nil && m.coarse == nil
+	m.mu.Unlock()
+	if genAfter != ownerGen+1 {
+		t.Fatalf("generation after teardown = %d, want %d (retire must bump it)", genAfter, ownerGen+1)
+	}
+	if unsubAfter != nil {
+		t.Fatal("teardown did not clear the stored unsubscribe")
+	}
+	if !ringsNil {
+		t.Fatal("teardown did not release the rings")
+	}
+
+	// A stale callback bound to the old generation must be dropped, not
+	// resurrect the entry.
+	m.add(true, ownerGen)
+	if a, d := m.snapshot(); a != 0 || d != 0 {
+		t.Fatalf("totals after stale add post-teardown = %d/%d, want 0/0", a, d)
+	}
+
+	// Calling teardown a second time must be a harmless no-op: the entry is no
+	// longer owned by ownerGen, so retireIfOwner must not fire again.
+	teardown()
+	m.mu.Lock()
+	genAfterSecond := m.generation
+	m.mu.Unlock()
+	if genAfterSecond != genAfter {
+		t.Fatalf("second teardown call changed generation from %d to %d, want no-op", genAfter, genAfterSecond)
+	}
+}
+
+func TestRegisterContractCallbackRespawnSurvivesOldTeardown(t *testing.T) {
+	// Simulates a proxy respawn at the same stable index: the old spawn's
+	// deferred teardown must not tear down the replacement's registration.
+	const index = -900002
+	clientA := newTestConnectClient(t)
+	clientB := newTestConnectClient(t)
+
+	teardownA := registerContractCallback(index, clientA)
+	m := globalContractMetrics.get(index)
+	if m == nil {
+		t.Fatal("registerContractCallback did not create a metrics entry")
+	}
+	m.mu.Lock()
+	genA := m.generation
+	m.mu.Unlock()
+
+	teardownB := registerContractCallback(index, clientB)
+	m.mu.Lock()
+	genB := m.generation
+	m.mu.Unlock()
+	if genB != genA+1 {
+		t.Fatalf("respawn generation = %d, want %d (one bump per registration)", genB, genA+1)
+	}
+
+	// The old spawn's teardown fires after the respawn: it must leave the
+	// replacement's ownership and rings untouched.
+	teardownA()
+	m.mu.Lock()
+	genAfterOldTeardown := m.generation
+	m.mu.Unlock()
+	if genAfterOldTeardown != genB {
+		t.Fatalf("old spawn's teardown changed generation to %d, want unchanged %d", genAfterOldTeardown, genB)
+	}
+
+	// The replacement's registration is still live: it can still record.
+	m.add(true, genB)
+	if a, _ := m.snapshot(); a != 1 {
+		t.Fatalf("acquired after old teardown = %d, want 1 (replacement's registration was killed)", a)
+	}
+
+	// The replacement's own teardown retires it normally afterwards.
+	teardownB()
+	m.mu.Lock()
+	genAfterNewTeardown := m.generation
+	ringsNil := m.fine == nil && m.coarse == nil
+	m.mu.Unlock()
+	if genAfterNewTeardown != genB+1 {
+		t.Fatalf("generation after replacement's teardown = %d, want %d", genAfterNewTeardown, genB+1)
+	}
+	if !ringsNil {
+		t.Fatal("replacement's teardown did not release the rings")
+	}
+}
+
+func TestRegisterContractCallbackDistinctIndicesAreIndependent(t *testing.T) {
+	// Two proxies at different stable indices must never share a metrics
+	// entry or interfere with each other's lifecycle.
+	const indexX, indexY = -900003, -900004
+	clientX := newTestConnectClient(t)
+	clientY := newTestConnectClient(t)
+
+	teardownX := registerContractCallback(indexX, clientX)
+	teardownY := registerContractCallback(indexY, clientY)
+	defer teardownY()
+
+	mx := globalContractMetrics.get(indexX)
+	my := globalContractMetrics.get(indexY)
+	if mx == nil || my == nil {
+		t.Fatal("registerContractCallback did not create metrics entries for both indices")
+	}
+	if mx == my {
+		t.Fatal("distinct indices share the same metrics entry")
+	}
+
+	teardownX()
+
+	mx.mu.Lock()
+	xRingsNil := mx.fine == nil && mx.coarse == nil
+	mx.mu.Unlock()
+	if !xRingsNil {
+		t.Fatal("index X teardown did not release its rings")
+	}
+
+	my.mu.Lock()
+	yGen := my.generation
+	my.mu.Unlock()
+	my.add(true, yGen)
+	if a, _ := my.snapshot(); a != 1 {
+		t.Fatalf("index Y acquired = %d, want 1 (unaffected by index X's teardown)", a)
 	}
 }
