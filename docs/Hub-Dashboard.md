@@ -289,7 +289,7 @@ Click any node row to expand its full proxy list:
 
 - **ID** — proxy identifier and address
 - **Address** — IP:port
-- **Status** — up / connecting / degraded
+- **Status** — up / connecting / degraded / dead. A proxy stays `connecting` while its first WebSocket is still being established; if it never connects, the connecting state expires after one pulse cycle (~65 minutes) and a previously connected proxy falls back to a degraded tier, while a proxy that never connected at all reads as `dead` — so a hung respawn is distinguishable from a fresh one.
 - **Earning** — `Yes`/`No` badge; `Yes` when this proxy's billable bytes grew since the previous report **and** it currently has active clients (mirrors the provider's `[traffic]`/`[profit]` earning signal)
 - **Clients** — active sessions on this proxy
 - **Max Age** — longest-running connection
