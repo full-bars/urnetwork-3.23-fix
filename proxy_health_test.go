@@ -416,8 +416,8 @@ func TestProxyHealthByAddressReportsConnectingOnRespawn(t *testing.T) {
 	markProxyDown(21)
 
 	status := ProxyHealthByAddress()
-	if s, ok := status["respawn-addr:2"]; !ok || s.Health != "recently_offline" {
-		t.Fatalf("expected recently_offline before respawn, got %q", s.Health)
+	if s, ok := status["respawn-addr:2"]; !ok || s.Health == "connecting" || s.Health == "up" || s.Health == "dead" {
+		t.Fatalf("expected a degraded tier before respawn, got %q", s.Health)
 	}
 
 	RegisterProxy(21, "respawn-addr:2")
@@ -437,5 +437,135 @@ func TestProxyHealthByAddressUpWinsOverConnecting(t *testing.T) {
 	status := ProxyHealthByAddress()
 	if s, ok := status["up-wins:3"]; !ok || s.Health != "up" {
 		t.Fatalf("expected up to win over connecting, got %q", s.Health)
+	}
+}
+
+func TestProxyHealthByAddress_Dead(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(30, "dead-addr:1")
+
+	// Force out of the connecting state without ever coming up, simulating
+	// a proxy that gave up before its first successful connection.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[30].connecting = false
+	proxyHealthMu.Unlock()
+
+	status := ProxyHealthByAddress()
+	if s, ok := status["dead-addr:1"]; !ok || s.Health != "dead" {
+		t.Fatalf("expected dead, got %q", s.Health)
+	}
+}
+
+func TestProxyHealthByAddress_ConnectingFresh(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(31, "connecting-addr:1")
+
+	// Freshly registered, never up, never down: should read as connecting
+	// (unchanged behavior, but now reached via the switch statement).
+	status := ProxyHealthByAddress()
+	if s, ok := status["connecting-addr:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting, got %q", s.Health)
+	}
+}
+
+func TestProxyHealthByAddress_DegradedTier(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(32, "degraded-tier:1")
+	markProxyUp(32)
+	markProxyDown(32)
+
+	// everUp branch must still be reachable after the if/else-if -> switch
+	// conversion: not currentlyUp, not connecting, but everUp.
+	status := ProxyHealthByAddress()
+	s, ok := status["degraded-tier:1"]
+	if !ok {
+		t.Fatal("expected an entry for degraded-tier:1")
+	}
+	if s.Health != "recently_offline" {
+		t.Fatalf("expected recently_offline tier, got %q", s.Health)
+	}
+}
+
+func TestProxyHealthByAddress_AllHealthStatesTogether(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(40, "up:1")
+	RegisterProxy(41, "connecting:1")
+	RegisterProxy(42, "degraded:1")
+	RegisterProxy(43, "dead:1")
+
+	markProxyUp(40)
+
+	markProxyUp(42)
+	markProxyDown(42)
+
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[43].connecting = false
+	proxyHealthMu.Unlock()
+
+	status := ProxyHealthByAddress()
+	want := map[string]string{
+		"up:1":         "up",
+		"connecting:1": "connecting",
+		"degraded:1":   "recently_offline",
+		"dead:1":       "dead",
+	}
+	for addr, expected := range want {
+		s, ok := status[addr]
+		if !ok {
+			t.Fatalf("missing entry for %q", addr)
+		}
+		if s.Health != expected {
+			t.Fatalf("health[%q] = %q, want %q", addr, s.Health, expected)
+		}
+	}
+}
+
+func TestDegradedProxies_MixedConnectingAndDegraded(t *testing.T) {
+	resetProxyHealthForTest()
+
+	// idx 50: genuinely degraded, no respawn involved.
+	RegisterProxy(50, "genuine-degraded:1")
+	markProxyUp(50)
+	markProxyDown(50)
+
+	// idx 51: was degraded, then respawned at the same index/address -> must
+	// be excluded despite the stale everUp/downSince it inherited.
+	RegisterProxy(51, "respawned:1")
+	markProxyUp(51)
+	markProxyDown(51)
+	RegisterProxy(51, "respawned:1")
+
+	dps := DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1", len(dps))
+	}
+	if dps[0].Address != "genuine-degraded:1" {
+		t.Fatalf("degraded address = %q, want %q", dps[0].Address, "genuine-degraded:1")
+	}
+}
+
+func TestDegradedProxies_RespawnThenRedown(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(52, "respawn-redown:1")
+	markProxyUp(52)
+	markProxyDown(52)
+
+	// Respawn: connecting=true, must be excluded.
+	RegisterProxy(52, "respawn-redown:1")
+	dps := DegradedProxies()
+	if len(dps) != 0 {
+		t.Fatalf("DegradedProxies = %d, want 0 while connecting", len(dps))
+	}
+
+	// The new instance reports its own up->down transition: connecting is
+	// cleared by markProxyUp/markProxyDown, so it should now count again.
+	markProxyUp(52)
+	markProxyDown(52)
+	dps = DegradedProxies()
+	if len(dps) != 1 {
+		t.Fatalf("DegradedProxies = %d, want 1 after the respawned instance reports its own down", len(dps))
+	}
+	if dps[0].Address != "respawn-redown:1" {
+		t.Fatalf("degraded address = %q, want %q", dps[0].Address, "respawn-redown:1")
 	}
 }
