@@ -2740,7 +2740,8 @@ func provide(opts docopt.Opts) {
 		connectClient.ContractManager().SetProvideModes(provideModes)
 
 		if proxySettings != nil {
-			registerContractCallback(proxySettings.Index, connectClient)
+			retireMetrics := registerContractCallback(proxySettings.Index, connectClient)
+			defer retireMetrics()
 		}
 
 		select {
@@ -2899,7 +2900,6 @@ func provide(opts docopt.Opts) {
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
-				defer globalContractMetrics.retire(stableID)
 				defer proxyCancel()
 
 				staggerMs := 150
