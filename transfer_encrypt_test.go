@@ -368,7 +368,6 @@ func TestSetPeerClientPublicKeyWrongSize(t *testing.T) {
 	}
 }
 
-
 // newTestEncryptionSession builds a peerEncryptionSession in the given role
 // with a manager that carries real TLS configs, so startEpoch / reset build
 // real epochs. No epoch is started; the caller drives the lifecycle. A short

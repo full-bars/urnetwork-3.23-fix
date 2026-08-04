@@ -1187,7 +1187,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hub: CA derivation failed: %v\n", err)
 			os.Exit(1)
 		}
-		if fp, err := ca.caFingerprint(); err == nil { fmt.Printf("hub: CA fingerprint %s\n", fp) }
+		if fp, err := ca.caFingerprint(); err == nil {
+			fmt.Printf("hub: CA fingerprint %s\n", fp)
+		}
 
 		// Write CA cert (non-fatal — the hub can still serve TLS without it on disk)
 		caPath := filepath.Join(*dataDir, "ca.crt")

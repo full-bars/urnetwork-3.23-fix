@@ -7,7 +7,6 @@ import (
 
 	"container/heap"
 
-
 	"github.com/urnetwork/connect/protocol"
 )
 

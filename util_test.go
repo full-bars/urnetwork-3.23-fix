@@ -287,7 +287,9 @@ func TestWeightedShuffle(t *testing.T) {
 }
 
 func TestWeightedShuffleWithEntropy(t *testing.T) {
-	if testing.Short() { t.Skip("skipping slow probabilistic test in short mode") }
+	if testing.Short() {
+		t.Skip("skipping slow probabilistic test in short mode")
+	}
 	// as entropy approaches 1, the weighted shuffle should become uniform
 
 	if testing.Short() {
