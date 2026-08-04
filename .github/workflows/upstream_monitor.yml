@@ -88,13 +88,17 @@ jobs:
                 AI_SUMMARY=""
                 PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
                 TRUNCATED_DIFF="${PR_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. Summarize this pull request diff in under 150 words. Cover architectural changes, performance impact, and potential breaking changes to routing or encryption.
+                PROMPT="You are an expert Go developer. Analyze this pull request diff and produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
                 
-                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
+                
+                Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
                 - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] otherwise
-                Add a one-line justification after the verdict.
+                with a one-line justification after it.
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
@@ -330,13 +334,17 @@ jobs:
                 COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
                 RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
                 TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. Summarize this commit diff in under 100 words. Cover architectural changes, performance impact, and potential breaking changes to routing or encryption.
+                PROMPT="You are an expert Go developer. Analyze this commit diff and produce a structured summary of approximately 150-250 words with exactly these three bolded sections:
                 
-                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
+                
+                Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
                 - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] otherwise
-                Add a one-line justification after the verdict.
+                with a one-line justification after it.
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
@@ -656,13 +664,17 @@ jobs:
             AI_SUMMARY=""
             RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
             TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Cover architecture changes, performance impact, and provider-impacting changes (routing, encryption, contracts).
+            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
             
-            Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+            **Architectural Changes** - what changed structurally and why
+            **Performance Impact** - throughput, latency, memory, or CPU effects
+            **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, contracts, or the provider binary
+            
+            Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
             - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
             - [WATCH] for behavior changes worth tracking
             - [NO ACTION] otherwise
-            Add a one-line justification after the verdict.
+            with a one-line justification after it.
             
             Diff:
                         ${TRUNCATED_DIFF}"
@@ -857,13 +869,17 @@ jobs:
                 AI_SUMMARY=""
                 RAW_DIFF=$(curl -sL "https://github.com/${SN_REPO}/commit/${COMMIT_SHA}.diff" 2>/dev/null || echo "")
                 TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Summarize in under 120 words what changed and whether it affects contract handling, routing, encryption, proxy management, or the provider binary.
+                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Produce a structured summary of approximately 200-300 words with exactly these three bolded sections:
                 
-                Then judge portability to the 3.23-fix production fork. End with exactly one verdict line, one of:
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything affecting contract handling, routing, encryption, proxy management, or the provider binary
+                
+                Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
                 - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] otherwise
-                Add a one-line justification after the verdict.
+                with a one-line justification after it.
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
