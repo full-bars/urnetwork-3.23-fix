@@ -266,7 +266,7 @@ func TestDoHubJoin_FullRoundTripSucceeds(t *testing.T) {
 	restoreStdin := setStdinFromString(t, password+"\n")
 	defer restoreStdin()
 
-	doHubJoin(ts.URL)
+	doHubJoin(context.Background(), ts.URL)
 
 	credPath := filepath.Join(homeDir, ".urnetwork", "hub.credential")
 	credBytes, err := os.ReadFile(credPath)
@@ -317,7 +317,7 @@ func setStdinFromString(t *testing.T, s string) func() {
 // error path calls os.Exit(1), it must run in a re-exec'd subprocess.
 func TestDoHubJoin_MalformedKE1ResponseBodyExitsWithDecodeError(t *testing.T) {
 	if os.Getenv("GO_WANT_HUB_JOIN_SUBPROCESS") == "1" {
-		doHubJoin(os.Getenv("HUB_JOIN_TEST_URL"))
+		doHubJoin(context.Background(), os.Getenv("HUB_JOIN_TEST_URL"))
 		return
 	}
 
@@ -347,7 +347,7 @@ func TestDoHubJoin_MalformedKE1ResponseBodyExitsWithDecodeError(t *testing.T) {
 // confirming the new check is scoped to actual decode failures.
 func TestDoHubJoin_ValidJSONMissingKE2FieldDoesNotTriggerDecodeError(t *testing.T) {
 	if os.Getenv("GO_WANT_HUB_JOIN_SUBPROCESS") == "1" {
-		doHubJoin(os.Getenv("HUB_JOIN_TEST_URL"))
+		doHubJoin(context.Background(), os.Getenv("HUB_JOIN_TEST_URL"))
 		return
 	}
 
