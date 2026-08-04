@@ -164,8 +164,8 @@ func parseProxyURLLine(line string) (address, user, password string, ok bool) {
 			}
 			return address, user, password, address != ""
 		}
-	address, user, password = parseProxyAddress(rest)
-	return address, user, password, address != ""
+		address, user, password = parseProxyAddress(rest)
+		return address, user, password, address != ""
 	}
 
 	address, user, password = parseProxyAddress(line)
@@ -188,9 +188,9 @@ var proxyURLHTTPClient = &http.Client{
 		return nil
 	},
 	Transport: &http.Transport{
-		MaxIdleConns:        1,
-		IdleConnTimeout:     30 * time.Second,
-		DisableCompression:  true,
+		MaxIdleConns:       1,
+		IdleConnTimeout:    30 * time.Second,
+		DisableCompression: true,
 	},
 }
 

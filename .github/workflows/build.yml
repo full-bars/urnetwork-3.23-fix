@@ -69,6 +69,15 @@ jobs:
           go vet ./provider/...
           go vet ./hub/...
 
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Run Installer Script Tests
         run: |
           chmod +x scripts/test_provider_install.sh

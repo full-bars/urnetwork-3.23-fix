@@ -25,9 +25,9 @@ func TestCapProxyList(t *testing.T) {
 
 func TestFormatStateFile(t *testing.T) {
 	r := connect.ProxyHealthReport{
-		Up:       3,
-		Dead:     []string{"proxy[2] (c:1)"},
-		Degraded: []string{"proxy[1] (b:1)"},
+		Up:                3,
+		Dead:              []string{"proxy[2] (c:1)"},
+		Degraded:          []string{"proxy[1] (b:1)"},
 		LifetimeRecovered: 5,
 		LifetimeLost:      4,
 	}

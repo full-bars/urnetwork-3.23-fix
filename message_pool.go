@@ -78,11 +78,11 @@ func newPoolShard(maxCount int) *poolShard {
 }
 
 type messagePool struct {
-	size        int
-	shards      []*poolShard
-	shardCount  int
-	shardMask   uint32
-	shardNext   atomic.Uint64
+	size       int
+	shards     []*poolShard
+	shardCount int
+	shardMask  uint32
+	shardNext  atomic.Uint64
 }
 
 func newMessagePool(size int, maxCount int) *messagePool {
@@ -262,7 +262,6 @@ func ResizeMessagePoolsPerClass(maxByteCount ByteCount) {
 		pool.Resize(int(maxByteCount / ByteCount(pool.size)))
 	}
 }
-
 
 func ClearMessagePools() {
 	for _, pool := range orderedMessagePools() {

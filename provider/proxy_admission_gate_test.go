@@ -20,7 +20,7 @@ func TestProxyAdmissionGate_ReleaseWeightedRandomFavorsLowerFailureCount(t *test
 	lowWins := 0
 
 	for i := 0; i < trials; i++ {
-		low := &admissionWaiter{weight: 1.0 / float64(0+1), ready: make(chan struct{})}  // untried
+		low := &admissionWaiter{weight: 1.0 / float64(0+1), ready: make(chan struct{})}   // untried
 		high := &admissionWaiter{weight: 1.0 / float64(10+1), ready: make(chan struct{})} // 10 prior failures
 		g.waiters = []*admissionWaiter{low, high}
 

@@ -46,9 +46,9 @@ func TestLogThrottle_SuppressedCountResetsAfterEmit(t *testing.T) {
 	th := newLogThrottle(time.Minute)
 	base := time.Unix(1000, 0)
 
-	th.Allow(base)                       // allowed
-	th.Allow(base.Add(1 * time.Second))  // suppressed -> count 1
-	th.Allow(base.Add(2 * time.Minute))  // allowed, reports & resets count
+	th.Allow(base)                      // allowed
+	th.Allow(base.Add(1 * time.Second)) // suppressed -> count 1
+	th.Allow(base.Add(2 * time.Minute)) // allowed, reports & resets count
 
 	// A subsequent allowed line with no suppression in between reports 0.
 	ok, suppressed := th.Allow(base.Add(4 * time.Minute))

@@ -325,15 +325,16 @@ func TestMultiClientChannelSendNackCoalesceDoesNotLeak(t *testing.T) {
 		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
 			return &MultiClientGeneratorClientArgs{ClientId: NewId(), ClientAuth: nil}, nil
 		},
-		removeClientArgs:      func(args *MultiClientGeneratorClientArgs) {},
-		removeClientWithArgs:  func(client *Client, args *MultiClientGeneratorClientArgs) {},
-		newClientSettings:     DefaultClientSettings,
+		removeClientArgs:     func(args *MultiClientGeneratorClientArgs) {},
+		removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {},
+		newClientSettings:    DefaultClientSettings,
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
 			return NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings), nil
 		},
 	}
 
-	clientReceivePacket := func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {}
+	clientReceivePacket := func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
+	}
 	contractStatus := func(contractStatus *ContractStatus) {}
 
 	settings := DefaultMultiClientSettings()
