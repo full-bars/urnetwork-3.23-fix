@@ -1,0 +1,52 @@
+# Area labels, applied automatically from the paths a PR touches.
+# Consumed by .github/workflows/pr-labeler.yml (actions/labeler v5).
+#
+# These are deliberately coarse. The goal is "which part of the fork does this
+# touch", so a PR can be found again six weeks later — not a precise taxonomy.
+# A PR touching several areas gets several labels; that is intended.
+
+"area:core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.go"
+          - "protocol/**"
+
+"area:provider":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "provider/**"
+          - "connectctl/**"
+          - "extender/**"
+
+"area:hub":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "hub/**"
+
+"area:docker":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docker/**"
+          - "Dockerfile"
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+"area:workers":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "workers/**"
+
+"area:scripts":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "scripts/**"
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "releases/**"
+          - "*.md"
