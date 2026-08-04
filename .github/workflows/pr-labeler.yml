@@ -1,0 +1,111 @@
+name: PR Labeler
+
+# Labels every PR automatically, along two axes:
+#
+#   area:*  — which part of the fork the PR touches, from changed paths
+#             (mapping lives in .github/labeler.yml)
+#   type    — fix / feat / docs / chore / perf / style / refactor / test / ci,
+#             from the conventional-commit prefix already used in PR titles
+#
+# Plus `upstream-port` when the title mentions upstream, since porting from
+# urnetwork/connect is a recurring category in this fork and there is otherwise
+# no way to filter for it.
+#
+# `needs-fleet-deploy` and `security` are deliberately NOT automated — they are
+# judgement calls, applied by hand.
+#
+# Uses `pull_request` (not `pull_request_target`) on purpose: PRs here come from
+# branches in this repo, and pull_request_target would run with write scope
+# against untrusted head refs for any future fork PR.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  area:
+    name: Area labels (from paths)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true
+
+  type:
+    name: Type label (from title)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive and apply type label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed via env, never interpolated into the script body: a PR title
+          # is attacker-controlled text and `${{ }}` inside `run:` would splice
+          # it straight into the shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Labels this job owns. Anything outside this set is never touched:
+          # area:* is owned by the `area` job, and security/needs-fleet-deploy
+          # are applied by hand and must survive a re-run.
+          MANAGED="fix feat docs chore perf style refactor test ci upstream-port"
+
+          # Match the whole Conventional Commits header rather than just the
+          # text before the first colon: <type>[(scope)][!]: <description>.
+          # Anchoring the trailing ": <description>" is what makes a bare "fix"
+          # or "fix :" fall through unlabelled, and the optional `!` is what
+          # keeps a breaking-change title like "fix!: ..." from being skipped.
+          # Regex must live in a variable: bash cannot parse these parens
+          # inline inside [[ =~ ]].
+          re='^(fix|feat|docs|chore|perf|style|refactor|test|ci)(\([^)]+\))?!?:[[:space:]]+[^[:space:]].*$'
+          shopt -s nocasematch
+          if [[ "$PR_TITLE" =~ $re ]]; then
+            type_label="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+          else
+            echo "No conventional-commit header in title; skipping type label."
+            type_label=""
+          fi
+          shopt -u nocasematch
+
+          want=""
+          [ -n "$type_label" ] && want="$type_label"
+
+          # Porting from upstream is a recurring category worth filtering on.
+          if printf '%s' "$PR_TITLE" | grep -qi 'upstream'; then
+            want="${want:+$want }upstream-port"
+          fi
+
+          # This job also runs on `edited`, so a retitled PR must lose the label
+          # it no longer earns. Without this, "fix: x" retitled to "feat: x"
+          # keeps `fix` and gains `feat`. Only managed labels are ever removed.
+          current="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name')"
+
+          add=""
+          for l in $want; do
+            printf '%s\n' "$current" | grep -qx "$l" || add="${add:+$add,}$l"
+          done
+
+          remove=""
+          for l in $MANAGED; do
+            printf '%s\n' "$current" | grep -qx "$l" || continue
+            printf '%s ' $want | grep -qw "$l" && continue
+            remove="${remove:+$remove,}$l"
+          done
+
+          if [ -z "$add" ] && [ -z "$remove" ]; then
+            echo "Labels already correct; nothing to do."
+            exit 0
+          fi
+
+          echo "add=[${add:-none}] remove=[${remove:-none}]"
+          gh pr edit "$PR_NUM" --repo "$REPO" \
+            ${add:+--add-label "$add"} \
+            ${remove:+--remove-label "$remove"}
