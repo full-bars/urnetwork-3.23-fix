@@ -20,7 +20,9 @@ import (
 // same as the CI script. A line that has been wrapped in the
 // `if v := log.V(n); v.Enabled() { v.Infof(...) }` guard no longer chains
 // `.Infof(` directly off `.V(n)`, so it does not match.
-var verboseLogCallRe = regexp.MustCompile(`(?m)^[^/]*\.V\(\d\)\.Inf\w*\(`)
+// [^\n/]* (rather than [^/]*) keeps the match on one line: the bare form
+// spanned newlines, misattributing sites and silently skipping some.
+var verboseLogCallRe = regexp.MustCompile(`(?m)^[^\n/]*\.V\(\d\)\.Inf\w*\(`)
 
 // verboseLogFormatRe finds the next double-quoted Go string literal
 // (allowing escaped characters) following a call site.
