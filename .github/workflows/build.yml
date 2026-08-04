@@ -101,16 +101,16 @@ jobs:
           def formats_of(src, pattern):
               out = []
               for m in re.finditer(pattern, src):
-                  fm = re.search(r'"(?:[^"\\]|\\.)*"', src[m.end():], re.DOTALL)
+                  fm = re.match(r'\s*("(?:[^"\\]|\\.)*")', src[m.end():])
                   out.append((src.count('\n', 0, m.start()) + 1,
-                              fm.group(0) if fm else '<no format string>'))
+                              fm.group(1) if fm else '<no format string>'))
               return out
 
           bad = []
           shared = []
           for f in ('ip.go', 'transfer.go', 'ip_remote_multi_client.go'):
               src = open(f).read()
-              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\.V\(\d\)\.Inf\w*\('):
+              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\.V\(\d+\)\.Inf\w*\('):
                   if fmt not in sanctioned:
                       bad.append(f'{f}:{line_no} {fmt[:90]}')
               for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\bv\.Inf\w*\('):

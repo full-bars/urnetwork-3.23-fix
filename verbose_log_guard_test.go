@@ -22,11 +22,15 @@ import (
 // `.Infof(` directly off `.V(n)`, so it does not match.
 // [^\n/]* (rather than [^/]*) keeps the match on one line: the bare form
 // spanned newlines, misattributing sites and silently skipping some.
-var verboseLogCallRe = regexp.MustCompile(`(?m)^[^\n/]*\.V\(\d\)\.Inf\w*\(`)
+// \d+ (rather than \d) so multi-digit levels such as V(10) are detected.
+var verboseLogCallRe = regexp.MustCompile(`(?m)^[^\n/]*\.V\(\d+\)\.Inf\w*\(`)
 
-// verboseLogFormatRe finds the next double-quoted Go string literal
-// (allowing escaped characters) following a call site.
-var verboseLogFormatRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+// verboseLogFormatRe matches the call's immediate first argument when it is a
+// string literal. Leading whitespace is allowed (the literal may sit on the
+// next line of a multiline call) but nothing else: a dynamic first argument
+// must not be able to hide behind a sanctioned literal later in the call.
+// The string itself is captured in group 1 (whitespace is skipped, not kept).
+var verboseLogFormatRe = regexp.MustCompile(`^\s*("(?:[^"\\]|\\.)*")`)
 
 type verboseLogViolation struct {
 	line   int
@@ -45,8 +49,8 @@ func findUnguardedVerboseLogViolations(src string, sanctioned map[string]bool) [
 	for _, loc := range verboseLogCallRe.FindAllStringIndex(src, -1) {
 		rest := src[loc[1]:]
 		format := "<no format string>"
-		if m := verboseLogFormatRe.FindString(rest); m != "" {
-			format = m
+		if m := verboseLogFormatRe.FindStringSubmatch(rest); m != nil {
+			format = m[1]
 		}
 		if !sanctioned[format] {
 			lineNo := strings.Count(src[:loc[0]], "\n") + 1
@@ -143,6 +147,14 @@ func TestFindUnguardedVerboseLogViolations_SyntheticCases(t *testing.T) {
 		"unguarded call with no format string literal at all": {
 			src:      `self.log.V(1).Infof(dynamicFormat)`,
 			expected: []verboseLogViolation{{line: 1, format: "<no format string>"}},
+		},
+		"dynamic format before a sanctioned literal is still a violation": {
+			src:      `self.log.V(1).Infof(dynamicFormat, "[ok]allowlisted %s\n")` + "\n",
+			expected: []verboseLogViolation{{line: 1, format: "<no format string>"}},
+		},
+		"multi-digit verbosity level is caught": {
+			src:      `self.log.V(10).Infof("[bad]new hot path %s\n", x)` + "\n",
+			expected: []verboseLogViolation{{line: 1, format: `"[bad]new hot path %s\n"`}},
 		},
 		"violation line number tracks preceding newlines": {
 			src: "package x\n\nfunc f() {\n" +
