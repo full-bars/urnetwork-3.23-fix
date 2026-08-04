@@ -244,13 +244,40 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
 - A real-time bandwidth and concurrent session load tracker is mirrored to `proxy_traffic.state` (default `~/.urnetwork`).
 
+### `proxy_health.log` row format
+
+`proxy_health.log` receives one append-line per proxy state transition (complete, uncapped; rotated to `proxy_health.log.1` at 20 MB, one generation kept):
+
+```
+| 2026-08-04T00:12:03Z | RECOVERED | proxy[47]  | 1.2.3.4:8080     | after=3m12s |
+| 2026-08-04T00:12:03Z | DEGRADED  | proxy[49]  | 5.6.7.8:1081     |             |
+| 2026-08-04T00:12:03Z | DEAD      | proxy[112] | 45.3.32.184:1081 |             |
+```
+
+| Field | Meaning |
+|---|---|
+| Timestamp | RFC3339 UTC. |
+| `RECOVERED` | A proxy that was down came back up. `after=` shows how long it was down (only when a `downSince` was recorded). |
+| `DEGRADED` | A proxy that was up went down (worked before, now not). |
+| `DEAD` | A proxy that never connected within a full pulse cycle. Emitted **once per proxy** (the `deadLogged` latch) prevents repeat rows for the same proxy. |
+
+> [!IMPORTANT]
+> `DEAD` rows were unreachable before the connecting-state bound shipped (the `!connecting` gate could never pass for a never-up proxy, so the path was latently dead). A fleet that has never seen `DEAD` rows will start seeing them for proxies that genuinely never connected within 65 minutes. This is a fixed latent bug; the rows are diagnostics only and nothing alerts on them.
+
 ### ⏱️ Hourly Pulse Marker
 
 ```
-[pulse] waking stalled transports: down=12 dead=3 degraded=9
+[pulse] waking stalled transports: down=12 dead=3 degraded=9 connecting=4
 ```
 
 An hourly retry sweep is performed to wake stalled transports. This marker logs the pre-pulse state, so you can track how many of the `down` proxies are `recovered` in the next heartbeat.
+
+| Field | Meaning |
+|---|---|
+| `down` | Sum of `dead` + `degraded` proxies. |
+| `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
+| `degraded` | Proxies that worked before but are currently down. |
+| `connecting` | Proxies registered and still establishing their first WebSocket. A never-connected proxy counts as `connecting` only until its `connectingStaleAfter` window expires (65 minutes, one hourly pulse interval plus margin); past that it falls to `dead`. |
 
 ---
 
@@ -360,18 +387,38 @@ Two distinct `[earn]` lines surface **how much** and **how well** the node is ea
 
 ---
 
+## 💾 Billable Rate Writer
+
+```
+[billable_rate] writer started (interval=10s)
+[billable_rate] warn: write failed: open /root/.urnetwork/billable_rate: permission denied
+[billable_rate] writer stopped
+```
+
+Persists the current billable transfer rate to `~/.urnetwork/billable_rate` on an interval so one-shot tools can read it without polling the live counters. This file is what `urnet-tools idle-update`'s threshold check reads. If you are debugging why `idle-update` never fires, this is the file (and these lines) to look at.
+
+| Message | Meaning |
+|---|---|
+| `writer started (interval=...)` | The writer loop began; interval is the persistence cadence. |
+| `warn: write failed: ...` | The rate file could not be written (permissions, disk). The rate itself is unaffected; the file is a mirror. |
+| `writer stopped` | The writer loop exited (provider shutdown or context cancel). |
+
+---
+
 ## 📑 Contract Lifecycle (3.23-fix)
 
 ```
 [contract] acquired size=256 KiB destination=0142...c3a9
+[contract] denied = insufficient allowance destination=0142...c3a9
 [contract] closed acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
 ```
 
-A contract is the platform's bandwidth grant for relaying a client's traffic. These two lines bracket a contract's life:
+A contract is the platform's bandwidth grant for relaying a client's traffic. These lines bracket a contract's life:
 
 | Field | Meaning |
 |---|---|
 | `size` (acquired) | Bytes granted by this contract. |
+| `denied` | The platform rejected a contract request; the message after `=` is the reason (e.g. `insufficient allowance`). A denied contract carries no `size`/`acked`. Frequent denials alongside low `util` means contracts are being refused, not just unused. |
 | `acked` (closed) | Bytes actually acknowledged/relayed before the contract closed. |
 | `allotted` (closed) | Bytes the contract granted (same basis as `size`). |
 | `util` (closed) | `acked / allotted` as a percentage — actual revenue-generating usage, not just the grant. |
@@ -440,6 +487,20 @@ Using 1000 proxy servers:
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
 
+### `proxy.state` reconciliation
+
+```
+[proxy] pruned 711 stale proxy.state entries (no longer desired)
+[proxy] skipping state prune this cycle: proxy_url.json unavailable
+```
+
+Emitted by the reload reconciler when it reconciles `~/.urnetwork/proxy.state` against the desired proxy set (config/file + URL cache). Entries for proxies that are no longer desired are pruned so `remove-dead` doesn't re-report ghosts forever.
+
+| Message | Meaning |
+|---|---|
+| `pruned N stale proxy.state entries (no longer desired)` | `N` state entries were deleted because their proxies are gone from every source. On the first run after upgrading, this can be a large number: the accumulated ghost backlog being cleaned, not an outage. |
+| `skipping state prune this cycle: proxy_url.json unavailable` | The URL cache could not be read, so the prune pass was skipped rather than risking deletion of state for still-desired URL proxies over a transient error. Nothing was removed this cycle; the next reload retries. |
+
 ---
 
 ## 📈 Reading Pool Stats Across Time
@@ -494,6 +555,26 @@ Emitted once at startup. Shows the current JWT's health status.
 
 ---
 
+## 🤝 Hub Bootstrap & CA Cert
+
+```
+[hub] bootstrapping CA cert from https://hub-server:8443/api/ca-cert
+[hub] CA cert installed from hub token bootstrap
+[hub] WARNING: verified CA cert fetch failed (expected for a direct password-derived CA hub) — falling back to an unverified fetch. The hub token will be sent before the hub's identity is confirmed. Only safe if hub and provider share a trusted network at boot; run 'urnet-tools hub link <url>' manually instead if you can't accept that.
+[hub] bootstrap URL error: failed to parse report URL
+```
+
+Fires once at startup when `URNETWORK_REPORT_URL` starts with `https://` and the hub has a CA. The provider fetches the hub's CA certificate over HTTPS so subsequent report/heartbeat POSTs can verify the hub's identity instead of trusting it blindly. Plain-`http://` report URLs skip this bootstrap entirely (there is nothing to verify).
+
+| Message | Meaning |
+|---|---|
+| `bootstrapping CA cert from <url>` | The provider is fetching the hub's cert from `<hub>/api/ca-cert`. |
+| `CA cert installed from hub token bootstrap` | The fetched cert was written to the hub CA store; future hub traffic is verified. |
+| `WARNING: verified CA cert fetch failed ...` | **Security-relevant.** The verified fetch failed (normal for a direct password-derived CA hub that hasn't been linked yet) and the provider fell back to an *unverified* TLS fetch, so the hub token will be sent before the hub's identity is confirmed. Only acceptable when the hub and provider share a trusted network at boot. If you can't accept that, run `urnet-tools hub link <url>` manually instead. |
+| `bootstrap URL error` / `bootstrap request error` / `CA cert write error` | The bootstrap attempt failed at the named step; the provider continues without a verified hub cert. |
+
+---
+
 ## 🌐 WebRTC Peer Lifecycle
 
 ```
@@ -507,6 +588,17 @@ Fires once per P2P session creation/destruction. Low frequency — one event per
 |---|---|
 | `peer connected` | A new WebRTC peer connection was established. |
 | `peer disconnected` | A peer connection was closed or timed out. |
+
+### SCTP progress watchdog
+
+```
+[peerconn]SCTP no progress for 10s with 524288 bytes buffered; reconnecting
+```
+
+Logged by the lazy SCTP progress watchdog (added in the WebRTC tuning pass). It starts only after the first successful write, and fires when the data plane has made no progress for the watchdog window (10s) while bytes are still buffered, i.e. ICE consent looks healthy but the association is blackholed. The connection is torn down and re-established.
+
+> [!NOTE]
+> This line looks alarming but is **correct, expected behaviour**: it is the teardown path for an association that stopped moving data, not a transport failure report. Seeing it occasionally on lossy links is normal; seeing it constantly for the same destination warrants investigation.
 
 ---
 
