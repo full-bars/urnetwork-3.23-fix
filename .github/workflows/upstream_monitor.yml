@@ -829,7 +829,7 @@ jobs:
           echo "Fetching recent commits to $SN_REPO/main..."
           COMMITS=$(gh api repos/$SN_REPO/commits?sha=main\&per_page=20)
 
-          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+          TWELVE_HOURS_AGO=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ")
 
           echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
             COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
