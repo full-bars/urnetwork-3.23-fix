@@ -9,10 +9,13 @@ jobs:
   monitor-critical-files:
     runs-on: ubuntu-latest
     steps:
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Monitor critical file changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
@@ -82,15 +85,33 @@ jobs:
               if [ -n "$MATCHED_FILES" ]; then
                 echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
 
-                AI_SUMMARY="*AI Summary unavailable.*"
-                if [ -n "$DEEPSEEK_API_KEY" ]; then
-                  PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
-                  TRUNCATED_DIFF="${PR_DIFF:0:60000}"
-                  JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+                AI_SUMMARY=""
+                PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
+                TRUNCATED_DIFF="${PR_DIFF:0:60000}"
+                PROMPT="You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.
+
+                Diff:
+                ${TRUNCATED_DIFF}"
+
+                # Tier 1: opencode-go gateway (via opencode CLI)
+                if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                  OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
+                  if [ -n "$RAW_SUMMARY" ]; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                  fi
+                fi
+
+                # Tier 2: DeepSeek API
+                if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                  JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
                     "model": "deepseek-v4-flash",
                     "messages": [{
                       "role": "user",
-                      "content": ("You are an expert Go developer. Summarize the following pull request code diff in under 150 words. Focus strictly on architectural changes, performance impacts, and potential breaking changes to routing or encryption. Keep it concise, professional, and skip introductory pleasantries.\n\nDiff:\n" + $diff)
+                      "content": $prompt
                     }],
                     "temperature": 0.2,
                     "max_tokens": 1500
@@ -101,26 +122,51 @@ jobs:
                     -d "$JSON_PAYLOAD" \
                     "https://api.deepseek.com/chat/completions")
 
-                  # Debug: log first 200 chars of response
-                  echo "[DEBUG] DeepSeek response (first 200 chars): ${DEEPSEEK_RESPONSE:0:200}"
-
-                  # Check for API errors first
                   API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
                   if [ -n "$API_ERROR" ]; then
-                    AI_SUMMARY="*API Error: $API_ERROR*"
-                    echo "[ERROR] DeepSeek API error: $API_ERROR"
+                    echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                   else
                     RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
                     if [ -n "$RAW_SUMMARY" ]; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                      echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
+                      echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                     else
-                      # Log raw response for debugging when jq extraction fails
-                      echo "[ERROR] Failed to extract summary from response. Full response:"
-                      echo "$DEEPSEEK_RESPONSE" | jq . 2>/dev/null || echo "$DEEPSEEK_RESPONSE"
-                      AI_SUMMARY="*Error: Unexpected API response format* (check workflow logs)"
+                      echo "[WARN] DeepSeek returned no content; falling back to Gemini"
                     fi
                   fi
+                fi
+
+                # Tier 3: Gemini API
+                if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                  JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                    "contents": [{
+                      "parts": [{
+                        "text": $prompt
+                      }]
+                    }],
+                    "generationConfig": { "temperature": 0.2 }
+                  }')
+
+                  GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    -d "$JSON_PAYLOAD" \
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                  API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                  if [ -n "$API_ERROR" ]; then
+                    echo "[ERROR] Gemini API error: $API_ERROR"
+                  else
+                    RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                    if [ -n "$RAW_SUMMARY" ]; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[ERROR] Failed to extract summary from Gemini response"
+                    fi
+                  fi
+                fi
+
+                if [ -z "$AI_SUMMARY" ]; then
+                  AI_SUMMARY="*AI Summary unavailable.*"
                 fi
 
                 if [ -n "$DISCORD_WEBHOOK" ]; then
@@ -197,11 +243,15 @@ jobs:
   monitor-commits:
     runs-on: ubuntu-latest
     steps:
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Monitor upstream commits to main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           UPSTREAM_REPO="urnetwork/connect"
 
@@ -258,16 +308,34 @@ jobs:
                 echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
 
                 AI_SUMMARY=""
-                if [ -n "$DEEPSEEK_API_KEY" ]; then
-                  COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
-                  RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
-                  TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-                  if [ -n "$TRUNCATED_DIFF" ]; then
-                    JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+                COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
+                RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
+                TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+                PROMPT="You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and potential breaking changes to routing or encryption. Skip pleasantries.
+
+                Diff:
+                ${TRUNCATED_DIFF}"
+
+                if [ -n "$TRUNCATED_DIFF" ]; then
+                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
+                    if [ -n "$RAW_SUMMARY" ]; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                    fi
+                  fi
+
+                  # Tier 2: DeepSeek API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
                       "model": "deepseek-v4-flash",
                       "messages": [{
                         "role": "user",
-                        "content": ("You are an expert Go developer. Summarize this commit diff in under 100 words. Focus on architectural changes, performance impact, and breaking changes. Skip pleasantries.\n\nDiff:\n" + $diff)
+                        "content": $prompt
                       }],
                       "temperature": 0.2,
                       "max_tokens": 1000
@@ -277,9 +345,43 @@ jobs:
                       -d "$JSON_PAYLOAD" \
                       "https://api.deepseek.com/chat/completions")
                     API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
-                    if [ -z "$API_ERROR" ]; then
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                    else
                       RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
-                      [ -n "$RAW_SUMMARY" ] && AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      if [ -n "$RAW_SUMMARY" ]; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                      fi
+                    fi
+                  fi
+
+                  # Tier 3: Gemini API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "contents": [{
+                        "parts": [{
+                          "text": $prompt
+                        }]
+                      }],
+                      "generationConfig": { "temperature": 0.2 }
+                    }')
+                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[ERROR] Gemini API error: $API_ERROR"
+                    else
+                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      if [ -n "$RAW_SUMMARY" ]; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[ERROR] Failed to extract summary from Gemini response"
+                      fi
                     fi
                   fi
                 fi
@@ -399,11 +501,15 @@ jobs:
   monitor-build-releases:
     runs-on: ubuntu-latest
     steps:
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Watch urnetwork/build for new releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           BUILD_REPO="urnetwork/build"
           UPSTREAM_REPO="urnetwork/connect"
@@ -510,15 +616,33 @@ jobs:
             SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
 
             AI_SUMMARY=""
-            if [ -n "$DEEPSEEK_API_KEY" ]; then
-              RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
-              TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
-              if [ -n "$TRUNCATED_DIFF" ]; then
-                JSON_PAYLOAD=$(jq -n --arg diff "$TRUNCATED_DIFF" '{
+            RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
+            TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes (routing, encryption, contracts). Skip introductory pleasantries.
+
+            Diff:
+            ${TRUNCATED_DIFF}"
+
+            if [ -n "$TRUNCATED_DIFF" ]; then
+              # Tier 1: opencode-go gateway (via opencode CLI)
+              if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
+                if [ -n "$RAW_SUMMARY" ]; then
+                  AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                  echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                else
+                  echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                fi
+              fi
+
+              # Tier 2: DeepSeek API
+              if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
                   "model": "deepseek-v4-flash",
                   "messages": [{
                     "role": "user",
-                    "content": ("You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Summarize the changes in under 150 words. Focus on architecture changes, performance impact, and any provider-impacting changes. Skip introductory pleasantries.\n\nDiff:\n" + $diff)
+                    "content": $prompt
                   }],
                   "temperature": 0.2,
                   "max_tokens": 1500
@@ -531,14 +655,43 @@ jobs:
 
                 API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
                 if [ -n "$API_ERROR" ]; then
-                  echo "[ERROR] DeepSeek API error: $API_ERROR"
+                  echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                 else
                   RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
                   if [ -n "$RAW_SUMMARY" ]; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                    echo "[SUCCESS] Generated AI summary (${#RAW_SUMMARY} chars)"
+                    echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                   else
-                    echo "[ERROR] Failed to extract summary from response"
+                    echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                  fi
+                fi
+              fi
+
+              # Tier 3: Gemini API
+              if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                  "contents": [{
+                    "parts": [{
+                      "text": $prompt
+                    }]
+                  }],
+                  "generationConfig": { "temperature": 0.2 }
+                }')
+
+                GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  -d "$JSON_PAYLOAD" \
+                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                if [ -n "$API_ERROR" ]; then
+                  echo "[ERROR] Gemini API error: $API_ERROR"
+                else
+                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                  if [ -n "$RAW_SUMMARY" ]; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[ERROR] Failed to extract summary from Gemini response"
                   fi
                 fi
               fi
@@ -595,3 +748,165 @@ jobs:
             }')
             curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
           fi
+
+  monitor-sn-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
+      - name: Watch urfoundation/sn for provider-relevant changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # urfoundation/sn is the Bittensor subnet repo that absorbed the old
+          # connect/provider (the "sn transition", July 2026). Provider-relevant
+          # changes now land here instead of urnetwork/connect: miner/ (run.go,
+          # sn.go, sn_rpc.go, onchain/), cli/miner/, cmd/, and dependency files.
+          # This job surfaces new commits so a human can judge portability back
+          # into the 3.23-fix production fork.
+          SN_REPO="urfoundation/sn"
+
+          CRITICAL_FILES=(
+            "^miner/"
+            "^cli/miner/"
+            "^cmd/"
+            "^onchain/"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "\.proto$"
+          )
+
+          echo "Fetching recent commits to $SN_REPO/main..."
+          COMMITS=$(gh api repos/$SN_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$SN_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              while IFS= read -r filename; do
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$filename" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🛰️ SN REPO: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                AI_SUMMARY=""
+                RAW_DIFF=$(curl -sL "https://github.com/${SN_REPO}/commit/${COMMIT_SHA}.diff" 2>/dev/null || echo "")
+                TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Summarize in under 120 words what changed and assess impact on portability: does any of this affect contract handling, routing, encryption, proxy management, or the provider binary itself? Flag anything the 3.23-fix production fork should port or watch. Skip pleasantries.
+
+                Diff:
+                ${TRUNCATED_DIFF}"
+
+                if [ -n "$TRUNCATED_DIFF" ]; then
+                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --format json "$PROMPT" 2>&1 || true)
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
+                    if [ -n "$RAW_SUMMARY" ]; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                    fi
+                  fi
+
+                  # Tier 2: DeepSeek API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "model": "deepseek-v4-flash",
+                      "messages": [{
+                        "role": "user",
+                        "content": $prompt
+                      }],
+                      "temperature": 0.2,
+                      "max_tokens": 1200
+                    }')
+                    DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://api.deepseek.com/chat/completions")
+                    API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                    else
+                      RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
+                      if [ -n "$RAW_SUMMARY" ]; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                      fi
+                    fi
+                  fi
+
+                  # Tier 3: Gemini API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "contents": [{
+                        "parts": [{
+                          "text": $prompt
+                        }]
+                      }],
+                      "generationConfig": { "temperature": 0.2 }
+                    }')
+                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[ERROR] Gemini API error: $API_ERROR"
+                    else
+                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      if [ -n "$RAW_SUMMARY" ]; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[ERROR] Failed to extract summary from Gemini response"
+                      fi
+                    fi
+                  fi
+                fi
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                    --arg summary "$AI_SUMMARY" \
+                  '{
+                    "embeds": [{
+                      "title": "🛰️ urfoundation/sn Committed to Provider-Relevant Files",
+                      "url": $url,
+                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Portability Assessment:**\n" + $summary else "" end)),
+                      "color": 16753920,
+                      "footer": { "text": "URNetwork Upstream Monitor • SN Repo" }
+                    }]
+                  }')
+                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                fi
+              fi
+            fi
+          done
