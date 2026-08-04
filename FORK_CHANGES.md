@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.26.5
+**Current Version**: v3.23.0-fix.26.6
 
 ---
 
@@ -2215,3 +2215,52 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 **Files Changed**: `provider/proxy_reload.go`, `provider/proxy_reload_test.go` (`TestRunReloadReconciler_FiresOnInterval`), `provider/main.go` (wired into `provide()`'s startup goroutine list)
 
 **Status**: ✅ Merged `main` (2026-08-02). PR #309. v3.23.0-fix.26.5.
+
+## 95. IPv4 Fragment-Drop Guard in `parseIpv4` (PR #311)
+
+**Purpose**: Reject fragmented IPv4 packets before transport parsing. A non-first fragment has no transport header and a first fragment has a truncated payload — both were previously misparsed as if a transport header were present, reading garbage bytes as ports/flags. The fork had zero fragment handling before this.
+
+**Fix**: One 16-bit load in `parseIpv4` (`ip.go`): if the MF bit or fragment-offset field (`0x3fff`) is non-zero, return without parsing. DF and the reserved bit pass. Ported from upstream `e05ecee0` (guard only — the ICMP echo path from the same commit was not ported; a SOCKS-relay provider has no use for ICMP).
+
+**Tests**: 4 new (`ip_fragment_drop_test.go`): MF-set, non-zero offset, DF-only (must still parse), unfragmented.
+
+**Status**: ✅ Merged `main` (2026-08-03). PR #311. v3.23.0-fix.26.6.
+
+---
+
+## 96. SCTP/WebRTC Tuning: ReceiveMtu, CwndCAStep, Progress Watchdog (PR #312)
+
+**Purpose**: Three SCTP/WebRTC reliability corrections ported from upstream `aee94774` (settings only — the Android netlink/SDP changes from the same commit are not applicable).
+
+**Changes**:
+- `ReceiveMtu` 4 KiB → 1500: it's a per-packet demux buffer, not the SCTP receive window; Pion's SCTP path MTU stays under 1500 regardless, so the old value only inflated scratch buffers.
+- `SctpCwndCAStep` = 4×1200: Pion's default adds one ~1.2 KiB MTU only after a complete cwnd is acknowledged; four MTUs makes recovery from independent loss competitive on higher-latency paths. Verified `SetSCTPCwndCAStep` exists at the fork's vendored `pion/webrtc` v4.2.15 — no dependency bump.
+- SCTP progress watchdog (`SctpNoProgressTimeout` 10 s): lazy goroutine that starts after the first successful write and detects a blackholed association where ICE consent stays healthy but the data plane is dead, cancelling the connection. Ported without upstream's `requestImmediateReconnect()` (doesn't exist here) — uses the fork's existing `self.cancel()`-only teardown pattern.
+
+**Files Changed**: `transport_p2p_webrtc.go`, `transport_p2p_webrtc_pc.go` (`webRtcSctpProgress`), `util.go` (`resetOrCreateTimer`), new `transport_p2p_webrtc_sctp_settings_test.go`.
+
+**Status**: ✅ Merged `main` (2026-08-03). PR #312. v3.23.0-fix.26.6.
+
+---
+
+## 97. `sender_generation_id` Proto Field + Proto Source Drift Repair (PR #313)
+
+**Purpose**: Add `sender_generation_id` to `ExchangeSignals` (disambiguates a delayed initial `WaitingForSdpOffer` from a newly restarted passive association). Inert until the peer-connection generation-reset logic lands; additive and wire-compatible with peers that don't set it. Ported from upstream `45357960` (field only).
+
+**Also fixes proto source drift**: commit `ccada52` (Jul 11) regenerated `transfer.pb.go`/`frame.pb.go` from a different upstream `.proto` during an earlier port without landing the matching source changes. Running `make build` in `protocol/` against the stale sources would have silently deleted `NetworkPeer`, `NetworkPeersReset`, `NetworkPeersUpdate`, and the two `TransferNetworkPeers*` enum values — all live types used by `transfer_peer_manager.go`. The missing definitions were reconstructed from the already-shipping generated code and restored to `transfer.proto`/`frame.proto`; `protocol/`'s `make build` is safe to run again.
+
+**Tests**: Marshal/unmarshal round-trips for the new field (with/without it set) and for the reconciled `NetworkPeer`/`NetworkPeersUpdate` types — proving wire serialization (protobuf-go serializes via the compiled descriptor, not struct tags alone), plus enum value pinning.
+
+**Status**: ✅ Merged `main` (2026-08-03). PR #313. v3.23.0-fix.26.6.
+
+---
+
+## 98. Bound `SecurityPolicyStatsCollector` Destination Cardinality (PR #314)
+
+**Purpose**: `resultDestinationCounts` (diagnostics map in `ip_security.go`) had no cap — on a long-running provider relaying to arbitrarily many distinct destinations, every unique (protocol, ip, port) tuple got a permanent map entry: unbounded memory growth on the diagnostics path.
+
+**Fix**: Cap at `securityPolicyStatsMaxDestinationsPerResult = 1024` per result, final slot reserved as an overflow bucket ("other destinations"); unrecognized result values share one unknown-result bucket; zero-count updates ignored. Ported from upstream `45357960` (same commit as #313, different file). Actual diff is 67 lines — diagnostics bookkeeping only, no blocklist data touched.
+
+**Tests**: 4 new — bound holds at 1050 distinct destinations fed in, unknown results share one bucket, zero-count no-op, overflow destination `String()`.
+
+**Status**: ✅ Merged `main` (2026-08-03). PR #314. v3.23.0-fix.26.6.
