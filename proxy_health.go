@@ -365,10 +365,7 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	bandwidth = make(map[string]*ProxyBandwidth)
-	total := 0
-	bwCount := 0
 	for _, idx := range sortedIndicesLocked() {
-		total++
 		h := proxyHealthByIndex[idx]
 		switch {
 		case h.currentlyUp:
@@ -386,7 +383,6 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		}
 
 		if h.bw != nil {
-			bwCount++
 			pb := proxyBandwidthSnapshot(h.bw)
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
@@ -476,12 +472,16 @@ func ProxyHealthByAddress() map[string]ProxyHealthStatus {
 	result := make(map[string]ProxyHealthStatus, len(proxyHealthByIndex))
 	for _, h := range proxyHealthByIndex {
 		health := "dead"
-		if h.currentlyUp {
+		switch {
+		case h.currentlyUp:
 			health = "up"
-		} else if h.everUp {
-			health = degradedTierFromDuration(time.Since(h.downSince))
-		} else if h.connecting {
+		case h.connecting:
+			// a re-registered instance reuses the struct and inherits its predecessor's
+			// everUp/downSince, so `connecting` must win over `everUp` or a respawning
+			// proxy reads as degraded. Mirrors the IsDegraded() guard.
 			health = "connecting"
+		case h.everUp:
+			health = degradedTierFromDuration(time.Since(h.downSince))
 		}
 		latencyNs := int64(0)
 		socksLatencyNs := int64(0)
@@ -550,7 +550,7 @@ func DegradedProxies() []DegradedProxyEntry {
 	now := time.Now()
 	var result []DegradedProxyEntry
 	for idx, h := range proxyHealthByIndex {
-		if h.everUp && !h.currentlyUp && !h.downSince.IsZero() {
+		if h.everUp && !h.currentlyUp && !h.downSince.IsZero() && !h.connecting {
 			entry := DegradedProxyEntry{
 				Index:   idx,
 				Address: h.address,
