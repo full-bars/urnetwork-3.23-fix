@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -240,7 +241,7 @@ func (rl *joinRateLimiter) cleanupLoop() {
 // handshake steps to pakeClientLoginStep1/pakeClientLoginFinish (pake_join.go)
 // rather than reimplementing them, so this production entrypoint runs the
 // same code the unit tests exercise.
-func doHubJoin(hubURL string) {
+func doHubJoin(ctx context.Context, hubURL string) {
 	passwordBytes, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hub-join: read password: %v\n", err)
@@ -263,8 +264,13 @@ func doHubJoin(hubURL string) {
 	ke1Bytes, client, err := pakeClientLoginStep1(password)
 	check(err, "KE1")
 
-	resp, err := http.Post(baseURL+"/api/join/ke1", "application/json",
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/join/ke1",
 		bytes.NewReader(mustJSON(map[string]string{"ke1": hex.EncodeToString(ke1Bytes)})))
+	check(err, "build KE1 request")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
 	check(err, "POST KE1")
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -275,7 +281,10 @@ func doHubJoin(hubURL string) {
 	var ke1Resp struct {
 		Ke2 string `json:"ke2"`
 	}
-	json.NewDecoder(resp.Body).Decode(&ke1Resp)
+	if err := json.NewDecoder(resp.Body).Decode(&ke1Resp); err != nil {
+		resp.Body.Close()
+		check(err, "decode KE2 response")
+	}
 	resp.Body.Close()
 
 	ke2Bytes, err := hex.DecodeString(ke1Resp.Ke2)
@@ -291,12 +300,15 @@ func doHubJoin(hubURL string) {
 		nodeID = host
 	}
 
-	resp, err = http.Post(baseURL+"/api/join/ke3", "application/json",
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/join/ke3",
 		bytes.NewReader(mustJSON(map[string]string{
 			"ke1":     hex.EncodeToString(ke1Bytes),
 			"ke3":     hex.EncodeToString(ke3Bytes),
 			"node_id": nodeID,
 		})))
+	check(err, "build KE3 request")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = httpClient.Do(req)
 	check(err, "POST KE3")
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
