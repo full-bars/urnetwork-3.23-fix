@@ -1171,7 +1171,9 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 			return false
 		}
 	default:
-		self.log.V(1).Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
+		if v := self.log.V(1); v.Enabled() {
+			v.Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
+		}
 		return false
 	}
 }
@@ -3752,7 +3754,9 @@ func (self *multiClientChannel) clientReceive(source TransferPath, frames []*pro
 				}
 				// else not an ip packet, drop
 			} else {
-				self.log.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
+				if v := self.log.V(2); v.Enabled() {
+					v.Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
+				}
 			}
 		default:
 			// unknown message, drop

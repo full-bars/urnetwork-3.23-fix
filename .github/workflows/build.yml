@@ -78,6 +78,22 @@ jobs:
             exit 1
           fi
 
+      - name: Check hot-path verbose logging guards
+        run: |
+          # Tier-1 hot-path files must not grow new unguarded V(n).Inf* calls.
+          # Baseline 58 = the sanctioned Tier-2 sites (per-connection/per-handshake)
+          # that Task 17 deliberately leaves unguarded; anything above that is a
+          # new per-packet/per-message site that must be wrapped. A future Tier-2
+          # sweep PR must update this baseline.
+          expected=58
+          found=$(grep -nE '^[^/]*\.V\([0-9]\)\.Inf' ip.go transfer.go ip_remote_multi_client.go | wc -l)
+          if [ "$found" -gt "$expected" ]; then
+            echo "unguarded V(n).Inf* in a hot-path file (expected $expected sanctioned Tier-2 sites, found $found):"
+            grep -nE '^[^/]*\.V\([0-9]\)\.Inf' ip.go transfer.go ip_remote_multi_client.go | tail -n +$((expected + 1))
+            echo "wrap new sites with 'if v := log.V(n); v.Enabled()'"
+            exit 1
+          fi
+
       - name: Run Installer Script Tests
         run: |
           chmod +x scripts/test_provider_install.sh
