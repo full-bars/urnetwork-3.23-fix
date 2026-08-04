@@ -87,6 +87,8 @@ hub -hub-join https://HUB_IP:8443 < ~/.local/share/urnetwork-hub/hub.password
 
 The PAKE handshake proves password knowledge to the hub without sending it over the wire. On success, the hub issues a per-node credential stored in `~/.urnetwork/hub.credential`. This credential works as a Bearer token for `/api/report` and `/api/heartbeat` — no `URNETWORK_HUB_TOKEN` env var needed on the provider.
 
+The join client uses a 30-second timeout and is interruptible (Ctrl-C); if the hub is unreachable or blackholed, the command fails cleanly instead of hanging forever.
+
 Re-run `hub -hub-join` to refresh the credential (e.g. if the hub password changed or the credential was revoked).
 
 ### Option C: TLS + shared token (most secure, for production fleets)

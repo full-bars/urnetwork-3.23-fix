@@ -64,6 +64,9 @@ You can view the full list of dead and degraded proxies, as well as a live event
 > [!NOTE]
 > The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).
 
+> [!NOTE]
+> The status server (served on the provider's `--port`) sets `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s`, matching the hub, so dribbled-header (Slowloris-style) clients cannot hold connections open indefinitely; `WriteTimeout` is deliberately unset so live streams are not killed.
+
 ## 🩹 Pressure system (self-heal)
 
 `URNETWORK_SELF_HEAL=1` (or `urnet-tools self-heal on` at runtime) turns on a resource-pressure monitor that scales several actuators proportionally instead of gating them on/off. It's off by default.
