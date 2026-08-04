@@ -439,3 +439,81 @@ func TestProxyHealthByAddressUpWinsOverConnecting(t *testing.T) {
 		t.Fatalf("expected up to win over connecting, got %q", s.Health)
 	}
 }
+
+func TestConnectingStateExpiresToDegraded(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(23, "stale-conn:1")
+	markProxyUp(23)
+	markProxyDown(23)
+	RegisterProxy(23, "stale-conn:1")
+
+	// Fresh connecting: reported as connecting, not degraded.
+	if s, ok := ProxyHealthByAddress()["stale-conn:1"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting while fresh, got %q", s.Health)
+	}
+	if IsDegraded("stale-conn:1") {
+		t.Fatal("expected not degraded while connecting fresh")
+	}
+
+	// Backdate connectingSince past the stale threshold.
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[23].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	// Stale connecting: falls back to a degraded tier.
+	if s, ok := ProxyHealthByAddress()["stale-conn:1"]; !ok || s.Health != "recently_offline" {
+		t.Fatalf("expected recently_offline once connecting stale, got %q", s.Health)
+	}
+	if !IsDegraded("stale-conn:1") {
+		t.Fatal("expected degraded once connecting stale")
+	}
+}
+
+func TestDegradedProxiesIncludesStaleConnecting(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(24, "stale-conn:2")
+	markProxyUp(24)
+	markProxyDown(24)
+	RegisterProxy(24, "stale-conn:2")
+
+	if len(DegradedProxies()) != 0 {
+		t.Fatal("expected no degraded entries while connecting fresh")
+	}
+
+	proxyHealthMu.Lock()
+	proxyHealthByIndex[24].connectingSince = time.Now().Add(-(connectingStaleAfter + time.Minute))
+	proxyHealthMu.Unlock()
+
+	found := false
+	for _, e := range DegradedProxies() {
+		if e.Index == 24 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected stale-connecting proxy to appear in DegradedProxies")
+	}
+}
+
+func TestConnectingStateResetsOnUpAndDown(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(25, "reset-conn:3")
+
+	// Up clears connecting and connectingSince.
+	markProxyUp(25)
+	proxyHealthMu.Lock()
+	h := proxyHealthByIndex[25]
+	proxyHealthMu.Unlock()
+	if h.connecting || !h.connectingSince.IsZero() {
+		t.Fatal("expected connecting/connectingSince cleared after markProxyUp")
+	}
+
+	// Down also clears them.
+	markProxyDown(25)
+	proxyHealthMu.Lock()
+	h = proxyHealthByIndex[25]
+	proxyHealthMu.Unlock()
+	if h.connecting || !h.connectingSince.IsZero() {
+		t.Fatal("expected connecting/connectingSince cleared after markProxyDown")
+	}
+}
