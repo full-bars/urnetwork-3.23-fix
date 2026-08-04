@@ -6,6 +6,28 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [v3.23.0-fix.26.6] — 2026-08-03
+
+### Fixed
+
+**Fragmented IPv4 packets dropped in `parseIpv4`** (#311): A non-first fragment has no transport header and a first fragment has a truncated payload; both were previously misparsed as if a transport header were present, reading garbage bytes as ports/flags. Any packet with the MF bit set or a non-zero fragment offset is now rejected before transport parsing. DF-only and unfragmented packets are unaffected. Ported from upstream `e05ecee0`.
+
+**SCTP/WebRTC reliability tuning** (#312): `ReceiveMtu` corrected from 4 KiB to 1500 (it's a per-packet demux buffer, not the SCTP receive window); `SctpCwndCAStep` set to 4 MTUs for faster recovery from independent loss on higher-latency paths; new lazy SCTP progress watchdog tears down blackholed associations where ICE consent stays healthy but the data plane is dead. Ported from upstream `aee94774` (settings only). No pion dependency bump needed (`SetSCTPCwndCAStep` verified at vendored v4.2.15).
+
+**`SecurityPolicyStatsCollector` destination cardinality bound** (#314): `resultDestinationCounts` was unbounded — every unique (protocol, ip, port) tuple got a permanent map entry on long-running providers. Now capped at 1024 destinations per result with the final slot as an overflow bucket ("other destinations"); unrecognized result values share one unknown-result bucket; zero-count updates ignored. Ported from upstream `45357960`.
+
+### Added
+
+**`sender_generation_id` proto field** (#313): Added to `ExchangeSignals` to disambiguate a delayed initial `WaitingForSdpOffer` from a newly restarted passive association. Inert until the peer-connection generation-reset logic lands; additive and wire-compatible with peers that don't set it. Ported from upstream `45357960` (field only).
+
+**Proto source drift repaired** (#313): Commit `ccada52` (Jul 11) regenerated `transfer.pb.go`/`frame.pb.go` from a different upstream `.proto` without landing matching source changes; a `make build` regen would have silently deleted `NetworkPeer`, `NetworkPeersReset`, `NetworkPeersUpdate`, and the `TransferNetworkPeers*` enum values (all live, used by `transfer_peer_manager.go`). Definitions reconstructed from the shipping generated code and restored to the `.proto` sources; `protocol/` `make build` is safe to run again.
+
+### Out of scope (deferred)
+
+- ICMP echo path (upstream `e05ecee0`): client-facing, provider relays TCP via SOCKS.
+- Android/cellular P2P (`759a5a7d`, `aee94774` Android bits): mobile-gated; fork lacks `ProviderStreamPolicy`/`DegradedMode` prerequisites.
+- Lifecycle/budget overhaul (`45357960` remainder, `fe8dee32` full perf split): needs a dedicated diff session against the fork's divergent `message_pool.go`/`memory_budget.go`.
+
 ## [v3.23.0-fix.26.5] — 2026-08-02
 
 ### Added
