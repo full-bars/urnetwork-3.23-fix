@@ -116,18 +116,18 @@ type ProxyFailureCounters struct {
 // proxyHealth tracks one proxy's platform-transport liveness for the
 // [health][proxies] report. See docs/design/dead-proxy-health-report.md.
 type proxyHealth struct {
-	address        string
-	currentlyUp    bool
-	everUp         bool
-	connecting     bool      // registered and still trying to establish first WebSocket
+	address         string
+	currentlyUp     bool
+	everUp          bool
+	connecting      bool      // registered and still trying to establish first WebSocket
 	connectingSince time.Time // when connecting was last set true (bounds stale connecting)
-	downSince      time.Time // when currentlyUp last went false (for recovery latency)
-	lastSeenUp     bool      // currentlyUp as of the previous heartbeat (baseline)
-	deadLogged     bool      // a confirmed-dead event has been emitted for this proxy
-	bw             *ProxyBandwidth
-	failures       ProxyFailureCounters
-	lastError      string
-	lastErrorAt    time.Time // when lastError was recorded (so a stale error reads as such)
+	downSince       time.Time // when currentlyUp last went false (for recovery latency)
+	lastSeenUp      bool      // currentlyUp as of the previous heartbeat (baseline)
+	deadLogged      bool      // a confirmed-dead event has been emitted for this proxy
+	bw              *ProxyBandwidth
+	failures        ProxyFailureCounters
+	lastError       string
+	lastErrorAt     time.Time // when lastError was recorded (so a stale error reads as such)
 }
 
 // connectingStaleAfter bounds the connecting state. connecting is cleared only
@@ -136,7 +136,17 @@ type proxyHealth struct {
 // forever. After this duration the state falls back to a degraded tier (computed
 // from the stale downSince), making a hung respawn distinguishable from a fresh
 // one and actionable during an outage.
-const connectingStaleAfter = 15 * time.Minute
+//
+// The 65-minute value matches the provider's deadConfirmDelay
+// (provider/main.go), but the two are independent timers with different origins
+// and scopes: deadConfirmDelay runs from provider start (uptime >= 65m) and
+// gates only the NewlyDead log row; connectingStaleAfter runs from each
+// RegisterProxy call and gates state classification. A never-connected proxy
+// reads as "dead" 65m after its own registration and its NewlyDead row appears
+// only once both conditions hold, so the ~1h staging window promised in
+// docs/Proxy-Management.md is preserved without the two clocks being
+// synchronized. If one constant changes, the other must too.
+const connectingStaleAfter = 65 * time.Minute
 
 // connectingActive reports whether the proxy is still in a fresh connecting
 // window (true) or its connecting state has gone stale (false). A stale
@@ -398,14 +408,18 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 		switch {
 		case h.currentlyUp:
 			up++
+		case h.connectingActive(now):
+			// a re-registered instance reuses the struct and inherits its
+			// predecessor's everUp/downSince, so a fresh `connecting` must win
+			// over `everUp` or a respawning proxy reads as degraded (or dead,
+			// when the inherited downSince is older than 7d) mid-respawn.
+			connecting = append(connecting, formatProxyEntry(idx, h.address))
 		case h.everUp:
 			if !h.downSince.IsZero() && time.Since(h.downSince) >= 7*24*time.Hour {
 				dead = append(dead, formatProxyEntry(idx, h.address))
 			} else {
 				degraded = append(degraded, formatProxyEntry(idx, h.address))
 			}
-		case h.connectingActive(now):
-			connecting = append(connecting, formatProxyEntry(idx, h.address))
 		default:
 			dead = append(dead, formatProxyEntry(idx, h.address))
 		}
@@ -437,10 +451,13 @@ func ProxyHealthHeartbeat(confirmDead bool) ProxyHealthReport {
 		switch {
 		case h.currentlyUp:
 			r.Up++
+		case h.connectingActive(now):
+			// still trying to connect — not degraded or dead. Checked before
+			// everUp for the same reason as ProxyHealthSnapshot: a re-registered
+			// instance inherits its predecessor's everUp/downSince and must not
+			// read as degraded while its fresh connection attempt is running.
 		case h.everUp:
 			r.Degraded = append(r.Degraded, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError, h.lastErrorAt))
-		case h.connectingActive(now):
-			// still trying to connect — not dead
 		default:
 			r.Dead = append(r.Dead, formatProxyErrorEntry(idx, h.address, &h.failures, h.lastError, h.lastErrorAt))
 		}
