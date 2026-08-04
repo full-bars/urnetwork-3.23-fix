@@ -70,7 +70,7 @@ func TestContractWindow24hUsesCoarseRing(t *testing.T) {
 	// anchored to the wall clock so the metrics-level window (which reads
 	// time.Now()) sees the same data.
 	fine := newContractRing(10, 420)
-	coarse := newContractRing(600, 144)
+	coarse := newContractRing(600, 145)
 	base := time.Now().Unix()
 	start := base - 23*600 // last write lands at ~now
 	for i := 0; i < 24; i++ {
@@ -92,7 +92,7 @@ func TestContractWindow24hUsesCoarseRing(t *testing.T) {
 		t.Fatalf("fine 1h window = %d acquired, want 7", a)
 	}
 
-	// Selection logic: window(d) routes long durations to the coarse ring.
+	// Selection logic: window(d) routes >=70 min to the coarse ring.
 	m.mu.Lock()
 	m.fine = fine
 	m.coarse = coarse
@@ -101,29 +101,66 @@ func TestContractWindow24hUsesCoarseRing(t *testing.T) {
 	if a != 24 || d != 0 {
 		t.Fatalf("metrics 24h window = %d acquired / %d denied, want 24/0 (coarse ring not selected)", a, d)
 	}
+	// Exactly 70 minutes also routes to the coarse ring (the fine ring cannot
+	// represent the inclusive cutoff at its own capacity). 7 whole 10-min
+	// buckets plus the straddling bucket at the exact cutoff = 8 writes.
+	a, d = m.window(70 * time.Minute)
+	if a != 8 || d != 0 {
+		t.Fatalf("metrics 70m window = %d acquired / %d denied, want 8/0 (coarse ring not selected)", a, d)
+	}
+}
+
+func TestContractCoarseRingHoldsFull24hSpan(t *testing.T) {
+	// A full 24h span can occupy 145 distinct coarse epochs (144 whole buckets
+	// plus the bucket straddling the cutoff). The ring must have 145 slots so
+	// the inclusive cutoff does not under-count the oldest bucket.
+	coarse := newContractRing(600, 145)
+	base := time.Now().Unix()
+	start := base - 144*600 // 144 buckets back: the oldest whole bucket
+	for i := 0; i < 145; i++ {
+		coarse.add(start+int64(i)*600, true)
+	}
+	a, d := coarse.window(base, 24*time.Hour)
+	if a != 145 || d != 0 {
+		t.Fatalf("coarse 24h window over full span = %d acquired / %d denied, want 145/0", a, d)
+	}
 }
 
 func TestRetireKeepsLifetimeTotals(t *testing.T) {
 	m := &proxyContractMetrics{}
-	m.add(true)
-	m.add(true)
-	m.add(false)
+	m.mu.Lock()
+	gen := m.generation
+	m.mu.Unlock()
+	m.add(true, gen)
+	m.add(true, gen)
+	m.add(false, gen)
 	if a, _ := m.snapshot(); a != 2 {
 		t.Fatalf("lifetime acquired = %d, want 2", a)
 	}
 
-	r := &contractMetricsRegistry{items: map[int]*proxyContractMetrics{7: m}}
-	r.retire(7)
-
-	got := r.get(7)
-	if got == nil {
-		t.Fatal("retire deleted the registry entry")
+	unsub := m.retireIfOwner(gen)
+	if unsub != nil {
+		t.Fatal("expected no stored unsubscribe")
 	}
-	if a, d := got.snapshot(); a != 2 || d != 1 {
+
+	if a, d := m.snapshot(); a != 2 || d != 1 {
 		t.Fatalf("lifetime totals after retire = %d/%d, want 2/1", a, d)
 	}
-	if a, d := got.window(time.Minute); a != 0 || d != 0 {
+	if a, d := m.window(time.Minute); a != 0 || d != 0 {
 		t.Fatalf("window after retire = %d/%d, want 0/0 (rings must be nil)", a, d)
+	}
+
+	// A stale callback (old generation) must not resurrect the rings or move
+	// the lifetime totals of the retired entry.
+	m.add(true, gen)
+	if a, d := m.snapshot(); a != 2 || d != 1 {
+		t.Fatalf("totals after stale add = %d/%d, want 2/1 (obsolete callback recorded)", a, d)
+	}
+	m.mu.Lock()
+	ringsNil := m.fine == nil && m.coarse == nil
+	m.mu.Unlock()
+	if !ringsNil {
+		t.Fatal("stale add resurrected the rings after retire")
 	}
 }
 
@@ -131,13 +168,58 @@ func TestRetireCallsUnsubscribe(t *testing.T) {
 	called := int32(0)
 	m := &proxyContractMetrics{}
 	m.mu.Lock()
+	m.generation++
+	gen := m.generation
 	m.unsubscribe = func() { atomic.AddInt32(&called, 1) }
 	m.mu.Unlock()
 
-	r := &contractMetricsRegistry{items: map[int]*proxyContractMetrics{9: m}}
-	r.retire(9)
+	if unsub := m.retireIfOwner(gen); unsub == nil {
+		t.Fatal("retire did not return the stored unsubscribe")
+	} else {
+		unsub()
+	}
 	if atomic.LoadInt32(&called) != 1 {
 		t.Fatal("retire did not invoke the stored unsubscribe")
+	}
+}
+
+func TestRetireDoesNotKillReplacement(t *testing.T) {
+	// A respawn reuses the stable index: an older spawn's retire must not
+	// release the replacement's rings or invalidate its callbacks.
+	m := &proxyContractMetrics{}
+	m.mu.Lock()
+	m.generation++
+	ownerA := m.generation
+	m.mu.Unlock()
+	m.add(true, ownerA)
+
+	m.mu.Lock()
+	m.generation++
+	ownerB := m.generation
+	m.mu.Unlock()
+	m.add(false, ownerB)
+
+	// A's late retire: not the owner anymore, must leave B intact.
+	if unsub := m.retireIfOwner(ownerA); unsub != nil {
+		t.Fatal("A's retire returned an unsubscribe it does not own")
+	}
+	m.add(true, ownerB)
+	if a, d := m.snapshot(); a != 2 || d != 1 {
+		t.Fatalf("totals after A's late retire = %d/%d, want 2/1", a, d)
+	}
+	m.mu.Lock()
+	ringsIntact := m.fine != nil && m.coarse != nil
+	m.mu.Unlock()
+	if !ringsIntact {
+		t.Fatal("A's late retire released the replacement's rings")
+	}
+
+	// B's own retire works normally afterwards.
+	if unsub := m.retireIfOwner(ownerB); unsub != nil {
+		t.Fatal("B's retire returned a stored unsubscribe unexpectedly")
+	}
+	if a, d := m.window(time.Minute); a != 0 || d != 0 {
+		t.Fatalf("window after B's retire = %d/%d, want 0/0", a, d)
 	}
 }
 
@@ -149,8 +231,11 @@ func TestRegistryConcurrentAddAndRetire(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			m := r.getOrCreate(idx)
+			m.mu.Lock()
+			gen := m.generation
+			m.mu.Unlock()
 			for j := 0; j < 200; j++ {
-				m.add(j%2 == 0)
+				m.add(j%2 == 0, gen)
 				if j%50 == 0 {
 					m.window(15 * time.Minute)
 				}
@@ -161,7 +246,11 @@ func TestRegistryConcurrentAddAndRetire(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			r.retire(idx)
+			m := r.getOrCreate(idx)
+			m.mu.Lock()
+			gen := m.generation
+			m.mu.Unlock()
+			m.retireIfOwner(gen)
 			r.windowTotals(time.Hour)
 		}(i)
 	}
