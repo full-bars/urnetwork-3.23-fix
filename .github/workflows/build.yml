@@ -81,13 +81,15 @@ jobs:
       - name: Check hot-path verbose logging guards
         run: |
           # Tier-1 hot-path files must not grow new unguarded V(n).Inf* calls.
-          # Every unguarded call must carry a format string from the checked-in
-          # allowlist (.github/verbose_log_allowlist.txt) — the sanctioned
-          # Tier-2 per-connection/per-handshake sites that Task 17 deliberately
-          # leaves unguarded. A call whose format string is not allowlisted is a
-          # new per-packet/per-message site and fails the build. Guarding a
-          # sanctioned site is allowed (the allowlist only shrinks). A Tier-2
-          # sweep PR must regenerate the allowlist.
+          # Two invariants:
+          #  1. Every unguarded call must carry a format string from the
+          #     checked-in allowlist (.github/verbose_log_allowlist.txt) - the
+          #     sanctioned Tier-2 per-connection/per-handshake sites that Task 17
+          #     deliberately leaves unguarded.
+          #  2. The allowlist and the guarded sites must be disjoint: an
+          #     allowlisted string used at a guarded site is a blind spot (the
+          #     guard could be silently removed and CI would not notice).
+          # A Tier-2 sweep PR must regenerate the allowlist.
           python3 - <<'PYEOF'
           import re, sys
           sanctioned = set()
@@ -95,19 +97,33 @@ jobs:
               line = line.strip()
               if line and not line.startswith('#'):
                   sanctioned.add(line)
+
+          def formats_of(src, pattern):
+              out = []
+              for m in re.finditer(pattern, src):
+                  fm = re.search(r'"(?:[^"\\]|\\.)*"', src[m.end():], re.DOTALL)
+                  out.append((src.count('\n', 0, m.start()) + 1,
+                              fm.group(0) if fm else '<no format string>'))
+              return out
+
           bad = []
+          shared = []
           for f in ('ip.go', 'transfer.go', 'ip_remote_multi_client.go'):
               src = open(f).read()
-              for m in re.finditer(r'(?m)^[^/]*\.V\(\d\)\.Inf\w*\(', src):
-                  fm = re.search(r'"(?:[^"\\]|\\.)*"', src[m.end():], re.DOTALL)
-                  fmt = fm.group(0) if fm else '<no format string>'
+              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\.V\(\d\)\.Inf\w*\('):
                   if fmt not in sanctioned:
-                      line_no = src.count('\n', 0, m.start()) + 1
                       bad.append(f'{f}:{line_no} {fmt[:90]}')
+              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\bv\.Inf\w*\('):
+                  if fmt in sanctioned:
+                      shared.append(f'{f}:{line_no} {fmt[:90]}')
           if bad:
               print('unguarded V(n).Inf* with a non-allowlisted format string:')
               print('\n'.join(bad))
               print("wrap with 'if v := log.V(n); v.Enabled()' or extend the allowlist (Tier-2 sweep only)")
+              sys.exit(1)
+          if shared:
+              print('allowlisted format string is also used at a guarded site - remove it from the allowlist:')
+              print('\n'.join(shared))
               sys.exit(1)
           PYEOF
 
