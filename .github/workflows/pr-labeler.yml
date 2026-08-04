@@ -1,0 +1,82 @@
+name: PR Labeler
+
+# Labels every PR automatically, along two axes:
+#
+#   area:*  — which part of the fork the PR touches, from changed paths
+#             (mapping lives in .github/labeler.yml)
+#   type    — fix / feat / docs / chore / perf / style / refactor / test / ci,
+#             from the conventional-commit prefix already used in PR titles
+#
+# Plus `upstream-port` when the title mentions upstream, since porting from
+# urnetwork/connect is a recurring category in this fork and there is otherwise
+# no way to filter for it.
+#
+# `needs-fleet-deploy` and `security` are deliberately NOT automated — they are
+# judgement calls, applied by hand.
+#
+# Uses `pull_request` (not `pull_request_target`) on purpose: PRs here come from
+# branches in this repo, and pull_request_target would run with write scope
+# against untrusted head refs for any future fork PR.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  area:
+    name: Area labels (from paths)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true
+
+  type:
+    name: Type label (from title)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive and apply type label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed via env, never interpolated into the script body: a PR title
+          # is attacker-controlled text and `${{ }}` inside `run:` would splice
+          # it straight into the shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Strip an optional scope, e.g. "fix(hub): ..." -> "fix"
+          prefix="${PR_TITLE%%:*}"
+          prefix="${prefix%%(*}"
+          prefix="$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+          case "$prefix" in
+            fix|feat|docs|chore|perf|style|refactor|test|ci) type_label="$prefix" ;;
+            *)
+              echo "No conventional-commit prefix in title; skipping type label."
+              type_label=""
+              ;;
+          esac
+
+          labels=""
+          [ -n "$type_label" ] && labels="$type_label"
+
+          # Porting from upstream is a recurring category worth filtering on.
+          if printf '%s' "$PR_TITLE" | grep -qi 'upstream'; then
+            labels="${labels:+$labels,}upstream-port"
+          fi
+
+          if [ -z "$labels" ]; then
+            echo "Nothing to label."
+            exit 0
+          fi
+
+          echo "Applying: $labels"
+          gh pr edit "$PR_NUM" --repo "$REPO" --add-label "$labels"
