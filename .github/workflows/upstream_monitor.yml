@@ -9,6 +9,8 @@ jobs:
   monitor-critical-files:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Install opencode CLI
         run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Monitor critical file changes
@@ -210,7 +212,8 @@ jobs:
                       "footer": { "text": "URNetwork Upstream Monitor • Critical Files" }
                     }]
                   }')
-                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
                 fi
               fi
             fi
@@ -219,6 +222,8 @@ jobs:
   monitor-all-prs:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Monitor all upstream PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -258,7 +263,8 @@ jobs:
                     "footer": { "text": "URNetwork Upstream Monitor • All PRs" }
                   }]
                 }')
-                curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
               fi
             fi
           done
@@ -266,6 +272,8 @@ jobs:
   monitor-commits:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Install opencode CLI
         run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Monitor upstream commits to main
@@ -449,7 +457,8 @@ jobs:
                       "footer": { "text": "URNetwork Upstream Monitor • Merged" }
                     }]
                   }')
-                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
                 fi
               fi
             fi
@@ -458,6 +467,8 @@ jobs:
   monitor-sibling-drift:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Detect sibling-fork commits to critical files not yet ported
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -538,7 +549,8 @@ jobs:
                       "footer": { "text": "URNetwork Fork Drift Monitor • Port check" }
                     }]
                   }')
-                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
                 fi
               fi
             fi
@@ -547,6 +559,8 @@ jobs:
   monitor-build-releases:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Install opencode CLI
         run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Watch urnetwork/build for new releases
@@ -802,12 +816,15 @@ jobs:
                 "footer": { "text": "URNetwork Upstream Monitor • Build Releases" }
               }]
             }')
-            curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+            echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+            python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
           fi
 
   monitor-sn-repo:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
       - name: Install opencode CLI
         run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
       - name: Watch urfoundation/sn for provider-relevant changes
@@ -984,7 +1001,8 @@ jobs:
                       "footer": { "text": "URNetwork Upstream Monitor • SN Repo" }
                     }]
                   }')
-                  curl -sf -H "Content-Type: application/json" -d "$DISCORD_JSON" "$DISCORD_WEBHOOK"
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
                 fi
               fi
             fi
