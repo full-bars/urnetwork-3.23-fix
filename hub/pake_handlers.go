@@ -263,7 +263,9 @@ func doHubJoin(hubURL string) {
 	ke1Bytes, client, err := pakeClientLoginStep1(password)
 	check(err, "KE1")
 
-	resp, err := http.Post(baseURL+"/api/join/ke1", "application/json",
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	resp, err := httpClient.Post(baseURL+"/api/join/ke1", "application/json",
 		bytes.NewReader(mustJSON(map[string]string{"ke1": hex.EncodeToString(ke1Bytes)})))
 	check(err, "POST KE1")
 	if resp.StatusCode != 200 {
@@ -275,7 +277,10 @@ func doHubJoin(hubURL string) {
 	var ke1Resp struct {
 		Ke2 string `json:"ke2"`
 	}
-	json.NewDecoder(resp.Body).Decode(&ke1Resp)
+	if err := json.NewDecoder(resp.Body).Decode(&ke1Resp); err != nil {
+		resp.Body.Close()
+		check(err, "decode KE2 response")
+	}
 	resp.Body.Close()
 
 	ke2Bytes, err := hex.DecodeString(ke1Resp.Ke2)
@@ -291,7 +296,7 @@ func doHubJoin(hubURL string) {
 		nodeID = host
 	}
 
-	resp, err = http.Post(baseURL+"/api/join/ke3", "application/json",
+	resp, err = httpClient.Post(baseURL+"/api/join/ke3", "application/json",
 		bytes.NewReader(mustJSON(map[string]string{
 			"ke1":     hex.EncodeToString(ke1Bytes),
 			"ke3":     hex.EncodeToString(ke3Bytes),
