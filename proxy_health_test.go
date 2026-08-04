@@ -695,6 +695,61 @@ func TestNewlyDeadFiresForNeverUpProxyAfterConnectingStale(t *testing.T) {
 	if r.NewlyDead[0].Index != 61 {
 		t.Fatalf("NewlyDead index = %d, want 61", r.NewlyDead[0].Index)
 	}
+
+	// deadLogged pins the event: a later heartbeat must not re-emit it.
+	r = ProxyHealthHeartbeat(true)
+	if len(r.NewlyDead) != 0 {
+		t.Fatalf("expected no repeated NewlyDead event, got %+v", r.NewlyDead)
+	}
+}
+
+func TestRespawnedEverUpProxyNotDegradedWhileConnecting(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(62, "respawn-everup:1")
+	markProxyUp(62)
+	markProxyDown(62)
+	RegisterProxy(62, "respawn-everup:1")
+
+	// Previously up, now respawning: the inherited everUp must not classify it
+	// as degraded while its fresh connection attempt is still running.
+	r := ProxyHealthHeartbeat(true)
+	want := "proxy[62] (respawn-everup:1)"
+	for _, e := range r.Degraded {
+		if e == want {
+			t.Fatalf("respawned proxy reported degraded while connecting: %q", e)
+		}
+	}
+	for _, e := range r.Dead {
+		if e == want {
+			t.Fatalf("respawned proxy reported dead while connecting: %q", e)
+		}
+	}
+	if r.Up != 0 {
+		t.Fatalf("Up = %d, want 0", r.Up)
+	}
+
+	// Same precedence applies to the snapshot: it must list the proxy as
+	// connecting, not dead or degraded.
+	_, dead, degraded, _, connecting := ProxyHealthSnapshot()
+	for _, e := range dead {
+		if e == want {
+			t.Fatalf("snapshot listed respawning proxy as dead: %q", e)
+		}
+	}
+	for _, e := range degraded {
+		if e == want {
+			t.Fatalf("snapshot listed respawning proxy as degraded: %q", e)
+		}
+	}
+	found := false
+	for _, e := range connecting {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("snapshot did not list respawning proxy as connecting: %v", connecting)
+	}
 }
 
 // TestConnectingStaleAfterIsOneHourlyPulseCycle pins the exact constant value
