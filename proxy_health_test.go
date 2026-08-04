@@ -382,3 +382,60 @@ func TestIsDegraded_FalseWhileRespawnConnecting(t *testing.T) {
 		t.Fatal("expected respawn:1 to not be degraded while the respawned instance is still connecting")
 	}
 }
+
+func TestDegradedProxiesExcludesConnecting(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(20, "degraded-conn:1")
+	markProxyUp(20)
+	markProxyDown(20)
+
+	found := false
+	for _, e := range DegradedProxies() {
+		if e.Index == 20 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected index 20 to appear in DegradedProxies before respawn")
+	}
+
+	// Respawn at the same index: RegisterProxy sets connecting=true and reuses
+	// the struct, so the stale everUp/downSince must not make it read degraded.
+	RegisterProxy(20, "degraded-conn:1")
+	for _, e := range DegradedProxies() {
+		if e.Index == 20 {
+			t.Fatal("expected index 20 to be excluded from DegradedProxies while connecting")
+		}
+	}
+}
+
+func TestProxyHealthByAddressReportsConnectingOnRespawn(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(21, "respawn-addr:2")
+	markProxyUp(21)
+	markProxyDown(21)
+
+	status := ProxyHealthByAddress()
+	if s, ok := status["respawn-addr:2"]; !ok || s.Health == "connecting" || s.Health == "up" || s.Health == "dead" {
+		t.Fatalf("expected a degraded tier before respawn, got %q", s.Health)
+	}
+
+	RegisterProxy(21, "respawn-addr:2")
+	status = ProxyHealthByAddress()
+	if s, ok := status["respawn-addr:2"]; !ok || s.Health != "connecting" {
+		t.Fatalf("expected connecting after respawn, got %q", s.Health)
+	}
+}
+
+func TestProxyHealthByAddressUpWinsOverConnecting(t *testing.T) {
+	resetProxyHealthForTest()
+	RegisterProxy(22, "up-wins:3")
+	markProxyUp(22)
+
+	// Re-register while still up: connecting=true, but currentlyUp must win.
+	RegisterProxy(22, "up-wins:3")
+	status := ProxyHealthByAddress()
+	if s, ok := status["up-wins:3"]; !ok || s.Health != "up" {
+		t.Fatalf("expected up to win over connecting, got %q", s.Health)
+	}
+}
