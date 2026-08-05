@@ -1996,6 +1996,20 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 	}
 }
 
+// resendBackoff computes the multiplicative resend timeout for an item that
+// has been sent sendCount times. The first transmission (sendCount == 1) uses
+// the plain scaled RTT; each repeated resend shifts it left by one more bit,
+// capped at maxResendInterval so a large shift cannot overflow. Ported from
+// upstream (urnetwork/connect): when acks are delayed (not lost) by queueing,
+// a flat timeout re-sends the whole in-flight window every interval, and the
+// duplicates feed the congestion that delayed the acks in the first place.
+func resendBackoff(scaledRtt time.Duration, sendCount int, maxResendInterval time.Duration) time.Duration {
+	if shift := uint(min(sendCount-1, 16)); 0 < shift {
+		return min(scaledRtt<<shift, maxResendInterval)
+	}
+	return scaledRtt
+}
+
 func (self *SendSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2189,13 +2203,16 @@ func (self *SendSequence) Run() {
 					self.resendQueue.Add(item)
 					continue
 				}
-				var itemResendTimeout time.Duration
-				if isBackendDegraded() {
-					shift := uint(min(item.sendCount, 6))
-					itemResendTimeout = self.rttWindow.ScaledRtt() << shift
-				} else {
-					itemResendTimeout = self.rttWindow.ScaledRtt()
-				}
+				// back off the resend timeout multiplicatively with each resend
+				// of the same item, up to `MaxResendInterval`. When acks are
+				// delayed (not lost) by queueing, a flat timeout re-sends the
+				// whole in-flight window every interval, and the duplicates
+				// feed the congestion that delayed the acks in the first place.
+				itemResendTimeout := resendBackoff(
+					self.rttWindow.ScaledRtt(),
+					item.sendCount,
+					self.sendBufferSettings.MaxResendInterval,
+				)
 				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
