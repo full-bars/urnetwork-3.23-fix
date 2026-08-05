@@ -77,6 +77,9 @@ type ContractKey struct {
 	EncryptionCompanion bool
 }
 
+// Legacy returns the key reduced to its destination, discarding the
+// intermediary, companion, force-stream, and encryption fields. The result
+// keys the same dimension as contracts created before those fields existed.
 func (self ContractKey) Legacy() ContractKey {
 	return ContractKey{
 		Destination: self.Destination,
@@ -110,6 +113,9 @@ func newContractStatusCallbackWorker(ctx context.Context, callback ContractStatu
 	return worker
 }
 
+// run is the worker goroutine loop: it delivers each queued contract status to
+// the callback, wrapping each invocation in HandleError, and exits when the
+// worker's context is canceled, leaving any still-queued statuses undelivered.
 func (self *contractStatusCallbackWorker) run() {
 	for {
 		select {
@@ -126,6 +132,11 @@ func (self *contractStatusCallbackWorker) run() {
 	}
 }
 
+// Dispatch queues a contract status for delivery on the worker goroutine,
+// blocking while the channel is full. The callback runs on the worker's
+// goroutine, never on the caller's; once the worker's context is canceled a
+// status is never delivered (an in-flight send may still enqueue it, but the
+// worker drops it).
 func (self *contractStatusCallbackWorker) Dispatch(contractStatus *ContractStatus) {
 	select {
 	case <-self.ctx.Done():
@@ -133,6 +144,8 @@ func (self *contractStatusCallbackWorker) Dispatch(contractStatus *ContractStatu
 	}
 }
 
+// Close cancels the worker's context, stopping its goroutine. Any statuses
+// still queued are not delivered.
 func (self *contractStatusCallbackWorker) Close() {
 	self.cancel()
 }
@@ -159,6 +172,10 @@ func NewContractManagerStats() *ContractManagerStats {
 	}
 }
 
+// ContractOpenByteCount returns the sum of the byte counts allotted to the
+// contracts currently tracked as open. It performs no synchronization of its
+// own, so call it on a snapshot taken from LocalStats rather than on a live
+// manager's stats.
 func (self *ContractManagerStats) ContractOpenByteCount() ByteCount {
 	netContractOpenByteCount := ByteCount(0)
 	for _, contractOpenByteCount := range self.ContractOpenByteCounts {
@@ -262,6 +279,10 @@ type ContractManagerSettings struct {
 	ContractStatsEpoch time.Duration
 }
 
+// ContractsEnabled reports whether the network contracts-enablement event time
+// has passed. While it has not, contracts are optional: senders may send
+// without one and receivers accept traffic without one (see SendNoContract and
+// ReceiveNoContract). A zero event time counts as enabled.
 func (self *ContractManagerSettings) ContractsEnabled() bool {
 	return self.NetworkEventTimeEnableContracts.Before(time.Now())
 }
@@ -354,6 +375,13 @@ func NewContractManager(
 	return contractManager
 }
 
+// providePing is the provide-ping loop started by NewContractManager for
+// non-control clients. It periodically sends a ProvidePing control frame —
+// keeping the control connection active so timeouts fast-track — and waits for
+// each ack before the next ping. It sleeps a uniform interval with mean
+// ProvidePingTimeout (0 disables pinging entirely), only pings while providing
+// is enabled and not paused (waking on provideMonitor notifications), and
+// exits when the manager context is canceled.
 func (self *ContractManager) providePing() {
 	if self.settings.ProvidePingTimeout == 0 {
 		return
@@ -517,10 +545,23 @@ func (self *ContractManager) expireQueuedContracts() {
 	}
 }
 
+// StandardContractTransferByteCount returns the settings value for a fully
+// scaled-up contract's byte allowance, the size contractByteCount converges
+// to.
 func (self *ContractManager) StandardContractTransferByteCount() ByteCount {
 	return self.settings.StandardContractTransferByteCount
 }
 
+// AddContractStatusCallback registers a callback for contract status events
+// and returns the unsubscribe function. The caller must retain the returned
+// function and invoke it on teardown — discarding it leaks the registration:
+// the callback keeps receiving events, and its worker goroutine keeps
+// running, until the manager's context is canceled (bounded by the manager's
+// lifetime, not a process-lifetime leak). Each event is one ContractStatus
+// for one contract result: acquired (Error nil, Premium taken from the stored
+// contract's priority), rejected, invalid, or denied (Error set). The
+// callback runs on its own goroutine, never on the caller's, and receives
+// statuses in order, buffered up to the sequence buffer size.
 func (self *ContractManager) AddContractStatusCallback(contractStatusCallback ContractStatusFunction) func() {
 	worker := newContractStatusCallbackWorker(self.ctx, contractStatusCallback, self.settings.SequenceBufferSize)
 	callbackId := self.contractStatusCallbacks.Add(worker)
@@ -548,6 +589,13 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 }
 */
 
+// HandleControlFrame handles a control frame from the platform's contract
+// result path. It processes TransferCreateContractResult frames: each parsed
+// contract is queued via addContract and reported to the contract-status
+// callbacks as acquired (with Premium from the stored priority), rejected, or
+// invalid; each platform denial is reported as a denied status. Any other
+// message type is ignored. The return value is always nil; per-contract
+// errors are reported through the status callbacks instead.
 func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *protocol.Frame) error {
 	switch frame.MessageType {
 	case protocol.MessageType_TransferCreateContractResult:
@@ -660,6 +708,9 @@ func (self *ContractManager) parseControlFrame(frame *protocol.Frame) (
 	return
 }
 
+// GetProvideSecretKeys returns a copy of the mode-to-secret-key map. Adding or
+// removing entries in the result does not affect the manager; the key byte
+// slices themselves are shared with the manager, so they must not be mutated.
 func (self *ContractManager) GetProvideSecretKeys() map[protocol.ProvideMode][]byte {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -667,6 +718,10 @@ func (self *ContractManager) GetProvideSecretKeys() map[protocol.ProvideMode][]b
 	return maps.Clone(self.provideSecretKeys)
 }
 
+// LoadProvideSecretKeys merges persisted provide secret keys into the retained
+// set, overwriting per mode and leaving modes absent from the argument intact.
+// Keys are retained until process restart so reconnecting clients can reuse
+// their contracts without timing out their send sequence.
 func (self *ContractManager) LoadProvideSecretKeys(provideSecretKeys map[protocol.ProvideMode][]byte) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -676,6 +731,9 @@ func (self *ContractManager) LoadProvideSecretKeys(provideSecretKeys map[protoco
 	}
 }
 
+// InitProvideSecretKeys ensures every ProvideMode has a secret key, generating
+// a fresh 32-byte key for any mode that has none. Existing keys are retained.
+// It panics if the OS random source fails.
 func (self *ContractManager) InitProvideSecretKeys() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -695,6 +753,13 @@ func (self *ContractManager) InitProvideSecretKeys() {
 	}
 }
 
+// SetProvidePaused pauses or resumes providing. While paused, the public
+// provide modes stop being advertised; Stream (return traffic) and Network
+// keep working (see provideFrame and Verify). It returns true only when the
+// state actually changed; on a change it wakes waiters on the provide monitor
+// and, when the provide frame can be built, sends it over the in-band control
+// sync. The manager mutex makes the change visible to concurrent readers such
+// as providePing and Verify.
 func (self *ContractManager) SetProvidePaused(providePaused bool) bool {
 	changed := false
 	func() {
@@ -720,6 +785,8 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) bool {
 	return false
 }
 
+// IsProvidePaused reports whether providing is currently paused. It may be
+// called concurrently with SetProvidePaused.
 func (self *ContractManager) IsProvidePaused() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -727,6 +794,12 @@ func (self *ContractManager) IsProvidePaused() bool {
 	return self.providePaused
 }
 
+// provideFrame builds the Provide frame advertising the current provide keys.
+// When paused, only the Stream and Network mode keys are advertised (return
+// traffic and network peers keep working while public and friends-and-family
+// stop); otherwise every enabled mode that has a key is advertised, and
+// enabled modes missing a key are omitted with a log. On frame-encoding
+// failure it returns nil and the error.
 func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -782,6 +855,10 @@ func (self *ContractManager) provideFrame() (*protocol.Frame, error) {
 	return provideFrame, nil
 }
 
+// SetProvideModesWithReturnTraffic sets the provide modes with
+// ProvideMode_Stream forced on, so return traffic is allowed (clients must
+// enable Stream to receive replies), and registers the change over the
+// in-band control with a no-op ack callback.
 func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
 	self.SetProvideModesWithReturnTrafficWithAckCallback(provideModes, func(err error) {})
 }
@@ -794,6 +871,10 @@ func (self *ContractManager) SetProvideModesWithReturnTrafficWithAckCallback(pro
 	self.SetProvideModesWithAckCallback(updatedProvideModes, ackCallback)
 }
 
+// SetProvideModes replaces the active provide modes with the given set
+// (missing secret keys are generated) and registers the change over the
+// in-band control with a no-op ack callback. Modes not in the map are no
+// longer provided.
 func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMode]bool) {
 	self.SetProvideModesWithAckCallback(provideModes, func(err error) {})
 }
@@ -825,6 +906,14 @@ func (self *ContractManager) applyProvideModes(provideModes map[protocol.Provide
 	self.provideMonitor.NotifyAll()
 }
 
+// SetProvideModesWithAckCallback replaces the active provide modes and sends
+// the updated provide frame over the in-band control sync, invoking
+// ackCallback with the send result. The callback fires once per call, not per
+// contract or frame: synchronously with the error when the provide frame
+// cannot be built, otherwise asynchronously when the control send completes.
+// An in-band ack means the frame was delivered, not that the platform has
+// committed the secret — use the out-of-band variant when registration must
+// be confirmed.
 func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[protocol.ProvideMode]bool, ackCallback func(err error)) {
 	self.applyProvideModes(provideModes)
 	if provideFrame, err := self.provideFrame(); err != nil {
@@ -854,6 +943,10 @@ func (self *ContractManager) SetProvideModesWithReturnTrafficWithOobAckCallback(
 	self.SetProvideModesWithOobAckCallback(updatedProvideModes, ackCallback)
 }
 
+// SetProvideModesWithOobAckCallback is like SetProvideModesWithAckCallback but
+// registers the provide over the out-of-band control sync, where the ack means
+// the platform has committed the provide secret rather than merely delivered
+// the message.
 func (self *ContractManager) SetProvideModesWithOobAckCallback(provideModes map[protocol.ProvideMode]bool, ackCallback func(err error)) {
 	self.applyProvideModes(provideModes)
 	if provideFrame, err := self.provideFrame(); err != nil {
@@ -868,6 +961,8 @@ func (self *ContractManager) SetProvideModesWithOobAckCallback(provideModes map[
 	}
 }
 
+// GetProvideModes returns a copy of the active provide modes, so the caller
+// may mutate the result without affecting the manager.
 func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -875,6 +970,12 @@ func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 	return maps.Clone(self.provideModes)
 }
 
+// Verify reports whether a contract presented by a remote client is
+// trustworthy: the mode must be enabled (unless paused, which keeps Stream and
+// Network valid), a secret key must exist for it, and the stored-contract HMAC
+// must match under either the legacy appended-HMAC format or the standard pure
+// HMAC format. This is the provider-side check applied before accepting a
+// contract.
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -909,6 +1010,9 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	return hmac.Equal(storedContractHmac, expectedHmac)
 }
 
+// GetProvideSecretKey returns the secret key for a provide mode. The second
+// result is false when the mode is not enabled or no key has been generated
+// for it.
 func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -921,6 +1025,8 @@ func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMod
 	return provideSecretKey, ok
 }
 
+// RequireProvideSecretKey returns the secret key for a provide mode, panicking
+// when the mode is not enabled or has no key. It never returns an error.
 func (self *ContractManager) RequireProvideSecretKey(provideMode protocol.ProvideMode) []byte {
 	secretKey, ok := self.GetProvideSecretKey(provideMode)
 	if !ok {
@@ -929,6 +1035,9 @@ func (self *ContractManager) RequireProvideSecretKey(provideMode protocol.Provid
 	return secretKey
 }
 
+// AddNoContractPeer registers a peer client id as a no-contract peer: traffic
+// to and from it is allowed without a contract. No-contract is mutual — both
+// sides must register each other.
 func (self *ContractManager) AddNoContractPeer(clientId Id) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -937,6 +1046,10 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 	self.receiveNoContractClientIds[clientId] = true
 }
 
+// SendNoContract reports whether a send to destinationId may proceed without
+// a contract: true for registered no-contract peers (see AddNoContractPeer)
+// and, while contracts are not yet enabled network-wide, true for everyone;
+// false otherwise.
 func (self *ContractManager) SendNoContract(destinationId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -952,6 +1065,10 @@ func (self *ContractManager) SendNoContract(destinationId Id) bool {
 	return false
 }
 
+// ReceiveNoContract reports whether traffic from sourceId may be accepted
+// without a contract: true for registered no-contract peers (see
+// AddNoContractPeer) and, while contracts are not yet enabled network-wide,
+// true for everyone; false otherwise.
 func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -967,6 +1084,12 @@ func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	return false
 }
 
+// TakeContract takes a queued contract for the key, consuming it from the
+// queue. A negative timeout waits indefinitely, a zero timeout polls once
+// without waiting, and a positive timeout bounds the wait; in all cases a nil
+// result means no contract arrived before the deadline or the context was
+// canceled (expired contracts are closed on the way out). On success the
+// contract is recorded in the local open-contract stats.
 func (self *ContractManager) TakeContract(
 	ctx context.Context,
 	contractKey ContractKey,
@@ -1033,6 +1156,12 @@ func (self *ContractManager) TakeContract(
 	}
 }
 
+// addContract validates a contract received from the platform and queues it
+// for the contract key. It fails when the stored contract bytes do not parse
+// or when the stored contract's source id is not this client's id. On success
+// the contract is added to the key's queue: an entry for the same contract id
+// replaces the queued one and, when the queue tracks used ids, an already-used
+// id is dropped instead.
 func (self *ContractManager) addContract(contractKey ContractKey, contract *protocol.Contract) error {
 	storedContract := &protocol.StoredContract{}
 	err := ProtoUnmarshal(contract.StoredContractBytes, storedContract)
@@ -1055,6 +1184,16 @@ func (self *ContractManager) addContract(contractKey ContractKey, contract *prot
 	return nil
 }
 
+// CreateContract requests a new contract for the key from the platform over
+// the out-of-band control. The requested byte count is contractByteCount at
+// the given sequence index, bounded below by minByteCount. The request is
+// asynchronous: the result arrives later through HandleControlFrame, which
+// either queues the contract for TakeContract or reports a denial to the
+// contract-status callbacks; this function itself returns nothing and only
+// logs a frame-build failure. Each round-trip feeds the backend degradation
+// state (noteBackendSuccess on success, noteBackendFailure otherwise); while
+// the backend is degraded the send sequence skips issuing new requests (see
+// isBackendDegraded).
 func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeqIndex uint64, minByteCount ByteCount) {
 	// look at destinationContracts and last contract to get previous contract id
 	self.openContractQueue(contractKey)
@@ -1109,6 +1248,11 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 	)
 }
 
+// contractByteCount returns the byte count to request for the contract at the
+// given sequence index: a lerp from the initial to the standard byte count
+// over the first ContractTransferByteSeqScale contracts, then the standard
+// count, never below minByteCount. A zero scale jumps straight to the
+// standard count.
 func (self *ContractManager) contractByteCount(contractSeqIndex uint64, minByteCount ByteCount) ByteCount {
 	scale := self.settings.ContractTransferByteSeqScale
 	if scale == 0 {
@@ -1127,6 +1271,11 @@ func (self *ContractManager) contractByteCount(contractSeqIndex uint64, minByteC
 	return max(targetByteCount, minByteCount)
 }
 
+// CheckpointContract reports acked and unacked byte counts for an open
+// contract without closing it: the wire contract remains open so the sender
+// may keep using it (used by the receive sequence when a contract may be
+// reused). The local open-contract stats are left intact; only the per-contract
+// stats entry is released.
 func (self *ContractManager) CheckpointContract(
 	contractId Id,
 	ackedByteCount ByteCount,
@@ -1135,6 +1284,11 @@ func (self *ContractManager) CheckpointContract(
 	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
 }
 
+// CloseContract closes an open contract, finalizing the local open-contract
+// stats (close count and acked byte total) and sending a CloseContract frame
+// with the acked and unacked byte counts. When the close send succeeds and
+// the contract was opened through the manager, its id is released from the
+// queue's used set, so a fresh contract with the same id can be queued again.
 func (self *ContractManager) CloseContract(
 	contractId Id,
 	ackedByteCount ByteCount,
@@ -1143,6 +1297,16 @@ func (self *ContractManager) CloseContract(
 	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
 }
 
+// CloseContractWithCheckpoint is the shared implementation behind
+// CloseContract and CheckpointContract. It sends a CloseContract frame (with
+// the Checkpoint flag; a frame-build failure is only logged) and always
+// releases the per-contract stats entry. With checkpoint false it also
+// finalizes the open-contract stats — close count, acked byte total, and
+// utilization — and, once the close send succeeds, releases the contract id
+// from the queue's used set; with checkpoint true the open stats stay
+// untouched because the wire contract may be reused by a new sequence.
+// Utilization (acked over allotted) is logged for contracts opened through the
+// manager.
 func (self *ContractManager) CloseContractWithCheckpoint(
 	contractId Id,
 	ackedByteCount ByteCount,
@@ -1240,6 +1404,9 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 	})
 }
 
+// LocalStats returns a snapshot of the manager's accumulated contract stats
+// (open counts, open byte counts and keys, close byte counts) with the maps
+// copied, safe to read while contract activity continues.
 func (self *ContractManager) LocalStats() *ContractManagerStats {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1255,6 +1422,8 @@ func (self *ContractManager) LocalStats() *ContractManagerStats {
 	}
 }
 
+// ResetLocalStats clears the accumulated local contract stats, starting fresh.
+// It is safe to call concurrently with contract activity.
 func (self *ContractManager) ResetLocalStats() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1262,6 +1431,10 @@ func (self *ContractManager) ResetLocalStats() {
 	self.localStats = NewContractManagerStats()
 }
 
+// Flush closes every queued, not-yet-taken contract across all destinations
+// and returns their ids, dropping destination queues that become done.
+// resetUsedContractIds additionally clears each queue's recorded used ids.
+// This is the manager-level teardown used on client shutdown.
 func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	// close queued contracts
 	contracts := func() []*protocol.Contract {
@@ -1285,6 +1458,11 @@ func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	return self.closeContracts(contracts)
 }
 
+// FlushContractQueue closes the queued contracts for one contract key and
+// returns their ids, force-removing the key's queue from the destination map
+// even if it is not done. This is the per-sequence exit-flush: it releases the
+// escrow of contracts a closing sequence never took. resetUsedContractIds also
+// clears the queue's recorded used ids.
 func (self *ContractManager) FlushContractQueue(contractKey ContractKey, resetUsedContractIds bool) []Id {
 	contractQueue := self.openContractQueue(contractKey)
 	defer self.closeContractQueueWithForceRemove(contractKey, true)
@@ -1294,6 +1472,9 @@ func (self *ContractManager) FlushContractQueue(contractKey ContractKey, resetUs
 	return self.closeContracts(contracts)
 }
 
+// closeContracts closes each contract with zero acked and unacked byte counts
+// and returns their ids. Contracts whose stored bytes do not parse to a
+// contract id are skipped.
 func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id {
 	contractIds := []Id{}
 	for _, contract := range contracts {
@@ -1308,6 +1489,11 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 	return contractIds
 }
 
+// openContractQueue returns the contract queue for the key, creating it in the
+// destination map if absent, and opens a reference on it (incrementing its
+// open count) so the queue is not considered done while the caller holds it.
+// Each call must be paired with closeContractQueue (or the force-remove
+// variant).
 func (self *ContractManager) openContractQueue(contractKey ContractKey) *contractQueue {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1322,10 +1508,17 @@ func (self *ContractManager) openContractQueue(contractKey ContractKey) *contrac
 	return contractQueue
 }
 
+// closeContractQueue releases a reference on the key's contract queue and
+// removes the queue from the destination map when it is done (no open
+// references, no queued or used contracts). Pair with openContractQueue.
 func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
 	self.closeContractQueueWithForceRemove(contractKey, false)
 }
 
+// closeContractQueueWithForceRemove releases a reference on the key's contract
+// queue and, when forceRemove is set, removes it from the destination map
+// regardless of its done state. Without forceRemove it behaves like
+// closeContractQueue.
 func (self *ContractManager) closeContractQueueWithForceRemove(contractKey ContractKey, forceRemove bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1371,6 +1564,8 @@ func newContractQueue(log Logger, trackUsedContracts bool) *contractQueue {
 	}
 }
 
+// Open marks that a caller holds the queue open, incrementing its open count.
+// A queue with a nonzero open count is never considered done.
 func (self *contractQueue) Open() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1378,6 +1573,7 @@ func (self *contractQueue) Open() {
 	self.openCount += 1
 }
 
+// Close marks that a caller released the queue, decrementing its open count.
 func (self *contractQueue) Close() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1425,6 +1621,11 @@ func (self *contractQueue) Expire(minEnqueueTime time.Time) []*protocol.Contract
 	return self.expireWithLock(minEnqueueTime)
 }
 
+// Add queues a contract (with its parsed stored contract) for later Poll or
+// Flush. It fails only when the stored contract's id cannot be parsed. A
+// contract whose id is already queued replaces the queued entry and refreshes
+// its enqueue time. When the queue tracks used ids, a contract whose id was
+// already recorded as used is dropped instead.
 func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) error {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1453,6 +1654,10 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 	return nil
 }
 
+// RemoveUsedContract forgets a previously recorded used contract id so a later
+// contract with the same id is accepted again. It is called from the close
+// path once a contract's close is acknowledged; it has no effect when the
+// queue does not track used ids.
 func (self *contractQueue) RemoveUsedContract(contractId Id) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1460,6 +1665,8 @@ func (self *contractQueue) RemoveUsedContract(contractId Id) {
 	delete(self.usedContractIds, contractId)
 }
 
+// Flush removes and returns all queued contracts, emptying the queue. When
+// removeUsedContractIds is set, the recorded used ids are cleared as well.
 func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contract {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1476,6 +1683,8 @@ func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contrac
 	return contracts
 }
 
+// IsDone reports whether the queue can be dropped: no open references, no
+// queued contracts, and no recorded used ids.
 func (self *contractQueue) IsDone() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1487,6 +1696,9 @@ func (self *contractQueue) IsDone() bool {
 	return 0 == len(self.contracts) && 0 == len(self.usedContractIds)
 }
 
+// UsedContractIdBytes returns the ids recorded as used, one byte slice per id.
+// Only populated when the queue tracks used ids; the manager's queues are
+// created without tracking, so for them this is always empty.
 func (self *contractQueue) UsedContractIdBytes() [][]byte {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()

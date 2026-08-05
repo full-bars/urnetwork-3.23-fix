@@ -52,6 +52,9 @@ type contractStatsEntry struct {
 	emitted              bool
 }
 
+// updateUsedByteCount stores the contract's used byte count atomically. The
+// owning sequence calls it on debit/ack; the epoch worker reads the value when
+// snapshotting, so no lock is shared between them.
 func (self *contractStatsEntry) updateUsedByteCount(usedByteCount ByteCount) {
 	self.usedByteCount.Store(int64(usedByteCount))
 }
@@ -114,6 +117,13 @@ func (self *ContractManager) AddContractStatsCallback(contractStatsCallback Cont
 	}
 }
 
+// runContractStats is the epoch worker started by AddContractStatsCallback on
+// the first registration. Every ContractStatsEpoch it snapshots the open
+// contract entries under contractStatsLock, emitting an event for each entry
+// not yet emitted, whose used count changed since the previous epoch, or that
+// has closed (the final event for a closed entry has Open false, after which
+// the entry is removed), and hands the batch to the registered callbacks. It
+// runs until the manager context is canceled.
 func (self *ContractManager) runContractStats() {
 	for {
 		select {
