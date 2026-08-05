@@ -325,7 +325,7 @@ func (self *successClientOob) SendControl(frames []*protocol.Frame, callback Oob
 
 // TestCreateContract_OobFailureRecordsBackendFailure is a regression test for
 // the CreateContract change that replaced the inlined
-// lastBackendFailNano.Store/consecutiveBackendFails.Add pair with a call to
+// inlined failure-recording pair with a call to
 // noteBackendFailure(): a failed contract OOB round-trip must still register
 // as a backend failure through the shared helper.
 func TestCreateContract_OobFailureRecordsBackendFailure(t *testing.T) {
@@ -344,17 +344,17 @@ func TestCreateContract_OobFailureRecordsBackendFailure(t *testing.T) {
 
 	contractManager.CreateContract(contractKey, 0, 0)
 
-	if got := consecutiveBackendFails.Load(); got != 1 {
+	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after one failed CreateContract, want 1", got)
 	}
-	if lastBackendFailNano.Load() == 0 {
-		t.Fatal("lastBackendFailNano not set after a failed CreateContract")
+	if backendFail.Load().lastNano == 0 {
+		t.Fatal("backend failure timestamp not set after a failed CreateContract")
 	}
 }
 
 // TestCreateContract_OobSuccessClearsBackendFailure is a regression test for
 // the CreateContract change that replaced the inlined
-// lastBackendFailNano.Store(0)/consecutiveBackendFails.Store(0) pair with a
+// inlined clear pair with a
 // call to noteBackendSuccess(): a successful contract OOB round-trip must
 // still clear a pre-existing failure streak through the shared helper.
 func TestCreateContract_OobSuccessClearsBackendFailure(t *testing.T) {
@@ -378,11 +378,11 @@ func TestCreateContract_OobSuccessClearsBackendFailure(t *testing.T) {
 
 	contractManager.CreateContract(contractKey, 0, 0)
 
-	if got := consecutiveBackendFails.Load(); got != 0 {
+	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after a successful CreateContract, want 0", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
-		t.Fatal("lastBackendFailNano not cleared after a successful CreateContract")
+	if backendFail.Load().lastNano != 0 {
+		t.Fatal("backend failure timestamp not cleared after a successful CreateContract")
 	}
 }
 
@@ -408,10 +408,10 @@ func TestCreateContract_ClientDoneSkipsFailureRecording(t *testing.T) {
 
 	client.ContractManager().CreateContract(contractKey, 0, 0)
 
-	if got := consecutiveBackendFails.Load(); got != 0 {
+	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after CreateContract on a closed client, want 0 (client.Done() carve-out should skip recording)", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
-		t.Fatal("lastBackendFailNano set after CreateContract on a closed client; the client.Done() carve-out should skip recording")
+	if backendFail.Load().lastNano != 0 {
+		t.Fatal("backend failure timestamp set after CreateContract on a closed client; the client.Done() carve-out should skip recording")
 	}
 }

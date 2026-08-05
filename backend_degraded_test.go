@@ -386,7 +386,7 @@ func TestBackendDegraded_JustInsideWindowIsDegraded(t *testing.T) {
 	for i := 0; i < backendDegradedFailThreshold; i++ {
 		noteBackendFailure()
 	}
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow + 500*time.Millisecond).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow - 500*time.Millisecond)
 
 	if !isBackendDegraded() {
 		t.Fatal("not degraded with the last failure just inside the recency window")
@@ -403,7 +403,7 @@ func TestBackendDegraded_JustOutsideWindowIsNotDegraded(t *testing.T) {
 	for i := 0; i < backendDegradedFailThreshold; i++ {
 		noteBackendFailure()
 	}
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow - 500*time.Millisecond).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow + 500*time.Millisecond)
 
 	if isBackendDegraded() {
 		t.Fatal("still degraded with the last failure just outside the recency window")
@@ -423,11 +423,11 @@ func TestNoteBackendFailure_GapAtWindowResetsStreak(t *testing.T) {
 	}
 	// Put the last failure just far enough in the past that any elapsed time
 	// through this call is >= the window.
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow)
 
 	noteBackendFailure()
 
-	if got := consecutiveBackendFails.Load(); got != 1 {
+	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after a gap of exactly the window, want 1 (streak should reset)", got)
 	}
 }
@@ -439,11 +439,11 @@ func TestNoteBackendFailure_GapJustInsideWindowExtendsStreak(t *testing.T) {
 	defer resetBackendDegraded()
 
 	noteBackendFailure()
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow + 500*time.Millisecond).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow - 500*time.Millisecond)
 
 	noteBackendFailure()
 
-	if got := consecutiveBackendFails.Load(); got != 2 {
+	if got := backendFails(); got != 2 {
 		t.Fatalf("consecutive failures = %d after a gap just inside the window, want 2 (streak should extend)", got)
 	}
 }
@@ -459,12 +459,12 @@ func TestNoteBackendFailure_FirstFailureFromCleanState(t *testing.T) {
 	noteBackendFailure()
 	after := time.Now().UnixNano()
 
-	if got := consecutiveBackendFails.Load(); got != 1 {
+	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after the first failure, want 1", got)
 	}
-	ts := lastBackendFailNano.Load()
+	ts := backendFail.Load().lastNano
 	if ts < before || after < ts {
-		t.Fatalf("lastBackendFailNano = %d, want a value between %d and %d", ts, before, after)
+		t.Fatalf("backend failure timestamp = %d, want a value between %d and %d", ts, before, after)
 	}
 }
 
@@ -476,11 +476,11 @@ func TestNoteBackendSuccess_OnCleanStateIsNoOp(t *testing.T) {
 
 	noteBackendSuccess()
 
-	if got := consecutiveBackendFails.Load(); got != 0 {
+	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after noteBackendSuccess on a clean state, want 0", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
-		t.Fatal("lastBackendFailNano set after noteBackendSuccess on a clean state")
+	if backendFail.Load().lastNano != 0 {
+		t.Fatal("backend failure timestamp set after noteBackendSuccess on a clean state")
 	}
 }
 
