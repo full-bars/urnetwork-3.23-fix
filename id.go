@@ -95,8 +95,9 @@ func ParseId(idStr string) (Id, error) {
 	return parseUuid(idStr)
 }
 
-// Bytes returns the id as a 16-byte slice view of the id's storage; no copy
-// is made, so mutating the returned slice mutates the id.
+// Bytes returns the id's 16 bytes as a slice. The receiver is a value, so
+// the slice aliases a copy: writes through it do not reach the caller's id,
+// and the slice stays valid independently of it.
 func (self Id) Bytes() []byte {
 	return self[0:16]
 }
