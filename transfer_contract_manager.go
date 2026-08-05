@@ -127,8 +127,10 @@ func (self *contractStatusCallbackWorker) run() {
 }
 
 // Dispatch queues a contract status for the worker goroutine. Once the
-// worker's context is canceled a status is never delivered: an in-flight send
-// may still enqueue one, but the worker drops it.
+// worker's context is canceled, statuses still queued are never delivered:
+// an in-flight send may still enqueue one, but the worker's post-receive
+// guard drops it. A status dequeued before cancellation is still delivered —
+// cancellation can land between the guard and the callback.
 func (self *contractStatusCallbackWorker) Dispatch(contractStatus *ContractStatus) {
 	select {
 	case <-self.ctx.Done():
