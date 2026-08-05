@@ -93,6 +93,10 @@ func NewRouteManagerWithLogger(ctx context.Context, clientTag string, log Logger
 	}
 }
 
+// DowngradeReceiverConnection asks every transport registered in the reader
+// match state to re-establish its connections to the source. Transports deny
+// connections from sources with bad audits (see Transport.Downgrade). Holds
+// the RouteManager mutex for the duration.
 func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -100,6 +104,12 @@ func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
 	self.readerMatchState.Downgrade(source)
 }
 
+// OpenMultiRouteWriter opens a multi-route writer to a destination. The
+// destination must be a destination mask (zero SourceId) — a specific
+// destination id and optionally a stream id, never a specific source;
+// otherwise the call panics. Each Write is delivered to one of the routes of
+// the transports that match the destination. Pair every opened writer with
+// CloseMultiRouteWriter. Registration is serialized by the RouteManager mutex.
 func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRouteWriter {
 	if !destination.IsDestinationMask() {
 		panic(fmt.Errorf("Destination required for writer: %s", destination))
@@ -111,6 +121,12 @@ func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRo
 	return MultiRouteWriter(self.writerMatchState.openMultiRouteSelector(destination))
 }
 
+// CloseMultiRouteWriter unregisters the writer's selector from the writer
+// match state, so it stops receiving transport route updates. The route
+// channels belong to the transports and are not closed here, and the
+// selector's context is not cancelled: a frame in flight to a route channel
+// is unaffected. The selector must be the concrete type returned by
+// OpenMultiRouteWriter. Holds the RouteManager mutex.
 func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -118,6 +134,11 @@ func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.writerMatchState.closeMultiRouteSelector(w.(*MultiRouteSelector))
 }
 
+// OpenMultiRouteReader opens a multi-route reader to a destination. The
+// destination must be a destination mask (zero SourceId); otherwise the call
+// panics. Each Read pulls from the routes of the transports that match the
+// destination. Pair every opened reader with CloseMultiRouteReader.
+// Registration is serialized by the RouteManager mutex.
 func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRouteReader {
 	if !destination.IsDestinationMask() {
 		panic(fmt.Errorf("Destination required for reader: %s", destination))
@@ -129,6 +150,12 @@ func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRo
 	return MultiRouteReader(self.readerMatchState.openMultiRouteSelector(destination))
 }
 
+// CloseMultiRouteReader unregisters the reader's selector from the reader
+// match state, so it stops receiving transport route updates. Unread frames
+// remain in the transport-owned route channels; the channels are not closed
+// here and the selector's context is not cancelled. The selector must be the
+// concrete type returned by OpenMultiRouteReader. Holds the RouteManager
+// mutex.
 func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -136,6 +163,13 @@ func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 	self.readerMatchState.closeMultiRouteSelector(r.(*MultiRouteSelector))
 }
 
+// UpdateTransport registers or replaces the routes a transport provides, in
+// both the writer and reader match states. Transports call this when their
+// connections are established; a nil or empty route list removes the
+// transport (see RemoveTransport). Every open selector is re-matched: routes
+// are wired to the destinations the transport matches, routes no longer
+// present are dropped, and newly added routes start active. Safe for
+// concurrent use; the RouteManager mutex serializes updates.
 func (self *RouteManager) UpdateTransport(transport Transport, routes []Route) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -144,10 +178,17 @@ func (self *RouteManager) UpdateTransport(transport Transport, routes []Route) {
 	self.readerMatchState.updateTransport(transport, routes)
 }
 
+// RemoveTransport removes a transport from both match states: its routes are
+// dropped from every open selector and its matched-destination bookkeeping is
+// deleted. Equivalent to UpdateTransport(transport, nil).
 func (self *RouteManager) RemoveTransport(transport Transport) {
 	self.UpdateTransport(transport, nil)
 }
 
+// getTransportStats returns the transport's accumulated send/receive counters
+// across all open selectors, split by match state. A nil value for a side
+// means the transport is not registered on that side. Holds the RouteManager
+// mutex while aggregating.
 func (self *RouteManager) getTransportStats(transport Transport) (writerStats *RouteStats, readerStats *RouteStats) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -188,6 +229,9 @@ func NewMatchState(ctx context.Context, clientTag string, log Logger, weightedRo
 	}
 }
 
+// getTransportStats sums the per-route stats of the selectors the transport
+// matches, across all destinations it currently matches. Returns nil if the
+// transport is matched to no destination. Called under the RouteManager mutex.
 func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	destinations, ok := self.transportMatchedDestinations[transport]
 	if !ok {
@@ -209,6 +253,11 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	return netStats
 }
 
+// openMultiRouteSelector creates a selector for the destination, registers it
+// in the destination's selector set, and wires in every transport that
+// currently matches the destination, with the transport's current routes.
+// Called by OpenMultiRouteWriter/OpenMultiRouteReader under the RouteManager
+// mutex.
 func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiRouteSelector {
 	multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, self.log, destination, self.weightedRoutes)
 
@@ -236,6 +285,11 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
 	return multiRouteSelector
 }
 
+// closeMultiRouteSelector unregisters the selector from its destination's
+// selector set. When the last selector for a destination is closed, the
+// destination's selector set is deleted and the destination is stripped from
+// every transport's matched-destination set. The selector's own state and the
+// transport-owned route channels are left untouched.
 func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
 	// TODO readers do not need to prioritize routes
 
@@ -256,6 +310,13 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 	}
 }
 
+// updateTransport applies a route change for a transport across every open
+// selector: destinations newly matched by the transport receive its routes,
+// destinations that no longer match drop them, and an empty route list
+// removes the transport entirely. It maintains the transport's
+// matched-destination set and the transportRoutes map, and each affected
+// selector notifies its monitor so blocked reads/writes re-match. Called under
+// the RouteManager mutex.
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	if len(routes) == 0 {
 		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
@@ -297,6 +358,9 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	}
 }
 
+// Downgrade asks every registered transport to re-establish its connections
+// that include the source; transports deny connections from sources with bad
+// audits (see Transport.Downgrade). Called under the RouteManager mutex.
 func (self *MatchState) Downgrade(source TransferPath) {
 	for transport, _ := range self.transportRoutes {
 		transport.Downgrade(source)
@@ -338,6 +402,9 @@ func NewMultiRouteSelector(ctx context.Context, clientTag string, log Logger, de
 	}
 }
 
+// getTransportStats sums the send/receive counters of the routes currently
+// registered to the transport within this selector. Returns nil if the
+// transport is not registered with the selector. Holds the selector mutex.
 func (self *MultiRouteSelector) getTransportStats(transport Transport) *RouteStats {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -427,6 +494,13 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	self.transportUpdate.NotifyAll()
 }
 
+// updateRouteWeights recomputes the per-route weights and resets every route
+// stat, so the next computation sees only the traffic since this change.
+// Transports are ordered by priority (equal priorities shuffled); each
+// transport's routes receive its RouteWeight share of the remaining weight.
+// Every transport must pass CanEvalRouteWeight, otherwise the weights and
+// stats are left as they were. Called by updateTransport on weighted
+// selectors while holding the selector mutex.
 func (self *MultiRouteSelector) updateRouteWeights() {
 	updatedRouteWeight := map[Route]float32{}
 
@@ -499,6 +573,11 @@ func (self *MultiRouteSelector) updateRouteWeights() {
 	}
 }
 
+// GetActiveRoutes returns a new slice of the routes that are currently
+// active, shuffled so a caller can pick one at random: a weighted shuffle
+// (favoring higher route weights) on a weighted selector, otherwise a plain
+// shuffle. A route is active from the moment it is added by updateTransport
+// until a read observes its channel closed. Holds the selector mutex.
 func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -525,6 +604,9 @@ func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	return activeRoutes
 }
 
+// GetInactiveRoutes returns a new slice of the registered routes that are not
+// currently active — routes whose channel a read observed closed, for
+// example. Not shuffled. Holds the selector mutex.
 func (self *MultiRouteSelector) GetInactiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -541,6 +623,9 @@ func (self *MultiRouteSelector) GetInactiveRoutes() []Route {
 	return inactiveRoutes
 }
 
+// setActive records whether a route is eligible for read/write selection. A
+// read marks a route inactive when it observes the route's channel closed.
+// Holds the selector mutex.
 func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -548,6 +633,11 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.routeActive[route] = active
 }
 
+// updateSendStats adds sendCount/sendByteCount to the route's stats, creating
+// the entry on first use. Called once per frame delivered by WriteDetailed.
+// The counters feed transport-level stats aggregation (getTransportStats) and,
+// on weighted selectors, the next weight recomputation. Holds the selector
+// mutex.
 func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -561,6 +651,11 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 	stats.sendByteCount += sendByteCount
 }
 
+// updateReceiveStats adds receiveCount/receiveByteCount to the route's stats,
+// creating the entry on first use. Called once per frame delivered by Read.
+// The counters feed transport-level stats aggregation (getTransportStats) and,
+// on weighted selectors, the next weight recomputation. Holds the selector
+// mutex.
 func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -574,6 +669,12 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
 	stats.receiveByteCount += receiveByteCount
 }
 
+// Write delivers transferFrameBytes whole to exactly one of the currently
+// active routes and returns nil; partial writes are not possible. If no route
+// can take the frame within the timeout it returns a "Timeout." error; a
+// cancelled caller or selector context propagates as the WriteDetailed error
+// ("Context done"/"Done"). On any failure the frame has already been returned
+// to the message pool, so the caller must treat it as consumed.
 func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error {
 	success, err := self.WriteDetailed(ctx, transferFrameBytes, timeout)
 	if err != nil {
@@ -810,6 +911,10 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 	}
 }
 
+// Close cancels the selector's context, so a blocked Read or Write returns
+// immediately with a "Done" error. It does not close the route channels (they
+// are owned by the transports) and does not unregister the selector from its
+// match state.
 func (self *MultiRouteSelector) Close() {
 	self.cancel()
 }
@@ -853,35 +958,50 @@ func NewSendClientTransportWithComplement(complement bool, destinations ...Trans
 	}
 }
 
+// TransportId returns the transport's unique id; every instance is assigned a
+// fresh id at construction.
 func (self *sendClientTransport) TransportId() Id {
 	return self.transportId
 }
 
+// Priority returns the fixed minimum priority (TransportMinPriority, 100).
+// Lower priority values take precedence during route weighting.
 func (self *sendClientTransport) Priority() int {
 	return 100
 }
 
+// Weight returns the intrinsic weight 0, meaning this transport has no
+// preference and the routing weight is assigned uniformly.
 func (self *sendClientTransport) Weight() float32 {
 	return 0
 }
 
+// CanEvalRouteWeight reports that the route weight is always evaluable; it
+// returns true unconditionally.
 func (self *sendClientTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
 	return true
 }
 
+// RouteWeight returns a uniform share of the remaining weight, so transports
+// of equal priority are used equally.
 func (self *sendClientTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
 	// uniform weight
 	return 1.0 / float32(1+len(remainingStats))
 }
 
+// MatchesSend reports whether the destination is in the transport's
+// destination set; with complement, the set is inverted and everything
+// outside it matches.
 func (self *sendClientTransport) MatchesSend(destination TransferPath) bool {
 	return self.complement != self.destinations[destination]
 }
 
+// MatchesReceive never matches: this is a send-only transport.
 func (self *sendClientTransport) MatchesReceive(destination TransferPath) bool {
 	return false
 }
 
+// Downgrade is a no-op: this transport has no connection to re-establish.
 func (self *sendClientTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
@@ -897,35 +1017,49 @@ func NewSendGatewayTransport() *sendGatewayTransport {
 	}
 }
 
+// TransportId returns the transport's unique id; every instance is assigned a
+// fresh id at construction.
 func (self *sendGatewayTransport) TransportId() Id {
 	return self.transportId
 }
 
+// Priority returns the fixed minimum priority (TransportMinPriority, 100).
+// Lower priority values take precedence during route weighting.
 func (self *sendGatewayTransport) Priority() int {
 	return 100
 }
 
+// Weight returns the intrinsic weight 0, meaning this transport has no
+// preference and the routing weight is assigned uniformly.
 func (self *sendGatewayTransport) Weight() float32 {
 	return 0
 }
 
+// CanEvalRouteWeight reports that the route weight is always evaluable; it
+// returns true unconditionally.
 func (self *sendGatewayTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
 	return true
 }
 
+// RouteWeight returns a uniform share of the remaining weight, so transports
+// of equal priority are used equally.
 func (self *sendGatewayTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
 	// uniform weight
 	return 1.0 / float32(1+len(remainingStats))
 }
 
+// MatchesSend matches every destination: the platform can route any
+// destination on the send side.
 func (self *sendGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return true
 }
 
+// MatchesReceive never matches: this is a send-only transport.
 func (self *sendGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return false
 }
 
+// Downgrade is a no-op: this transport has no connection to re-establish.
 func (self *sendGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
@@ -941,35 +1075,49 @@ func NewReceiveGatewayTransport() *receiveGatewayTransport {
 	}
 }
 
+// TransportId returns the transport's unique id; every instance is assigned a
+// fresh id at construction.
 func (self *receiveGatewayTransport) TransportId() Id {
 	return self.transportId
 }
 
+// Priority returns the fixed minimum priority (TransportMinPriority, 100).
+// Lower priority values take precedence during route weighting.
 func (self *receiveGatewayTransport) Priority() int {
 	return 100
 }
 
+// Weight returns the intrinsic weight 0, meaning this transport has no
+// preference and the routing weight is assigned uniformly.
 func (self *receiveGatewayTransport) Weight() float32 {
 	return 0
 }
 
+// CanEvalRouteWeight reports that the route weight is always evaluable; it
+// returns true unconditionally.
 func (self *receiveGatewayTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
 	return true
 }
 
+// RouteWeight returns a uniform share of the remaining weight, so transports
+// of equal priority are used equally.
 func (self *receiveGatewayTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
 	// uniform weight
 	return 1.0 / float32(1+len(remainingStats))
 }
 
+// MatchesSend never matches: this is a receive-only transport.
 func (self *receiveGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return false
 }
 
+// MatchesReceive matches every destination: the platform can receive from any
+// destination on the receive side.
 func (self *receiveGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return true
 }
 
+// Downgrade is a no-op: this transport has no connection to re-establish.
 func (self *receiveGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
@@ -989,22 +1137,33 @@ func NewPrioritySendGatewayTransport(priority int, weight float32) *prioritySend
 	}
 }
 
+// TransportId returns the transport's unique id; every instance is assigned a
+// fresh id at construction.
 func (self *prioritySendGatewayTransport) TransportId() Id {
 	return self.transportId
 }
 
+// Priority returns the configured priority: lower values take precedence over
+// the fixed-priority (100) gateway transports.
 func (self *prioritySendGatewayTransport) Priority() int {
 	return self.priority
 }
 
+// Weight returns the configured intrinsic weight in [0, 1].
 func (self *prioritySendGatewayTransport) Weight() float32 {
 	return self.weight
 }
 
+// CanEvalRouteWeight reports that the route weight is always evaluable; it
+// returns true unconditionally.
 func (self *prioritySendGatewayTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
 	return true
 }
 
+// RouteWeight returns the transport's share of the remaining weight,
+// proportional to its own weight over the total of its weight and the
+// remaining transports' weights; when that total is zero it falls back to a
+// uniform share.
 func (self *prioritySendGatewayTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
 	netWeight := self.weight
 	for t, _ := range remainingStats {
@@ -1017,14 +1176,18 @@ func (self *prioritySendGatewayTransport) RouteWeight(stats *RouteStats, remaini
 	}
 }
 
+// MatchesSend matches every destination: the platform can route any
+// destination on the send side.
 func (self *prioritySendGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return true
 }
 
+// MatchesReceive never matches: this is a send-only transport.
 func (self *prioritySendGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return false
 }
 
+// Downgrade is a no-op: this transport has no connection to re-establish.
 func (self *prioritySendGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
@@ -1044,22 +1207,33 @@ func NewPriorityReceiveGatewayTransport(priority int, weight float32) *priorityR
 	}
 }
 
+// TransportId returns the transport's unique id; every instance is assigned a
+// fresh id at construction.
 func (self *priorityReceiveGatewayTransport) TransportId() Id {
 	return self.transportId
 }
 
+// Priority returns the configured priority: lower values take precedence over
+// the fixed-priority (100) gateway transports.
 func (self *priorityReceiveGatewayTransport) Priority() int {
 	return self.priority
 }
 
+// Weight returns the configured intrinsic weight in [0, 1].
 func (self *priorityReceiveGatewayTransport) Weight() float32 {
 	return self.weight
 }
 
+// CanEvalRouteWeight reports that the route weight is always evaluable; it
+// returns true unconditionally.
 func (self *priorityReceiveGatewayTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
 	return true
 }
 
+// RouteWeight returns the transport's share of the remaining weight,
+// proportional to its own weight over the total of its weight and the
+// remaining transports' weights; when that total is zero it falls back to a
+// uniform share.
 func (self *priorityReceiveGatewayTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
 	netWeight := self.weight
 	for t, _ := range remainingStats {
@@ -1072,14 +1246,18 @@ func (self *priorityReceiveGatewayTransport) RouteWeight(stats *RouteStats, rema
 	}
 }
 
+// MatchesSend never matches: this is a receive-only transport.
 func (self *priorityReceiveGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return false
 }
 
+// MatchesReceive matches every destination: the platform can receive from any
+// destination on the receive side.
 func (self *priorityReceiveGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return true
 }
 
+// Downgrade is a no-op: this transport has no connection to re-establish.
 func (self *priorityReceiveGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
