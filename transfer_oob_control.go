@@ -48,11 +48,8 @@ func NewApiOutOfBandControlWithApi(api *BringYourApi) *ApiOutOfBandControl {
 	}
 }
 
-// SendControl sends frames to the platform over its control API and invokes
-// callback with the response frames unpacked from the platform's reply, or
-// with the error; the callback fires once, asynchronously. The caller's
-// frames are consumed: their MessageBytes are returned to the message pool
-// before the callback fires.
+// SendControl consumes the caller's frames: their MessageBytes are returned
+// to the message pool before the callback fires.
 func (self *ApiOutOfBandControl) SendControl(
 	frames []*protocol.Frame,
 	callback OobResultFunction,
@@ -116,8 +113,6 @@ func NewNoContractClientOob() *NoContractClientOob {
 	return &NoContractClientOob{}
 }
 
-// SendControl is a placeholder for a client with no out-of-band control
-// channel: it invokes callback immediately with a "Not supported." error.
 func (self *NoContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
 	safeCallback := func(resultFrames []*protocol.Frame, err error) {
 		if callback != nil {
