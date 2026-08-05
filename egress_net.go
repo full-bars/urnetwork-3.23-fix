@@ -43,8 +43,9 @@ func (self *egressNet) ListenUDP(network string, locAddr *net.UDPAddr) (transpor
 }
 
 // ListenPacket is the packet-connection variant of ListenUDP: it creates the
-// socket through the embedded transport.Net and applies the egress interface
-// binding when the connection exposes a syscall.Conn.
+// socket through the embedded transport.Net and, when the connection exposes
+// a syscall.Conn, applies the egress interface binding best-effort (binding
+// errors are ignored, so the egress binding is not guaranteed).
 func (self *egressNet) ListenPacket(network string, address string) (net.PacketConn, error) {
 	conn, err := self.Net.ListenPacket(network, address)
 	if err != nil {

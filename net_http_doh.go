@@ -327,10 +327,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 	}
 }
 
-// pruneCacheLocked removes expired results from queryResultExpiration and,
-// when the cache still exceeds CacheMaxEntries plus reserve, evicts the
-// oldest results by result Time until it fits. The caller must hold
-// stateLock.
+// pruneCacheLocked prunes the result cache to its configured size bound and
+// drops expired entries. The caller must hold stateLock.
 func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
 	for key, result := range self.queryResultExpiration {
 		if !result.Valid(now, self.settings.MissExpiration) {
@@ -885,10 +883,12 @@ type DohResult struct {
 	Miss            bool
 }
 
-// Valid reports whether the result can be served at now: when it holds
-// addresses, every address's expiration must be in the future; when it holds
-// none, it is valid only if it records an authoritative miss (Miss) whose age
-// does not exceed missExpiration.
+// Valid reports whether the result can still be served at now: a result
+// holding addresses is served while any address is not yet expired; a result
+// holding none is served only for an authoritative miss (Miss) recorded
+// within missExpiration. The exclusivity of the miss bound matters: it is
+// what makes a cached NXDOMAIN/NODATA answer expire instead of persisting
+// forever.
 func (self *DohResult) Valid(now time.Time, missExpiration time.Duration) bool {
 	if len(self.AddrExpirations) == 0 {
 		return self.Miss && !self.Time.Add(missExpiration).Before(now)

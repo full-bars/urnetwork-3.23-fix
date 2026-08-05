@@ -130,13 +130,13 @@ func (self *ResilientTlsConn) Off() {
 
 // Write sends b over the underlying connection. While enabled, TLS records
 // are intercepted before the write: handshake records (content type 22) that
-// carry a server name are fragmented and, when reorder is set and the
-// underlying connection is a *net.TCPConn, sent with alternating socket TTLs
-// to force retransmits and out-of-order arrival; every other record is
-// flushed as-is. On success Write returns len(b), nil even when part of b
-// remains buffered awaiting a complete record; a failure flushing a buffered
-// record returns 0, err. When disabled, Write forwards directly to the
-// underlying connection.
+// carry a server name are fragmented only when fragment is set, and sent
+// with alternating socket TTLs only when reorder is set and the underlying
+// connection is a *net.TCPConn; every other record is flushed as-is. On
+// success Write returns len(b), nil even when part of b remains buffered
+// awaiting a complete record; a failure flushing a buffered record returns
+// 0, err. When disabled, Write forwards directly to the underlying
+// connection.
 func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 	if self.enabled {
 		self.buffer = append(self.buffer, b...)
