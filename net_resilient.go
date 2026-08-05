@@ -119,11 +119,24 @@ func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientT
 	}
 }
 
+// Off permanently disables the resilient fragment/reorder processing on this
+// connection. It cannot be re-enabled: once the TLS stream has been written
+// past, the record boundaries needed to realign the fragmentation are no
+// longer known.
 func (self *ResilientTlsConn) Off() {
 	// can't turn back on after off because we don't know where to align the tls header
 	self.enabled = false
 }
 
+// Write sends b over the underlying connection. While enabled, TLS records
+// are intercepted before the write: handshake records (content type 22) that
+// carry a server name are fragmented and, when reorder is set and the
+// underlying connection is a *net.TCPConn, sent with alternating socket TTLs
+// to force retransmits and out-of-order arrival; every other record is
+// flushed as-is. On success Write returns len(b), nil even when part of b
+// remains buffered awaiting a complete record; a failure flushing a buffered
+// record returns 0, err. When disabled, Write forwards directly to the
+// underlying connection.
 func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 	if self.enabled {
 		self.buffer = append(self.buffer, b...)
@@ -286,30 +299,39 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 	}
 }
 
+// Read forwards to the underlying connection; the resilient layer only
+// transforms writes, never reads.
 func (self *ResilientTlsConn) Read(b []byte) (int, error) {
 	return self.conn.Read(b)
 }
 
+// Close closes the underlying connection, completing the net.Conn
+// implementation that tls.Client runs over.
 func (self *ResilientTlsConn) Close() error {
 	return self.conn.Close()
 }
 
+// LocalAddr returns the underlying connection's local address.
 func (self *ResilientTlsConn) LocalAddr() net.Addr {
 	return self.conn.LocalAddr()
 }
 
+// RemoteAddr returns the underlying connection's remote address.
 func (self *ResilientTlsConn) RemoteAddr() net.Addr {
 	return self.conn.RemoteAddr()
 }
 
+// SetDeadline forwards the deadline to the underlying connection.
 func (self *ResilientTlsConn) SetDeadline(t time.Time) error {
 	return self.conn.SetDeadline(t)
 }
 
+// SetReadDeadline forwards the read deadline to the underlying connection.
 func (self *ResilientTlsConn) SetReadDeadline(t time.Time) error {
 	return self.conn.SetReadDeadline(t)
 }
 
+// SetWriteDeadline forwards the write deadline to the underlying connection.
 func (self *ResilientTlsConn) SetWriteDeadline(t time.Time) error {
 	return self.conn.SetWriteDeadline(t)
 }
@@ -328,6 +350,10 @@ func parseTlsHeader(b []byte) *tlsHeader {
 	}
 }
 
+// reconstruct frames content as a standalone TLS record: it allocates a
+// 5+len(content) slice carrying this record's content type and version with
+// the length field recomputed from len(content). Used to re-frame the
+// client-hello fragments that Write emits.
 func (self *tlsHeader) reconstruct(content []byte) []byte {
 	b := make([]byte, 5+len(content))
 	b[0] = self.contentType

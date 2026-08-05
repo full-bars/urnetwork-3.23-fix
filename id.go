@@ -95,14 +95,20 @@ func ParseId(idStr string) (Id, error) {
 	return parseUuid(idStr)
 }
 
+// Bytes returns the id as a 16-byte slice view of the id's storage; no copy
+// is made, so mutating the returned slice mutates the id.
 func (self Id) Bytes() []byte {
 	return self[0:16]
 }
 
+// LessThan reports whether the id is lexicographically (byte-wise) less than
+// b; equivalent to Cmp(b) < 0.
 func (self Id) LessThan(b Id) bool {
 	return self.Cmp(b) < 0
 }
 
+// Cmp compares the id with b byte by byte, returning -1, 0, or 1. Because
+// ids are time-ordered (NewId), this is also their time order.
 func (self Id) Cmp(b Id) int {
 	for i, v := range self {
 		if v < b[i] {
@@ -115,10 +121,14 @@ func (self Id) Cmp(b Id) int {
 	return 0
 }
 
+// String formats the id as a lowercase, dash-separated UUID string of the
+// form xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
 func (self Id) String() string {
 	return encodeUuid(self)
 }
 
+// MarshalJSON encodes the id as a JSON string containing the dashed
+// lowercase UUID form of String.
 func (self *Id) MarshalJSON() ([]byte, error) {
 	var buf [16]byte
 	copy(buf[0:16], self[0:16])
@@ -130,6 +140,9 @@ func (self *Id) MarshalJSON() ([]byte, error) {
 	return b, nil
 }
 
+// UnmarshalJSON parses a quoted UUID string of exactly 38 bytes (a 36-char
+// dashed UUID plus quotes; shorter undashed forms are rejected by the length
+// check) into the id, replacing the receiver in place.
 func (self *Id) UnmarshalJSON(src []byte) error {
 	if len(src) != 38 {
 		return fmt.Errorf("invalid length for UUID: %v", len(src))
