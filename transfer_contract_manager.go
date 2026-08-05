@@ -1071,7 +1071,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 		[]*protocol.Frame{frame},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil {
-				consecutiveBackendFails.Store(0)
+				noteBackendSuccess()
 				// [contract] acquired is logged in HandleControlFrame on the
 				// actual contract-success branch, not here: err==nil only means
 				// the control request round-tripped; the result may still carry a
@@ -1084,8 +1084,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 				case <-self.client.Done():
 					// no need to log warnings when the client closes
 				default:
-					lastBackendFailNano.Store(time.Now().UnixNano())
-					consecutiveBackendFails.Add(1)
+					noteBackendFailure()
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
 							self.client.log.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)

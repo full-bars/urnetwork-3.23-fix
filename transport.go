@@ -43,7 +43,24 @@ var lastBackendFailNano atomic.Int64
 // it; isolated transient timeouts never accumulate because an interleaved
 // success clears the count. isBackendDegraded() requires this to cross a
 // threshold so one or two stray failures are not mistaken for an outage.
+//
+// This is process-wide rather than per-Client on purpose: "is the control API
+// reachable from this host" is a property of the host, not of any one client.
+// A host running many proxies gets a stronger signal from sharing the counter,
+// because a success on any one clears it — so a single misbehaving proxy
+// cannot trip the threshold on its own.
+//
+// The known limit of that framing: a process talking to MULTIPLE platform urls
+// (separate network spaces) shares one signal across them, so a dead custom
+// endpoint can gate a healthy one. Accepted for now — the fleet runs one
+// platform per process — and keying this state by platform url is the upgrade
+// path if that changes.
 var consecutiveBackendFails atomic.Int64
+
+// backendFailMu guards the pair (consecutiveBackendFails, lastBackendFailNano).
+// Both are atomics, but the count and the timestamp move together as one
+// logical transition; see noteBackendSuccess for the interleaving this closes.
+var backendFailMu sync.Mutex
 
 // activeProxyConnections counts proxy transports that are currently registered
 // with the route manager (i.e. authenticated and live on the platform). It is
@@ -78,6 +95,16 @@ func shouldLogWriteErr() (bool, int64) {
 // the threshold with no intervening success and the last failure is recent.
 // This distinguishes a sustained, broad outage (every attempt failing) from the
 // isolated single-connection timeouts that are normal churn on a busy provider.
+//
+// During an outage where the transport stays connected (the control API down,
+// the websocket alive), auth never re-runs and the gated CreateContract is the
+// only other success source — so nothing can SUCCEED to clear the state.
+// Recovery then rides the recency window instead: after backendDegradedWindow
+// without failures this reads false, the sequences that tick before three
+// fresh failures land probe the backend, and either one succeeds (clearing the
+// state) or the gate re-trips. The steady state of a long OOB-only outage is
+// therefore a bounded probe burst every ~backendDegradedWindow, not a latched
+// stop — which is also what makes recovery need no timer of its own.
 func isBackendDegraded() bool {
 	if consecutiveBackendFails.Load() < backendDegradedFailThreshold {
 		return false
@@ -89,6 +116,47 @@ func isBackendDegraded() bool {
 // IsBackendDegraded is the exported form for use by the provider binary.
 func IsBackendDegraded() bool {
 	return isBackendDegraded()
+}
+
+// noteBackendFailure records a failed backend round-trip (auth or contract OOB).
+//
+// A streak older than backendDegradedWindow is discarded rather than extended.
+// Without that, an idle provider that saw a few failures long ago and simply
+// stopped retrying would carry the old count forward: the next single failure
+// would push the total past the threshold with a fresh timestamp, and the
+// backend would read as degraded on the strength of one recent failure. The
+// threshold means "consecutive failures within the window", so a gap that
+// invalidates the streak for isBackendDegraded must also reset it here.
+func noteBackendFailure() {
+	now := time.Now().UnixNano()
+
+	backendFailMu.Lock()
+	defer backendFailMu.Unlock()
+
+	last := lastBackendFailNano.Load()
+	if last != 0 && int64(backendDegradedWindow) <= now-last {
+		consecutiveBackendFails.Store(1)
+	} else {
+		consecutiveBackendFails.Add(1)
+	}
+	lastBackendFailNano.Store(now)
+}
+
+// noteBackendSuccess clears the recorded backend failure state after a
+// successful auth or OOB round-trip.
+//
+// It takes backendFailMu for the same reason noteBackendFailure does: clearing
+// the count and the timestamp is one logical transition. Unsynchronized, a
+// concurrent failure could land its increment and timestamp between the two
+// stores here, leaving a positive count with a zero timestamp — a state
+// isBackendDegraded reads as "not degraded" while failures are in fact
+// accumulating.
+func noteBackendSuccess() {
+	backendFailMu.Lock()
+	defer backendFailMu.Unlock()
+
+	consecutiveBackendFails.Store(0)
+	lastBackendFailNano.Store(0)
 }
 
 // note that it is possible to have multiple transports for the same client destination
@@ -626,10 +694,18 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			ws, err = connect()
 		}
 		if err != nil {
-			lastBackendFailNano.Store(time.Now().UnixNano())
-			consecutiveBackendFails.Add(1)
-			if idx, ok := self.proxyIndex(); ok {
-				RecordProxyAuthFailure(idx, err)
+			// a canceled dial is local teardown — this transport or its owner
+			// shutting down mid-connect — not a backend signal, and not a
+			// fault of the proxy being dialed. Without this carve-out, closing
+			// a multi-client window cancels many transports at once and the
+			// burst of canceled dials trips the degraded threshold with fresh
+			// timestamps, so the NEXT session starts gated. The contract OOB
+			// path makes the same carve-out on client.Done.
+			if self.ctx.Err() == nil {
+				noteBackendFailure()
+				if idx, ok := self.proxyIndex(); ok {
+					RecordProxyAuthFailure(idx, err)
+				}
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
@@ -655,8 +731,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}
 		authErrBackoff = 0
-		lastBackendFailNano.Store(0)
-		consecutiveBackendFails.Store(0)
+		noteBackendSuccess()
 
 		c := func() {
 			defer ws.Close()
@@ -1204,10 +1279,16 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			connStream, err = connect()
 		}
 		if err != nil {
-			lastBackendFailNano.Store(time.Now().UnixNano())
-			consecutiveBackendFails.Add(1)
-			if idx, ok := self.proxyIndex(); ok {
-				RecordProxyAuthFailure(idx, err)
+			// a canceled dial is local teardown — this transport or its owner
+			// shutting down mid-connect — not a backend signal, and not a
+			// fault of the proxy being dialed. See runH1 for why the burst
+			// from a closing multi-client window would otherwise gate the
+			// next session.
+			if self.ctx.Err() == nil {
+				noteBackendFailure()
+				if idx, ok := self.proxyIndex(); ok {
+					RecordProxyAuthFailure(idx, err)
+				}
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
@@ -1233,8 +1314,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
-		lastBackendFailNano.Store(0)
-		consecutiveBackendFails.Store(0)
+		noteBackendSuccess()
 
 		conn := connStream.conn
 		stream := connStream.stream
