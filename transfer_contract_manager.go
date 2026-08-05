@@ -23,8 +23,19 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+// oobErrThrottle rate-limits `[contract]oob err`. During a control-API outage
+// every sequence's CreateContract round-trip fails, so on a provider carrying
+// many sequences this is one of the highest-volume lines in the log — and the
+// one most likely to push out the lines needed to diagnose the outage. It is
+// package-level, not per-ContractManager, because the flood is across every
+// manager at once; a per-instance limiter would still emit once per proxy per
+// interval, which at fleet scale is not a limit at all.
 var oobErrThrottle = newLogThrottle(time.Minute)
 
+// shouldLogOobErr reports whether a `[contract]oob err` line may be emitted
+// now. The second return is the number of lines suppressed since the previous
+// allowed one, for the "(N suppressed)" tail; see shouldLogAuthErr in
+// transport.go for the full contract on that value.
 func shouldLogOobErr() (bool, int64) { return oobErrThrottle.Allow(time.Now()) }
 
 // Contract counters for aggregate metrics in heartbeat

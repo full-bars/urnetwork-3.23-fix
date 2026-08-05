@@ -105,12 +105,25 @@ const backendDegradedFailThreshold = 3
 // old blip on an idle provider does not.
 const backendDegradedWindow = 2 * time.Minute
 
-func shouldLogAuthErr() (bool, int64)   { return authErrThrottle.Allow(time.Now()) }
+// shouldLogAuthErr reports whether a `[t]auth error` line may be emitted now.
+//
+// The second return is the number of lines SUPPRESSED since the previous
+// allowed one, not a throttle state or an interval: it is meant to be printed
+// as the "(N suppressed)" tail so a single surviving line still carries the
+// volume behind it. It is only meaningful when the first return is true, and
+// reading it resets the counter — so each suppressed line is attributed to
+// exactly one emitted line.
+func shouldLogAuthErr() (bool, int64) { return authErrThrottle.Allow(time.Now()) }
+
+// shouldLogSelectErr reports whether a `[net][s]select` error line may be
+// emitted now, with the count of lines suppressed since the previous allowed
+// one. See shouldLogAuthErr for the contract on that second value.
 func shouldLogSelectErr() (bool, int64) { return selectErrThrottle.Allow(time.Now()) }
 
-func shouldLogWriteErr() (bool, int64) {
-	return writeErrThrottle.Allow(time.Now())
-}
+// shouldLogWriteErr reports whether a transport write error line may be emitted
+// now, with the count of lines suppressed since the previous allowed one. See
+// shouldLogAuthErr for the contract on that second value.
+func shouldLogWriteErr() (bool, int64) { return writeErrThrottle.Allow(time.Now()) }
 
 // isBackendDegraded returns true when backend failures have accumulated past
 // the threshold with no intervening success and the last failure is recent.

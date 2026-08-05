@@ -26,6 +26,9 @@ func ageLastBackendFailure(d time.Duration) {
 	})
 }
 
+// backendFails reads the current consecutive-failure count out of the snapshot.
+// Assertions want the raw count, which isBackendDegraded deliberately does not
+// expose: it folds the count and the recency guard into one verdict.
 func backendFails() int64 {
 	return backendFail.Load().fails
 }
