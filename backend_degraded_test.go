@@ -12,8 +12,22 @@ import (
 // is across every transport and sequence at once. These tests therefore reset
 // it rather than constructing an instance, and must not run in parallel.
 func resetBackendDegraded() {
-	consecutiveBackendFails.Store(0)
-	lastBackendFailNano.Store(0)
+	backendFail.Store(&backendFailState{})
+}
+
+// ageLastBackendFailure rewinds the recorded failure time, keeping the count.
+// This is how an idle provider that stopped retrying looks: a streak on the
+// books, but nothing recent.
+func ageLastBackendFailure(d time.Duration) {
+	state := backendFail.Load()
+	backendFail.Store(&backendFailState{
+		fails:    state.fails,
+		lastNano: time.Now().Add(-d).UnixNano(),
+	})
+}
+
+func backendFails() int64 {
+	return backendFail.Load().fails
 }
 
 func TestBackendDegraded_CleanStateIsNotDegraded(t *testing.T) {
@@ -64,7 +78,7 @@ func TestBackendDegraded_StaleFailuresAreNotDegraded(t *testing.T) {
 	}
 
 	// Age the last failure past the recency window.
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow - time.Second).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow + time.Second)
 
 	if isBackendDegraded() {
 		t.Fatalf("still degraded with the last failure older than %s", backendDegradedWindow)
@@ -88,7 +102,7 @@ func TestBackendDegraded_SuccessClearsImmediately(t *testing.T) {
 	if isBackendDegraded() {
 		t.Fatal("a successful round-trip must clear the degraded state immediately")
 	}
-	if got := consecutiveBackendFails.Load(); got != 0 {
+	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after success, want 0", got)
 	}
 }
@@ -123,7 +137,7 @@ func TestBackendDegraded_StaleStreakIsNotResumedByANewFailure(t *testing.T) {
 	}
 	// Age the whole streak out of the window, as an idle provider that simply
 	// stopped retrying would.
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow - time.Minute).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow + time.Minute)
 	if isBackendDegraded() {
 		t.Fatal("precondition: an aged-out streak must not read as degraded")
 	}
@@ -132,7 +146,7 @@ func TestBackendDegraded_StaleStreakIsNotResumedByANewFailure(t *testing.T) {
 	// fourth of the old one.
 	noteBackendFailure()
 
-	if got := consecutiveBackendFails.Load(); got != 1 {
+	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after a stale streak plus one failure, want 1", got)
 	}
 	if isBackendDegraded() {
@@ -149,11 +163,11 @@ func TestBackendDegraded_StreakSurvivesGapInsideWindow(t *testing.T) {
 	noteBackendFailure()
 	noteBackendFailure()
 	// A gap well inside the window: still the same outage.
-	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow / 2).UnixNano())
+	ageLastBackendFailure(backendDegradedWindow / 2)
 
 	noteBackendFailure()
 
-	if got := consecutiveBackendFails.Load(); got != backendDegradedFailThreshold {
+	if got := backendFails(); got != backendDegradedFailThreshold {
 		t.Fatalf("consecutive failures = %d, want %d (streak reset inside the window)", got, backendDegradedFailThreshold)
 	}
 	if !isBackendDegraded() {
@@ -166,11 +180,10 @@ func TestBackendDegraded_StreakSurvivesGapInsideWindow(t *testing.T) {
 // positive failure count with a zero timestamp, which isBackendDegraded would
 // read as "not degraded" while failures are actually accumulating.
 //
-// This asserts the invariant; it does not reliably reproduce its violation. The
-// window is two adjacent atomic stores, so an unsynchronized noteBackendSuccess
-// still passes this test almost always. The serialization in noteBackendSuccess
-// is what makes the invariant hold, and this guards against a future change that
-// breaks it in a wider, actually-observable way.
+// Storing the pair as one immutable snapshot makes this structural rather than
+// probabilistic: a reader cannot observe half a transition because there is no
+// half to observe. The assertion still earns its place as a guard against a
+// future change that splits the fields back apart.
 func TestBackendDegraded_ConcurrentSuccessAndFailureNeverLeaveInvalidState(t *testing.T) {
 	resetBackendDegraded()
 	defer resetBackendDegraded()
@@ -190,18 +203,79 @@ func TestBackendDegraded_ConcurrentSuccessAndFailureNeverLeaveInvalidState(t *te
 	}
 	wg.Wait()
 
-	// A positive count always implies a real failure timestamp.
-	if got := consecutiveBackendFails.Load(); 0 < got {
-		if lastBackendFailNano.Load() == 0 {
-			t.Fatalf("invalid state: %d consecutive failures recorded with a zero timestamp", got)
-		}
+	state := backendFail.Load()
+	// A positive count always implies a real failure timestamp, and a zeroed
+	// timestamp always implies no outstanding failures.
+	if 0 < state.fails && state.lastNano == 0 {
+		t.Fatalf("invalid state: %d consecutive failures recorded with a zero timestamp", state.fails)
 	}
-	// And a zeroed timestamp always implies no outstanding failures.
-	if lastBackendFailNano.Load() == 0 {
-		if got := consecutiveBackendFails.Load(); got != 0 {
-			t.Fatalf("invalid state: zero timestamp with %d consecutive failures", got)
-		}
+	if state.lastNano == 0 && state.fails != 0 {
+		t.Fatalf("invalid state: zero timestamp with %d consecutive failures", state.fails)
 	}
+}
+
+// The reader must never combine a count from one transition with a timestamp
+// from another. The interleaving that mattered: a stale-streak reset drops the
+// count to 1 and stamps a fresh time, so a reader that loaded the old count
+// (past the threshold) and then the new timestamp would report an outage on the
+// strength of a single recent failure.
+//
+// Readers here run against writers that continuously age the streak out and
+// then fail again, which is exactly that reset. Every observation is checked
+// for self-consistency: degraded implies the snapshot it came from really did
+// hold both a threshold-crossing count and a recent timestamp.
+func TestBackendDegraded_ConcurrentReadersNeverSeeATornPair(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// One writer, so the state is deterministic: it alternates between a
+	// threshold-crossing streak that is already stale (not degraded, the count
+	// is too old to trust) and the single fresh failure that reset leaves
+	// behind (not degraded, one failure is below the threshold). Neither state
+	// is degraded, so a correct reader must never say it is.
+	stale := backendDegradedWindow + time.Second
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			backendFail.Store(&backendFailState{
+				fails:    backendDegradedFailThreshold + 5,
+				lastNano: time.Now().Add(-stale).UnixNano(),
+			})
+			// stale streak discarded: {threshold+5, old} becomes {1, now}
+			noteBackendFailure()
+		}
+	}()
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				if isBackendDegraded() {
+					t.Error("reader saw a degraded backend, but the state was never both recent and past the threshold: the count and the timestamp came from different transitions")
+					return
+				}
+			}
+		}()
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	close(done)
+	wg.Wait()
 }
 
 func TestBackendDegraded_ConcurrentFailuresReachThreshold(t *testing.T) {
@@ -218,7 +292,7 @@ func TestBackendDegraded_ConcurrentFailuresReachThreshold(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := consecutiveBackendFails.Load(); got != 32 {
+	if got := backendFails(); got != 32 {
 		t.Fatalf("consecutive failures = %d after 32 concurrent failures, want 32", got)
 	}
 	if !isBackendDegraded() {

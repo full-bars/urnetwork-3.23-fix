@@ -33,20 +33,36 @@ var (
 	writeErrThrottle  = newLogThrottle(time.Minute)
 )
 
-// lastBackendFailNano is updated on every backend failure (auth or OOB), not
-// rate-limited. Used by isBackendDegraded() as the recency guard.
-var lastBackendFailNano atomic.Int64
+// backendFailState is the backend health signal: a count of consecutive
+// failures and the time of the most recent one. The two are one value, not two.
+// isBackendDegraded needs them from the SAME transition — read separately, a
+// stale-streak reset landing between the two loads pairs the old count with the
+// new timestamp, and the backend reads as degraded on the strength of a single
+// recent failure. Storing an immutable snapshot behind atomic.Pointer makes
+// that pairing structural, and keeps the read lock-free: isBackendDegraded runs
+// per contract creation and per window resize, so a mutex on the read path
+// would put process-wide contention on a hot read to close a race that only
+// writers can create.
+type backendFailState struct {
+	// fails counts backend failures (auth or OOB) since the last success. Any
+	// successful connect or OOB result resets it to 0. A real platform outage
+	// drives this up fast because every attempt fails with nothing to reset it;
+	// isolated transient timeouts never accumulate because an interleaved
+	// success clears the count. isBackendDegraded() requires this to cross a
+	// threshold so one or two stray failures are not mistaken for an outage.
+	fails int64
+	// lastNano is the time of the most recent failure, in unix nanos. Updated
+	// on every failure, not rate-limited. Used by isBackendDegraded() as the
+	// recency guard. Zero means no outstanding failures.
+	lastNano int64
+}
 
-// consecutiveBackendFails counts backend failures (auth or OOB) since the last
-// success. Any successful connect or OOB result resets it to 0. A real platform
-// outage drives this up fast because every attempt fails with nothing to reset
-// it; isolated transient timeouts never accumulate because an interleaved
-// success clears the count. isBackendDegraded() requires this to cross a
-// threshold so one or two stray failures are not mistaken for an outage.
+// backendFail holds the current backend health signal. Never nil after init,
+// so readers do not have to nil-check.
 //
 // This is process-wide rather than per-Client on purpose: "is the control API
 // reachable from this host" is a property of the host, not of any one client.
-// A host running many proxies gets a stronger signal from sharing the counter,
+// A host running many proxies gets a stronger signal from sharing the state,
 // because a success on any one clears it — so a single misbehaving proxy
 // cannot trip the threshold on its own.
 //
@@ -55,12 +71,17 @@ var lastBackendFailNano atomic.Int64
 // endpoint can gate a healthy one. Accepted for now — the fleet runs one
 // platform per process — and keying this state by platform url is the upgrade
 // path if that changes.
-var consecutiveBackendFails atomic.Int64
+var backendFail atomic.Pointer[backendFailState]
 
-// backendFailMu guards the pair (consecutiveBackendFails, lastBackendFailNano).
-// Both are atomics, but the count and the timestamp move together as one
-// logical transition; see noteBackendSuccess for the interleaving this closes.
+// backendFailMu serializes writers. The pointer store is atomic, but building
+// the next state reads the current one first, and that read-modify-write has to
+// be exclusive or two concurrent failures both read the same count and one
+// increment is lost.
 var backendFailMu sync.Mutex
+
+func init() {
+	backendFail.Store(&backendFailState{})
+}
 
 // activeProxyConnections counts proxy transports that are currently registered
 // with the route manager (i.e. authenticated and live on the platform). It is
@@ -106,11 +127,14 @@ func shouldLogWriteErr() (bool, int64) {
 // therefore a bounded probe burst every ~backendDegradedWindow, not a latched
 // stop — which is also what makes recovery need no timer of its own.
 func isBackendDegraded() bool {
-	if consecutiveBackendFails.Load() < backendDegradedFailThreshold {
+	// one load: the count and the timestamp are guaranteed to come from the
+	// same transition, so no interleaving writer can pair a stale count with a
+	// fresh timestamp under the reader.
+	state := backendFail.Load()
+	if state.fails < backendDegradedFailThreshold {
 		return false
 	}
-	now := time.Now().UnixNano()
-	return now-lastBackendFailNano.Load() < int64(backendDegradedWindow)
+	return time.Now().UnixNano()-state.lastNano < int64(backendDegradedWindow)
 }
 
 // IsBackendDegraded is the exported form for use by the provider binary.
@@ -133,30 +157,25 @@ func noteBackendFailure() {
 	backendFailMu.Lock()
 	defer backendFailMu.Unlock()
 
-	last := lastBackendFailNano.Load()
-	if last != 0 && int64(backendDegradedWindow) <= now-last {
-		consecutiveBackendFails.Store(1)
-	} else {
-		consecutiveBackendFails.Add(1)
+	state := backendFail.Load()
+	fails := int64(1)
+	if state.lastNano != 0 && now-state.lastNano < int64(backendDegradedWindow) {
+		fails = state.fails + 1
 	}
-	lastBackendFailNano.Store(now)
+	backendFail.Store(&backendFailState{fails: fails, lastNano: now})
 }
 
 // noteBackendSuccess clears the recorded backend failure state after a
 // successful auth or OOB round-trip.
 //
-// It takes backendFailMu for the same reason noteBackendFailure does: clearing
-// the count and the timestamp is one logical transition. Unsynchronized, a
-// concurrent failure could land its increment and timestamp between the two
-// stores here, leaving a positive count with a zero timestamp — a state
-// isBackendDegraded reads as "not degraded" while failures are in fact
-// accumulating.
+// It takes backendFailMu so the clear cannot land in the middle of a
+// concurrent noteBackendFailure's read-modify-write, which would otherwise
+// resurrect the count it just cleared.
 func noteBackendSuccess() {
 	backendFailMu.Lock()
 	defer backendFailMu.Unlock()
 
-	consecutiveBackendFails.Store(0)
-	lastBackendFailNano.Store(0)
+	backendFail.Store(&backendFailState{})
 }
 
 // note that it is possible to have multiple transports for the same client destination
