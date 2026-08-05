@@ -52,8 +52,6 @@ func NewPeerManager(ctx context.Context, client *Client, peerManagerSettings *Pe
 	}
 }
 
-// Client returns the client this peer manager belongs to, set at
-// construction.
 func (self *PeerManager) Client() *Client {
 	return self.client
 }
@@ -73,12 +71,6 @@ func (self *PeerManager) Receive(source TransferPath, frames []*protocol.Frame, 
 	}
 }
 
-// handleControlFrame applies a single network-peer announcement frame. Only
-// MessageType_TransferNetworkPeersReset and
-// MessageType_TransferNetworkPeersUpdate are handled; any other message type
-// is ignored and returns nil. When the applied change modified the peer
-// state, the peers monitor is notified. Returns the frame decode or peer
-// update error, if any.
 func (self *PeerManager) handleControlFrame(frame *protocol.Frame) error {
 	switch frame.MessageType {
 	case protocol.MessageType_TransferNetworkPeersReset, protocol.MessageType_TransferNetworkPeersUpdate:
@@ -104,9 +96,6 @@ func (self *PeerManager) handleControlFrame(frame *protocol.Frame) error {
 	return nil
 }
 
-// resetPeers clears both the connected peers and the disconnect markers,
-// replacing the peer set with the empty state the platform announces on each
-// connect. Returns whether any peer state was cleared. Holds the state lock.
 func (self *PeerManager) resetPeers() bool {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -117,13 +106,6 @@ func (self *PeerManager) resetPeers() bool {
 	return changed
 }
 
-// updatePeers applies a network peer diff: a peer with a disconnect time is
-// moved from connected to the disconnect markers, and a peer without one is
-// (re)inserted as connected with its identity metadata, dropping any prior
-// disconnect marker. The disconnect markers are capped at 10000 entries,
-// aging out expired ones first and evicting an arbitrary entry if the cap
-// still holds. Returns whether the peer state changed, or an error if a peer
-// id cannot be decoded. Holds the state lock.
 func (self *PeerManager) updatePeers(update *protocol.NetworkPeersUpdate) (bool, error) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -170,11 +152,8 @@ func (self *PeerManager) updatePeers(update *protocol.NetworkPeersUpdate) (bool,
 	return changed, nil
 }
 
-// ageOutDisconnectTimesLocked removes disconnect markers older than the
-// configured disconnected peer window, so the disconnected count reflects only
-// recent disconnects and the marker map stays bounded. The Locked suffix
-// means the caller must hold the state lock (it is called from updatePeers
-// and NetworkPeers, both of which do).
+// ageOutDisconnectTimesLocked must be called with the state lock held; it
+// is called from updatePeers and NetworkPeers, both of which do.
 func (self *PeerManager) ageOutDisconnectTimesLocked() {
 	windowStart := time.Now().Add(-self.peerManagerSettings.DisconnectedPeerWindow)
 	for clientId, disconnectTime := range self.disconnectTimes {
