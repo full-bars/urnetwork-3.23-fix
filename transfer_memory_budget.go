@@ -33,6 +33,8 @@ func NewTransferMemoryBudget(totalByteCount ByteCount) *TransferMemoryBudget {
 	}
 }
 
+// TotalByteCount returns the budget's fixed total, as configured at
+// construction; it never changes.
 func (self *TransferMemoryBudget) TotalByteCount() ByteCount {
 	return self.totalByteCount
 }
@@ -42,6 +44,8 @@ func (self *TransferMemoryBudget) Available() ByteCount {
 	return max(0, self.totalByteCount-self.usedByteCount.Load())
 }
 
+// UsedByteCount returns the number of bytes currently reserved but not yet
+// released — the outstanding borrow against the budget.
 func (self *TransferMemoryBudget) UsedByteCount() ByteCount {
 	return self.usedByteCount.Load()
 }

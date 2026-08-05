@@ -113,6 +113,10 @@ func (self *ControlSyncOob) Send(frame *protocol.Frame, ackCallback AckFunction)
 	go HandleError(send, handleCancel)
 }
 
+// Close cancels the control's context, stopping new attempts and background
+// retries. An out-of-band request already in flight completes its API round
+// trip and may still invoke the ack callback. Close is idempotent and safe
+// to call from any goroutine.
 func (self *ControlSyncOob) Close() {
 	self.cancel()
 }

@@ -55,15 +55,22 @@ func NewStreamManager(ctx context.Context, client *Client, webRtcManager *WebRtc
 	return streamManager
 }
 
+// initBuffers stores the WebRTC manager and creates the stream buffer;
+// called once by NewStreamManager before the manager is used.
 func (self *StreamManager) initBuffers(webRtcManager *WebRtcManager) {
 	self.webRtcManager = webRtcManager
 	self.streamBuffer = NewStreamBuffer(self.ctx, self, self.streamManagerSettings.StreamBufferSettings)
 }
 
+// Client returns the client the stream manager was created with; stream
+// sequences use it for their P2P transports and logging.
 func (self *StreamManager) Client() *Client {
 	return self.client
 }
 
+// WebRtcManager returns the WebRTC manager the stream manager was created
+// with (nil when constructed with none); stream P2P transports use it for
+// signaling and peer connections.
 func (self *StreamManager) WebRtcManager() *WebRtcManager {
 	return self.webRtcManager
 }
@@ -78,6 +85,10 @@ func (self *StreamManager) Receive(source TransferPath, frames []*protocol.Frame
 	}
 }
 
+// handleControlFrame applies a stream control frame: TransferStreamOpen
+// opens the stream, TransferStreamClose closes it, and TransferStreamReset
+// cancels all streams and reopens the streams listed in the message. Other
+// message types are ignored. It returns a decode error, or nil.
 func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 	switch frame.MessageType {
 	case protocol.MessageType_TransferStreamOpen, protocol.MessageType_TransferStreamClose, protocol.MessageType_TransferStreamReset:
@@ -140,6 +151,8 @@ func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 	return nil
 }
 
+// IsStreamOpen reports whether the given stream id is open in the stream
+// buffer.
 func (self *StreamManager) IsStreamOpen(streamId Id) bool {
 	return self.streamBuffer.IsStreamOpen(streamId)
 }
@@ -196,6 +209,9 @@ func NewStreamBuffer(ctx context.Context, streamManager *StreamManager, streamBu
 	}
 }
 
+// ResetStreams cancels every registered stream sequence under the buffer
+// lock, which stops their run loops and P2P transports; each sequence is
+// unregistered by its own cleanup as it shuts down.
 func (self *StreamBuffer) ResetStreams() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -204,6 +220,13 @@ func (self *StreamBuffer) ResetStreams() {
 	}
 }
 
+// OpenStream creates (or reuses) a stream sequence for the given
+// source/destination/stream ids, starts its run loop, and opens it, retrying
+// once with a fresh sequence if the first open fails. It returns whether the
+// stream ended up open, or the error. An existing sequence for the same
+// (source, destination, stream) tuple is reused and re-opened; a sequence
+// registered under the same stream id for a different tuple is cancelled and
+// replaced. It returns (false, error) when the buffer context is done.
 func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId Id) (bool, error) {
 	streamSequenceId := newStreamSequenceId(sourceId, destinationId, streamId)
 
@@ -266,6 +289,9 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 	return success, err
 }
 
+// CloseStream cancels the sequence registered for the stream id, if any; it
+// is a no-op when the stream is not open. The sequence's map entries are
+// removed by its cleanup once its run loop exits.
 func (self *StreamBuffer) CloseStream(streamId Id) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -275,6 +301,9 @@ func (self *StreamBuffer) CloseStream(streamId Id) {
 	}
 }
 
+// IsStreamOpen reports whether a stream sequence is currently registered for
+// the stream id. A sequence that is shutting down still counts as open until
+// its cleanup unregisters it.
 func (self *StreamBuffer) IsStreamOpen(streamId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -319,6 +348,11 @@ func NewStreamSequence(
 	}
 }
 
+// Open marks the sequence open: it increments the sequence's open count
+// (decremented when the caller is done), so the run loop's idle timeout
+// keeps the sequence running. It returns (true, nil) unless the sequence
+// context is cancelled or the idle condition is already closed, in which
+// case it returns (false, error).
 func (self *StreamSequence) Open() (bool, error) {
 	select {
 	case <-self.ctx.Done():
@@ -334,6 +368,11 @@ func (self *StreamSequence) Open() (bool, error) {
 	return true, nil
 }
 
+// Run runs the stream sequence: it starts P2P transports for the stream (to
+// the source and/or destination peer, relaying traffic between the two when
+// both ends are present) and then blocks until the sequence context is
+// cancelled, which also stops the transports. It cancels the context when it
+// returns.
 func (self *StreamSequence) Run() {
 	defer self.cancel()
 
@@ -450,10 +489,14 @@ func (self *StreamSequence) Run() {
 	}
 }
 
+// Cancel cancels the sequence context, stopping Run and the stream's P2P
+// transports. It is idempotent and safe to call from any goroutine.
 func (self *StreamSequence) Cancel() {
 	self.cancel()
 }
 
+// Close is equivalent to Cancel: it cancels the sequence context, stopping
+// the run loop. The stream buffer's cleanup calls it once Run exits.
 func (self *StreamSequence) Close() {
 	self.cancel()
 }
