@@ -310,3 +310,108 @@ func TestSequencePeerAuditComplete_LogsSendErrorWithoutPanicking(t *testing.T) {
 		t.Fatal("expected peerAudit to be reset to nil after Complete()")
 	}
 }
+
+// successClientOob is a minimal OutOfBandControl double that always succeeds,
+// invoking the callback synchronously with a nil error and no result frames.
+// It is the success-side counterpart to NewNoContractClientOob, which only
+// ever fails.
+type successClientOob struct{}
+
+func (self *successClientOob) SendControl(frames []*protocol.Frame, callback OobResultFunction) {
+	if callback != nil {
+		callback(nil, nil)
+	}
+}
+
+// TestCreateContract_OobFailureRecordsBackendFailure is a regression test for
+// the CreateContract change that replaced the inlined
+// lastBackendFailNano.Store/consecutiveBackendFails.Add pair with a call to
+// noteBackendFailure(): a failed contract OOB round-trip must still register
+// as a backend failure through the shared helper.
+func TestCreateContract_OobFailureRecordsBackendFailure(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	contractManager := client.ContractManager()
+
+	contractKey := ContractKey{
+		Destination: DestinationId(NewId()),
+	}
+
+	contractManager.CreateContract(contractKey, 0, 0)
+
+	if got := consecutiveBackendFails.Load(); got != 1 {
+		t.Fatalf("consecutive failures = %d after one failed CreateContract, want 1", got)
+	}
+	if lastBackendFailNano.Load() == 0 {
+		t.Fatal("lastBackendFailNano not set after a failed CreateContract")
+	}
+}
+
+// TestCreateContract_OobSuccessClearsBackendFailure is a regression test for
+// the CreateContract change that replaced the inlined
+// lastBackendFailNano.Store(0)/consecutiveBackendFails.Store(0) pair with a
+// call to noteBackendSuccess(): a successful contract OOB round-trip must
+// still clear a pre-existing failure streak through the shared helper.
+func TestCreateContract_OobSuccessClearsBackendFailure(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	// seed a pre-existing failure streak, as if a prior auth or contract
+	// round-trip had failed.
+	noteBackendFailure()
+	noteBackendFailure()
+
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, &successClientOob{}, settings)
+	defer client.Cancel()
+	contractManager := client.ContractManager()
+
+	contractKey := ContractKey{
+		Destination: DestinationId(NewId()),
+	}
+
+	contractManager.CreateContract(contractKey, 0, 0)
+
+	if got := consecutiveBackendFails.Load(); got != 0 {
+		t.Fatalf("consecutive failures = %d after a successful CreateContract, want 0", got)
+	}
+	if lastBackendFailNano.Load() != 0 {
+		t.Fatal("lastBackendFailNano not cleared after a successful CreateContract")
+	}
+}
+
+// TestCreateContract_ClientDoneSkipsFailureRecording confirms the
+// client.Done() carve-out around the noteBackendFailure() call still holds
+// after the switch to the helper: a contract OOB error that arrives after
+// (or because) the client has closed must not be recorded as a backend
+// failure, since it says nothing about the backend's health.
+func TestCreateContract_ClientDoneSkipsFailureRecording(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	// close the client before the OOB round-trip is attempted, so the error
+	// callback observes client.Done() already closed.
+	client.Cancel()
+
+	contractKey := ContractKey{
+		Destination: DestinationId(NewId()),
+	}
+
+	client.ContractManager().CreateContract(contractKey, 0, 0)
+
+	if got := consecutiveBackendFails.Load(); got != 0 {
+		t.Fatalf("consecutive failures = %d after CreateContract on a closed client, want 0 (client.Done() carve-out should skip recording)", got)
+	}
+	if lastBackendFailNano.Load() != 0 {
+		t.Fatal("lastBackendFailNano set after CreateContract on a closed client; the client.Done() carve-out should skip recording")
+	}
+}

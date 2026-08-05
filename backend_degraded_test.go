@@ -302,6 +302,114 @@ func TestWindowExpansionIsGatedOnBackendHealth(t *testing.T) {
 	}
 }
 
+// Tight boundary check on isBackendDegraded's recency comparison
+// (now-last < backendDegradedWindow): a failure timestamped just inside the
+// window must still read as degraded.
+func TestBackendDegraded_JustInsideWindowIsDegraded(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	for i := 0; i < backendDegradedFailThreshold; i++ {
+		noteBackendFailure()
+	}
+	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow + 500*time.Millisecond).UnixNano())
+
+	if !isBackendDegraded() {
+		t.Fatal("not degraded with the last failure just inside the recency window")
+	}
+}
+
+// The mirror of the above: a failure timestamped just outside the window must
+// read as not degraded, distinguishing this from the coarse-margin case
+// already covered by TestBackendDegraded_StaleFailuresAreNotDegraded.
+func TestBackendDegraded_JustOutsideWindowIsNotDegraded(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	for i := 0; i < backendDegradedFailThreshold; i++ {
+		noteBackendFailure()
+	}
+	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow - 500*time.Millisecond).UnixNano())
+
+	if isBackendDegraded() {
+		t.Fatal("still degraded with the last failure just outside the recency window")
+	}
+}
+
+// noteBackendFailure's own boundary: the streak-reset comparison
+// (backendDegradedWindow <= now-last) uses <=, so a gap of exactly the window
+// (modulo the small delay of the store/call itself) must discard the old
+// streak, not extend it.
+func TestNoteBackendFailure_GapAtWindowResetsStreak(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	for i := 0; i < backendDegradedFailThreshold; i++ {
+		noteBackendFailure()
+	}
+	// Put the last failure just far enough in the past that any elapsed time
+	// through this call is >= the window.
+	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow).UnixNano())
+
+	noteBackendFailure()
+
+	if got := consecutiveBackendFails.Load(); got != 1 {
+		t.Fatalf("consecutive failures = %d after a gap of exactly the window, want 1 (streak should reset)", got)
+	}
+}
+
+// The mirror of the above: a gap just short of the window must extend the
+// streak rather than reset it.
+func TestNoteBackendFailure_GapJustInsideWindowExtendsStreak(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	noteBackendFailure()
+	lastBackendFailNano.Store(time.Now().Add(-backendDegradedWindow + 500*time.Millisecond).UnixNano())
+
+	noteBackendFailure()
+
+	if got := consecutiveBackendFails.Load(); got != 2 {
+		t.Fatalf("consecutive failures = %d after a gap just inside the window, want 2 (streak should extend)", got)
+	}
+}
+
+// noteBackendFailure called from a completely clean state (no prior failure
+// timestamp) must start a fresh streak rather than dereference or
+// misinterpret the zero timestamp as a very old failure.
+func TestNoteBackendFailure_FirstFailureFromCleanState(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	before := time.Now().UnixNano()
+	noteBackendFailure()
+	after := time.Now().UnixNano()
+
+	if got := consecutiveBackendFails.Load(); got != 1 {
+		t.Fatalf("consecutive failures = %d after the first failure, want 1", got)
+	}
+	ts := lastBackendFailNano.Load()
+	if ts < before || after < ts {
+		t.Fatalf("lastBackendFailNano = %d, want a value between %d and %d", ts, before, after)
+	}
+}
+
+// noteBackendSuccess on an already-clean state must be a no-op, not panic or
+// otherwise misbehave.
+func TestNoteBackendSuccess_OnCleanStateIsNoOp(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+
+	noteBackendSuccess()
+
+	if got := consecutiveBackendFails.Load(); got != 0 {
+		t.Fatalf("consecutive failures = %d after noteBackendSuccess on a clean state, want 0", got)
+	}
+	if lastBackendFailNano.Load() != 0 {
+		t.Fatal("lastBackendFailNano set after noteBackendSuccess on a clean state")
+	}
+}
+
 func readDegradedSource(name string) (string, error) {
 	b, err := os.ReadFile(name)
 	if err != nil {
