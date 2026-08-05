@@ -2331,7 +2331,9 @@ func (self *TcpSequence) Run() {
 					}
 					return
 				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					self.log.V(2).Infof("[f%d]timeout\n", forwardIter)
+					if v := self.log.V(2); v.Enabled() {
+						v.Infof("[f%d]timeout\n", forwardIter)
+					}
 					return
 				} else {
 					// some other error
