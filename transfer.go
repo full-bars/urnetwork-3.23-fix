@@ -2003,6 +2003,16 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 // upstream (urnetwork/connect): when acks are delayed (not lost) by queueing,
 // a flat timeout re-sends the whole in-flight window every interval, and the
 // duplicates feed the congestion that delayed the acks in the first place.
+//
+// The shift saturates at 16 rather than growing until the cap binds, so for a
+// scaled RTT below roughly 122µs (maxResendInterval >> 16 at the 8s default)
+// the interval plateaus BELOW maxResendInterval and stops growing, even though
+// MaxResendCount == 0 permits unlimited retransmissions. That is upstream's
+// behavior and is kept deliberately: this helper exists to align with upstream,
+// and a saturating loop would fork the exact code the alignment is for. Real
+// relay paths do not produce scaled RTTs that small, and the 8s cap was tuned
+// against this shift design. If a transport ever does land in that range,
+// changing it is an upstream conversation, not a local patch.
 func resendBackoff(scaledRtt time.Duration, sendCount int, maxResendInterval time.Duration) time.Duration {
 	if shift := uint(min(sendCount-1, 16)); 0 < shift {
 		return min(scaledRtt<<shift, maxResendInterval)
