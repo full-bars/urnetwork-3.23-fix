@@ -109,6 +109,43 @@ func TestPacketLogShapes_NoPanic(t *testing.T) {
 	}
 }
 
+// TestTimeoutLogShape_NoPanic is a smoke test over the exact call shape this
+// PR introduced in ip.go's TcpSequence.Run (the per-forward-iteration
+// "[f%d]timeout" site): guarding
+// `self.log.V(2).Infof("[f%d]timeout\n", forwardIter)` with
+// `if v := self.log.V(2); v.Enabled() { ... }` must not change the level or
+// arguments passed through to Infof, against the real glog-backed logger.
+func TestTimeoutLogShape_NoPanic(t *testing.T) {
+	logger := NewGlogLogger()
+
+	logger.V(2).Infof("[f%d]timeout\n", benchInt)
+
+	if v := logger.V(2); v.Enabled() {
+		v.Infof("[f%d]timeout\n", benchInt)
+	}
+}
+
+// TestVerboseGuard_InvokesInfofWithIntArgWhenEnabled mirrors the exact
+// argument type passed at the ip.go call site this PR guards (forwardIter is
+// an int), rather than only the string arg used by the other Infof guard
+// tests above, to catch a guard implementation that only forwards string
+// arguments correctly.
+func TestVerboseGuard_InvokesInfofWithIntArgWhenEnabled(t *testing.T) {
+	logger := &fakeLogger{verboseEnabled: true}
+
+	if v := logger.V(2); v.Enabled() {
+		v.Infof("[f%d]timeout\n", 7)
+	}
+
+	if len(logger.infofCalls) != 1 {
+		t.Fatalf("expected exactly one Infof call, got %d", len(logger.infofCalls))
+	}
+	got := logger.infofCalls[0]
+	if got.format != "[f%d]timeout\n" || len(got.args) != 1 || got.args[0] != 7 {
+		t.Fatalf("unexpected Infof call: %+v", got)
+	}
+}
+
 // fakeLogger is a minimal Logger/Verbose test double that records Infof
 // calls and lets the test control Enabled() deterministically, independent
 // of glog's global verbosity flag state.
