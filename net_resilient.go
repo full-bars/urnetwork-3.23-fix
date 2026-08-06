@@ -183,6 +183,71 @@ func (self *ResilientTlsConn) writeRecord(w io.Writer, record []byte) error {
 	return err
 }
 
+// writeFragmentsAlternatingTtl sends the server-name portion of the client
+// hello one fragment at a time, alternating the socket TTL to force
+// retransmits and out-of-order arrival, then writes the tail record. The
+// TTL restore is deferred so it runs on every return path; a fragment-write
+// failure closes the connection (see writeRecord), so the restore is a
+// no-op there — it matters on the paths that hand the connection back
+// usable. The explicit restore before the tail record is sequencing, not
+// duplicate cleanup: the tail record must go out at the native TTL, which
+// the deferred restore would only reach after the write.
+func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn, ttlCtl *ttlControl, nativeTtl int, tlsHeader *tlsHeader, handshakeBytes []byte, serverNameValueEnd int, split int, step int) error {
+	defer ttlCtl.set(nativeTtl)
+
+	ttlCtl.set(0)
+	record := tlsHeader.reconstruct(handshakeBytes[0:split])
+	if err := self.writeRecord(tcpConn, record); err != nil {
+		return err
+	}
+
+	for i := split; i < serverNameValueEnd; i += step {
+		var ttl int
+		if 0 == mathrand.Intn(2) {
+			ttl = 0
+		} else {
+			ttl = nativeTtl
+		}
+		ttlCtl.set(ttl)
+		record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, serverNameValueEnd)])
+		if err := self.writeRecord(tcpConn, record); err != nil {
+			return err
+		}
+	}
+
+	ttlCtl.set(nativeTtl)
+
+	tailRecord := tlsHeader.reconstruct(handshakeBytes[serverNameValueEnd:])
+	return self.writeRecord(tcpConn, tailRecord)
+}
+
+// writeBlocksAlternatingTtl sends the record in blocks, alternating the
+// socket TTL to force retransmits and out-of-order arrival. The TTL restore
+// is deferred so it runs on every return path; a block-write failure closes
+// the connection (see writeRecord), so the restore is a no-op there — it
+// matters on the paths that hand the connection back usable.
+func (self *ResilientTlsConn) writeBlocksAlternatingTtl(tcpConn *net.TCPConn, ttlCtl *ttlControl, nativeTtl int, tlsBytes []byte, blockSize int) error {
+	defer ttlCtl.set(nativeTtl)
+
+	for i := 0; i*blockSize < len(tlsBytes); i += 1 {
+		var ttl int
+		if 0 == i%2 {
+			ttl = 0
+		} else {
+			ttl = nativeTtl
+		}
+		ttlCtl.set(ttl)
+		b := tlsBytes[i*blockSize : min((i+1)*blockSize, len(tlsBytes))]
+		if err := self.writeRecord(tcpConn, b); err != nil {
+			return err
+		}
+	}
+
+	ttlCtl.set(nativeTtl)
+
+	return nil
+}
+
 // Write sends b over the underlying connection. While enabled, TLS records
 // are intercepted before the write: handshake records (content type 22) that
 // carry a server name are fragmented only when fragment is set, and sent
@@ -229,6 +294,12 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 								ttlCtl, err := newTtlControl(tcpConn)
 								if err != nil {
+									// nothing has hit the wire yet: the buffer
+									// still holds the whole record and the wire
+									// is clean. The close is for caller-retry
+									// safety: b was already appended to the
+									// buffer, so a retry would double-append.
+									self.failConnection()
 									return 0, err
 								}
 
@@ -243,43 +314,11 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									self.buffer = self.buffer[5+tlsHeader.contentLength:]
 									continue
 								}
-								// restore the TTL on every exit after this point.
-								// a fragment-write failure closes the connection,
-								// so the restore is a no-op there; it matters on
-								// the paths that hand the connection back usable
-								defer ttlCtl.set(nativeTtl)
 
-								// fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
-
-								ttlCtl.set(0)
-								record := tlsHeader.reconstruct(handshakeBytes[0:split])
-								if err := self.writeRecord(tcpConn, record); err != nil {
+								if err := self.writeFragmentsAlternatingTtl(tcpConn, ttlCtl, nativeTtl, tlsHeader, handshakeBytes, meta.ServerNameValueEnd, split, step); err != nil {
 									return 0, err
 								}
-								// fmt.Printf("frag ttl=0\n")
 
-								for i := split; i < meta.ServerNameValueEnd; i += step {
-									var ttl int
-									if 0 == mathrand.Intn(2) {
-										ttl = 0
-									} else {
-										ttl = nativeTtl
-									}
-									ttlCtl.set(ttl)
-									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
-									if err := self.writeRecord(tcpConn, record); err != nil {
-										return 0, err
-									}
-									// fmt.Printf("frag ttl=%d\n", ttl)
-								}
-
-								ttlCtl.set(nativeTtl)
-
-								tailRecord := tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
-								if err := self.writeRecord(tcpConn, tailRecord); err != nil {
-									return 0, err
-								}
-								// fmt.Printf("frag ttl=%d\n", nativeTtl)
 							} else if self.fragment {
 
 								record := tlsHeader.reconstruct(handshakeBytes[0:split])
@@ -307,6 +346,12 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 								ttlCtl, err := newTtlControl(tcpConn)
 								if err != nil {
+									// nothing has hit the wire yet: the buffer
+									// still holds the whole record and the wire
+									// is clean. The close is for caller-retry
+									// safety: b was already appended to the
+									// buffer, so a retry would double-append.
+									self.failConnection()
 									return 0, err
 								}
 
@@ -319,27 +364,10 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									self.buffer = self.buffer[5+tlsHeader.contentLength:]
 									continue
 								}
-								// restore the TTL on every exit after this point.
-								// a block-write failure closes the connection, so
-								// the restore is a no-op there; it matters on the
-								// paths that hand the connection back usable
-								defer ttlCtl.set(nativeTtl)
 
-								for i := 0; i*blockSize < len(tlsBytes); i += 1 {
-									var ttl int
-									if 0 == i%2 {
-										ttl = 0
-									} else {
-										ttl = nativeTtl
-									}
-									ttlCtl.set(ttl)
-									b := tlsBytes[i*blockSize : min((i+1)*blockSize, len(tlsBytes))]
-									if err := self.writeRecord(tcpConn, b); err != nil {
-										return 0, err
-									}
+								if err := self.writeBlocksAlternatingTtl(tcpConn, ttlCtl, nativeTtl, tlsBytes, blockSize); err != nil {
+									return 0, err
 								}
-
-								ttlCtl.set(nativeTtl)
 
 							} else {
 								record := tlsHeader.reconstruct(handshakeBytes)
