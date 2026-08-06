@@ -5,6 +5,7 @@ package connect
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -301,5 +302,240 @@ func TestResilientTlsConnReorderOnlyFragmentsOnFailure(t *testing.T) {
 	client.SetWriteDeadline(time.Time{})
 	if _, err := rconn.Write(record); err == nil {
 		t.Fatalf("write after reorder failure: expected error (conn closed), got nil")
+	}
+}
+
+func TestResilientTlsConnReorderOnlySuccessRestoresTtl(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+	setSocketTtl(t, client, 42)
+
+	rconn := NewResilientTlsConn(client, false, true)
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+
+	// The reorder-only path writes the record as a sequence of raw byte
+	// blocks (not re-wrapped as separate TLS records), so the peer must
+	// see the exact original bytes once reassembled.
+	if got := socketTtl(t, client); got != 42 {
+		t.Fatalf("socket TTL after reorder-only write = %d, want 42 (native restored)", got)
+	}
+
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes than written")
+	}
+}
+
+func TestResilientTlsConnReorderOnlyDoesNotLeakFileDescriptors(t *testing.T) {
+	record := buildClientHelloRecord(t)
+
+	before := countOpenFds(t)
+	for i := 0; i < 20; i++ {
+		client, server := newTcpPair(t)
+		client.SetWriteDeadline(time.Now().Add(-time.Second))
+		rconn := NewResilientTlsConn(client, false, true)
+		if _, err := rconn.Write(record); err == nil {
+			t.Fatalf("iteration %d: expected write error, got nil", i)
+		}
+		client.Close()
+		server.Close()
+	}
+	after := countOpenFds(t)
+	if after > before+5 {
+		t.Fatalf("file descriptors grew from %d to %d over 20 failed reorder writes", before, after)
+	}
+}
+
+func TestResilientTlsConnFragmentOnlySuccess(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+
+	// fragment without reorder: this path does not touch the fd or TTL at
+	// all, only splits the record into standalone TLS records.
+	rconn := NewResilientTlsConn(client, true, false)
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+
+	got := readTlsRecords(t, server, len(record)-5)
+	if !bytes.Equal(got, record[5:]) {
+		t.Fatalf("peer received different payload than written")
+	}
+}
+
+func TestResilientTlsConnFragmentOnlyFailureDropsBuffer(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+
+	// Expire the deadline so the first fragment write fails deterministically.
+	client.SetWriteDeadline(time.Now().Add(-time.Second))
+
+	rconn := NewResilientTlsConn(client, true, false)
+	_, err := rconn.Write(record)
+	if err == nil {
+		t.Fatalf("write with expired deadline: expected error, got nil")
+	}
+
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after fragment-only write failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after fragment-only write failure: %d bytes", len(rconn.buffer))
+	}
+
+	// A retry after disable must send the raw bytes directly, without
+	// re-fragmenting the stale record.
+	client.SetWriteDeadline(time.Time{})
+	if _, err := rconn.Write(record); err != nil {
+		t.Fatalf("write after disable: %v", err)
+	}
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read after disable: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes after disable")
+	}
+}
+
+// countingFailConn wraps a net.Conn but is deliberately never a
+// *net.TCPConn, so ResilientTlsConn.Write must take the non-fd fallback
+// branch (self.conn.Write) for fragment handling instead of the TCPConn/fd
+// branch. The call-th Write (1-indexed) returns failErr instead of
+// forwarding to the underlying conn; every other call is forwarded so the
+// peer still observes the bytes that were actually sent.
+type countingFailConn struct {
+	net.Conn
+	calls   int
+	failAt  int
+	failErr error
+}
+
+func (c *countingFailConn) Write(b []byte) (int, error) {
+	c.calls++
+	if c.failAt > 0 && c.calls == c.failAt {
+		return 0, c.failErr
+	}
+	return c.Conn.Write(b)
+}
+
+func TestResilientTlsConnNonTCPConnFragmentSuccess(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+
+	wrapped := &countingFailConn{Conn: client}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+	if wrapped.calls == 0 {
+		t.Fatalf("expected writes to be forwarded through the wrapped non-TCPConn")
+	}
+
+	got := readTlsRecords(t, server, len(record)-5)
+	if !bytes.Equal(got, record[5:]) {
+		t.Fatalf("peer received different payload than written")
+	}
+}
+
+func TestResilientTlsConnNonTCPConnFragmentFailureDropsBuffer(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	failErr := errors.New("injected write failure")
+	wrapped := &countingFailConn{Conn: client, failAt: 1, failErr: failErr}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	_, err := rconn.Write(record)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("write error = %v, want %v", err, failErr)
+	}
+
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after non-TCPConn fragment write failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after non-TCPConn fragment write failure: %d bytes", len(rconn.buffer))
+	}
+}
+
+func TestResilientTlsConnOffNoopWhenBufferEmpty(t *testing.T) {
+	client, server := newTcpPair(t)
+	rconn := NewResilientTlsConn(client, true, false)
+
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not empty before Off: %d bytes", len(rconn.buffer))
+	}
+
+	rconn.Off()
+
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after Off")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer unexpectedly non-empty after a no-op Off: %d bytes", len(rconn.buffer))
+	}
+
+	// Nothing should have been written to the peer since the buffer was
+	// empty; the read must time out rather than return data.
+	server.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	one := make([]byte, 1)
+	_, err := server.Read(one)
+	if err == nil {
+		t.Fatalf("peer unexpectedly received data from a no-op Off")
+	}
+	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("unexpected error waiting for no data: %v", err)
+	}
+}
+
+func TestResilientTlsConnOffDrainFailureKeepsBuffer(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	rconn := NewResilientTlsConn(client, true, false)
+
+	partial := record[:15]
+	n, err := rconn.Write(partial)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(partial) {
+		t.Fatalf("write n=%d want %d", n, len(partial))
+	}
+	if len(rconn.buffer) != len(partial) {
+		t.Fatalf("buffered %d bytes, want %d", len(rconn.buffer), len(partial))
+	}
+
+	// Close the underlying conn so the drain write inside Off fails.
+	client.Close()
+
+	rconn.Off()
+
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after Off")
+	}
+	// A failed drain means the connection is unusable; the buffer is left
+	// as-is (the bytes are dropped either way since the conn is dead).
+	if len(rconn.buffer) != len(partial) {
+		t.Fatalf("buffer changed after a failed drain: got %d bytes, want %d (unchanged)", len(rconn.buffer), len(partial))
 	}
 }
