@@ -957,6 +957,106 @@ func TestResilientTlsConnFragmentFailsMidRecordAfterPartialSend(t *testing.T) {
 	}
 }
 
+// suffixFailConn short-writes the single write whose payload ends with
+// suffix, and lets every other write through.
+//
+// The fragment path emits a head record, a randomised number of middle
+// records, and a tail record. split and step are drawn from mathrand on
+// every Write, so the number of middle records changes run to run and the
+// tail lands at a different write index each time. A test that injects at a
+// fixed index therefore cannot reliably target the tail: it hits a middle
+// record on most runs. Matching on content instead pins the tail exactly,
+// on every run.
+type suffixFailConn struct {
+	net.Conn
+	suffix []byte
+	calls  int
+	failed bool
+	closed bool
+}
+
+func (c *suffixFailConn) Write(b []byte) (int, error) {
+	c.calls++
+	if !c.failed && 0 < len(c.suffix) && bytes.HasSuffix(b, c.suffix) {
+		c.failed = true
+		// land one byte and drop the rest: a short write with a nil error,
+		// which writeRecord must convert to io.ErrShortWrite
+		if n, err := c.Conn.Write(b[0:1]); err != nil {
+			return n, err
+		}
+		return 1, nil
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *suffixFailConn) Close() error {
+	c.closed = true
+	return c.Conn.Close()
+}
+
+// TestResilientTlsConnFragmentFailsOnTailRecord covers the last write of the
+// fragment path: the tail record that carries everything after the server
+// name. Every earlier fragment has already reached the peer at that point,
+// so the record is on the wire in pieces and cannot be coherently retried.
+//
+// This is the one fragment write that index-based injection cannot reach
+// reliably (see suffixFailConn), so without this test a regression that
+// dropped the tail record's error would go unnoticed.
+func TestResilientTlsConnFragmentFailsOnTailRecord(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	handshakeBytes := record[5:]
+	_, meta := UnmarshalClientHello(handshakeBytes)
+	if meta == nil {
+		t.Fatalf("test ClientHello did not parse")
+	}
+	// the tail is handshakeBytes[ServerNameValueEnd:]. No head or middle
+	// record can contain these bytes: both stop at ServerNameValueEnd, so
+	// the suffix match identifies the tail write uniquely.
+	tailPayload := handshakeBytes[meta.ServerNameValueEnd:]
+	if len(tailPayload) == 0 {
+		t.Fatalf("test record has no tail payload, cannot target the tail write")
+	}
+
+	client, _ := newTcpPair(t)
+	wrapped := &suffixFailConn{Conn: client, suffix: tailPayload}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	_, err := rconn.Write(record)
+	if err == nil {
+		t.Fatalf("tail record short write: expected non-nil error, got nil")
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("tail record short write error = %v, want io.ErrShortWrite", err)
+	}
+
+	// Proves the injection actually landed on the tail rather than silently
+	// never matching, which would make every assertion below vacuous.
+	if !wrapped.failed {
+		t.Fatalf("tail record was never written, injection did not fire")
+	}
+	// The tail is the last of head + middles + tail, so reaching it means
+	// every earlier fragment was already accepted by the peer.
+	if wrapped.calls < 3 {
+		t.Fatalf("expected head and middle fragments before the tail, got %d writes", wrapped.calls)
+	}
+
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after tail record failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after tail record failure: %d bytes", len(rconn.buffer))
+	}
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after tail record failure")
+	}
+
+	// A follow-up write must also fail: the connection is closed and the
+	// layer disabled, so nothing can append to the corrupt stream.
+	if _, err := rconn.Write(record); err == nil {
+		t.Fatalf("write after tail failure: expected non-nil error, got nil")
+	}
+}
+
 // TestResilientTlsConnNonTCPConnRawRecordShortWrite verifies a short write
 // on the raw-record flush path (non-handshake content type) fails the
 // connection and returns io.ErrShortWrite. The test uses a plain TLS
