@@ -528,9 +528,10 @@ func (self *MultiRouteSelector) updateRouteWeights() {
 }
 
 // GetActiveRoutes returns a new slice of the currently active routes,
-// shuffled so a caller can pick one at random. A route is active from the
-// moment it is added by updateTransport until a read observes its channel
-// closed.
+// shuffled so a caller can pick one; on a weighted selector the shuffle is
+// weighted by route weight (not uniform), so higher-weight routes are more
+// likely to be picked first. A route is active from the moment it is added
+// by updateTransport until a read observes its channel closed.
 func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
