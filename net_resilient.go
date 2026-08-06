@@ -187,9 +187,10 @@ func (self *ResilientTlsConn) writeRecord(w io.Writer, record []byte) error {
 // with alternating socket TTLs only when reorder is set and the underlying
 // connection is a *net.TCPConn; every other record is flushed as-is. On
 // success Write returns len(b), nil even when part of b remains buffered
-// awaiting a complete record; a failure flushing a buffered record returns
-// 0, err. When disabled, Write forwards directly to the underlying
-// connection.
+// awaiting a complete record; a failure flushing a buffered record drops
+// the buffer, disables the layer, and closes the connection (see
+// writeRecord), so a later retry cannot append to a corrupt stream. When
+// disabled, Write forwards directly to the underlying connection.
 func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 	if self.enabled {
 		self.buffer = append(self.buffer, b...)
