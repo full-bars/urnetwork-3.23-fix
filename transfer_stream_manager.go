@@ -450,6 +450,7 @@ func (self *StreamSequence) Run() {
 	}
 }
 
+// Cancel is idempotent and safe to call from any goroutine.
 func (self *StreamSequence) Cancel() {
 	self.cancel()
 }
