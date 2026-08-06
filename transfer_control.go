@@ -40,6 +40,12 @@ func NewControlSync(ctx context.Context, client *Client, scopeTag string) *Contr
 	}
 }
 
+// Send delivers a control frame to the control destination: ackCallback is
+// invoked at most once, with a nil error, when the message is acknowledged
+// — failures are retried rather than reported, and the callback does not
+// fire when the send is abandoned or superseded. Send takes ownership of
+// frame.MessageBytes and returns them to the message pool when the send
+// concludes.
 func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protocol.Frame, ackCallback AckFunction) {
 	// 1. try to send non-blocking
 	// 2. if fails, send blocking with no timeout
@@ -209,6 +215,9 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 	}, handleCancel)
 }
 
+// Close cancels the control's context. A message already queued in the
+// client may still be acknowledged afterwards. Close is idempotent and safe
+// to call from any goroutine.
 func (self *ControlSync) Close() {
 	self.cancel()
 }

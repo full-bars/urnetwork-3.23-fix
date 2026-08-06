@@ -81,6 +81,9 @@ func (self *RttWindow) coalesce(windowTime time.Time) {
 	}
 }
 
+// OpenTag starts an RTT sample: the caller attaches the returned tag to a
+// sent pack, gets it threaded back in the peer's ack, then passes it to
+// CloseTag.
 func (self *RttWindow) OpenTag() *protocol.Tag {
 	return self.openTag(time.Now())
 }
@@ -169,6 +172,8 @@ func newRttHeap() *rttHeap {
 	return h
 }
 
+// The heap has no internal lock; the owning window's state lock guards all
+// access.
 func (self *rttHeap) Add(item *rttWindowItem) {
 	heap.Push(self, item)
 	self.netRtt += item.rtt
