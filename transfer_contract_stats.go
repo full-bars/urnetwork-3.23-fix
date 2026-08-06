@@ -52,6 +52,8 @@ type contractStatsEntry struct {
 	emitted              bool
 }
 
+// updateUsedByteCount is called by the owning sequence on debit/ack; the epoch
+// worker reads the value when snapshotting, so no lock is shared between them.
 func (self *contractStatsEntry) updateUsedByteCount(usedByteCount ByteCount) {
 	self.usedByteCount.Store(int64(usedByteCount))
 }
