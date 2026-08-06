@@ -904,12 +904,56 @@ func TestResilientTlsConnNonTCPConnFragmentShortWrite(t *testing.T) {
 	if !wrapped.closed {
 		t.Fatalf("underlying connection not closed after a failed write")
 	}
+}
+
+// TestResilientTlsConnFragmentFailsMidRecordAfterPartialSend verifies the
+// fail-closed path when a LATER fragment of a record fails, after earlier
+// fragments already went out. That is the scenario the fail-closed design
+// exists for: the peer has part of the record while the buffer still holds
+// all of it, so the record cannot be coherently retried. Unlike the
+// first-write failure tests, this one fails on the third write, so at least
+// two fragments reach the wire before the failure.
+func TestResilientTlsConnFragmentFailsMidRecordAfterPartialSend(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	wrapped := &countingFailConn{Conn: client, shortWriteAt: 3, shortN: 1}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	_, err := rconn.Write(record)
+	if err == nil {
+		t.Fatalf("mid-record short write: expected non-nil error, got nil")
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("mid-record short write error = %v, want io.ErrShortWrite", err)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after mid-record short write")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after mid-record short write: %d bytes", len(rconn.buffer))
+	}
 
 	// The layer must also close the underlying connection, so a later
 	// write fails instead of appending to the corrupt stream. Without this
 	// the test would pass even if failConnection stopped closing.
 	if !wrapped.closed {
 		t.Fatalf("underlying connection not closed after a failed write")
+	}
+
+	// The discriminating assertion: at least one fragment was written
+	// before the failing one. The fragment path emits one record for
+	// handshakeBytes[0:split], then one per step chunk, then a tail record;
+	// failing on the third write proves earlier fragments went out. Without
+	// this assertion the test is just a duplicate of the first-write test.
+	if wrapped.calls <= 1 {
+		t.Fatalf("expected earlier fragments to be written before the failure, got %d writes", wrapped.calls)
+	}
+
+	// A follow-up write must also fail: the connection is closed and the
+	// layer disabled, so nothing can append to the corrupt stream.
+	if _, err := rconn.Write(record); err == nil {
+		t.Fatalf("write after failure: expected non-nil error, got nil")
 	}
 }
 
@@ -941,13 +985,6 @@ func TestResilientTlsConnNonTCPConnRawRecordShortWrite(t *testing.T) {
 	}
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after short write")
-	}
-
-	// The layer must also close the underlying connection, so a later
-	// write fails instead of appending to the corrupt stream. Without this
-	// the test would pass even if failConnection stopped closing.
-	if !wrapped.closed {
-		t.Fatalf("underlying connection not closed after a failed write")
 	}
 
 	// The layer must also close the underlying connection, so a later
