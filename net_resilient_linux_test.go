@@ -19,9 +19,11 @@ func countOpenFds(t *testing.T) int {
 	return len(entries)
 }
 
-// TestResilientTlsConnFragmentDoesNotLeakFileDescriptors verifies the
-// fragment path closes the dup'd socket fd on failure: before the fix, every
-// failed fragment write leaked one fd from tcpConn.File().
+// TestResilientTlsConnFragmentDoesNotLeakFileDescriptors guards the fragment
+// path against descriptor growth on failure. It originally caught a leak where
+// every failed fragment write stranded one fd from tcpConn.File(); the path now
+// reads the TTL through SyscallConn and never dups at all, so this stays as a
+// regression guard against reintroducing a File-based descriptor.
 func TestResilientTlsConnFragmentDoesNotLeakFileDescriptors(t *testing.T) {
 	record := buildClientHelloRecord(t)
 
@@ -42,9 +44,8 @@ func TestResilientTlsConnFragmentDoesNotLeakFileDescriptors(t *testing.T) {
 	}
 }
 
-// TestResilientTlsConnReorderOnlyDoesNotLeakFileDescriptors verifies the
-// reorder-only path closes the dup'd socket fd on failure, like the
-// fragment+reorder path.
+// TestResilientTlsConnReorderOnlyDoesNotLeakFileDescriptors is the same
+// regression guard for the reorder-only path.
 func TestResilientTlsConnReorderOnlyDoesNotLeakFileDescriptors(t *testing.T) {
 	record := buildClientHelloRecord(t)
 
