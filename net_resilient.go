@@ -123,7 +123,9 @@ func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientT
 	}
 }
 
-// Off permanently disables the resilient fragment/reorder layer. It drains
+// Off permanently disables the resilient fragment/reorder layer. It cannot be
+// re-enabled: once the TLS stream has been written past, the record boundaries
+// needed to realign the fragmentation are no longer known. It drains
 // any partially-buffered record first — an earlier Write already returned
 // len(b), nil for those bytes, so stranding them would silently lose data
 // the caller believes was sent. A partial or failed drain leaves the wire
