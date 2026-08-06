@@ -109,14 +109,25 @@ func newMessagePool(size int, maxCount int) *messagePool {
 	return mp
 }
 
+// shard returns the poolShard at index without bounds checking; indexes come
+// from nextShardIndex or from the shard-index meta byte of a message buffer.
 func (self *messagePool) shard(index int) *poolShard {
 	return self.shards[index]
 }
 
+// nextShardIndex returns the index of the next shard for Get, rotating
+// round-robin across the shards by advancing an atomic counter and masking
+// it with shardMask (the shard count must be a power of two).
 func (self *messagePool) nextShardIndex() int {
 	return int(self.shardNext.Add(1)-1) & int(self.shardMask)
 }
 
+// Resize replaces each shard's freelist with a new slice whose per-shard
+// capacity is maxCount/shardCount (floor 1), keeping the first count entries
+// and discarding the rest. Buffers already handed out are not invalidated —
+// the shard count and the shard-index meta byte never change, so such a
+// buffer can still be Put back later and will re-enter the freelist when
+// there is room.
 func (self *messagePool) Resize(maxCount int) {
 	maxCountPerShard := maxCount / self.shardCount
 	if maxCountPerShard < 1 {
@@ -132,6 +143,9 @@ func (self *messagePool) Resize(maxCount int) {
 	}
 }
 
+// Clear empties every shard's freelist (count reset to 0 and entries nil'd)
+// so the pooled buffers become garbage. It does not invalidate buffers
+// currently held by callers; a later Put returns them to the empty freelist.
 func (self *messagePool) Clear() {
 	for _, shard := range self.shards {
 		shard.mutex.Lock()
@@ -169,6 +183,15 @@ func (self *messagePool) Get() []byte {
 	return poolMessage
 }
 
+// Put returns a message that was handed out by Get back to the pool. The
+// owning shard is read from the meta byte at self.size+12, so the message
+// must be a full-length buffer (cap self.size+MessagePoolMetaByteCount) that
+// this pool produced — Put does not verify size, ownership, or the ref
+// count, and does not reset any meta bytes (MessagePoolReturn clears the
+// tag/flags/ref count under the shard lock before calling Put). The message
+// is pushed onto the shard's freelist when there is capacity and silently
+// dropped for GC otherwise. Put works after Clear or Resize: those only
+// touch the freelist, never the meta bytes of outstanding buffers.
 func (self *messagePool) Put(poolMessage []byte) {
 	shardIndex := int(poolMessage[self.size+12])
 	if shardIndex < 0 || shardIndex >= self.shardCount {
