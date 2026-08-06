@@ -258,8 +258,11 @@ func TestResilientTlsConnOffDrainsPartialRecord(t *testing.T) {
 	}
 
 	// Off must drain the buffered bytes to the wire before disabling, so
-	// the bytes an earlier Write accepted are not stranded.
-	rconn.Off()
+	// the bytes an earlier Write accepted are not stranded. A successful
+	// drain returns nil.
+	if err := rconn.Off(); err != nil {
+		t.Fatalf("Off: unexpected error %v", err)
+	}
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after Off")
 	}
@@ -459,7 +462,10 @@ func TestResilientTlsConnOffNoopWhenBufferEmpty(t *testing.T) {
 		t.Fatalf("buffer not empty before Off: %d bytes", len(rconn.buffer))
 	}
 
-	rconn.Off()
+	// Off on an empty buffer is a no-op and returns nil.
+	if err := rconn.Off(); err != nil {
+		t.Fatalf("Off: unexpected error %v", err)
+	}
 
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after Off")
@@ -502,7 +508,12 @@ func TestResilientTlsConnOffDrainFailureClosesConnection(t *testing.T) {
 	// Close the underlying conn so the drain write inside Off fails.
 	client.Close()
 
-	rconn.Off()
+	// A failed drain must surface as a non-nil error, not a silent success:
+	// the caller hands the connection back as established, so a silent
+	// failure would present a closed conn as live.
+	if err := rconn.Off(); err == nil {
+		t.Fatalf("Off: expected drain error, got nil")
+	}
 
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after Off")
