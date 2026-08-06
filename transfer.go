@@ -522,6 +522,9 @@ func (self *Client) Log() Logger {
 	return self.log
 }
 
+// initBuffers runs at the end of `NewClientWithTag`, before `ready` is
+// closed: the send path must exist before manager goroutines gated on
+// `ReadyNotify` (such as the encryption key publish) make their first send.
 func (self *Client) initBuffers(
 	routeManager *RouteManager,
 	contractManager *ContractManager,
@@ -598,6 +601,9 @@ func (self *Client) unwrapFrame(sourceId Id, roleHint protocol.SequenceRole, com
 	return nil, sequenceTlsRoleServer, false, fmt.Errorf("no encryption session for peer %s could decrypt", sourceId)
 }
 
+// ClientKeyManager returns the client's Ed25519 key manager. It may be nil:
+// when key initialization fails, `NewClientWithTag` logs the error and
+// continues without one.
 func (self *Client) ClientKeyManager() *ClientKeyManager {
 	return self.clientKeyManager
 }
@@ -622,6 +628,10 @@ func (self *Client) ClientOob() OutOfBandControl {
 	return self.clientOob
 }
 
+// ReportAbuse flags the peer that sent from `source` as abusive in a peer
+// audit sent to the platform. It is called by the security layer when a
+// peer's traffic trips an incident policy (for example a blocklisted
+// protocol).
 func (self *Client) ReportAbuse(source TransferPath) {
 	peerAudit := NewSequencePeerAudit(self, source, 0)
 	peerAudit.Update(func(peerAudit *PeerAudit) {
@@ -630,11 +640,18 @@ func (self *Client) ReportAbuse(source TransferPath) {
 	peerAudit.Complete()
 }
 
+// ForwardWithTimeout forwards pre-marshalled `TransferFrame` bytes toward the
+// destination encoded in their TransferPath. It reports only the enqueue —
+// not delivery: `true` means accepted, and the forward buffer then takes
+// ownership of `transferFrameBytes` (returning them to the message pool after
+// the write).
 func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration, opts ...any) bool {
 	success, err := self.ForwardWithTimeoutDetailed(transferFrameBytes, timeout, opts...)
 	return success && err == nil
 }
 
+// ForwardWithTimeoutDetailed is the Detailed form of ForwardWithTimeout. On
+// success the forward buffer takes ownership of `transferFrameBytes`.
 func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeout time.Duration, opts ...any) (bool, error) {
 	select {
 	case <-self.ctx.Done():
@@ -667,10 +684,15 @@ func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeou
 	return self.forwardBuffer.Pack(forwardPack, timeout)
 }
 
+// Forward is ForwardWithTimeout with no timeout: it waits indefinitely for
+// the frame to be accepted into the forward queue.
 func (self *Client) Forward(transferFrameBytes []byte, opts ...any) bool {
 	return self.ForwardWithTimeout(transferFrameBytes, -1, opts...)
 }
 
+// SendWithTimeout sends `frame` to `destination` and reports whether it was
+// accepted into the send queue; the acknowledgment is delivered asynchronously
+// to `ackCallback` (see SendWithTimeoutDetailed).
 func (self *Client) SendWithTimeout(
 	frame *protocol.Frame,
 	destination TransferPath,
@@ -682,6 +704,11 @@ func (self *Client) SendWithTimeout(
 	return success && err == nil
 }
 
+// SendWithTimeoutDetailed sends `frame` to `destination` and returns whether
+// it was accepted into the send queue. On acceptance the send sequence takes
+// ownership of `frame.MessageBytes`. `ackCallback` (may be nil) is invoked
+// asynchronously: once with nil when the message is acknowledged, or with a
+// non-nil error if the send is abandoned (no contract, sequence closed).
 func (self *Client) SendWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destination TransferPath,
@@ -699,6 +726,9 @@ func (self *Client) SendWithTimeoutDetailed(
 	)
 }
 
+// SendMultiHopWithTimeout sends `frame` through one or more intermediary
+// hops toward the final destination in `destination`; the ack arrives
+// asynchronously via `ackCallback` (see SendMultiHopWithTimeoutDetailed).
 func (self *Client) SendMultiHopWithTimeout(
 	frame *protocol.Frame,
 	destination MultiHopId,
@@ -710,6 +740,9 @@ func (self *Client) SendMultiHopWithTimeout(
 	return success && err == nil
 }
 
+// SendMultiHopWithTimeoutDetailed is the Detailed form of
+// SendMultiHopWithTimeout. Ownership, ack, and timeout semantics match
+// SendWithTimeoutDetailed.
 func (self *Client) SendMultiHopWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destination MultiHopId,
@@ -745,6 +778,11 @@ func (self *Client) sendWithTimeout(
 	return success && err == nil
 }
 
+// sendWithTimeoutDetailed is the core send path shared by
+// SendWithTimeoutDetailed and SendMultiHopWithTimeoutDetailed. On
+// acceptance the send sequence owns `frame.MessageBytes` and `ackCallback`
+// fires asynchronously (nil on ack, a non-nil error if the send is
+// abandoned).
 func (self *Client) sendWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destination TransferPath,
@@ -837,6 +875,8 @@ func (self *Client) sendWithTimeoutDetailed(
 	}
 }
 
+// SendControlWithTimeout sends `frame` to the platform control channel
+// (`ControlId`); ack and ownership semantics match SendWithTimeoutDetailed.
 func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback AckFunction, timeout time.Duration) bool {
 	return self.SendWithTimeout(
 		frame,
@@ -846,10 +886,16 @@ func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback Ac
 	)
 }
 
+// Send sends `frame` to `destination`, waiting indefinitely for acceptance
+// into the send queue; the ack arrives asynchronously via `ackCallback`
+// (SendWithTimeout with no timeout).
 func (self *Client) Send(frame *protocol.Frame, destination TransferPath, ackCallback AckFunction) bool {
 	return self.SendWithTimeout(frame, destination, ackCallback, -1)
 }
 
+// SendControl sends `frame` to the platform control channel (`ControlId`),
+// waiting indefinitely for acceptance into the send queue
+// (SendControlWithTimeout with no timeout).
 func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
 	return self.Send(
 		frame,
@@ -858,6 +904,9 @@ func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) 
 	)
 }
 
+// SendMultiHop sends `frame` along the hop chain in `destination`, waiting
+// indefinitely for acceptance into the send queue (SendMultiHopWithTimeout
+// with no timeout).
 func (self *Client) SendMultiHop(frame *protocol.Frame, destination MultiHopId, ackCallback AckFunction) bool {
 	return self.SendMultiHopWithTimeout(frame, destination, ackCallback, -1)
 }
@@ -900,6 +949,12 @@ func (self *Client) forward(path TransferPath, transferFrameBytes []byte) {
 	}
 }
 
+// AddReceiveCallback registers `receiveCallback` to be invoked for every
+// in-order pack delivered to this client. The `frames` slice is valid only
+// for the duration of the call. Callbacks run on the delivering sequence's
+// goroutine (or the loopback goroutine) — never on the caller's goroutine.
+// The returned function removes the callback and is safe to call more than
+// once.
 func (self *Client) AddReceiveCallback(receiveCallback ReceiveFunction) func() {
 	callbackId := self.receiveCallbacks.Add(receiveCallback)
 	return func() {
@@ -907,6 +962,11 @@ func (self *Client) AddReceiveCallback(receiveCallback ReceiveFunction) func() {
 	}
 }
 
+// AddForwardCallback registers `forwardCallback` to be invoked for every
+// message this client receives that is addressed to a destination other than
+// itself (relay traffic). The run loop does not return `transferFrameBytes`
+// to the message pool after dispatching, so a callback must not retain them
+// past the call.
 func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
 	callbackId := self.forwardCallbacks.Add(forwardCallback)
 	return func() {
@@ -914,6 +974,10 @@ func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
 	}
 }
 
+// run is the client's main loop, launched by NewClientWithTag. It is
+// started with the client's cancel as the HandleError error handler, so a
+// panic in the loop cancels the client context, tearing down the managers,
+// buffers, and sequences.
 func (self *Client) run() {
 	defer self.cancel()
 
@@ -1402,6 +1466,10 @@ func (self *Client) Cancel() {
 	self.forwardBuffer.Cancel()
 }
 
+// Flush shuts down all pending transfers, discarding queued items rather
+// than delivering them. It also flushes the contract manager's queued
+// contracts without resetting the used-contract tracking
+// (ContractManager.Flush is called with resetUsedContractIds=false).
 func (self *Client) Flush() {
 	self.sendBuffer.Flush()
 	self.receiveBuffer.Flush()
@@ -1494,6 +1562,10 @@ func NewSendBuffer(ctx context.Context,
 	}
 }
 
+// Pack enqueues `sendPack` for delivery on the send sequence keyed by its
+// destination. On success the sequence takes ownership of the pack's frame
+// message bytes (returned to the message pool once the pack is sent or the
+// sequence shuts down); on failure the caller retains ownership.
 func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
 	sendSequenceId := sendSequenceId{
 		Destination:         sendPack.Destination,
@@ -1897,6 +1969,10 @@ func (self *SendSequence) ResendQueueSizeAndMessageTypes() (int, ByteCount, Id, 
 	return count, byteSize, self.sequenceId, messageTypes
 }
 
+// Pack enqueues `sendPack` on the sequence's pack queue for its run loop to
+// send, waiting up to `timeout` for room in the queue. On acceptance the
+// sequence takes ownership of the pack's frame message bytes, returning them
+// to the message pool once they are sent or the sequence shuts down.
 // success, error
 func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
 	self.packMutex.Lock()
@@ -2326,6 +2402,11 @@ func computeFillFraction(meanRtt time.Duration, fallback float32) float32 {
 	return float32(high - (high-low)*(ms-100)/900)
 }
 
+// contractFillFraction returns the fill fraction used to size this
+// sequence's contracts. The fraction keeps a contract open while its
+// follow-up is being created; as it approaches 1, no-ack messages are more
+// likely to be dropped by out-of-sync contracts (see
+// SendBufferSettings.ContractFillFraction).
 func (self *SendSequence) contractFillFraction() float32 {
 	meanRtt := self.rttWindow.MeanRtt()
 	return computeFillFraction(meanRtt, self.sendBufferSettings.ContractFillFraction)
@@ -2539,12 +2620,20 @@ func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
 	}
 }
 
+// setContractAcked records whether `nextSendContract` has been
+// acknowledged by the receiver. Until it is acked, sendWithSetContract
+// forces ack=true on new items so no-ack messages cannot race ahead of the
+// contract itself.
 func (self *SendSequence) setContractAcked(nextSendContract *sequenceContract, ack bool) {
 	if self.sendContract == nextSendContract {
 		self.sendContractAcked = ack
 	}
 }
 
+// send writes one transfer frame carrying `frame` to the sequence's
+// destination (see sendWithSetContract). `ackCallback` fires with nil once
+// the item is acked, or with an error when the item is dropped or the
+// sequence shuts down.
 func (self *SendSequence) send(
 	frame *protocol.Frame,
 	ackCallback AckFunction,
@@ -2554,6 +2643,11 @@ func (self *SendSequence) send(
 	self.sendWithSetContract(frame, ackCallback, ack, false, forceUnwrapped)
 }
 
+// sendWithSetContract builds and writes one transfer frame for a message
+// and tracks it for retransmission and ack. The message frame bytes are
+// returned to the message pool once the wire frame is built; the resulting
+// transfer frame bytes are owned by the send item until it is acked or
+// dropped.
 func (self *SendSequence) sendWithSetContract(
 	frame *protocol.Frame,
 	ackCallback AckFunction,
@@ -2740,6 +2834,9 @@ func (self *SendSequence) sendWithSetContract(
 	}
 }
 
+// setHead rebuilds the transfer frame of `item` for a head retransmission.
+// The returned bytes are owned by the caller and are returned to the
+// message pool with the item when it completes or is dropped.
 func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 	if v := self.log.V(1); v.Enabled() {
 		v.Infof("[s]set head %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
@@ -2829,6 +2926,9 @@ func (self *SendSequence) setTag(item *sendItem) ([]byte, error) {
 }
 */
 
+// receiveAck applies an ack for `messageId` to the sequence's resend queue.
+// A selective ack defers the item's retransmission, on the assumption that
+// the receiver holds the message.
 func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol.Tag) {
 	item := self.resendQueue.GetByMessageId(messageId)
 	if item == nil {
@@ -3265,6 +3365,13 @@ func NewReceiveBuffer(ctx context.Context,
 	}
 }
 
+// Pack routes an inbound pack to the receive sequence keyed by its source,
+// sequence id, encryption role, and encryption companion, creating the
+// sequence if none exists. A newer sequence version cancels the previous
+// head sequence and waits for it to exit before starting the replacement,
+// so deliveries stay ordered across sequence versions. On success the
+// pack's frame bytes are owned by the sequence (or already returned to the
+// pool for a superseded pack); on failure the caller retains ownership.
 func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
 	receiveSequenceId := receiveSequenceId{
 		Source:              receivePack.Source,
@@ -3585,6 +3692,10 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 	}
 }
 
+// Run is the sequence's main loop, started once per ReceiveSequence by
+// ReceiveBuffer.Pack and blocking until the sequence terminates. On exit the
+// deferred teardown closes the exit channel last, so WaitForExit returns
+// only once teardown has fully completed.
 func (self *ReceiveSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -3946,6 +4057,10 @@ func (self *ReceiveSequence) sendAck(sequenceNumber uint64, messageId Id, select
 	self.ackWindow.Update(ack)
 }
 
+// receive handles an inbound ack (non-nack) pack. On a true return the frame
+// bytes have been consumed: returned to the pool by receiveHead on the
+// delivered path, or owned by the receive queue until the item is dequeued.
+// On false or error the caller retains ownership.
 func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	receiveTime := time.Now()
 
@@ -4332,6 +4447,9 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	return false
 }
 
+// updateContractStats publishes the contract's acked byte count to its
+// registered contract-manager stats entry, which the contract stats epoch
+// worker consumes.
 func (self *ReceiveSequence) updateContractStats(receiveContract *sequenceContract) {
 	if receiveContract.contractStatsEntry != nil {
 		receiveContract.contractStatsEntry.updateUsedByteCount(receiveContract.ackedByteCount)
@@ -4367,6 +4485,9 @@ func (self *ReceiveSequence) Cancel() {
 	self.cancel()
 }
 
+// WaitForExit blocks until the run loop has fully exited, that is, until
+// its deferred teardown has closed the exit channel (the teardown always
+// runs, so it is safe to call after Cancel).
 func (self *ReceiveSequence) WaitForExit() {
 	select {
 	case <-self.exit:
@@ -4463,6 +4584,10 @@ func newSequenceAckWindow() *sequenceAckWindow {
 	}
 }
 
+// Update records an ack in the window. An ack at or below the head — a late
+// duplicate of an already-acked message — is folded into the head
+// copy-on-write, since a concurrent Snapshot may have published the head
+// pointer.
 func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 	self.ackLock.Lock()
 	defer self.ackLock.Unlock()
@@ -4517,6 +4642,11 @@ func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 	self.ackMonitor.NotifyAll()
 }
 
+// Snapshot returns a point-in-time view of the window. When `reset` is true
+// the update count and selective acks are cleared — the head ack is kept so
+// the writer can resend it. The returned head ack pointer is shared with the
+// window: the caller must treat it as read-only (Update folds in late acks
+// copy-on-write).
 func (self *sequenceAckWindow) Snapshot(reset bool) sequenceAckWindowSnapshot {
 	self.ackLock.Lock()
 	defer self.ackLock.Unlock()
@@ -4700,6 +4830,9 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 	return true
 }
 
+// ack credits `byteCount` against the contract, moving it from the unacked
+// to the acked count. It panics when the unacked count does not cover the
+// credit — an accounting violation that must never occur.
 func (self *sequenceContract) ack(byteCount ByteCount) {
 	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
 
@@ -4742,6 +4875,10 @@ func NewForwardBuffer(ctx context.Context,
 	}
 }
 
+// Pack enqueues `forwardPack` for delivery on the forward sequence keyed by
+// its destination. On success the sequence takes ownership of the pack's
+// frame bytes (returned to the message pool once the pack is forwarded or
+// the sequence shuts down); on failure the caller retains ownership.
 func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration) (bool, error) {
 	initForwardSequence := func(skip *ForwardSequence) *ForwardSequence {
 		self.mutex.Lock()
