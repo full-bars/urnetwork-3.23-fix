@@ -37,7 +37,10 @@ func TestGzipJSONRoundtrip(t *testing.T) {
 
 func TestPersistRollup(t *testing.T) {
 	s := newTestStore(t)
-	now := time.Now().UTC()
+	// pinned mid-hour: rows bucket by epoch-hour, so a bare time.Now() within
+	// 30s of the top of the hour would push the second report into the next
+	// bucket and yield two rows
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 
 	// two reports in the same hour for the same node
 	s.upsert("n1", &nodeState{
@@ -157,7 +160,8 @@ func TestInternProxy(t *testing.T) {
 
 func TestPersistWritesProxyNodeHourly(t *testing.T) {
 	s := newTestStore(t)
-	now := time.Now().UTC()
+	// pinned mid-hour, same epoch-hour bucketing reason as TestPersistRollup
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 
 	addr := "1.2.3.4:1080"
 
