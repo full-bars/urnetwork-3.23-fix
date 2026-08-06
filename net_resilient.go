@@ -227,14 +227,12 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 							if self.fragment && self.reorder {
 								tcpConn.SetNoDelay(true)
 
-								f, err := tcpConn.File()
+								ttlCtl, err := newTtlControl(tcpConn)
 								if err != nil {
 									return 0, err
 								}
-								defer f.Close()
-								fd := SocketHandle(f.Fd())
 
-								nativeTtl := GetSocketTtl(fd)
+								nativeTtl := ttlCtl.get()
 								if nativeTtl <= 0 {
 									// syscall failed or returned a value we can't safely restore
 									// (setting back to 0 would drop all packets at the first hop)
@@ -245,14 +243,15 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									self.buffer = self.buffer[5+tlsHeader.contentLength:]
 									continue
 								}
-								// restore the TTL on every exit after this point,
-								// including fragment-write failures; defer LIFO
-								// runs it before f.Close() closes the dup'd fd
-								defer SetSocketTtl(fd, nativeTtl)
+								// restore the TTL on every exit after this point.
+								// a fragment-write failure closes the connection,
+								// so the restore is a no-op there; it matters on
+								// the paths that hand the connection back usable
+								defer ttlCtl.set(nativeTtl)
 
 								// fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
 
-								SetSocketTtl(fd, 0)
+								ttlCtl.set(0)
 								record := tlsHeader.reconstruct(handshakeBytes[0:split])
 								if err := self.writeRecord(tcpConn, record); err != nil {
 									return 0, err
@@ -266,7 +265,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									} else {
 										ttl = nativeTtl
 									}
-									SetSocketTtl(fd, ttl)
+									ttlCtl.set(ttl)
 									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
 									if err := self.writeRecord(tcpConn, record); err != nil {
 										return 0, err
@@ -274,7 +273,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									// fmt.Printf("frag ttl=%d\n", ttl)
 								}
 
-								SetSocketTtl(fd, nativeTtl)
+								ttlCtl.set(nativeTtl)
 
 								tailRecord := tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
 								if err := self.writeRecord(tcpConn, tailRecord); err != nil {
@@ -306,14 +305,12 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 								tcpConn.SetNoDelay(true)
 
-								f, err := tcpConn.File()
+								ttlCtl, err := newTtlControl(tcpConn)
 								if err != nil {
 									return 0, err
 								}
-								defer f.Close()
-								fd := SocketHandle(f.Fd())
 
-								nativeTtl := GetSocketTtl(fd)
+								nativeTtl := ttlCtl.get()
 								if nativeTtl <= 0 {
 									// syscall failed; fall back to a single write
 									if err := self.writeRecord(tcpConn, tlsBytes); err != nil {
@@ -322,10 +319,11 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									self.buffer = self.buffer[5+tlsHeader.contentLength:]
 									continue
 								}
-								// restore the TTL on every exit after this point,
-								// including block-write failures; defer LIFO
-								// runs it before f.Close() closes the dup'd fd
-								defer SetSocketTtl(fd, nativeTtl)
+								// restore the TTL on every exit after this point.
+								// a block-write failure closes the connection, so
+								// the restore is a no-op there; it matters on the
+								// paths that hand the connection back usable
+								defer ttlCtl.set(nativeTtl)
 
 								for i := 0; i*blockSize < len(tlsBytes); i += 1 {
 									var ttl int
@@ -334,14 +332,14 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									} else {
 										ttl = nativeTtl
 									}
-									SetSocketTtl(fd, ttl)
+									ttlCtl.set(ttl)
 									b := tlsBytes[i*blockSize : min((i+1)*blockSize, len(tlsBytes))]
 									if err := self.writeRecord(tcpConn, b); err != nil {
 										return 0, err
 									}
 								}
 
-								SetSocketTtl(fd, nativeTtl)
+								ttlCtl.set(nativeTtl)
 
 							} else {
 								record := tlsHeader.reconstruct(handshakeBytes)
