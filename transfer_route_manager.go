@@ -100,6 +100,8 @@ func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
 	self.readerMatchState.Downgrade(source)
 }
 
+// OpenMultiRouteWriter opens a multi-route writer to a destination; pair
+// every opened writer with CloseMultiRouteWriter.
 func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRouteWriter {
 	if !destination.IsDestinationMask() {
 		panic(fmt.Errorf("Destination required for writer: %s", destination))
@@ -111,6 +113,10 @@ func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRo
 	return MultiRouteWriter(self.writerMatchState.openMultiRouteSelector(destination))
 }
 
+// CloseMultiRouteWriter unregisters the writer's selector from the writer
+// match state. The route channels belong to the transports and are not
+// closed here, and the selector's context is not cancelled: a frame in
+// flight to a route channel is unaffected.
 func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -118,6 +124,8 @@ func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.writerMatchState.closeMultiRouteSelector(w.(*MultiRouteSelector))
 }
 
+// OpenMultiRouteReader opens a multi-route reader to a destination; pair
+// every opened reader with CloseMultiRouteReader.
 func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRouteReader {
 	if !destination.IsDestinationMask() {
 		panic(fmt.Errorf("Destination required for reader: %s", destination))
@@ -129,6 +137,10 @@ func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRo
 	return MultiRouteReader(self.readerMatchState.openMultiRouteSelector(destination))
 }
 
+// CloseMultiRouteReader unregisters the reader's selector from the reader
+// match state. Unread frames remain in the transport-owned route channels;
+// the channels are not closed here and the selector's context is not
+// cancelled.
 func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -148,6 +160,9 @@ func (self *RouteManager) RemoveTransport(transport Transport) {
 	self.UpdateTransport(transport, nil)
 }
 
+// getTransportStats returns the transport's counters across both match
+// states; a nil value for a side means the transport is not registered on
+// that side.
 func (self *RouteManager) getTransportStats(transport Transport) (writerStats *RouteStats, readerStats *RouteStats) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -188,6 +203,8 @@ func NewMatchState(ctx context.Context, clientTag string, log Logger, weightedRo
 	}
 }
 
+// getTransportStats is called from RouteManager.getTransportStats, which
+// holds the RouteManager mutex.
 func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	destinations, ok := self.transportMatchedDestinations[transport]
 	if !ok {
@@ -209,6 +226,8 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	return netStats
 }
 
+// openMultiRouteSelector is called by OpenMultiRouteWriter and
+// OpenMultiRouteReader under the RouteManager mutex.
 func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiRouteSelector {
 	multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, self.log, destination, self.weightedRoutes)
 
@@ -236,6 +255,9 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
 	return multiRouteSelector
 }
 
+// closeMultiRouteSelector unregisters the selector from its destination's
+// selector set. The selector's own state and the transport-owned route
+// channels are left untouched.
 func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
 	// TODO readers do not need to prioritize routes
 
@@ -256,6 +278,8 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 	}
 }
 
+// updateTransport is called from RouteManager.UpdateTransport, which holds
+// the RouteManager mutex.
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	if len(routes) == 0 {
 		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
@@ -297,6 +321,8 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	}
 }
 
+// Downgrade is called from RouteManager.DowngradeReceiverConnection, which
+// holds the RouteManager mutex.
 func (self *MatchState) Downgrade(source TransferPath) {
 	for transport, _ := range self.transportRoutes {
 		transport.Downgrade(source)
@@ -427,6 +453,8 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	self.transportUpdate.NotifyAll()
 }
 
+// updateRouteWeights is called by updateTransport on weighted selectors
+// while holding the selector mutex.
 func (self *MultiRouteSelector) updateRouteWeights() {
 	updatedRouteWeight := map[Route]float32{}
 
@@ -499,6 +527,11 @@ func (self *MultiRouteSelector) updateRouteWeights() {
 	}
 }
 
+// GetActiveRoutes returns a new slice of the currently active routes,
+// shuffled so a caller can pick one; on a weighted selector the shuffle is
+// weighted by route weight (not uniform), so higher-weight routes are more
+// likely to be picked first. A route is active from the moment it is added
+// by updateTransport until a read observes its channel closed.
 func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -525,6 +558,8 @@ func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	return activeRoutes
 }
 
+// GetInactiveRoutes returns a new slice of the registered routes that are
+// not currently active — routes whose channel a read observed closed.
 func (self *MultiRouteSelector) GetInactiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -541,6 +576,8 @@ func (self *MultiRouteSelector) GetInactiveRoutes() []Route {
 	return inactiveRoutes
 }
 
+// setActive is called by Read, which marks a route inactive when it
+// observes the route's channel closed.
 func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -548,6 +585,9 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.routeActive[route] = active
 }
 
+// updateSendStats is called once per frame delivered by WriteDetailed. The
+// counters feed transport-level stats aggregation (getTransportStats) and,
+// on weighted selectors, the next weight recomputation.
 func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -561,6 +601,9 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 	stats.sendByteCount += sendByteCount
 }
 
+// updateReceiveStats is called once per frame delivered by Read. The
+// counters feed transport-level stats aggregation (getTransportStats) and,
+// on weighted selectors, the next weight recomputation.
 func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -574,6 +617,9 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
 	stats.receiveByteCount += receiveByteCount
 }
 
+// Write delivers transferFrameBytes to one of the active routes, or returns
+// an error on failure. On any failure the frame has already been returned
+// to the message pool, so the caller must treat it as consumed.
 func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error {
 	success, err := self.WriteDetailed(ctx, transferFrameBytes, timeout)
 	if err != nil {
@@ -810,6 +856,10 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 	}
 }
 
+// Close cancels the selector's context, so a blocked Read or Write returns
+// immediately with a "Done" error. It does not close the route channels (they
+// are owned by the transports) and does not unregister the selector from its
+// match state.
 func (self *MultiRouteSelector) Close() {
 	self.cancel()
 }

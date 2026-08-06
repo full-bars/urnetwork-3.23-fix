@@ -152,6 +152,8 @@ func (self *PeerManager) updatePeers(update *protocol.NetworkPeersUpdate) (bool,
 	return changed, nil
 }
 
+// ageOutDisconnectTimesLocked must be called with the state lock held; it
+// is called from updatePeers and NetworkPeers, both of which do.
 func (self *PeerManager) ageOutDisconnectTimesLocked() {
 	windowStart := time.Now().Add(-self.peerManagerSettings.DisconnectedPeerWindow)
 	for clientId, disconnectTime := range self.disconnectTimes {
