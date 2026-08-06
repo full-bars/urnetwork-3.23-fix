@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -104,15 +105,21 @@ func newTcpPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 	return client.(*net.TCPConn), server
 }
 
-// socketTtl reads the socket TTL through a dup'd fd, like the resilient path.
+// socketTtl reads the socket TTL through SyscallConn, like the resilient path.
+//
+// These helpers deliberately avoid TCPConn.File plus os.File.Fd. Fd puts the
+// socket into blocking mode, which detaches it from the runtime poller and
+// stops write deadlines from being enforced. Several tests below fail a write
+// by expiring the write deadline, so a helper that quietly switched the socket
+// to blocking mode would defeat the failure injection and let those tests pass
+// without exercising the failure path at all.
 func socketTtl(t *testing.T, conn *net.TCPConn) int {
 	t.Helper()
-	f, err := conn.File()
+	ttlCtl, err := newTtlControl(conn)
 	if err != nil {
-		t.Fatalf("file: %v", err)
+		t.Fatalf("syscall conn: %v", err)
 	}
-	defer f.Close()
-	return GetSocketTtl(SocketHandle(f.Fd()))
+	return ttlCtl.get()
 }
 
 // setSocketTtl sets the socket TTL to ttl for the duration of the test.
@@ -120,20 +127,45 @@ func socketTtl(t *testing.T, conn *net.TCPConn) int {
 // may already be closed, so a failure there must not fail the test.
 func setSocketTtl(t *testing.T, conn *net.TCPConn, ttl int) {
 	t.Helper()
-	f, err := conn.File()
+	ttlCtl, err := newTtlControl(conn)
 	if err != nil {
-		t.Fatalf("file: %v", err)
+		t.Fatalf("syscall conn: %v", err)
 	}
-	SetSocketTtl(SocketHandle(f.Fd()), ttl)
-	f.Close()
-	t.Cleanup(func() {
-		f, err := conn.File()
-		if err != nil {
-			return // conn already closed; nothing to restore
-		}
-		SetSocketTtl(SocketHandle(f.Fd()), 64)
-		f.Close()
-	})
+	ttlCtl.set(ttl)
+	t.Cleanup(func() { ttlCtl.set(64) })
+}
+
+// probeTtl reads the socket TTL through a dup'd descriptor held open by the
+// test. The dup keeps the socket alive after failConnection closes the conn,
+// so the TTL stays observable on the failure paths. It goes through
+// SyscallConn rather than Fd for the blocking-mode reason above.
+func probeTtl(t *testing.T, probe *os.File) int {
+	t.Helper()
+	raw, err := probe.SyscallConn()
+	if err != nil {
+		t.Fatalf("probe syscall conn: %v", err)
+	}
+	var ttl int
+	if err := raw.Control(func(fd uintptr) {
+		ttl = GetSocketTtl(SocketHandle(fd))
+	}); err != nil {
+		t.Fatalf("probe control: %v", err)
+	}
+	return ttl
+}
+
+// setProbeTtl sets the socket TTL through the dup'd descriptor.
+func setProbeTtl(t *testing.T, probe *os.File, ttl int) {
+	t.Helper()
+	raw, err := probe.SyscallConn()
+	if err != nil {
+		t.Fatalf("probe syscall conn: %v", err)
+	}
+	if err := raw.Control(func(fd uintptr) {
+		SetSocketTtl(SocketHandle(fd), ttl)
+	}); err != nil {
+		t.Fatalf("probe control: %v", err)
+	}
 }
 
 // readTlsRecords reads raw TLS records from r and returns their
@@ -161,7 +193,7 @@ func readTlsRecords(t *testing.T, r io.Reader, wantPayloadLen int) []byte {
 	return payload
 }
 
-func TestResilientTlsConnFragmentRestoresTtlAndClosesFd(t *testing.T) {
+func TestResilientTlsConnFragmentRestoresTtl(t *testing.T) {
 	record := buildClientHelloRecord(t)
 	client, server := newTcpPair(t)
 	setSocketTtl(t, client, 42)
@@ -202,7 +234,7 @@ func TestResilientTlsConnFragmentFailureDisablesAndRestoresTtl(t *testing.T) {
 		t.Fatalf("file: %v", err)
 	}
 	defer probe.Close()
-	SetSocketTtl(SocketHandle(probe.Fd()), 42)
+	setProbeTtl(t, probe, 42)
 
 	// Expire the write deadline so the first fragment write fails
 	// deterministically after the fd and native TTL are acquired.
@@ -225,7 +257,7 @@ func TestResilientTlsConnFragmentFailureDisablesAndRestoresTtl(t *testing.T) {
 
 	// The socket TTL must be restored even on the failure path (via the
 	// dup'd fd; the original conn is closed by failConnection).
-	if got := GetSocketTtl(SocketHandle(probe.Fd())); got != 42 {
+	if got := probeTtl(t, probe); got != 42 {
 		t.Fatalf("socket TTL after failed fragmented write = %d, want 42 (restored)", got)
 	}
 
@@ -288,7 +320,7 @@ func TestResilientTlsConnReorderOnlyFragmentsOnFailure(t *testing.T) {
 		t.Fatalf("file: %v", err)
 	}
 	defer probe.Close()
-	SetSocketTtl(SocketHandle(probe.Fd()), 42)
+	setProbeTtl(t, probe, 42)
 
 	client.SetWriteDeadline(time.Now().Add(-time.Second))
 	rconn := NewResilientTlsConn(client, false, true)
@@ -299,7 +331,7 @@ func TestResilientTlsConnReorderOnlyFragmentsOnFailure(t *testing.T) {
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after reorder write failure")
 	}
-	if got := GetSocketTtl(SocketHandle(probe.Fd())); got != 42 {
+	if got := probeTtl(t, probe); got != 42 {
 		t.Fatalf("socket TTL after failed reorder write = %d, want 42 (restored)", got)
 	}
 	client.SetWriteDeadline(time.Time{})
