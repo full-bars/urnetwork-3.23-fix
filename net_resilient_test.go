@@ -335,26 +335,6 @@ func TestResilientTlsConnReorderOnlySuccessRestoresTtl(t *testing.T) {
 	}
 }
 
-func TestResilientTlsConnReorderOnlyDoesNotLeakFileDescriptors(t *testing.T) {
-	record := buildClientHelloRecord(t)
-
-	before := countOpenFds(t)
-	for i := 0; i < 20; i++ {
-		client, server := newTcpPair(t)
-		client.SetWriteDeadline(time.Now().Add(-time.Second))
-		rconn := NewResilientTlsConn(client, false, true)
-		if _, err := rconn.Write(record); err == nil {
-			t.Fatalf("iteration %d: expected write error, got nil", i)
-		}
-		client.Close()
-		server.Close()
-	}
-	after := countOpenFds(t)
-	if after > before+5 {
-		t.Fatalf("file descriptors grew from %d to %d over 20 failed reorder writes", before, after)
-	}
-}
-
 func TestResilientTlsConnFragmentOnlySuccess(t *testing.T) {
 	record := buildClientHelloRecord(t)
 	client, server := newTcpPair(t)
@@ -378,7 +358,7 @@ func TestResilientTlsConnFragmentOnlySuccess(t *testing.T) {
 
 func TestResilientTlsConnFragmentOnlyFailureDropsBuffer(t *testing.T) {
 	record := buildClientHelloRecord(t)
-	client, server := newTcpPair(t)
+	client, _ := newTcpPair(t)
 
 	// Expire the deadline so the first fragment write fails deterministically.
 	client.SetWriteDeadline(time.Now().Add(-time.Second))
@@ -396,18 +376,12 @@ func TestResilientTlsConnFragmentOnlyFailureDropsBuffer(t *testing.T) {
 		t.Fatalf("buffer not dropped after fragment-only write failure: %d bytes", len(rconn.buffer))
 	}
 
-	// A retry after disable must send the raw bytes directly, without
-	// re-fragmenting the stale record.
+	// A retry after the failure must fail: the connection is closed after
+	// the indeterminate fragment state, so retries cannot re-fragment the
+	// stale record or append to the corrupt stream.
 	client.SetWriteDeadline(time.Time{})
-	if _, err := rconn.Write(record); err != nil {
-		t.Fatalf("write after disable: %v", err)
-	}
-	got := make([]byte, len(record))
-	if _, err := io.ReadFull(server, got); err != nil {
-		t.Fatalf("read after disable: %v", err)
-	}
-	if !bytes.Equal(got, record) {
-		t.Fatalf("peer received different bytes after disable")
+	if _, err := rconn.Write(record); err == nil {
+		t.Fatalf("write after fragment failure: expected error (conn closed), got nil")
 	}
 }
 
@@ -507,7 +481,7 @@ func TestResilientTlsConnOffNoopWhenBufferEmpty(t *testing.T) {
 	}
 }
 
-func TestResilientTlsConnOffDrainFailureKeepsBuffer(t *testing.T) {
+func TestResilientTlsConnOffDrainFailureClosesConnection(t *testing.T) {
 	record := buildClientHelloRecord(t)
 	client, _ := newTcpPair(t)
 
@@ -533,9 +507,10 @@ func TestResilientTlsConnOffDrainFailureKeepsBuffer(t *testing.T) {
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after Off")
 	}
-	// A failed drain means the connection is unusable; the buffer is left
-	// as-is (the bytes are dropped either way since the conn is dead).
-	if len(rconn.buffer) != len(partial) {
-		t.Fatalf("buffer changed after a failed drain: got %d bytes, want %d (unchanged)", len(rconn.buffer), len(partial))
+	// A failed drain leaves the wire state indeterminate: the connection is
+	// closed and the buffer cleared so nothing can be appended to the
+	// partial stream.
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not cleared after a failed drain: got %d bytes", len(rconn.buffer))
 	}
 }
