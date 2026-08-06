@@ -39,6 +39,10 @@ jobs:
   type:
     name: Type label (from title)
     runs-on: ubuntu-latest
+    # Must run after `area`: actions/labeler@v5 with sync-labels replaces the
+    # whole label set from its own snapshot of the PR's labels, so a type label
+    # added while the area job is in flight gets wiped by its final write.
+    needs: [area]
     steps:
       - name: Derive and apply type label
         env:
