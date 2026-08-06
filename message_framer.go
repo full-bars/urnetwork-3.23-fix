@@ -70,6 +70,12 @@ func NewFramer(settings *FramerSettings) *Framer {
 	}
 }
 
+// Read reads one length-prefixed frame from r: a 4-byte header whose first
+// two bytes are the big-endian payload length (the second uint16 is the
+// split index used by Write and is ignored here), followed by that many
+// payload bytes read via io.ReadFull. The payload is returned in a pooled
+// message buffer the caller owns (MessagePoolReturn when done). A frame
+// whose payload exceeds MaxMessageLen is rejected with an error.
 func (self *Framer) Read(r io.Reader) ([]byte, error) {
 	var h [4]byte
 	n, err := r.Read(h[:])

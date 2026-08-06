@@ -106,6 +106,13 @@ type DialContextSettings struct {
 	DialContext DialContextFunction
 }
 
+// DialContext dials network/addr, applying the family policy from
+// DisableIpv4/DisableIpv6: explicitly requested families that are disabled
+// (tcp4/tcp6/udp4/udp6) are rejected, while generic "tcp"/"udp" are remapped
+// to the enabled family. The dial goes through DialContextSettings.DialContext
+// when set, otherwise through ProxySettings.NewDialContext when a proxy is
+// configured, otherwise through a plain NetDialer. Dial results are logged
+// at V(2).
 func (self *ConnectSettings) DialContext(ctx context.Context, network string, addr string) (net.Conn, error) {
 	if self.DisableIpv4 && self.DisableIpv6 {
 		return nil, fmt.Errorf("ipv4 and ipv6 are both disabled")
@@ -168,6 +175,9 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 	return conn, err
 }
 
+// NetDialer builds a fresh net.Dialer from the settings' connect timeout,
+// keep-alive configuration, and resolver; each call returns an independent
+// dialer, so per-dial state never shares between calls.
 func (self *ConnectSettings) NetDialer() *net.Dialer {
 	return &net.Dialer{
 		Timeout:         self.ConnectTimeout,
@@ -193,6 +203,12 @@ type ProxySettings struct {
 // indefinitely.
 const proxySOCKS5DialTimeout = 30 * time.Second
 
+// NewDialContext returns a DialContextFunction that dials through this
+// SOCKS5 proxy using forward as the transport. Non-IP hosts are resolved
+// through the package-level dnsCache before the proxy CONNECT; when the
+// caller's context carries no deadline the proxy dial is bounded by
+// proxySOCKS5DialTimeout; successful connections are wrapped in a trackedConn
+// that counts bytes against this proxy's bandwidth index.
 func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dialer) DialContextFunction {
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
@@ -247,6 +263,8 @@ type trackedConn struct {
 	once sync.Once
 }
 
+// Read reads from the underlying connection and, when bw is set, credits the
+// byte count to the proxy's TotalRx.
 func (self *trackedConn) Read(b []byte) (n int, err error) {
 	n, err = self.Conn.Read(b)
 	if n > 0 && self.bw != nil {
@@ -255,6 +273,8 @@ func (self *trackedConn) Read(b []byte) (n int, err error) {
 	return
 }
 
+// Write writes to the underlying connection and, when bw is set, credits the
+// byte count to the proxy's TotalTx.
 func (self *trackedConn) Write(b []byte) (n int, err error) {
 	n, err = self.Conn.Write(b)
 	if n > 0 && self.bw != nil {
@@ -263,6 +283,9 @@ func (self *trackedConn) Write(b []byte) (n int, err error) {
 	return
 }
 
+// Close closes the underlying connection and returns its error. The once
+// field's closure is empty, so Close still forwards every call — it does not
+// make the close idempotent or adjust the bandwidth accounting.
 func (self *trackedConn) Close() error {
 	self.once.Do(func() {})
 	return self.Conn.Close()

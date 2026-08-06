@@ -71,12 +71,19 @@ func NewAddrGenerator(prefix netip.Prefix) *AddrGenerator {
 	}
 }
 
+// Next returns the next address in the generator's prefix range and whether
+// one remains; after the range is exhausted it returns the zero netip.Addr
+// with ok=false. Calls are serialized under stateLock, so Next is safe for
+// concurrent use.
 func (self *AddrGenerator) Next() (netip.Addr, bool) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return self.next()
 }
 
+// Close stops the generator's pull iterator, releasing it. Like iter.Pull,
+// the generator must not be used afterward; Close takes no lock, so it must
+// not run concurrently with Next.
 func (self *AddrGenerator) Close() {
 	self.stop()
 }

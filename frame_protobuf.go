@@ -192,6 +192,9 @@ func (m *sendPackFrame) sizePack() int {
 	return n
 }
 
+// appendPack appends the Pack submessage body (fields 1-9) to b; the
+// enclosing TransferFrame field-4 tag and length prefix are written by
+// append, which sizes the submessage with sizePack.
 func (m *sendPackFrame) appendPack(b []byte) []byte {
 	b = appendIdField(b, 1, m.messageId)
 	b = appendIdField(b, 2, m.sequenceId)
@@ -256,6 +259,10 @@ func (m *sendPackFrame) size() int {
 	return n
 }
 
+// append appends the whole Pack TransferFrame to b: transfer_path (1),
+// message_type (3, always TransferPack), pack (4) with its length prefix,
+// and session_role (7) / session_companion (8) when set. The encoded size
+// matches size().
 func (m *sendPackFrame) append(b []byte) []byte {
 	// transfer_path=1
 	b = protoAppendTag(b, 1, protoWireBytes)
@@ -309,6 +316,7 @@ type sendAckFrame struct {
 	tag        *protocol.Tag // nil when absent
 }
 
+// sizeAck returns the encoded size of the Ack submessage body (fields 1-4).
 func (m *sendAckFrame) sizeAck() int {
 	n := 0
 	// message_id=1, sequence_id=2 (always 16-byte bytes)
@@ -324,6 +332,9 @@ func (m *sendAckFrame) sizeAck() int {
 	return n
 }
 
+// appendAck appends the Ack submessage body (fields 1-4) to b; the
+// enclosing TransferFrame field-5 tag and length prefix are written by
+// append, which sizes the submessage with sizeAck.
 func (m *sendAckFrame) appendAck(b []byte) []byte {
 	b = appendIdField(b, 1, m.messageId)
 	b = appendIdField(b, 2, m.sequenceId)
@@ -339,6 +350,8 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 	return b
 }
 
+// size returns the encoded size of the whole Ack TransferFrame:
+// transfer_path (1), message_type (3, always TransferAck), and ack (5).
 func (m *sendAckFrame) size() int {
 	n := 0
 	// transfer_path=1
@@ -352,6 +365,9 @@ func (m *sendAckFrame) size() int {
 	return n
 }
 
+// append appends the whole Ack TransferFrame to b: transfer_path (1),
+// message_type (3, always TransferAck), and ack (5) with its length prefix.
+// The encoded size matches size().
 func (m *sendAckFrame) append(b []byte) []byte {
 	// transfer_path=1
 	b = protoAppendTag(b, 1, protoWireBytes)
