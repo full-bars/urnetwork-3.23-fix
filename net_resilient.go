@@ -8,6 +8,7 @@ import (
 	// "os"
 	// "strings"
 	"fmt"
+	"io"
 	"time"
 	// "strconv"
 	// "slices"
@@ -90,7 +91,10 @@ func NewResilientDialTlsContext(
 			return nil, err
 		}
 		// once the stream is established, no longer need the resilient features
-		rconn.Off()
+		if err := rconn.Off(); err != nil {
+			tlsConn.Close()
+			return nil, err
+		}
 
 		return tlsConn, nil
 	}
@@ -119,26 +123,30 @@ func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientT
 	}
 }
 
-// Off permanently disables the resilient fragment/reorder processing on this
-// connection. It cannot be re-enabled: once the TLS stream has been written
-// past, the record boundaries needed to realign the fragmentation are no
-// longer known.
-func (self *ResilientTlsConn) Off() {
-	// drain any partial record first: an earlier Write already returned
-	// len(b), nil for these bytes, so stranding them would silently lose
-	// data the caller believes was sent. A partial or failed drain leaves
-	// the wire state indeterminate, so the connection is closed rather than
-	// reused.
+// Off permanently disables the resilient fragment/reorder layer. It drains
+// any partially-buffered record first — an earlier Write already returned
+// len(b), nil for those bytes, so stranding them would silently lose data
+// the caller believes was sent. A partial or failed drain leaves the wire
+// state indeterminate: the connection is failed closed (closed, so the
+// caller must not hand it back as established) and the drain error is
+// returned — io.ErrShortWrite when the drain came up short with a nil
+// error. Returns nil on a successful drain or when the buffer is empty.
+// Off is not safe for concurrent use with Write.
+func (self *ResilientTlsConn) Off() error {
 	if 0 < len(self.buffer) {
 		n, err := self.conn.Write(self.buffer)
 		if err != nil || n < len(self.buffer) {
+			if err == nil {
+				err = io.ErrShortWrite
+			}
 			self.failConnection()
-			return
+			return err
 		}
-		self.buffer = self.buffer[0:0]
+		self.buffer = nil
 	}
 	// can't turn back on after off because we don't know where to align the tls header
 	self.enabled = false
+	return nil
 }
 
 // failConnection marks the connection unusable after an indeterminate write
@@ -150,6 +158,27 @@ func (self *ResilientTlsConn) failConnection() {
 	self.buffer = nil
 	self.enabled = false
 	self.conn.Close()
+}
+
+// writeRecord writes record whole to w. On any short or failed write the
+// connection is failed closed: a partial record on the wire cannot be
+// coherently retried — the buffer still holds the full record, so a retry
+// would re-send the bytes already on the wire — and the layer is disabled
+// and the connection closed so later writes fail instead of appending to
+// the corrupt stream. A short write with a nil error is converted to
+// io.ErrShortWrite so the caller never mistakes a closed connection for
+// success. The buffer is not advanced here; callers advance it past the
+// record only after this returns nil.
+func (self *ResilientTlsConn) writeRecord(w io.Writer, record []byte) error {
+	n, err := w.Write(record)
+	if err == nil && n == len(record) {
+		return nil
+	}
+	if err == nil {
+		err = io.ErrShortWrite
+	}
+	self.failConnection()
+	return err
 }
 
 // Write sends b over the underlying connection. While enabled, TLS records
@@ -188,11 +217,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 						// the wire. Fail the connection: drop the buffered
 						// record, disable the layer, and close the connection
 						// so a later retry cannot append to the corrupt
-						// stream.
-						fragmentWriteFailed := func(err error) (int, error) {
-							self.failConnection()
-							return 0, err
-						}
+						// stream. (Handled by writeRecord below.)
 
 						if tcpConn, ok := self.conn.(*net.TCPConn); ok {
 
@@ -207,15 +232,27 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 								fd := SocketHandle(f.Fd())
 
 								nativeTtl := GetSocketTtl(fd)
-								// restore the TTL before the fd closes; defer LIFO
-								// orders this before f.Close() on every exit path
+								if nativeTtl <= 0 {
+									// syscall failed or returned a value we can't safely restore
+									// (setting back to 0 would drop all packets at the first hop)
+									record := tlsHeader.reconstruct(handshakeBytes)
+									if err := self.writeRecord(tcpConn, record); err != nil {
+										return 0, err
+									}
+									self.buffer = self.buffer[5+tlsHeader.contentLength:]
+									continue
+								}
+								// restore the TTL on every exit after this point,
+								// including fragment-write failures; defer LIFO
+								// runs it before f.Close() closes the dup'd fd
 								defer SetSocketTtl(fd, nativeTtl)
 
 								// fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
 
 								SetSocketTtl(fd, 0)
-								if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:split])); err != nil {
-									return fragmentWriteFailed(err)
+								record := tlsHeader.reconstruct(handshakeBytes[0:split])
+								if err := self.writeRecord(tcpConn, record); err != nil {
+									return 0, err
 								}
 								// fmt.Printf("frag ttl=0\n")
 
@@ -227,32 +264,37 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 										ttl = nativeTtl
 									}
 									SetSocketTtl(fd, ttl)
-									if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])); err != nil {
-										return fragmentWriteFailed(err)
+									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
+									if err := self.writeRecord(tcpConn, record); err != nil {
+										return 0, err
 									}
 									// fmt.Printf("frag ttl=%d\n", ttl)
 								}
 
 								SetSocketTtl(fd, nativeTtl)
 
-								if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
-									return fragmentWriteFailed(err)
+								tailRecord := tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
+								if err := self.writeRecord(tcpConn, tailRecord); err != nil {
+									return 0, err
 								}
 								// fmt.Printf("frag ttl=%d\n", nativeTtl)
 							} else if self.fragment {
 
-								if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:split])); err != nil {
-									return fragmentWriteFailed(err)
+								record := tlsHeader.reconstruct(handshakeBytes[0:split])
+								if err := self.writeRecord(tcpConn, record); err != nil {
+									return 0, err
 								}
 
 								for i := split; i < meta.ServerNameValueEnd; i += step {
-									if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])); err != nil {
-										return fragmentWriteFailed(err)
+									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
+									if err := self.writeRecord(tcpConn, record); err != nil {
+										return 0, err
 									}
 								}
 
-								if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
-									return fragmentWriteFailed(err)
+								record = tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
+								if err := self.writeRecord(tcpConn, record); err != nil {
+									return 0, err
 								}
 
 							} else if self.reorder {
@@ -269,8 +311,17 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 								fd := SocketHandle(f.Fd())
 
 								nativeTtl := GetSocketTtl(fd)
-								// restore the TTL before the fd closes; defer LIFO
-								// orders this before f.Close() on every exit path
+								if nativeTtl <= 0 {
+									// syscall failed; fall back to a single write
+									if err := self.writeRecord(tcpConn, tlsBytes); err != nil {
+										return 0, err
+									}
+									self.buffer = self.buffer[5+tlsHeader.contentLength:]
+									continue
+								}
+								// restore the TTL on every exit after this point,
+								// including block-write failures; defer LIFO
+								// runs it before f.Close() closes the dup'd fd
 								defer SetSocketTtl(fd, nativeTtl)
 
 								for i := 0; i*blockSize < len(tlsBytes); i += 1 {
@@ -282,8 +333,8 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 									}
 									SetSocketTtl(fd, ttl)
 									b := tlsBytes[i*blockSize : min((i+1)*blockSize, len(tlsBytes))]
-									if _, err := tcpConn.Write(b); err != nil {
-										return fragmentWriteFailed(err)
+									if err := self.writeRecord(tcpConn, b); err != nil {
+										return 0, err
 									}
 								}
 
@@ -291,51 +342,50 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 							} else {
 								record := tlsHeader.reconstruct(handshakeBytes)
-								n, err := tcpConn.Write(record)
-								if err != nil || n < len(record) {
-									return fragmentWriteFailed(err)
+								if err := self.writeRecord(tcpConn, record); err != nil {
+									return 0, err
 								}
 							}
 
 						} else {
 
 							if self.fragment {
-								if _, err := self.conn.Write(tlsHeader.reconstruct(handshakeBytes[0:split])); err != nil {
-									return fragmentWriteFailed(err)
+								record := tlsHeader.reconstruct(handshakeBytes[0:split])
+								if err := self.writeRecord(self.conn, record); err != nil {
+									return 0, err
 								}
 
 								for i := split; i < meta.ServerNameValueEnd; i += step {
-									if _, err := self.conn.Write(tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])); err != nil {
-										return fragmentWriteFailed(err)
+									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
+									if err := self.writeRecord(self.conn, record); err != nil {
+										return 0, err
 									}
 								}
 
-								if _, err := self.conn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
-									return fragmentWriteFailed(err)
+								record = tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
+								if err := self.writeRecord(self.conn, record); err != nil {
+									return 0, err
 								}
 							} else {
 								record := tlsHeader.reconstruct(handshakeBytes)
-								n, err := self.conn.Write(record)
-								if err != nil || n < len(record) {
-									return fragmentWriteFailed(err)
+								if err := self.writeRecord(self.conn, record); err != nil {
+									return 0, err
 								}
 							}
 
 						}
 
 					} else {
-						// flush the raw record
-						n, err := self.conn.Write(self.buffer[0 : 5+tlsHeader.contentLength])
-						if err != nil || n < 5+int(tlsHeader.contentLength) {
-							self.failConnection()
+						// flush the raw record; a short or failed write leaves a
+						// partial record on the wire, so writeRecord fails closed
+						if err := self.writeRecord(self.conn, self.buffer[0:5+tlsHeader.contentLength]); err != nil {
 							return 0, err
 						}
 					}
 				} else {
-					// flush the raw record
-					n, err := self.conn.Write(self.buffer[0 : 5+tlsHeader.contentLength])
-					if err != nil || n < 5+int(tlsHeader.contentLength) {
-						self.failConnection()
+					// flush the raw record; a short or failed write leaves a
+					// partial record on the wire, so writeRecord fails closed
+					if err := self.writeRecord(self.conn, self.buffer[0:5+tlsHeader.contentLength]); err != nil {
 						return 0, err
 					}
 				}

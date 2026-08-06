@@ -152,6 +152,14 @@ func NewExtenderDialTlsContext(
 			if err != nil {
 				return nil, err
 			}
+			// close the underlying conn on any failure path before we return a
+			// successful serverConn to the caller
+			success := false
+			defer func() {
+				if !success {
+					conn.Close()
+				}
+			}()
 
 			if extenderConfig.Profile.Fragment || extenderConfig.Profile.Reorder {
 				rconn := NewResilientTlsConn(conn, extenderConfig.Profile.Fragment, extenderConfig.Profile.Reorder)
@@ -171,7 +179,9 @@ func NewExtenderDialTlsContext(
 					return nil, err
 				}
 				// once the stream is established, no longer need the resilient features
-				rconn.Off()
+				if err := rconn.Off(); err != nil {
+					return nil, err
+				}
 
 				serverConn = tlsServerConn
 			} else {
@@ -192,6 +202,7 @@ func NewExtenderDialTlsContext(
 
 				serverConn = tlsServerConn
 			}
+			success = true
 
 			// fragmentConn.Off()
 
