@@ -396,13 +396,34 @@ func TestResilientTlsConnFragmentOnlyFailureDropsBuffer(t *testing.T) {
 // peer still observes the bytes that were actually sent.
 type countingFailConn struct {
 	net.Conn
-	calls   int
-	failAt  int
-	failErr error
+	calls        int
+	failAt       int
+	failErr      error
+	shortWriteAt int
+	shortN       int
+	closed       bool
+}
+
+// Close records that the resilient layer closed the connection, so the
+// fail-closed tests can assert the close actually happened rather than
+// inferring it from the buffer and enabled flag alone.
+func (c *countingFailConn) Close() error {
+	c.closed = true
+	return c.Conn.Close()
 }
 
 func (c *countingFailConn) Write(b []byte) (int, error) {
 	c.calls++
+	if c.shortWriteAt > 0 && c.calls == c.shortWriteAt {
+		n := c.shortN
+		if n > len(b) {
+			n = len(b)
+		}
+		if n, err := c.Conn.Write(b[:n]); err != nil {
+			return n, err
+		}
+		return n, nil
+	}
 	if c.failAt > 0 && c.calls == c.failAt {
 		return 0, c.failErr
 	}
@@ -452,6 +473,13 @@ func TestResilientTlsConnNonTCPConnFragmentFailureDropsBuffer(t *testing.T) {
 	if len(rconn.buffer) != 0 {
 		t.Fatalf("buffer not dropped after non-TCPConn fragment write failure: %d bytes", len(rconn.buffer))
 	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
 }
 
 func TestResilientTlsConnOffNoopWhenBufferEmpty(t *testing.T) {
@@ -491,7 +519,13 @@ func TestResilientTlsConnOffDrainFailureClosesConnection(t *testing.T) {
 	record := buildClientHelloRecord(t)
 	client, _ := newTcpPair(t)
 
-	rconn := NewResilientTlsConn(client, true, false)
+	// Fail the drain write through the wrapper rather than pre-closing the
+	// conn: pre-closing makes the close that Off performs unobservable, so
+	// the test could not distinguish a fail-closed Off from one that leaves
+	// the connection open.
+	failErr := errors.New("drain failed")
+	wrapped := &countingFailConn{Conn: client, failAt: 1, failErr: failErr}
+	rconn := NewResilientTlsConn(wrapped, true, false)
 
 	partial := record[:15]
 	n, err := rconn.Write(partial)
@@ -504,9 +538,6 @@ func TestResilientTlsConnOffDrainFailureClosesConnection(t *testing.T) {
 	if len(rconn.buffer) != len(partial) {
 		t.Fatalf("buffered %d bytes, want %d", len(rconn.buffer), len(partial))
 	}
-
-	// Close the underlying conn so the drain write inside Off fails.
-	client.Close()
 
 	// A failed drain must surface as a non-nil error, not a silent success:
 	// the caller hands the connection back as established, so a silent
@@ -523,5 +554,416 @@ func TestResilientTlsConnOffDrainFailureClosesConnection(t *testing.T) {
 	// partial stream.
 	if len(rconn.buffer) != 0 {
 		t.Fatalf("buffer not cleared after a failed drain: got %d bytes", len(rconn.buffer))
+	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
+}
+
+// The fork's tlsHeader carries raw byte/uint16 fields rather than connect's
+// named TlsContentType/TlsVersion types, so the record constants these tests
+// need are defined locally.
+const (
+	tlsContentTypeHandshake       byte   = 0x16
+	tlsContentTypeApplicationData byte   = 0x17
+	tlsVersion1_2                 uint16 = 0x0303
+)
+
+// buildRawRecord builds a single TLS record of the given content type
+// wrapping payload, using tlsVersion1_2 as the record version. Unlike
+// buildClientHelloRecord, the payload is not required to parse as a
+// ClientHello, so this is used to reach the raw-record flush branches
+// (non-handshake content types, and handshake records that are not a
+// ClientHello with a server_name extension).
+func buildRawRecord(contentType byte, payload []byte) []byte {
+	header := &tlsHeader{contentType: contentType, tlsVersion: tlsVersion1_2}
+	return header.reconstruct(payload)
+}
+
+// buildNonClientHelloHandshakeRecord builds a Handshake-content-type record
+// whose body is not a ClientHello (message type 2, e.g. a ServerHello
+// framing), so UnmarshalClientHello returns (nil, nil) and Write must take
+// the raw-record flush branch instead of the fragment/reorder path.
+func buildNonClientHelloHandshakeRecord() []byte {
+	handshakeBody := []byte{0xAA, 0xBB, 0xCC}
+	handshake := make([]byte, 0, 4+len(handshakeBody))
+	handshake = append(handshake, 2) // ServerHello, not ClientHello (type 1)
+	l := len(handshakeBody)
+	handshake = append(handshake, byte(l>>16), byte(l>>8), byte(l))
+	handshake = append(handshake, handshakeBody...)
+	return buildRawRecord(tlsContentTypeHandshake, handshake)
+}
+
+// shortWriteConn wraps a net.Conn and, on the shortAt-th call (1-indexed) to
+// Write, forwards only shortN of the requested bytes to the underlying conn
+// and returns (shortN, nil) instead of the full length. This exercises the
+// "short write, no error" branch the PR added checks for: prior to the PR,
+// only err != nil was checked, so a short write with a nil error would have
+// been treated as a full, successful send. Close is tracked so tests can
+// confirm failConnection actually closes the wrapped connection.
+type shortWriteConn struct {
+	net.Conn
+	calls   int
+	shortAt int
+	shortN  int
+	closed  bool
+}
+
+func (c *shortWriteConn) Write(b []byte) (int, error) {
+	c.calls++
+	if c.shortAt > 0 && c.calls == c.shortAt {
+		n := c.shortN
+		if len(b) < n {
+			n = len(b)
+		}
+		if 0 < n {
+			if _, err := c.Conn.Write(b[:n]); err != nil {
+				return 0, err
+			}
+		}
+		return n, nil
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *shortWriteConn) Close() error {
+	c.closed = true
+	return c.Conn.Close()
+}
+
+func TestResilientTlsConnNonHandshakeRecordFlushSuccess(t *testing.T) {
+	record := buildRawRecord(tlsContentTypeApplicationData, []byte("application data payload"))
+	client, server := newTcpPair(t)
+
+	// non-handshake content types (e.g. application data) never enter the
+	// fragment/reorder logic; Write must flush the raw record unmodified.
+	rconn := NewResilientTlsConn(client, true, true)
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes than written")
+	}
+}
+
+func TestResilientTlsConnNonHandshakeRecordShortWriteFailsConnection(t *testing.T) {
+	record := buildRawRecord(tlsContentTypeApplicationData, []byte("application data payload"))
+	client, _ := newTcpPair(t)
+
+	// short-write (nil error, n < len) on the very first flush of the raw
+	// record must be treated as a failure, not a successful send.
+	wrapped := &shortWriteConn{Conn: client, shortAt: 1, shortN: 3}
+	rconn := NewResilientTlsConn(wrapped, true, true)
+
+	n, err := rconn.Write(record)
+	// The flush branch's short-write check must surface a non-nil error
+	// (io.ErrShortWrite) when the write comes up short with a nil error, so
+	// the caller never mistakes a closed connection for success.
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("write error = %v, want io.ErrShortWrite", err)
+	}
+	if n != 0 {
+		t.Fatalf("write n=%d want 0", n)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after short-write flush failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after short-write flush failure: %d bytes", len(rconn.buffer))
+	}
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after short-write flush failure")
+	}
+}
+
+func TestResilientTlsConnHandshakeWithoutClientHelloFlushSuccess(t *testing.T) {
+	record := buildNonClientHelloHandshakeRecord()
+	client, server := newTcpPair(t)
+
+	// a Handshake-content-type record that is not a ClientHello with SNI
+	// must be flushed as a raw record rather than routed into the
+	// fragment/reorder logic.
+	rconn := NewResilientTlsConn(client, true, true)
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes than written")
+	}
+}
+
+func TestResilientTlsConnHandshakeWithoutClientHelloShortWriteFailsConnection(t *testing.T) {
+	record := buildNonClientHelloHandshakeRecord()
+	client, _ := newTcpPair(t)
+
+	wrapped := &shortWriteConn{Conn: client, shortAt: 1, shortN: 2}
+	rconn := NewResilientTlsConn(wrapped, true, true)
+
+	n, err := rconn.Write(record)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("write error = %v, want io.ErrShortWrite", err)
+	}
+	if n != 0 {
+		t.Fatalf("write n=%d want 0", n)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after short-write flush failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after short-write flush failure: %d bytes", len(rconn.buffer))
+	}
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after short-write flush failure")
+	}
+}
+
+func TestResilientTlsConnTcpNeitherFragmentNorReorderSuccess(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+
+	// fragment=false, reorder=false with a *net.TCPConn takes the plain
+	// tcpConn.Write(record) branch: no ttl/fd manipulation, no splitting.
+	rconn := NewResilientTlsConn(client, false, false)
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes than written")
+	}
+}
+
+func TestResilientTlsConnTcpNeitherFragmentNorReorderFailureClosesConnection(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	client.SetWriteDeadline(time.Now().Add(-time.Second))
+	rconn := NewResilientTlsConn(client, false, false)
+
+	if _, err := rconn.Write(record); err == nil {
+		t.Fatalf("write with expired deadline: expected error, got nil")
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after write failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after write failure: %d bytes", len(rconn.buffer))
+	}
+
+	client.SetWriteDeadline(time.Time{})
+	if _, err := rconn.Write(record); err == nil {
+		t.Fatalf("write after failure: expected error (conn closed), got nil")
+	}
+}
+
+func TestResilientTlsConnNonTCPConnNoFragmentSuccess(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, server := newTcpPair(t)
+
+	// self.conn is not a *net.TCPConn and fragment is false: Write must
+	// take the self.conn.Write(record) fallback (net_resilient.go's
+	// "else" branch under "if self.fragment {...} else {...}" for the
+	// non-TCPConn path), sending the whole record as one call.
+	wrapped := &countingFailConn{Conn: client}
+	rconn := NewResilientTlsConn(wrapped, false, true)
+
+	n, err := rconn.Write(record)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(record) {
+		t.Fatalf("write n=%d want %d", n, len(record))
+	}
+	if wrapped.calls != 1 {
+		t.Fatalf("expected exactly one forwarded write, got %d", wrapped.calls)
+	}
+
+	got := make([]byte, len(record))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, record) {
+		t.Fatalf("peer received different bytes than written")
+	}
+}
+
+func TestResilientTlsConnNonTCPConnNoFragmentShortWriteFailsConnection(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	wrapped := &shortWriteConn{Conn: client, shortAt: 1, shortN: 4}
+	rconn := NewResilientTlsConn(wrapped, false, true)
+
+	n, err := rconn.Write(record)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("write error = %v, want io.ErrShortWrite", err)
+	}
+	if n != 0 {
+		t.Fatalf("write n=%d want 0", n)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after non-TCPConn short-write failure")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after non-TCPConn short-write failure: %d bytes", len(rconn.buffer))
+	}
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after non-TCPConn short-write failure")
+	}
+}
+
+// TestResilientTlsConnNonTCPConnFragmentShortWrite verifies a short write
+// with a nil error on the fragment path fails the connection and returns a
+// non-nil error (io.ErrShortWrite), never a nil error after closing.
+func TestResilientTlsConnNonTCPConnFragmentShortWrite(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	client, _ := newTcpPair(t)
+
+	wrapped := &countingFailConn{Conn: client, shortWriteAt: 1, shortN: 1}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	_, err := rconn.Write(record)
+	if err == nil {
+		t.Fatalf("short write: expected non-nil error, got nil")
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error = %v, want io.ErrShortWrite", err)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after short write")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after short write: %d bytes", len(rconn.buffer))
+	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
+}
+
+// TestResilientTlsConnNonTCPConnRawRecordShortWrite verifies a short write
+// on the raw-record flush path (non-handshake content type) fails the
+// connection and returns io.ErrShortWrite. The test uses a plain TLS
+// record with an application-data content type so it takes the raw flush
+// path rather than the fragment path.
+func TestResilientTlsConnNonTCPConnRawRecordShortWrite(t *testing.T) {
+	// Build a non-handshake TLS record: content type 23 (application data)
+	// so Write takes the raw flush path.
+	payload := []byte("hello world")
+	record := make([]byte, 0, 5+len(payload))
+	record = append(record, 23)
+	record = append(record, 0x03, 0x03)
+	record = append(record, byte(len(payload)>>8), byte(len(payload)))
+	record = append(record, payload...)
+
+	client, _ := newTcpPair(t)
+	wrapped := &countingFailConn{Conn: client, shortWriteAt: 1, shortN: 2}
+	rconn := NewResilientTlsConn(wrapped, true, false)
+
+	_, err := rconn.Write(record)
+	if err == nil {
+		t.Fatalf("short write: expected non-nil error, got nil")
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error = %v, want io.ErrShortWrite", err)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after short write")
+	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
+
+	// The layer must also close the underlying connection, so a later
+	// write fails instead of appending to the corrupt stream. Without this
+	// the test would pass even if failConnection stopped closing.
+	if !wrapped.closed {
+		t.Fatalf("underlying connection not closed after a failed write")
+	}
+}
+
+// passthroughConn counts writes so the post-Off passthrough can be checked.
+type passthroughConn struct {
+	net.Conn
+	writes int
+}
+
+func (c *passthroughConn) Write(b []byte) (int, error) {
+	c.writes++
+	return len(b), nil
+}
+
+func (c *passthroughConn) Close() error { return nil }
+
+// TestResilientTlsConnOffWritesDirectly checks that once the layer is off,
+// Write forwards straight to the underlying conn with no record buffering,
+// and that a second Off is a no-op that still reports success.
+func TestResilientTlsConnOffWritesDirectly(t *testing.T) {
+	underlying := &passthroughConn{}
+	rconn := NewResilientTlsConn(underlying, true, true)
+	if err := rconn.Off(); err != nil {
+		t.Fatalf("Off: %v", err)
+	}
+	if err := rconn.Off(); err != nil {
+		t.Fatalf("second Off: %v", err)
+	}
+
+	message := []byte("application data")
+	n, err := rconn.Write(message)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(message) {
+		t.Fatalf("write n=%d want %d", n, len(message))
+	}
+	if underlying.writes != 1 {
+		t.Fatalf("underlying writes = %d, want 1 (no buffering once off)", underlying.writes)
+	}
+	if rconn.enabled {
+		t.Fatalf("layer still enabled after Off")
 	}
 }
