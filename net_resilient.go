@@ -122,7 +122,10 @@ func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientT
 // Off permanently disables the resilient fragment/reorder processing on this
 // connection. It cannot be re-enabled: once the TLS stream has been written
 // past, the record boundaries needed to realign the fragmentation are no
-// longer known.
+// longer known. It drains any partially-buffered record first; a partial or
+// failed drain fails the connection closed (see failConnection) so no bytes
+// an earlier Write accepted are stranded. Off is not safe for concurrent
+// use with Write.
 func (self *ResilientTlsConn) Off() {
 	// can't turn back on after off because we don't know where to align the tls header
 	self.enabled = false
@@ -134,9 +137,10 @@ func (self *ResilientTlsConn) Off() {
 // with alternating socket TTLs only when reorder is set and the underlying
 // connection is a *net.TCPConn; every other record is flushed as-is. On
 // success Write returns len(b), nil even when part of b remains buffered
-// awaiting a complete record; a failure flushing a buffered record returns
-// 0, err. When disabled, Write forwards directly to the underlying
-// connection.
+// awaiting a complete record; a failure flushing a buffered record drops
+// the buffer, disables the layer, and closes the connection (see
+// failConnection), so a later retry cannot append to a corrupt stream. When
+// disabled, Write forwards directly to the underlying connection.
 func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 	if self.enabled {
 		self.buffer = append(self.buffer, b...)
