@@ -27,6 +27,10 @@ func newEgressNet() (transport.Net, error) {
 	return &egressNet{Net: base}, nil
 }
 
+// ListenUDP creates a UDP socket through the embedded transport.Net and,
+// when the connection exposes a syscall.Conn, binds it to the egress
+// interface via applyEgress (binding errors are ignored) so p2p (webrtc)
+// traffic does not loop back into the tunnel this process provides.
 func (self *egressNet) ListenUDP(network string, locAddr *net.UDPAddr) (transport.UDPConn, error) {
 	conn, err := self.Net.ListenUDP(network, locAddr)
 	if err != nil {
@@ -38,6 +42,10 @@ func (self *egressNet) ListenUDP(network string, locAddr *net.UDPAddr) (transpor
 	return conn, nil
 }
 
+// ListenPacket is the packet-connection variant of ListenUDP: it creates the
+// socket through the embedded transport.Net and, when the connection exposes
+// a syscall.Conn, applies the egress interface binding best-effort (binding
+// errors are ignored, so the egress binding is not guaranteed).
 func (self *egressNet) ListenPacket(network string, address string) (net.PacketConn, error) {
 	conn, err := self.Net.ListenPacket(network, address)
 	if err != nil {

@@ -97,6 +97,9 @@ type DohSettings struct {
 	DnsResolverSettings      *DnsResolverSettings
 }
 
+// ResolverIp returns the network family string to pass to
+// net.Resolver.LookupIP: "ip4" for IpVersion 4, "ip6" for IpVersion 6, and
+// "ip" (both families) for any other value.
 func (self *DohSettings) ResolverIp() string {
 	switch self.IpVersion {
 	case 4:
@@ -324,6 +327,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 	}
 }
 
+// pruneCacheLocked prunes the result cache to its configured size bound and
+// drops expired entries. The caller must hold stateLock.
 func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
 	for key, result := range self.queryResultExpiration {
 		if !result.Valid(now, self.settings.MissExpiration) {
@@ -878,6 +883,12 @@ type DohResult struct {
 	Miss            bool
 }
 
+// Valid reports whether the result can still be served at now: a result
+// holding addresses is served while any address is not yet expired; a result
+// holding none is served only for an authoritative miss (Miss) recorded
+// within missExpiration. The exclusivity of the miss bound matters: it is
+// what makes a cached NXDOMAIN/NODATA answer expire instead of persisting
+// forever.
 func (self *DohResult) Valid(now time.Time, missExpiration time.Duration) bool {
 	if len(self.AddrExpirations) == 0 {
 		return self.Miss && !self.Time.Add(missExpiration).Before(now)
@@ -890,6 +901,9 @@ func (self *DohResult) Valid(now time.Time, missExpiration time.Duration) bool {
 	return true
 }
 
+// Addrs returns the result's addresses as a slice; the order is unspecified
+// because the addresses are stored in a map. The slice is empty for a miss or
+// an address-less result.
 func (self *DohResult) Addrs() []netip.Addr {
 	ips := []netip.Addr{}
 	for ip := range self.AddrExpirations {
