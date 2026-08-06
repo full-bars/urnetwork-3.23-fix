@@ -33,6 +33,7 @@ func NewTransferMemoryBudget(totalByteCount ByteCount) *TransferMemoryBudget {
 	}
 }
 
+// TotalByteCount never changes after construction.
 func (self *TransferMemoryBudget) TotalByteCount() ByteCount {
 	return self.totalByteCount
 }

@@ -48,6 +48,11 @@ func NewApiOutOfBandControlWithApi(api *BringYourApi) *ApiOutOfBandControl {
 	}
 }
 
+// SendControl consumes the caller's frames: their MessageBytes are returned
+// to the message pool when SendControl returns. On the success path that is
+// before the async callback executes; on the ProtoMarshal error path the
+// callback is dispatched first (the pool return is deferred until return),
+// so a callback must not retain frame bytes across the call.
 func (self *ApiOutOfBandControl) SendControl(
 	frames []*protocol.Frame,
 	callback OobResultFunction,
