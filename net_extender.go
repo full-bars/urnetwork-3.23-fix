@@ -138,6 +138,17 @@ func NewExtenderDialTlsContext(
 		// set ttl 0 on every other handshake records
 
 		var serverConn net.Conn
+		// conn is the underlying TCP connection for the TcpTls mode. success
+		// tracks whether the full extender handshake (switch, header write,
+		// inner TLS) completed; on any failure before the final return the
+		// defer closes conn so a failed dial never leaks the socket.
+		var conn net.Conn
+		success := false
+		defer func() {
+			if !success && conn != nil {
+				conn.Close()
+			}
+		}()
 
 		extenderTlsConfig := &tls.Config{
 			ServerName:         extenderConfig.Profile.ServerName,
@@ -148,18 +159,11 @@ func NewExtenderDialTlsContext(
 
 		switch extenderConfig.Profile.ConnectMode {
 		case ExtenderConnectModeTcpTls:
-			conn, err := connectSettings.DialContext(ctx, "tcp", authority)
+			var err error
+			conn, err = connectSettings.DialContext(ctx, "tcp", authority)
 			if err != nil {
 				return nil, err
 			}
-			// close the underlying conn on any failure path before we return a
-			// successful serverConn to the caller
-			success := false
-			defer func() {
-				if !success {
-					conn.Close()
-				}
-			}()
 
 			if extenderConfig.Profile.Fragment || extenderConfig.Profile.Reorder {
 				rconn := NewResilientTlsConn(conn, extenderConfig.Profile.Fragment, extenderConfig.Profile.Reorder)
@@ -202,7 +206,6 @@ func NewExtenderDialTlsContext(
 
 				serverConn = tlsServerConn
 			}
-			success = true
 
 			// fragmentConn.Off()
 
@@ -292,6 +295,8 @@ func NewExtenderDialTlsContext(
 			return nil, err
 		}
 
+		// the full extender path succeeded; keep the underlying conn alive
+		success = true
 		return tlsServerConn, nil
 	}
 }
