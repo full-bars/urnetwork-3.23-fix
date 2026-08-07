@@ -97,9 +97,9 @@ jobs:
                 **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
                 
                 Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
-                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
-                - [NO ACTION] otherwise
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
                 with a one-line justification after it.
                 
                 Diff:
@@ -349,9 +349,9 @@ jobs:
                 **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
                 
                 Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
-                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
-                - [NO ACTION] otherwise
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
                 with a one-line justification after it.
                 
                 Diff:
@@ -685,9 +685,9 @@ jobs:
             **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, contracts, or the provider binary
             
             Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
-            - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+            - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
             - [WATCH] for behavior changes worth tracking
-            - [NO ACTION] otherwise
+            - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
             with a one-line justification after it.
             
             Diff:
@@ -893,9 +893,9 @@ jobs:
                 **Breaking Changes** - anything affecting contract handling, routing, encryption, proxy management, or the provider binary
                 
                 Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
-                - [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
-                - [NO ACTION] otherwise
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
                 with a one-line justification after it.
                 
                 Diff:
