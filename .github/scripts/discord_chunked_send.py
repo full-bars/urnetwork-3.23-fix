@@ -19,6 +19,11 @@ import urllib.request
 
 MAX_CHUNK = 4000  # under Discord's 4096 limit; leaves room for other fields
 
+# Discord's documented User-Agent format for API clients.
+USER_AGENT = (
+    "DiscordBot (https://github.com/full-bars/urnetwork-3.23-fix, 1.0)"
+)
+
 
 def chunk_description(desc: str) -> list[str]:
     chunks = []
@@ -74,7 +79,14 @@ def main() -> int:
         req = urllib.request.Request(
             webhook,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Discord requires a User-Agent on API requests, and Cloudflare
+                # (which fronts discord.com) blocks urllib's default
+                # "Python-urllib/x.y" signature with HTTP 403 "error code: 1010"
+                # before the request ever reaches Discord.
+                "User-Agent": USER_AGENT,
+            },
             method="POST",
         )
         try:
