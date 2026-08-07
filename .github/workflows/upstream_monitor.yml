@@ -100,7 +100,7 @@ jobs:
                 - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
-                with a one-line justification after it.
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
@@ -108,8 +108,8 @@ jobs:
                 # Tier 1: opencode-go gateway (via opencode CLI)
                 if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                   OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
-                  if [ -n "$RAW_SUMMARY" ]; then
+                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                     echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
                   else
@@ -139,7 +139,7 @@ jobs:
                     echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                   else
                     RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
-                    if [ -n "$RAW_SUMMARY" ]; then
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                       echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                     else
@@ -168,7 +168,7 @@ jobs:
                     echo "[ERROR] Gemini API error: $API_ERROR"
                   else
                     RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-                    if [ -n "$RAW_SUMMARY" ]; then
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                       echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
                     else
@@ -352,7 +352,7 @@ jobs:
                 - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
-                with a one-line justification after it.
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
@@ -361,8 +361,8 @@ jobs:
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                     OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
-                    if [ -n "$RAW_SUMMARY" ]; then
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                       echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
                     else
@@ -390,7 +390,7 @@ jobs:
                       echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                     else
                       RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
-                      if [ -n "$RAW_SUMMARY" ]; then
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                         AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                         echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                       else
@@ -417,7 +417,7 @@ jobs:
                       echo "[ERROR] Gemini API error: $API_ERROR"
                     else
                       RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-                      if [ -n "$RAW_SUMMARY" ]; then
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                         AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                         echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
                       else
@@ -688,7 +688,7 @@ jobs:
             - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
             - [WATCH] for behavior changes worth tracking
             - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
-            with a one-line justification after it.
+            with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
             
             Diff:
                         ${TRUNCATED_DIFF}"
@@ -697,8 +697,8 @@ jobs:
               # Tier 1: opencode-go gateway (via opencode CLI)
               if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                 OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
-                if [ -n "$RAW_SUMMARY" ]; then
+                RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                   AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                   echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
                 else
@@ -728,7 +728,7 @@ jobs:
                   echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                 else
                   RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
-                  if [ -n "$RAW_SUMMARY" ]; then
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                     echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                   else
@@ -757,7 +757,7 @@ jobs:
                   echo "[ERROR] Gemini API error: $API_ERROR"
                 else
                   RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-                  if [ -n "$RAW_SUMMARY" ]; then
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                     echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
                   else
@@ -896,7 +896,7 @@ jobs:
                 - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
                 - [WATCH] for behavior changes worth tracking
                 - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
-                with a one-line justification after it.
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
                                 ${TRUNCATED_DIFF}"
@@ -905,8 +905,8 @@ jobs:
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                     OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null | tail -1)
-                    if [ -n "$RAW_SUMMARY" ]; then
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                       echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
                     else
@@ -934,7 +934,7 @@ jobs:
                       echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
                     else
                       RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
-                      if [ -n "$RAW_SUMMARY" ]; then
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                         AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                         echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
                       else
@@ -961,7 +961,7 @@ jobs:
                       echo "[ERROR] Gemini API error: $API_ERROR"
                     else
                       RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-                      if [ -n "$RAW_SUMMARY" ]; then
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                         AI_SUMMARY="${RAW_SUMMARY:0:3800}"
                         echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
                       else
