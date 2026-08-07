@@ -107,7 +107,7 @@ jobs:
 
                 # Tier 1: opencode-go gateway (via opencode CLI)
                 if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                  OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                  OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                   RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
                   if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                     AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -360,7 +360,7 @@ jobs:
                 if [ -n "$TRUNCATED_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                     RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
                     if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -696,7 +696,7 @@ jobs:
             if [ -n "$TRUNCATED_DIFF" ]; then
               # Tier 1: opencode-go gateway (via opencode CLI)
               if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                 RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
                 if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                   AI_SUMMARY="${RAW_SUMMARY:0:3800}"
@@ -904,7 +904,7 @@ jobs:
                 if [ -n "$TRUNCATED_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
                     RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
                     if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
                       AI_SUMMARY="${RAW_SUMMARY:0:3800}"
