@@ -131,27 +131,10 @@ func setSocketTtl(t *testing.T, conn *net.TCPConn, ttl int) {
 	if err != nil {
 		t.Fatalf("syscall conn: %v", err)
 	}
-	ttlCtl.set(ttl)
-	t.Cleanup(func() { ttlCtl.set(64) })
-}
-
-// probeTtl reads the socket TTL through a dup'd descriptor held open by the
-// test. The dup keeps the socket alive after failConnection closes the conn,
-// so the TTL stays observable on the failure paths. It goes through
-// SyscallConn rather than Fd for the blocking-mode reason above.
-func probeTtl(t *testing.T, probe *os.File) int {
-	t.Helper()
-	raw, err := probe.SyscallConn()
-	if err != nil {
-		t.Fatalf("probe syscall conn: %v", err)
+	if err := ttlCtl.set(ttl, nil); err != nil {
+		t.Fatalf("set ttl %d: %v", ttl, err)
 	}
-	var ttl int
-	if err := raw.Control(func(fd uintptr) {
-		ttl = GetSocketTtl(SocketHandle(fd))
-	}); err != nil {
-		t.Fatalf("probe control: %v", err)
-	}
-	return ttl
+	t.Cleanup(func() { _ = ttlCtl.set(64, nil) })
 }
 
 // setProbeTtl sets the socket TTL through the dup'd descriptor.
@@ -222,7 +205,7 @@ func TestResilientTlsConnFragmentRestoresTtl(t *testing.T) {
 	}
 }
 
-func TestResilientTlsConnFragmentFailureDisablesAndRestoresTtl(t *testing.T) {
+func TestResilientTlsConnFragmentFailureDisablesAndFailsClosed(t *testing.T) {
 	record := buildClientHelloRecord(t)
 	client, _ := newTcpPair(t)
 
@@ -255,11 +238,22 @@ func TestResilientTlsConnFragmentFailureDisablesAndRestoresTtl(t *testing.T) {
 		t.Fatalf("buffer not dropped after fragment write failure: %d bytes", len(rconn.buffer))
 	}
 
-	// The socket TTL must be restored even on the failure path (via the
-	// dup'd fd; the original conn is closed by failConnection).
-	if got := probeTtl(t, probe); got != 42 {
-		t.Fatalf("socket TTL after failed fragmented write = %d, want 42 (restored)", got)
-	}
+	// The socket TTL is deliberately NOT asserted here. failConnection has
+	// closed the conn by this point, so SyscallConn.Control fails and the
+	// deferred restore is a no-op; the socket is left at resilientLowTtl.
+	// That is correct: a closed socket sends nothing, so its TTL has no
+	// observable effect (see ttlControl in net_resilient_ttl.go). This
+	// assertion previously read "want 42 (restored)" and passed only because
+	// the low TTL was 0, which Linux rejects with EINVAL, so the socket never
+	// moved off 42 and the check was vacuous. It measured nothing.
+	//
+	// Upstream differs here and does restore on this path, because it holds a
+	// dup'd descriptor from tcpConn.File() that outlives conn.Close(). This
+	// fork stopped dup'ing in #339 to fix the fd leak and the blocking-mode
+	// flip, and gave up the post-close restore as part of that trade.
+	//
+	// What actually matters on this path is asserted above and below: the
+	// layer is disabled, the buffer is dropped, and a later write fails.
 
 	// A subsequent Write must fail: the connection is closed after the
 	// indeterminate fragment state, so retries cannot corrupt the stream.
@@ -331,9 +325,9 @@ func TestResilientTlsConnReorderOnlyFragmentsOnFailure(t *testing.T) {
 	if rconn.enabled {
 		t.Fatalf("layer still enabled after reorder write failure")
 	}
-	if got := probeTtl(t, probe); got != 42 {
-		t.Fatalf("socket TTL after failed reorder write = %d, want 42 (restored)", got)
-	}
+	// TTL deliberately not asserted after a fail-close; see the note on the
+	// fragment-failure test above. The socket is closed, so the deferred
+	// restore cannot run and the value it holds is unobservable.
 	client.SetWriteDeadline(time.Time{})
 	if _, err := rconn.Write(record); err == nil {
 		t.Fatalf("write after reorder failure: expected error (conn closed), got nil")
