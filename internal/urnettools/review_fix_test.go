@@ -34,6 +34,30 @@ func TestDispatchHelpIsSafe(t *testing.T) {
 	}
 }
 
+// TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
+// the provider binary, so -h/--help must short-circuit in parseDelegationArgs
+// (help printed, nothing delegated) — the C1 invariant for pass-through
+// commands (free-review gap: no test pinned this).
+func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
+	for _, args := range [][]string{{"-h"}, {"--help"}, {"--unit", "urnetwork-native.service", "-h"}} {
+		rest, err := parseDelegationArgs(args)
+		if err != errHelpShown {
+			t.Errorf("parseDelegationArgs(%v): expected errHelpShown, got %v", args, err)
+		}
+		if rest != nil {
+			t.Errorf("parseDelegationArgs(%v): rest must be nil when help shown, got %v", args, rest)
+		}
+	}
+	// Without help flags, args pass through untouched.
+	rest, err := parseDelegationArgs([]string{"--unit", "urnetwork-native.service"})
+	if err != nil {
+		t.Fatalf("no help flag: expected nil error, got %v", err)
+	}
+	if len(rest) != 2 || rest[0] != "--unit" {
+		t.Errorf("args must pass through unchanged, got %v", rest)
+	}
+}
+
 // TestParseTargetFlagsRejectsUnknownFlags: a typo'd --flag must error, not
 // silently drop (review finding L2).
 func TestParseTargetFlagsRejectsUnknownFlags(t *testing.T) {

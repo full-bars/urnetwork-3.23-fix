@@ -176,8 +176,9 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	}
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path (free-review major: harden the deletion guard).
+	// Both guards clean the path so "/" and "/./" are caught identically.
 	removedAny := false
-	if p.Binary != "" && strings.HasPrefix(p.Binary, "/") && filepath.Base(p.Binary) != "" && filepath.Base(p.Binary) != "." && filepath.Base(p.Binary) != "/" {
+	if p.Binary != "" && strings.HasPrefix(p.Binary, "/") && filepath.Clean(p.Binary) != "/" {
 		if err := os.Remove(p.Binary); err == nil {
 			removedAny = true
 		}
