@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -39,9 +40,14 @@ func defaultUpdateConfig() updateConfig {
 	}
 }
 
-// cmdUpdate updates one or more providers' binaries to the given release,
-// then restarts the unit that actually owns each (system-level or
-// user-level — never the wrong one). Destructive gate applies per provider.
+// cmdUpdate updates one or more providers' binaries, then restarts the unit
+// that actually owns each (system-level or user-level — never the wrong
+// one). Destructive gate applies per provider.
+//
+// Interactive-first: with no --tag it fetches the latest release from
+// GitHub and prompts; with multiple providers and no target it shows the
+// numbered picker. Non-interactive (no TTY) refuses ambiguity unless an
+// explicit target or --include is given — scripts must be explicit.
 func cmdUpdate(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
@@ -50,7 +56,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	cfg := defaultUpdateConfig()
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
-	interactive := false
+	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -79,22 +85,46 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			i++
 		case "--exclude":
 			if i+1 >= len(rest) {
-				return fmt.Errorf("--exclude requires a value (comma-separated labels)")
+				return fmt.Errorf("--exclude requires a value (com-separated labels)")
 			}
 			exclude = splitLabels(rest[i+1])
 			i++
 		case "--select":
-			interactive = true
+			interactive = !force // --select forces the picker unless -f
 		}
-	}
-	if cfg.Tag == "" {
-		return fmt.Errorf("update requires --tag (e.g. --tag v3.23.0-fix.26.8)")
 	}
 
 	providers := Discover()
 	chosen, err := selectTargets(providers, t, include, exclude, interactive)
 	if err != nil {
 		return err
+	}
+
+	// Resolve the release: --tag wins; otherwise fetch latest.
+	if cfg.Tag == "" {
+		rel, rerr := latestRelease()
+		if rerr != nil {
+			return rerr
+		}
+		cfg.Tag = rel.Tag
+		if cfg.Digest == "" {
+			cfg.Digest = rel.Digest
+		}
+		if cfg.AssetURL == "" {
+			cfg.AssetURL = rel.URL
+		}
+	}
+
+	// Confirm version choice interactively unless -f or dry-run already
+	// covers it (dry-run prints without acting).
+	if !force && !dryRun {
+		yes, cerr := confirmVersion(cfg.Tag, chosen)
+		if cerr != nil {
+			return cerr
+		}
+		if !yes {
+			return nil
+		}
 	}
 
 	// Confirm once for the whole set, listing every provider.
@@ -119,6 +149,54 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 	return nil
+}
+
+// confirmVersion prompts "update to <tag>?" for the chosen set. Returns
+// (true, nil) on yes; (false, nil) on no/abort.
+func confirmVersion(tag string, providers []Provider) (bool, error) {
+	fmt.Printf("Latest release: %s", tag)
+	if len(providers) > 0 {
+		fmt.Printf("  (targeting %d provider(s))", len(providers))
+	}
+	fmt.Println()
+	for _, p := range providers {
+		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
+	}
+	fmt.Print("Update to this version? [Y/n]: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" || line == "y" || line == "yes" {
+		return true, nil
+	}
+	fmt.Println("aborted")
+	return false, nil
+}
+
+// orDash renders empty strings as "-".
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// forceInteractive reports whether prompts/pickers should be enabled. With
+// -f we never prompt — scripts must be fully explicit.
+func forceInteractive(force bool) bool {
+	return !force && isTTY()
+}
+
+// isTTY reports whether stdin is a terminal (interactive session).
+func isTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // splitLabels splits a comma-separated label list.
