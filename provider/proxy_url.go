@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -250,20 +251,22 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 	return result, nil
 }
 
-// mergeProxyURLEntries parses each line and adds genuinely new addresses to
+// mergeProxyURLEntries adds genuinely new addresses from lines into
 // state.Cache (mutating it in place). Already-cached addresses are left
-// untouched — this function only ever adds, never updates or removes.
-// Addresses present in state.Blacklist are always skipped, even if not yet
-// cached, so a permanently-evicted address can never come back. maxTotal
-// caps the total cache size; 0 means unlimited.
+// untouched — the insertion path never updates an existing entry, and the
+// ONLY removal is best-overall cap eviction: when the cache is at maxTotal,
+// the lowest-ranked cached entry is deleted to make room for a higher-ranked
+// candidate (see rankAddr below). Addresses present in state.Blacklist are
+// always skipped, even if not yet cached, so a permanently-evicted address
+// can never come back. maxTotal caps the total cache size; 0 means
+// unlimited.
 //
-// mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
-// expected to have any api-verified entries first, followed by socks5-only
-// entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
-// how many of the leading entries passed the API-reachability probe and
-// should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
-// or callers that don't track probe results) get ProbeOK=false so the
-// background reaper picks them up for retry.
+// lines is expected to have any api-verified entries first, followed by
+// socks5-only entries (the order fetchAndMergeProxyURLs builds them in);
+// apiOKCount is how many of the leading entries passed the API-reachability
+// probe and should be cached with ProbeOK=true. Entries beyond apiOKCount
+// (socks5-only, or callers that don't track probe results) get ProbeOK=false
+// so the background reaper picks them up for retry.
 //
 // rankAddr (may be nil) reports the priority of a candidate address so the
 // cache keeps the BEST entries across all sources rather than the first
@@ -381,15 +384,18 @@ func rankCacheEntry(e ProxyURLEntry) int {
 
 // lowestRankedCacheEntry returns the address of the lowest-ranked cached
 // entry and its rank, using rankCacheEntry on each persisted entry. Ties
-// are broken arbitrarily (Go map order is randomized); equal ranks are
-// interchangeable.
+// are broken by the entry's raw Score (lower score evicts first), so
+// eviction is deterministic across map orders and strictly prefers the
+// worse proxy within a tier (finding LOW).
 func lowestRankedCacheEntry(state *ProxyURLState) (string, int) {
 	lowestAddr := ""
-	lowestRank := int(^uint(0) >> 1) // max int
+	lowestRank := math.MaxInt
+	lowestScore := math.MaxFloat64
 	for addr, e := range state.Cache {
 		r := rankCacheEntry(e)
-		if r < lowestRank {
+		if r < lowestRank || (r == lowestRank && e.Score < lowestScore) {
 			lowestRank = r
+			lowestScore = e.Score
 			lowestAddr = addr
 		}
 	}
@@ -410,8 +416,10 @@ func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf m
 	// must not enter the desired set at all. Spawning them would hold a
 	// goroutine and a context for a proxy the auth gate will never admit,
 	// and the reaper would keep marking them ProbeOK=true while the gate
-	// blocks them (finding H4). They stay in the cache (the fetch cycle
-	// re-grades them next time); they just never launch.
+	// blocks them (finding H4). They stay in the cache; the reaper's stale
+	// sweep re-grades them (promotion to ProbeOK on one cycle, grade
+	// refresh on the next), so a proxy that recovered clears the bar again
+	// without a manual flush. They just never launch in the meantime.
 	//
 	// The filter is itself gated on cfg.Enabled: flipping the kill switch
 	// off must bring previously-graded below-bar proxies BACK into the

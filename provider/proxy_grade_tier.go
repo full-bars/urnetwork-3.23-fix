@@ -41,18 +41,21 @@ func gradeTierFor(res tableProbeResult) string {
 
 // proxyTierRank returns a numeric priority for a tier: higher is better.
 // The empty tier (undecidable / never graded) ranks below F so cap
-// eviction and prioritization always prefer graded entries. Case-insensitive.
+// eviction and prioritization always prefer graded entries. Only the
+// uppercase letters proxyGradeTier produces are reachable: every
+// production caller feeds this the output of proxyGradeTier, which returns
+// only "A"-"F" (finding LOW — the lowercase branches were dead code).
 func proxyTierRank(tier string) int {
 	switch tier {
-	case "A", "a":
+	case "A":
 		return 4
-	case "B", "b":
+	case "B":
 		return 3
-	case "C", "c":
+	case "C":
 		return 2
-	case "D", "d":
+	case "D":
 		return 1
-	case "F", "f":
+	case "F":
 		return 0
 	default:
 		return -1
