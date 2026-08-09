@@ -664,8 +664,10 @@ func TestReview_ResolveConfig_EmptyFileFallsBackToDefaults(t *testing.T) {
 }
 
 // REGRESSION (inverted L1). An inverted bar pair is clamped in
-// resolveProxyTableProbeConfig so the log label can never disagree with the
-// gate decision.
+// resolveProxyTableProbeConfig, and the A-F tier is a pure function of the
+// score — so with clamped bars, a score the gate rejects can never carry a
+// tier label that implies admission quality (the label agrees with the
+// gate).
 func TestReview_ScoreTierLabel_ClampedBarsAgreeWithGate(t *testing.T) {
 	withTempHome(t)
 	// Operator inverts: pass_bar 0.9, preferred_bar 0.6.
@@ -676,15 +678,15 @@ func TestReview_ScoreTierLabel_ClampedBarsAgreeWithGate(t *testing.T) {
 		t.Fatalf("inverted bars must be clamped: preferred=%.2f < pass=%.2f (L1)", cfg.PreferredBar, cfg.PassBar)
 	}
 	// With clamped bars (preferred == pass == 0.9), a score of 0.7 is below
-	// both: the gate rejects it AND the label must not claim preferred —
-	// the label and the decision agree.
+	// both: the gate rejects it, and its A-F tier (C) must never be
+	// mistaken for an admitted grade.
 	const score = 0.7
 	res := tableProbeResult{Score: score, OK: 7, SampleWidth: 10, Total: 10, Decidable: true}
 	if res.qualified(cfg.PassBar) {
 		t.Fatal("score 0.7 must not qualify at a 0.9 bar")
 	}
-	if label := scoreTierLabel(score, cfg); label == "preferred" {
-		t.Errorf("score 0.7 labelled preferred while the gate rejects it (L1)")
+	if tier := proxyGradeTier(score); tier == "A" || tier == "B" {
+		t.Errorf("score 0.7 graded %q — a rejected score must not carry a top tier label (L1)", tier)
 	}
 }
 
