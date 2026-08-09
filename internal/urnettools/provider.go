@@ -6,6 +6,7 @@
 package urnettools
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -119,11 +120,17 @@ func stateDirFor(env map[string]string) string {
 
 // providerVersion returns the version string from a provider binary by
 // running "<binary> --version" with a short timeout. Errors yield "".
+//
+// The timeout is essential: Discover() calls this for every matched process
+// synchronously, so a single hung provider binary would otherwise wedge
+// every command including read-only `providers` (review finding H1).
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""
 	}
-	cmd := exec.Command(binary, "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--version")
 	cmd.Env = append(os.Environ(), "URNETWORK_NO_DOWNLOAD_TARBALL=1")
 	out, err := cmd.Output()
 	if err != nil {

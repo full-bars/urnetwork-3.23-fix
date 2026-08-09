@@ -82,6 +82,11 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	providers := Discover()
 	var chosen []Provider
 	if all {
+		// --all conflicts with an explicit target — error rather than
+		// silently discarding it (review finding M4).
+		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
+		}
 		if len(providers) == 0 {
 			return fmt.Errorf("no providers found on this box")
 		}
@@ -135,7 +140,7 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		}
 		return cmdProxyTrafficTarget(p)
 	case "remove-dead":
-		t2, rest2, err := parseTargetFlags(rest)
+		t2, rest2, err := parseTargetFlagsLenient(rest)
 		if err != nil {
 			return err
 		}
