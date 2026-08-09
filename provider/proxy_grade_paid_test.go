@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // Tests for the paid/file-list proxy grading sweep (design note 2026-08-09):
@@ -23,9 +24,10 @@ func writePaidGradeProbeOverride(t *testing.T, enabled bool) {
 }
 
 // TestPaidProxyGrader_GradesFileProxy is the positive path: a credentialed
-// file proxy gets table-probed once (1 API + sample_width table CONNECTs),
-// the decidable grade is persisted, and the proxy lifecycle fields are
-// untouched.
+// file proxy gets table-probed once (sample_width table CONNECTs — the
+// sweep calls probeTableThroughProxy directly, no separate stage-0 API
+// CONNECT), the decidable grade is persisted, and the proxy lifecycle
+// fields are untouched.
 func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
@@ -349,6 +351,37 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	// not hammer the proxy.
 	if n := connects.Load(); n != 0 {
 		t.Fatalf("expected 0 CONNECTs (all sampled targets unresolvable), got %d", n)
+	}
+}
+
+// TestPaidGradeSettingsMatch pins the stale-settings guard used at apply
+// time: a probe result whose credentials no longer match the address's
+// current settings must be rejected (coderabbit review) — otherwise a
+// concurrent reload that rotated credentials would persist a stale-creds
+// grade and defer the next probe by the whole 1-3h window.
+func TestPaidGradeSettingsMatch(t *testing.T) {
+	withCreds := connect.ProxySettings{Address: "1.2.3.4:1080", Auth: &proxy.Auth{User: "u", Password: "p"}}
+	noCreds := connect.ProxySettings{Address: "1.2.3.4:1080"}
+
+	cases := []struct {
+		name              string
+		s                 connect.ProxySettings
+		user, password    string
+		want              bool
+	}{
+		{"same creds", withCreds, "u", "p", true},
+		{"user changed", withCreds, "u2", "p", false},
+		{"password changed", withCreds, "u", "p2", false},
+		{"both changed", withCreds, "u2", "p2", false},
+		{"auth dropped", withCreds, "", "", false},
+		{"no creds matches empty", noCreds, "", "", true},
+		{"no creds vs provided", noCreds, "u", "p", false},
+	}
+	for _, c := range cases {
+		if got := paidGradeSettingsMatch(c.s, c.user, c.password); got != c.want {
+			t.Errorf("%s: paidGradeSettingsMatch(%+v, %q, %q) = %v, want %v",
+				c.name, c.s, c.user, c.password, got, c.want)
+		}
 	}
 }
 
