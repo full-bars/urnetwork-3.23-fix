@@ -38,11 +38,6 @@ func cmdAutoStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would %s auto-start for %s (%s)\n", mode, providerLabel(p), p.Unit)
 		return nil
 	}
-	if !force {
-		// Non-destructive enough to just report state; still honor -f for
-		// consistency but this command is not destructive.
-		_ = force
-	}
 
 	if mode == "on" {
 		return unitEnable(p, true)
@@ -203,10 +198,16 @@ func cmdReinstall(args []string, force, dryRun bool) error {
 	}
 	// The installer is the canonical reinstall path. Run it as the
 	// provider's user with the right HOME so it targets the same install.
-	installer := "/home/" + p.User + "/.local/share/urnetwork-provider/bin/urnet-tools"
+	// Resolve home via getent — never hardcode /home/<user> (breaks
+	// root-run providers; review finding M3).
+	home := homeForUser(p.User)
+	if home == "" {
+		return fmt.Errorf("cannot resolve home for user %s", p.User)
+	}
+	installer := filepath.Join(home, ".local/share/urnetwork-provider/bin/urnet-tools")
 	cmd := exec.Command(installer, "reinstall")
 	if p.User != "" {
-		cmd.Env = append(os.Environ(), "HOME="+homeForUser(p.User))
+		cmd.Env = append(os.Environ(), "HOME="+home)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

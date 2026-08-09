@@ -67,6 +67,13 @@ func discoverProcesses() []Provider {
 				break
 			}
 		}
+		if p.StateDir == "" {
+			// No state dir resolvable (HOME unset). Skip the JWT read
+			// entirely rather than falling through to a relative "jwt"
+			// path in the invoker's CWD (review finding L1).
+			out = append(out, p)
+			continue
+		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
 		p.Version = providerVersion(p.Binary)
 		out = append(out, p)

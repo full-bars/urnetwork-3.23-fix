@@ -137,9 +137,6 @@ func dockerProvider(c dockerContainer) (Provider, error) {
 	if err != nil {
 		return Provider{}, fmt.Errorf("container %s: decode jwt: %w", c.Name, err)
 	}
-	// Version via the container's own binary.
-	ver, _ := containerReadFile(c, "/dev/null") // no-op; version comes from image tag or exec
-	_ = ver
 	p := Provider{
 		User:       "docker:" + c.Name,
 		StateDir:   stateDir,
