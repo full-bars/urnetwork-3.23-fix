@@ -56,6 +56,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	cfg := defaultUpdateConfig()
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
+	all := false
 	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
@@ -89,15 +90,27 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			}
 			exclude = splitLabels(rest[i+1])
 			i++
+		case "--all", "-all":
+			all = true
 		case "--select":
 			interactive = !force // --select forces the picker unless -f
 		}
 	}
 
 	providers := Discover()
-	chosen, err := selectTargets(providers, t, include, exclude, interactive)
-	if err != nil {
-		return err
+	var chosen []Provider
+	if all {
+		// --all means every provider on the box, no ambiguity.
+		if len(providers) == 0 {
+			return fmt.Errorf("no providers found on this box")
+		}
+		chosen = providers
+	} else {
+		var err error
+		chosen, err = selectTargets(providers, t, include, exclude, interactive)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Resolve the release: --tag wins; otherwise fetch latest.
