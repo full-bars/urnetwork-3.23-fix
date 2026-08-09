@@ -133,6 +133,9 @@ func dockerProvider(c dockerContainer) (Provider, error) {
 	if err != nil {
 		return Provider{}, err
 	}
+	// The temp file holds a live network credential — always remove it,
+	// success or failure (free-review HIGH, both passes).
+	defer os.Remove(tmp)
 	net, id, exp, err := decodeJWT(tmp)
 	if err != nil {
 		return Provider{}, fmt.Errorf("container %s: decode jwt: %w", c.Name, err)

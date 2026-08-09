@@ -2,7 +2,6 @@ package urnettools
 
 import (
 	"archive/tar"
-	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -86,7 +85,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			i++
 		case "--exclude":
 			if i+1 >= len(rest) {
-				return fmt.Errorf("--exclude requires a value (com-separated labels)")
+				return fmt.Errorf("--exclude requires a value (comma-separated labels)")
 			}
 			exclude = splitLabels(rest[i+1])
 			i++
@@ -181,8 +180,7 @@ func confirmVersion(tag string, providers []Provider) (bool, error) {
 		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
 	}
 	fmt.Print("Update to this version? [Y/n]: ")
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
@@ -244,10 +242,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if err := os.MkdirAll(cfg.StageDir, 0o755); err != nil {
 		return fmt.Errorf("stage dir: %w", err)
 	}
-	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "amd64"
-	}
+	arch := runtimeGOARCH()
 	relPath := filepath.Join("linux", arch, "provider")
 	if runtime.GOOS == "windows" {
 		relPath = filepath.Join("windows", arch, "provider.exe")
