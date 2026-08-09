@@ -1,5 +1,9 @@
 package main
 
+import (
+	"sort"
+)
+
 // Letter-grade tiers for stage-1 probe scores. The mapping is deliberately
 // fixed (not config-driven): A >= 0.9, B >= 0.8, C >= 0.7, D >= 0.6,
 // F < 0.6. Tiers exist so an operator can see the score DISTRIBUTION of
@@ -53,4 +57,48 @@ func proxyTierRank(tier string) int {
 	default:
 		return -1
 	}
+}
+
+// rankedProxyCandidate is one URL-source line with its tier rank, pooled
+// across all sources for best-overall admission.
+type rankedProxyCandidate struct {
+	address string
+	line    string
+	rank    int
+	grade   proxyURLGrade
+	// hasGrade is true when the grade map contained a genuine verdict for
+	// this address (decidable or not); used to attach the persisted grade.
+	hasGrade bool
+}
+
+// collectRankedCandidates pools every parseable line from all sources with
+// its tier rank and sorts best-first (A, B, C, D, F, then ungraded/
+// socks5-only). The sort is STABLE within a tier, so same-tier candidates
+// keep source order. This ordering is what makes cache admission a true
+// A→B→C→D funnel: the merge fills from the front, so the highest-tier
+// proxies across ALL sources get the slots first, and lower tiers fill
+// whatever remains.
+func collectRankedCandidates(fetched [][]string, grades map[string]proxyURLGrade) []rankedProxyCandidate {
+	var cands []rankedProxyCandidate
+	for _, lines := range fetched {
+		for _, line := range lines {
+			address, _, _, ok := parseProxyURLLine(line)
+			if !ok {
+				continue
+			}
+			c := rankedProxyCandidate{address: address, line: line, rank: -1}
+			if g, ok := grades[address]; ok {
+				c.hasGrade = true
+				c.grade = g
+				if g.Decidable && !g.Socks5Only {
+					c.rank = proxyTierRank(proxyGradeTier(g.Score))
+				}
+			}
+			cands = append(cands, c)
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		return cands[i].rank > cands[j].rank
+	})
+	return cands
 }
