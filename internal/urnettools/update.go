@@ -32,24 +32,22 @@ type updateConfig struct {
 	StageDir string
 }
 
-// defaultUpdateConfig returns the config for the latest known release. Tag
-// and Digest are populated by the caller (release metadata may be fetched).
-func defaultUpdateConfig() (updateConfig, error) {
-	// Stage on real disk, NOT /tmp (frequently a small tmpfs that the
-	// multi-platform tarball overflows — the 2026-08-09 failure). Windows
-	// has no /var/tmp; use the system temp dir there (free-review major).
-	// Each update gets a PRIVATE 0700 staging dir: a predictable path under
-	// /var/tmp could be pre-created by a local user who then swaps the
-	// tarball between verify and extract (coderabbit critical).
+// newStageDir creates a private 0700 staging directory for one update.
+// Stage on real disk, NOT /tmp (frequently a small tmpfs that the
+// multi-platform tarball overflows — the 2026-08-09 failure). Windows has
+// no /var/tmp; use the system temp dir there (free-review major). A
+// predictable path could be pre-created by a local user who then swaps the
+// tarball between verify and extract (coderabbit critical).
+func newStageDir() (string, error) {
 	parent := "/var/tmp"
 	if runtime.GOOS == "windows" {
 		parent = os.TempDir()
 	}
 	stageDir, err := os.MkdirTemp(parent, "urnet-stage-")
 	if err != nil {
-		return updateConfig{}, fmt.Errorf("create staging directory: %w", err)
+		return "", fmt.Errorf("create staging directory: %w", err)
 	}
-	return updateConfig{StageDir: stageDir}, nil
+	return stageDir, nil
 }
 
 // cmdUpdate updates one or more providers' binaries, then restarts the unit
@@ -65,12 +63,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := defaultUpdateConfig()
-	if err != nil {
-		return err
-	}
-	// Private staging dir is created per-update; always clean it up.
-	defer os.RemoveAll(cfg.StageDir)
+	cfg := updateConfig{}
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
 	all := false
@@ -191,6 +184,19 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			return fmt.Errorf("provider %s has no resolvable binary path — nothing updated", providerLabel(p))
 		}
 	}
+
+	// Create the private staging dir ONLY now — after dry-run, cancellation,
+	// and no-op paths. A dry run or declined confirm must not create (and
+	// then remove) a temp dir or fail on staging permissions (coderabbit
+	// minor).
+	stageDir, serr := newStageDir()
+	if serr != nil {
+		return serr
+	}
+	// Private staging dir is created per-update; always clean it up.
+	defer os.RemoveAll(stageDir)
+	cfg.StageDir = stageDir
+
 	failures := 0
 	for _, p := range chosen {
 		if p.Version == cfg.Tag {
@@ -328,20 +334,23 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		return fmt.Errorf("staged binary reports %q, expected %q — aborting", v, cfg.Tag)
 	}
 
-	// Backup current binary with a timestamped name so repeated updates
-	// never collide (review finding M2: keying off p.Version can yield an
-	// empty/stale suffix and silently reuse an old backup).
+	// Backup current binary with a nanosecond-timestamped name so repeated
+	// updates never collide (review finding M2; coderabbit minor: second
+	// precision let two updates in one second reuse the older backup).
 	backup := backupName(p.Binary, time.Now())
-	if _, err := os.Stat(backup); os.IsNotExist(err) {
-		if err := copyFile(p.Binary, backup); err != nil {
-			return fmt.Errorf("backup: %w", err)
-		}
-		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
-	} else if err != nil {
+	if _, err := os.Stat(backup); err == nil {
+		// Same-instant collision: fail loudly rather than silently reusing
+		// the older backup and losing the immediate previous binary.
+		return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
+	} else if !os.IsNotExist(err) {
 		// Non-NotExist error (permissions, etc.) — treat as a real
 		// failure, not "already backed up" (free-review minor).
 		return fmt.Errorf("backup stat: %w", err)
 	}
+	if err := copyFile(p.Binary, backup); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 
 	// Swap with ownership preserved for the provider user.
 	if err := installBinary(staged, p.Binary, p.User); err != nil {
@@ -528,7 +537,7 @@ func installBinary(src, dst, user string) error {
 // never collide across seconds (review finding M2). Extracted as a pure
 // helper so tests call production logic (coderabbit).
 func backupName(binary string, at time.Time) string {
-	return binary + ".bak-" + at.UTC().Format("20060102T150405Z")
+	return binary + ".bak-" + at.UTC().Format("20060102T150405.000000000Z")
 }
 
 // copyFile copies src to dst preserving mode.

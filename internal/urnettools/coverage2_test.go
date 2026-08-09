@@ -79,7 +79,9 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 	err := cmdProxyTrafficTarget(p)
-	w.Close()
+	if cerr := w.Close(); cerr != nil {
+		t.Fatalf("closing capture pipe: %v", cerr)
+	}
 	os.Stdout = old
 	if err != nil {
 		t.Fatalf("unexpected error reading snapshot: %v", err)
