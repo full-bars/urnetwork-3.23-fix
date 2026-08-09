@@ -114,7 +114,7 @@ func listenSocks5AuthRequired(t *testing.T, rep byte) (addr string, cleanup func
 // REGRESSION (inverted H1). A peer that sends only part of the greeting or
 // CONNECT reply is NOT an answer: io.ReadFull requires the full frame, and
 // a short reply must not be read as REP 0x00.
-func TestReview_ProbeSocks5Connect_ShortReplyCountsAsSuccess(t *testing.T) {
+func TestReview_ProbeSocks5Connect_ShortReplyIsNotSuccess(t *testing.T) {
 	addr, cleanup := listenSocks5Raw(t, func(c net.Conn) {
 		defer c.Close()
 		greeting := make([]byte, 3)
@@ -158,7 +158,7 @@ func TestReview_ProbeSocks5Connect_RejectsWrongVersion(t *testing.T) {
 // REGRESSION (inverted H3). Credentialed proxies are graded on the same
 // evidence as everyone else: with RFC 1929 credentials supplied, an
 // auth-required proxy completes the sub-negotiation and is scored.
-func TestReview_ProbeSocks5Connect_AuthRequiredScoresZero(t *testing.T) {
+func TestReview_ProbeSocks5Connect_AuthRequiredWithCredsScores(t *testing.T) {
 	addr, cleanup := listenSocks5AuthRequired(t, 0x00)
 	defer cleanup()
 
@@ -183,6 +183,84 @@ func TestReview_ProbeSocks5Connect_AuthRequiredNoCredsFails(t *testing.T) {
 
 	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
 		t.Error("an auth-required proxy with no credentials must not be scored as a SynAck")
+	}
+}
+
+// REGRESSION (review #9/10). A CONNECT reply with ATYP=3 (domain) is
+// SHORTER than the fixed 10-byte IPv4 shape. The reply is parsed by ATYP, so
+// a short domain BND.ADDR is still a success.
+func TestReview_ProbeSocks5Connect_DomainReplyAccepted(t *testing.T) {
+	addr, cleanup := listenSocks5Raw(t, func(c net.Conn) {
+		defer c.Close()
+		greeting := make([]byte, 3)
+		if _, err := c.Read(greeting); err != nil {
+			return
+		}
+		c.Write([]byte{0x05, 0x00})
+		frame := make([]byte, 10)
+		if _, err := c.Read(frame); err != nil {
+			return
+		}
+		// ATYP=3, 1-char domain "a", port 80: 4-byte header + len + name + 2.
+		c.Write([]byte{0x05, 0x00, 0x00, 0x03, 0x01, 'a', 0x00, 0x50})
+	})
+	defer cleanup()
+
+	if !probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+		t.Error("a short-domain CONNECT reply must be scored as a SynAck (parsed by ATYP, not fixed length)")
+	}
+}
+
+// REGRESSION (review #9/10). A CONNECT reply with ATYP=4 (IPv6) is LONGER
+// than the fixed 10-byte IPv4 shape: the 16-byte BND.ADDR plus port must all
+// be consumed before REP 0x00 counts.
+func TestReview_ProbeSocks5Connect_IPv6ReplyAccepted(t *testing.T) {
+	addr, cleanup := listenSocks5Raw(t, func(c net.Conn) {
+		defer c.Close()
+		greeting := make([]byte, 3)
+		if _, err := c.Read(greeting); err != nil {
+			return
+		}
+		c.Write([]byte{0x05, 0x00})
+		frame := make([]byte, 10)
+		if _, err := c.Read(frame); err != nil {
+			return
+		}
+		reply := []byte{0x05, 0x00, 0x00, 0x04}
+		reply = append(reply, make([]byte, 16)...)
+		reply = append(reply, 0x00, 0x50)
+		c.Write(reply)
+	})
+	defer cleanup()
+
+	if !probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+		t.Error("an IPv6 BND.ADDR CONNECT reply must be scored as a SynAck (parsed by ATYP, not fixed length)")
+	}
+}
+
+// REGRESSION (review #9/10). A reply whose header declares an ATYP but stops
+// before the declared address is not an answer: the full payload must be
+// consumed before REP 0x00 counts.
+func TestReview_ProbeSocks5Connect_TruncatedDomainReplyRejected(t *testing.T) {
+	addr, cleanup := listenSocks5Raw(t, func(c net.Conn) {
+		defer c.Close()
+		greeting := make([]byte, 3)
+		if _, err := c.Read(greeting); err != nil {
+			return
+		}
+		c.Write([]byte{0x05, 0x00})
+		frame := make([]byte, 10)
+		if _, err := c.Read(frame); err != nil {
+			return
+		}
+		// Header claims ATYP=3 with a 10-byte domain; only 2 bytes follow.
+		c.Write([]byte{0x05, 0x00, 0x00, 0x03, 0x0A, 'a', 'b'})
+		time.Sleep(500 * time.Millisecond)
+	})
+	defer cleanup()
+
+	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+		t.Error("a truncated domain reply must not be scored as a SynAck")
 	}
 }
 
@@ -231,7 +309,7 @@ func TestReview_TableProbeRotation_ConsecutivePassesAreDisjoint(t *testing.T) {
 // REGRESSION (inverted M4). sample_width is clamped to at most half the
 // table in resolveProxyTableProbeConfig, so the disjoint-block property
 // cannot be silently destroyed by a wide override.
-func TestReview_TableProbeRotation_WideSamplesCannotRotate(t *testing.T) {
+func TestReview_TableProbeRotation_WideSamplesClampedToHalfTable(t *testing.T) {
 	withTempHome(t)
 	total := len(connect.ProbeHostNames())
 	if total < 4 {
@@ -267,7 +345,7 @@ func TestReview_TableProbeRotation_CoversWholeTableInOneCycle(t *testing.T) {
 // REGRESSION (inverted M1). The pass counter advances once per FETCH CYCLE
 // (in fetchAndMergeProxyURLs), NOT once per source URL: calling the grading
 // function directly must not move the rotation.
-func TestReview_TableProbePassCounter_AdvancesPerSourceNotPerCycle(t *testing.T) {
+func TestReview_TableProbePassCounter_NotAdvancedByDirectGradingCalls(t *testing.T) {
 	before := tableProbePassCounter.Load()
 	cfg := defaultProxyTableProbeConfig()
 	probeAndGradeProxyURLLines(context.Background(), nil, "api.bringyour.com", 443, cfg)
@@ -284,7 +362,7 @@ func TestReview_TableProbePassCounter_AdvancesPerSourceNotPerCycle(t *testing.T)
 // but would clear the bar on a full pass is NOT truncated: the pass ends
 // only when the bar is mathematically unreachable, so the grade reflects
 // the full evidence.
-func TestReview_FailFast_TruncationCanFailAnAboveBarProxy(t *testing.T) {
+func TestReview_FailFast_AboveBarProxyRunsFullPass(t *testing.T) {
 	// Fails the 3rd through 6th CONNECT, answers every other one.
 	repFor := func(n int) byte {
 		if 3 <= n && n <= 6 {
@@ -320,7 +398,7 @@ func TestReview_FailFast_TruncationCanFailAnAboveBarProxy(t *testing.T) {
 
 // REGRESSION. A dead proxy aborts early once the bar is unreachable, and
 // the aborted pass is still a decided verdict (score 0).
-func TestReview_FailFast_CountsConsecutiveNotCumulative(t *testing.T) {
+func TestReview_FailFast_AlternatingFailuresCountedIndividually(t *testing.T) {
 	repFor := func(n int) byte {
 		if n%2 == 0 {
 			return 0x05
@@ -352,7 +430,7 @@ func TestReview_FailFast_CountsConsecutiveNotCumulative(t *testing.T) {
 // REGRESSION (inverted C1). A pass that asks NOTHING — cancelled context —
 // is not decidable: it carries no verdict and must not be persisted as a
 // grade. The Decidable field makes it distinguishable from a genuine zero.
-func TestReview_CancelledPass_IsIndistinguishableFromAZeroScore(t *testing.T) {
+func TestReview_CancelledPass_IsUndecidableNotZeroVerdict(t *testing.T) {
 	addr, cleanup := listenSocks5ConnectOnce(t, 0x00)
 	defer cleanup()
 
@@ -386,7 +464,7 @@ func TestReview_CancelledPass_IsIndistinguishableFromAZeroScore(t *testing.T) {
 // REGRESSION (inverted C2). Socks5-only lines never reach stage 1 and must
 // NOT be persisted as graded-zero: the reaper must be able to revive them
 // after a transient routing failure, which requires Graded to stay false.
-func TestReview_Socks5OnlyIsRecordedAsGradedZero(t *testing.T) {
+func TestReview_Socks5OnlyIsNotRecordedAsGraded(t *testing.T) {
 	resetAdmissionStateCache()
 	withTempHome(t)
 
@@ -421,7 +499,7 @@ func TestReview_Socks5OnlyIsRecordedAsGradedZero(t *testing.T) {
 
 // REGRESSION (inverted H4). mergeProxyURLCache skips graded-below-bar
 // entries: they are never spawned, never requeued, never burn a goroutine.
-func TestReview_GradedZeroStillEntersDesiredSet(t *testing.T) {
+func TestReview_GradedZeroExcludedFromDesiredSet(t *testing.T) {
 	resetAdmissionStateCache()
 	withTempHome(t)
 
@@ -454,7 +532,7 @@ func TestReview_GradedZeroStillEntersDesiredSet(t *testing.T) {
 // REGRESSION (inverted M2). The admission gate fails CLOSED on an
 // unreadable cache: a corrupt proxy_url.json must not disable the quality
 // gate for every URL proxy.
-func TestReview_AdmissionFailsOpenOnUnreadableState(t *testing.T) {
+func TestReview_AdmissionFailsClosedOnUnreadableState(t *testing.T) {
 	resetAdmissionStateCache()
 	home := withTempHome(t)
 
@@ -510,7 +588,7 @@ func TestReview_AdmissionHonoursRuntimePassBarOverride(t *testing.T) {
 
 // REGRESSION (inverted M3). Two lines for the same address (bare and
 // credentialed forms) collapse to ONE address key and pay ONE stage-1 pass.
-func TestReview_DuplicateAddressIsTableProbedTwice(t *testing.T) {
+func TestReview_DuplicateAddressIsTableProbedOnce(t *testing.T) {
 	repFor := func(n int) byte { return 0x00 }
 	addr, connects, cleanup := listenSocks5Sequenced(t, repFor)
 	defer cleanup()
@@ -591,7 +669,7 @@ func TestReview_ResolveConfig_EmptyFileFallsBackToDefaults(t *testing.T) {
 // REGRESSION (inverted L1). An inverted bar pair is clamped in
 // resolveProxyTableProbeConfig so the log label can never disagree with the
 // gate decision.
-func TestReview_ScoreTierLabel_InvertedBarsMislabel(t *testing.T) {
+func TestReview_ScoreTierLabel_ClampedBarsAgreeWithGate(t *testing.T) {
 	withTempHome(t)
 	// Operator inverts: pass_bar 0.9, preferred_bar 0.6.
 	writeReviewProbeOverride(t, map[string]any{"pass_bar": 0.9, "preferred_bar": 0.6})
@@ -733,6 +811,48 @@ func TestReview_GradedQualifiedDeadIsUnreachableNotQuality(t *testing.T) {
 	t.Log("NEW-3: graded-qualified dead proxy reports unreachable, not below-bar (label decided in main.go)")
 }
 
+// REGRESSION (review #12). A graded-below-bar cache entry is filtered from
+// the desired set by mergeProxyURLCache, so it must not count toward the
+// maxTotal cap: a source that drops a below-bar address must not leave the
+// cache unable to admit new candidates (merging is add-only, so dropped
+// entries would otherwise squat on the cap forever).
+func TestReview_BelowBarSquattersDoNotBlockCap(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
+
+	// Two squatters (graded below bar) + one healthy entry. maxTotal=2: the
+	// squatters are excluded from the count, so the healthy entry is 1 of 2
+	// and exactly one new candidate fits.
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
+		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
+		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true},
+	}}
+	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080", "10.0.0.5:1080"}, 2, 2)
+	if added != 1 {
+		t.Fatalf("expected 1 new entry admitted past squatters (cap counts non-squatters), got %d", added)
+	}
+	if _, ok := state.Cache["10.0.0.4:1080"]; !ok {
+		t.Fatal("first candidate should have been added")
+	}
+	if _, ok := state.Cache["10.0.0.5:1080"]; ok {
+		t.Fatal("second candidate exceeds the cap and must not be added")
+	}
+
+	// Kill switch off: below-bar entries are re-admitted (not squatters), so
+	// the same cap counts every entry and no new candidate fits.
+	writeReviewProbeOverride(t, map[string]any{"enabled": false})
+	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
+		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
+	}}
+	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2)
+	if added2 != 0 {
+		t.Fatalf("kill switch off: squatters count toward the cap, expected 0 added, got %d", added2)
+	}
+}
+
 // REGRESSION (NEW-1). A partial resolver failure must not convict a proxy:
 // score is OK/attempted (not OK/intended-sample), and a sample gutted below
 // quorum is not Decidable at all. This is the CRITICAL the fix pass briefly
@@ -758,20 +878,42 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 	}
 
 	// Simulate a partial resolver: make roughly half the sampled hosts
-	// unresolvable by forcing them through the negative-DNS cache, then
-	// re-run. The proxy still answers every resolvable host; its score must
-	// remain 1.0 (OK/attempted), and it must still be decidable (quorum
-	// measured against resolvable, not intended).
+	// unresolvable by REMOVING them from the success cache AND forcing them
+	// through the negative-DNS cache, then re-run. The proxy still answers
+	// every resolvable host; its score must remain 1.0 (OK/attempted), and
+	// it must still be decidable (quorum measured against resolvable, not
+	// intended). Deleting from m matters: resolveProbeTarget consults the
+	// success cache FIRST, so a fail entry alone is never consulted while
+	// the host still sits in m (Opus review finding 2 — the old injection
+	// was inert and the test could not fail on regression).
 	blocked := 0
+	injected := make([]string, 0, cfg.SampleWidth/2)
+	saved := map[string]probeDNSCachedIP{}
 	probeDNSCache.Lock()
-	for host := range probeDNSCache.m {
+	for host, e := range probeDNSCache.m {
 		if blocked >= cfg.SampleWidth/2 {
 			break
 		}
+		saved[host] = e
+		delete(probeDNSCache.m, host)
 		probeDNSCache.fail[host] = time.Now()
+		injected = append(injected, host)
 		blocked++
 	}
 	probeDNSCache.Unlock()
+	// Restore the process-global DNS cache before the test exits: Go runs
+	// all tests in a package in one process, and these injected failures
+	// would otherwise leak into every later probeTableThroughProxy call for
+	// up to probeDNSFailTTL (review #5). Restore the success entries we
+	// removed and drop the fail entries we added.
+	t.Cleanup(func() {
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for host, e := range saved {
+			probeDNSCache.m[host] = e
+			delete(probeDNSCache.fail, host)
+		}
+	})
 	if blocked == 0 {
 		t.Skip("no cached hosts to simulate resolver failure; run once after a warm pass")
 	}
@@ -807,4 +949,8 @@ func writeReviewProbeOverride(t *testing.T, over map[string]any) {
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// resolveProxyTableProbeConfig caches its parse for probeConfigTTL;
+	// tests write an override then resolve immediately, so clear the cache
+	// after every write.
+	resetProbeConfigCache()
 }

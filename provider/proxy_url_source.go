@@ -408,7 +408,15 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			switch {
 			case g.Qualified:
 				qualified = append(qualified, line)
-				tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+				if probeCfg.Enabled {
+					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+				} else {
+					// Kill switch off: stage 1 never ran, so there is no
+					// score to label. Counting these as "below-bar" would
+					// claim the whole pool is failing while every one of
+					// them was admitted (review #11).
+					tierCounts["ungraded"]++
+				}
 			case g.Socks5Only:
 				socks5Only = append(socks5Only, line)
 				tierCounts["socks5-only"]++
@@ -507,7 +515,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// skipped it entirely on no-change cycles).
 	if len(tierCounts) > 0 {
 		parts := make([]string, 0, len(tierCounts))
-		for _, tier := range []string{"preferred", "qualified", "below-bar", "undecidable", "socks5-only"} {
+		for _, tier := range []string{"preferred", "qualified", "below-bar", "undecidable", "socks5-only", "ungraded"} {
 			if n := tierCounts[tier]; n > 0 {
 				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}

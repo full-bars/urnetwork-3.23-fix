@@ -77,6 +77,106 @@ func socks5ConnectV4(ip net.IP, port uint16) []byte {
 	return frame
 }
 
+// socks5Greet completes the SOCKS5 greeting phase on conn: it offers no-auth
+// (0x00), plus username/password (0x02) when BOTH credentials are non-empty,
+// then validates the server's method selection. Returns true only when the
+// server selected a method the client actually offered and any RFC 1929
+// sub-negotiation succeeded. A server that selects 0x02 without complete
+// credentials being supplied, or any method we never offered (e.g. 0x01
+// GSSAPI), is not a usable proxy — proceeding into CONNECT without finishing
+// that method's negotiation would be a blind guess (review #3). RFC 1929
+// bounds each credential at 255 bytes; longer credentials would truncate
+// silently on the wire and make a working proxy look dead, so reject them
+// outright.
+func socks5Greet(conn net.Conn, user, password string) bool {
+	if len(user) > 255 || len(password) > 255 {
+		return false
+	}
+	greeting := socks5Greeting
+	if user != "" && password != "" {
+		greeting = []byte{0x05, 0x02, 0x00, 0x02}
+	}
+	if _, err := conn.Write(greeting); err != nil {
+		return false
+	}
+	greetingResp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greetingResp); err != nil {
+		return false
+	}
+	if greetingResp[0] != 0x05 {
+		return false
+	}
+	switch greetingResp[1] {
+	case 0x00:
+		// No auth selected — proceed.
+		return true
+	case 0x02:
+		if user == "" || password == "" {
+			// Server demands credentials the client did not fully supply.
+			return false
+		}
+		// RFC 1929 sub-negotiation.
+		auth := []byte{0x01, byte(len(user))}
+		auth = append(auth, []byte(user)...)
+		auth = append(auth, byte(len(password)))
+		auth = append(auth, []byte(password)...)
+		if _, err := conn.Write(auth); err != nil {
+			return false
+		}
+		authResp := make([]byte, 2)
+		if _, err := io.ReadFull(conn, authResp); err != nil {
+			return false
+		}
+		return authResp[0] == 0x01 && authResp[1] == 0x00
+	default:
+		// A method we never offered, or 0xFF "no acceptable method".
+		return false
+	}
+}
+
+// readSocks5ConnectReply consumes and validates a SOCKS5 CONNECT reply:
+// VER(1)=0x05, REP(1), RSV(1)=0x00, ATYP(1), then the BND.ADDR declared by
+// ATYP (4 bytes IPv4, 1 length byte + name for domain, 16 bytes IPv6) and
+// BND.PORT(2). Returns true only when the ENTIRE declared reply was read and
+// REP == 0x00. A fixed-size read only completes an IPv4 reply: a short
+// domain reply is shorter than 10 bytes (so io.ReadFull would block until
+// the deadline) and an IPv6 reply is longer — either would misclassify a
+// healthy proxy. Truncated, wrong-version, non-zero-RSV, or unsupported-ATYP
+// replies are never an answer (review #9/10).
+func readSocks5ConnectReply(conn net.Conn) bool {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return false
+	}
+	if header[0] != 0x05 || header[2] != 0x00 {
+		return false
+	}
+	var addrLen int
+	switch header[3] {
+	case 0x01: // IPv4
+		addrLen = 4
+	case 0x03: // domain name
+		lenByte := make([]byte, 1)
+		if _, err := io.ReadFull(conn, lenByte); err != nil {
+			return false
+		}
+		addrLen = int(lenByte[0])
+	case 0x04: // IPv6
+		addrLen = 16
+	default:
+		return false
+	}
+	addr := make([]byte, addrLen)
+	if _, err := io.ReadFull(conn, addr); err != nil {
+		return false
+	}
+	port := make([]byte, 2)
+	if _, err := io.ReadFull(conn, port); err != nil {
+		return false
+	}
+	return header[1] == 0x00
+}
+
 // apiProbeAddr caches the resolved IP for api.bringyour.com so each probe
 // doesn't trigger a fresh DNS lookup through every proxy.
 var apiProbeAddr struct {
@@ -140,47 +240,12 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 		}
 	}
 
-	// Offer no-auth, plus username/password when we have creds. RFC 1929
-	// bounds each field at 255 bytes; reject longer credentials rather than
-	// truncating them on the wire and misreporting a working proxy as dead.
-	if len(user) > 255 || len(password) > 255 {
+	// Offer no-auth, plus username/password when we have BOTH creds.
+	// socks5Greet validates the server's method selection (0x00, or 0x02 with
+	// complete credentials) and runs the RFC 1929 sub-negotiation; a server
+	// that picks a method we never offered is not a usable proxy (review #3).
+	if !socks5Greet(conn, user, password) {
 		return probeDead
-	}
-	greeting := socks5Greeting
-	if user != "" || password != "" {
-		greeting = []byte{0x05, 0x02, 0x00, 0x02}
-	}
-	if _, err := conn.Write(greeting); err != nil {
-		return probeDead
-	}
-
-	greetingResp := make([]byte, 2)
-	if _, err := io.ReadFull(conn, greetingResp); err != nil {
-		return probeDead
-	}
-	if greetingResp[0] != 0x05 {
-		return probeDead
-	}
-	if greetingResp[1] == 0xFF {
-		// no acceptable method
-		return probeDead
-	}
-	if greetingResp[1] == 0x02 {
-		// RFC 1929 sub-negotiation
-		auth := []byte{0x01, byte(len(user))}
-		auth = append(auth, []byte(user)...)
-		auth = append(auth, byte(len(password)))
-		auth = append(auth, []byte(password)...)
-		if _, err := conn.Write(auth); err != nil {
-			return probeDead
-		}
-		authResp := make([]byte, 2)
-		if _, err := io.ReadFull(conn, authResp); err != nil {
-			return probeDead
-		}
-		if authResp[0] != 0x01 || authResp[1] != 0x00 {
-			return probeDead
-		}
 	}
 
 	// Stage 2: SOCKS5 CONNECT to api.bringyour.com:443 (or custom apiHost)
@@ -200,13 +265,13 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 		return probeSocks5Only
 	}
 
-	connectResp := make([]byte, 10)
-	if _, err := io.ReadFull(conn, connectResp); err != nil {
-		return probeSocks5Only
-	}
-	// Response: VER(1) REP(1) RSV(1) ATYP(1) BND.ADDR(4) BND.PORT(2)
-	// REP = 0x00 means success
-	if len(connectResp) >= 2 && connectResp[0] == 0x05 && connectResp[1] == 0x00 {
+	// REP = 0x00 with a fully-consumed, well-formed reply means success. The
+	// reply is parsed by ATYP (IPv4/domain/IPv6), not by a fixed length, so
+	// a short domain reply or an IPv6 BND.ADDR is handled correctly
+	// (review #9/10). Anything else — truncated, wrong version, REP != 0x00 —
+	// means the API CONNECT failed: the proxy speaks SOCKS5 but cannot reach
+	// the API, which is socks5-only.
+	if readSocks5ConnectReply(conn) {
 		return probeAPIReachable
 	}
 	return probeSocks5Only
