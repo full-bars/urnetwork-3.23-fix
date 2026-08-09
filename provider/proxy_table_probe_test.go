@@ -56,8 +56,8 @@ func TestProbeTableThroughProxy_AllSuccess(t *testing.T) {
 	cfg.TargetTimeout = time.Second
 
 	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
-	if res.Total == 0 {
-		t.Skip("no sampled targets resolved on this box (DNS required); cannot exercise the probe")
+	if res.Total != res.SampleWidth {
+		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the full-success assertion needs every host to resolve", res.Total, res.SampleWidth)
 	}
 	if res.SampleWidth == 0 {
 		t.Fatalf("expected a non-zero sample, got sample_width=0")
@@ -118,8 +118,8 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	cfg.TargetTimeout = 100 * time.Millisecond
 
 	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
-	if res.Total == 0 {
-		t.Skip("no sampled targets resolved on this box (DNS required); cannot exercise the viability abort")
+	if res.Total != res.SampleWidth {
+		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the exact abort count assumes every host resolves", res.Total, res.SampleWidth)
 	}
 	if res.OK != 0 {
 		t.Fatalf("expected 0 successes, got %d", res.OK)

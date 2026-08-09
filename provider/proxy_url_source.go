@@ -368,6 +368,10 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// we don't hold it across HTTP requests. Only the read-modify-write of
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
+	// qualifiedBySource[i] is the address-keyed set of stage-1-qualified
+	// results for source i, built during the fetch/grading loop and consumed
+	// by the merge loop below (review round 2).
+	qualifiedBySource := make([]map[string]bool, len(urls))
 	apiOKCounts := make([]int, len(urls))
 	// grades accumulates the stage-1 result per address so the merge loop
 	// can persist score/failed alongside ProbeOK.
@@ -395,6 +399,13 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// (score >= pass bar) are admitted.
 		lineGrades := probeAndGradeProxyURLLines(ctx, lines, apiHost, apiPort, probeCfg)
 		var qualified, belowBar, socks5Only []string
+		// qualifiedAddrs is the address-keyed set of stage-1-qualified
+		// results for this source. It decides ProbeOK at insert and cache
+		// update time instead of the raw line index / apiOKCount boundary,
+		// so skipped cached, duplicate, blacklisted, excluded, or invalid
+		// lines can never shift qualification status onto another address
+		// (review round 2).
+		qualifiedAddrs := map[string]bool{}
 		for _, line := range lines {
 			addr, _, _, ok := parseProxyURLLine(line)
 			if !ok {
@@ -408,6 +419,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			switch {
 			case g.Qualified:
 				qualified = append(qualified, line)
+				qualifiedAddrs[addr] = true
 				if probeCfg.Enabled {
 					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
 				} else {
@@ -438,6 +450,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// that the reaper later revives still cannot spend auth slots.
 		fetched[i] = append(append(qualified, belowBar...), socks5Only...)
 		apiOKCounts[i] = len(qualified)
+		qualifiedBySource[i] = qualifiedAddrs
 		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(lines) > 0 {
 			// The fetch itself succeeded but every line was unparseable or
 			// dead — distinct from the fetch-failed case above (N3).
@@ -466,11 +479,11 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		if fetched[i] == nil {
 			continue
 		}
-		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal)
+		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal, qualifiedBySource[i])
 		totalAdded += added
 		markedAPI := 0
 		markedSocks5 := 0
-		for j, line := range fetched[i] {
+		for _, line := range fetched[i] {
 			addr, _, _, ok := parseProxyURLLine(line)
 			if !ok {
 				continue
@@ -478,21 +491,20 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			if entry, exists := state.Cache[addr]; exists {
 				entry.LastProbe = time.Now()
 				// Persist the stage-1 grade alongside ProbeOK so the
-				// auth-time gate and fleet grading can consume it.
-				//
-				// Graded is set ONLY for a genuine stage-1 verdict
-				// (g.Decidable). A socks5-only line never reached stage 1,
-				// and a pass that could not ask anything (cancelled context,
-				// resolver outage) produced no evidence — persisting either
-				// as "graded, score 0.0" would convict a proxy the probe
-				// never actually tested (findings C1 and C2). Such entries
-				// keep their prior grade (or the ungraded state).
+				// auth-time gate and fleet grading can consume it. Graded
+				// is set ONLY for a genuine stage-1 verdict (g.Decidable).
+				// A socks5-only line never reached stage 1, and a pass that
+				// could not ask anything (cancelled context, resolver
+				// outage) produced no evidence — persisting either as
+				// "graded, score 0.0" would convict a proxy the probe never
+				// actually tested (findings C1 and C2). Such entries keep
+				// their prior grade (or the ungraded state).
 				if g, ok := grades[addr]; ok && g.Decidable && !g.Socks5Only {
 					entry.Score = g.Score
 					entry.Graded = true
 					entry.Failed = capFailedList(g.Failed)
 				}
-				if j < apiOKCounts[i] {
+				if qualifiedBySource[i][addr] {
 					entry.ProbeOK = true
 					entry.ProbeFails = 0
 					markedAPI++

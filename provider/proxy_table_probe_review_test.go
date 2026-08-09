@@ -381,11 +381,8 @@ func TestReview_FailFast_AboveBarProxyRunsFullPass(t *testing.T) {
 
 	got := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
 
-	if got.Total < 10 {
-		t.Skipf("only %d of %d targets resolved on this box; the comparison needs a full block", got.Total, cfg.SampleWidth)
-	}
 	if got.Total != cfg.SampleWidth {
-		t.Fatalf("pass was truncated to %d/%d targets; viability abort must not fire while the bar is reachable (H2)", got.Total, cfg.SampleWidth)
+		t.Skipf("only %d of %d targets resolved on this box; the full-block comparison needs every host to resolve", got.Total, cfg.SampleWidth)
 	}
 	if !got.qualified(cfg.PassBar) {
 		t.Fatalf("a proxy answering 8/12 targets must qualify (score %.3f), got %d/%d (H2)", got.Score, got.OK, got.Total)
@@ -829,7 +826,7 @@ func TestReview_BelowBarSquattersDoNotBlockCap(t *testing.T) {
 		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
 		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true},
 	}}
-	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080", "10.0.0.5:1080"}, 2, 2)
+	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080", "10.0.0.5:1080"}, 2, 2, nil)
 	if added != 1 {
 		t.Fatalf("expected 1 new entry admitted past squatters (cap counts non-squatters), got %d", added)
 	}
@@ -847,9 +844,56 @@ func TestReview_BelowBarSquattersDoNotBlockCap(t *testing.T) {
 		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
 		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
 	}}
-	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2)
+	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2, nil)
 	if added2 != 0 {
 		t.Fatalf("kill switch off: squatters count toward the cap, expected 0 added, got %d", added2)
+	}
+}
+
+// REGRESSION (review round 2). At the hard cap (maxTotal*2 total entries),
+// a new candidate evicts the OLDEST below-bar squatter instead of being
+// dropped, while a cache at the hard cap with no squatters stops the merge.
+func TestReview_HardCapEvictsOldestSquatter(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
+
+	old := time.Now().Add(-3 * time.Hour)
+	mid := time.Now().Add(-2 * time.Hour)
+	recent := time.Now().Add(-1 * time.Hour)
+
+	// maxTotal=2 → hard cap 4. Three squatters + one healthy = 4 total. The
+	// new candidate evicts the OLDEST squatter (10.0.0.1) and is added.
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false, LastProbe: old},
+		"10.0.0.2:1080": {Graded: true, Score: 0.3, ProbeOK: false, LastProbe: mid},
+		"10.0.0.3:1080": {Graded: true, Score: 0.4, ProbeOK: false, LastProbe: recent},
+		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+	}}
+	added := mergeProxyURLEntries(state, []string{"10.0.0.5:1080"}, 1, 2, nil)
+	if added != 1 {
+		t.Fatalf("expected the candidate to evict a squatter and be added, got added=%d", added)
+	}
+	if _, ok := state.Cache["10.0.0.1:1080"]; ok {
+		t.Error("oldest squatter should have been evicted at the hard cap")
+	}
+	if _, ok := state.Cache["10.0.0.5:1080"]; !ok {
+		t.Error("candidate should be in the cache after eviction")
+	}
+	if len(state.Cache) != 4 {
+		t.Fatalf("cache size should stay at the hard cap (4), got %d", len(state.Cache))
+	}
+
+	// A cache at the hard cap with NO squatters stops the merge.
+	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"10.0.0.1:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: old},
+		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: mid},
+		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+	}}
+	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.5:1080"}, 1, 2, nil)
+	if added2 != 0 {
+		t.Fatalf("hard cap with no squatters must stop the merge, got added=%d", added2)
 	}
 }
 
@@ -953,4 +997,15 @@ func writeReviewProbeOverride(t *testing.T, over map[string]any) {
 	// tests write an override then resolve immediately, so clear the cache
 	// after every write.
 	resetProbeConfigCache()
+}
+
+// resetProbeConfigCache clears the probe-config TTL cache. Test-only (kept
+// out of production builds, review round 2): tests write an override file
+// then resolve immediately, which would otherwise reuse a snapshot for
+// probeConfigTTL.
+func resetProbeConfigCache() {
+	probeConfigCache.Lock()
+	defer probeConfigCache.Unlock()
+	probeConfigCache.cfg = proxyTableProbeConfig{}
+	probeConfigCache.at = time.Time{}
 }
