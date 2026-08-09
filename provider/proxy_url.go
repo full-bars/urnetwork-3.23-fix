@@ -265,13 +265,53 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
 // or callers that don't track probe results) get ProbeOK=false so the
 // background reaper picks them up for retry.
+// cacheSizeExcludingBelowBar returns the number of cache entries that count
+// toward the maxTotal cap: every entry except graded-below-bar squatters.
+// A below-bar entry is filtered out of the desired set by mergeProxyURLCache,
+// so it can never launch — but if it counted toward the cap it would still
+// block new candidates after the source dropped it (merging is add-only).
+// Excluding it from the count lets fresh candidates in while the entry waits
+// for a re-grade or the reaper (review #12; the tiers branch supersedes this
+// with best-overall eviction). When the kill switch is off, below-bar
+// entries are re-admitted and count normally.
+func cacheSizeExcludingBelowBar(cache map[string]ProxyURLEntry, cfg proxyTableProbeConfig) int {
+	n := 0
+	for _, e := range cache {
+		if cfg.Enabled && e.Graded && e.Score < cfg.PassBar {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// proxyURLCacheHardCapFactor bounds the TOTAL cache size (below-bar
+// squatters included) at maxTotal * factor. cacheSizeExcludingBelowBar lets
+// fresh candidates in past graded-below-bar squatters, but nothing ever
+// removes a squatter that still passes stage 0 (the reaper resets its
+// ProbeFails, it is not re-graded once the source drops it, and it never
+// launches) — without a hard backstop proxy_url.json could grow without
+// limit (Opus review finding 3).
+const proxyURLCacheHardCapFactor = 2
+
 func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
-	if maxTotal > 0 && len(state.Cache) > maxTotal {
-		tlog("[proxy][url] cache over cap: %d entries, maxTotal=%d (new entries will not be added until cleanup prunes stale entries)\n",
-			len(state.Cache), maxTotal)
+	// The cap counts non-squatter entries (see cacheSizeExcludingBelowBar).
+	// Computed once: inserted entries are ungraded at insert time (grades are
+	// persisted after the merge), so the count only grows by one per add.
+	capCount := len(state.Cache)
+	if maxTotal > 0 {
+		capCount = cacheSizeExcludingBelowBar(state.Cache, resolveProxyTableProbeConfig())
+		if capCount > maxTotal {
+			tlog("[proxy][url] cache over cap: %d non-squatter entries, maxTotal=%d (new entries will not be added)\n",
+				capCount, maxTotal)
+		}
+	}
+	hardCap := 0
+	if maxTotal > 0 {
+		hardCap = maxTotal * proxyURLCacheHardCapFactor
 	}
 	for i, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
@@ -287,10 +327,16 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 		if hostMatchesAny(state.ExcludePatterns, address) {
 			continue
 		}
-		if maxTotal > 0 && len(state.Cache) >= maxTotal {
+		// Hard backstop first: even with squatters excluded from the count,
+		// the file itself must stay bounded.
+		if hardCap > 0 && len(state.Cache) >= hardCap {
+			break
+		}
+		if maxTotal > 0 && capCount >= maxTotal {
 			break
 		}
 		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
+		capCount++
 		added++
 	}
 	return added

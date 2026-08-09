@@ -11,10 +11,18 @@ package connect
 // apply unchanged.
 
 // ProbeHostNames returns the health-class hostname table, dialed at :443.
-func ProbeHostNames() []string { return probeHostNames }
+// The returned slice is a COPY: callers must not be able to mutate the
+// package-owned table, which concurrent samplers read (review #1).
+func ProbeHostNames() []string { return append([]string(nil), probeHostNames...) }
+
+// ProbeHostCount returns the size of the health-class hostname table
+// without copying it — callers that only need the length should not pay for
+// a full table copy (review #6).
+func ProbeHostCount() int { return len(probeHostNames) }
 
 // ProbeResolverIps returns the dns-class resolver table, queried at :53.
-func ProbeResolverIps() []string { return probeResolverIps }
+// The returned slice is a COPY (review #1).
+func ProbeResolverIps() []string { return append([]string(nil), probeResolverIps...) }
 
 // ProbePassFraction is the share of a pass's targets that must answer for a
 // provider to qualify (0.6). Deliberately below 1 (anti-bot egress drops)

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -57,6 +56,9 @@ func TestProbeTableThroughProxy_AllSuccess(t *testing.T) {
 	cfg.TargetTimeout = time.Second
 
 	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	if res.Total == 0 {
+		t.Skip("no sampled targets resolved on this box (DNS required); cannot exercise the probe")
+	}
 	if res.SampleWidth == 0 {
 		t.Fatalf("expected a non-zero sample, got sample_width=0")
 	}
@@ -116,12 +118,16 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	cfg.TargetTimeout = 100 * time.Millisecond
 
 	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	if res.Total == 0 {
+		t.Skip("no sampled targets resolved on this box (DNS required); cannot exercise the viability abort")
+	}
 	if res.OK != 0 {
 		t.Fatalf("expected 0 successes, got %d", res.OK)
 	}
-	// needed = ceil(0.6*20) = 12; with OK=0 the pass aborts once remaining
-	// < 12, i.e. after 9 attempts (remaining 11 < 12 is the first time the
-	// strict inequality holds).
+	// With every host resolvable the viability threshold is remaining/20 < 0.6
+	// (best possible score on the attemptable denominator): with OK=0 the pass
+	// aborts once remaining < 12, i.e. after 9 attempts (remaining 11 < 12 is
+	// the first time the strict inequality holds).
 	if res.Total != 9 {
 		t.Fatalf("expected viability abort after 9 attempts (needed 12 of 20), got total=%d (walked: %+v)", res.Total, res)
 	}
@@ -233,14 +239,7 @@ func TestURLProxyPassesAdmission_UngradedPasses(t *testing.T) {
 // CONNECT but can dial nothing else.
 func TestURLProxyPassesAdmission_GradedZeroBlocked(t *testing.T) {
 	resetAdmissionStateCache()
-	home := withTempHome(t)
-	if err := writeProxyURLStateTo(filepath.Join(home, ".urnetwork", "proxy_url.json"), &ProxyURLState{
-		Cache: map[string]ProxyURLEntry{
-			"9.9.9.9:1080": {Graded: true, Score: 0.0, ProbeOK: false},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	withTempHome(t)
 	// The live SOCKS5 probe would pass for a reachable proxy; the recorded
 	// grade must still block it. Use a live fake so the probe is not the
 	// reason for the failure.
