@@ -339,7 +339,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 				continue
 			}
 			delete(state.Cache, evictAddr)
-			tlog("[proxy][url] cap eviction: %s (rank %d) evicted for %s (rank %d)\n",
+			importantLogf("[proxy][url] cap eviction: %s (rank %d) evicted for %s (rank %d)\n",
 				evictAddr, evictRank, address, candidateRank)
 		}
 		entry := ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
