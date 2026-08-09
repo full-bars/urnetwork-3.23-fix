@@ -27,7 +27,7 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 	var err error
 
 	switch {
-	case t.Unit != "" || t.User != "" || t.Network != "" || t.StateDir != "":
+	case t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "":
 		// A single explicit target still resolves to one provider.
 		p, serr := selectTarget(providers, t)
 		if serr != nil {
@@ -154,16 +154,24 @@ func labelSet(labels []string) map[string]bool {
 	return m
 }
 
-// matchKey returns a stable unique key for a provider (unit, else
-// user@network, else state dir).
+// matchKey returns a stable unique key for a provider. The state dir is the
+// only field guaranteed unique per provider (two providers CAN share the
+// same network name — e.g. same account on mainnet and beta backends — and
+// even the same user). Unit is preferred when present for readability, but
+// state dir breaks ties.
 func matchKey(p Provider) string {
 	if p.Unit != "" {
+		// Unit names are unique per box, but a user-level unit could exist
+		// for multiple users; state dir disambiguates.
+		if p.StateDir != "" {
+			return p.Unit + "|" + p.StateDir
+		}
 		return p.Unit
 	}
-	if p.User != "" || p.Network != "" {
-		return p.User + "@" + p.Network
+	if p.StateDir != "" {
+		return p.StateDir
 	}
-	return p.StateDir
+	return p.User + "@" + p.Network
 }
 
 // ambiguousError renders the refusal message with the inventory.
