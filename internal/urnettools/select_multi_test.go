@@ -141,3 +141,65 @@ func TestSelectTargetsAllSemantics(t *testing.T) {
 		t.Fatalf("want all 3, got %d", len(got))
 	}
 }
+
+// twoSameNetwork is the duplicate-network fixture: the same account name on
+// two providers (e.g. one mainnet, one beta) with different network IDs and
+// state dirs — the scenario the user asked about.
+func twoSameNetwork() []Provider {
+	return []Provider{
+		{User: "urnet", Unit: "urnetwork-native.service", Network: "tacogonzalez3000", NetworkID: "019c3c0c-436c-6b8b-68a3-2d21dd48a50c", StateDir: "/home/urnet/.urnetwork"},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "tacogonzalez3000", NetworkID: "019f1234-aaaa-bbbb-cccc-dddddddddddd", StateDir: "/home/urnetwork-beta/.urnetwork"},
+	}
+}
+
+// TestSelectTargetSameNetworkNameAmbiguous: --network with a duplicate name
+// must refuse (can't tell which one) — the operator must add --network-id.
+func TestSelectTargetSameNetworkNameAmbiguous(t *testing.T) {
+	_, err := selectTarget(twoSameNetwork(), Target{Network: "tacogonzalez3000"})
+	if err == nil {
+		t.Fatal("expected ambiguity error: same network name on two providers")
+	}
+	if !contains(err.Error(), "ambiguous") {
+		t.Errorf("error should say ambiguous, got: %s", err)
+	}
+}
+
+// TestSelectTargetByNetworkID: the TRUE unique identity (network_id) breaks
+// the tie and resolves exactly one.
+func TestSelectTargetByNetworkID(t *testing.T) {
+	p, err := selectTarget(twoSameNetwork(), Target{NetworkID: "019f1234-aaaa-bbbb-cccc-dddddddddddd"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.User != "urnetwork-beta" {
+		t.Errorf("selected user %s, want urnetwork-beta (the beta copy)", p.User)
+	}
+}
+
+// TestSelectTargetsIncludeSameNetworkKeepsBoth: batch selection by labels
+// must keep BOTH providers even when they share a network name (the matchKey
+// uniqueness fix).
+func TestSelectTargetsIncludeSameNetworkKeepsBoth(t *testing.T) {
+	ps := twoSameNetwork()
+	got, err := selectTargets(ps, Target{}, []string{"urnetwork-native.service", "urnetwork-beta.service"}, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want both providers, got %d (dedup bug if 1)", len(got))
+	}
+}
+
+// TestMatchKeyUniquenessAcrossProviders: no two providers in the duplicate
+// fixture share a matchKey.
+func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
+	ps := twoSameNetwork()
+	seen := map[string]bool{}
+	for _, p := range ps {
+		k := matchKey(p)
+		if seen[k] {
+			t.Fatalf("matchKey collision: %q", k)
+		}
+		seen[k] = true
+	}
+}

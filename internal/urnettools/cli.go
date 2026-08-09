@@ -85,10 +85,14 @@ Providers are identified three ways (use any):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
   --user <user>          OS user, e.g. urnet
   --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
+  --network-id <id>      JWT network id — TRUE unique identity; use when two
+                         providers share the same network name (e.g. mainnet
+                         + beta copies of one account)
 
 Targeting rules:
   - one provider on box: no flag needed, it is used automatically
   - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
+  - same network name on two providers: add --network-id or --unit to break the tie
   - batch: --include a,b (exactly these) / --exclude a,b (subtract) / --all (everything)
   - --select             interactive picker (choose A B C, skip D)
   - see 'providers' first to learn each provider's unit/user/network
@@ -128,6 +132,12 @@ func parseTargetFlags(args []string) (Target, []string, error) {
 			}
 			t.Network = args[i+1]
 			i++
+		case "--network-id":
+			if i+1 >= len(args) {
+				return t, nil, fmt.Errorf("--network-id requires a value")
+			}
+			t.NetworkID = args[i+1]
+			i++
 		case "--state-dir":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--state-dir requires a value")
@@ -149,7 +159,7 @@ func cmdProviders(args []string) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PID\tUSER\tUNIT\tNETWORK\tSTATE-DIR\tBIN\tVER")
+	fmt.Fprintln(w, "PID	USER	UNIT	NETWORK	NET-ID	STATE-DIR	BIN	VER")
 	for _, p := range providers {
 		pid := "-"
 		if p.PID > 0 {
@@ -159,10 +169,19 @@ func cmdProviders(args []string) error {
 		if ver == "" {
 			ver = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			pid, p.User, p.Unit, p.Network, p.StateDir, p.Binary, ver)
+		netID := shortID(p.NetworkID)
+		fmt.Fprintf(w, "%s	%s	%s	%s	%s	%s	%s	%s\n",
+			pid, p.User, p.Unit, p.Network, netID, p.StateDir, p.Binary, ver)
 	}
 	return w.Flush()
+}
+
+// shortID renders a UUID-ish id as its first 8 chars for table display.
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
 }
 
 // cmdStatus shows detailed info for one provider (targeted).
