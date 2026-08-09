@@ -33,6 +33,21 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdUpdate(rest2, force, dryRun)
+	case "proxy":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdProxy(rest2, force, dryRun)
+	case "summary":
+		return cmdSimpleDelegation("summary", rest)
+	case "report":
+		return cmdSimpleDelegation("report", rest)
+	case "hot-restart", "hotrestart":
+		return cmdSimpleDelegation("hot-restart", rest)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -59,6 +74,24 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 		}
 	}
 	return force, dryRun, rest, nil
+}
+
+// cmdSimpleDelegation handles the pass-through commands (summary, report,
+// hot-restart): resolve the targeted provider, then delegate the exact
+// subcommand to that provider's binary.
+func cmdSimpleDelegation(sub string, args []string) error {
+	t, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+	providers := Discover()
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	// Delegate: <binary> <sub> <rest...>
+	cmdArgs := append([]string{sub}, rest...)
+	return providerSubcommand(p, cmdArgs...)
 }
 
 // errHelpShown is a sentinel: help was printed, not an error condition.
