@@ -907,6 +907,39 @@ func TestReview_NoRankAddrKeepsOldCapBehavior(t *testing.T) {
 	}
 }
 
+// REGRESSION (self-review). The kill switch disables the reaper's stage-1
+// grade refresh: with enabled=false, the stale re-probe of a once-good entry
+// still runs liveness (stage 0) but must NOT run the table probe — otherwise
+// the operator's "turn stage-1 off" (e.g. because the probes trip egress
+// abuse detection) would be silently defeated on the 1-3h stale cadence.
+func TestReview_ReaperKillSwitchSkipsGradeRefresh(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": false, "sample_width": 4, "timeout_ms": 500})
+
+	// A fake SOCKS5 proxy that answers every CONNECT (stage-0 liveness
+	// passes); count CONNECTs to detect any stage-1 table probe.
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Literal API IP so stage-0's API CONNECT resolves without DNS.
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	// Stage-0 liveness = 1 CONNECT (the API CONNECT through the proxy).
+	// Stage-1 would add sample_width more; with the kill switch off there
+	// must be none.
+	if n := connects.Load(); n > 1 {
+		t.Fatalf("kill switch off must skip the stage-1 grade refresh: %d CONNECTs, want at most 1 (stage-0 only)", n)
+	}
+}
+
 // REGRESSION (NEW-1). A partial resolver failure must not convict a proxy:
 // score is OK/attempted (not OK/intended-sample), and a sample gutted below
 // quorum is not Decidable at all. This is the CRITICAL the fix pass briefly
