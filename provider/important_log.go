@@ -22,11 +22,13 @@ var importantLogMarkers = []string{
 	// breakdown, what got admitted by tier, cap evictions, and reaper grade
 	// refreshes happen at most a few times a day and are the only record of
 	// how the quality gate behaved. Keep them in the important buffer so
-	// they survive hours of main-log flooding.
-	"probe grade breakdown",
-	"admitted by tier",
-	"cap eviction",
-	"reaper: refreshed grade",
+	// they survive hours of main-log flooding. Markers carry the exact
+	// "[proxy][url] " prefix so unrelated lines cannot match (coderabbit
+	// review).
+	"[proxy][url] probe grade breakdown",
+	"[proxy][url] admitted by tier",
+	"[proxy][url] cap eviction",
+	"[proxy][url] reaper: refreshed grade",
 }
 
 // isImportantLogLine reports whether a single log line should be mirrored to the
