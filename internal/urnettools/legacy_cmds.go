@@ -119,14 +119,21 @@ func cmdLogs(args []string) error {
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid,
 	// free-review critical). Scope user units explicitly.
-	jargs := []string{"-fu", p.Unit}
-	if isUserUnit(p.Unit) && p.User != "" {
-		jargs = []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
-	}
-	cmd := exec.Command("journalctl", jargs...)
+	cmd := exec.Command("journalctl", journalctlArgs(p)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// journalctlArgs builds the journalctl argv for following a provider's
+// unit: system units use "-fu <unit>"; user units are scoped to the owning
+// user's session via "-M <user>@ --user-unit <unit> -f" (a plain "-fu"
+// against a user unit name would query the SYSTEM journal instead).
+func journalctlArgs(p Provider) []string {
+	if isUserUnit(p.Unit) && p.User != "" {
+		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
+	}
+	return []string{"-fu", p.Unit}
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
@@ -432,12 +439,17 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 		return nil
 	}
 	fmt.Println("optimize: applying golden-fleet network limits")
-	switch runtime.GOOS {
-	case "windows":
-		return optimizeWindows()
-	default:
-		return optimizeLinux()
+	return optimizeFor(runtime.GOOS)()
+}
+
+// optimizeFor returns the platform-appropriate optimize function for goos.
+// Extracted so the dispatch itself is unit-testable without running the
+// (root-requiring, host-mutating) implementations.
+func optimizeFor(goos string) func() error {
+	if goos == "windows" {
+		return optimizeWindows
 	}
+	return optimizeLinux
 }
 
 // optimizeLinux applies the Linux sysctl set: socket buffers, FD limit, and

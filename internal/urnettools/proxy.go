@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -177,5 +176,3 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	return nil
 }
-
-var _ = filepath.Join // keep import stable

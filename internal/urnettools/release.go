@@ -56,16 +56,23 @@ func fetchLatestRelease() (*releaseInfo, error) {
 	// ERROR, not a silent skip — an unverified download would be executed
 	// as the provider user (free-review critical).
 	wantName := "urnetwork-provider-" + rj.TagName + ".tar.gz"
-	for _, a := range rj.Assets {
-		if a.Name == wantName {
-			info.Digest = strings.TrimPrefix(a.Digest, "sha256:")
-			break
-		}
-	}
+	info.Digest = digestForAsset(rj.Assets, wantName)
 	if info.Digest == "" {
 		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", rj.TagName, wantName)
 	}
 	return info, nil
+}
+
+// digestForAsset finds the sha256 digest (hex, "sha256:" prefix stripped)
+// for the named asset. Returns "" when the asset is absent or carries no
+// digest — callers treat that as a hard refusal, never a silent skip.
+func digestForAsset(assets []releaseAsset, wantName string) string {
+	for _, a := range assets {
+		if a.Name == wantName {
+			return strings.TrimPrefix(a.Digest, "sha256:")
+		}
+	}
+	return ""
 }
 
 // fetchReleaseByTag queries the GitHub releases/tags/<tag> endpoint and
@@ -92,12 +99,7 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 		URL: fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", tag, tag),
 	}
 	wantName := "urnetwork-provider-" + tag + ".tar.gz"
-	for _, a := range rj.Assets {
-		if a.Name == wantName {
-			info.Digest = strings.TrimPrefix(a.Digest, "sha256:")
-			break
-		}
-	}
+	info.Digest = digestForAsset(rj.Assets, wantName)
 	if info.Digest == "" {
 		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", tag, wantName)
 	}
