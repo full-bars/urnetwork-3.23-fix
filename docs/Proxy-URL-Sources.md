@@ -15,6 +15,48 @@ Point the provider at a URL and it will:
 
 ---
 
+## 🎓 Stage-1 Quality Gate
+
+Proxies that pass stage-0 (the SOCKS5 greeting and API `CONNECT`) are not yet
+trusted with client traffic. Each one is graded against a sampled block of
+the backend's destination table — dialed through the proxy itself at `:443`
+— before it reaches the auth queue.
+
+**Scoring**: a pass samples `sample_width` hosts (default 12) from the
+backend's ~127-host health table, disjoint from the previous pass, and
+dials each at `:443` with a per-target timeout of `timeout_ms` (default
+4000ms). The proxy's score is the fraction of successful dials in the
+pass. Only a SynAck counts as success; a timeout or refusal is not treated
+as proof the proxy is bad, since the target host itself could be
+unreachable for unrelated reasons. Hostnames are resolved through the
+box's own DNS, not through the proxy being probed, so a proxy with broken
+DNS is not penalized for a resolution failure that isn't its fault.
+
+A grade is only written when the pass is decidable — a quorum of the
+sampled hosts answered and the probe context wasn't cancelled. An empty,
+cancelled, or resolver-gutted pass leaves the proxy's previous grade in
+place rather than overwriting it with a false failure.
+
+**`pass_bar`**: a proxy must score at or above `pass_bar` (default 0.6) to
+be admitted to the auth queue. A score at or above `preferred_bar`
+(default 0.9) marks the proxy as preferred tier. Proxies that clear
+stage-0 but fail stage-1 never spawn, and are reported separately from
+dead proxies in the auth gate's summary.
+
+**Credentialed URL entries**: RFC 1929 auth (`host:port:user:pass`) is
+carried through both the stage-0 and stage-1 probes, so paid/credentialed
+URL-source entries are graded on the same footing as free ones.
+
+**Kill switch**: create `~/.urnetwork/proxy_probe.json` with
+`{"enabled": false}` to disable stage-1 entirely and fall back to
+stage-0-only admission. See [Configuration](Configuration.md) for the
+full set of `proxy_probe.json` knobs.
+
+**Persistence**: `Score`, `Graded`, and `Failed` are stored per proxy in
+`proxy_url.json`, alongside the existing cache fields.
+
+---
+
 ## 📝 Setting It Up
 
 ### 🐧 Binary / Linux Service

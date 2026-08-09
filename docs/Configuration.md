@@ -33,6 +33,29 @@
 | `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default — with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on\|off\|status` (no restart required; the monitor starts sensing within ~30s). |
 | `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
 
+## 📄 `proxy_probe.json` (Stage-1 Gate)
+
+Location: `~/.urnetwork/proxy_probe.json`. Controls the stage-1 table-probe
+quality gate for URL-source proxy admission (see
+[Proxy URL Sources](Proxy-URL-Sources.md#-stage-1-quality-gate)). All
+fields are optional; omitted fields keep their default. The file is
+re-read on a short cache (a few seconds), so changes take effect without
+a restart.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Kill switch. `false` disables stage-1 entirely; proxies are admitted on stage-0 alone. |
+| `sample_width` | int | `12` | Number of destination-table hosts probed per pass. |
+| `timeout_ms` | int | `4000` | Per-target dial timeout, in milliseconds. |
+| `pass_bar` | float | `0.6` | Minimum score (fraction of successful dials) required for admission to the auth queue. |
+| `preferred_bar` | float | `0.9` | Score threshold above which a proxy is marked preferred tier. |
+
+Example, disabling the gate entirely:
+
+```json
+{"enabled": false}
+```
+
 ## 📝 Critical Event Log
 
 Since v3.23.0-fix.25.14, the provider writes a per-process event log to `~/.urnetwork/events.log` (on disk, not RAM — survives restarts). It records STARTUP, SIGNAL, PROVIDER EXIT, PANIC, and FATAL events. Capped at 1 MiB with automatic rotation.

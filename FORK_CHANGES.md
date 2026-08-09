@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.26.7
+**Current Version**: v3.23.0-fix.26.8
 
 ---
 
@@ -2349,4 +2349,51 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **Files Modified**: `connectctl/main.go`
 
 **Status**: ✅ Merged `main` (2026-08-04). PR #318. v3.23.0-fix.26.7.
+
+---
+
+## 104. Stage-1 Table-Probe Quality Gate for URL-Source Proxy Admission (PR #342)
+
+**Purpose**: A URL-source proxy only had to survive stage-0 admission (a SOCKS5 greeting plus an API `CONNECT`) to be trusted with real traffic. That proves the proxy is alive; it does not prove the proxy can actually reach the destinations providers need to reach. Bad or geo-restricted URL-source proxies were being admitted on aliveness alone and only shown to be useless once real client traffic started failing through them.
+
+**Files Modified**: `ip_probe_targets.go`, `ip_probe_targets_api.go`, `ip_probe_targets_api_test.go`, `provider/proxy_probe.go`, `provider/proxy_table_probe.go`, `provider/proxy_table_probe_test.go`, `provider/proxy_table_probe_integration_test.go`, `provider/proxy_table_probe_review_test.go`, `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/main.go`
+
+**Change**:
+- After the existing stage-0 handshake probe, each surviving proxy is graded against a sampled block of the backend's destination table (~127 health hosts, default 12 per pass), dialed through the proxy itself at `:443` with a 4s per-target timeout.
+- Only proxies scoring `>= pass_bar` (default 0.6) are admitted to the auth queue; a `preferred_bar` (default 0.9) marks a higher tier used by downstream consumers.
+- Follows upstream `ip_remote_multi_client_probe.go`'s design: positive evidence only (a SynAck proves the proxy's own upstream dial worked; silence never convicts, since an unreachable target for unrelated reasons shouldn't fail the proxy), resolution outside the probed channel (the box's own DNS, not the proxy's, so a proxy with broken DNS never fails a TCP probe it should pass), deterministic disjoint-block rotation across passes, and a viability abort so an aborted pass is always a decided verdict rather than an ambiguous one.
+- A grade only overwrites the previous one when the pass is DECIDABLE (quorum of the requested sample answered, context not cancelled); an empty, cancelled, or resolver-gutted pass leaves the prior grade untouched — the same "the box's own DNS can never convict a proxy" guarantee applied to the grading loop itself.
+- RFC 1929 auth (`host:port:user:pass`) now carries through both probe stages, so credentialed (usually paid) URL entries are graded on the same footing as free ones instead of failing auth mid-probe.
+- Score/Graded/Failed persist in `proxy_url.json` cache entries, matching the backend's own data model.
+- Kill switch: `~/.urnetwork/proxy_probe.json` with `{"enabled": false}` restores pre-feature behavior end-to-end. `sample_width`, `timeout_ms`, `pass_bar`, `preferred_bar`, and `enabled` are all runtime-tunable via the same file.
+
+**Effect**: Proxies that grade below the bar never spawn, and the auth gate reports them distinctly from proxies that are simply dead — operators can now tell "alive but can't reach anything useful" apart from "dead." Needs a fleet deploy: this changes provider binary behavior and introduces a new operator-facing config file.
+
+**How to Identify in New Upstream**:
+- Search for `ip_remote_multi_client_probe.go` or destination-table probing logic in `urnetwork/connect`'s proxy admission path.
+- Look for a second post-handshake admission stage gating URL-source proxies, or scoring fields (`Score`, `Graded`, `Failed`) on proxy cache entries.
+- Check whether upstream's probe design still follows positive-evidence-only semantics before porting; a stricter (silence-convicts) upstream rewrite would need reconciling with this fork's DECIDABLE-only grade-overwrite rule.
+
+**Status**: ✅ Merged `main` (2026-08-09). PR #342. v3.23.0-fix.26.8.
+
+---
+
+## 105. A-F Proxy Grade Tiers, Admission Funnel, and Best-Overall Eviction (in development, `feat/proxy-quality-tiers`)
+
+**Purpose**: The stage-1 scores from #342 (entry 104) are a single pass/fail bar. They don't let the fleet preferentially keep its best proxies when the cache is full, or compare quality across sources when admitting new ones — a 0.61-scoring proxy and a 0.98-scoring proxy are treated identically once both clear `pass_bar`.
+
+**Files Modified**: `proxy_probe.go`, `proxy_url.go`, `proxy_reload.go`, `provider/main.go` (in progress; exact file list may change before merge)
+
+**Change**:
+- Letter-grade tiers layered on top of the existing stage-1 scores: A `>= 0.9`, B `>= 0.8`, C `>= 0.7`, D `>= 0.6`, F `< 0.6`.
+- Best-overall cache eviction: when the proxy cache is full, eviction compares candidates across all sources by tier rather than per-source, so a full cache keeps the fleet's highest-tier proxies regardless of which source they came from.
+- Admission funnel: candidates from all sources are pooled and added best-first up to the cap, instead of admitting per-source in whatever order sources happen to be processed.
+- Per-cycle A-F probe grade breakdown logged, and probe-grade lines routed to both the important and disk logs.
+- Fetch cycles probe only newly-seen addresses; the reaper's existing stale sweep is reused to refresh grades on already-cached proxies instead of re-probing everything every cycle.
+
+**Effect**: Not yet shipped — no behavioral change until this merges. When it lands, it changes which proxies survive cache pressure (best-overall rather than per-source) and adds new log lines (`admitted by tier`, `probe grade breakdown`, `cap eviction`, `reaper: refreshed grade`) that downstream log tooling and docs will need to account for.
+
+**How to Identify in New Upstream**: N/A — this is fork-native logic built on top of entry 104's stage-1 gate, which itself has no direct upstream equivalent yet. If upstream adds its own quality-tiering on top of `ip_remote_multi_client_probe.go`, compare tier thresholds and eviction policy before reconciling.
+
+**Status**: 🚧 In development on `feat/proxy-quality-tiers` (6 commits, rebased, awaiting review). Not merged; not part of v3.23.0-fix.26.8. Related: PR #343 (planned, not started) would extend read-only grading to paid/file-list proxies on a slow cadence without evicting them.
 
