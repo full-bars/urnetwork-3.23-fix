@@ -51,10 +51,25 @@ func (self *ttlControl) get() int {
 	return ttl
 }
 
-// set applies ttl to the socket. Errors are ignored: the only failure mode is a
-// closed connection, where the TTL no longer matters.
-func (self *ttlControl) set(ttl int) {
-	self.raw.Control(func(fd uintptr) {
-		SetSocketTtl(SocketHandle(fd), ttl)
-	})
+// set applies ttl to the socket and reports whether it took. setFn replaces the
+// SetSocketTtl syscall when non-nil; it is the test seam that lets the reorder
+// paths be observed and made to fail without a router in the way.
+//
+// Two distinct failures are folded into the one return. Control fails once the
+// connection is closed, which is the benign case the deferred restores hit. The
+// sockopt itself fails when the kernel refuses the value, which is the case
+// that matters: IP_TTL accepts only 1-255, so the previously discarded error is
+// exactly what hid the inert reorder technique. Callers decide which failures
+// are fatal; see applyTtlBestEffort and restoreNativeTtl in net_resilient.go.
+func (self *ttlControl) set(ttl int, setFn func(SocketHandle, int) error) error {
+	if setFn == nil {
+		setFn = SetSocketTtl
+	}
+	var setErr error
+	if controlErr := self.raw.Control(func(fd uintptr) {
+		setErr = setFn(SocketHandle(fd), ttl)
+	}); controlErr != nil {
+		return controlErr
+	}
+	return setErr
 }
