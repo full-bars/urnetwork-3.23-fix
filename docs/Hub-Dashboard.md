@@ -171,20 +171,20 @@ The `report` command writes to `~/.urnetwork/report_url`, which the provider re-
 
 **Runtime (Docker -- no restart):**
 
-The `urnet-tools.ps1` PowerShell wrapper executes these commands inside the container via `docker exec`:
+The `urnet-docker` binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) executes these commands inside the container via `docker exec`:
 
-```powershell
+```sh
 # Set or change
-urnet-tools report http://HUB_IP:8080
+urnet-docker report http://HUB_IP:8080
 
 # Check current
-urnet-tools report
+urnet-docker report
 
 # Disable
-urnet-tools report off
+urnet-docker report off
 ```
 
-The PowerShell wrapper handles the `docker exec` transparently -- it writes `~/.urnetwork/report_url` inside the container. The provider picks it up on the next tick. No container restart needed.
+The Go binary handles the `docker exec` transparently -- it discovers the provider container and writes `~/.urnetwork/report_url` inside it. The provider picks it up on the next tick. No container restart needed.
 
 > [!TIP]
 > Use a single hub instance for your entire fleet. All nodes report to the same URL.

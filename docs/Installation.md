@@ -104,7 +104,7 @@ Unlike traditional services that run as root, this build defaults to a **systemd
 
 ## 🛠️ Post-Install Commands
 
-The installation includes the `urnet-tools` suite for management:
+The installation includes the `urnet-tools` suite for management. Since v3.23.0-fix.27.0 this is the **provider-aware Go binary** — on multi-provider machines, pass a target (`--unit` / `--user` / `--network` / `--network-id` / `--state-dir`) or the tool refuses. See [urnet-tools-go.md](urnet-tools-go.md).
 
 | Command | Description |
 | :--- | :--- |
