@@ -344,18 +344,19 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 		}
 		entry := ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
 		if gradeFor != nil {
-			if g, ok := gradeFor(address); ok && g.Decidable && !g.Socks5Only {
-				entry.Score = g.Score
-				entry.Graded = true
-				entry.Failed = capFailedList(g.Failed)
-				// Address-keyed ProbeOK: the grade decides it, so skipped
-				// cached, duplicate, blacklisted, excluded, or invalid lines
-				// cannot shift qualification status onto another address
-				// (342 review round 2).
+			if g, ok := gradeFor(address); ok {
+				// Address-keyed ProbeOK: the grade's Qualified flag decides
+				// it, independent of Decidable — a kill-switch-disabled
+				// admission carries Qualified=true with Decidable=false
+				// (stage 1 never ran), and must still be ProbeOK=true
+				// (self-review finding). The Decidable && !Socks5Only gate
+				// applies only to the persisted Score/Graded/Failed.
 				entry.ProbeOK = g.Qualified
-			} else if ok {
-				// Socks5-only or undecidable: never ProbeOK.
-				entry.ProbeOK = false
+				if g.Decidable && !g.Socks5Only {
+					entry.Score = g.Score
+					entry.Graded = true
+					entry.Failed = capFailedList(g.Failed)
+				}
 			}
 		}
 		state.Cache[address] = entry

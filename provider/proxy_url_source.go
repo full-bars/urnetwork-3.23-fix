@@ -488,8 +488,8 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// highest-tier proxies first; lower tiers fill only remaining slots.
 	// This is the A→B→C→D funnel — we add the best, not the first.
 	rankAddr := func(addr string) int {
-		if g, ok := grades[addr]; ok && g.Decidable {
-			return proxyTierRank(proxyGradeTier(g.Score))
+		if g, ok := grades[addr]; ok {
+			return rankFromGrade(g)
 		}
 		return -1
 	}
@@ -736,7 +736,14 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// a degraded proxy gets re-ranked a few times a day, never hammered.
 		// Credentials are carried through so credentialed entries are
 		// re-graded fairly.
-		if c.wasProbeOK && res == probeAPIReachable {
+		//
+		// The refresh is gated on the kill switch, mirroring the fetch-side
+		// invariant ("a full skip of the table probe, not just a gate
+		// bypass"): with enabled:false the operator has turned stage-1 off
+		// because the table probes themselves are the problem (egress abuse
+		// detection), and the reaper must not keep running them on the stale
+		// cadence (self-review finding).
+		if c.wasProbeOK && res == probeAPIReachable && probeCfg.Enabled {
 			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, probeCfg)
 		}
 		results = append(results, entry)

@@ -71,6 +71,18 @@ type rankedProxyCandidate struct {
 	hasGrade bool
 }
 
+// rankFromGrade computes the tier rank for a stage-1 grade: decidable,
+// non-socks5-only grades rank A=4..F=0 by letter; everything else (socks5-only,
+// undecidable, ungraded) ranks -1. Used by BOTH the funnel's candidate
+// ranking (collectRankedCandidates) and the merge's candidate-rank closure so
+// the two can never drift (self-review finding).
+func rankFromGrade(g proxyURLGrade) int {
+	if g.Decidable && !g.Socks5Only {
+		return proxyTierRank(proxyGradeTier(g.Score))
+	}
+	return -1
+}
+
 // collectRankedCandidates pools every parseable line from all sources with
 // its tier rank and sorts best-first (A, B, C, D, F, then ungraded/
 // socks5-only). The sort is STABLE within a tier, so same-tier candidates
@@ -90,9 +102,7 @@ func collectRankedCandidates(fetched [][]string, grades map[string]proxyURLGrade
 			if g, ok := grades[address]; ok {
 				c.hasGrade = true
 				c.grade = g
-				if g.Decidable && !g.Socks5Only {
-					c.rank = proxyTierRank(proxyGradeTier(g.Score))
-				}
+				c.rank = rankFromGrade(g)
 			}
 			cands = append(cands, c)
 		}
