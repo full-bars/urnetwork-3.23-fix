@@ -2967,6 +2967,9 @@ func provide(opts docopt.Opts) {
 
 	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
+	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
+	// non-URL proxies read-only on the 1-3h stale sweep (design note).
+	go runPaidProxyGrader(ctx, apiProbeHost, apiProbePort)
 	go pruneURLProxyBlacklist(ctx)
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
 	go runPressureMonitor(ctx, selfHealEnabled)
