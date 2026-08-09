@@ -368,10 +368,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// we don't hold it across HTTP requests. Only the read-modify-write of
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
-	// qualifiedBySource[i] is the address-keyed set of stage-1-qualified
-	// results for source i, built during the fetch/grading loop and consumed
-	// by the merge loop below (review round 2).
-	qualifiedBySource := make([]map[string]bool, len(urls))
 	apiOKCounts := make([]int, len(urls))
 	// grades accumulates the stage-1 result per address so the merge loop
 	// can persist score/failed alongside ProbeOK.
@@ -399,13 +395,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// (score >= pass bar) are admitted.
 		lineGrades := probeAndGradeProxyURLLines(ctx, lines, apiHost, apiPort, probeCfg)
 		var qualified, belowBar, socks5Only []string
-		// qualifiedAddrs is the address-keyed set of stage-1-qualified
-		// results for this source. It decides ProbeOK at insert and cache
-		// update time instead of the raw line index / apiOKCount boundary,
-		// so skipped cached, duplicate, blacklisted, excluded, or invalid
-		// lines can never shift qualification status onto another address
-		// (review round 2).
-		qualifiedAddrs := map[string]bool{}
 		for _, line := range lines {
 			addr, _, _, ok := parseProxyURLLine(line)
 			if !ok {
@@ -419,7 +408,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			switch {
 			case g.Qualified:
 				qualified = append(qualified, line)
-				qualifiedAddrs[addr] = true
 				if probeCfg.Enabled {
 					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
 				} else {
@@ -450,7 +438,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// that the reaper later revives still cannot spend auth slots.
 		fetched[i] = append(append(qualified, belowBar...), socks5Only...)
 		apiOKCounts[i] = len(qualified)
-		qualifiedBySource[i] = qualifiedAddrs
 		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(lines) > 0 {
 			// The fetch itself succeeded but every line was unparseable or
 			// dead — distinct from the fetch-failed case above (N3).
@@ -479,7 +466,22 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		if fetched[i] == nil {
 			continue
 		}
-		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal, qualifiedBySource[i])
+		// Best-overall cache selection: rank every candidate by its stage-1
+		// tier (A=4..F=0, ungraded=-1) so a full cache keeps the highest-tier
+		// proxies across ALL sources instead of the first source's entries.
+		// gradeFor also decides ProbeOK at insert time (address-keyed, 342
+		// review round 2).
+		rankAddr := func(addr string) int {
+			if g, ok := grades[addr]; ok && g.Decidable {
+				return proxyTierRank(proxyGradeTier(g.Score))
+			}
+			return -1
+		}
+		gradeFor := func(addr string) (proxyURLGrade, bool) {
+			g, ok := grades[addr]
+			return g, ok
+		}
+		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal, rankAddr, gradeFor)
 		totalAdded += added
 		markedAPI := 0
 		markedSocks5 := 0
@@ -504,7 +506,11 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 					entry.Graded = true
 					entry.Failed = capFailedList(g.Failed)
 				}
-				if qualifiedBySource[i][addr] {
+				// ProbeOK comes from the address-keyed grade (342 review
+				// round 2): a qualified address is ProbeOK even if skipped
+				// lines shifted the raw index, and a below-bar/socks5-only
+				// address is not, regardless of position.
+				if g, ok := grades[addr]; ok && g.Qualified {
 					entry.ProbeOK = true
 					entry.ProbeFails = 0
 					markedAPI++
