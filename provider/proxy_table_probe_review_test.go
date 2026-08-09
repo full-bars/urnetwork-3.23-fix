@@ -808,92 +808,100 @@ func TestReview_GradedQualifiedDeadIsUnreachableNotQuality(t *testing.T) {
 	t.Log("NEW-3: graded-qualified dead proxy reports unreachable, not below-bar (label decided in main.go)")
 }
 
-// REGRESSION (review #12). A graded-below-bar cache entry is filtered from
-// the desired set by mergeProxyURLCache, so it must not count toward the
-// maxTotal cap: a source that drops a below-bar address must not leave the
-// cache unable to admit new candidates (merging is add-only, so dropped
-// entries would otherwise squat on the cap forever).
-func TestReview_BelowBarSquattersDoNotBlockCap(t *testing.T) {
+// REGRESSION (tiers). Best-overall eviction: when the cache is at maxTotal,
+// a candidate that OUTRANKS the lowest-ranked cached entry replaces it — so
+// a full cache keeps the highest-tier proxies across all sources, and a
+// graded-below-bar squatter (rank 0) is the first eviction target. The
+// qualified candidate is inserted with ProbeOK=true (address-keyed grade,
+// 342 review round 2). This supersedes the 342-branch squatter-exclusion +
+// hard-cap stopgap: evict-one-add-one bounds the total at maxTotal.
+func TestReview_BestOverallEvictionReplacesLowestRank(t *testing.T) {
 	withTempHome(t)
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
 
-	// Two squatters (graded below bar) + one healthy entry. maxTotal=2: the
-	// squatters are excluded from the count, so the healthy entry is 1 of 2
-	// and exactly one new candidate fits.
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
-		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
-		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true},
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false}, // F (rank 0)
+		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true},  // A (rank 4)
 	}}
-	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080", "10.0.0.5:1080"}, 2, 2, nil)
+	grades := map[string]proxyURLGrade{
+		"10.0.0.3:1080": {Qualified: true, Score: 0.95, Decidable: true},
+	}
+	rankAddr := func(addr string) int {
+		if g, ok := grades[addr]; ok && g.Decidable {
+			return proxyTierRank(proxyGradeTier(g.Score))
+		}
+		return -1
+	}
+	gradeFor := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades[addr]
+		return g, ok
+	}
+	added := mergeProxyURLEntries(state, []string{"10.0.0.3:1080"}, 1, 2, rankAddr, gradeFor)
 	if added != 1 {
-		t.Fatalf("expected 1 new entry admitted past squatters (cap counts non-squatters), got %d", added)
+		t.Fatalf("expected the higher-ranked candidate to evict the lowest-ranked entry, got added=%d", added)
 	}
-	if _, ok := state.Cache["10.0.0.4:1080"]; !ok {
-		t.Fatal("first candidate should have been added")
+	if _, ok := state.Cache["10.0.0.1:1080"]; ok {
+		t.Error("lowest-ranked (below-bar) entry should have been evicted")
 	}
-	if _, ok := state.Cache["10.0.0.5:1080"]; ok {
-		t.Fatal("second candidate exceeds the cap and must not be added")
+	got, ok := state.Cache["10.0.0.3:1080"]
+	if !ok {
+		t.Fatal("candidate should be in the cache after eviction")
+	}
+	if !got.ProbeOK || !got.Graded {
+		t.Errorf("qualified candidate should be persisted ProbeOK+Graded, got %+v", got)
+	}
+	if len(state.Cache) != 2 {
+		t.Fatalf("cache size should stay at maxTotal (2), got %d", len(state.Cache))
 	}
 
-	// Kill switch off: below-bar entries are re-admitted (not squatters), so
-	// the same cap counts every entry and no new candidate fits.
-	writeReviewProbeOverride(t, map[string]any{"enabled": false})
+	// A candidate that does NOT outrank the lowest cached entry is skipped.
 	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
-		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
+		"10.0.0.1:1080": {Graded: true, Score: 0.95, ProbeOK: true},
+		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true},
 	}}
-	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2, nil)
+	grades2 := map[string]proxyURLGrade{
+		"10.0.0.4:1080": {Qualified: false, Score: 0.3, Decidable: true}, // F
+	}
+	rankAddr2 := func(addr string) int {
+		if g, ok := grades2[addr]; ok && g.Decidable {
+			return proxyTierRank(proxyGradeTier(g.Score))
+		}
+		return -1
+	}
+	gradeFor2 := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades2[addr]
+		return g, ok
+	}
+	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2, rankAddr2, gradeFor2)
 	if added2 != 0 {
-		t.Fatalf("kill switch off: squatters count toward the cap, expected 0 added, got %d", added2)
+		t.Fatalf("a worse candidate must not displace a better cached entry, got added=%d", added2)
+	}
+	if _, ok := state2.Cache["10.0.0.4:1080"]; ok {
+		t.Error("worse candidate should not be cached")
 	}
 }
 
-// REGRESSION (review round 2). At the hard cap (maxTotal*2 total entries),
-// a new candidate evicts the OLDEST below-bar squatter instead of being
-// dropped, while a cache at the hard cap with no squatters stops the merge.
-func TestReview_HardCapEvictsOldestSquatter(t *testing.T) {
+// REGRESSION (tiers). With a nil rankAddr the merge keeps the old behavior:
+// at maxTotal the remaining lines are skipped without evicting anything —
+// best-overall selection is opt-in. The kill-switch-off path lands here
+// too: nothing is graded while disabled, so every candidate ranks -1 and
+// the cache never evicts.
+func TestReview_NoRankAddrKeepsOldCapBehavior(t *testing.T) {
 	withTempHome(t)
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
 
-	old := time.Now().Add(-3 * time.Hour)
-	mid := time.Now().Add(-2 * time.Hour)
-	recent := time.Now().Add(-1 * time.Hour)
-
-	// maxTotal=2 → hard cap 4. Three squatters + one healthy = 4 total. The
-	// new candidate evicts the OLDEST squatter (10.0.0.1) and is added.
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false, LastProbe: old},
-		"10.0.0.2:1080": {Graded: true, Score: 0.3, ProbeOK: false, LastProbe: mid},
-		"10.0.0.3:1080": {Graded: true, Score: 0.4, ProbeOK: false, LastProbe: recent},
-		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
+		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
 	}}
-	added := mergeProxyURLEntries(state, []string{"10.0.0.5:1080"}, 1, 2, nil)
-	if added != 1 {
-		t.Fatalf("expected the candidate to evict a squatter and be added, got added=%d", added)
+	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080"}, 1, 2, nil, nil)
+	if added != 0 {
+		t.Fatalf("nil rankAddr must keep the old cap behavior (no eviction), got added=%d", added)
 	}
-	if _, ok := state.Cache["10.0.0.1:1080"]; ok {
-		t.Error("oldest squatter should have been evicted at the hard cap")
-	}
-	if _, ok := state.Cache["10.0.0.5:1080"]; !ok {
-		t.Error("candidate should be in the cache after eviction")
-	}
-	if len(state.Cache) != 4 {
-		t.Fatalf("cache size should stay at the hard cap (4), got %d", len(state.Cache))
-	}
-
-	// A cache at the hard cap with NO squatters stops the merge.
-	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: old},
-		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: mid},
-		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
-		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
-	}}
-	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.5:1080"}, 1, 2, nil)
-	if added2 != 0 {
-		t.Fatalf("hard cap with no squatters must stop the merge, got added=%d", added2)
+	if _, ok := state.Cache["10.0.0.4:1080"]; ok {
+		t.Error("candidate must not be added at cap without a rank function")
 	}
 }
 

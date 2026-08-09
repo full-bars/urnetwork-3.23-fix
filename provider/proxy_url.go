@@ -255,9 +255,20 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // untouched — this function only ever adds, never updates or removes.
 // Addresses present in state.Blacklist are always skipped, even if not yet
 // cached, so a permanently-evicted address can never come back. maxTotal
-// caps the total cache size; 0 means unlimited. Once the cap is reached,
-// remaining lines in this call are skipped without evicting any existing
-// entry.
+// caps the total cache size; 0 means unlimited.
+//
+// rankAddr (may be nil) reports the priority of a candidate address so the
+// cache keeps the BEST entries across all sources rather than the first
+// ones to arrive: when the cache is at maxTotal, a new line is added only
+// if its rank exceeds the lowest-ranked cached entry, which is then evicted
+// to make room. A nil rankAddr preserves the old behavior (at cap, remaining
+// lines are skipped without evicting anything).
+//
+// gradeFor (may be nil) supplies the stage-1 grade for a newly added
+// address so it is persisted with Score/Graded at insert time — otherwise a
+// just-added entry would rank as ungraded (-1) and be the first eviction
+// target of the very next line.
+//
 // mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
 // expected to have any api-verified entries first, followed by socks5-only
 // entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
@@ -265,66 +276,6 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
 // or callers that don't track probe results) get ProbeOK=false so the
 // background reaper picks them up for retry.
-// cacheSizeExcludingBelowBar returns the number of cache entries that count
-// toward the maxTotal cap: every entry except graded-below-bar squatters.
-// A below-bar entry is filtered out of the desired set by mergeProxyURLCache,
-// so it can never launch — but if it counted toward the cap it would still
-// block new candidates after the source dropped it (merging is add-only).
-// Excluding it from the count lets fresh candidates in while the entry waits
-// for a re-grade or the reaper (review #12; the tiers branch supersedes this
-// with best-overall eviction). When the kill switch is off, below-bar
-// entries are re-admitted and count normally.
-func cacheSizeExcludingBelowBar(cache map[string]ProxyURLEntry, cfg proxyTableProbeConfig) int {
-	n := 0
-	for _, e := range cache {
-		if cfg.Enabled && e.Graded && e.Score < cfg.PassBar {
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-// proxyURLCacheHardCapFactor bounds the TOTAL cache size (below-bar
-// squatters included) at maxTotal * factor. cacheSizeExcludingBelowBar lets
-// fresh candidates in past graded-below-bar squatters, but nothing ever
-// removes a squatter that still passes stage 0 (the reaper resets its
-// ProbeFails, it is not re-graded once the source drops it, and it never
-// launches) — without a hard backstop proxy_url.json could grow without
-// limit (Opus review finding 3). At the hard cap the merge evicts the
-// OLDEST squatter to make room rather than dropping the candidate (review
-// round 2).
-const proxyURLCacheHardCapFactor = 2
-
-// evictOldestBelowBarSquatter removes the graded-below-bar cache entry with
-// the oldest LastProbe, if any, so an admissible candidate can still be
-// admitted when the hard cap is reached. Squatters (Graded && Score <
-// PassBar while the kill switch is on) never launch, so evicting them is
-// strictly better than dropping the new candidate. Returns false when there
-// is nothing to evict (cache at/over cap with no squatters — the merge then
-// stops).
-func evictOldestBelowBarSquatter(state *ProxyURLState, cfg proxyTableProbeConfig) bool {
-	var oldestAddr string
-	var oldest time.Time
-	for addr, e := range state.Cache {
-		if !cfg.Enabled || !e.Graded || e.Score >= cfg.PassBar {
-			continue
-		}
-		if oldestAddr == "" || e.LastProbe.Before(oldest) {
-			oldestAddr = addr
-			oldest = e.LastProbe
-		}
-	}
-	if oldestAddr == "" {
-		return false
-	}
-	oldestEntry := state.Cache[oldestAddr]
-	delete(state.Cache, oldestAddr)
-	tlog("[proxy][url] hard cap eviction: below-bar squatter %s (score %.2f) evicted for a new candidate\n",
-		oldestAddr, oldestEntry.Score)
-	return true
-}
-
 // mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
 // expected to have any api-verified entries first, followed by socks5-only
 // entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
@@ -333,28 +284,27 @@ func evictOldestBelowBarSquatter(state *ProxyURLState, cfg proxyTableProbeConfig
 // or callers that don't track probe results) get ProbeOK=false so the
 // background reaper picks them up for retry.
 //
-// qualified (may be nil) is an address-keyed set of stage-1-qualified
-// addresses. When non-nil it decides ProbeOK at insert time instead of the
-// raw line index / apiOKCount boundary, so skipped cached, duplicate,
+// rankAddr (may be nil) reports the priority of a candidate address so the
+// cache keeps the BEST entries across all sources rather than the first
+// ones to arrive: when the cache is at maxTotal, a new line is added only
+// if its rank exceeds the lowest-ranked cached entry, which is then evicted
+// to make room. A nil rankAddr preserves the old behavior (at cap, remaining
+// lines are skipped without evicting anything). Evict-one-add-one also keeps
+// the TOTAL cache size bounded at maxTotal, which subsumes the 342-branch
+// squatter-exclusion and hard-cap backstop (graded-below-bar squatters are
+// the lowest-ranked entries and are the first eviction targets).
+//
+// gradeFor (may be nil) supplies the stage-1 grade for a newly added
+// address so it is persisted with Score/Graded at insert time — otherwise a
+// just-added entry would rank as ungraded (-1) and be the first eviction
+// target of the very next line. When gradeFor returns a decidable grade it
+// also decides ProbeOK (address-keyed), so skipped cached, duplicate,
 // blacklisted, excluded, or invalid lines can never shift qualification
-// status onto another address (review round 2).
-func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int, qualified map[string]bool) (added int) {
+// status onto another address (342 review round 2); without a grade, the
+// line-index / apiOKCount boundary is the fallback.
+func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int, rankAddr func(addr string) int, gradeFor func(addr string) (proxyURLGrade, bool)) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
-	}
-	// The cap counts non-squatter entries (see cacheSizeExcludingBelowBar).
-	// Computed once: inserted entries are ungraded at insert time (grades are
-	// persisted after the merge), so the count only grows by one per add.
-	cfg := resolveProxyTableProbeConfig()
-	capCount := len(state.Cache)
-	hardCap := 0
-	if maxTotal > 0 {
-		capCount = cacheSizeExcludingBelowBar(state.Cache, cfg)
-		if capCount > maxTotal {
-			tlog("[proxy][url] cache over cap: %d non-squatter entries, maxTotal=%d (new entries will not be added)\n",
-				capCount, maxTotal)
-		}
-		hardCap = maxTotal * proxyURLCacheHardCapFactor
 	}
 	for i, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
@@ -370,29 +320,79 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 		if hostMatchesAny(state.ExcludePatterns, address) {
 			continue
 		}
-		// Soft cap first: if the non-squatter count is already at maxTotal,
-		// stop without evicting (a squatter eviction would be wasted).
-		if maxTotal > 0 && capCount >= maxTotal {
-			break
-		}
-		// Hard backstop: the file itself must stay bounded even with
-		// squatters excluded from the count. When a squatter exists, evict
-		// the oldest one to make room for this candidate; only stop when
-		// there is nothing left to evict.
-		if hardCap > 0 && len(state.Cache) >= hardCap {
-			if !evictOldestBelowBarSquatter(state, cfg) {
+		if maxTotal > 0 && len(state.Cache) >= maxTotal {
+			// Cache full. With a rank function, evict the lowest-ranked
+			// cached entry if this candidate is better — best-overall
+			// selection across all sources, not first-come-first-served.
+			// Evict-one-add-one also keeps the TOTAL cache size bounded at
+			// maxTotal, and graded-below-bar squatters (rank 0 / ungraded
+			// -1) are the first eviction targets.
+			if rankAddr == nil {
 				break
 			}
+			candidateRank := rankAddr(address)
+			evictAddr, evictRank := lowestRankedCacheEntry(state)
+			if evictAddr == "" || candidateRank <= evictRank {
+				// No evictable entry, or this candidate is not better than
+				// the worst one already cached: skip it (and keep scanning —
+				// a later line might be better than this one).
+				continue
+			}
+			delete(state.Cache, evictAddr)
+			tlog("[proxy][url] cap eviction: %s (rank %d) evicted for %s (rank %d)\n",
+				evictAddr, evictRank, address, candidateRank)
 		}
-		probeOK := i < apiOKCount
-		if qualified != nil {
-			probeOK = qualified[address]
+		entry := ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
+		if gradeFor != nil {
+			if g, ok := gradeFor(address); ok && g.Decidable && !g.Socks5Only {
+				entry.Score = g.Score
+				entry.Graded = true
+				entry.Failed = capFailedList(g.Failed)
+				// Address-keyed ProbeOK: the grade decides it, so skipped
+				// cached, duplicate, blacklisted, excluded, or invalid lines
+				// cannot shift qualification status onto another address
+				// (342 review round 2).
+				entry.ProbeOK = g.Qualified
+			} else if ok {
+				// Socks5-only or undecidable: never ProbeOK.
+				entry.ProbeOK = false
+			}
 		}
-		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: probeOK}
-		capCount++
+		state.Cache[address] = entry
 		added++
 	}
 	return added
+}
+
+// rankCacheEntry computes the tier priority of an already-cached entry from
+// its PERSISTED grade. Ungraded entries (never graded, or graded in a cycle
+// whose write was skipped) rank below every graded one, so cap eviction
+// prefers dropping them first. This is distinct from the candidate-rank
+// closure the caller supplies: a cached entry from a previous cycle is not
+// in this cycle's grades map, so ranking it through the closure would
+// collapse every old entry to -1 and evict good proxies ahead of worse ones.
+func rankCacheEntry(e ProxyURLEntry) int {
+	if e.Graded {
+		return proxyTierRank(proxyGradeTier(e.Score))
+	}
+	return -1
+}
+
+// lowestRankedCacheEntry returns the address of the lowest-ranked cached
+// entry and its rank, using rankCacheEntry on each persisted entry. Ties
+// are broken arbitrarily (Go map order is randomized); equal ranks are
+// interchangeable.
+func lowestRankedCacheEntry(state *ProxyURLState) (string, int) {
+	lowestAddr := ""
+	lowestRank := int(^uint(0) >> 1) // max int
+	for addr, e := range state.Cache {
+		r := rankCacheEntry(e)
+		if r < lowestRank {
+			lowestRank = r
+			lowestAddr = addr
+		}
+	}
+	return lowestAddr, lowestRank
 }
 
 // mergeProxyURLCache adds entries from urlState.Cache into desiredSet for any
