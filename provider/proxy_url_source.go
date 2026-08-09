@@ -369,25 +369,74 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
 	apiOKCounts := make([]int, len(urls))
-	socks5OnlyCounts := make([]int, len(urls))
+	// grades accumulates the stage-1 result per address so the merge loop
+	// can persist score/failed alongside ProbeOK.
+	grades := make(map[string]proxyURLGrade)
+	// tierCounts breaks down this cycle's grades for the per-source log.
+	tierCounts := map[string]int{}
+	probeCfg := resolveProxyTableProbeConfig()
+	tlog("[proxy][url] stage-1 table probe config: %s\n", describeProxyTableProbeConfig(probeCfg))
+	// Advance the rotation once per FETCH CYCLE (not once per source URL):
+	// with N sources, the same address probed from two sources in one cycle
+	// must be graded against the same block, and consecutive cycles must
+	// walk the table one block at a time (finding M1).
+	tableProbePassCounter.Add(1)
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
 			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
 			continue
 		}
-		// Free public proxy lists are mostly dead entries. The dual-stage probe
-		// checks TCP reachability, SOCKS5 protocol compliance, and whether the
-		// proxy can route traffic to the URNetwork API — before anything ever
-		// enters the cache or consumes an auth-rate-limiter slot.
-		apiOK, socks5Only := probeAndFilterProxyURLLines(ctx, lines, apiHost, apiPort)
-		tlog("[proxy][url] probed %s: %d/%d api-reachable, %d socks5-only\n", url, len(apiOK), len(lines), len(socks5Only))
-		// api-reachable lines are cached with ProbeOK=true; socks5-only lines
-		// are cached with ProbeOK=false so the background reaper can retry
-		// them (they may have had a transient routing issue).
-		fetched[i] = append(apiOK, socks5Only...)
-		apiOKCounts[i] = len(apiOK)
-		socks5OnlyCounts[i] = len(socks5Only)
+		// Free public proxy lists are mostly dead entries. The staged probe
+		// checks TCP reachability, SOCKS5 protocol compliance, API CONNECT
+		// (stage 0), and — for survivors — a sampled table probe of real
+		// destinations (stage 1), before anything ever enters the cache or
+		// consumes an auth-rate-limiter slot. Only stage-1-qualified proxies
+		// (score >= pass bar) are admitted.
+		lineGrades := probeAndGradeProxyURLLines(ctx, lines, apiHost, apiPort, probeCfg)
+		var qualified, belowBar, socks5Only []string
+		for _, line := range lines {
+			addr, _, _, ok := parseProxyURLLine(line)
+			if !ok {
+				continue
+			}
+			g, ok := lineGrades[addr]
+			if !ok {
+				continue // probeDead: dropped entirely
+			}
+			grades[addr] = g
+			switch {
+			case g.Qualified:
+				qualified = append(qualified, line)
+				tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+			case g.Socks5Only:
+				socks5Only = append(socks5Only, line)
+				tierCounts["socks5-only"]++
+			default:
+				belowBar = append(belowBar, line)
+				if g.Decidable {
+					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+				} else {
+					// No verdict this cycle (cancelled/DNS-down): the entry
+					// keeps its prior grade and is simply not admitted now.
+					tierCounts["undecidable"]++
+				}
+			}
+		}
+		// Qualified lines are cached with ProbeOK=true; below-bar and
+		// socks5-only lines with ProbeOK=false so the background reaper can
+		// retry them (they may have had a transient routing issue). The
+		// auth-time gate re-checks the recorded score, so a below-bar entry
+		// that the reaper later revives still cannot spend auth slots.
+		fetched[i] = append(append(qualified, belowBar...), socks5Only...)
+		apiOKCounts[i] = len(qualified)
+		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(lines) > 0 {
+			// The fetch itself succeeded but every line was unparseable or
+			// dead — distinct from the fetch-failed case above (N3).
+			tlog("[proxy][url] %s: fetched %d lines, all unparseable or dead\n", url, len(lines))
+		}
+		tlog("[proxy][url] probed %s: %d/%d qualified, %d below-bar, %d socks5-only\n",
+			url, len(qualified), len(lines), len(belowBar), len(socks5Only))
 	}
 
 	release, err := acquireProxyLock()
@@ -411,7 +460,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		}
 		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal)
 		totalAdded += added
-		socks5Count := socks5OnlyCounts[i]
 		markedAPI := 0
 		markedSocks5 := 0
 		for j, line := range fetched[i] {
@@ -421,7 +469,22 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			}
 			if entry, exists := state.Cache[addr]; exists {
 				entry.LastProbe = time.Now()
-				if j < len(fetched[i])-socks5Count {
+				// Persist the stage-1 grade alongside ProbeOK so the
+				// auth-time gate and fleet grading can consume it.
+				//
+				// Graded is set ONLY for a genuine stage-1 verdict
+				// (g.Decidable). A socks5-only line never reached stage 1,
+				// and a pass that could not ask anything (cancelled context,
+				// resolver outage) produced no evidence — persisting either
+				// as "graded, score 0.0" would convict a proxy the probe
+				// never actually tested (findings C1 and C2). Such entries
+				// keep their prior grade (or the ungraded state).
+				if g, ok := grades[addr]; ok && g.Decidable && !g.Socks5Only {
+					entry.Score = g.Score
+					entry.Graded = true
+					entry.Failed = capFailedList(g.Failed)
+				}
+				if j < apiOKCounts[i] {
 					entry.ProbeOK = true
 					entry.ProbeFails = 0
 					markedAPI++
@@ -434,9 +497,22 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			}
 		}
 		if markedSocks5 > 0 || markedAPI > 0 {
-			tlog("[proxy][url] %s: %d api-ok entries saved, %d socks5-only entries marked for reaper\n", url, markedAPI, markedSocks5)
+			tlog("[proxy][url] %s: %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", url, markedAPI, markedSocks5)
 		}
 		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
+	}
+
+	// Tier breakdown is printed every cycle that produced any grade, even
+	// when nothing was newly added (N1: the old code's early return below
+	// skipped it entirely on no-change cycles).
+	if len(tierCounts) > 0 {
+		parts := make([]string, 0, len(tierCounts))
+		for _, tier := range []string{"preferred", "qualified", "below-bar", "undecidable", "socks5-only"} {
+			if n := tierCounts[tier]; n > 0 {
+				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
+			}
+		}
+		tlog("[proxy][url] stage-1 tier breakdown: %s\n", strings.Join(parts, " "))
 	}
 
 	if totalAdded == 0 && !dirty {
@@ -451,6 +527,19 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			tlog("[proxy][url] warn: reload trigger write failed: %v\n", err)
 		}
 	}
+}
+
+// capFailedList bounds the persisted Failed list so a wide sample_width
+// cannot inflate the hot proxy_url.json file unboundedly (finding L4).
+const maxFailedStored = 8
+
+func capFailedList(hosts []string) []string {
+	if len(hosts) <= maxFailedStored {
+		return hosts
+	}
+	out := make([]string, maxFailedStored)
+	copy(out, hosts[:maxFailedStored])
+	return out
 }
 
 // reaperProbeTarget holds a single candidate address and a snapshot of its
@@ -543,7 +632,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	for _, c := range candidates {
 		results = append(results, probeResultEntry{
 			addr:       c.addr,
-			result:     probeProxy(ctx, c.addr, apiHost, apiPort),
+			result:     probeProxy(ctx, c.addr, c.entry.User, c.entry.Password, apiHost, apiPort),
 			wasProbeOK: c.wasProbeOK,
 			lastProbe:  c.entry.LastProbe,
 		})

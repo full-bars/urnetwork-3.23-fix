@@ -2487,17 +2487,26 @@ func provide(opts docopt.Opts) {
 				// File/internal lists are operator-curated (paid) endpoints that should
 				// always attempt auth; the probe exists to cheaply skip dead entries in
 				// large free URL lists before spending a shared auth-rate-limiter slot.
-				if proxySettings != nil && isURLSourced && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
-					// The proxy itself isn't even speaking SOCKS5 right now — either
-					// the port is dead, or something is listening but isn't a real
-					// SOCKS5 endpoint (open port with a broken/wrong service, a
-					// captive portal, etc). Either way that's a dead local hop, not a
-					// signal about the API's health. Skip the auth attempt (and the
+				// URL-sourced proxies additionally carry a recorded stage-1 table score;
+				// a below-bar score blocks auth even when the proxy is momentarily
+				// reachable, so a quality-rejected entry cannot spend auth slots.
+				if proxySettings != nil && isURLSourced && !urlProxyPassesAdmission(proxyCtx, proxySettings.Address) {
+					// Either the proxy isn't speaking SOCKS5 right now (dead port,
+					// broken service, captive portal — a dead local hop, not a signal
+					// about the API's health), or its recorded stage-1 score is below
+					// the quality bar. Both mean: skip the auth attempt (and the
 					// shared rate limiter) entirely rather than spending a slot and
 					// reporting a timeout that would falsely look like the API is
 					// overloaded and throttle every other proxy's auth rate for no
-					// reason.
-					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
+					// reason. The error names the score only when it is genuinely
+					// below the bar — a graded-but-qualified proxy that fails the
+					// live probe is dead, not quality-rejected (finding NEW-3).
+					cfg := resolveProxyTableProbeConfig()
+					if score, ok := cachedProxyURLScore(proxySettings.Address); ok && score < cfg.PassBar {
+						err = fmt.Errorf("proxy below stage-1 bar: %s (score %.2f)", proxySettings.Address, score)
+					} else {
+						err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
+					}
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
 					// (persists across the 15-minute URL-source requeue, unlike
