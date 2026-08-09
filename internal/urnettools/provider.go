@@ -145,8 +145,13 @@ func unitStateDir(user string) string {
 	if user == "" {
 		return ""
 	}
-	// Best effort: the provider's install convention is
-	// ~/.local/share/urnetwork-provider with state in ~/.urnetwork.
+	// Resolve the real home via getent (matches homeForUser used by the
+	// update/reinstall paths — review finding M3 class); fall back to the
+	// /root and /home conventions only when getent fails (e.g. an
+	// ephemeral container without passwd entries).
+	if home := homeForUser(user); home != "" {
+		return filepath.Join(home, ".urnetwork")
+	}
 	if user == "root" {
 		return filepath.Join("/root", ".urnetwork")
 	}

@@ -40,8 +40,12 @@ func unitCommand(p Provider, action string, extra ...string) error {
 func isUserUnit(unit string) bool {
 	// The legacy installer places units under ~/.config/systemd/user/.
 	// Heuristic: if it's NOT a system unit file, treat as user unit.
-	if _, err := os.Stat(filepath.Join("/etc/systemd/system", unit)); err == nil {
-		return false
+	// Check both the admin dir and the vendor/package dir — units shipped
+	// by a package live under /usr/lib/systemd/system (free-review MEDIUM).
+	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
+		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
+			return false
+		}
 	}
 	return true
 }
@@ -418,8 +422,18 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 	// This is intentionally conservative — full parity lives in the legacy
 	// installer until the Go tool is validated.
 	fmt.Println("optimize: applying conservative kernel limits (sysctl net.core.rmem/wmem, fs.file-max)")
-	_ = exec.Command("sysctl", "-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728").Run()
-	_ = exec.Command("sysctl", "-w", "fs.file-max=1000000").Run()
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run with sudo or as root", os.Geteuid())
+	}
+	for _, args := range [][]string{
+		{"-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728"},
+		{"-w", "fs.file-max=1000000"},
+	} {
+		cmd := exec.Command("sysctl", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
+		}
+	}
 	fmt.Println("optimize: done")
 	return nil
 }

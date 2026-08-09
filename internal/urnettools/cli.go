@@ -392,6 +392,14 @@ func cmdStatus(args []string) error {
 	return w.Flush()
 }
 
+// stdinReader is the ONE buffered reader over stdin, shared by every
+// interactive prompt (confirm gates, update confirm, the provider picker).
+// Each prompt MUST read from this single reader: a second bufio.Reader over
+// the same fd would lose whatever the first already buffered, so piped
+// input (`echo y | urnet-tools update --all`) hangs on the second prompt
+// (free-review HIGH, mimo-v2.5).
+var stdinReader = bufio.NewReader(os.Stdin)
+
 // confirmGateMulti is the batch variant of confirmGate: it lists every
 // provider in the chosen set before the yes/no prompt.
 //
@@ -413,8 +421,7 @@ func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, 
 		return true, nil
 	}
 	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
@@ -443,8 +450,7 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 		return true, nil
 	}
 	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}

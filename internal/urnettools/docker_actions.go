@@ -51,9 +51,6 @@ func tailLines(s, n string) string {
 	if count <= 0 || count > len(lines) {
 		count = len(lines)
 	}
-	if count > len(lines) {
-		count = len(lines)
-	}
 	return strings.Join(lines[len(lines)-count:], "\n") + "\n"
 }
 

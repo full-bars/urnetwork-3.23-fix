@@ -1,9 +1,7 @@
 package urnettools
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -112,8 +110,7 @@ func interactivePick(providers []Provider) ([]Provider, error) {
 			i+1, providerLabel(p), p.User, p.Network, p.StateDir)
 	}
 	fmt.Print("> ")
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return nil, fmt.Errorf("read selection: %w", err)
 	}
