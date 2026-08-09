@@ -687,19 +687,6 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 	return probeProxy(ctx, address, user, password, "", 0) != probeDead
 }
 
-// scoreTierLabel returns a human label for a stage-1 score. The bars are
-// validated (PreferredBar >= PassBar) in resolveProxyTableProbeConfig, so
-// the label can never disagree with the gate.
-func scoreTierLabel(score float64, cfg proxyTableProbeConfig) string {
-	if score >= cfg.PreferredBar {
-		return "preferred"
-	}
-	if score >= cfg.PassBar {
-		return "qualified"
-	}
-	return "below-bar"
-}
-
 // describeProxyTableProbeConfig is for logs: a one-line dump of the
 // effective stage-1 configuration.
 func describeProxyTableProbeConfig(cfg proxyTableProbeConfig) string {
