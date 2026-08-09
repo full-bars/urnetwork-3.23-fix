@@ -257,25 +257,6 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // cached, so a permanently-evicted address can never come back. maxTotal
 // caps the total cache size; 0 means unlimited.
 //
-// rankAddr (may be nil) reports the priority of a candidate address so the
-// cache keeps the BEST entries across all sources rather than the first
-// ones to arrive: when the cache is at maxTotal, a new line is added only
-// if its rank exceeds the lowest-ranked cached entry, which is then evicted
-// to make room. A nil rankAddr preserves the old behavior (at cap, remaining
-// lines are skipped without evicting anything).
-//
-// gradeFor (may be nil) supplies the stage-1 grade for a newly added
-// address so it is persisted with Score/Graded at insert time — otherwise a
-// just-added entry would rank as ungraded (-1) and be the first eviction
-// target of the very next line.
-//
-// mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
-// expected to have any api-verified entries first, followed by socks5-only
-// entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
-// how many of the leading entries passed the API-reachability probe and
-// should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
-// or callers that don't track probe results) get ProbeOK=false so the
-// background reaper picks them up for retry.
 // mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
 // expected to have any api-verified entries first, followed by socks5-only
 // entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
@@ -306,6 +287,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
+	evictions := 0
 	for i, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
 		if !ok {
@@ -334,13 +316,16 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 			evictAddr, evictRank := lowestRankedCacheEntry(state)
 			if evictAddr == "" || candidateRank <= evictRank {
 				// No evictable entry, or this candidate is not better than
-				// the worst one already cached: skip it (and keep scanning —
-				// a later line might be better than this one).
-				continue
+				// the worst one already cached. The production caller feeds
+				// candidates RANK-SORTED (collectRankedCandidates, best
+				// first), so once a candidate fails to outrank the lowest
+				// cached entry, every later candidate is at most its rank
+				// and cannot evict either — stop scanning instead of
+				// re-scanning the whole cache per line (coderabbit review).
+				break
 			}
 			delete(state.Cache, evictAddr)
-			importantLogf("[proxy][url] cap eviction: %s (rank %d) evicted for %s (rank %d)\n",
-				evictAddr, evictRank, address, candidateRank)
+			evictions++
 		}
 		entry := ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
 		if gradeFor != nil {
@@ -352,17 +337,32 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 				// (self-review finding). The Decidable && !Socks5Only gate
 				// applies only to the persisted Score/Graded/Failed.
 				entry.ProbeOK = g.Qualified
-				if g.Decidable && !g.Socks5Only {
-					entry.Score = g.Score
-					entry.Graded = true
-					entry.Failed = capFailedList(g.Failed)
-				}
+				applyProxyGradeToEntry(&entry, g)
 			}
 		}
 		state.Cache[address] = entry
 		added++
 	}
+	// One aggregate line per merge call (per fetch cycle), not one per
+	// evicted address — the important buffer must not become a per-proxy
+	// stream on a large cache (coderabbit review).
+	if evictions > 0 {
+		importantLogf("[proxy][url] cap eviction: %d entries evicted for higher-ranked candidates this cycle\n", evictions)
+	}
 	return added
+}
+
+// applyProxyGradeToEntry persists a stage-1 grade onto a cache entry: the
+// Score/Graded/Failed fields, gated on a genuine decidable verdict that is
+// not socks5-only (C1/C2: an empty or cancelled pass leaves the prior grade
+// intact). Shared by the merge insert path and the fetch cache-update loop so
+// the persist rule cannot drift (coderabbit review).
+func applyProxyGradeToEntry(entry *ProxyURLEntry, g proxyURLGrade) {
+	if g.Decidable && !g.Socks5Only {
+		entry.Score = g.Score
+		entry.Graded = true
+		entry.Failed = capFailedList(g.Failed)
+	}
 }
 
 // rankCacheEntry computes the tier priority of an already-cached entry from
