@@ -31,6 +31,26 @@ type ProxyEntry struct {
 	DownSince    string `json:"down_since,omitempty"`    // RFC3339, set when not up
 	Source       string `json:"source,omitempty"`        // "file", "internal", or "url" — where this address was first added from
 	AuthFailures int64  `json:"auth_failures,omitempty"` // cumulutive auth errors this run
+
+	// Score is the stage-1 table probe result (ok/total) from the last
+	// graded pass, 0 when the entry has never been graded. Mirrors the URL
+	// store's ProxyURLEntry fields so fleet grading consumes both stores
+	// uniformly. Written ONLY by the paid/file-proxy grading sweep — the
+	// admission and eviction paths never read or write these fields, so
+	// grades for non-URL proxies are read-only advisory by construction.
+	Score float64 `json:"score,omitempty"`
+	// Graded is true once a stage-1 table probe has recorded a DECIDABLE
+	// result for this proxy. Distinct from Score: a decidable 0.0 is a
+	// graded failure, while Score==0 with Graded=false means "never graded".
+	Graded bool `json:"graded,omitempty"`
+	// Failed lists the target hostnames that did not answer the last
+	// stage-1 pass, for diagnostics and fleet reporting.
+	Failed []string `json:"failed,omitempty"`
+	// LastGraded is when the last stage-1 pass ran (decidable or not). The
+	// grade sweep re-probes only entries older than the reaper stale
+	// threshold (1-3h), so a DNS-gutted pass does not trigger a
+	// re-probe-every-tick herd.
+	LastGraded time.Time `json:"last_graded,omitempty"`
 }
 
 func proxyStatePath() (string, error) {
