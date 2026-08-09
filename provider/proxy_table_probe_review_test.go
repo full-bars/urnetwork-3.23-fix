@@ -932,11 +932,13 @@ func TestReview_ReaperKillSwitchSkipsGradeRefresh(t *testing.T) {
 	// Literal API IP so stage-0's API CONNECT resolves without DNS.
 	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
 
-	// Stage-0 liveness = 1 CONNECT (the API CONNECT through the proxy).
-	// Stage-1 would add sample_width more; with the kill switch off there
-	// must be none.
-	if n := connects.Load(); n > 1 {
-		t.Fatalf("kill switch off must skip the stage-1 grade refresh: %d CONNECTs, want at most 1 (stage-0 only)", n)
+	// Stage-0 liveness = exactly 1 CONNECT (the API CONNECT through the
+	// proxy). Stage-1 would add sample_width more; with the kill switch off
+	// there must be none. Pin BOTH bounds so a candidate-selection regression
+	// (stale entry never probed at all) still fails the test (coderabbit
+	// review).
+	if n := connects.Load(); n != 1 {
+		t.Fatalf("kill switch off must run stage-0 only: %d CONNECTs, want exactly 1", n)
 	}
 }
 
