@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sort"
 	"testing"
 )
 
@@ -82,5 +81,3 @@ func TestRankedProxyCandidates_UndecidableRanksLast(t *testing.T) {
 		t.Errorf("graded F must rank above undecidable, got %v first", cands[0].address)
 	}
 }
-
-var _ = sort.Strings // keep sort import honest if unused after refactor
