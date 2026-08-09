@@ -113,8 +113,39 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		opArgs = []string{"proxy", "refresh"}
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
+	case "health":
+		// State-file based; not a provider-binary delegation.
+		t2, _, err := parseTargetFlags(rest)
+		if err != nil {
+			return err
+		}
+		p, err := selectTarget(providers, t2)
+		if err != nil {
+			return err
+		}
+		return cmdProxyHealthTarget(p)
+	case "traffic":
+		t2, _, err := parseTargetFlags(rest)
+		if err != nil {
+			return err
+		}
+		p, err := selectTarget(providers, t2)
+		if err != nil {
+			return err
+		}
+		return cmdProxyTrafficTarget(p)
+	case "remove-dead":
+		t2, rest2, err := parseTargetFlags(rest)
+		if err != nil {
+			return err
+		}
+		p, err := selectTarget(providers, t2)
+		if err != nil {
+			return err
+		}
+		return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, rest2...)...)
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|clear|remove|refresh)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.

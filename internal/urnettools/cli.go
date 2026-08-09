@@ -48,6 +48,84 @@ func Run(args []string) error {
 		return cmdSimpleDelegation("report", rest)
 	case "hot-restart", "hotrestart":
 		return cmdSimpleDelegation("hot-restart", rest)
+	case "start":
+		return cmdStart(rest)
+	case "stop":
+		return cmdStop(rest)
+	case "restart":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdRestart(rest2, force, dryRun)
+	case "logs":
+		return cmdLogs(rest)
+	case "hub":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdHub(rest2, force, dryRun)
+	case "turbo", "eco", "lowmode", "ramlogs", "auto":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdTune(op, rest2, force, dryRun)
+	case "optimize":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdOptimize(rest2, force, dryRun)
+	case "auto-start", "autostart":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdAutoStart(rest2, force, dryRun)
+	case "auto-update", "autoupdate":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdAutoUpdate(rest2, force, dryRun)
+	case "uninstall":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdUninstall(rest2, force, dryRun)
+	case "reinstall":
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdReinstall(rest2, force, dryRun)
 	case "help", "-h", "--help":
 		usage()
 		return nil
