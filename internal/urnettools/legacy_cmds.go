@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,17 +24,24 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
-	var args []string
-	if isUserUnit(p.Unit) && p.User != "" {
-		// systemctl --user -M <user>@ ... (session-scoped)
-		args = append([]string{"systemctl", "--user", "-M", p.User + "@", action}, extra...)
-	} else {
-		args = append([]string{"systemctl", action}, extra...)
-	}
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command(unitCommandArgs(p, action, extra...)[0], unitCommandArgs(p, action, extra...)[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// unitCommandArgs builds the systemctl argv for an action on the provider's
+// unit: system units use "systemctl <action>"; user units are scoped to the
+// owning user's session via "--user -M <user>@". Extracted as a pure helper
+// so tests can pin the argv shape without running systemctl (coderabbit:
+// tests must call production logic, not reimplement it).
+func unitCommandArgs(p Provider, action string, extra ...string) []string {
+	if isUserUnit(p.Unit) && p.User != "" {
+		args := []string{"systemctl", "--user", "-M", p.User + "@", action}
+		return append(args, extra...)
+	}
+	args := []string{"systemctl", action}
+	return append(args, extra...)
 }
 
 // isUserUnit reports whether a unit name is user-level (no systemd system
@@ -231,11 +239,21 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		return err
 	}
 	path := filepath.Join(dropDir, name)
-	// Merge, don't clobber: the same tuning.conf holds multiple
-	// Environment= lines (profile + RAMLOGS), and overwriting the file
-	// would silently drop the sibling setting (free-review major:
-	// "tuning.conf is overwritten, so tuning profiles and RAMLOGS clobber
-	// each other"). Keep lines whose key differs; replace same-key lines.
+	content := mergeDropinEnvFile(path, envLine)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("Wrote %s\n", path)
+	return restartAfterDropin(p)
+}
+
+// mergeDropinEnvFile returns the merged drop-in content for a new
+// Environment= line: it reads the existing file, keeps lines whose env key
+// differs, replaces same-key lines, and always re-emits exactly one
+// [Service] header. Pure (no I/O beyond the read) so tests can pin the
+// merge semantics without a real unit (coderabbit: tests must call
+// production logic).
+func mergeDropinEnvFile(path, envLine string) string {
 	newKey := envLine
 	if i := strings.IndexByte(envLine, '='); i > 0 {
 		newKey = envLine[:i]
@@ -245,7 +263,7 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		for _, ln := range strings.Split(string(b), "\n") {
 			trimmed := strings.TrimSpace(ln)
 			if trimmed == "" || trimmed == "[Service]" {
-				continue // header is re-emitted below — skip to avoid duplicates
+				continue // header is re-emitted below — avoid duplicates
 			}
 			if strings.HasPrefix(trimmed, "Environment=") {
 				val := strings.TrimPrefix(trimmed, "Environment=")
@@ -259,12 +277,7 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		}
 	}
 	kept = append(kept, fmt.Sprintf("Environment=%q", envLine))
-	content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("Wrote %s\n", path)
-	return restartAfterDropin(p)
+	return "[Service]\n" + strings.Join(kept, "\n") + "\n"
 }
 
 // removeDropinEnv removes a matching Environment line from a drop-in file
@@ -319,6 +332,23 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 	return restartAfterDropin(p)
 }
 
+// isELFExecutable reports whether path starts with the ELF magic bytes
+// (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
+// executing them — running a freshly downloaded, unverified artifact is
+// code execution of a remote file (coderabbit critical).
+func isELFExecutable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F'
+}
+
 // unitDropinDir returns the drop-in dir for the provider's unit.
 func unitDropinDir(p Provider) (string, error) {
 	if p.Unit == "" {
@@ -367,15 +397,17 @@ func cmdHubInstall(p Provider, rest []string) error {
 	if err := downloadFile(url, hubBin); err != nil {
 		return fmt.Errorf("hub download: %w", err)
 	}
-	// Verify the downloaded hub binary is a valid executable BEFORE
-	// installing it — a corrupted/truncated download would otherwise be
-	// chmod'd and launched (free-review security major).
-	if _, err := exec.Command(hubBin, "--help").CombinedOutput(); err != nil {
-		os.Remove(hubBin)
-		return fmt.Errorf("hub download: binary failed sanity check: %w", err)
-	}
+	// chmod FIRST (the sanity check needs the execute bit), then verify the
+	// file structurally WITHOUT executing it — running a freshly downloaded,
+	// unverified binary is code execution of a remote artifact (coderabbit
+	// critical; the provider-update path requires a digest for the same
+	// reason, but the hub asset has no published digest to check against).
 	if err := os.Chmod(hubBin, 0o755); err != nil {
 		return err
+	}
+	if !isELFExecutable(hubBin) {
+		os.Remove(hubBin)
+		return fmt.Errorf("hub download: %s is not an ELF executable (corrupted or wrong asset)", hubBin)
 	}
 	// User-level systemd unit for the hub.
 	home := homeForUser(p.User)

@@ -1,7 +1,9 @@
 package urnettools
 
 import (
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,9 +28,16 @@ func TestRestartProviderNoResolution(t *testing.T) {
 // rather than reporting a successful restart (Signal fails silently
 // swallowed would be a false "restarted" claim to the operator).
 func TestRestartProviderPIDSignalFailure(t *testing.T) {
-	// PID 999999 is astronomically unlikely to be a live process in any
-	// test environment (max PID is usually far below that on Linux).
-	err := restartProvider(Provider{User: "nobody-test-9f3a", PID: 999999})
+	// Use a REAL dead PID: fork a child that exits immediately and reap it,
+	// then signal its (now-reaped) PID. A guessed PID like 999999 could
+	// theoretically collide on a huge-pid-max system (coderabbit major).
+	dead := exec.Command("true")
+	if err := dead.Start(); err != nil {
+		t.Skipf("cannot spawn helper process: %v", err)
+	}
+	pid := dead.Process.Pid
+	_ = dead.Wait() // reaped — pid is now guaranteed dead
+	err := restartProvider(Provider{User: "nobody-test-9f3a", PID: pid})
 	if err == nil {
 		t.Fatal("expected error when the PID does not correspond to a live process")
 	}
@@ -58,12 +67,26 @@ func TestCmdProxyTrafficTargetNoSnapshot(t *testing.T) {
 // cmdProxyTrafficTarget must read and print it without error.
 func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "proxy_traffic.state"), []byte("rx=100 tx=200\n"), 0o644); err != nil {
+	snapshot := "rx=100 tx=200\n"
+	if err := os.WriteFile(filepath.Join(dir, "proxy_traffic.state"), []byte(snapshot), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	p := Provider{StateDir: dir}
-	if err := cmdProxyTrafficTarget(p); err != nil {
+	// Capture stdout so the printed snapshot is asserted, not just the
+	// nil error (coderabbit minor: assert the snapshot output).
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	err := cmdProxyTrafficTarget(p)
+	w.Close()
+	os.Stdout = old
+	if err != nil {
 		t.Fatalf("unexpected error reading snapshot: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "rx=100") {
+		t.Errorf("printed output should contain the snapshot contents, got: %q", out)
 	}
 }
 
@@ -103,19 +126,27 @@ func TestCmdAutoUpdateRequiresInterval(t *testing.T) {
 }
 
 // TestCmdAutoUpdateInvalidInterval: an interval outside the known set must
-// be rejected by cmdAutoUpdate's switch default (requires a resolvable
-// target/unit to reach the switch, so use a fabricated Provider indirectly
-// via the exported error path is not possible without a real box — instead
-// pin the validation set as documented in the help text).
+// be rejected by cmdAutoUpdate BEFORE targeting (validation moved ahead of
+// selectTarget so this is testable without a live provider — the old test
+// asserted a map literal against itself and could never fail; coderabbit
+// minor).
 func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
-	valid := map[string]bool{"daily": true, "weekly": true, "monthly": true, "off": true}
-	for _, v := range []string{"daily", "weekly", "monthly", "off"} {
-		if !valid[v] {
-			t.Errorf("%s should be a valid auto-update interval", v)
-		}
+	err := cmdAutoUpdate([]string{"yearly"}, false, false)
+	if err == nil {
+		t.Fatal("expected error for invalid auto-update interval")
 	}
-	if valid["yearly"] {
-		t.Error("yearly must not be treated as valid")
+	if !contains(err.Error(), "invalid interval") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// A valid interval must get past validation (it will then fail
+	// targeting on a box with no providers — that's fine, the point is the
+	// interval check itself passes).
+	err = cmdAutoUpdate([]string{"daily"}, false, false)
+	if err == nil {
+		t.Fatal("expected targeting error for daily (no provider on test box)")
+	}
+	if contains(err.Error(), "invalid interval") {
+		t.Errorf("daily must pass interval validation, got: %v", err)
 	}
 }
 
