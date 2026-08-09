@@ -100,7 +100,12 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	providers := Discover()
 	var chosen []Provider
 	if all {
-		// --all means every provider on the box, no ambiguity.
+		// --all means every provider on the box, no ambiguity. It conflicts
+		// with an explicit target — error rather than silently discarding
+		// it (review finding M4).
+		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
+		}
 		if len(providers) == 0 {
 			return fmt.Errorf("no providers found on this box")
 		}
@@ -283,8 +288,10 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		return fmt.Errorf("staged binary reports %q, expected %q — aborting", v, cfg.Tag)
 	}
 
-	// Backup current binary.
-	backup := p.Binary + ".bak-" + strings.TrimPrefix(p.Version, "v")
+	// Backup current binary with a timestamped name so repeated updates
+	// never collide (review finding M2: keying off p.Version can yield an
+	// empty/stale suffix and silently reuse an old backup).
+	backup := p.Binary + ".bak-" + time.Now().UTC().Format("20060102T150405Z")
 	if _, err := os.Stat(backup); os.IsNotExist(err) {
 		if err := copyFile(p.Binary, backup); err != nil {
 			return fmt.Errorf("backup: %w", err)
@@ -408,14 +415,21 @@ func extractSingleFile(tarball, relPath, dst string) error {
 	return fmt.Errorf("path %s not found in tarball", relPath)
 }
 
-// installBinary copies src to dst preserving ownership for the given user.
-// When running as root it chowns to the provider user; otherwise it relies
-// on the caller's own permissions.
+// installBinary copies src to dst preserving ownership for the given user,
+// then atomically renames into place.
+//
+// The write goes to dst+".new" (same directory, so same filesystem) and is
+// os.Rename'd over dst — never O_TRUNC in place. The running provider may
+// still be executing from dst during an update; overwriting that inode in
+// place risks SIGBUS/SIGSEGV on demand-paging (review finding H2), while
+// rename(2) leaves the old inode serving already-open processes and only
+// new execve's see the new file.
 func installBinary(src, dst, user string) error {
-	if err := copyFile(src, dst); err != nil {
+	newPath := dst + ".new"
+	if err := copyFile(src, newPath); err != nil {
 		return err
 	}
-	if err := os.Chmod(dst, 0o755); err != nil {
+	if err := os.Chmod(newPath, 0o755); err != nil {
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
@@ -430,9 +444,12 @@ func installBinary(src, dst, user string) error {
 		}
 		uid := strings.TrimSpace(string(uidOut))
 		gid := strings.TrimSpace(string(gidOut))
-		if err := exec.Command("chown", uid+":"+gid, dst).Run(); err != nil {
-			return fmt.Errorf("chown %s: %w", dst, err)
+		if err := exec.Command("chown", uid+":"+gid, newPath).Run(); err != nil {
+			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
+	}
+	if err := os.Rename(newPath, dst); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
 	return nil
 }

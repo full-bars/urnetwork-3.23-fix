@@ -21,9 +21,25 @@ func Run(args []string) error {
 	rest := args[1:]
 	switch op {
 	case "providers", "list", "ps":
-		return cmdProviders(rest)
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, _, _ = force, dryRun, rest2 // providers is read-only; flags consumed for help handling
+		return cmdProviders(rest2)
 	case "status":
-		return cmdStatus(rest)
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, _, _ = force, dryRun, rest2
+		return cmdStatus(rest2)
 	case "update":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -49,9 +65,25 @@ func Run(args []string) error {
 	case "hot-restart", "hotrestart":
 		return cmdSimpleDelegation("hot-restart", rest)
 	case "start":
-		return cmdStart(rest)
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, _ = force, dryRun
+		return cmdStart(rest2)
 	case "stop":
-		return cmdStop(rest)
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, _ = force, dryRun
+		return cmdStop(rest2)
 	case "restart":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -62,7 +94,15 @@ func Run(args []string) error {
 		}
 		return cmdRestart(rest2, force, dryRun)
 	case "logs":
-		return cmdLogs(rest)
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, _ = force, dryRun
+		return cmdLogs(rest2)
 	case "hub":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -158,7 +198,7 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 // hot-restart): resolve the targeted provider, then delegate the exact
 // subcommand to that provider's binary.
 func cmdSimpleDelegation(sub string, args []string) error {
-	t, rest, err := parseTargetFlags(args)
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
@@ -217,10 +257,30 @@ Force (machines/scripts):
 `)
 }
 
+// parseTargetFlagsLenient is like parseTargetFlags but does NOT reject
+// unknown --flags: it only extracts the known targeting flags and leaves
+// everything else (including provider-binary flags like --force) in rest
+// for pass-through. Used by delegation commands (summary/report/hot-restart,
+// proxy refresh/remove-dead) where trailing args belong to the provider
+// binary, not this tool.
+func parseTargetFlagsLenient(args []string) (Target, []string, error) {
+	return parseTargetFlagsInner(args, false)
+}
+
 // parseTargetFlags extracts targeting flags from args and returns the
 // remaining positional args. Unknown -x flags are left in place (subcommands
 // may define their own).
+//
+// Unknown --flags are REJECTED (review finding L2) — a typo like --netwrok
+// or --dryrun must not be silently absorbed, because on a single-provider
+// box the command would then proceed as a real action with no notice.
 func parseTargetFlags(args []string) (Target, []string, error) {
+	return parseTargetFlagsInner(args, true)
+}
+
+// parseTargetFlagsInner implements both variants. When strict is true,
+// unknown --flags are rejected; otherwise they are preserved in rest.
+func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error) {
 	var t Target
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -256,6 +316,14 @@ func parseTargetFlags(args []string) (Target, []string, error) {
 			t.StateDir = args[i+1]
 			i++
 		default:
+			// Reject unknown flags instead of silently dropping them — a
+			// typo like --netwrok or --dryrun would otherwise be absorbed
+			// and the command proceeds as if un-targeted (review finding
+			// L2; on a single-provider box that means a real action with
+			// no dry-run notice).
+			if strict && strings.HasPrefix(args[i], "--") {
+				return t, nil, fmt.Errorf("unknown flag %q", args[i])
+			}
 			rest = append(rest, args[i])
 		}
 	}
@@ -326,22 +394,25 @@ func cmdStatus(args []string) error {
 
 // confirmGateMulti is the batch variant of confirmGate: it lists every
 // provider in the chosen set before the yes/no prompt.
+//
+// The listing is printed UNCONDITIONALLY (to stderr, so it doesn't pollute
+// piped stdout) — even with -f/--force, which only bypasses the interactive
+// prompt. Scripted/cron runs are the primary -f users and the most likely to
+// be replayed unattended; a printed "about to touch: X, Y" line in the log
+// is the audit trail for the incident class (review finding M1).
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
+	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
+	for _, p := range targets {
+		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
+	}
 	if dryRun {
-		fmt.Printf("[dry-run] would %s:\n", op)
-		for _, p := range targets {
-			fmt.Printf("  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
-		}
+		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")
 		return false, nil // caller must not act
 	}
 	if force {
 		return true, nil
 	}
-	fmt.Printf("This will %s:\n", op)
-	for _, p := range targets {
-		fmt.Printf("  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
-	}
-	fmt.Print("Type 'yes' to continue: ")
+	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil {
@@ -357,17 +428,21 @@ func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, 
 // With dryRun it prints the effect and returns a sentinel "skip" so callers
 // can proceed without acting. With force it proceeds silently. Otherwise it
 // prompts on the terminal and requires an explicit "yes".
+//
+// Like confirmGateMulti, the target is always printed (stderr) even under
+// -f — the listing is the audit trail, only the prompt is gated.
 func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
+	// Always print the target to stderr (audit trail), even under -f.
+	fmt.Fprintf(os.Stderr, "[urnet-tools] %s: %s (user=%s, network=%s, state=%s)\n",
+		op, providerLabel(target), target.User, target.Network, target.StateDir)
 	if dryRun {
-		fmt.Printf("[dry-run] would %s: %s\n", op, providerLabel(target))
+		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")
 		return false, nil // caller must not act
 	}
 	if force {
 		return true, nil
 	}
-	fmt.Printf("This will %s:\n  %s (user=%s, network=%s, state=%s)\n",
-		op, providerLabel(target), target.User, target.Network, target.StateDir)
-	fmt.Print("Type 'yes' to continue: ")
+	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil {
