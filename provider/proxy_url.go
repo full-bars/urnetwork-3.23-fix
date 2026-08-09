@@ -62,6 +62,21 @@ type ProxyURLEntry struct {
 	ProbeOK    bool      `json:"probe_ok"`              // passed API reachability probe
 	ProbeFails int       `json:"probe_fails,omitempty"` // consecutive API probe failures
 	LastProbe  time.Time `json:"last_probe,omitempty"`  // last API probe time
+
+	// Score is the stage-1 table probe result (ok/total) from the last
+	// graded pass, 0 when the entry has never been table-probed. Matches
+	// the backend data model so fleet grading can consume it directly.
+	Score float64 `json:"score,omitempty"`
+	// Graded is true once a stage-1 table probe has run and recorded its
+	// result. It is distinct from Score: a proxy that scored 0.0 was graded
+	// (and failed), while Score==0 with Graded=false means "never probed".
+	// The auth-time admission gate only enforces the bar for graded entries,
+	// so a honeypot that answers the API CONNECT but nothing else is
+	// blocked even though its score field is numerically zero.
+	Graded bool `json:"graded,omitempty"`
+	// Failed lists the target hostnames that did not answer the last
+	// stage-1 pass, for diagnostics and fleet reporting.
+	Failed []string `json:"failed,omitempty"`
 }
 
 func proxyURLStatePath() (string, error) {
@@ -250,13 +265,96 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 // should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
 // or callers that don't track probe results) get ProbeOK=false so the
 // background reaper picks them up for retry.
-func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int) (added int) {
+// cacheSizeExcludingBelowBar returns the number of cache entries that count
+// toward the maxTotal cap: every entry except graded-below-bar squatters.
+// A below-bar entry is filtered out of the desired set by mergeProxyURLCache,
+// so it can never launch — but if it counted toward the cap it would still
+// block new candidates after the source dropped it (merging is add-only).
+// Excluding it from the count lets fresh candidates in while the entry waits
+// for a re-grade or the reaper (review #12; the tiers branch supersedes this
+// with best-overall eviction). When the kill switch is off, below-bar
+// entries are re-admitted and count normally.
+func cacheSizeExcludingBelowBar(cache map[string]ProxyURLEntry, cfg proxyTableProbeConfig) int {
+	n := 0
+	for _, e := range cache {
+		if cfg.Enabled && e.Graded && e.Score < cfg.PassBar {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// proxyURLCacheHardCapFactor bounds the TOTAL cache size (below-bar
+// squatters included) at maxTotal * factor. cacheSizeExcludingBelowBar lets
+// fresh candidates in past graded-below-bar squatters, but nothing ever
+// removes a squatter that still passes stage 0 (the reaper resets its
+// ProbeFails, it is not re-graded once the source drops it, and it never
+// launches) — without a hard backstop proxy_url.json could grow without
+// limit (Opus review finding 3). At the hard cap the merge evicts the
+// OLDEST squatter to make room rather than dropping the candidate (review
+// round 2).
+const proxyURLCacheHardCapFactor = 2
+
+// evictOldestBelowBarSquatter removes the graded-below-bar cache entry with
+// the oldest LastProbe, if any, so an admissible candidate can still be
+// admitted when the hard cap is reached. Squatters (Graded && Score <
+// PassBar while the kill switch is on) never launch, so evicting them is
+// strictly better than dropping the new candidate. Returns false when there
+// is nothing to evict (cache at/over cap with no squatters — the merge then
+// stops).
+func evictOldestBelowBarSquatter(state *ProxyURLState, cfg proxyTableProbeConfig) bool {
+	var oldestAddr string
+	var oldest time.Time
+	for addr, e := range state.Cache {
+		if !cfg.Enabled || !e.Graded || e.Score >= cfg.PassBar {
+			continue
+		}
+		if oldestAddr == "" || e.LastProbe.Before(oldest) {
+			oldestAddr = addr
+			oldest = e.LastProbe
+		}
+	}
+	if oldestAddr == "" {
+		return false
+	}
+	oldestEntry := state.Cache[oldestAddr]
+	delete(state.Cache, oldestAddr)
+	tlog("[proxy][url] hard cap eviction: below-bar squatter %s (score %.2f) evicted for a new candidate\n",
+		oldestAddr, oldestEntry.Score)
+	return true
+}
+
+// mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
+// expected to have any api-verified entries first, followed by socks5-only
+// entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
+// how many of the leading entries passed the API-reachability probe and
+// should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
+// or callers that don't track probe results) get ProbeOK=false so the
+// background reaper picks them up for retry.
+//
+// qualified (may be nil) is an address-keyed set of stage-1-qualified
+// addresses. When non-nil it decides ProbeOK at insert time instead of the
+// raw line index / apiOKCount boundary, so skipped cached, duplicate,
+// blacklisted, excluded, or invalid lines can never shift qualification
+// status onto another address (review round 2).
+func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int, qualified map[string]bool) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
-	if maxTotal > 0 && len(state.Cache) > maxTotal {
-		tlog("[proxy][url] cache over cap: %d entries, maxTotal=%d (new entries will not be added until cleanup prunes stale entries)\n",
-			len(state.Cache), maxTotal)
+	// The cap counts non-squatter entries (see cacheSizeExcludingBelowBar).
+	// Computed once: inserted entries are ungraded at insert time (grades are
+	// persisted after the merge), so the count only grows by one per add.
+	cfg := resolveProxyTableProbeConfig()
+	capCount := len(state.Cache)
+	hardCap := 0
+	if maxTotal > 0 {
+		capCount = cacheSizeExcludingBelowBar(state.Cache, cfg)
+		if capCount > maxTotal {
+			tlog("[proxy][url] cache over cap: %d non-squatter entries, maxTotal=%d (new entries will not be added)\n",
+				capCount, maxTotal)
+		}
+		hardCap = maxTotal * proxyURLCacheHardCapFactor
 	}
 	for i, line := range lines {
 		address, user, password, ok := parseProxyURLLine(line)
@@ -272,10 +370,26 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 		if hostMatchesAny(state.ExcludePatterns, address) {
 			continue
 		}
-		if maxTotal > 0 && len(state.Cache) >= maxTotal {
+		// Soft cap first: if the non-squatter count is already at maxTotal,
+		// stop without evicting (a squatter eviction would be wasted).
+		if maxTotal > 0 && capCount >= maxTotal {
 			break
 		}
-		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
+		// Hard backstop: the file itself must stay bounded even with
+		// squatters excluded from the count. When a squatter exists, evict
+		// the oldest one to make room for this candidate; only stop when
+		// there is nothing left to evict.
+		if hardCap > 0 && len(state.Cache) >= hardCap {
+			if !evictOldestBelowBarSquatter(state, cfg) {
+				break
+			}
+		}
+		probeOK := i < apiOKCount
+		if qualified != nil {
+			probeOK = qualified[address]
+		}
+		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: probeOK}
+		capCount++
 		added++
 	}
 	return added
@@ -291,8 +405,23 @@ func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf m
 	if urlState == nil {
 		return
 	}
+	// The stage-1 admission bar, resolved once: graded-below-bar entries
+	// must not enter the desired set at all. Spawning them would hold a
+	// goroutine and a context for a proxy the auth gate will never admit,
+	// and the reaper would keep marking them ProbeOK=true while the gate
+	// blocks them (finding H4). They stay in the cache (the fetch cycle
+	// re-grades them next time); they just never launch.
+	//
+	// The filter is itself gated on cfg.Enabled: flipping the kill switch
+	// off must bring previously-graded below-bar proxies BACK into the
+	// desired set — that is exactly the mis-grading scenario the operator
+	// is escaping from (finding NEW-2).
+	cfg := resolveProxyTableProbeConfig()
 	for addr, entry := range urlState.Cache {
 		if _, exists := desiredSet[addr]; exists {
+			continue
+		}
+		if cfg.Enabled && entry.Graded && entry.Score < cfg.PassBar {
 			continue
 		}
 		settings := &connect.ProxySettings{Network: "tcp", Address: addr}
