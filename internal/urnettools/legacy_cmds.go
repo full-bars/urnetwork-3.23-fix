@@ -23,12 +23,13 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
-	args := append([]string{action}, extra...)
+	var args []string
 	if isUserUnit(p.Unit) && p.User != "" {
 		// systemctl --user -M <user>@ ... (session-scoped)
-		args = append([]string{"--user", "-M", p.User + "@", action}, extra...)
+		args = append([]string{"systemctl", "--user", "-M", p.User + "@", action}, extra...)
+	} else {
+		args = append([]string{"systemctl", action}, extra...)
 	}
-	args = append([]string{"systemctl"}, args...)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -52,7 +53,7 @@ func isUserUnit(unit string) bool {
 }
 
 // cmdStart starts the provider's owning unit.
-func cmdStart(args []string) error {
+func cmdStart(args []string, force, dryRun bool) error {
 	t, _, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -60,12 +61,17 @@ func cmdStart(args []string) error {
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
 		return err
+	}
+	// -n/--dry-run is documented "safe anywhere": print the plan, do
+	// nothing (free-review HIGH: start/stop previously discarded it and
+	// executed for real).
+	if dryRun {
+		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
+		return nil
 	}
 	return unitCommand(p, "start")
 }
-
-// cmdStop stops the provider's owning unit.
-func cmdStop(args []string) error {
+func cmdStop(args []string, force, dryRun bool) error {
 	t, _, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -73,6 +79,10 @@ func cmdStop(args []string) error {
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
 		return err
+	}
+	if dryRun {
+		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
+		return nil
 	}
 	return unitCommand(p, "stop")
 }
@@ -234,8 +244,8 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 	if b, err := os.ReadFile(path); err == nil {
 		for _, ln := range strings.Split(string(b), "\n") {
 			trimmed := strings.TrimSpace(ln)
-			if trimmed == "" {
-				continue
+			if trimmed == "" || trimmed == "[Service]" {
+				continue // header is re-emitted below — skip to avoid duplicates
 			}
 			if strings.HasPrefix(trimmed, "Environment=") {
 				val := strings.TrimPrefix(trimmed, "Environment=")
@@ -273,14 +283,26 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 	if err != nil {
 		return err
 	}
+	// Exact-key removal, NOT substring: envKey "URNETWORK_PROFILE" must not
+	// drop a sibling "URNETWORK_PROFILE_EXTRA" line (free-review MAJOR).
 	var kept []string
 	for _, ln := range strings.Split(string(b), "\n") {
-		if strings.Contains(ln, envKey) {
-			continue // drop this line only
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" {
+			continue
 		}
-		if strings.TrimSpace(ln) != "" {
-			kept = append(kept, ln)
+		if strings.HasPrefix(trimmed, "Environment=") {
+			val := strings.TrimPrefix(trimmed, "Environment=")
+			val = strings.Trim(val, `"`)
+			// Exact key match (key or key=value); anything else is kept.
+			if val == envKey || (strings.HasPrefix(val, envKey+"=")) {
+				continue // drop this line only
+			}
 		}
+		if trimmed == "[Service]" {
+			continue // header re-emitted below — avoid duplicates
+		}
+		kept = append(kept, trimmed)
 	}
 	if len(kept) == 0 {
 		if err := os.Remove(path); err != nil {

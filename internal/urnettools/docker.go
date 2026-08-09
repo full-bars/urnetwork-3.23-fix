@@ -110,16 +110,6 @@ func containerReadFile(c dockerContainer, path string) (string, error) {
 	return string(out), nil
 }
 
-// containerExec runs an arbitrary command inside the container (used for
-// delegation to the container's own urnet-tools).
-func containerExec(c dockerContainer, args ...string) error {
-	full := append([]string{"exec", c.ID}, args...)
-	cmd := exec.Command(dockerCLI(), full...)
-	cmd.Stdout = stdoutWriter()
-	cmd.Stderr = stderrWriter()
-	return cmd.Run()
-}
-
 // dockerProvider builds a host-facing Provider from a container by reading
 // its JWT and version inside the container.
 func dockerProvider(c dockerContainer) (Provider, error) {

@@ -84,8 +84,7 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
-		_, _ = force, dryRun
-		return cmdStart(rest2)
+		return cmdStart(rest2, force, dryRun)
 	case "stop":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -94,8 +93,7 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
-		_, _ = force, dryRun
-		return cmdStop(rest2)
+		return cmdStop(rest2, force, dryRun)
 	case "restart":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
