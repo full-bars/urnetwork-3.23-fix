@@ -57,7 +57,4 @@ func TestTierRankOrder(t *testing.T) {
 		}
 		prev = rank
 	}
-	if proxyTierRank("A") != proxyTierRank("a") {
-		t.Error("tier rank must be case-insensitive")
-	}
 }

@@ -942,6 +942,170 @@ func TestReview_ReaperKillSwitchSkipsGradeRefresh(t *testing.T) {
 	}
 }
 
+// REGRESSION (Opus review test gap). The POSITIVE counterpart to the
+// kill-switch test: with stage-1 ENABLED, the reaper's stale sweep of a
+// once-good entry must actually run the table probe and PERSIST the
+// refreshed grade. Before this test, deleting the table-probe call,
+// setting the refresh budget to 0, or gating the persist on
+// Decidable&&false all left the suite green — the entire quality-refresh
+// half of the feature had no positive signal.
+func TestReview_ReaperRefreshesStaleGrade(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	// Seed the box's probe DNS cache so the sampled targets resolve
+	// offline. The reaper's table probe reads the pass counter directly
+	// (no fetch increment), so seed the CURRENT counter value.
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load())
+
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := got.Cache[addr]
+	if !ok {
+		t.Fatal("entry must remain cached after the refresh")
+	}
+	// All-answering proxy: the refresh pass scores 1.0 and persists it.
+	if !entry.Graded || entry.Score != 1.0 {
+		t.Fatalf("expected refreshed grade 1.0, got graded=%v score=%v", entry.Graded, entry.Score)
+	}
+	if !entry.LastProbe.After(time.Now().Add(-time.Minute)) {
+		t.Error("LastProbe must be re-stamped when the table probe ran")
+	}
+	// Stage-0 API CONNECT (1) + stage-1 table probe (sample_width=4).
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("expected 1 API + 4 table CONNECTs, got %d", n)
+	}
+}
+
+// REGRESSION (Opus review, MEDIUM #3). The 32/cycle grade-refresh budget
+// must land on the OLDEST grades, and a budget loser (stage-0 liveness
+// passed, table probe skipped) must NOT get its LastProbe re-stamped —
+// otherwise a once-good herd (all entries born with synchronized LastProbe
+// in one fetch cycle) re-stamps as a block every cycle and never
+// desynchronizes, leaving a random ~16% refresh coverage per stale window.
+func TestReview_ReaperRefreshBudgetOldestFirst(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	// One more than the production refresh budget (32/cycle,
+	// proxyReaperMaxGradeRefresh in runURLProxyReaperOnce).
+	const refreshBudget = 32
+	const n = refreshBudget + 1 // 33
+
+	var addrs []string
+	for i := 0; i < n; i++ {
+		addr, _, cleanup := listenSocks5Sequenced(t, func(conn int) byte { return 0x00 })
+		defer cleanup()
+		addrs = append(addrs, addr)
+	}
+	cache := map[string]ProxyURLEntry{}
+	pass := tableProbePassCounter.Load()
+	for i, addr := range addrs {
+		// Oldest first: addrs[0] is 6h stale, addrs[n-1] is 3h stale.
+		age := 6*time.Hour - time.Duration(i)*3*time.Hour/time.Duration(n-1)
+		cache[addr] = ProxyURLEntry{ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-age)}
+		seedProbeDNSForAddress(t, addr, pass)
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: cache}); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, addr := range addrs {
+		e := got.Cache[addr]
+		if i < refreshBudget {
+			// The OLDEST 32 got a table probe: score refreshed 0.9 -> 1.0
+			// and LastProbe re-stamped.
+			if e.Score != 1.0 {
+				t.Errorf("idx %d (oldest %d): expected refreshed score 1.0, got %v", i, i, e.Score)
+			}
+			if !e.LastProbe.After(time.Now().Add(-time.Minute)) {
+				t.Errorf("idx %d (oldest %d): LastProbe %v not re-stamped", i, i, e.LastProbe)
+			}
+		} else {
+			// The NEWEST (budget loser): no table probe, no re-stamp — it
+			// must keep its stale LastProbe so it is first in line next
+			// tick (herd desync).
+			if e.Score != 0.9 {
+				t.Errorf("idx %d (budget loser): expected UNrefreshed score 0.9, got %v", i, e.Score)
+			}
+			if !e.LastProbe.Before(time.Now().Add(-3*time.Hour + time.Minute)) {
+				t.Errorf("idx %d (budget loser): LastProbe %v was re-stamped — herd never desyncs", i, e.LastProbe)
+			}
+		}
+	}
+}
+
+// REGRESSION (Opus review, MEDIUM #2). An address listed in TWO sources in
+// the same fetch cycle must be table-probed ONCE, not once per source —
+// the same scraped IPs circulate across free lists, and per-source probing
+// defeats the new-only filter's own efficiency goal. The live `probed`
+// skip set must de-duplicate across sources, and the merge must persist
+// the single first-verdict grade.
+func TestReview_FetchCrossSourceDuplicateProbedOnce(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	// fetchAndMergeProxyURLs advances the pass counter once at the start of
+	// the cycle, so the probes run on the NEXT pass value; seed both.
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load(), tableProbePassCounter.Load()+1)
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(addr + "\n"))
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(addr + "\n"))
+	}))
+	defer srvB.Close()
+
+	fetchAndMergeProxyURLs(context.Background(), []string{srvA.URL, srvB.URL}, 100, "1.2.3.4", 443)
+
+	// One address, probed once: 1 API CONNECT + sample_width table probes.
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("cross-source duplicate must be probed ONCE: %d CONNECTs, want 5 (1 API + 4 table)", n)
+	}
+	state, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Cache) != 1 {
+		t.Fatalf("expected 1 cached entry, got %d", len(state.Cache))
+	}
+	entry, ok := state.Cache[addr]
+	if !ok {
+		t.Fatalf("expected %s in cache, got %v", addr, state.Cache)
+	}
+	if !entry.ProbeOK || !entry.Graded || entry.Score != 1.0 {
+		t.Errorf("expected single first-verdict grade persisted, got %+v", entry)
+	}
+}
+
 // REGRESSION (NEW-1). A partial resolver failure must not convict a proxy:
 // score is OK/attempted (not OK/intended-sample), and a sample gutted below
 // quorum is not Decidable at all. This is the CRITICAL the fix pass briefly
@@ -1053,4 +1217,36 @@ func resetProbeConfigCache() {
 	defer probeConfigCache.Unlock()
 	probeConfigCache.cfg = proxyTableProbeConfig{}
 	probeConfigCache.at = time.Time{}
+}
+
+// seedProbeDNSForAddress injects fake resolutions for the stage-1 sampled
+// targets of address at the given probe pass values, so a test can run the
+// table probe offline and deterministically (the sampled hostnames are real
+// health-check domains; without seeding they need working DNS). The probe
+// DNS cache is process-global, so all injected entries are removed on test
+// cleanup and any prior fail-cache entry for the same host is cleared
+// (resolveProbeTarget consults fail BEFORE re-resolving).
+func seedProbeDNSForAddress(t *testing.T, address string, passes ...uint64) {
+	t.Helper()
+	cfg := resolveProxyTableProbeConfig()
+	added := map[string]bool{}
+	probeDNSCache.Lock()
+	for _, pass := range passes {
+		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		for _, h := range hosts {
+			if _, exists := probeDNSCache.m[h]; !exists {
+				added[h] = true
+			}
+			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			delete(probeDNSCache.fail, h)
+		}
+	}
+	probeDNSCache.Unlock()
+	t.Cleanup(func() {
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for h := range added {
+			delete(probeDNSCache.m, h)
+		}
+	})
 }

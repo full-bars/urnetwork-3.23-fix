@@ -1,6 +1,10 @@
 package main
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +57,44 @@ func TestMustReadProxyURLState_ReadsExisting(t *testing.T) {
 	state := mustReadProxyURLState()
 	if len(state.Cache) != 1 || !state.Cache["9.9.9.9:1080"].Graded {
 		t.Fatalf("expected cached entry to round-trip, got %+v", state.Cache)
+	}
+}
+
+// TestMustReadProxyURLState_CorruptLogsWarning pins that a CORRUPT cache
+// file is not silent: mustReadProxyURLState degrades to an empty state (so
+// the fetch cycle treats every address as new) AND logs the warning, so the
+// operator sees why — the missing-file and round-trip paths were covered,
+// the tlog error path the coderabbit review asked for was not (Opus review
+// test gap).
+func TestMustReadProxyURLState_CorruptLogsWarning(t *testing.T) {
+	withTempHome(t)
+	path, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{definitely not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// tlog writes through fmt.Printf to os.Stdout; capture it for the call.
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	state := mustReadProxyURLState()
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if state == nil || len(state.Cache) != 0 {
+		t.Fatalf("corrupt file must degrade to empty state, got %+v", state)
+	}
+	if !strings.Contains(string(out), "could not read proxy_url.json for cached-address snapshot") {
+		t.Errorf("expected the corrupt-file warning on stdout, got: %q", out)
 	}
 }
