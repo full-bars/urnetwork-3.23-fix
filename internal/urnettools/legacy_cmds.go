@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -401,7 +402,9 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 }
 
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates
-// to the legacy installer script's optimize when present).
+// to the legacy installer script's optimize when present). Platform-aware:
+// Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
+// network stack equivalents matter for proxy-scale connection churn).
 func cmdOptimize(args []string, force, dryRun bool) error {
 	t, _, err := parseTargetFlags(args)
 	if err != nil {
@@ -418,16 +421,31 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil
 	}
-	// The legacy do_optimize writes sysctl/limits; mirror the essentials.
-	// This is intentionally conservative — full parity lives in the legacy
-	// installer until the Go tool is validated.
-	fmt.Println("optimize: applying conservative kernel limits (sysctl net.core.rmem/wmem, fs.file-max)")
+	fmt.Println("optimize: applying golden-fleet network limits")
+	switch runtime.GOOS {
+	case "windows":
+		return optimizeWindows()
+	default:
+		return optimizeLinux()
+	}
+}
+
+// optimizeLinux applies the Linux sysctl set: socket buffers, FD limit, and
+// the two connection-churn knobs that matter most for a proxy box — the
+// ephemeral port pool (ip_local_port_range) and TIME_WAIT recycling
+// (tcp_fin_timeout). Conservative; failures are logged, never fatal.
+func optimizeLinux() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run with sudo or as root", os.Geteuid())
 	}
+	// Buffer + FD settings mirror the legacy do_optimize; the port range
+	// and TIME_WAIT knobs are new (proxy-scale outbound churn exhausts
+	// the default ~28k ephemeral ports and parks sockets in TIME_WAIT).
 	for _, args := range [][]string{
 		{"-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728"},
 		{"-w", "fs.file-max=1000000"},
+		{"-w", "net.ipv4.ip_local_port_range=1024 65535"},
+		{"-w", "net.ipv4.tcp_fin_timeout=15"},
 	} {
 		cmd := exec.Command("sysctl", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -435,6 +453,26 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 		}
 	}
 	fmt.Println("optimize: done")
+	return nil
+}
+
+// optimizeWindows applies the Windows network-stack equivalents: a widened
+// ephemeral port pool (netsh dynamicport) and a shorter TIME_WAIT
+// (TcpTimedWaitDelay registry key). These need an elevated shell; failures
+// are logged, never fatal.
+func optimizeWindows() error {
+	// netsh: widen the dynamic client port pool (default ~16k is too small
+	// for a busy proxy box).
+	if out, err := exec.Command("netsh", "int", "ipv4", "set", "dynamicport", "tcp", "start=1025", "num=64510").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: netsh dynamicport failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
+	}
+	// Registry: shorten TIME_WAIT so closed sockets free their ports faster
+	// (default 120s on Windows). Takes effect after reboot.
+	if out, err := exec.Command("reg", "add", `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`,
+		"/v", "TcpTimedWaitDelay", "/t", "REG_DWORD", "/d", "30", "/f").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: reg TcpTimedWaitDelay failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Println("optimize: done (TcpTimedWaitDelay takes effect on reboot)")
 	return nil
 }
 

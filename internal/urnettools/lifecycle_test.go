@@ -19,6 +19,22 @@ func TestIsUserUnit(t *testing.T) {
 	}
 }
 
+// TestOptimizeLinuxRootCheck: optimizeLinux must refuse non-root with an
+// actionable error before touching sysctl. (The sysctl loop itself needs
+// root, so this test pins the guard, not the mutation.)
+func TestOptimizeLinuxRootCheck(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; the non-root guard cannot be exercised")
+	}
+	err := optimizeLinux()
+	if err == nil {
+		t.Fatal("optimizeLinux on non-root must return an error")
+	}
+	if !strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("error must say root is required, got: %v", err)
+	}
+}
+
 // TestWriteDropinEnvRoundTrip: writing a hub.conf drop-in then removing it
 // leaves no file behind.
 func TestWriteDropinEnvRoundTrip(t *testing.T) {
