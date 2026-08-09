@@ -694,6 +694,7 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 		case <-ticker.C:
 		}
 		runURLProxyReaperOnce(ctx, apiHost, apiPort)
+		setNextGradeRefreshAt(time.Now().Add(proxyReaperInterval))
 	}
 }
 
@@ -870,6 +871,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					// cancelled pass leaves the prior grade intact.
 					if r.table.Decidable {
 						oldTier := ""
+						oldScore := entry.Score
 						if entry.Graded {
 							oldTier = proxyGradeTier(entry.Score)
 						}
@@ -882,6 +884,9 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 							tierChanges++
 							importantLogf("[proxy][url] reaper: refreshed grade for %s -> %s (%.2f, %d/%d)\n",
 								r.addr, newTier, r.table.Score, r.table.OK, r.table.SampleWidth)
+							// Per-address delta line (grades.log history), matching
+							// the paid-grader convention for URL proxies.
+							emitProxyGradeDelta(r.addr, oldTier, newTier, oldScore, r.table.Score, entry.Graded)
 						}
 					}
 					// Re-stamp the staleness clock ONLY when the quality
@@ -1043,6 +1048,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
+	setNextFetchProbeAt(time.Now().Add(activeInterval))
 	ticker := time.NewTicker(activeInterval)
 	// A plain `defer ticker.Stop()` binds the ticker *value* at defer time;
 	// once the loop below reassigns `ticker` on an interval change, that
@@ -1076,6 +1082,13 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			}
 			lastFetch = time.Now()
 			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
+			// Publish the next-fetch estimate for the grade summary
+			// countdown, mirroring shouldFetchNow's stretch math exactly.
+			effectiveNext := activeInterval
+			if readURLCacheSize() >= 50 {
+				effectiveNext = time.Duration(float64(activeInterval) * fetchStretch(currentPressure()))
+			}
+			setNextFetchProbeAt(time.Now().Add(effectiveNext))
 		}
 	}
 }

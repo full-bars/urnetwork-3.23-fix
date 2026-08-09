@@ -29,6 +29,17 @@ var importantLogMarkers = []string{
 	"[proxy][url] admitted by tier",
 	"[proxy][url] cap eviction",
 	"[proxy][url] reaper: refreshed grade",
+	// Grade summary + per-address delta lines (design 2026-08-09): the
+	// running-tier snapshot, per-source breakdown, changes-vs-last-round,
+	// score stats, and tier-change deltas are low-volume and high-value —
+	// keep them in the important buffer + disk events.log. The countdown
+	// line ("next fetch probe ...") deliberately matches NO marker, so it
+	// stays in the regular ramlog only.
+	"[proxy][grade] running:",
+	"[proxy][grade] sources:",
+	"[proxy][grade] changes",
+	"[proxy][grade] scores:",
+	"[proxy][grade] delta",
 }
 
 // isImportantLogLine reports whether a single log line should be mirrored to the
