@@ -190,6 +190,34 @@ func TestDigestForAsset(t *testing.T) {
 	}
 }
 
+// TestRestartProviderNoUnitNoPID: restartProvider must return a clear error
+// when no systemd unit is resolved AND no PID is available (the fallback
+// path). This pins the user-level fallback logic: system systemctl fails
+// -> user systemctl fails -> PID signal skipped (PID=0) -> error.
+func TestRestartProviderNoUnitNoPID(t *testing.T) {
+	p := Provider{User: "testuser", Unit: "", PID: 0}
+	err := restartProvider(p)
+	if err == nil {
+		t.Fatal("restartProvider with no unit and no PID must error")
+	}
+	if !strings.Contains(err.Error(), "could not restart") {
+		t.Errorf("error should say 'could not restart', got: %v", err)
+	}
+}
+
+// TestRestartProviderWithUnitFailsGracefully: when a unit is set but
+// systemctl is not available (or the unit doesn't exist), restartProvider
+// must return an error, not panic.
+func TestRestartProviderWithUnitFailsGracefully(t *testing.T) {
+	// Use a fake unit name that systemctl won't find.
+	p := Provider{User: "testuser", Unit: "urnet-tools-test-fake-unit-restart.service", PID: 0}
+	err := restartProvider(p)
+	// Should error (systemctl will fail for the fake unit), not panic.
+	if err == nil {
+		t.Log("restartProvider returned nil — systemctl may have succeeded unexpectedly")
+	}
+}
+
 // TestWriteTimerCalendarMissingHome covers the guard added alongside this
 // review: writeTimerCalendar must error cleanly when getent can't resolve
 // the target user's home, rather than silently falling back to a

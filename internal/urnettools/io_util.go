@@ -3,7 +3,6 @@ package urnettools
 import (
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // writeTempJWT writes raw JWT content to a temp file and returns its path.
@@ -27,24 +26,3 @@ func stdoutWriter() io.Writer { return os.Stdout }
 
 // stderrWriter returns the process stderr as an io.Writer.
 func stderrWriter() io.Writer { return os.Stderr }
-
-// removeQuietly removes a path, ignoring errors (best-effort cleanup).
-func removeQuietly(path string) {
-	_ = os.Remove(path)
-}
-
-// homeDir returns the current user's home directory (used in fallbacks).
-func homeDir() string {
-	if h, err := os.UserHomeDir(); err == nil {
-		return h
-	}
-	return ""
-}
-
-// joinStateDir joins a home path with the .urnetwork state dir.
-func joinStateDir(home string) string {
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".urnetwork")
-}

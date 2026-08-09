@@ -52,13 +52,14 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
-	// refresh passes provider-binary flags through (e.g. --force), so it
-	// needs the LENIENT parse (unknown --flags preserved); every other
-	// subcommand keeps strict rejection so a typo like --netwrok cannot be
-	// silently absorbed on a destructive op (review finding L2).
+	// refresh and remove-dead pass provider-binary flags through (e.g.
+	// --force), so they need the LENIENT parse (unknown --flags preserved);
+	// every other subcommand keeps strict rejection so a typo like
+	// --netwrok cannot be silently absorbed on a destructive op (review
+	// finding L2; free-review major: remove-dead lost --force passthrough).
 	var t Target
 	var err error
-	if sub == "refresh" {
+	if sub == "refresh" || sub == "remove-dead" {
 		t, rest, err = parseTargetFlagsLenient(rest)
 	} else {
 		t, rest, err = parseTargetFlags(rest)
@@ -127,28 +128,29 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		opArgs = []string{"proxy", "refresh"}
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
-	case "health":
-		// State-file based; not a provider-binary delegation. Uses the
-		// already-parsed target (t) — re-parsing here would see an arg
-		// list with the target flags already stripped (free-review
-		// major: health/traffic/remove-dead lost targeting).
+	case "health", "traffic", "remove-dead":
+		// These are single-target subcommands (selectTarget, not
+		// selectTargets) — batch flags are meaningless here and must not be
+		// silently dropped (free-review MEDIUM).
+		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
+		}
 		p, err := selectTarget(providers, t)
 		if err != nil {
 			return err
 		}
-		return cmdProxyHealthTarget(p)
-	case "traffic":
-		p, err := selectTarget(providers, t)
-		if err != nil {
-			return err
+		switch sub {
+		case "health":
+			// State-file based; not a provider-binary delegation. Uses the
+			// already-parsed target (t) — re-parsing here would see an arg
+			// list with the target flags already stripped (free-review
+			// major: health/traffic/remove-dead lost targeting).
+			return cmdProxyHealthTarget(p)
+		case "traffic":
+			return cmdProxyTrafficTarget(p)
+		default: // remove-dead
+			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
-		return cmdProxyTrafficTarget(p)
-	case "remove-dead":
-		p, err := selectTarget(providers, t)
-		if err != nil {
-			return err
-		}
-		return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 	default:
 		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead)", sub)
 	}
