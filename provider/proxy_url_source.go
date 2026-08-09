@@ -408,13 +408,10 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			switch {
 			case g.Qualified:
 				qualified = append(qualified, line)
-				if probeCfg.Enabled {
-					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+				if g.Decidable {
+					tierCounts[proxyGradeTier(g.Score)]++
 				} else {
-					// Kill switch off: stage 1 never ran, so there is no
-					// score to label. Counting these as "below-bar" would
-					// claim the whole pool is failing while every one of
-					// them was admitted (review #11).
+					// Kill-switch-disabled or otherwise ungraded but admitted.
 					tierCounts["ungraded"]++
 				}
 			case g.Socks5Only:
@@ -423,7 +420,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			default:
 				belowBar = append(belowBar, line)
 				if g.Decidable {
-					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+					tierCounts[proxyGradeTier(g.Score)]++
 				} else {
 					// No verdict this cycle (cancelled/DNS-down): the entry
 					// keeps its prior grade and is simply not admitted now.
@@ -547,17 +544,18 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		tlog("[proxy][url] %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", markedAPI, markedSocks5)
 	}
 
-	// Tier breakdown is printed every cycle that produced any grade, even
+	// Grade breakdown is printed every cycle that produced any grade, even
 	// when nothing was newly added (N1: the old code's early return below
-	// skipped it entirely on no-change cycles).
+	// skipped it entirely on no-change cycles). Letters are what the probe
+	// FOUND this cycle (A>=0.9 .. F<0.6), plus the non-grade buckets.
 	if len(tierCounts) > 0 {
 		parts := make([]string, 0, len(tierCounts))
-		for _, tier := range []string{"preferred", "qualified", "below-bar", "undecidable", "socks5-only", "ungraded"} {
+		for _, tier := range []string{"A", "B", "C", "D", "F", "ungraded", "undecidable", "socks5-only"} {
 			if n := tierCounts[tier]; n > 0 {
 				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}
 		}
-		tlog("[proxy][url] stage-1 tier breakdown: %s\n", strings.Join(parts, " "))
+		tlog("[proxy][url] probe grade breakdown: %s\n", strings.Join(parts, " "))
 	}
 
 	if totalAdded == 0 && !dirty {
