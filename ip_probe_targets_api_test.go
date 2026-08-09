@@ -102,3 +102,26 @@ func toLower(s string) string {
 	}
 	return string(b)
 }
+
+// TestProbeTargetsAccessors_ReturnCopies: the accessors must hand out copies,
+// not the package-owned tables — a caller that mutates its slice must not
+// change what the next caller (or a concurrent sampler) sees (review #1).
+func TestProbeTargetsAccessors_ReturnCopies(t *testing.T) {
+	hosts := ProbeHostNames()
+	if len(hosts) == 0 {
+		t.Fatal("expected a non-empty host table")
+	}
+	hosts[0] = "mutated.invalid"
+	if got := ProbeHostNames(); got[0] == "mutated.invalid" {
+		t.Fatal("ProbeHostNames returned a shared slice: mutating the copy changed the table")
+	}
+
+	resolvers := ProbeResolverIps()
+	if len(resolvers) == 0 {
+		t.Fatal("expected a non-empty resolver table")
+	}
+	resolvers[0] = "mutated.invalid"
+	if got := ProbeResolverIps(); got[0] == "mutated.invalid" {
+		t.Fatal("ProbeResolverIps returned a shared slice: mutating the copy changed the table")
+	}
+}

@@ -18,6 +18,11 @@ func withTempHome(t *testing.T) string {
 	t.Setenv("USERPROFILE", dir) // os.UserHomeDir() reads this on Windows
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
 	lastReloadTriggerTime.ts = time.Time{}
+	// The probe-config and admission-state TTL caches are process-global and
+	// hold snapshots keyed to the previous HOME; a HOME change invalidates
+	// them, otherwise a config/state read in one test leaks into the next.
+	resetProbeConfigCache()
+	resetAdmissionStateCache()
 	return dir
 }
 

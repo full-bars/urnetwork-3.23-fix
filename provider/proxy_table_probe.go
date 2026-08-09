@@ -3,10 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,10 +31,11 @@ import (
 //     proxy re-probed over a session walks the whole table instead of
 //     re-testing the same few sites.
 //   - Fail-fast by viability: the pass aborts only when the bar is already
-//     mathematically unreachable (OK + remaining < needed), so an aborted
-//     pass can never look worse than the evidence supports — the failure
-//     run that triggered the abort is the same one that would have failed
-//     the full pass.
+//     mathematically unreachable on the denominator the score will actually
+//     use (attempted + still-untried), so an aborted pass can never look
+//     worse than the evidence supports and hosts the box's resolver cannot
+//     answer — which leave the score denominator — can never abort a pass
+//     that could still qualify (review #8).
 //
 // The bar is tiered: score >= PreferredBar is "preferred", >= PassBar is
 // "qualified". Only qualified (or better) proxies enter the auth queue.
@@ -86,10 +86,49 @@ func proxyProbeOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_probe.json"), nil
 }
 
-// resolveProxyTableProbeConfig re-reads the override file on every call and
-// returns the effective configuration. Absent/unparseable file or fields
-// fall back to defaults; an explicitly-set field wins over the default.
+// probeConfigTTL bounds how long resolveProxyTableProbeConfig reuses a
+// parsed override snapshot. The resolver runs on the auth hot path (twice
+// per retry iteration) and on every cache merge; a few seconds of staleness
+// is invisible to an operator editing proxy_probe.json, and the TTL stops a
+// filesystem read per call (review #14, extending the admissionStateTTL
+// pattern).
+const probeConfigTTL = 5 * time.Second
+
+var probeConfigCache struct {
+	sync.Mutex
+	cfg proxyTableProbeConfig
+	at  time.Time
+}
+
+// resetProbeConfigCache clears the TTL cache. Test-only: tests write an
+// override file then resolve immediately, which would otherwise reuse a
+// snapshot for probeConfigTTL.
+func resetProbeConfigCache() {
+	probeConfigCache.Lock()
+	defer probeConfigCache.Unlock()
+	probeConfigCache.cfg = proxyTableProbeConfig{}
+	probeConfigCache.at = time.Time{}
+}
+
+// resolveProxyTableProbeConfig returns the effective probe configuration,
+// reusing the previous parse within probeConfigTTL so the auth hot path does
+// not issue one filesystem read per call (review #14).
 func resolveProxyTableProbeConfig() proxyTableProbeConfig {
+	probeConfigCache.Lock()
+	defer probeConfigCache.Unlock()
+	if !probeConfigCache.at.IsZero() && time.Since(probeConfigCache.at) < probeConfigTTL {
+		return probeConfigCache.cfg
+	}
+	cfg := loadProxyTableProbeConfig()
+	probeConfigCache.cfg = cfg
+	probeConfigCache.at = time.Now()
+	return cfg
+}
+
+// loadProxyTableProbeConfig re-reads the override file and returns the
+// effective configuration. Absent/unparseable file or fields fall back to
+// defaults; an explicitly-set field wins over the default.
+func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	cfg := defaultProxyTableProbeConfig()
 	path, err := proxyProbeOverridePath()
 	if err != nil {
@@ -130,27 +169,32 @@ func resolveProxyTableProbeConfig() proxyTableProbeConfig {
 	// override silently destroys the property, so clamp and say so —
 	// ONCE, not once per auth attempt (finding NEW-6: this resolver runs
 	// on the auth hot path).
-	if maxWidth := len(connect.ProbeHostNames()) / 2; cfg.SampleWidth > maxWidth {
+	if maxWidth := connect.ProbeHostCount() / 2; cfg.SampleWidth > maxWidth {
 		cfg.SampleWidth = maxWidth
-		clampWarnings.Do(func() {
+		widthClampWarning.Do(func() {
 			tlog("[proxy][url] stage-1: sample_width clamped to %d (half the %d-host table; disjoint rotation requires 2*width <= table)\n",
-				maxWidth, len(connect.ProbeHostNames()))
+				maxWidth, connect.ProbeHostCount())
 		})
 	}
 	// An inverted bar pair would let the log label ("preferred") disagree
 	// with the gate decision. Clamp PreferredBar up to PassBar.
 	if cfg.PreferredBar < cfg.PassBar {
 		cfg.PreferredBar = cfg.PassBar
-		clampWarnings.Do(func() {
+		barClampWarning.Do(func() {
 			tlog("[proxy][url] stage-1: preferred_bar clamped up to pass_bar %.2f (inverted pair)\n", cfg.PassBar)
 		})
 	}
 	return cfg
 }
 
-// clampWarnings dedupes the config-clamp log lines so they print once per
-// process instead of once per auth attempt (finding NEW-6).
-var clampWarnings sync.Once
+// widthClampWarning and barClampWarning dedupe the config-clamp log lines so
+// each prints once per process instead of once per auth attempt (finding
+// NEW-6). Separate guards per clamp: a shared Once would let the first clamp
+// that fires silence the other for the whole process lifetime (review #7).
+var (
+	widthClampWarning sync.Once
+	barClampWarning   sync.Once
+)
 
 // tableProbePassCounter increments once per fetch cycle so consecutive
 // cycles rotate the sampled block (disjoint rotation across passes).
@@ -172,15 +216,17 @@ func tableProbeSeed(address string, pass uint64) uint64 {
 
 // tableProbeResult is the outcome of one stage-1 pass against one proxy.
 type tableProbeResult struct {
-	// Score is OK/SampleWidth at or above which the proxy is qualified.
-	// The denominator is the INTENDED sample, not the attempted subset:
-	// a pass aborted by fail-fast or cancellation therefore can never look
-	// worse than the evidence supports (unattempted targets are unknown,
-	// not failures, but they are also not counted as successes).
+	// Score is OK/Total — the share of ATTEMPTED targets that answered
+	// (upstream's Answered/Sent semantics). The denominator is the
+	// attempted subset, not the intended sample: hosts the box's resolver
+	// could not answer are excluded from both the pass and the score, so a
+	// DNS failure on this box can never convict a proxy (findings H2,
+	// NEW-1, review #8).
 	Score float64
 	// OK is how many sampled targets answered with a SynAck.
 	OK int
-	// SampleWidth is the intended sample size (the denominator of Score).
+	// SampleWidth is the intended sample size (not the Score denominator —
+	// see Score).
 	SampleWidth int
 	// Total is how many targets were actually attempted (unresolvable
 	// hosts are excluded — resolution failure is the box's problem, not
@@ -205,22 +251,38 @@ func (r tableProbeResult) qualified(bar float64) bool {
 	return r.Score >= bar
 }
 
-// probeDNSCache memoizes target resolution for the lifetime of the box.
-// The table is ~127 hosts, so one lookup per host per process covers every
-// proxy and every cycle, and stage 0 already caches the API address the
-// same way ("so each probe doesn't trigger a fresh DNS lookup"). Failures
-// are memoized too (with a short TTL) so a resolver degradation does not
-// re-issue the same failing lookup per proxy per pass (finding NEW-8).
+// probeDNSCache memoizes target resolution. The table is ~127 hosts, so one
+// lookup per host per TTL covers every proxy and every cycle, and stage 0
+// already caches the API address the same way ("so each probe doesn't
+// trigger a fresh DNS lookup"). Failures are memoized with a short TTL so a
+// resolver degradation does not re-issue the same failing lookup per proxy
+// per pass (finding NEW-8); successes are memoized with a longer TTL so a
+// health host that changes address is re-resolved within hours instead of
+// the box dialing a stale IP through every proxy for the whole process
+// lifetime (review #15).
 var probeDNSCache = struct {
 	sync.Mutex
-	m    map[string]net.IP
+	m    map[string]probeDNSCachedIP
 	fail map[string]time.Time
-}{m: map[string]net.IP{}, fail: map[string]time.Time{}}
+}{m: map[string]probeDNSCachedIP{}, fail: map[string]time.Time{}}
+
+// probeDNSCachedIP is a successful resolution memoized with its lookup time
+// so it can expire (probeDNSSuccessTTL).
+type probeDNSCachedIP struct {
+	ip net.IP
+	at time.Time
+}
 
 // probeDNSFailTTL is how long a failed resolution is remembered before the
 // box retries it. Long enough to absorb a whole fetch cycle of probes,
 // short enough that a recovered resolver is noticed.
 const probeDNSFailTTL = 30 * time.Second
+
+// probeDNSSuccessTTL is how long a successful resolution is remembered
+// before the box re-resolves the host. Long enough that a fetch cycle only
+// pays one lookup per host, short enough that an address change is noticed
+// within hours.
+const probeDNSSuccessTTL = 2 * time.Hour
 
 // resolveProbeTarget resolves host, returning the box's own DNS answer or
 // nil when it cannot answer. Literal IPs pass straight through — they are
@@ -232,9 +294,13 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 		return ip
 	}
 	probeDNSCache.Lock()
-	if ip, ok := probeDNSCache.m[host]; ok {
-		probeDNSCache.Unlock()
-		return ip
+	if e, ok := probeDNSCache.m[host]; ok {
+		if time.Since(e.at) < probeDNSSuccessTTL {
+			probeDNSCache.Unlock()
+			return e.ip
+		}
+		// Stale address: drop it so the lookup below re-resolves.
+		delete(probeDNSCache.m, host)
 	}
 	if t, ok := probeDNSCache.fail[host]; ok && time.Since(t) < probeDNSFailTTL {
 		probeDNSCache.Unlock()
@@ -251,7 +317,7 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 	}
 	ip := addrs[0].AsSlice()
 	probeDNSCache.Lock()
-	probeDNSCache.m[host] = ip
+	probeDNSCache.m[host] = probeDNSCachedIP{ip: ip, at: time.Now()}
 	delete(probeDNSCache.fail, host)
 	probeDNSCache.Unlock()
 	return ip
@@ -271,9 +337,6 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
 
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
-	// The minimum successes needed to clear the bar on the FULL intended
-	// sample. When even a perfect finish cannot reach it, the pass is over.
-	needed := int(math.Ceil(cfg.PassBar * float64(len(hosts))))
 	unresolved := 0
 
 	for _, host := range hosts {
@@ -296,12 +359,18 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 
 		// Viability abort — the pass ends only when the verdict is already
 		// decided: even if every remaining target succeeds, the bar is
-		// unreachable. This is the no-convict guarantee (finding H2): an
-		// aborted pass is never a biased sample, because the only way to
-		// abort is to be unable to qualify. A good proxy that fails a run
-		// of adjacent anti-bot targets walks the whole block and is scored
-		// on its full pass.
-		if res.OK+(len(hosts)-res.Total-unresolved) < needed {
+		// unreachable. Viability is measured against the denominator the
+		// score will actually use (attempted + still-untried), so hosts the
+		// box's resolver cannot answer — which leave the score denominator —
+		// can never abort a pass that could still qualify on its resolvable
+		// targets (review #8). This preserves the no-convict guarantee
+		// (finding H2): an aborted pass is never a biased sample, because
+		// the only way to abort is to be unable to qualify. A good proxy
+		// that fails a run of adjacent anti-bot targets walks the whole
+		// block and is scored on its full pass.
+		remaining := len(hosts) - res.Total - unresolved
+		best := float64(res.OK+remaining) / float64(res.Total+remaining)
+		if best < cfg.PassBar {
 			break
 		}
 	}
@@ -355,58 +424,24 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 		conn.SetDeadline(deadline)
 	}
 
-	// Greeting: offer no-auth, plus username/password when we have creds.
-	// RFC 1929 bounds each field at 255 bytes; longer credentials would
-	// truncate silently on the wire and make a working proxy look dead, so
-	// reject them outright.
-	if len(user) > 255 || len(password) > 255 {
+	// Greeting: offer no-auth, plus username/password when we have BOTH
+	// creds. socks5Greet validates the server's method selection (0x00, or
+	// 0x02 with complete credentials) and runs the RFC 1929 sub-negotiation;
+	// a server that picks a method we never offered is not an answer
+	// (review #3).
+	if !socks5Greet(conn, user, password) {
 		return false
-	}
-	greeting := []byte{0x05, 0x01, 0x00}
-	if user != "" || password != "" {
-		greeting = []byte{0x05, 0x02, 0x00, 0x02}
-	}
-	if _, err := conn.Write(greeting); err != nil {
-		return false
-	}
-	greetingResp := make([]byte, 2)
-	if _, err := io.ReadFull(conn, greetingResp); err != nil {
-		return false
-	}
-	if greetingResp[0] != 0x05 {
-		return false
-	}
-	if greetingResp[1] == 0xFF {
-		// "no acceptable method"
-		return false
-	}
-	if greetingResp[1] == 0x02 {
-		// RFC 1929 sub-negotiation.
-		auth := []byte{0x01, byte(len(user))}
-		auth = append(auth, []byte(user)...)
-		auth = append(auth, byte(len(password)))
-		auth = append(auth, []byte(password)...)
-		if _, err := conn.Write(auth); err != nil {
-			return false
-		}
-		authResp := make([]byte, 2)
-		if _, err := io.ReadFull(conn, authResp); err != nil {
-			return false
-		}
-		if authResp[0] != 0x01 || authResp[1] != 0x00 {
-			return false
-		}
 	}
 
 	connectFrame := socks5ConnectV4(ip, port)
 	if _, err := conn.Write(connectFrame); err != nil {
 		return false
 	}
-	connectResp := make([]byte, 10)
-	if _, err := io.ReadFull(conn, connectResp); err != nil {
-		return false
-	}
-	return len(connectResp) >= 2 && connectResp[0] == 0x05 && connectResp[1] == 0x00
+	// The CONNECT reply is parsed by ATYP (IPv4/domain/IPv6), not by a
+	// fixed length, so a short domain reply or an IPv6 BND.ADDR is handled
+	// correctly; only a fully-consumed reply with REP 0x00 counts (review
+	// #9/10).
+	return readSocks5ConnectReply(conn)
 }
 
 // proxyURLGrade is the admission decision for one URL-source line after the
@@ -549,6 +584,12 @@ func resetAdmissionStateCache() {
 	admissionStateCache.at = time.Time{}
 }
 
+// errProxyURLBelowBar is the sentinel for a URL-source proxy rejected by its
+// recorded stage-1 score. main.go's auth loop distinguishes it from a
+// reachability failure so a quality rejection is never counted as an auth
+// failure or give-up and can never trigger eviction (review #2).
+var errProxyURLBelowBar = errors.New("proxy below stage-1 bar")
+
 // cachedProxyURLState returns a parsed snapshot of proxy_url.json, reusing
 // the previous parse within admissionStateTTL. On a read error with a
 // previously-cached snapshot, the STALE snapshot is returned (with a
@@ -556,6 +597,12 @@ func resetAdmissionStateCache() {
 // not brick the entire URL pool when a valid — if slightly old — state
 // exists. Only when no state has ever been cached does the caller fail
 // closed (finding M2).
+//
+// The returned *ProxyURLState and its Cache map are SHARED across every
+// concurrent caller (all auth goroutines, fetch, reaper) and must be
+// treated as READ-ONLY. The TTL cache hands out the same pointer until it
+// expires; mutating the state or map from any caller is an unsynchronized
+// write against the other readers (review #17).
 func cachedProxyURLState() (*ProxyURLState, error) {
 	admissionStateCache.Lock()
 	defer admissionStateCache.Unlock()
@@ -591,12 +638,12 @@ func cachedProxyURLScore(address string) (float64, bool) {
 	return entry.Score, true
 }
 
-// urlProxyPassesAdmission is the auth-time gate for URL-sourced proxies: a
-// cheap live SOCKS5 check (existing behavior) AND the recorded stage-1
-// score, when one exists. A proxy whose last recorded score is below the
-// bar never spends an auth-rate-limiter slot, even if it happens to be
-// reachable right now. Ungraded entries (pre-upgrade caches, or addresses
-// added outside the URL pipeline) are gated only by the live probe.
+// urlProxyPassesAdmission is the auth-time gate for URL-sourced proxies: the
+// recorded stage-1 score, when one exists, AND a cheap live SOCKS5 check. A
+// proxy whose last recorded score is below the bar is rejected WITHOUT
+// spending a dial or up to proxyProbeTimeout per auth attempt (review #16);
+// entries at or above the bar, and ungraded entries (pre-upgrade caches, or
+// addresses added outside the URL pipeline), are gated by the live probe.
 //
 // The kill switch (enabled=false) restores pre-stage-1 behavior entirely:
 // the live probe is the only gate, exactly as before this feature shipped.
@@ -605,27 +652,49 @@ func cachedProxyURLScore(address string) (float64, bool) {
 // admitting everything: a safety gate that quietly does nothing is worse
 // than an absent one (finding M2).
 func urlProxyPassesAdmission(ctx context.Context, address string) bool {
-	if !probeProxySocks5(ctx, address, proxyProbeTimeout) {
-		return false
-	}
 	cfg := resolveProxyTableProbeConfig()
-	if !cfg.Enabled {
-		// Kill switch off: stage-1 gating is disabled, live probe only.
-		return true
+	var user, password string
+	if cfg.Enabled {
+		state, err := cachedProxyURLState()
+		if err != nil {
+			tlog("[proxy][url] warning: could not read proxy_url.json for admission gate (%v); DENYING %s\n", err, address)
+			return false
+		}
+		entry, ok := state.Cache[address]
+		if ok && entry.Graded {
+			// A recorded verdict below the bar is final until the next
+			// re-grade: reject before dialing. (An entry scored 0.0 has
+			// Graded=true and IS enforced — a zero score is a verdict, not
+			// an absence of one.)
+			if entry.Score < cfg.PassBar {
+				return false
+			}
+		}
+		if ok {
+			user, password = entry.User, entry.Password
+		}
+		// Ungraded entries (no recorded verdict) fall through to the live
+		// probe — nothing to enforce.
+	} else {
+		// Kill switch off: pre-stage-1 behavior. Best-effort credential
+		// lookup so credentialed entries are live-probed on the same terms
+		// stage 1 grades them (finding H3); a cache read failure simply
+		// means no credentials, exactly as before the feature shipped.
+		if state, err := cachedProxyURLState(); err == nil {
+			if entry, ok := state.Cache[address]; ok {
+				user, password = entry.User, entry.Password
+			}
+		}
 	}
-	state, err := cachedProxyURLState()
-	if err != nil {
-		tlog("[proxy][url] warning: could not read proxy_url.json for admission gate (%v); DENYING %s\n", err, address)
-		return false
+	// The live SOCKS5 check is the final gate. Credentials are passed
+	// through so a credentialed proxy (which stage 1 graded WITH creds,
+	// finding H3) is not convicted by a credential-less handshake — under
+	// socks5Greet a server selecting 0x02 without creds fails immediately
+	// (Opus review finding 4).
+	if user == "" && password == "" {
+		return probeProxySocks5(ctx, address, proxyProbeTimeout)
 	}
-	entry, ok := state.Cache[address]
-	if !ok || !entry.Graded {
-		// No recorded stage-1 grade — nothing to enforce. The live probe is
-		// the only gate. (An entry scored 0.0 has Graded=true and IS
-		// enforced — a zero score is a verdict, not an absence of one.)
-		return true
-	}
-	return entry.Score >= cfg.PassBar
+	return probeProxy(ctx, address, user, password, "", 0) != probeDead
 }
 
 // scoreTierLabel returns a human label for a stage-1 score. The bars are

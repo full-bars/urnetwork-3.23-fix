@@ -56,6 +56,10 @@ func listenSocks5Smart(t *testing.T, okIPs map[string]bool) (addr string, cleanu
 // TestProbeAndGradeProxyURLLines_QualifiedGetsGrade: a proxy that answers
 // every CONNECT with success is qualified and carries its score/failed.
 func TestProbeAndGradeProxyURLLines_QualifiedGetsGrade(t *testing.T) {
+	apiIP, _ := resolveAPIProbeAddr("api.bringyour.com", 443)
+	if apiIP == nil {
+		t.Skip("could not resolve api.bringyour.com; DNS required for this test")
+	}
 	addr, cleanup := listenSocks5ConnectOnce(t, 0x00)
 	defer cleanup()
 
@@ -163,11 +167,12 @@ func TestResolveProxyTableProbeConfig_OverrideFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	good := map[string]any{"sample_width": 20, "timeout_ms": 2000, "pass_bar": 0.5, "preferred_bar": 0.85, "fail_fast": 6}
+	good := map[string]any{"sample_width": 20, "timeout_ms": 2000, "pass_bar": 0.5, "preferred_bar": 0.85}
 	b, _ := json.Marshal(good)
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)
 	}
+	resetProbeConfigCache()
 	cfg := resolveProxyTableProbeConfig()
 	if cfg.SampleWidth != 20 || cfg.TargetTimeout != 2*time.Second || cfg.PassBar != 0.5 || cfg.PreferredBar != 0.85 {
 		t.Fatalf("override not applied: %+v", cfg)
@@ -176,6 +181,7 @@ func TestResolveProxyTableProbeConfig_OverrideFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	resetProbeConfigCache()
 	cfg = resolveProxyTableProbeConfig()
 	def := defaultProxyTableProbeConfig()
 	if cfg.SampleWidth != def.SampleWidth || cfg.PassBar != def.PassBar {
@@ -188,6 +194,11 @@ func TestResolveProxyTableProbeConfig_OverrideFile(t *testing.T) {
 // proxies with ProbeOK=true.
 func TestFetchAndMergeProxyURLs_GradedPersistence(t *testing.T) {
 	withTempHome(t)
+
+	apiIP, _ := resolveAPIProbeAddr("api.bringyour.com", 443)
+	if apiIP == nil {
+		t.Skip("could not resolve api.bringyour.com; DNS required for this test")
+	}
 
 	// One proxy that passes everything (qualified), one dead (dropped).
 	goodAddr, cleanup := listenSocks5ConnectOnce(t, 0x00)
@@ -203,9 +214,10 @@ func TestFetchAndMergeProxyURLs_GradedPersistence(t *testing.T) {
 	home := os.Getenv("HOME")
 	probePath := filepath.Join(home, ".urnetwork", "proxy_probe.json")
 	os.MkdirAll(filepath.Dir(probePath), 0700)
-	b, _ := json.Marshal(map[string]any{"sample_width": 4, "timeout_ms": 500, "fail_fast": 2})
+	b, _ := json.Marshal(map[string]any{"sample_width": 4, "timeout_ms": 500})
 	os.WriteFile(probePath, b, 0600)
 	defer os.Remove(probePath)
+	resetProbeConfigCache()
 
 	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 100, "api.bringyour.com", 443)
 
@@ -249,9 +261,10 @@ func TestFetchAndMergeProxyURLs_AllBelowBarNothingAdmitted(t *testing.T) {
 	home := os.Getenv("HOME")
 	probePath := filepath.Join(home, ".urnetwork", "proxy_probe.json")
 	os.MkdirAll(filepath.Dir(probePath), 0700)
-	b, _ := json.Marshal(map[string]any{"sample_width": 4, "timeout_ms": 500, "fail_fast": 2})
+	b, _ := json.Marshal(map[string]any{"sample_width": 4, "timeout_ms": 500})
 	os.WriteFile(probePath, b, 0600)
 	defer os.Remove(probePath)
+	resetProbeConfigCache()
 
 	fetchAndMergeProxyURLs(context.Background(), []string{srv.URL}, 100, "api.bringyour.com", 443)
 
