@@ -102,3 +102,32 @@ func collectRankedCandidates(fetched [][]string, grades map[string]proxyURLGrade
 	})
 	return cands
 }
+
+// cachedProxyAddresses returns the set of addresses already in the cache.
+// The fetch cycle probes ONLY addresses not in this set — a cached proxy
+// already has a grade; re-probing it on every cycle (or even hourly) is
+// redundant because most don't change. Quality refresh of cached entries is
+// the reaper's job (its stale sweep re-probes once-good entries after
+// 1-3h). New addresses always get the full table probe at admission.
+func cachedProxyAddresses(state *ProxyURLState) map[string]bool {
+	addrs := map[string]bool{}
+	if state == nil {
+		return addrs
+	}
+	for addr := range state.Cache {
+		addrs[addr] = true
+	}
+	return addrs
+}
+
+// mustReadProxyURLState reads proxy_url.json without failing the caller: on
+// any error it returns an empty state (the fetch cycle then treats every
+// address as new and probes it — safe, just slightly more probing than
+// necessary for one cycle).
+func mustReadProxyURLState() *ProxyURLState {
+	state, err := readProxyURLState()
+	if err != nil {
+		return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
+	}
+	return state
+}
