@@ -2487,16 +2487,39 @@ func provide(opts docopt.Opts) {
 				// File/internal lists are operator-curated (paid) endpoints that should
 				// always attempt auth; the probe exists to cheaply skip dead entries in
 				// large free URL lists before spending a shared auth-rate-limiter slot.
-				if proxySettings != nil && isURLSourced && !probeProxySocks5(proxyCtx, proxySettings.Address, proxyProbeTimeout) {
-					// The proxy itself isn't even speaking SOCKS5 right now — either
-					// the port is dead, or something is listening but isn't a real
-					// SOCKS5 endpoint (open port with a broken/wrong service, a
-					// captive portal, etc). Either way that's a dead local hop, not a
-					// signal about the API's health. Skip the auth attempt (and the
+				// URL-sourced proxies additionally carry a recorded stage-1 table score;
+				// a below-bar score blocks auth even when the proxy is momentarily
+				// reachable, so a quality-rejected entry cannot spend auth slots.
+				if proxySettings != nil && isURLSourced && !urlProxyPassesAdmission(proxyCtx, proxySettings.Address) {
+					// Either the proxy isn't speaking SOCKS5 right now (dead port,
+					// broken service, captive portal — a dead local hop, not a signal
+					// about the API's health), or its recorded stage-1 score is below
+					// the quality bar. Both mean: skip the auth attempt (and the
 					// shared rate limiter) entirely rather than spending a slot and
 					// reporting a timeout that would falsely look like the API is
 					// overloaded and throttle every other proxy's auth rate for no
 					// reason.
+					cfg := resolveProxyTableProbeConfig()
+					if score, ok := cachedProxyURLScore(proxySettings.Address); ok && cfg.Enabled && score < cfg.PassBar {
+						// QUALITY rejection (review #2): the recorded score is below
+						// the bar AND the kill switch is ON. This is a filter, not a
+						// failure of auth or reachability — it must not count in
+						// authFailures, RecordFailure, or RecordGiveUp, and must never
+						// trigger evictProxyURLAddress (a below-bar proxy is alive,
+						// just not good enough; blacklisting it for 24h is wrong).
+						// Exit the retry loop with a distinguishable error so the
+						// give-up path below skips the accounting; the next fetch
+						// cycle re-grades the entry (and the merge drops it from the
+						// desired set) and a later score above the bar re-admits it.
+						//
+						// The cfg.Enabled guard is load-bearing: with the kill switch
+						// OFF the gate never rejects on score (urlProxyPassesAdmission
+						// skips it), so a gate failure here means the proxy is DEAD —
+						// labeling it a quality rejection would suppress the give-up/
+						// eviction/backoff machinery and the address would churn on
+						// every reload forever (Opus review finding 1).
+						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, proxySettings.Address, score)
+					}
 					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
@@ -2613,35 +2636,46 @@ func provide(opts docopt.Opts) {
 					delete(proxyCancelMap, proxySettings.Address)
 					proxyCancelMu.Unlock()
 
-					giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
-					if giveUpCount >= proxyURLGiveUpEvictAfterCycles {
-						if evictErr := evictProxyURLAddress(proxySettings.Address); evictErr != nil {
-							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) could not evict after %d give-ups: %v\n",
-								proxySettings.Index, proxySettings.Address, giveUpCount, evictErr)
-							delay := proxyURLGiveUpRetryDelay(giveUpCount)
-							globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
-						} else {
-							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
-								proxySettings.Index, proxySettings.Address, err, giveUpCount)
-						}
+					if errors.Is(err, errProxyURLBelowBar) {
+						// Quality rejection (review #2): the proxy was filtered
+						// by its recorded stage-1 score, not by auth or
+						// reachability failure. No give-up accounting, no
+						// eviction, no backoff — the next fetch cycle re-grades
+						// the entry and the merge re-admits it if it clears the
+						// bar.
+						tlog("[proxy][init] proxy[%d] (%s) rejected by stage-1 quality gate: %v. Not counted as a failure; re-graded next fetch cycle.\n",
+							proxySettings.Index, proxySettings.Address, err)
 					} else {
-						delay := proxyURLGiveUpRetryDelay(giveUpCount)
-						// Enforce the backoff at launch time, not just by
-						// scheduling a one-shot reload: record the earliest
-						// time this address may be relaunched so the reload
-						// path skips it until the window elapses. Otherwise any
-						// other reload (another proxy's give-up, a URL refresh)
-						// would relaunch it immediately and defeat the backoff.
-						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
-						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
-							time.AfterFunc(delay, func() {
-								if err := writeReloadTrigger(reloadPath); err != nil {
-									tlog("[proxy] warn: reload trigger write failed: %v\n", err)
-								}
-							})
+						giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
+						if giveUpCount >= proxyURLGiveUpEvictAfterCycles {
+							if evictErr := evictProxyURLAddress(proxySettings.Address); evictErr != nil {
+								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) could not evict after %d give-ups: %v\n",
+									proxySettings.Index, proxySettings.Address, giveUpCount, evictErr)
+								delay := proxyURLGiveUpRetryDelay(giveUpCount)
+								globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
+							} else {
+								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
+									proxySettings.Index, proxySettings.Address, err, giveUpCount)
+							}
+						} else {
+							delay := proxyURLGiveUpRetryDelay(giveUpCount)
+							// Enforce the backoff at launch time, not just by
+							// scheduling a one-shot reload: record the earliest
+							// time this address may be relaunched so the reload
+							// path skips it until the window elapses. Otherwise any
+							// other reload (another proxy's give-up, a URL refresh)
+							// would relaunch it immediately and defeat the backoff.
+							globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
+							if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
+								time.AfterFunc(delay, func() {
+									if err := writeReloadTrigger(reloadPath); err != nil {
+										tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+									}
+								})
+							}
+							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
+								proxySettings.Index, proxySettings.Address, err, giveUpCount, proxyURLGiveUpEvictAfterCycles, formatDuration(delay))
 						}
-						fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
-							proxySettings.Index, proxySettings.Address, err, giveUpCount, proxyURLGiveUpEvictAfterCycles, formatDuration(delay))
 					}
 				} else {
 					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline; run 'urnet-tools proxy refresh' after fixing the underlying issue)\n",
