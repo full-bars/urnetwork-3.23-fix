@@ -164,17 +164,14 @@ func TestInstallBinaryAtomic(t *testing.T) {
 }
 
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
-// updates never collide (review finding M2). Two updates in the same second
-// must produce distinct backup names — a literal-assertion version of this
-// test could never fail (free-review minor), so generate real names.
+// updates never collide (review finding M2). Calls the PRODUCTION backupName
+// helper — a local copy would pass even if the real format changed
+// (coderabbit trivial finding).
 func TestBackupNameTimestamped(t *testing.T) {
-	backupName := func(binary string, at time.Time) string {
-		return binary + ".bak-" + at.UTC().Format("20060102T150405Z")
-	}
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
 	b := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 1, 0, time.UTC))
 	if a == b {
-		t.Errorf("backup names must differ within the same second, got %q == %q", a, b)
+		t.Errorf("backup names must differ across seconds, got %q == %q", a, b)
 	}
 	if !strings.Contains(a, "bak-20") {
 		t.Errorf("backup name should carry a timestamp, got %s", a)

@@ -60,20 +60,29 @@ func Run(args []string) error {
 		return cmdProxy(rest2, force, dryRun)
 	case "summary":
 		rest2, herr := parseDelegationArgs(rest)
-		if herr != nil {
+		if herr == errHelpShown {
 			return nil // help printed, never executes
+		}
+		if herr != nil {
+			return herr
 		}
 		return cmdSimpleDelegation("summary", rest2)
 	case "report":
 		rest2, herr := parseDelegationArgs(rest)
-		if herr != nil {
+		if herr == errHelpShown {
 			return nil // help printed, never executes
+		}
+		if herr != nil {
+			return herr
 		}
 		return cmdSimpleDelegation("report", rest2)
 	case "hot-restart", "hotrestart":
 		rest2, herr := parseDelegationArgs(rest)
-		if herr != nil {
+		if herr == errHelpShown {
 			return nil // help printed, never executes
+		}
+		if herr != nil {
+			return herr
 		}
 		return cmdSimpleDelegation("hot-restart", rest2)
 	case "start":
