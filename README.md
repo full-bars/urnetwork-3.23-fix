@@ -56,17 +56,15 @@ Choose your platform:
 After installation, authenticate and start providing:
 
 ```bash
-# Linux / macOS
+# Linux / macOS / Windows (PowerShell) — one Go binary on every platform
 urnetwork auth
 urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh
 urnet-tools auto on
-
-# Windows (PowerShell)
-urnet-tools.ps1 auth
-urnet-tools.ps1 proxy add ~/proxies.txt
-urnet-tools.ps1 proxy refresh
 ```
+
+> [!NOTE]
+> Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
 
 ### 🐋 Docker (Production-Ready)
 
