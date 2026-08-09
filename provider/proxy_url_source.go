@@ -526,7 +526,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}
 		}
-		tlog("[proxy][url] admitted by tier: %s (cap %d, total cached %d)\n",
+		importantLogf("[proxy][url] admitted by tier: %s (cap %d, total cached %d)\n",
 			strings.Join(parts, " "), maxTotal, len(state.Cache))
 	}
 
@@ -578,7 +578,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}
 		}
-		tlog("[proxy][url] probe grade breakdown: %s\n", strings.Join(parts, " "))
+		importantLogf("[proxy][url] probe grade breakdown: %s\n", strings.Join(parts, " "))
 	}
 
 	if totalAdded == 0 && !dirty {
@@ -711,9 +711,12 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			lastProbe:  c.entry.LastProbe,
 		}
 		// Quality refresh on the stale re-probe of once-good entries: the
-		// table probe is meaningful only when stage 0 still says the proxy
-		// is alive and speaking SOCKS5. Credentials are carried through so
-		// credentialed entries are re-graded fairly.
+		// table probe runs on the same 1-3h stale cadence as liveness (the
+		// reaperStaleCalm/Hot window). Upstream re-probes idle exits every
+		// 10 minutes, so a 1-3h grade refresh is comfortably conservative —
+		// a degraded proxy gets re-ranked a few times a day, never hammered.
+		// Credentials are carried through so credentialed entries are
+		// re-graded fairly.
 		if c.wasProbeOK && res == probeAPIReachable {
 			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, probeCfg)
 		}
@@ -761,7 +764,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 						entry.Score = r.table.Score
 						entry.Graded = true
 						entry.Failed = capFailedList(r.table.Failed)
-						tlog("[proxy][url] reaper: refreshed grade for %s -> %.2f (%d/%d)\n",
+						importantLogf("[proxy][url] reaper: refreshed grade for %s -> %.2f (%d/%d)\n",
 							r.addr, r.table.Score, r.table.OK, r.table.SampleWidth)
 					}
 					state.Cache[r.addr] = entry
