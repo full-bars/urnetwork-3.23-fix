@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+**A-F letter-grade proxy quality tiers** (#343): Every URL-source proxy that survives the stage-1 gate is assigned a letter grade (A >= 0.9, B >= 0.8, C >= 0.7, D >= 0.6, F < 0.6). Best-overall cache eviction keeps the highest-tier proxies when the cache is full; all sources' candidates pool into a single A-to-F admission funnel (best-first up to the cap); the fetch cycle probes only new addresses while the reaper's stale sweep refreshes cached grades; a per-cycle A-F grade breakdown is logged. Cross-source duplicates are probed once per cycle; the eviction tie-break uses the grade score. Seven review passes (two CodeRabbit rounds plus independent passes) closed the fetch-logging phantom lines, cross-source duplicate probing, reaper-refresh herd, and eviction-tie-break gaps. Needs a fleet deploy.
+
+**Read-only grading for paid/file-list proxies** (#344): Proxies from `--proxy_file` / the internal config bypass the URL admission gate by construction and were previously invisible to the quality system. A background sweep now grades every non-URL proxy the box serves with the same stage-1 table probe on the same 1-3h stale cadence, persisting Score/Graded/Failed/LastGraded into `proxy.state` (omitempty — same field shape as the URL store). Read-only by construction: only the grade fields are written; admission, eviction, give-up, and cleanup never read them, so a graded F keeps serving exactly as it did before. `proxy_probe.json enabled=false` skips the sweep entirely. Needs a fleet deploy.
+
+### Changed
+
+**Provider-aware `urnet-tools` rewritten in Go** (#345): The fleet ops tool is now a single Go codebase (`urnet-tools` for process/systemd, `urnet-docker` for containers) instead of the ~4000-line POSIX shell script plus a separate PowerShell variant. Discovers actual running providers (process scan + systemd units), identifies each by its JWT network identity, refuses ambiguous targets with an inventory table, and gates destructive ops behind a confirm prompt (`-f` for machines, never for provider selection). All 25 legacy subcommands dispatch with verified parity. Update is interactive-first with mandatory SHA-256 digest verification; the staging dir is a private per-update `MkdirTemp`; the hub install sanity-checks ELF magic instead of executing the downloaded binary; `optimize` is platform-aware (Linux ephemeral-port pool + TIME_WAIT sysctls, Windows netsh/reg equivalents). **Breaking for multi-provider boxes**: the tool now refuses to guess — scripts must specify `--unit`/`--user`/`--network`/`--network-id`/`--state-dir` when the box is ambiguous. Needs a fleet deploy.
+
 ## [v3.23.0-fix.26.8] — 2026-08-09
 
 ### Added

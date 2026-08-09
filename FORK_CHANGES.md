@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.26.8
+**Current Version**: v3.23.0-fix.27.0
 
 ---
 
@@ -2378,11 +2378,11 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ---
 
-## 105. A-F Proxy Grade Tiers, Admission Funnel, and Best-Overall Eviction (in development, `feat/proxy-quality-tiers`)
+## 105. A-F Proxy Grade Tiers, Admission Funnel, and Best-Overall Eviction (PR #343)
 
 **Purpose**: The stage-1 scores from #342 (entry 104) are a single pass/fail bar. They don't let the fleet preferentially keep its best proxies when the cache is full, or compare quality across sources when admitting new ones — a 0.61-scoring proxy and a 0.98-scoring proxy are treated identically once both clear `pass_bar`.
 
-**Files Modified**: `proxy_probe.go`, `proxy_url.go`, `proxy_reload.go`, `provider/main.go` (in progress; exact file list may change before merge)
+**Files Modified**: `proxy_probe.go`, `proxy_url.go`, `proxy_reload.go`, `provider/main.go`
 
 **Change**:
 - Letter-grade tiers layered on top of the existing stage-1 scores: A `>= 0.9`, B `>= 0.8`, C `>= 0.7`, D `>= 0.6`, F `< 0.6`.
@@ -2390,10 +2390,50 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Admission funnel: candidates from all sources are pooled and added best-first up to the cap, instead of admitting per-source in whatever order sources happen to be processed.
 - Per-cycle A-F probe grade breakdown logged, and probe-grade lines routed to both the important and disk logs.
 - Fetch cycles probe only newly-seen addresses; the reaper's existing stale sweep is reused to refresh grades on already-cached proxies instead of re-probing everything every cycle.
+- Cross-source duplicates are table-probed once per cycle (a live `probed` skip set), and the eviction tie-break uses the grade score.
 
-**Effect**: Not yet shipped — no behavioral change until this merges. When it lands, it changes which proxies survive cache pressure (best-overall rather than per-source) and adds new log lines (`admitted by tier`, `probe grade breakdown`, `cap eviction`, `reaper: refreshed grade`) that downstream log tooling and docs will need to account for.
+**Effect**: Shipped. Changes which proxies survive cache pressure (best-overall rather than per-source) and adds new log lines (`admitted by tier`, `probe grade breakdown`, `cap eviction`, `reaper: refreshed grade`) that downstream log tooling and docs need to account for.
 
 **How to Identify in New Upstream**: N/A — this is fork-native logic built on top of entry 104's stage-1 gate, which itself has no direct upstream equivalent yet. If upstream adds its own quality-tiering on top of `ip_remote_multi_client_probe.go`, compare tier thresholds and eviction policy before reconciling.
 
-**Status**: 🚧 In development on `feat/proxy-quality-tiers` (6 commits, rebased, awaiting review). Not merged; not part of v3.23.0-fix.26.8. Related: PR #343 (planned, not started) would extend read-only grading to paid/file-list proxies on a slow cadence without evicting them.
+**Status**: ✅ Shipped in v3.23.0-fix.27.0 (merged 2026-08-09).
+
+## 106. Read-Only Grading for Paid/File-List Proxies (PR #344)
+
+**Purpose**: Proxies from `--proxy_file` / the internal config bypass the URL admission gate by construction, so the quality system (stage-1 scores, A-F tiers) had no opinion on them. Operators running paid lists had no signal on what their paid lists actually deliver.
+
+**Files Modified**: `provider/proxy_state.go`, `provider/proxy_grade_paid.go` (new), `provider/main.go`, `provider/proxy_grade_paid_test.go` (new)
+
+**Change**:
+- Background sweep (`runPaidProxyGrader`) rides the reaper ticker and, on the same 1-3h pressure-scaled stale cadence, table-probes every tracked non-URL proxy the box serves (creds carried through RFC 1929).
+- Grade persists into `proxy.state` ProxyEntry: Score/Graded/Failed/LastGraded (omitempty — same field shape as the URL store's cache entries).
+- Read-only by construction: only the grade fields are written; admission, eviction, give-up, and cleanup never read them, so a graded F keeps serving exactly as it did before. Proxies without a tracker entry are skipped at collect AND apply (no ghost entries).
+- Kill switch: `proxy_probe.json enabled=false` is a full skip, mirroring the fetch/reaper invariant.
+
+**Effect**: Shipped. Every proxy the box serves now carries an A-F grade, not just URL-sourced ones. `proxy.state` grows the four grade fields per graded entry.
+
+**How to Identify in New Upstream**: N/A — fork-native. If upstream adds non-URL grading, compare cadence and the read-only guarantee.
+
+**Status**: ✅ Shipped in v3.23.0-fix.27.0 (merged 2026-08-09).
+
+## 107. Provider-Aware `urnet-tools` Rewrite in Go (PR #345)
+
+**Purpose**: The legacy `urnet-tools` (POSIX shell `Provider_Install_Linux.sh` ~4000 lines, plus a separate `urnet-tools.ps1` for Windows) resolved its target from a hardcoded path with zero awareness that other providers exist on the box — the root cause of the 08-08 pool-wipe and the 08-09 half-update. Two parallel implementations that drift (proven: box copies differ from repo copy).
+
+**Files Modified**: `cmd/urnet-tools/main.go` (new), `cmd/urnet-docker/main.go` (new), `internal/urnettools/*` (new: cli, target, discover, update, proxy, legacy_cmds, lifecycle_cmds, release, docker, select_multi, provider, io_util, docker_actions + tests)
+
+**Change**:
+- Single Go codebase: `urnet-tools` (process/systemd variant) + `urnet-docker` (container variant). One source, cross-compiled — kills the shell↔PowerShell drift.
+- Provider discovery, not path guessing: process scan + systemd units; identity is JWT-derived (network_name/network_id); paths only locate state.
+- Targeting: `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. Multi-provider + no target = REFUSAL with inventory table. Conflicting selectors error. `-f` only skips confirm prompts, never picks providers.
+- `--help` always prints help, never executes (the legacy `--help`-executes-clear bug class dies).
+- `update`: interactive-first, latest-release fetch, sha256 digest MANDATORY (resolved from release API on `--tag`), private per-update `MkdirTemp` staging dir, atomic binary swap (dst.new + rename), restarts THE unit that is actually running (user vs system), timestamped backups, batch continues on per-provider failure.
+- `optimize` platform-aware: Linux adds ephemeral-port pool + TIME_WAIT sysctls; Windows netsh dynamicport + TcpTimedWaitDelay.
+- All 25 legacy subcommands dispatch (verified parity).
+
+**Effect**: Shipped. The tool refuses to operate on an ambiguous target — operators on multi-provider boxes must specify a target. Migration is drop-in at the same path; `.ps1` and docker shell variant retired in Phase 2.
+
+**How to Identify in New Upstream**: N/A — fork-native tooling. If upstream ships its own Go ops tool, compare targeting/discovery semantics before reconciling.
+
+**Status**: ✅ Phase 1 shipped in v3.23.0-fix.27.0 (PR #345, merged 2026-08-09). Phase 2 (retire `.ps1` + docker shell variant) and Phase 3 (installer in Go) tracked in URN-TOOLS-GO-DESIGN.md §7.
 
