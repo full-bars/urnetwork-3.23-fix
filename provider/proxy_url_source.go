@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -368,16 +369,15 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// we don't hold it across HTTP requests. Only the read-modify-write of
 	// proxy_url.json below needs to be serialized against removeDeadProxies.
 	fetched := make([][]string, len(urls))
-	// qualifiedBySource[i] is the address-keyed set of stage-1-qualified
-	// results for source i, built during the fetch/grading loop and consumed
-	// by the merge loop below (review round 2).
-	qualifiedBySource := make([]map[string]bool, len(urls))
-	apiOKCounts := make([]int, len(urls))
 	// grades accumulates the stage-1 result per address so the merge loop
 	// can persist score/failed alongside ProbeOK.
 	grades := make(map[string]proxyURLGrade)
 	// tierCounts breaks down this cycle's grades for the per-source log.
 	tierCounts := map[string]int{}
+	// countedGrade dedupes the breakdown by ADDRESS across sources: the same
+	// address listed in two sources (bare + credentialed, or duplicated)
+	// must count once, matching admittedByTier (coderabbit review).
+	countedGrade := map[string]bool{}
 	probeCfg := resolveProxyTableProbeConfig()
 	tlog("[proxy][url] stage-1 table probe config: %s\n", describeProxyTableProbeConfig(probeCfg))
 	// Advance the rotation once per FETCH CYCLE (not once per source URL):
@@ -385,6 +385,24 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// must be graded against the same block, and consecutive cycles must
 	// walk the table one block at a time (finding M1).
 	tableProbePassCounter.Add(1)
+
+	// Probe ONLY addresses not already cached. A cached proxy already has a
+	// grade; re-probing it every fetch cycle is redundant because most don't
+	// change, and at aggressive refresh (5-15m) it turns the probe itself
+	// into a suspicious traffic pattern through the same egress IPs. Quality
+	// refresh of cached entries is the reaper's job (its stale sweep
+	// re-probes once-good entries and now refreshes the stage-1 grade). The
+	// cache snapshot is read once up front; the merge re-reads it under the
+	// lock later, so any race just means a proxy gets probed once more.
+	cached := cachedProxyAddresses(mustReadProxyURLState())
+	// probed is LIVE across sources: an address listed in source A AND
+	// source B must be table-probed ONCE per cycle, not once per source —
+	// the same address circulating across free lists is the norm, and
+	// re-probing it per source defeats the new-only filter's whole purpose
+	// (finding MEDIUM #2). The first source to list an address probes it;
+	// every later source skips it, and its grade comes from that one pass.
+	probed := map[string]bool{}
+	skippedCached := 0
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
@@ -397,15 +415,23 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// destinations (stage 1), before anything ever enters the cache or
 		// consumes an auth-rate-limiter slot. Only stage-1-qualified proxies
 		// (score >= pass bar) are admitted.
-		lineGrades := probeAndGradeProxyURLLines(ctx, lines, apiHost, apiPort, probeCfg)
+		var probeLines []string
+		skippedThisSource := 0
+		for _, line := range lines {
+			addr, _, _, ok := parseProxyURLLine(line)
+			if !ok {
+				continue
+			}
+			if cached[addr] || probed[addr] {
+				skippedCached++
+				skippedThisSource++
+				continue
+			}
+			probed[addr] = true
+			probeLines = append(probeLines, line)
+		}
+		lineGrades := probeAndGradeProxyURLLines(ctx, probeLines, apiHost, apiPort, probeCfg)
 		var qualified, belowBar, socks5Only []string
-		// qualifiedAddrs is the address-keyed set of stage-1-qualified
-		// results for this source. It decides ProbeOK at insert and cache
-		// update time instead of the raw line index / apiOKCount boundary,
-		// so skipped cached, duplicate, blacklisted, excluded, or invalid
-		// lines can never shift qualification status onto another address
-		// (review round 2).
-		qualifiedAddrs := map[string]bool{}
 		for _, line := range lines {
 			addr, _, _, ok := parseProxyURLLine(line)
 			if !ok {
@@ -416,30 +442,38 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 				continue // probeDead: dropped entirely
 			}
 			grades[addr] = g
+			countThisAddr := !countedGrade[addr]
+			countedGrade[addr] = true
 			switch {
 			case g.Qualified:
 				qualified = append(qualified, line)
-				qualifiedAddrs[addr] = true
-				if probeCfg.Enabled {
-					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+				if g.Decidable {
+					if countThisAddr {
+						tierCounts[proxyGradeTier(g.Score)]++
+					}
 				} else {
-					// Kill switch off: stage 1 never ran, so there is no
-					// score to label. Counting these as "below-bar" would
-					// claim the whole pool is failing while every one of
-					// them was admitted (review #11).
-					tierCounts["ungraded"]++
+					// Kill-switch-disabled or otherwise ungraded but admitted.
+					if countThisAddr {
+						tierCounts["ungraded"]++
+					}
 				}
 			case g.Socks5Only:
 				socks5Only = append(socks5Only, line)
-				tierCounts["socks5-only"]++
+				if countThisAddr {
+					tierCounts["socks5-only"]++
+				}
 			default:
 				belowBar = append(belowBar, line)
 				if g.Decidable {
-					tierCounts[scoreTierLabel(g.Score, probeCfg)]++
+					if countThisAddr {
+						tierCounts[proxyGradeTier(g.Score)]++
+					}
 				} else {
 					// No verdict this cycle (cancelled/DNS-down): the entry
 					// keeps its prior grade and is simply not admitted now.
-					tierCounts["undecidable"]++
+					if countThisAddr {
+						tierCounts["undecidable"]++
+					}
 				}
 			}
 		}
@@ -449,15 +483,27 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// auth-time gate re-checks the recorded score, so a below-bar entry
 		// that the reaper later revives still cannot spend auth slots.
 		fetched[i] = append(append(qualified, belowBar...), socks5Only...)
-		apiOKCounts[i] = len(qualified)
-		qualifiedBySource[i] = qualifiedAddrs
-		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(lines) > 0 {
-			// The fetch itself succeeded but every line was unparseable or
-			// dead — distinct from the fetch-failed case above (N3).
-			tlog("[proxy][url] %s: fetched %d lines, all unparseable or dead\n", url, len(lines))
+		// N3 must measure against the NEW lines actually probed, not the
+		// fetched count: in the steady state every address is cached, so
+		// all three buckets are empty on the healthiest possible cycle, and
+		// gating on len(lines) fires a false "all unparseable or dead" on
+		// every source (finding MEDIUM #1).
+		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(probeLines) > 0 {
+			// The fetch itself succeeded but every NEW line was unparseable
+			// or dead — distinct from the fetch-failed case above (N3).
+			tlog("[proxy][url] %s: fetched %d lines, %d new, all unparseable or dead\n", url, len(lines), len(probeLines))
 		}
-		tlog("[proxy][url] probed %s: %d/%d qualified, %d below-bar, %d socks5-only\n",
-			url, len(qualified), len(lines), len(belowBar), len(socks5Only))
+		tlog("[proxy][url] probed %s: %d/%d new qualified (%d cached, skipped), %d below-bar, %d socks5-only\n",
+			url, len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
+	}
+	if skippedCached > 0 {
+		// Cached-skip is the main efficiency change of this PR; the
+		// operator should see how many addresses were skipped (coderabbit
+		// review) — grade refresh is the reaper's job. One AGGREGATE line
+		// after the loop: the counter is cumulative across sources, so
+		// logging it inside the loop would read as per-source figures
+		// (finding LOW).
+		tlog("[proxy][url] skipped %d already-cached addresses this cycle (grade refresh is the reaper's job)\n", skippedCached)
 	}
 
 	release, err := acquireProxyLock()
@@ -475,64 +521,126 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 
 	totalAdded := 0
 	dirty := false
-	for i, url := range urls {
-		if fetched[i] == nil {
+
+	// Best-overall admission: pool every candidate across ALL sources, rank
+	// by tier (A first), and merge in that order. The cache fills with the
+	// highest-tier proxies first; lower tiers fill only remaining slots.
+	// This is the A→B→C→D funnel — we add the best, not the first.
+	rankAddr := func(addr string) int {
+		if g, ok := grades[addr]; ok {
+			return rankFromGrade(g)
+		}
+		return -1
+	}
+	gradeFor := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades[addr]
+		return g, ok
+	}
+	cands := collectRankedCandidates(fetched, grades)
+	admittedByTier := map[string]int{}
+	var admittedLines []string
+	for _, c := range cands {
+		admittedLines = append(admittedLines, c.line)
+	}
+	// apiOKCount is 0 because gradeFor decides ProbeOK for every candidate
+	// (each admitted line has a grade): the pool is ordered by tier RANK,
+	// not by Qualified, so the positional fallback (ProbeOK = i < apiOKCount)
+	// would be wrong if a candidate ever reached the merge without a grade —
+	// a kill-switch-disabled admission (Qualified=true, Decidable=false)
+	// ranks last while a decidable F ranks first (coderabbit review).
+	added := mergeProxyURLEntries(state, admittedLines, 0, maxTotal, rankAddr, gradeFor)
+	totalAdded += added
+	// admittedByTier counts what actually entered the cache this cycle, per
+	// letter grade. The same address can appear in multiple sources' fetched
+	// lists (bare + credentialed, or listed twice), so count each address
+	// ONCE — the merge itself dedupes (existing addresses are skipped), and
+	// the counters must match the cache, not the pooled line count (Sonnet
+	// review finding).
+	countedTier := map[string]bool{}
+	for _, c := range cands {
+		if countedTier[c.address] {
 			continue
 		}
-		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal, qualifiedBySource[i])
-		totalAdded += added
-		markedAPI := 0
-		markedSocks5 := 0
-		for _, line := range fetched[i] {
-			addr, _, _, ok := parseProxyURLLine(line)
-			if !ok {
-				continue
-			}
-			if entry, exists := state.Cache[addr]; exists {
-				entry.LastProbe = time.Now()
-				// Persist the stage-1 grade alongside ProbeOK so the
-				// auth-time gate and fleet grading can consume it. Graded
-				// is set ONLY for a genuine stage-1 verdict (g.Decidable).
-				// A socks5-only line never reached stage 1, and a pass that
-				// could not ask anything (cancelled context, resolver
-				// outage) produced no evidence — persisting either as
-				// "graded, score 0.0" would convict a proxy the probe never
-				// actually tested (findings C1 and C2). Such entries keep
-				// their prior grade (or the ungraded state).
-				if g, ok := grades[addr]; ok && g.Decidable && !g.Socks5Only {
-					entry.Score = g.Score
-					entry.Graded = true
-					entry.Failed = capFailedList(g.Failed)
-				}
-				if qualifiedBySource[i][addr] {
-					entry.ProbeOK = true
-					entry.ProbeFails = 0
-					markedAPI++
-				} else {
-					entry.ProbeOK = false
-					markedSocks5++
-				}
-				state.Cache[addr] = entry
-				dirty = true
+		if _, exists := state.Cache[c.address]; exists && c.grade.Qualified {
+			countedTier[c.address] = true
+			if c.grade.Decidable {
+				admittedByTier[proxyGradeTier(c.grade.Score)]++
+			} else {
+				// Kill-switch-disabled or otherwise ungraded but admitted:
+				// count into the "ungraded" bucket so the important marker
+				// still fires when stage-1 is off — that is exactly when an
+				// operator debugging admission most needs the record
+				// (finding LOW).
+				admittedByTier["ungraded"]++
 			}
 		}
-		if markedSocks5 > 0 || markedAPI > 0 {
-			tlog("[proxy][url] %s: %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", url, markedAPI, markedSocks5)
+	}
+	if len(admittedByTier) > 0 {
+		parts := make([]string, 0, len(admittedByTier))
+		for _, tier := range []string{"A", "B", "C", "D", "F", "ungraded"} {
+			if n := admittedByTier[tier]; n > 0 {
+				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
+			}
 		}
-		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
+		importantLogf("[proxy][url] admitted by tier: %s (cap %d, total cached %d)\n",
+			strings.Join(parts, " "), maxTotal, len(state.Cache))
 	}
 
-	// Tier breakdown is printed every cycle that produced any grade, even
+	markedAPI := 0
+	markedSocks5 := 0
+	// Dedupe by address so a cross-source duplicate is persisted and counted
+	// once — the counters reflect distinct cached addresses, not pooled
+	// lines (Sonnet review finding).
+	seen := map[string]bool{}
+	for _, c := range cands {
+		if seen[c.address] {
+			continue
+		}
+		seen[c.address] = true
+		addr := c.address
+		if entry, exists := state.Cache[addr]; exists {
+			entry.LastProbe = time.Now()
+			// Persist the stage-1 grade alongside ProbeOK so the
+			// auth-time gate and fleet grading can consume it.
+			//
+			// Graded is set ONLY for a genuine stage-1 verdict
+			// (g.Decidable). A socks5-only line never reached stage 1,
+			// and a pass that could not ask anything (cancelled context,
+			// resolver outage) produced no evidence — persisting either
+			// as "graded, score 0.0" would convict a proxy the probe
+			// never actually tested (findings C1 and C2). Such entries
+			// keep their prior grade (or the ungraded state).
+			if g, ok := grades[addr]; ok {
+				applyProxyGradeToEntry(&entry, g)
+			}
+			if c.grade.Qualified {
+				entry.ProbeOK = true
+				entry.ProbeFails = 0
+				markedAPI++
+			} else {
+				entry.ProbeOK = false
+				markedSocks5++
+			}
+			state.Cache[addr] = entry
+			dirty = true
+		}
+	}
+	if markedSocks5 > 0 || markedAPI > 0 {
+		tlog("[proxy][url] %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", markedAPI, markedSocks5)
+	}
+
+	// Grade breakdown is printed every cycle that produced any grade, even
 	// when nothing was newly added (N1: the old code's early return below
-	// skipped it entirely on no-change cycles).
+	// skipped it entirely on no-change cycles). Letters are what the probe
+	// FOUND this cycle (A>=0.9 .. F<0.6), plus the non-grade buckets.
 	if len(tierCounts) > 0 {
 		parts := make([]string, 0, len(tierCounts))
-		for _, tier := range []string{"preferred", "qualified", "below-bar", "undecidable", "socks5-only", "ungraded"} {
+		for _, tier := range []string{"A", "B", "C", "D", "F", "ungraded", "undecidable", "socks5-only"} {
 			if n := tierCounts[tier]; n > 0 {
 				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}
 		}
-		tlog("[proxy][url] stage-1 tier breakdown: %s\n", strings.Join(parts, " "))
+		importantLogf("[proxy][url] probe grade breakdown: %s\n", strings.Join(parts, " "))
 	}
 
 	if totalAdded == 0 && !dirty {
@@ -638,24 +746,84 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		return
 	}
 
+	// Order the probe loop so the 32/cycle grade-refresh budget lands on the
+	// genuinely oldest grades, not a random map-order slice (finding MEDIUM
+	// #3). Liveness-only candidates (ProbeOK=false) do not spend refresh
+	// budget, so they go first regardless of age. Among the stale once-good
+	// candidates, oldest LastProbe first: when a fresh fill of the cache
+	// births a herd of entries with synchronized LastProbe, this ordering
+	// (plus skipping the re-stamp for budget losers, below) is what breaks
+	// the herd — without it the same random 32 of 200 get refreshed every
+	// stale window and the rest never desynchronize.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].wasProbeOK != candidates[j].wasProbeOK {
+			return !candidates[i].wasProbeOK // liveness-only first, they don't spend budget
+		}
+		return candidates[i].entry.LastProbe.Before(candidates[j].entry.LastProbe)
+	})
+
 	// Probe every candidate outside the lock. Serial probing caps total
 	// cycle time but no longer blocks concurrent proxy operations, which
 	// was the critical problem — a 5-minute stale-lock age window would
 	// let a reload steal the lock mid-cycle and race on proxy_url.json.
+	// For once-good entries (stale re-probe), the stage-1 table probe also
+	// runs so the QUALITY grade is refreshed, not just liveness — a proxy
+	// that degraded (or recovered) gets its letter grade updated on the
+	// stale cadence (~6h), giving live proxies a few re-probe chances a
+	// day without hammering them every fetch cycle.
+	probeCfg := resolveProxyTableProbeConfig()
 	type probeResultEntry struct {
 		addr       string
 		result     probeResult
 		wasProbeOK bool
 		lastProbe  time.Time
+		table      tableProbeResult
+		// tableProbed records whether the stage-1 table probe actually ran
+		// for this entry (as opposed to being skipped because the 32/cycle
+		// refresh budget was exhausted). The apply step uses it to decide
+		// whether to re-stamp LastProbe (finding MEDIUM #3).
+		tableProbed bool
 	}
+	// Grade refresh is bounded per cycle: each stale once-good candidate
+	// that passes stage 0 would otherwise run a serial table probe of
+	// sample_width destinations, and a large cache could stretch the reaper
+	// cycle past its own tick (coderabbit review). Liveness probing is
+	// unaffected; only the quality refresh is capped. Candidates are sorted
+	// above so the budget lands on the OLDEST grades first; budget losers
+	// keep their stale LastProbe and are first in line next tick, so the
+	// whole once-good cache is re-graded over a few cycles (finding MEDIUM
+	// #3).
+	const proxyReaperMaxGradeRefresh = 32
+	refreshBudget := proxyReaperMaxGradeRefresh
 	results := make([]probeResultEntry, 0, len(candidates))
 	for _, c := range candidates {
-		results = append(results, probeResultEntry{
+		res := probeProxy(ctx, c.addr, c.entry.User, c.entry.Password, apiHost, apiPort)
+		entry := probeResultEntry{
 			addr:       c.addr,
-			result:     probeProxy(ctx, c.addr, c.entry.User, c.entry.Password, apiHost, apiPort),
+			result:     res,
 			wasProbeOK: c.wasProbeOK,
 			lastProbe:  c.entry.LastProbe,
-		})
+		}
+		// Quality refresh on the stale re-probe of once-good entries: the
+		// table probe runs on the same 1-3h stale cadence as liveness (the
+		// reaperStaleCalm/Hot window). Upstream re-probes idle exits every
+		// 10 minutes, so a 1-3h grade refresh is comfortably conservative —
+		// a degraded proxy gets re-ranked a few times a day, never hammered.
+		// Credentials are carried through so credentialed entries are
+		// re-graded fairly.
+		//
+		// The refresh is gated on the kill switch, mirroring the fetch-side
+		// invariant ("a full skip of the table probe, not just a gate
+		// bypass"): with enabled:false the operator has turned stage-1 off
+		// because the table probes themselves are the problem (egress abuse
+		// detection), and the reaper must not keep running them on the stale
+		// cadence (self-review finding).
+		if c.wasProbeOK && res == probeAPIReachable && probeCfg.Enabled && refreshBudget > 0 {
+			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, probeCfg)
+			entry.tableProbed = true
+			refreshBudget--
+		}
+		results = append(results, entry)
 	}
 
 	// Re-acquire the lock and atomically apply all results.
@@ -672,6 +840,12 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		}
 
 		changed := false
+		// Grade-refresh counters for the per-cycle summary: the per-address
+		// important line fires only on a LETTER TIER change, and one summary
+		// line is emitted after the loop, so a large cache does not turn the
+		// important buffer into a per-proxy stream (coderabbit review).
+		refreshedGrades := 0
+		tierChanges := 0
 		for _, r := range results {
 			entry, ok := state.Cache[r.addr]
 			if !ok {
@@ -685,9 +859,41 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				// or refresh timestamp on success.
 				switch r.result {
 				case probeAPIReachable:
-					entry.LastProbe = time.Now()
 					entry.ProbeOK = true
 					entry.ProbeFails = 0
+					// Quality refresh: the table probe re-graded the proxy
+					// on the stale cadence. Persist the fresh grade so a
+					// degraded proxy is re-ranked (and, if it fell below
+					// the bar, is no longer spawned by mergeProxyURLCache),
+					// and a recovered proxy gets a fair new chance. The
+					// Decidable guard keeps C1/C2 semantics: an empty or
+					// cancelled pass leaves the prior grade intact.
+					if r.table.Decidable {
+						oldTier := ""
+						if entry.Graded {
+							oldTier = proxyGradeTier(entry.Score)
+						}
+						newTier := proxyGradeTier(r.table.Score)
+						entry.Score = r.table.Score
+						entry.Graded = true
+						entry.Failed = capFailedList(r.table.Failed)
+						refreshedGrades++
+						if oldTier != newTier {
+							tierChanges++
+							importantLogf("[proxy][url] reaper: refreshed grade for %s -> %s (%.2f, %d/%d)\n",
+								r.addr, newTier, r.table.Score, r.table.OK, r.table.SampleWidth)
+						}
+					}
+					// Re-stamp the staleness clock ONLY when the quality
+					// refresh actually ran. A budget loser (stage-0 liveness
+					// passed but the 32/cycle table-probe budget was
+					// exhausted) keeps its stale LastProbe, so it sorts
+					// first next tick and gets refreshed then — without
+					// this, the once-good herd re-stamps as a block every
+					// cycle and never desynchronizes (finding MEDIUM #3).
+					if r.tableProbed {
+						entry.LastProbe = time.Now()
+					}
 					state.Cache[r.addr] = entry
 					changed = true
 				case probeSocks5Only, probeDead:
@@ -742,6 +948,11 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				}
 				changed = true
 			}
+		}
+
+		if refreshedGrades > 0 {
+			importantLogf("[proxy][url] reaper: refreshed grades for %d stale entries (%d tier changes)\n",
+				refreshedGrades, tierChanges)
 		}
 
 		if changed {

@@ -664,8 +664,10 @@ func TestReview_ResolveConfig_EmptyFileFallsBackToDefaults(t *testing.T) {
 }
 
 // REGRESSION (inverted L1). An inverted bar pair is clamped in
-// resolveProxyTableProbeConfig so the log label can never disagree with the
-// gate decision.
+// resolveProxyTableProbeConfig, and the A-F tier is a pure function of the
+// score — so with clamped bars, a score the gate rejects can never carry a
+// tier label that implies admission quality (the label agrees with the
+// gate).
 func TestReview_ScoreTierLabel_ClampedBarsAgreeWithGate(t *testing.T) {
 	withTempHome(t)
 	// Operator inverts: pass_bar 0.9, preferred_bar 0.6.
@@ -676,15 +678,15 @@ func TestReview_ScoreTierLabel_ClampedBarsAgreeWithGate(t *testing.T) {
 		t.Fatalf("inverted bars must be clamped: preferred=%.2f < pass=%.2f (L1)", cfg.PreferredBar, cfg.PassBar)
 	}
 	// With clamped bars (preferred == pass == 0.9), a score of 0.7 is below
-	// both: the gate rejects it AND the label must not claim preferred —
-	// the label and the decision agree.
+	// both: the gate rejects it, and its A-F tier (C) must never be
+	// mistaken for an admitted grade.
 	const score = 0.7
 	res := tableProbeResult{Score: score, OK: 7, SampleWidth: 10, Total: 10, Decidable: true}
 	if res.qualified(cfg.PassBar) {
 		t.Fatal("score 0.7 must not qualify at a 0.9 bar")
 	}
-	if label := scoreTierLabel(score, cfg); label == "preferred" {
-		t.Errorf("score 0.7 labelled preferred while the gate rejects it (L1)")
+	if tier := proxyGradeTier(score); tier == "A" || tier == "B" {
+		t.Errorf("score 0.7 graded %q — a rejected score must not carry a top tier label (L1)", tier)
 	}
 }
 
@@ -808,92 +810,299 @@ func TestReview_GradedQualifiedDeadIsUnreachableNotQuality(t *testing.T) {
 	t.Log("NEW-3: graded-qualified dead proxy reports unreachable, not below-bar (label decided in main.go)")
 }
 
-// REGRESSION (review #12). A graded-below-bar cache entry is filtered from
-// the desired set by mergeProxyURLCache, so it must not count toward the
-// maxTotal cap: a source that drops a below-bar address must not leave the
-// cache unable to admit new candidates (merging is add-only, so dropped
-// entries would otherwise squat on the cap forever).
-func TestReview_BelowBarSquattersDoNotBlockCap(t *testing.T) {
+// REGRESSION (tiers). Best-overall eviction: when the cache is at maxTotal,
+// a candidate that OUTRANKS the lowest-ranked cached entry replaces it — so
+// a full cache keeps the highest-tier proxies across all sources, and a
+// graded-below-bar squatter (rank 0) is the first eviction target. The
+// qualified candidate is inserted with ProbeOK=true (address-keyed grade,
+// 342 review round 2). This supersedes the 342-branch squatter-exclusion +
+// hard-cap stopgap: evict-one-add-one bounds the total at maxTotal.
+func TestReview_BestOverallEvictionReplacesLowestRank(t *testing.T) {
 	withTempHome(t)
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
 
-	// Two squatters (graded below bar) + one healthy entry. maxTotal=2: the
-	// squatters are excluded from the count, so the healthy entry is 1 of 2
-	// and exactly one new candidate fits.
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
-		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
-		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true},
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false}, // F (rank 0)
+		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true},  // A (rank 4)
 	}}
-	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080", "10.0.0.5:1080"}, 2, 2, nil)
+	grades := map[string]proxyURLGrade{
+		"10.0.0.3:1080": {Qualified: true, Score: 0.95, Decidable: true},
+	}
+	rankAddr := func(addr string) int {
+		if g, ok := grades[addr]; ok && g.Decidable {
+			return proxyTierRank(proxyGradeTier(g.Score))
+		}
+		return -1
+	}
+	gradeFor := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades[addr]
+		return g, ok
+	}
+	added := mergeProxyURLEntries(state, []string{"10.0.0.3:1080"}, 1, 2, rankAddr, gradeFor)
 	if added != 1 {
-		t.Fatalf("expected 1 new entry admitted past squatters (cap counts non-squatters), got %d", added)
+		t.Fatalf("expected the higher-ranked candidate to evict the lowest-ranked entry, got added=%d", added)
 	}
-	if _, ok := state.Cache["10.0.0.4:1080"]; !ok {
-		t.Fatal("first candidate should have been added")
+	if _, ok := state.Cache["10.0.0.1:1080"]; ok {
+		t.Error("lowest-ranked (below-bar) entry should have been evicted")
 	}
-	if _, ok := state.Cache["10.0.0.5:1080"]; ok {
-		t.Fatal("second candidate exceeds the cap and must not be added")
+	got, ok := state.Cache["10.0.0.3:1080"]
+	if !ok {
+		t.Fatal("candidate should be in the cache after eviction")
+	}
+	if !got.ProbeOK || !got.Graded {
+		t.Errorf("qualified candidate should be persisted ProbeOK+Graded, got %+v", got)
+	}
+	if len(state.Cache) != 2 {
+		t.Fatalf("cache size should stay at maxTotal (2), got %d", len(state.Cache))
 	}
 
-	// Kill switch off: below-bar entries are re-admitted (not squatters), so
-	// the same cap counts every entry and no new candidate fits.
-	writeReviewProbeOverride(t, map[string]any{"enabled": false})
+	// A candidate that does NOT outrank the lowest cached entry is skipped.
 	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
-		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
+		"10.0.0.1:1080": {Graded: true, Score: 0.95, ProbeOK: true},
+		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true},
 	}}
-	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2, nil)
+	grades2 := map[string]proxyURLGrade{
+		"10.0.0.4:1080": {Qualified: false, Score: 0.3, Decidable: true}, // F
+	}
+	rankAddr2 := func(addr string) int {
+		if g, ok := grades2[addr]; ok && g.Decidable {
+			return proxyTierRank(proxyGradeTier(g.Score))
+		}
+		return -1
+	}
+	gradeFor2 := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades2[addr]
+		return g, ok
+	}
+	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.4:1080"}, 1, 2, rankAddr2, gradeFor2)
 	if added2 != 0 {
-		t.Fatalf("kill switch off: squatters count toward the cap, expected 0 added, got %d", added2)
+		t.Fatalf("a worse candidate must not displace a better cached entry, got added=%d", added2)
+	}
+	if _, ok := state2.Cache["10.0.0.4:1080"]; ok {
+		t.Error("worse candidate should not be cached")
 	}
 }
 
-// REGRESSION (review round 2). At the hard cap (maxTotal*2 total entries),
-// a new candidate evicts the OLDEST below-bar squatter instead of being
-// dropped, while a cache at the hard cap with no squatters stops the merge.
-func TestReview_HardCapEvictsOldestSquatter(t *testing.T) {
+// REGRESSION (tiers). With a nil rankAddr the merge keeps the old behavior:
+// at maxTotal the remaining lines are skipped without evicting anything —
+// best-overall selection is opt-in. The kill-switch-off path lands here
+// too: nothing is graded while disabled, so every candidate ranks -1 and
+// the cache never evicts.
+func TestReview_NoRankAddrKeepsOldCapBehavior(t *testing.T) {
 	withTempHome(t)
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "pass_bar": 0.6})
 
-	old := time.Now().Add(-3 * time.Hour)
-	mid := time.Now().Add(-2 * time.Hour)
-	recent := time.Now().Add(-1 * time.Hour)
-
-	// maxTotal=2 → hard cap 4. Three squatters + one healthy = 4 total. The
-	// new candidate evicts the OLDEST squatter (10.0.0.1) and is added.
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false, LastProbe: old},
-		"10.0.0.2:1080": {Graded: true, Score: 0.3, ProbeOK: false, LastProbe: mid},
-		"10.0.0.3:1080": {Graded: true, Score: 0.4, ProbeOK: false, LastProbe: recent},
-		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+		"10.0.0.1:1080": {Graded: true, Score: 0.2, ProbeOK: false},
+		"10.0.0.2:1080": {Graded: true, Score: 0.4, ProbeOK: false},
 	}}
-	added := mergeProxyURLEntries(state, []string{"10.0.0.5:1080"}, 1, 2, nil)
-	if added != 1 {
-		t.Fatalf("expected the candidate to evict a squatter and be added, got added=%d", added)
+	added := mergeProxyURLEntries(state, []string{"10.0.0.4:1080"}, 1, 2, nil, nil)
+	if added != 0 {
+		t.Fatalf("nil rankAddr must keep the old cap behavior (no eviction), got added=%d", added)
 	}
-	if _, ok := state.Cache["10.0.0.1:1080"]; ok {
-		t.Error("oldest squatter should have been evicted at the hard cap")
+	if _, ok := state.Cache["10.0.0.4:1080"]; ok {
+		t.Error("candidate must not be added at cap without a rank function")
 	}
-	if _, ok := state.Cache["10.0.0.5:1080"]; !ok {
-		t.Error("candidate should be in the cache after eviction")
-	}
-	if len(state.Cache) != 4 {
-		t.Fatalf("cache size should stay at the hard cap (4), got %d", len(state.Cache))
+}
+
+// REGRESSION (self-review). The kill switch disables the reaper's stage-1
+// grade refresh: with enabled=false, the stale re-probe of a once-good entry
+// still runs liveness (stage 0) but must NOT run the table probe — otherwise
+// the operator's "turn stage-1 off" (e.g. because the probes trip egress
+// abuse detection) would be silently defeated on the 1-3h stale cadence.
+func TestReview_ReaperKillSwitchSkipsGradeRefresh(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": false, "sample_width": 4, "timeout_ms": 500})
+
+	// A fake SOCKS5 proxy that answers every CONNECT (stage-0 liveness
+	// passes); count CONNECTs to detect any stage-1 table probe.
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
 	}
 
-	// A cache at the hard cap with NO squatters stops the merge.
-	state2 := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		"10.0.0.1:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: old},
-		"10.0.0.2:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: mid},
-		"10.0.0.3:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
-		"10.0.0.4:1080": {Graded: true, Score: 0.9, ProbeOK: true, LastProbe: recent},
+	// Literal API IP so stage-0's API CONNECT resolves without DNS.
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	// Stage-0 liveness = exactly 1 CONNECT (the API CONNECT through the
+	// proxy). Stage-1 would add sample_width more; with the kill switch off
+	// there must be none. Pin BOTH bounds so a candidate-selection regression
+	// (stale entry never probed at all) still fails the test (coderabbit
+	// review).
+	if n := connects.Load(); n != 1 {
+		t.Fatalf("kill switch off must run stage-0 only: %d CONNECTs, want exactly 1", n)
+	}
+}
+
+// REGRESSION (Opus review test gap). The POSITIVE counterpart to the
+// kill-switch test: with stage-1 ENABLED, the reaper's stale sweep of a
+// once-good entry must actually run the table probe and PERSIST the
+// refreshed grade. Before this test, deleting the table-probe call,
+// setting the refresh budget to 0, or gating the persist on
+// Decidable&&false all left the suite green — the entire quality-refresh
+// half of the feature had no positive signal.
+func TestReview_ReaperRefreshesStaleGrade(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	// Seed the box's probe DNS cache so the sampled targets resolve
+	// offline. The reaper's table probe reads the pass counter directly
+	// (no fetch increment), so seed the CURRENT counter value.
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load())
+
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-24 * time.Hour)},
 	}}
-	added2 := mergeProxyURLEntries(state2, []string{"10.0.0.5:1080"}, 1, 2, nil)
-	if added2 != 0 {
-		t.Fatalf("hard cap with no squatters must stop the merge, got added=%d", added2)
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := got.Cache[addr]
+	if !ok {
+		t.Fatal("entry must remain cached after the refresh")
+	}
+	// All-answering proxy: the refresh pass scores 1.0 and persists it.
+	if !entry.Graded || entry.Score != 1.0 {
+		t.Fatalf("expected refreshed grade 1.0, got graded=%v score=%v", entry.Graded, entry.Score)
+	}
+	if !entry.LastProbe.After(time.Now().Add(-time.Minute)) {
+		t.Error("LastProbe must be re-stamped when the table probe ran")
+	}
+	// Stage-0 API CONNECT (1) + stage-1 table probe (sample_width=4).
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("expected 1 API + 4 table CONNECTs, got %d", n)
+	}
+}
+
+// REGRESSION (Opus review, MEDIUM #3). The 32/cycle grade-refresh budget
+// must land on the OLDEST grades, and a budget loser (stage-0 liveness
+// passed, table probe skipped) must NOT get its LastProbe re-stamped —
+// otherwise a once-good herd (all entries born with synchronized LastProbe
+// in one fetch cycle) re-stamps as a block every cycle and never
+// desynchronizes, leaving a random ~16% refresh coverage per stale window.
+func TestReview_ReaperRefreshBudgetOldestFirst(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	// One more than the production refresh budget (32/cycle,
+	// proxyReaperMaxGradeRefresh in runURLProxyReaperOnce).
+	const refreshBudget = 32
+	const n = refreshBudget + 1 // 33
+
+	var addrs []string
+	for i := 0; i < n; i++ {
+		addr, _, cleanup := listenSocks5Sequenced(t, func(conn int) byte { return 0x00 })
+		defer cleanup()
+		addrs = append(addrs, addr)
+	}
+	cache := map[string]ProxyURLEntry{}
+	pass := tableProbePassCounter.Load()
+	for i, addr := range addrs {
+		// Oldest first: addrs[0] is 6h stale, addrs[n-1] is 3h stale.
+		age := 6*time.Hour - time.Duration(i)*3*time.Hour/time.Duration(n-1)
+		cache[addr] = ProxyURLEntry{ProbeOK: true, Graded: true, Score: 0.9, LastProbe: time.Now().Add(-age)}
+		seedProbeDNSForAddress(t, addr, pass)
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: cache}); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, addr := range addrs {
+		e := got.Cache[addr]
+		if i < refreshBudget {
+			// The OLDEST 32 got a table probe: score refreshed 0.9 -> 1.0
+			// and LastProbe re-stamped.
+			if e.Score != 1.0 {
+				t.Errorf("idx %d (oldest %d): expected refreshed score 1.0, got %v", i, i, e.Score)
+			}
+			if !e.LastProbe.After(time.Now().Add(-time.Minute)) {
+				t.Errorf("idx %d (oldest %d): LastProbe %v not re-stamped", i, i, e.LastProbe)
+			}
+		} else {
+			// The NEWEST (budget loser): no table probe, no re-stamp — it
+			// must keep its stale LastProbe so it is first in line next
+			// tick (herd desync).
+			if e.Score != 0.9 {
+				t.Errorf("idx %d (budget loser): expected UNrefreshed score 0.9, got %v", i, e.Score)
+			}
+			if !e.LastProbe.Before(time.Now().Add(-3*time.Hour + time.Minute)) {
+				t.Errorf("idx %d (budget loser): LastProbe %v was re-stamped — herd never desyncs", i, e.LastProbe)
+			}
+		}
+	}
+}
+
+// REGRESSION (Opus review, MEDIUM #2). An address listed in TWO sources in
+// the same fetch cycle must be table-probed ONCE, not once per source —
+// the same scraped IPs circulate across free lists, and per-source probing
+// defeats the new-only filter's own efficiency goal. The live `probed`
+// skip set must de-duplicate across sources, and the merge must persist
+// the single first-verdict grade.
+func TestReview_FetchCrossSourceDuplicateProbedOnce(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+
+	// fetchAndMergeProxyURLs advances the pass counter once at the start of
+	// the cycle, so the probes run on the NEXT pass value; seed both.
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load(), tableProbePassCounter.Load()+1)
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(addr + "\n"))
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(addr + "\n"))
+	}))
+	defer srvB.Close()
+
+	fetchAndMergeProxyURLs(context.Background(), []string{srvA.URL, srvB.URL}, 100, "1.2.3.4", 443)
+
+	// One address, probed once: 1 API CONNECT + sample_width table probes.
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("cross-source duplicate must be probed ONCE: %d CONNECTs, want 5 (1 API + 4 table)", n)
+	}
+	state, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Cache) != 1 {
+		t.Fatalf("expected 1 cached entry, got %d", len(state.Cache))
+	}
+	entry, ok := state.Cache[addr]
+	if !ok {
+		t.Fatalf("expected %s in cache, got %v", addr, state.Cache)
+	}
+	if !entry.ProbeOK || !entry.Graded || entry.Score != 1.0 {
+		t.Errorf("expected single first-verdict grade persisted, got %+v", entry)
 	}
 }
 
@@ -1008,4 +1217,36 @@ func resetProbeConfigCache() {
 	defer probeConfigCache.Unlock()
 	probeConfigCache.cfg = proxyTableProbeConfig{}
 	probeConfigCache.at = time.Time{}
+}
+
+// seedProbeDNSForAddress injects fake resolutions for the stage-1 sampled
+// targets of address at the given probe pass values, so a test can run the
+// table probe offline and deterministically (the sampled hostnames are real
+// health-check domains; without seeding they need working DNS). The probe
+// DNS cache is process-global, so all injected entries are removed on test
+// cleanup and any prior fail-cache entry for the same host is cleared
+// (resolveProbeTarget consults fail BEFORE re-resolving).
+func seedProbeDNSForAddress(t *testing.T, address string, passes ...uint64) {
+	t.Helper()
+	cfg := resolveProxyTableProbeConfig()
+	added := map[string]bool{}
+	probeDNSCache.Lock()
+	for _, pass := range passes {
+		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		for _, h := range hosts {
+			if _, exists := probeDNSCache.m[h]; !exists {
+				added[h] = true
+			}
+			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			delete(probeDNSCache.fail, h)
+		}
+	}
+	probeDNSCache.Unlock()
+	t.Cleanup(func() {
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for h := range added {
+			delete(probeDNSCache.m, h)
+		}
+	})
 }
