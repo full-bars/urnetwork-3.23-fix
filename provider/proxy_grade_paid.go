@@ -138,6 +138,8 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	type gradeResult struct {
 		addr             string
 		snapshotGradedAt time.Time
+		user             string
+		password         string
 		table            tableProbeResult
 	}
 	results := make([]gradeResult, len(targets))
@@ -151,6 +153,8 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			results[i] = gradeResult{
 				addr:             t.addr,
 				snapshotGradedAt: t.snapshotGradedAt,
+				user:             t.user,
+				password:         t.password,
 				table:            probeTableThroughProxy(ctx, t.addr, t.user, t.password, probeCfg),
 			}
 		}(i, t)
@@ -170,6 +174,27 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			tlog("[proxy][grade] warning: could not read proxy.state: %v\n", err)
 			return
 		}
+		// Re-read the CURRENT desired settings so a concurrent reload that
+		// changed an address's credentials (or removed it) between collect
+		// and apply cannot have a stale-creds probe result persisted
+		// (coderabbit review). On mismatch the result is skipped entirely —
+		// no grade, no LastGraded advance — so the next sweep probes with
+		// the current settings.
+		current := map[string]connect.ProxySettings{}
+		if state.Source != "" {
+			cur, err := readProxySettingsFromFile(state.Source)
+			if err != nil {
+				tlog("[proxy][grade] warning: %v (skipping apply)\n", err)
+				return
+			}
+			for _, s := range cur {
+				current[s.Address] = *s
+			}
+		} else {
+			for _, s := range readProxySettings() {
+				current[s.Address] = *s
+			}
+		}
 		changed := false
 		graded := 0
 		tierChanges := 0
@@ -180,6 +205,16 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			}
 			if entry.LastGraded.After(r.snapshotGradedAt) {
 				continue // refreshed by a concurrent pass; do not clobber
+			}
+			s, ok := current[r.addr]
+			if !ok {
+				continue // removed from the desired set mid-pass; do not grade
+			}
+			if !paidGradeSettingsMatch(s, r.user, r.password) {
+				// Credentials changed mid-pass: the probe ran against the
+				// OLD settings, so neither the grade nor the staleness
+				// clock may move (the next sweep probes the new settings).
+				continue
 			}
 			// Advance the staleness clock on ANY completed pass so a
 			// DNS-gutted (undecidable) pass does not re-probe every tick;
@@ -216,4 +251,14 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			}
 		}
 	}()
+}
+
+// paidGradeSettingsMatch reports whether the address's current settings
+// carry the same credentials the sweep probed with. Used at apply time to
+// reject results whose probe ran against settings that have since changed.
+func paidGradeSettingsMatch(s connect.ProxySettings, user, password string) bool {
+	if s.Auth == nil {
+		return user == "" && password == ""
+	}
+	return s.Auth.User == user && s.Auth.Password == password
 }
