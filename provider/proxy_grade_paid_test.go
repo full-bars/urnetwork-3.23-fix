@@ -364,10 +364,10 @@ func TestPaidGradeSettingsMatch(t *testing.T) {
 	noCreds := connect.ProxySettings{Address: "1.2.3.4:1080"}
 
 	cases := []struct {
-		name              string
-		s                 connect.ProxySettings
-		user, password    string
-		want              bool
+		name           string
+		s              connect.ProxySettings
+		user, password string
+		want           bool
 	}{
 		{"same creds", withCreds, "u", "p", true},
 		{"user changed", withCreds, "u2", "p", false},
