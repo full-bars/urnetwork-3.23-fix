@@ -44,6 +44,23 @@ import (
 
 // see https://upb-syssec.github.io/blog/2023/record-fragmentation/
 
+// resilientLowTtl is the TTL applied to fragments the reorder technique intends
+// to have dropped in flight, so the retransmit arrives after the fragments that
+// followed it. IP_TTL accepts 1-255 but only 1 is useful: a packet at TTL 1 is
+// discarded at the first L3 hop, and anything higher survives that hop, arrives
+// first try, and reorders nothing. There is no reorder effect for an on-link
+// peer either (a bridged L2 path, or the loopback the tests run over, delivers
+// TTL 1 intact), so the technique only bites once a router is in the path.
+//
+// The value was 0, which no host may emit. Linux rejects that sockopt with
+// EINVAL, so the technique was inert there. Windows accepts the sockopt, but
+// RFC 1122 3.2.1.7 forbids emitting TTL 0, so it is likely dropped locally
+// rather than by a router; the loss is the same either way, but that mechanism
+// was never observed, only the sockopt's acceptance.
+//
+// Ported from urnetwork/connect#196 (fixes urnetwork/connect#195).
+const resilientLowTtl = 1
+
 // set this as the `DialTLSContext` or equivalent
 // returns a tls connection
 func NewResilientDialTlsContext(
@@ -109,7 +126,17 @@ type ResilientTlsConn struct {
 	fragment bool
 	reorder  bool
 	buffer   []byte
-	enabled  bool
+
+	// setTtl replaces the SetSocketTtl syscall; nil means call it directly.
+	// This is a test seam so the reorder paths can be observed and made to
+	// fail without a router in the way. It is a field rather than a package
+	// var so that installing a seam is scoped to one connection.
+	setTtl func(SocketHandle, int) error
+	// ttlErr holds the first TTL failure seen on this connection, fatal ones
+	// included, and is the hook a future metric would read.
+	ttlErr error
+
+	enabled bool
 }
 
 // must be created before the tls connection starts
@@ -162,6 +189,58 @@ func (self *ResilientTlsConn) failConnection() {
 	self.conn.Close()
 }
 
+// applyTtl sets the socket TTL through ttlCtl, routing via the test seam when
+// one is installed so tests can observe and fail the TTL sequence without
+// needing a router to actually drop packets. It is the single choke point for
+// every TTL write in the resilient paths; the policy for what to do with the
+// error lives in applyTtlBestEffort and restoreNativeTtl.
+//
+// Upstream takes a bare descriptor here. This fork routes through ttlControl so
+// the descriptor is borrowed for the syscall only, never dup'd (see
+// net_resilient_ttl.go), which is why the signature differs.
+func (self *ResilientTlsConn) applyTtl(ttlCtl *ttlControl, ttl int) error {
+	return ttlCtl.set(ttl, self.setTtl)
+}
+
+// applyTtlBestEffort applies ttl and keeps going if the syscall refuses it,
+// recording only the first failure. This is the non-fatal half of a
+// deliberately asymmetric policy: a TTL that will not apply costs the reorder
+// property for that fragment, but the fragment still goes out whole at the
+// native TTL and the record on the wire stays coherent. Failing the dial here
+// would trade a working connection for no connection on any socket that
+// refuses IPPROTO_IP/IP_TTL, an AF_INET6 socket for one, where
+// IPV6_UNICAST_HOPS is the correct option. Rejection is often value-dependent
+// rather than blanket (Linux refuses 0 and accepts 64), so a later write may
+// well succeed; the first error is kept because it is the most diagnostic, not
+// because it predicts the rest.
+func (self *ResilientTlsConn) applyTtlBestEffort(ttlCtl *ttlControl, ttl int) {
+	if err := self.applyTtl(ttlCtl, ttl); err != nil && self.ttlErr == nil {
+		self.ttlErr = err
+	}
+}
+
+// restoreNativeTtl puts the socket back to its native TTL and fails the
+// connection closed if it cannot. This is the fatal half of the policy: unlike
+// the low-TTL writes, a failure here is not confined to one fragment, since
+// every later packet on the socket, the rest of the handshake included, would
+// leave at resilientLowTtl and be discarded at the first L3 hop. Note this
+// closes the connection even where nothing on the wire is indeterminate: the
+// reorder-only path has written every block by the time it restores, so the
+// record the peer holds is complete and coherent, and the connection dies only
+// because the socket's future TTL is wrong. A dial failure still beats a
+// handshake that hangs. The error is recorded before closing so a metric
+// reading ttlErr does not miss precisely the failures that killed connections.
+func (self *ResilientTlsConn) restoreNativeTtl(ttlCtl *ttlControl, nativeTtl int) error {
+	if err := self.applyTtl(ttlCtl, nativeTtl); err != nil {
+		if self.ttlErr == nil {
+			self.ttlErr = err
+		}
+		self.failConnection()
+		return err
+	}
+	return nil
+}
+
 // writeRecord writes record whole to w. On any short or failed write the
 // connection is failed closed: a partial record on the wire cannot be
 // coherently retried — the buffer still holds the full record, so a retry
@@ -193,9 +272,10 @@ func (self *ResilientTlsConn) writeRecord(w io.Writer, record []byte) error {
 // duplicate cleanup: the tail record must go out at the native TTL, which
 // the deferred restore would only reach after the write.
 func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn, ttlCtl *ttlControl, nativeTtl int, tlsHeader *tlsHeader, handshakeBytes []byte, serverNameValueEnd int, split int, step int) error {
-	defer ttlCtl.set(nativeTtl)
+	// best effort: a defer has nobody to report to
+	defer func() { _ = self.applyTtl(ttlCtl, nativeTtl) }()
 
-	ttlCtl.set(0)
+	self.applyTtlBestEffort(ttlCtl, resilientLowTtl)
 	record := tlsHeader.reconstruct(handshakeBytes[0:split])
 	if err := self.writeRecord(tcpConn, record); err != nil {
 		return err
@@ -204,18 +284,23 @@ func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn,
 	for i := split; i < serverNameValueEnd; i += step {
 		var ttl int
 		if 0 == mathrand.Intn(2) {
-			ttl = 0
+			ttl = resilientLowTtl
 		} else {
 			ttl = nativeTtl
 		}
-		ttlCtl.set(ttl)
+		// not the final restore, so best effort
+		self.applyTtlBestEffort(ttlCtl, ttl)
 		record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, serverNameValueEnd)])
 		if err := self.writeRecord(tcpConn, record); err != nil {
 			return err
 		}
 	}
 
-	ttlCtl.set(nativeTtl)
+	// checked: the tail and the rest of the handshake still have to leave
+	// this socket
+	if err := self.restoreNativeTtl(ttlCtl, nativeTtl); err != nil {
+		return err
+	}
 
 	tailRecord := tlsHeader.reconstruct(handshakeBytes[serverNameValueEnd:])
 	return self.writeRecord(tcpConn, tailRecord)
@@ -227,25 +312,26 @@ func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn,
 // the connection (see writeRecord), so the restore is a no-op there — it
 // matters on the paths that hand the connection back usable.
 func (self *ResilientTlsConn) writeBlocksAlternatingTtl(tcpConn *net.TCPConn, ttlCtl *ttlControl, nativeTtl int, tlsBytes []byte, blockSize int) error {
-	defer ttlCtl.set(nativeTtl)
+	// best effort: a defer has nobody to report to
+	defer func() { _ = self.applyTtl(ttlCtl, nativeTtl) }()
 
 	for i := 0; i*blockSize < len(tlsBytes); i += 1 {
 		var ttl int
 		if 0 == i%2 {
-			ttl = 0
+			ttl = resilientLowTtl
 		} else {
 			ttl = nativeTtl
 		}
-		ttlCtl.set(ttl)
+		// not the final restore, so best effort
+		self.applyTtlBestEffort(ttlCtl, ttl)
 		b := tlsBytes[i*blockSize : min((i+1)*blockSize, len(tlsBytes))]
 		if err := self.writeRecord(tcpConn, b); err != nil {
 			return err
 		}
 	}
 
-	ttlCtl.set(nativeTtl)
-
-	return nil
+	// checked: the rest of the handshake still has to leave this socket
+	return self.restoreNativeTtl(ttlCtl, nativeTtl)
 }
 
 // Write sends b over the underlying connection. While enabled, TLS records
