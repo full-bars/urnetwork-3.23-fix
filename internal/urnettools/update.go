@@ -34,15 +34,22 @@ type updateConfig struct {
 
 // defaultUpdateConfig returns the config for the latest known release. Tag
 // and Digest are populated by the caller (release metadata may be fetched).
-func defaultUpdateConfig() updateConfig {
+func defaultUpdateConfig() (updateConfig, error) {
 	// Stage on real disk, NOT /tmp (frequently a small tmpfs that the
 	// multi-platform tarball overflows — the 2026-08-09 failure). Windows
 	// has no /var/tmp; use the system temp dir there (free-review major).
-	stageDir := "/var/tmp/urnet-stage"
+	// Each update gets a PRIVATE 0700 staging dir: a predictable path under
+	// /var/tmp could be pre-created by a local user who then swaps the
+	// tarball between verify and extract (coderabbit critical).
+	parent := "/var/tmp"
 	if runtime.GOOS == "windows" {
-		stageDir = filepath.Join(os.TempDir(), "urnet-stage")
+		parent = os.TempDir()
 	}
-	return updateConfig{StageDir: stageDir}
+	stageDir, err := os.MkdirTemp(parent, "urnet-stage-")
+	if err != nil {
+		return updateConfig{}, fmt.Errorf("create staging directory: %w", err)
+	}
+	return updateConfig{StageDir: stageDir}, nil
 }
 
 // cmdUpdate updates one or more providers' binaries, then restarts the unit
@@ -58,7 +65,12 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	cfg := defaultUpdateConfig()
+	cfg, err := defaultUpdateConfig()
+	if err != nil {
+		return err
+	}
+	// Private staging dir is created per-update; always clean it up.
+	defer os.RemoveAll(cfg.StageDir)
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
 	all := false
@@ -319,7 +331,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Backup current binary with a timestamped name so repeated updates
 	// never collide (review finding M2: keying off p.Version can yield an
 	// empty/stale suffix and silently reuse an old backup).
-	backup := p.Binary + ".bak-" + time.Now().UTC().Format("20060102T150405Z")
+	backup := backupName(p.Binary, time.Now())
 	if _, err := os.Stat(backup); os.IsNotExist(err) {
 		if err := copyFile(p.Binary, backup); err != nil {
 			return fmt.Errorf("backup: %w", err)
@@ -508,6 +520,15 @@ func installBinary(src, dst, user string) error {
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
 	return nil
+}
+
+// backupName returns the timestamped backup path for a binary — distinct
+// names even for repeated updates within the same second are NOT guaranteed
+// at second resolution, but the timestamp carries the wall clock so backups
+// never collide across seconds (review finding M2). Extracted as a pure
+// helper so tests call production logic (coderabbit).
+func backupName(binary string, at time.Time) string {
+	return binary + ".bak-" + at.UTC().Format("20060102T150405Z")
 }
 
 // copyFile copies src to dst preserving mode.

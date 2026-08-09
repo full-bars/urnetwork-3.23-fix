@@ -64,6 +64,14 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 		return fmt.Errorf("auto-update requires daily|weekly|monthly|off")
 	}
 	interval := args[0]
+	// Validate the interval BEFORE targeting so an invalid value errors
+	// deterministically without needing a resolvable provider (coderabbit
+	// minor: the old switch-default check was unreachable in tests).
+	switch interval {
+	case "off", "daily", "weekly", "monthly":
+	default:
+		return fmt.Errorf("invalid interval %q: daily|weekly|monthly|off", interval)
+	}
 	t, _, err := parseTargetFlags(args[1:])
 	if err != nil {
 		return err
@@ -97,9 +105,8 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 		return writeTimerCalendar(timer, p, "Sun *-*-* 00:00:00 UTC")
 	case "monthly":
 		return writeTimerCalendar(timer, p, "monthly")
-	default:
-		return fmt.Errorf("invalid interval %q: daily|weekly|monthly|off", interval)
 	}
+	return nil
 }
 
 // writeTimerCalendar rewrites a timer unit's OnCalendar line and reloads.
@@ -177,16 +184,27 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path (free-review major: harden the deletion guard).
 	// Both guards clean the path so "/" and "/./" are caught identically.
+	// Removal errors are REPORTED, not hidden (coderabbit major).
 	removedAny := false
-	if p.Binary != "" && strings.HasPrefix(p.Binary, "/") && filepath.Clean(p.Binary) != "/" {
-		if err := os.Remove(p.Binary); err == nil {
+	hadErrors := false
+	if safeRemoveTarget(p.Binary) {
+		if err := os.Remove(p.Binary); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove binary %s: %v\n", p.Binary, err)
+			hadErrors = true
+		} else {
 			removedAny = true
 		}
 	}
-	if p.StateDir != "" && strings.HasPrefix(p.StateDir, "/") && filepath.Clean(p.StateDir) != "/" {
-		if err := os.RemoveAll(p.StateDir); err == nil {
+	if safeRemoveTarget(p.StateDir) {
+		if err := os.RemoveAll(p.StateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove state dir %s: %v\n", p.StateDir, err)
+			hadErrors = true
+		} else {
 			removedAny = true
 		}
+	}
+	if hadErrors {
+		return fmt.Errorf("uninstall %s: partial — some paths could not be removed (see warnings)", providerLabel(p))
 	}
 	if removedAny {
 		fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
@@ -194,6 +212,14 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 		fmt.Printf("Uninstall %s: nothing removable found (unit disabled if present)\n", providerLabel(p))
 	}
 	return nil
+}
+
+// safeRemoveTarget reports whether a path is safe to remove: non-empty,
+// absolute, and not the filesystem root after cleaning. Used by cmdUninstall
+// so "/" or "/./" can never be removed (free-review major). Pure helper so
+// tests call production logic, not a copy (coderabbit major).
+func safeRemoveTarget(path string) bool {
+	return path != "" && strings.HasPrefix(path, "/") && filepath.Clean(path) != "/"
 }
 
 // cmdReinstall delegates to the legacy installer script for a full

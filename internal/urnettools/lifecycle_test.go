@@ -1,7 +1,6 @@
 package urnettools
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,64 +146,36 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate writeDropinEnv's merge logic (same as the function does).
-	// We read existing, filter out same-key lines, append new, write back.
-	newEnvLine := "URNETWORK_PROFILE=turbo-v4"
-	newKey := "URNETWORK_PROFILE"
-	var kept []string
-	b, _ := os.ReadFile(path)
-	for _, ln := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(ln)
-		if trimmed == "" {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Environment=") {
-			val := strings.TrimPrefix(trimmed, "Environment=")
-			val = strings.Trim(val, "\"")
-			if strings.HasPrefix(val, newKey) && (len(val) == len(newKey) || val[len(newKey)] == '=') {
-				continue
-			}
-		}
-		kept = append(kept, trimmed)
-	}
-	kept = append(kept, fmt.Sprintf("Environment=%q", newEnvLine))
-	content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(path)
+	// Call the PRODUCTION merge helper — not a copy of its logic
+	// (coderabbit major: reimplemented tests cannot detect regressions).
+	got := mergeDropinEnvFile(path, "URNETWORK_PROFILE=turbo-v4")
 	// The old URNETWORK_PROFILE=eco should be gone.
-	if strings.Contains(string(got), "eco") {
+	if strings.Contains(got, "eco") {
 		t.Errorf("same-key replace failed: old value 'eco' still present: %s", got)
 	}
 	// The new URNETWORK_PROFILE=turbo-v4 should be there.
-	if !strings.Contains(string(got), "turbo-v4") {
+	if !strings.Contains(got, "turbo-v4") {
 		t.Errorf("new value 'turbo-v4' missing: %s", got)
 	}
 	// URNETWORK_RAMLOGS=1 (different key) must be preserved.
-	if !strings.Contains(string(got), "URNETWORK_RAMLOGS=1") {
+	if !strings.Contains(got, "URNETWORK_RAMLOGS=1") {
 		t.Errorf("different key 'URNETWORK_RAMLOGS' was dropped: %s", got)
+	}
+	// Exactly one [Service] header (free-review LOW: duplicate header bug).
+	if n := strings.Count(got, "[Service]"); n != 1 {
+		t.Errorf("expected exactly one [Service] header, got %d:\n%s", n, got)
 	}
 }
 
 // TestCmdUninstallPathGuards: cmdUninstall must not remove "/" or paths with
-// degenerate basenames (. or /). We verify the guard conditions from
-// lifecycle_cmds.go:180-189 in isolation.
+// degenerate basenames (. or /). Calls the PRODUCTION safeRemoveTarget guard
+// (coderabbit major: reimplemented tests cannot detect regressions).
 func TestCmdUninstallPathGuards(t *testing.T) {
-	// Helper: simulates the binary guard from cmdUninstall.
-	binGuard := func(bin string) bool {
-		return bin != "" && strings.HasPrefix(bin, "/") && filepath.Base(bin) != "" && filepath.Base(bin) != "." && filepath.Base(bin) != "/"
-	}
-	// Helper: simulates the state-dir guard from cmdUninstall.
-	dirGuard := func(d string) bool {
-		return d != "" && strings.HasPrefix(d, "/") && filepath.Clean(d) != "/"
-	}
-
 	// These must be REJECTED (guard returns false).
-	rejectedBins := []string{"/", "."}
+	rejectedBins := []string{"/", "/./", ".", "", "relative/path"}
 	for _, bin := range rejectedBins {
-		if binGuard(bin) {
-			t.Errorf("binary %q should be rejected by guards but would pass", bin)
+		if safeRemoveTarget(bin) {
+			t.Errorf("path %q should be rejected by guards but would pass", bin)
 		}
 	}
 	// These must PASS the guard (guard returns true).
@@ -214,50 +185,42 @@ func TestCmdUninstallPathGuards(t *testing.T) {
 		"/provider", // basename="provider", valid
 	}
 	for _, bin := range acceptedBins {
-		if !binGuard(bin) {
+		if !safeRemoveTarget(bin) {
 			t.Errorf("binary %q should pass guards but was rejected", bin)
 		}
 	}
 	// State dir guards: "/" and empty are rejected.
-	if dirGuard("/") {
+	if safeRemoveTarget("/") {
 		t.Errorf("state dir '/' should be rejected")
 	}
-	if dirGuard("") {
+	if safeRemoveTarget("") {
 		t.Errorf("state dir '' should be rejected")
 	}
 	// Valid state dir passes.
-	if !dirGuard("/home/urnet/.urnetwork") {
+	if !safeRemoveTarget("/home/urnet/.urnetwork") {
 		t.Errorf("state dir '/home/urnet/.urnetwork' should pass")
 	}
 }
 
-// TestUnitCommandArgv: unitCommand must produce the correct argv for both
-// system and user units. This pins the fix for the duplicate-action bug
-// where user units generated ["systemctl", "start", "--user", "-M",
-// "user@", "start"] (action appended twice).
+// TestUnitCommandArgv: unitCommandArgs must produce the correct argv for
+// both system and user units. Calls the PRODUCTION argv builder directly
+// (coderabbit major: reimplemented tests cannot detect regressions).
 func TestUnitCommandArgv(t *testing.T) {
-	// We can't run systemctl in a test, but we CAN verify the arg-building
-	// logic by checking that the command is constructed correctly. The
-	// simplest way: verify isUserUnit dispatches correctly, and that the
-	// argv shape matches expectations by inspecting the exec.Command.
-	//
-	// Since we can't intercept exec.Command easily, we verify the invariant
-	// indirectly: for a user unit, isUserUnit returns true; for a system
-	// unit (if present), it returns false. The actual argv construction is
-	// now correct after the fix.
-
 	// A fake unit name that won't exist on any box -> isUserUnit = true.
 	userUnit := "urnet-tools-test-fake-unit-argv.service"
 	if !isUserUnit(userUnit) {
 		t.Skip("isUserUnit returned false for fake unit; cannot test user-level argv")
 	}
-	// The user-level branch should produce args with --user -M <user>@
-	// prepended, NOT a duplicate action. We can't observe the exec.Command
-	// args directly, but we can verify the logic path by confirming that
-	// the user branch is the one taken (isUserUnit=true + User!="").
-	p := Provider{Unit: userUnit, User: "testuser"}
-	if !(isUserUnit(p.Unit) && p.User != "") {
-		t.Fatal("expected user-level branch to be taken")
+	// User-level unit: systemctl --user -M <user>@ <action> [extra...].
+	got := unitCommandArgs(Provider{Unit: userUnit, User: "testuser"}, "restart", "--no-block")
+	want := []string{"systemctl", "--user", "-M", "testuser@", "restart", "--no-block"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("user-unit argv = %v, want %v", got, want)
 	}
-	// If we got here without panicking, the fix is in place.
+	// System-level unit: systemctl <action> [extra...].
+	got = unitCommandArgs(Provider{Unit: "urnetwork-native.service", User: ""}, "start")
+	want = []string{"systemctl", "start"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("system-unit argv = %v, want %v", got, want)
+	}
 }
