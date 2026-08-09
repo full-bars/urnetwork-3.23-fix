@@ -131,3 +131,27 @@ func TestBackupNameTimestamped(t *testing.T) {
 		t.Errorf("backup name should carry a timestamp, got %s", tsName)
 	}
 }
+
+// TestUpdateProviderRefusesEmptyDigest: updateProvider must refuse to run
+// when no sha256 digest is available — the staged binary would be executed
+// (version check + install) with no integrity verification. Pins the
+// free-review critical on unverified downloads.
+func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
+	dir := t.TempDir()
+	cfg := updateConfig{
+		Tag:      "v9.9.9-test",
+		Digest:   "",
+		StageDir: filepath.Join(dir, "stage"),
+	}
+	err := updateProvider(Provider{Binary: filepath.Join(dir, "provider")}, cfg)
+	if err == nil {
+		t.Fatal("updateProvider with empty digest must error")
+	}
+	if !strings.Contains(err.Error(), "no sha256 digest") {
+		t.Fatalf("error must say digest is missing, got: %v", err)
+	}
+	// Must fail BEFORE any download/stage activity.
+	if _, err := os.Stat(cfg.StageDir); !os.IsNotExist(err) {
+		t.Errorf("stage dir must not be created when digest is missing (err=%v)", err)
+	}
+}

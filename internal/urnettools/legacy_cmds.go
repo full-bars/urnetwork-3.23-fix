@@ -116,7 +116,17 @@ func cmdLogs(args []string) error {
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	return unitCommand(p, "journalctl", "-fu", p.Unit)
+	// journalctl is a standalone binary, not a systemctl verb — calling it
+	// through unitCommand would execute `systemctl journalctl` (invalid,
+	// free-review critical). Scope user units explicitly.
+	jargs := []string{"-fu", p.Unit}
+	if isUserUnit(p.Unit) && p.User != "" {
+		jargs = []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
+	}
+	cmd := exec.Command("journalctl", jargs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a

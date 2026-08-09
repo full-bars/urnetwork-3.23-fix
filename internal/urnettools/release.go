@@ -23,8 +23,8 @@ type releaseAsset struct {
 
 // releaseJSON is the subset of the GitHub release JSON we need.
 type releaseJSON struct {
-	TagName string          `json:"tag_name"`
-	Assets  []releaseAsset  `json:"assets"`
+	TagName string         `json:"tag_name"`
+	Assets  []releaseAsset `json:"assets"`
 }
 
 // fetchLatestRelease queries the fork's GitHub releases/latest endpoint and
@@ -52,13 +52,54 @@ func fetchLatestRelease() (*releaseInfo, error) {
 		URL: fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", rj.TagName, rj.TagName),
 	}
 	// The release API digest field is "sha256:<hex>"; strip the prefix and
-	// match the exact asset name.
+	// match the exact asset name. A missing asset or missing digest is an
+	// ERROR, not a silent skip — an unverified download would be executed
+	// as the provider user (free-review critical).
 	wantName := "urnetwork-provider-" + rj.TagName + ".tar.gz"
 	for _, a := range rj.Assets {
 		if a.Name == wantName {
 			info.Digest = strings.TrimPrefix(a.Digest, "sha256:")
 			break
 		}
+	}
+	if info.Digest == "" {
+		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", rj.TagName, wantName)
+	}
+	return info, nil
+}
+
+// fetchReleaseByTag queries the GitHub releases/tags/<tag> endpoint and
+// returns the tarball sha256 digest for the provider asset. Used when the
+// user passes --tag without --digest so the update is always verified
+// against the release API's recorded digest.
+func fetchReleaseByTag(tag string) (*releaseInfo, error) {
+	api := fmt.Sprintf("https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/%s", tag)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(api)
+	if err != nil {
+		return nil, fmt.Errorf("fetch release %s: %w", tag, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch release %s: status %d", tag, resp.StatusCode)
+	}
+	var rj releaseJSON
+	if err := json.NewDecoder(resp.Body).Decode(&rj); err != nil {
+		return nil, fmt.Errorf("decode release %s: %w", tag, err)
+	}
+	info := &releaseInfo{
+		Tag: tag,
+		URL: fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", tag, tag),
+	}
+	wantName := "urnetwork-provider-" + tag + ".tar.gz"
+	for _, a := range rj.Assets {
+		if a.Name == wantName {
+			info.Digest = strings.TrimPrefix(a.Digest, "sha256:")
+			break
+		}
+	}
+	if info.Digest == "" {
+		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", tag, wantName)
 	}
 	return info, nil
 }
