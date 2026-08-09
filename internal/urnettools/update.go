@@ -39,16 +39,18 @@ func defaultUpdateConfig() updateConfig {
 	}
 }
 
-// cmdUpdate updates one provider's binary to the given release, then
-// restarts the unit that actually owns it (system-level or user-level —
-// never the wrong one). Destructive gate applies.
+// cmdUpdate updates one or more providers' binaries to the given release,
+// then restarts the unit that actually owns each (system-level or
+// user-level — never the wrong one). Destructive gate applies per provider.
 func cmdUpdate(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
 	}
 	cfg := defaultUpdateConfig()
-	// Parse --tag/--digest/--url overrides.
+	// Parse --tag/--digest/--url and batch-selection overrides.
+	var include, exclude []string
+	interactive := false
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -69,6 +71,20 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			}
 			cfg.AssetURL = rest[i+1]
 			i++
+		case "--include":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--include requires a value (comma-separated labels)")
+			}
+			include = splitLabels(rest[i+1])
+			i++
+		case "--exclude":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--exclude requires a value (comma-separated labels)")
+			}
+			exclude = splitLabels(rest[i+1])
+			i++
+		case "--select":
+			interactive = true
 		}
 	}
 	if cfg.Tag == "" {
@@ -76,19 +92,13 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	}
 
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	chosen, err := selectTargets(providers, t, include, exclude, interactive)
 	if err != nil {
 		return err
 	}
-	if p.Binary == "" {
-		return fmt.Errorf("provider %s has no resolvable binary path", providerLabel(p))
-	}
-	if p.Version == cfg.Tag {
-		fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
-		return nil
-	}
 
-	ok, err := confirmGate(fmt.Sprintf("update %s to %s (binary swap + restart of %s)", providerLabel(p), cfg.Tag, p.Unit), p, force, dryRun)
+	// Confirm once for the whole set, listing every provider.
+	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, force, dryRun)
 	if err != nil {
 		return err
 	}
@@ -96,10 +106,31 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		return nil // dry-run
 	}
 
-	if err := updateProvider(p, cfg); err != nil {
-		return fmt.Errorf("update failed: %w", err)
+	for _, p := range chosen {
+		if p.Binary == "" {
+			return fmt.Errorf("provider %s has no resolvable binary path", providerLabel(p))
+		}
+		if p.Version == cfg.Tag {
+			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
+			continue
+		}
+		if err := updateProvider(p, cfg); err != nil {
+			return fmt.Errorf("update %s failed: %w", providerLabel(p), err)
+		}
 	}
 	return nil
+}
+
+// splitLabels splits a comma-separated label list.
+func splitLabels(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // updateProvider performs the surgical binary swap for one provider:
