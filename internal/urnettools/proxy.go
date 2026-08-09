@@ -52,7 +52,17 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
-	t, rest, err := parseTargetFlags(rest)
+	// refresh passes provider-binary flags through (e.g. --force), so it
+	// needs the LENIENT parse (unknown --flags preserved); every other
+	// subcommand keeps strict rejection so a typo like --netwrok cannot be
+	// silently absorbed on a destructive op (review finding L2).
+	var t Target
+	var err error
+	if sub == "refresh" {
+		t, rest, err = parseTargetFlagsLenient(rest)
+	} else {
+		t, rest, err = parseTargetFlags(rest)
+	}
 	if err != nil {
 		return err
 	}
@@ -118,36 +128,27 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
 	case "health":
-		// State-file based; not a provider-binary delegation.
-		t2, _, err := parseTargetFlags(rest)
-		if err != nil {
-			return err
-		}
-		p, err := selectTarget(providers, t2)
+		// State-file based; not a provider-binary delegation. Uses the
+		// already-parsed target (t) — re-parsing here would see an arg
+		// list with the target flags already stripped (free-review
+		// major: health/traffic/remove-dead lost targeting).
+		p, err := selectTarget(providers, t)
 		if err != nil {
 			return err
 		}
 		return cmdProxyHealthTarget(p)
 	case "traffic":
-		t2, _, err := parseTargetFlags(rest)
-		if err != nil {
-			return err
-		}
-		p, err := selectTarget(providers, t2)
+		p, err := selectTarget(providers, t)
 		if err != nil {
 			return err
 		}
 		return cmdProxyTrafficTarget(p)
 	case "remove-dead":
-		t2, rest2, err := parseTargetFlagsLenient(rest)
+		p, err := selectTarget(providers, t)
 		if err != nil {
 			return err
 		}
-		p, err := selectTarget(providers, t2)
-		if err != nil {
-			return err
-		}
-		return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, rest2...)...)
+		return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 	default:
 		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead)", sub)
 	}

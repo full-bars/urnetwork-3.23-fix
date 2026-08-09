@@ -62,5 +62,11 @@ func containerIDByName(name string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	// -aqf can match several containers (name prefix); take the first ID.
+	for _, line := range strings.Split(string(out), "\n") {
+		if id := strings.TrimSpace(line); id != "" {
+			return id
+		}
+	}
+	return ""
 }

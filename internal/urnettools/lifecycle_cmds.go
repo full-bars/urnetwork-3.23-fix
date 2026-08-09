@@ -165,18 +165,33 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 
 	if p.Unit != "" {
 		if isUserUnit(p.Unit) && p.User != "" {
-			_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", p.Unit).Run()
+			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", p.Unit).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
+			}
 		} else {
-			_ = exec.Command("systemctl", "disable", "--now", p.Unit).Run()
+			if out, err := exec.Command("systemctl", "disable", "--now", p.Unit).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
+			}
 		}
 	}
-	if p.Binary != "" && strings.HasPrefix(p.Binary, "/") {
-		_ = os.Remove(p.Binary)
+	// Only remove paths that look like real install paths — never "/" or
+	// a bare relative path (free-review major: harden the deletion guard).
+	removedAny := false
+	if p.Binary != "" && strings.HasPrefix(p.Binary, "/") && filepath.Base(p.Binary) != "" && filepath.Base(p.Binary) != "." && filepath.Base(p.Binary) != "/" {
+		if err := os.Remove(p.Binary); err == nil {
+			removedAny = true
+		}
 	}
-	if p.StateDir != "" && strings.HasPrefix(p.StateDir, "/") {
-		_ = os.RemoveAll(p.StateDir)
+	if p.StateDir != "" && strings.HasPrefix(p.StateDir, "/") && filepath.Clean(p.StateDir) != "/" {
+		if err := os.RemoveAll(p.StateDir); err == nil {
+			removedAny = true
+		}
 	}
-	fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
+	if removedAny {
+		fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
+	} else {
+		fmt.Printf("Uninstall %s: nothing removable found (unit disabled if present)\n", providerLabel(p))
+	}
 	return nil
 }
 
