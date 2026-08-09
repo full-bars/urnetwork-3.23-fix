@@ -462,70 +462,89 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 
 	totalAdded := 0
 	dirty := false
-	for i, url := range urls {
-		if fetched[i] == nil {
-			continue
+
+	// Best-overall admission: pool every candidate across ALL sources, rank
+	// by tier (A first), and merge in that order. The cache fills with the
+	// highest-tier proxies first; lower tiers fill only remaining slots.
+	// This is the A→B→C→D funnel — we add the best, not the first.
+	rankAddr := func(addr string) int {
+		if g, ok := grades[addr]; ok && g.Decidable {
+			return proxyTierRank(proxyGradeTier(g.Score))
 		}
-		// Best-overall cache selection: rank every candidate by its stage-1
-		// tier (A=4..F=0, ungraded=-1) so a full cache keeps the highest-tier
-		// proxies across ALL sources instead of the first source's entries.
-		// gradeFor also decides ProbeOK at insert time (address-keyed, 342
-		// review round 2).
-		rankAddr := func(addr string) int {
-			if g, ok := grades[addr]; ok && g.Decidable {
-				return proxyTierRank(proxyGradeTier(g.Score))
-			}
-			return -1
+		return -1
+	}
+	gradeFor := func(addr string) (proxyURLGrade, bool) {
+		g, ok := grades[addr]
+		return g, ok
+	}
+	cands := collectRankedCandidates(fetched, grades)
+	// admittedByTier counts what actually entered the cache this cycle, per
+	// letter grade, so the operator sees the funnel's output directly.
+	admittedByTier := map[string]int{}
+	var admittedLines []string
+	var admittedOKCount int
+	for _, c := range cands {
+		admittedLines = append(admittedLines, c.line)
+		if c.grade.Qualified {
+			// Qualified = score >= pass bar (or kill-switch-disabled
+			// stage-0-only admission). These get ProbeOK=true and lead the
+			// merge so they fill the cap first.
+			admittedOKCount++
 		}
-		gradeFor := func(addr string) (proxyURLGrade, bool) {
-			g, ok := grades[addr]
-			return g, ok
+	}
+	added := mergeProxyURLEntries(state, admittedLines, admittedOKCount, maxTotal, rankAddr, gradeFor)
+	totalAdded += added
+	for _, c := range cands {
+		if _, exists := state.Cache[c.address]; exists && c.grade.Qualified && c.grade.Decidable {
+			admittedByTier[proxyGradeTier(c.grade.Score)]++
 		}
-		added := mergeProxyURLEntries(state, fetched[i], apiOKCounts[i], maxTotal, rankAddr, gradeFor)
-		totalAdded += added
-		markedAPI := 0
-		markedSocks5 := 0
-		for _, line := range fetched[i] {
-			addr, _, _, ok := parseProxyURLLine(line)
-			if !ok {
-				continue
-			}
-			if entry, exists := state.Cache[addr]; exists {
-				entry.LastProbe = time.Now()
-				// Persist the stage-1 grade alongside ProbeOK so the
-				// auth-time gate and fleet grading can consume it. Graded
-				// is set ONLY for a genuine stage-1 verdict (g.Decidable).
-				// A socks5-only line never reached stage 1, and a pass that
-				// could not ask anything (cancelled context, resolver
-				// outage) produced no evidence — persisting either as
-				// "graded, score 0.0" would convict a proxy the probe never
-				// actually tested (findings C1 and C2). Such entries keep
-				// their prior grade (or the ungraded state).
-				if g, ok := grades[addr]; ok && g.Decidable && !g.Socks5Only {
-					entry.Score = g.Score
-					entry.Graded = true
-					entry.Failed = capFailedList(g.Failed)
-				}
-				// ProbeOK comes from the address-keyed grade (342 review
-				// round 2): a qualified address is ProbeOK even if skipped
-				// lines shifted the raw index, and a below-bar/socks5-only
-				// address is not, regardless of position.
-				if g, ok := grades[addr]; ok && g.Qualified {
-					entry.ProbeOK = true
-					entry.ProbeFails = 0
-					markedAPI++
-				} else {
-					entry.ProbeOK = false
-					markedSocks5++
-				}
-				state.Cache[addr] = entry
-				dirty = true
+	}
+	if len(admittedByTier) > 0 {
+		parts := make([]string, 0, len(admittedByTier))
+		for _, tier := range []string{"A", "B", "C", "D", "F"} {
+			if n := admittedByTier[tier]; n > 0 {
+				parts = append(parts, fmt.Sprintf("%s=%d", tier, n))
 			}
 		}
-		if markedSocks5 > 0 || markedAPI > 0 {
-			tlog("[proxy][url] %s: %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", url, markedAPI, markedSocks5)
+		tlog("[proxy][url] admitted by tier: %s (cap %d, total cached %d)\n",
+			strings.Join(parts, " "), maxTotal, len(state.Cache))
+	}
+
+	markedAPI := 0
+	markedSocks5 := 0
+	for _, c := range cands {
+		addr := c.address
+		if entry, exists := state.Cache[addr]; exists {
+			entry.LastProbe = time.Now()
+			// Persist the stage-1 grade alongside ProbeOK so the
+			// auth-time gate and fleet grading can consume it.
+			//
+			// Graded is set ONLY for a genuine stage-1 verdict
+			// (g.Decidable). A socks5-only line never reached stage 1,
+			// and a pass that could not ask anything (cancelled context,
+			// resolver outage) produced no evidence — persisting either
+			// as "graded, score 0.0" would convict a proxy the probe
+			// never actually tested (findings C1 and C2). Such entries
+			// keep their prior grade (or the ungraded state).
+			if g, ok := grades[addr]; ok && g.Decidable && !g.Socks5Only {
+				entry.Score = g.Score
+				entry.Graded = true
+				entry.Failed = capFailedList(g.Failed)
+			}
+			if c.grade.Qualified {
+				entry.ProbeOK = true
+				entry.ProbeFails = 0
+				markedAPI++
+			} else {
+				entry.ProbeOK = false
+				markedSocks5++
+			}
+			state.Cache[addr] = entry
+			dirty = true
 		}
-		tlog("[proxy][url] fetched %s: +%d new proxies\n", url, added)
+	}
+	if markedSocks5 > 0 || markedAPI > 0 {
+		tlog("[proxy][url] %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", markedAPI, markedSocks5)
 	}
 
 	// Tier breakdown is printed every cycle that produced any grade, even
