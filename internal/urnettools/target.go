@@ -8,10 +8,11 @@ import (
 // Target identifies exactly one provider to operate on. At most one field is
 // set; the others are empty.
 type Target struct {
-	Unit     string // systemd unit name, e.g. "urnetwork-native.service"
-	User     string // OS user, e.g. "urnet"
-	Network  string // JWT network_name, e.g. "tacogonzalez3000"
-	StateDir string // explicit state directory path
+	Unit      string // systemd unit name, e.g. "urnetwork-native.service"
+	User      string // OS user, e.g. "urnet"
+	Network   string // JWT network_name, e.g. "tacogonzalez3000" (NOT unique per box — see matchKey)
+	NetworkID string // JWT network_id — the TRUE unique account identity
+	StateDir  string // explicit state directory path
 }
 
 // String renders the target in a human-readable form for confirm prompts.
@@ -21,6 +22,8 @@ func (t Target) String() string {
 		return fmt.Sprintf("unit %s", t.Unit)
 	case t.User != "":
 		return fmt.Sprintf("user %s", t.User)
+	case t.NetworkID != "":
+		return fmt.Sprintf("network-id %s", t.NetworkID)
 	case t.Network != "":
 		return fmt.Sprintf("network %s", t.Network)
 	case t.StateDir != "":
@@ -37,6 +40,9 @@ func (t Target) matchProvider(p Provider) bool {
 	}
 	if t.User != "" {
 		return p.User == t.User
+	}
+	if t.NetworkID != "" {
+		return p.NetworkID == t.NetworkID
 	}
 	if t.Network != "" {
 		return p.Network == t.Network
@@ -57,7 +63,7 @@ func (t Target) matchProvider(p Provider) bool {
 //     providers exist the operation is REFUSED with the inventory listed —
 //     the operator must say which one (the incident-class guard).
 func selectTarget(providers []Provider, t Target) (Provider, error) {
-	if t.Unit != "" || t.User != "" || t.Network != "" || t.StateDir != "" {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 		var matches []Provider
 		for _, p := range providers {
 			if t.matchProvider(p) {
