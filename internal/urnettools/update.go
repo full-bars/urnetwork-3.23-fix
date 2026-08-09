@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -130,6 +131,18 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		if cfg.AssetURL == "" {
 			cfg.AssetURL = rel.URL
 		}
+	} else if cfg.Digest == "" {
+		// --tag without --digest: resolve the digest from the release API
+		// so the download is always verified (never silently skipped —
+		// the staged binary would be executed as the provider user).
+		rel, rerr := fetchReleaseByTag(cfg.Tag)
+		if rerr != nil {
+			return rerr
+		}
+		cfg.Digest = rel.Digest
+		if cfg.AssetURL == "" {
+			cfg.AssetURL = rel.URL
+		}
 	}
 
 	// Confirm version choice interactively unless -f or dry-run already
@@ -239,13 +252,24 @@ func splitLabels(s string) []string {
 //
 // This is the exact recipe proven on 2026-08-09 for taco's fleet.
 func updateProvider(p Provider, cfg updateConfig) error {
+	// A digest is MANDATORY: without it the downloaded binary is executed
+	// (version check + install, often as the provider user) with no
+	// integrity verification. Check BEFORE any staging side effects — the
+	// flag parser and release lookup both ensure a digest is resolved;
+	// this is the last line of defense.
+	if cfg.Digest == "" {
+		return fmt.Errorf("update: no sha256 digest for %s; refusing unverified download", cfg.Tag)
+	}
 	if err := os.MkdirAll(cfg.StageDir, 0o755); err != nil {
 		return fmt.Errorf("stage dir: %w", err)
 	}
 	arch := runtimeGOARCH()
-	relPath := filepath.Join("linux", arch, "provider")
+	// Tar headers always use forward slashes regardless of host OS; using
+	// filepath.Join here would produce backslashes on Windows and the
+	// in-archive lookup would never match (free-review critical).
+	relPath := path.Join("linux", arch, "provider")
 	if runtime.GOOS == "windows" {
-		relPath = filepath.Join("windows", arch, "provider.exe")
+		relPath = path.Join("windows", arch, "provider.exe")
 	}
 
 	url := cfg.AssetURL
@@ -258,12 +282,10 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if err := downloadFile(url, tarball); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
-	if cfg.Digest != "" {
-		if err := verifySHA256(tarball, cfg.Digest); err != nil {
-			return err
-		}
-		fmt.Println("sha256 verified")
+	if err := verifySHA256(tarball, cfg.Digest); err != nil {
+		return err
 	}
+	fmt.Println("sha256 verified")
 
 	// Extract only the needed arch's provider binary.
 	extractDir := filepath.Join(cfg.StageDir, "extract-"+cfg.Tag)

@@ -26,9 +26,9 @@ func TestIsDockerCandidate(t *testing.T) {
 func TestDockerImageVersion(t *testing.T) {
 	cases := map[string]string{
 		"ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.26.8": "v3.23.0-fix.26.8",
-		"urnetwork-3.23-fix:stable":                            "",
-		"urnetwork-3.23-fix:latest":                            "",
-		"urnetwork-3.23-fix":                                   "",
+		"urnetwork-3.23-fix:stable":                             "",
+		"urnetwork-3.23-fix:latest":                             "",
+		"urnetwork-3.23-fix":                                    "",
 	}
 	for img, want := range cases {
 		if got := dockerImageVersion(img); got != want {
