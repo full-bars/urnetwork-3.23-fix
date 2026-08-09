@@ -112,3 +112,32 @@ func TestSelectTargetsExcludeLeavesEmpty(t *testing.T) {
 		t.Fatal("expected error when selection is empty after exclude")
 	}
 }
+
+// TestSelectTargetsForceRefusesMulti: -f mode (non-interactive) with
+// multiple providers and no criteria must refuse — force never auto-selects
+// everything; that requires an explicit --all.
+func TestSelectTargetsForceRefusesMulti(t *testing.T) {
+	// Non-interactive (what -f implies) with 3 providers and no criteria.
+	_, err := selectTargets(threeProviders(), Target{}, nil, nil, false)
+	if err == nil {
+		t.Fatal("expected refusal: -f alone must not update a multi-provider box")
+	}
+	if !contains(err.Error(), "specify a target") {
+		t.Errorf("refusal should demand a target, got: %s", err)
+	}
+}
+
+// TestSelectTargetsAllSemantics documents that --all maps to every provider
+// (handled in cmdUpdate, but the contract is: all three come back).
+func TestSelectTargetsAllSemantics(t *testing.T) {
+	ps := threeProviders()
+	// selectTargets has no --all; cmdUpdate expands it. Simulate the same
+	// contract: an explicit include of all three labels yields all three.
+	got, err := selectTargets(ps, Target{}, []string{"urnetwork-native.service", "urnetwork-beta.service", "urnetwork-alpha.service"}, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want all 3, got %d", len(got))
+	}
+}

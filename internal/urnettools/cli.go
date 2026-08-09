@@ -64,35 +64,40 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 // errHelpShown is a sentinel: help was printed, not an error condition.
 var errHelpShown = fmt.Errorf("help shown")
 
-// usage prints the subcommand summary.
+// usage prints the subcommand summary. It is deliberately self-contained:
+// an operator should be able to figure out targeting + force rules from
+// this alone, without the README/wiki.
 func usage() {
 	fmt.Fprintf(os.Stderr, `urnet-tools — provider-aware URnetwork manager
 
 Usage: urnet-tools <command> [flags]
 
 Commands:
-  providers              list all providers on this box (all users)
+  providers              list all providers on this box (all users, JWT identity)
   status [target]        detailed status of one provider
-  update [target]        update one provider's binary (stages on real disk)
+  update [target]        update provider(s) to latest (interactive; --tag to pin)
   proxy add|clear|remove|refresh [target]   manage proxies
   summary [target]       fleet-style summary for one provider
   report <url> [target]  set hub URL at runtime
   hot-restart [target]   restart one provider's unit
 
-Targeting flags (required when the box runs more than one provider):
+Providers are identified three ways (use any):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
   --user <user>          OS user, e.g. urnet
-  --network <name>       JWT network name, e.g. tacogonzalez3000
-  --state-dir <path>     explicit state directory
+  --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
 
-Batch selection (update/proxy ops):
-  --include <a,b>        update/add to exactly these providers (unit/user/network labels)
-  --exclude <a,b>        subtract providers from the chosen set
-  --select               interactive numbered picker (update A B C, skip D)
+Targeting rules:
+  - one provider on box: no flag needed, it is used automatically
+  - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
+  - batch: --include a,b (exactly these) / --exclude a,b (subtract) / --all (everything)
+  - --select             interactive picker (choose A B C, skip D)
+  - see 'providers' first to learn each provider's unit/user/network
 
-Global flags:
-  -f, --force            bypass the confirm gate (for scripts/cron)
-  -n, --dry-run          show what would happen without doing it
+Force (machines/scripts):
+  -f, --force            skip confirm prompts ONLY — never picks providers.
+                         Multi-provider box + -f alone = REFUSED (no target).
+                         Use -f --all (everything) or -f --include a,b.
+  -n, --dry-run          print the plan, change nothing (safe anywhere)
   -h, --help             show help (never executes anything)
 `)
 }
