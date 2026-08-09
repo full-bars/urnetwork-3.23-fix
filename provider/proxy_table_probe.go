@@ -100,16 +100,6 @@ var probeConfigCache struct {
 	at  time.Time
 }
 
-// resetProbeConfigCache clears the TTL cache. Test-only: tests write an
-// override file then resolve immediately, which would otherwise reuse a
-// snapshot for probeConfigTTL.
-func resetProbeConfigCache() {
-	probeConfigCache.Lock()
-	defer probeConfigCache.Unlock()
-	probeConfigCache.cfg = proxyTableProbeConfig{}
-	probeConfigCache.at = time.Time{}
-}
-
 // resolveProxyTableProbeConfig returns the effective probe configuration,
 // reusing the previous parse within probeConfigTTL so the auth hot path does
 // not issue one filesystem read per call (review #14).

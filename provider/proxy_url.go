@@ -291,26 +291,69 @@ func cacheSizeExcludingBelowBar(cache map[string]ProxyURLEntry, cfg proxyTablePr
 // removes a squatter that still passes stage 0 (the reaper resets its
 // ProbeFails, it is not re-graded once the source drops it, and it never
 // launches) — without a hard backstop proxy_url.json could grow without
-// limit (Opus review finding 3).
+// limit (Opus review finding 3). At the hard cap the merge evicts the
+// OLDEST squatter to make room rather than dropping the candidate (review
+// round 2).
 const proxyURLCacheHardCapFactor = 2
 
-func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int) (added int) {
+// evictOldestBelowBarSquatter removes the graded-below-bar cache entry with
+// the oldest LastProbe, if any, so an admissible candidate can still be
+// admitted when the hard cap is reached. Squatters (Graded && Score <
+// PassBar while the kill switch is on) never launch, so evicting them is
+// strictly better than dropping the new candidate. Returns false when there
+// is nothing to evict (cache at/over cap with no squatters — the merge then
+// stops).
+func evictOldestBelowBarSquatter(state *ProxyURLState, cfg proxyTableProbeConfig) bool {
+	var oldestAddr string
+	var oldest time.Time
+	for addr, e := range state.Cache {
+		if !cfg.Enabled || !e.Graded || e.Score >= cfg.PassBar {
+			continue
+		}
+		if oldestAddr == "" || e.LastProbe.Before(oldest) {
+			oldestAddr = addr
+			oldest = e.LastProbe
+		}
+	}
+	if oldestAddr == "" {
+		return false
+	}
+	oldestEntry := state.Cache[oldestAddr]
+	delete(state.Cache, oldestAddr)
+	tlog("[proxy][url] hard cap eviction: below-bar squatter %s (score %.2f) evicted for a new candidate\n",
+		oldestAddr, oldestEntry.Score)
+	return true
+}
+
+// mergeProxyURLEntries adds new entries from lines into state.Cache. lines is
+// expected to have any api-verified entries first, followed by socks5-only
+// entries (the order fetchAndMergeProxyURLs builds them in); apiOKCount is
+// how many of the leading entries passed the API-reachability probe and
+// should be cached with ProbeOK=true. Entries beyond apiOKCount (socks5-only,
+// or callers that don't track probe results) get ProbeOK=false so the
+// background reaper picks them up for retry.
+//
+// qualified (may be nil) is an address-keyed set of stage-1-qualified
+// addresses. When non-nil it decides ProbeOK at insert time instead of the
+// raw line index / apiOKCount boundary, so skipped cached, duplicate,
+// blacklisted, excluded, or invalid lines can never shift qualification
+// status onto another address (review round 2).
+func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, maxTotal int, qualified map[string]bool) (added int) {
 	if state.Cache == nil {
 		state.Cache = map[string]ProxyURLEntry{}
 	}
 	// The cap counts non-squatter entries (see cacheSizeExcludingBelowBar).
 	// Computed once: inserted entries are ungraded at insert time (grades are
 	// persisted after the merge), so the count only grows by one per add.
+	cfg := resolveProxyTableProbeConfig()
 	capCount := len(state.Cache)
+	hardCap := 0
 	if maxTotal > 0 {
-		capCount = cacheSizeExcludingBelowBar(state.Cache, resolveProxyTableProbeConfig())
+		capCount = cacheSizeExcludingBelowBar(state.Cache, cfg)
 		if capCount > maxTotal {
 			tlog("[proxy][url] cache over cap: %d non-squatter entries, maxTotal=%d (new entries will not be added)\n",
 				capCount, maxTotal)
 		}
-	}
-	hardCap := 0
-	if maxTotal > 0 {
 		hardCap = maxTotal * proxyURLCacheHardCapFactor
 	}
 	for i, line := range lines {
@@ -327,15 +370,25 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 		if hostMatchesAny(state.ExcludePatterns, address) {
 			continue
 		}
-		// Hard backstop first: even with squatters excluded from the count,
-		// the file itself must stay bounded.
-		if hardCap > 0 && len(state.Cache) >= hardCap {
-			break
-		}
+		// Soft cap first: if the non-squatter count is already at maxTotal,
+		// stop without evicting (a squatter eviction would be wasted).
 		if maxTotal > 0 && capCount >= maxTotal {
 			break
 		}
-		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: i < apiOKCount}
+		// Hard backstop: the file itself must stay bounded even with
+		// squatters excluded from the count. When a squatter exists, evict
+		// the oldest one to make room for this candidate; only stop when
+		// there is nothing left to evict.
+		if hardCap > 0 && len(state.Cache) >= hardCap {
+			if !evictOldestBelowBarSquatter(state, cfg) {
+				break
+			}
+		}
+		probeOK := i < apiOKCount
+		if qualified != nil {
+			probeOK = qualified[address]
+		}
+		state.Cache[address] = ProxyURLEntry{User: user, Password: password, ProbeOK: probeOK}
 		capCount++
 		added++
 	}
