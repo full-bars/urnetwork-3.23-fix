@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	mathrand "math/rand"
 	"net"
 	"sync"
@@ -108,7 +109,12 @@ func resolveAPIProbeAddr(host string, port uint16) (net.IP, uint16) {
 // Both stages reuse one TCP connection. A random stagger up to
 // proxyProbeStagger is applied before dialing to smooth batch bursts.
 // The API destination IP is resolved once and cached across probes.
-func probeProxy(ctx context.Context, address string, apiHost string, apiPort uint16) probeResult {
+// Credentials (user/password) are honoured via RFC 1929 so credentialed
+// entries are probed on the same terms the real auth path will use.
+// Reads use io.ReadFull and the greeting method byte is inspected, so a
+// partial reply or "no acceptable method" (0xFF) is not mistaken for a
+// live proxy (finding H1).
+func probeProxy(ctx context.Context, address, user, password string, apiHost string, apiPort uint16) probeResult {
 	stagger := time.Duration(mathrand.Intn(int(proxyProbeStagger)))
 	timer := time.NewTimer(stagger)
 	select {
@@ -134,16 +140,47 @@ func probeProxy(ctx context.Context, address string, apiHost string, apiPort uin
 		}
 	}
 
-	if _, err := conn.Write(socks5Greeting); err != nil {
+	// Offer no-auth, plus username/password when we have creds. RFC 1929
+	// bounds each field at 255 bytes; reject longer credentials rather than
+	// truncating them on the wire and misreporting a working proxy as dead.
+	if len(user) > 255 || len(password) > 255 {
+		return probeDead
+	}
+	greeting := socks5Greeting
+	if user != "" || password != "" {
+		greeting = []byte{0x05, 0x02, 0x00, 0x02}
+	}
+	if _, err := conn.Write(greeting); err != nil {
 		return probeDead
 	}
 
 	greetingResp := make([]byte, 2)
-	if _, err := conn.Read(greetingResp); err != nil {
+	if _, err := io.ReadFull(conn, greetingResp); err != nil {
 		return probeDead
 	}
 	if greetingResp[0] != 0x05 {
 		return probeDead
+	}
+	if greetingResp[1] == 0xFF {
+		// no acceptable method
+		return probeDead
+	}
+	if greetingResp[1] == 0x02 {
+		// RFC 1929 sub-negotiation
+		auth := []byte{0x01, byte(len(user))}
+		auth = append(auth, []byte(user)...)
+		auth = append(auth, byte(len(password)))
+		auth = append(auth, []byte(password)...)
+		if _, err := conn.Write(auth); err != nil {
+			return probeDead
+		}
+		authResp := make([]byte, 2)
+		if _, err := io.ReadFull(conn, authResp); err != nil {
+			return probeDead
+		}
+		if authResp[0] != 0x01 || authResp[1] != 0x00 {
+			return probeDead
+		}
 	}
 
 	// Stage 2: SOCKS5 CONNECT to api.bringyour.com:443 (or custom apiHost)
@@ -164,7 +201,7 @@ func probeProxy(ctx context.Context, address string, apiHost string, apiPort uin
 	}
 
 	connectResp := make([]byte, 10)
-	if _, err := conn.Read(connectResp); err != nil {
+	if _, err := io.ReadFull(conn, connectResp); err != nil {
 		return probeSocks5Only
 	}
 	// Response: VER(1) REP(1) RSV(1) ATYP(1) BND.ADDR(4) BND.PORT(2)
@@ -181,14 +218,17 @@ func probeProxy(ctx context.Context, address string, apiHost string, apiPort uin
 // dual-stage probe during the URL fetch pipeline. Used at auth time as a
 // cheap gate before spending an auth-rate-limiter slot.
 func probeProxySocks5(ctx context.Context, address string, timeout time.Duration) bool {
-	return probeProxy(ctx, address, "", 0) != probeDead
+	return probeProxy(ctx, address, "", "", "", 0) != probeDead
 }
 
 // probeAndFilterProxyURLLines parses each line, probes the address with the
 // dual-stage check (SOCKS5 + API CONNECT), and returns only the lines whose
 // probeResult is probeAPIReachable. Lines that fail to parse are dropped.
 // Lines that reach SOCKS5 but fail API CONNECT are returned separately so
-// the caller can cache them with ProbeOK=false for reaper retry.
+// the caller can cache them with ProbeOK=false for reaper retry. Credentials
+// from the line (host:port:user:pass or socks5://user:pass@host:port) are
+// carried into the probe so credentialed entries are evaluated on the same
+// terms the real auth path uses (finding H3).
 func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost string, apiPort uint16) (apiOK, socks5Only []string) {
 	type result struct {
 		idx int
@@ -201,18 +241,18 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 	var wg sync.WaitGroup
 
 	for i, line := range lines {
-		address, _, _, ok := parseProxyURLLine(line)
+		address, user, password, ok := parseProxyURLLine(line)
 		if !ok {
 			results[i].r = probeDead
 			continue
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, address string) {
+		go func(i int, address, user, password string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = result{i, probeProxy(ctx, address, apiHost, apiPort)}
-		}(i, address)
+			results[i] = result{i, probeProxy(ctx, address, user, password, apiHost, apiPort)}
+		}(i, address, user, password)
 	}
 	wg.Wait()
 

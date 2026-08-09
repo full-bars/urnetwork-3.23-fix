@@ -62,6 +62,21 @@ type ProxyURLEntry struct {
 	ProbeOK    bool      `json:"probe_ok"`              // passed API reachability probe
 	ProbeFails int       `json:"probe_fails,omitempty"` // consecutive API probe failures
 	LastProbe  time.Time `json:"last_probe,omitempty"`  // last API probe time
+
+	// Score is the stage-1 table probe result (ok/total) from the last
+	// graded pass, 0 when the entry has never been table-probed. Matches
+	// the backend data model so fleet grading can consume it directly.
+	Score float64 `json:"score,omitempty"`
+	// Graded is true once a stage-1 table probe has run and recorded its
+	// result. It is distinct from Score: a proxy that scored 0.0 was graded
+	// (and failed), while Score==0 with Graded=false means "never probed".
+	// The auth-time admission gate only enforces the bar for graded entries,
+	// so a honeypot that answers the API CONNECT but nothing else is
+	// blocked even though its score field is numerically zero.
+	Graded bool `json:"graded,omitempty"`
+	// Failed lists the target hostnames that did not answer the last
+	// stage-1 pass, for diagnostics and fleet reporting.
+	Failed []string `json:"failed,omitempty"`
 }
 
 func proxyURLStatePath() (string, error) {
@@ -291,8 +306,23 @@ func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf m
 	if urlState == nil {
 		return
 	}
+	// The stage-1 admission bar, resolved once: graded-below-bar entries
+	// must not enter the desired set at all. Spawning them would hold a
+	// goroutine and a context for a proxy the auth gate will never admit,
+	// and the reaper would keep marking them ProbeOK=true while the gate
+	// blocks them (finding H4). They stay in the cache (the fetch cycle
+	// re-grades them next time); they just never launch.
+	//
+	// The filter is itself gated on cfg.Enabled: flipping the kill switch
+	// off must bring previously-graded below-bar proxies BACK into the
+	// desired set — that is exactly the mis-grading scenario the operator
+	// is escaping from (finding NEW-2).
+	cfg := resolveProxyTableProbeConfig()
 	for addr, entry := range urlState.Cache {
 		if _, exists := desiredSet[addr]; exists {
+			continue
+		}
+		if cfg.Enabled && entry.Graded && entry.Score < cfg.PassBar {
 			continue
 		}
 		settings := &connect.ProxySettings{Network: "tcp", Address: addr}
