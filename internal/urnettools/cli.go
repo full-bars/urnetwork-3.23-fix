@@ -85,6 +85,11 @@ Targeting flags (required when the box runs more than one provider):
   --network <name>       JWT network name, e.g. tacogonzalez3000
   --state-dir <path>     explicit state directory
 
+Batch selection (update/proxy ops):
+  --include <a,b>        update/add to exactly these providers (unit/user/network labels)
+  --exclude <a,b>        subtract providers from the chosen set
+  --select               interactive numbered picker (update A B C, skip D)
+
 Global flags:
   -f, --force            bypass the confirm gate (for scripts/cron)
   -n, --dry-run          show what would happen without doing it
@@ -182,6 +187,35 @@ func cmdStatus(args []string) error {
 	}
 	fmt.Fprintf(w, "jwt-expires:\t%s\n", exp)
 	return w.Flush()
+}
+
+// confirmGateMulti is the batch variant of confirmGate: it lists every
+// provider in the chosen set before the yes/no prompt.
+func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
+	if dryRun {
+		fmt.Printf("[dry-run] would %s:\n", op)
+		for _, p := range targets {
+			fmt.Printf("  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
+		}
+		return false, nil // caller must not act
+	}
+	if force {
+		return true, nil
+	}
+	fmt.Printf("This will %s:\n", op)
+	for _, p := range targets {
+		fmt.Printf("  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
+	}
+	fmt.Print("Type 'yes' to continue: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	if strings.TrimSpace(line) != "yes" {
+		return false, fmt.Errorf("aborted (confirmation did not match)")
+	}
+	return true, nil
 }
 
 // confirmGate implements the dry-run + confirm gate for destructive ops.
