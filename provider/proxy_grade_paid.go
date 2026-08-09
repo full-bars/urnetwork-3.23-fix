@@ -160,6 +160,11 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		}(i, t)
 	}
 	wg.Wait()
+	// Capture the probe-completion time once, so every entry's LastGraded
+	// reflects when its probe finished (not when the apply phase happened
+	// to run under the lock) — the delta is small, but under load the
+	// apply can be delayed by lock contention (review nit).
+	probeDone := time.Now()
 
 	// Apply the grades atomically. Only the grade fields are touched:
 	// Health/DownSince/Source/AuthFailures and the proxy lifecycle are
@@ -219,7 +224,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// Advance the staleness clock on ANY completed pass so a
 			// DNS-gutted (undecidable) pass does not re-probe every tick;
 			// the grade itself is persisted only on a decidable verdict.
-			entry.LastGraded = time.Now()
+			entry.LastGraded = probeDone
 			if r.table.Decidable {
 				oldTier := ""
 				if entry.Graded {
