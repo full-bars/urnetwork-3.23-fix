@@ -137,12 +137,20 @@ func journalctlArgs(p Provider) []string {
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
-// RAM profile (the same check the legacy show_logs does).
+// RAM profile (the same check the legacy show_logs does). User units are
+// queried in the owning user's session, not the system manager
+// (free-review major: RAMLOGS detection ignored user units).
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
 	}
-	out, err := exec.Command("systemctl", "show", p.Unit, "-p", "Environment").Output()
+	var out []byte
+	var err error
+	if isUserUnit(p.Unit) && p.User != "" {
+		out, err = exec.Command("systemctl", "--user", "-M", p.User+"@", "show", p.Unit, "-p", "Environment").Output()
+	} else {
+		out, err = exec.Command("systemctl", "show", p.Unit, "-p", "Environment").Output()
+	}
 	if err != nil {
 		return false
 	}
@@ -213,7 +221,35 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		return err
 	}
 	path := filepath.Join(dropDir, name)
-	content := fmt.Sprintf("[Service]\nEnvironment=%q\n", envLine)
+	// Merge, don't clobber: the same tuning.conf holds multiple
+	// Environment= lines (profile + RAMLOGS), and overwriting the file
+	// would silently drop the sibling setting (free-review major:
+	// "tuning.conf is overwritten, so tuning profiles and RAMLOGS clobber
+	// each other"). Keep lines whose key differs; replace same-key lines.
+	newKey := envLine
+	if i := strings.IndexByte(envLine, '='); i > 0 {
+		newKey = envLine[:i]
+	}
+	var kept []string
+	if b, err := os.ReadFile(path); err == nil {
+		for _, ln := range strings.Split(string(b), "\n") {
+			trimmed := strings.TrimSpace(ln)
+			if trimmed == "" {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "Environment=") {
+				val := strings.TrimPrefix(trimmed, "Environment=")
+				val = strings.Trim(val, `"`)
+				// Same key (e.g. URNETWORK_PROFILE) — replaced below.
+				if strings.HasPrefix(val, newKey) && (len(val) == len(newKey) || val[len(newKey)] == '=') {
+					continue
+				}
+			}
+			kept = append(kept, trimmed)
+		}
+	}
+	kept = append(kept, fmt.Sprintf("Environment=%q", envLine))
+	content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
@@ -221,7 +257,8 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 	return restartAfterDropin(p)
 }
 
-// removeDropinEnv removes a drop-in file (or a matching Environment line).
+// removeDropinEnv removes a matching Environment line from a drop-in file
+// (or the whole file if it becomes empty).
 func removeDropinEnv(p Provider, name, envKey string) error {
 	dropDir, err := unitDropinDir(p)
 	if err != nil {
@@ -232,10 +269,31 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		fmt.Printf("No %s found for %s\n", name, providerLabel(p))
 		return nil
 	}
-	if err := os.Remove(path); err != nil {
+	b, err := os.ReadFile(path)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("Removed %s\n", path)
+	var kept []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		if strings.Contains(ln, envKey) {
+			continue // drop this line only
+		}
+		if strings.TrimSpace(ln) != "" {
+			kept = append(kept, ln)
+		}
+	}
+	if len(kept) == 0 {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		fmt.Printf("Removed %s\n", path)
+	} else {
+		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Updated %s (removed %s)\n", path, envKey)
+	}
 	return restartAfterDropin(p)
 }
 
@@ -286,6 +344,13 @@ func cmdHubInstall(p Provider, rest []string) error {
 	fmt.Printf("Downloading hub %s -> %s\n", url, hubBin)
 	if err := downloadFile(url, hubBin); err != nil {
 		return fmt.Errorf("hub download: %w", err)
+	}
+	// Verify the downloaded hub binary is a valid executable BEFORE
+	// installing it — a corrupted/truncated download would otherwise be
+	// chmod'd and launched (free-review security major).
+	if _, err := exec.Command(hubBin, "--help").CombinedOutput(); err != nil {
+		os.Remove(hubBin)
+		return fmt.Errorf("hub download: binary failed sanity check: %w", err)
 	}
 	if err := os.Chmod(hubBin, 0o755); err != nil {
 		return err

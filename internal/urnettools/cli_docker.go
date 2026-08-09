@@ -18,10 +18,22 @@ func RunDocker(args []string) error {
 	rest := args[1:]
 	switch op {
 	case "providers", "list", "ps":
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
 		return cmdDockerProviders(rest)
 	case "status":
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
 		return cmdDockerStatus(rest)
 	case "exec":
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
 		return cmdDockerExec(rest)
 	case "restart":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
@@ -33,6 +45,10 @@ func RunDocker(args []string) error {
 		}
 		return cmdDockerRestart(rest2, force, dryRun)
 	case "logs":
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
 		return cmdDockerLogs(rest)
 	case "help", "-h", "--help":
 		usageDocker()
@@ -40,6 +56,17 @@ func RunDocker(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q (see 'urnet-docker help')", op)
 	}
+}
+
+// hasHelpFlag reports whether args contains -h/--help (used by the
+// read-only docker subcommands so help never reaches a delegated action).
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
 }
 
 // usageDocker prints the urnet-docker subcommand summary.

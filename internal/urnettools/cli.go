@@ -59,11 +59,23 @@ func Run(args []string) error {
 		}
 		return cmdProxy(rest2, force, dryRun)
 	case "summary":
-		return cmdSimpleDelegation("summary", rest)
+		rest2, herr := parseDelegationArgs(rest)
+		if herr != nil {
+			return nil // help printed, never executes
+		}
+		return cmdSimpleDelegation("summary", rest2)
 	case "report":
-		return cmdSimpleDelegation("report", rest)
+		rest2, herr := parseDelegationArgs(rest)
+		if herr != nil {
+			return nil // help printed, never executes
+		}
+		return cmdSimpleDelegation("report", rest2)
 	case "hot-restart", "hotrestart":
-		return cmdSimpleDelegation("hot-restart", rest)
+		rest2, herr := parseDelegationArgs(rest)
+		if herr != nil {
+			return nil // help printed, never executes
+		}
+		return cmdSimpleDelegation("hot-restart", rest2)
 	case "start":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -212,6 +224,22 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	return providerSubcommand(p, cmdArgs...)
 }
 
+// parseDelegationArgs guards -h/--help for the pass-through commands
+// (summary, report, hot-restart) BEFORE any targeting runs: those commands
+// delegate to the provider binary, so without this guard `--help` would be
+// forwarded and the operation would actually run (the help-never-executes
+// invariant, review finding C1 class). Returns errHelpShown when help was
+// printed; the caller must NOT proceed.
+func parseDelegationArgs(args []string) ([]string, error) {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			usage()
+			return nil, errHelpShown
+		}
+	}
+	return args, nil
+}
+
 // errHelpShown is a sentinel: help was printed, not an error condition.
 var errHelpShown = fmt.Errorf("help shown")
 
@@ -283,37 +311,64 @@ func parseTargetFlags(args []string) (Target, []string, error) {
 func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error) {
 	var t Target
 	var rest []string
+	// Conflicting targeting flags are an error: matchProvider applies the
+	// FIRST set field and silently ignores the rest, so `--unit x --user y`
+	// would act on unit x while pretending to scope by user (free-review
+	// major). Only one selector may be set; a same-field repeat just
+	// overwrites.
+	setField := func(flag, value string, field *string) error {
+		if *field != "" {
+			// Same field, different value — last one wins (harmless).
+			*field = value
+			return nil
+		}
+		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+			return fmt.Errorf("%s=%s conflicts with already-set target selector; specify exactly one of --unit/--user/--network/--network-id/--state-dir", flag, value)
+		}
+		*field = value
+		return nil
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--unit":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--unit requires a value")
 			}
-			t.Unit = args[i+1]
+			if err := setField("--unit", args[i+1], &t.Unit); err != nil {
+				return t, nil, err
+			}
 			i++
 		case "--user":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--user requires a value")
 			}
-			t.User = args[i+1]
+			if err := setField("--user", args[i+1], &t.User); err != nil {
+				return t, nil, err
+			}
 			i++
 		case "--network":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--network requires a value")
 			}
-			t.Network = args[i+1]
+			if err := setField("--network", args[i+1], &t.Network); err != nil {
+				return t, nil, err
+			}
 			i++
 		case "--network-id":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--network-id requires a value")
 			}
-			t.NetworkID = args[i+1]
+			if err := setField("--network-id", args[i+1], &t.NetworkID); err != nil {
+				return t, nil, err
+			}
 			i++
 		case "--state-dir":
 			if i+1 >= len(args) {
 				return t, nil, fmt.Errorf("--state-dir requires a value")
 			}
-			t.StateDir = args[i+1]
+			if err := setField("--state-dir", args[i+1], &t.StateDir); err != nil {
+				return t, nil, err
+			}
 			i++
 		default:
 			// Reject unknown flags instead of silently dropping them — a

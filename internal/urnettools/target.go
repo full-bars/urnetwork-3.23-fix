@@ -88,7 +88,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 	default:
 		// The guard: multiple providers and no target = refuse.
 		var b strings.Builder
-		fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir):\n", len(providers))
+		fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --network-id / --state-dir):\n", len(providers))
 		for _, p := range providers {
 			fmt.Fprintf(&b, "  %s  user=%s net=%s state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
 		}

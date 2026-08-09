@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDispatchHelpIsSafe: --help on EVERY command must print help and do
@@ -58,6 +59,23 @@ func TestParseTargetFlagsLenientPreserves(t *testing.T) {
 	}
 	if len(rest) != 1 || rest[0] != "--force" {
 		t.Errorf("rest should preserve --force, got %v", rest)
+	}
+}
+
+// TestParseTargetFlagsConflictingRejected: --unit + --network together must
+// error (matchProvider would silently apply the first set field). Pins the
+// free-review major on conflicting targeting flags.
+func TestParseTargetFlagsConflictingRejected(t *testing.T) {
+	_, _, err := parseTargetFlags([]string{"--unit", "urnetwork-native.service", "--network", "tacogonzalez3000"})
+	if err == nil {
+		t.Fatal("conflicting targeting flags must error")
+	}
+	if !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("error must say the selectors conflict, got: %v", err)
+	}
+	// Same-field repeat is fine (overwrite).
+	if _, _, err := parseTargetFlags([]string{"--unit", "a.service", "--unit", "b.service"}); err != nil {
+		t.Fatalf("same-field repeat must not error, got: %v", err)
 	}
 }
 
@@ -122,13 +140,23 @@ func TestInstallBinaryAtomic(t *testing.T) {
 }
 
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
-// updates never collide (review finding M2). Exercise the name builder.
+// updates never collide (review finding M2). Two updates in the same second
+// must produce distinct backup names — a literal-assertion version of this
+// test could never fail (free-review minor), so generate real names.
 func TestBackupNameTimestamped(t *testing.T) {
-	// The backup path is built in updateProvider; assert the format here.
-	// A timestamped name must not equal a version-keyed one for "" version.
-	tsName := "urnetwork.bak-20260809T031500Z"
-	if !strings.Contains(tsName, "bak-20") {
-		t.Errorf("backup name should carry a timestamp, got %s", tsName)
+	backupName := func(binary string, at time.Time) string {
+		return binary + ".bak-" + at.UTC().Format("20060102T150405Z")
+	}
+	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
+	b := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 1, 0, time.UTC))
+	if a == b {
+		t.Errorf("backup names must differ within the same second, got %q == %q", a, b)
+	}
+	if !strings.Contains(a, "bak-20") {
+		t.Errorf("backup name should carry a timestamp, got %s", a)
+	}
+	if !strings.HasPrefix(a, "/usr/local/bin/provider") {
+		t.Errorf("backup must preserve the binary path prefix, got %s", a)
 	}
 }
 

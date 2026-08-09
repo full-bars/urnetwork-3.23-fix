@@ -52,7 +52,11 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 
 	if len(exclude) > 0 {
 		excluded := labelSet(exclude)
-		filtered := chosen[:0]
+		// Build a NEW slice — filtering in place (chosen[:0]) would write
+		// through to the caller's backing array when chosen aliases
+		// providers (single-provider default path), mutating the input
+		// (free-review major).
+		filtered := make([]Provider, 0, len(chosen))
 		for _, p := range chosen {
 			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] {
 				filtered = append(filtered, p)

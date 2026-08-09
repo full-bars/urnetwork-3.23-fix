@@ -150,9 +150,11 @@ func discoverSystemdUnits(running []Provider) []Provider {
 			Unit:     unit,
 			Running:  false,
 		}
-		// Prefer unit User= state dir over the root convention when known.
-		if u != "" {
-			p.StateDir = unitStateDir(u)
+		if p.StateDir == "" {
+			// No resolvable state dir: skip the JWT read rather than
+			// decoding from a relative "jwt" path (free-review major).
+			out2 = append(out2, p)
+			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
 		out2 = append(out2, p)

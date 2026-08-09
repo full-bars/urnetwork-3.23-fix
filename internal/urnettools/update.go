@@ -35,9 +35,14 @@ type updateConfig struct {
 // defaultUpdateConfig returns the config for the latest known release. Tag
 // and Digest are populated by the caller (release metadata may be fetched).
 func defaultUpdateConfig() updateConfig {
-	return updateConfig{
-		StageDir: "/var/tmp/urnet-stage",
+	// Stage on real disk, NOT /tmp (frequently a small tmpfs that the
+	// multi-platform tarball overflows — the 2026-08-09 failure). Windows
+	// has no /var/tmp; use the system temp dir there (free-review major).
+	stageDir := "/var/tmp/urnet-stage"
+	if runtime.GOOS == "windows" {
+		stageDir = filepath.Join(os.TempDir(), "urnet-stage")
 	}
+	return updateConfig{StageDir: stageDir}
 }
 
 // cmdUpdate updates one or more providers' binaries, then restarts the unit
@@ -166,17 +171,29 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		return nil // dry-run
 	}
 
+	// Validate EVERY provider's preconditions before touching any of them —
+	// a single missing binary path must not abort after earlier providers
+	// were already updated (free-review major).
 	for _, p := range chosen {
 		if p.Binary == "" {
-			return fmt.Errorf("provider %s has no resolvable binary path", providerLabel(p))
+			return fmt.Errorf("provider %s has no resolvable binary path — nothing updated", providerLabel(p))
 		}
+	}
+	failures := 0
+	for _, p := range chosen {
 		if p.Version == cfg.Tag {
 			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
 			continue
 		}
 		if err := updateProvider(p, cfg); err != nil {
-			return fmt.Errorf("update %s failed: %w", providerLabel(p), err)
+			// Continue the batch; report all failures at the end rather
+			// than aborting mid-fleet (free-review major).
+			fmt.Fprintf(os.Stderr, "update %s failed: %v\n", providerLabel(p), err)
+			failures++
 		}
+	}
+	if failures > 0 {
+		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
 	}
 	return nil
 }
@@ -308,6 +325,10 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			return fmt.Errorf("backup: %w", err)
 		}
 		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
+	} else if err != nil {
+		// Non-NotExist error (permissions, etc.) — treat as a real
+		// failure, not "already backed up" (free-review minor).
+		return fmt.Errorf("backup stat: %w", err)
 	}
 
 	// Swap with ownership preserved for the provider user.
@@ -325,14 +346,26 @@ func updateProvider(p Provider, cfg updateConfig) error {
 func restartProvider(p Provider) error {
 	if p.Unit != "" {
 		// System-level units are owned by root; user-level units run in the
-		// user's session. Try the system manager first, then the user one.
+		// user's session. Try the system manager first, then the user one,
+		// then the PID-signal fallback.
 		if out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput(); err == nil {
 			fmt.Printf("restarted %s\n", p.Unit)
 			return nil
 		} else if strings.Contains(string(out), "not found") || strings.Contains(string(out), "No such") {
-			// Fall through to user-level.
+			// Not a system unit — fall through to user-level.
 		} else {
 			return fmt.Errorf("systemctl restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+		}
+		if p.User != "" {
+			// User-level unit in the owning user's session (the missing
+			// path — previously fell straight to PID signaling, which
+			// cannot restart a stopped user unit).
+			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).CombinedOutput(); err == nil {
+				fmt.Printf("restarted %s (user %s)\n", p.Unit, p.User)
+				return nil
+			} else if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+			}
 		}
 	}
 	if p.User != "" && p.PID > 0 {
@@ -493,6 +526,15 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	_, cerr := io.Copy(out, in)
-	out.Close()
-	return cerr
+	if cerr != nil {
+		out.Close()
+		return cerr
+	}
+	// Close flushes buffered data — a disk-full or I/O error here would
+	// otherwise be lost and the copy reported successful (free-review
+	// major: copyFile produces the backup AND the .new binary).
+	if cerr = out.Close(); cerr != nil {
+		return fmt.Errorf("close %s: %w", dst, cerr)
+	}
+	return nil
 }
