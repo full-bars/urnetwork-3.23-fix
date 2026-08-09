@@ -264,13 +264,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		return fmt.Errorf("stage dir: %w", err)
 	}
 	arch := runtimeGOARCH()
-	// Tar headers always use forward slashes regardless of host OS; using
-	// filepath.Join here would produce backslashes on Windows and the
-	// in-archive lookup would never match (free-review critical).
-	relPath := path.Join("linux", arch, "provider")
-	if runtime.GOOS == "windows" {
-		relPath = path.Join("windows", arch, "provider.exe")
-	}
+	relPath := tarRelPath(runtime.GOOS, arch)
 
 	url := cfg.AssetURL
 	if url == "" {
@@ -396,6 +390,18 @@ func verifySHA256(path, want string) error {
 		return fmt.Errorf("sha256 mismatch: got %s want %s", got, want)
 	}
 	return nil
+}
+
+// tarRelPath returns the in-archive path of the provider binary for goos.
+//
+// Tar headers always use forward slashes regardless of host OS; using
+// filepath.Join here would produce backslashes on Windows and the
+// in-archive lookup would never match (free-review critical).
+func tarRelPath(goos, arch string) string {
+	if goos == "windows" {
+		return path.Join("windows", arch, "provider.exe")
+	}
+	return path.Join("linux", arch, "provider")
 }
 
 // extractSingleFile extracts exactly one file from a .tar.gz to dst.

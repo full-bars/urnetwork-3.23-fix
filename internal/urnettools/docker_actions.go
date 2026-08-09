@@ -64,5 +64,3 @@ func containerIDByName(name string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
-
-var _ = fmt.Sprintf // keep fmt import if unused in future edits

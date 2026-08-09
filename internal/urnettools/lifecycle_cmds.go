@@ -108,6 +108,9 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 	var path string
 	if isUserUnit(timer) && p.User != "" {
 		home := homeForUser(p.User)
+		if home == "" {
+			return fmt.Errorf("cannot resolve home for user %s", p.User)
+		}
 		path = filepath.Join(home, ".config/systemd/user", timer)
 	} else {
 		path = "/etc/systemd/system/" + timer
