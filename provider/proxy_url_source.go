@@ -514,8 +514,19 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 	added := mergeProxyURLEntries(state, admittedLines, admittedOKCount, maxTotal, rankAddr, gradeFor)
 	totalAdded += added
+	// admittedByTier counts what actually entered the cache this cycle, per
+	// letter grade. The same address can appear in multiple sources' fetched
+	// lists (bare + credentialed, or listed twice), so count each address
+	// ONCE — the merge itself dedupes (existing addresses are skipped), and
+	// the counters must match the cache, not the pooled line count (Sonnet
+	// review finding).
+	countedTier := map[string]bool{}
 	for _, c := range cands {
+		if countedTier[c.address] {
+			continue
+		}
 		if _, exists := state.Cache[c.address]; exists && c.grade.Qualified && c.grade.Decidable {
+			countedTier[c.address] = true
 			admittedByTier[proxyGradeTier(c.grade.Score)]++
 		}
 	}
@@ -532,7 +543,15 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 
 	markedAPI := 0
 	markedSocks5 := 0
+	// Dedupe by address so a cross-source duplicate is persisted and counted
+	// once — the counters reflect distinct cached addresses, not pooled
+	// lines (Sonnet review finding).
+	seen := map[string]bool{}
 	for _, c := range cands {
+		if seen[c.address] {
+			continue
+		}
+		seen[c.address] = true
 		addr := c.address
 		if entry, exists := state.Cache[addr]; exists {
 			entry.LastProbe = time.Now()
