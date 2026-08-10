@@ -688,13 +688,16 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 	defer ticker.Stop()
 
 	for {
+		// Publish the countdown BEFORE the pass so the first cycle is not
+		// "unknown" and the estimate is not systematically late by the
+		// pass duration (coderabbit minor + LOW-9).
+		setNextGradeRefreshAt(time.Now().Add(proxyReaperInterval))
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
 		runURLProxyReaperOnce(ctx, apiHost, apiPort)
-		setNextGradeRefreshAt(time.Now().Add(proxyReaperInterval))
 	}
 }
 
@@ -872,6 +875,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					if r.table.Decidable {
 						oldTier := ""
 						oldScore := entry.Score
+						wasGraded := entry.Graded // capture BEFORE the write below (HIGH-1)
 						if entry.Graded {
 							oldTier = proxyGradeTier(entry.Score)
 						}
@@ -886,7 +890,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 								r.addr, newTier, r.table.Score, r.table.OK, r.table.SampleWidth)
 							// Per-address delta line (grades.log history), matching
 							// the paid-grader convention for URL proxies.
-							emitProxyGradeDelta(r.addr, oldTier, newTier, oldScore, r.table.Score, entry.Graded)
+							emitProxyGradeDelta(r.addr, oldTier, newTier, oldScore, r.table.Score, wasGraded)
 						}
 					}
 					// Re-stamp the staleness clock ONLY when the quality
@@ -1048,7 +1052,15 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	lastFetch := time.Now()
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
-	setNextFetchProbeAt(time.Now().Add(activeInterval))
+	// Publish the initial next-fetch estimate WITH the pressure stretch
+	// applied, mirroring the loop's own math below (coderabbit minor: the
+	// initial estimate was unstretched).
+	initialCache := readURLCacheSize()
+	initialNext := activeInterval
+	if initialCache >= 50 {
+		initialNext = time.Duration(float64(activeInterval) * fetchStretch(currentPressure()))
+	}
+	setNextFetchProbeAt(lastFetch.Add(initialNext))
 	ticker := time.NewTicker(activeInterval)
 	// A plain `defer ticker.Stop()` binds the ticker *value* at defer time;
 	// once the loop below reassigns `ticker` on an interval change, that
@@ -1083,12 +1095,15 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			lastFetch = time.Now()
 			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
 			// Publish the next-fetch estimate for the grade summary
-			// countdown, mirroring shouldFetchNow's stretch math exactly.
+			// countdown, mirroring shouldFetchNow's stretch math exactly
+			// (reuse cacheSize read above — LOW-10) and anchored to
+			// lastFetch, the same reference shouldFetchNow measures against
+			// (coderabbit minor: it was anchored to a post-fetch now).
 			effectiveNext := activeInterval
-			if readURLCacheSize() >= 50 {
+			if cacheSize >= 50 {
 				effectiveNext = time.Duration(float64(activeInterval) * fetchStretch(currentPressure()))
 			}
-			setNextFetchProbeAt(time.Now().Add(effectiveNext))
+			setNextFetchProbeAt(lastFetch.Add(effectiveNext))
 		}
 	}
 }
