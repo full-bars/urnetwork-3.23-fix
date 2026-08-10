@@ -186,7 +186,10 @@ func cmdHub(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
-	t, rest, err := parseTargetFlags(rest)
+	// LENIENT target parse: `hub install` defines its own --tag= flag
+	// (opus5 F1: strict parsing rejected --tag= before cmdHubInstall saw
+	// it). Unknown --flags are rejected per-subcommand below.
+	t, rest, err := parseTargetFlagsLenient(rest)
 	if err != nil {
 		return err
 	}
