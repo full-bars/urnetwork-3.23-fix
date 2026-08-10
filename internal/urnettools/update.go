@@ -59,7 +59,12 @@ func newStageDir() (string, error) {
 // numbered picker. Non-interactive (no TTY) refuses ambiguity unless an
 // explicit target or --include is given — scripts must be explicit.
 func cmdUpdate(args []string, force, dryRun bool) error {
-	t, rest, err := parseTargetFlags(args)
+	// LENIENT target parse: update defines its own flags (--tag, --digest,
+	// --url, --include, --exclude, --all, --select) which the loop below
+	// consumes. Strict parsing here would reject them as unknown before
+	// the loop ever runs (opus5 F1: every update flag was dead). Leftover
+	// unknown --flags are rejected AFTER the loop instead.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
@@ -104,6 +109,19 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			all = true
 		case "--select":
 			interactive = !force // --select forces the picker unless -f
+		default:
+			// Accept the = form (--include=a,b) as well as the space form.
+			if strings.HasPrefix(rest[i], "--include=") {
+				include = splitLabels(strings.TrimPrefix(rest[i], "--include="))
+			} else if strings.HasPrefix(rest[i], "--exclude=") {
+				exclude = splitLabels(strings.TrimPrefix(rest[i], "--exclude="))
+			} else if strings.HasPrefix(rest[i], "-") {
+				// Unknown --flag (typo like --netwrok): reject AFTER the
+				// command's own flags were consumed (review finding L2).
+				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select)", rest[i])
+			} else {
+				return fmt.Errorf("unexpected argument %q for update", rest[i])
+			}
 		}
 	}
 

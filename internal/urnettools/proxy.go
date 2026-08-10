@@ -52,18 +52,14 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
-	// refresh and remove-dead pass provider-binary flags through (e.g.
-	// --force), so they need the LENIENT parse (unknown --flags preserved);
-	// every other subcommand keeps strict rejection so a typo like
-	// --netwrok cannot be silently absorbed on a destructive op (review
-	// finding L2; free-review major: remove-dead lost --force passthrough).
-	var t Target
-	var err error
-	if sub == "refresh" || sub == "remove-dead" {
-		t, rest, err = parseTargetFlagsLenient(rest)
-	} else {
-		t, rest, err = parseTargetFlags(rest)
-	}
+	// LENIENT target parse for ALL subcommands: proxy defines its own
+	// batch flags (--all/--select/--include/--exclude) consumed below, and
+	// refresh/remove-dead additionally pass provider-binary flags through
+	// (e.g. --force). Strict parsing here rejected those as unknown before
+	// the loop ran (opus5 F1: `proxy clear --all` was dead). Leftover
+	// unknown --flags are rejected after the loop, except for the
+	// pass-through subcommands.
+	t, rest, err := parseTargetFlagsLenient(rest)
 	if err != nil {
 		return err
 	}
@@ -72,7 +68,8 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	all := false
 	interactive := forceInteractive(force)
 	var positionals []string
-	for _, a := range rest {
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
 		switch {
 		case a == "--all" || a == "-all":
 			all = true
@@ -83,8 +80,26 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		case strings.HasPrefix(a, "--exclude="):
 			exclude = splitLabels(strings.TrimPrefix(a, "--exclude="))
 		case a == "--include" || a == "--exclude":
+			// Also accept the space-separated form (--include a,b), matching
+			// update's syntax (opus5 F1 note: the two commands disagreed).
+			if i+1 < len(rest) {
+				if a == "--include" {
+					include = splitLabels(rest[i+1])
+				} else {
+					exclude = splitLabels(rest[i+1])
+				}
+				i++
+				break
+			}
 			return fmt.Errorf("%s requires a value (use --%s=a,b)", a, strings.TrimPrefix(a, "--"))
 		default:
+			// Unknown --flag: pass through only for refresh/remove-dead
+			// (provider-binary flags like --force); reject elsewhere so a
+			// typo like --netwrok cannot be silently absorbed on a
+			// destructive op (review finding L2; opus5 F1).
+			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" {
+				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
+			}
 			positionals = append(positionals, a)
 		}
 	}

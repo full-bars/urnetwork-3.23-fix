@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -142,11 +143,26 @@ func cmdDockerStatus(args []string) error {
 
 // cmdDockerExec runs a command inside the targeted container — the
 // delegation path (e.g. `urnet-docker exec urnet-tools proxy add ...`).
+// Target flags come BEFORE the command; everything from the first
+// positional onward is the in-container command and must pass through
+// verbatim, including its own --flags (opus5 F1: strict parsing rejected
+// `--proxy_file=` before delegation).
 func cmdDockerExec(args []string) error {
-	t, rest, err := dockerTargetFromArgs(args)
+	// Split at the first non-flag token: target flags before it, command
+	// after it.
+	split := 0
+	for split < len(args) && strings.HasPrefix(args[split], "-") {
+		if args[split] == "--unit" || args[split] == "--user" || args[split] == "--network" || args[split] == "--network-id" || args[split] == "--state-dir" {
+			split += 2 // flag + value
+		} else {
+			split++
+		}
+	}
+	t, _, err := parseTargetFlags(args[:split])
 	if err != nil {
 		return err
 	}
+	rest := args[split:]
 	if len(rest) == 0 {
 		return fmt.Errorf("exec requires a command, e.g. 'urnet-docker exec --unit urnet urnet-tools proxy add --proxy_file=/tmp/p.txt'")
 	}
@@ -155,7 +171,7 @@ func cmdDockerExec(args []string) error {
 	if err != nil {
 		return err
 	}
-	// p.Unit holds the container name; delegate.
+	// p.Unit holds the container name; delegate the command verbatim.
 	return containerExecByName(p.Unit, rest...)
 }
 
