@@ -484,13 +484,17 @@ func TestRuntimeGOARCH(t *testing.T) {
 	}
 }
 
-// TestRestartAfterDropinNoUnit covers the system-unit branch of
-// restartAfterDropin with an empty unit name (systemctl will reject it, but
-// the function must return that error rather than panicking).
+// TestRestartAfterDropinNoUnit covers the empty-unit guard of
+// restartAfterDropin: it must reject BEFORE any systemctl invocation with
+// the same "no owning systemd unit" error unitCommand uses (coderabbit
+// minor on the coverage pass).
 func TestRestartAfterDropinNoUnit(t *testing.T) {
 	err := restartAfterDropin(Provider{})
 	if err == nil {
 		t.Error("restartAfterDropin with an empty unit name should error")
+	}
+	if !strings.Contains(err.Error(), "no owning systemd unit") {
+		t.Errorf("error should name the missing unit, got: %v", err)
 	}
 }
 
