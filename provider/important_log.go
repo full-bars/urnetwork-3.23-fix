@@ -40,6 +40,12 @@ var importantLogMarkers = []string{
 	"[proxy][grade] changes",
 	"[proxy][grade] scores:",
 	"[proxy][grade] delta",
+	// Sibling paid-grader + table-probe lines from #344/#343 also belong
+	// in the important buffer — same low-volume/high-value class. They
+	// were added to the [proxy][grade] namespace by this PR, so curate
+	// them here (NIT-16).
+	"[proxy][grade] paid",
+	"[proxy][grade] graded",
 }
 
 // isImportantLogLine reports whether a single log line should be mirrored to the

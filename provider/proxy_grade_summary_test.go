@@ -112,7 +112,10 @@ func TestCollectProxyGradeSummary_Buckets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := collectProxyGradeSummary()
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
 	if s.running != 6 { // 1.1.1.1..4.4.4.4 (url), 5.5.5.5 (file), 7.7.7.7 (internal up-ungraded); 6.6.6.6 dead
 		t.Fatalf("running: %d", s.running)
 	}
@@ -150,7 +153,10 @@ func TestCollectProxyGradeSummary_Stale(t *testing.T) {
 	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
 		t.Fatal(err)
 	}
-	s := collectProxyGradeSummary()
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
 	if s.stale != 1 {
 		t.Fatalf("stale: %d, want 1", s.stale)
 	}
@@ -166,7 +172,10 @@ func TestEmitProxyGradeDelta(t *testing.T) {
 
 	// Same tier: no delta.
 	emitProxyGradeDelta("1.1.1.1:1080", "A", "A", 0.9, 0.91, true)
-	// Not previously graded: no delta.
+	// Not previously graded: no delta. This is the HIGH-1 shape: the
+	// first-ever grade of a proxy must be suppressed (oldGraded=false) —
+	// the production call sites now capture wasGraded BEFORE setting
+	// entry.Graded=true, so this is the value they actually pass.
 	emitProxyGradeDelta("2.2.2.2:1080", "", "A", 0, 0.9, false)
 	// Real change: delta written to grades.log.
 	emitProxyGradeDelta("3.3.3.3:1080", "A", "F", 0.92, 0.33, true)
@@ -188,6 +197,27 @@ func TestEmitProxyGradeDelta(t *testing.T) {
 	}
 	if contains(content, "1.1.1.1") || contains(content, "2.2.2.2") {
 		t.Fatalf("non-delta lines written: %q", content)
+	}
+}
+
+// TestGradeSummaryScoresLineP95Edge is the coderabbit p95 regression:
+// with exactly n%20==0 scores (the off-by-one case), scoresLine must not
+// panic and must return a sane p95, not the max by accident.
+func TestGradeSummaryScoresLineP95Edge(t *testing.T) {
+	scores := make([]float64, 20)
+	for i := range scores {
+		scores[i] = float64(i+1) / 20 // 0.05..1.0
+	}
+	s := gradeSummary{scores: scores}
+	got := s.scoresLine()
+	// Nearest-rank p95 index for n=20: int(20*0.95)=19 → scores[19]=1.0
+	// (the 95th percentile of 20 samples is the 19th element, 0-indexed).
+	if !contains(got, "p95 1.00") {
+		t.Fatalf("p95 edge: %q", got)
+	}
+	// LOW-8: the stale denominator is len(scores) for graded proxies.
+	if !contains(got, "stale grades: 0/20") {
+		t.Fatalf("stale denominator: %q", got)
 	}
 }
 
@@ -241,6 +271,68 @@ func TestCountdownLine(t *testing.T) {
 	got := countdownLine()
 	if !contains(got, "next fetch probe in 4m") || !contains(got, "next grade refresh in 55s") {
 		t.Fatalf("countdownLine: %q", got)
+	}
+}
+
+// TestRunProxyGradeSummaryOnceSkipsOnUnreadableState is the HIGH-2
+// regression: when the summary cannot build a real snapshot (here, the
+// proxy.state path is a directory so ReadFile errors), the round must be
+// skipped entirely — no "all-zero fleet collapsed" lines, and the delta
+// baseline must NOT be installed so the next round cannot report a
+// phantom mass recovery.
+func TestRunProxyGradeSummaryOnceSkipsOnUnreadableState(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resetProxyGradesConfigCache()
+
+	// Make proxy.state unreadable-as-file (a directory): readProxyState
+	// returns a real error, not an empty state.
+	if err := os.Mkdir(filepath.Join(dir, "proxy.state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	gradeSummaryHasPrev = false
+	runProxyGradeSummaryOnce()
+
+	if gradeSummaryHasPrev {
+		t.Fatal("HIGH-2 regression: failed round installed the delta baseline (gradeSummaryHasPrev=true)")
+	}
+	// No grades.log may be created either: the round never reached the
+	// write path.
+	if _, err := os.Stat(filepath.Join(dir, "grades")); !os.IsNotExist(err) {
+		t.Fatalf("HIGH-2 regression: grades dir created on a skipped round (err=%v)", err)
+	}
+}
+
+// TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff is the MEDIUM-6
+// regression: proxy_probe.json {"enabled": false} must silence the
+// summary too, not just the stage-1 probe.
+func TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resetProxyGradesConfigCache()
+	if err := os.WriteFile(filepath.Join(dir, "proxy_probe.json"), []byte(`{"enabled": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A valid state file so the only reason to skip is the kill switch.
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "file", Score: 0.95, Graded: true},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	gradeSummaryHasPrev = false
+	runProxyGradeSummaryOnce()
+
+	if gradeSummaryHasPrev {
+		t.Fatal("MEDIUM-6 regression: summary ran despite kill switch (baseline installed)")
 	}
 }
 
