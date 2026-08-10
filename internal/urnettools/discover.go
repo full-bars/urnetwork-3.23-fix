@@ -82,34 +82,52 @@ func discoverProcesses() []Provider {
 }
 
 // isProviderArg reports whether an executable path/name is a known provider
-// binary. Matches on basename to be resilient to custom install paths.
+// binary. Matches on basename to be resilient to custom install paths, and
+// by PREFIX so suffixed unit names (urnetwork-native.service,
+// provider_beta-custom) are recognized too (opus5 F2). Excludes the
+// well-known non-provider suffixes (-hub, -update) so their units are not
+// mistaken for providers.
 func isProviderArg(arg string) bool {
 	base := filepath.Base(arg)
 	// Strip a trailing .exe (Windows) defensively.
 	base = strings.TrimSuffix(base, ".exe")
-	return knownBinaries[base]
+	for known := range knownBinaries {
+		if base == known || strings.HasPrefix(base, known+"-") {
+			// provider-hub / provider-update are NOT providers.
+			if strings.HasSuffix(base, "-hub") || strings.HasSuffix(base, "-update") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // discoverSystemdUnits scans systemd for provider units (running or stopped)
 // and fills in Provider records for any unit not already represented by a
 // live process. Unit User= is read from the unit file; state dir follows the
 // install convention.
+//
+// The fork's install model places units under ~/.config/systemd/user and
+// drives them with `systemctl --user`, which the SYSTEM-manager listing
+// below never shows. So this also enumerates per-user managers for users
+// that plausibly run a provider (a user unit that looks like a provider, or
+// a .urnetwork state dir), bounded to those users (opus5 F2).
 func discoverSystemdUnits(running []Provider) []Provider {
+	out := discoverSystemUnits(running)
+	out = append(out, discoverUserUnits(running)...)
+	return out
+}
+
+// discoverSystemUnits scans the system manager's unit listing.
+func discoverSystemUnits(running []Provider) []Provider {
 	cmd := exec.Command("systemctl", "list-units", "--all", "--no-legend", "--no-pager")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil // no systemd (container/other init) — process scan is enough
 	}
-	seenPID := map[int]bool{}
-	seenUnit := map[string]bool{}
-	for _, p := range running {
-		seenPID[p.PID] = true
-	}
 	// unitUser maps unit name -> User= value, resolved on demand.
 	unitUser := func(unit string) string {
-		if seenUnit[unit] {
-			return "" // already resolved, no-op guard
-		}
 		c := exec.Command("systemctl", "show", unit, "-p", "User", "--value")
 		b, err := c.Output()
 		if err != nil {
@@ -124,42 +142,132 @@ func discoverSystemdUnits(running []Provider) []Provider {
 			continue
 		}
 		unit := fields[0]
-		base := unit
-		if i := strings.IndexByte(base, '.'); i >= 0 {
-			base = base[:i]
-		}
-		if !isProviderArg(base) {
+		if !isProviderUnit(unit) {
 			continue
 		}
 		// Skip units already backed by a running process (matched by unit
 		// name via the provider's Unit field, set below).
-		matched := false
-		for i := range running {
-			if running[i].Unit == unit {
-				matched = true
-				break
-			}
-		}
-		if matched {
+		if unitIn(running, unit) {
 			continue
 		}
 		u := unitUser(unit)
-		p := Provider{
-			User:     u,
-			StateDir: unitStateDir(u),
-			Unit:     unit,
-			Running:  false,
-		}
-		if p.StateDir == "" {
-			// No resolvable state dir: skip the JWT read rather than
-			// decoding from a relative "jwt" path (free-review major).
-			out2 = append(out2, p)
-			continue
-		}
-		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		out2 = append(out2, p)
+		out2 = append(out2, providerFromUnit(unit, u))
 	}
 	return out2
+}
+
+// discoverUserUnits enumerates user-manager units for users that plausibly
+// run a provider: those already seen running (their user manager may hold a
+// stopped sibling) plus any user whose home has a provider-looking unit
+// under ~/.config/systemd/user or a .urnetwork state dir. Each candidate
+// user's manager is queried once with `systemctl --user -M <user>@`.
+func discoverUserUnits(running []Provider) []Provider {
+	users := map[string]bool{}
+	for _, p := range running {
+		if p.User != "" {
+			users[p.User] = true
+		}
+	}
+	// Broaden to any user with provider-ish files in their home (bounded:
+	// only users with evidence, never all of /etc/passwd).
+	if homes, err := providerCandidateHomes(); err == nil {
+		for _, h := range homes {
+			users[h] = true
+		}
+	}
+	var out []Provider
+	for user := range users {
+		cmd := exec.Command("systemctl", "--user", "-M", user+"@", "list-units", "--all", "--no-legend", "--no-pager")
+		b, err := cmd.Output()
+		if err != nil {
+			continue // no session bus / user manager for this user
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			unit := fields[0]
+			if !isProviderUnit(unit) {
+				continue
+			}
+			if unitIn(running, unit) {
+				continue
+			}
+			out = append(out, providerFromUnit(unit, user))
+		}
+	}
+	return out
+}
+
+// providerCandidateHomes returns home directories of users that show
+// evidence of a provider install: a provider-looking unit under
+// ~/.config/systemd/user or a ~/.urnetwork state dir. Best-effort.
+func providerCandidateHomes() ([]string, error) {
+	b, err := exec.Command("getent", "passwd").Output()
+	if err != nil {
+		return nil, err
+	}
+	var homes []string
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 6 || fields[5] == "" {
+			continue
+		}
+		home := fields[5]
+		// User-level unit dir with a provider unit, or a state dir.
+		found := false
+		for known := range knownBinaries {
+			unitGlob := filepath.Join(home, ".config/systemd/user", known+"*.service")
+			if matches, _ := filepath.Glob(unitGlob); len(matches) > 0 {
+				homes = append(homes, home)
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(home, ".urnetwork")); err == nil {
+			homes = append(homes, home)
+		}
+	}
+	return homes, nil
+}
+
+// isProviderUnit reports whether a systemd unit name looks like a provider
+// unit (basename matches a known binary, optionally suffixed).
+func isProviderUnit(unit string) bool {
+	base := unit
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	return isProviderArg(base)
+}
+
+// unitIn reports whether any running provider carries the unit name.
+func unitIn(running []Provider, unit string) bool {
+	for i := range running {
+		if running[i].Unit == unit {
+			return true
+		}
+	}
+	return false
+}
+
+// providerFromUnit builds a Provider record for a (possibly stopped) unit.
+func providerFromUnit(unit, user string) Provider {
+	p := Provider{
+		User:     user,
+		StateDir: unitStateDir(user),
+		Unit:     unit,
+		Running:  false,
+	}
+	if p.StateDir == "" {
+		return p // no resolvable state dir — listed, but ungraded
+	}
+	p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
+	return p
 }
 
 // Discover returns every provider on the box: running processes across all
