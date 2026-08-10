@@ -539,6 +539,13 @@ func summaryIntervalFromConfig() time.Duration {
 	return iv
 }
 
+// collectGradeSummaryFn is the snapshot collector used by the summary
+// runner. It is a package-level var (not a direct call) so tests can
+// inject a fake that returns ok=false with tracked>0 — the scenario that
+// proves the HIGH-2 guard is load-bearing rather than masked by the
+// tracked==0 skip (Sonnet round-2 Finding A).
+var collectGradeSummaryFn = collectProxyGradeSummary
+
 // runProxyGradeSummaryOnce computes and logs one snapshot. Split out for
 // direct testing.
 func runProxyGradeSummaryOnce() {
@@ -552,7 +559,7 @@ func runProxyGradeSummaryOnce() {
 	if !resolveProxyTableProbeConfig().Enabled {
 		return
 	}
-	s, ok := collectProxyGradeSummary()
+	s, ok := collectGradeSummaryFn()
 	if !ok {
 		// Lock contention or unreadable state: skip the round entirely.
 		// Logging an all-zero snapshot would read as a fleet collapse and

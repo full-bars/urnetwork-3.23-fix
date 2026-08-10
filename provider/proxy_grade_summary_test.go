@@ -307,6 +307,54 @@ func TestRunProxyGradeSummaryOnceSkipsOnUnreadableState(t *testing.T) {
 	}
 }
 
+// TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure is the LOAD-BEARING
+// HIGH-2 regression (Sonnet round-2 Finding A). The unreadable-state test
+// above is masked by the tracked==0 skip (both fire on the same scenario),
+// so it cannot prove the !ok guard is what prevents the phantom snapshot.
+// This test injects a collector that returns ok=false WITH tracked>0 —
+// the only scenario that discriminates: if the !ok guard were deleted,
+// this round would log a zero snapshot and install the baseline even
+// though real proxies exist.
+func TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resetProxyGradesConfigCache()
+	// A valid state file so tracked>0 would be produced by the real
+	// collector — the fake below reports failure despite that.
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "file", Score: 0.95, Graded: true},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := collectGradeSummaryFn
+	collectGradeSummaryFn = func() (gradeSummary, bool) {
+		// A partial snapshot with real proxies, but a failed round:
+		// tracked>0 AND ok=false — the HIGH-2 discriminator.
+		return gradeSummary{
+			tracked: 1, running: 1,
+			tiers:   map[string]int{"A": 1},
+			sources: map[string]map[string]int{"file": {"A": 1}},
+			scores:  []float64{0.95},
+		}, false
+	}
+	defer func() { collectGradeSummaryFn = orig }()
+
+	gradeSummaryHasPrev = false
+	runProxyGradeSummaryOnce()
+
+	if gradeSummaryHasPrev {
+		t.Fatal("HIGH-2: collector failure with tracked>0 installed the delta baseline — !ok guard is dead")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "grades")); !os.IsNotExist(err) {
+		t.Fatalf("HIGH-2: grades dir created despite collector failure (err=%v)", err)
+	}
+}
+
 // TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff is the MEDIUM-6
 // regression: proxy_probe.json {"enabled": false} must silence the
 // summary too, not just the stage-1 probe.
