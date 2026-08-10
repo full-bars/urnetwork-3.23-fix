@@ -339,3 +339,151 @@ func TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff(t *testing.T) {
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
+
+// TestSummaryIntervalFromConfig covers the ticker-interval resolver
+// (0% covered before this test — runProxyGradeSummary's loop is only
+// exercised via a live ticker, so the pure resolver needs its own test).
+func TestSummaryIntervalFromConfig(t *testing.T) {
+	withTempHome(t)
+	resetProxyGradesConfigCache()
+	if got := summaryIntervalFromConfig(); got != defaultGradeSummaryInterval {
+		t.Fatalf("default: got %v, want %v", got, defaultGradeSummaryInterval)
+	}
+
+	writeGradesOverride(t, `{"interval_sec": 42}`)
+	resetProxyGradesConfigCache()
+	if got := summaryIntervalFromConfig(); got != 42*time.Second {
+		t.Fatalf("override: got %v, want 42s", got)
+	}
+}
+
+// TestGradeSummaryChangesLine_Diff exercises the round-over-round delta
+// branch of changesLine (only the "(first snapshot)" branch was covered
+// before this test, leaving the actual diff math — the reason the line
+// exists at all — untested).
+func TestGradeSummaryChangesLine_Diff(t *testing.T) {
+	gradeSummaryPrevMu.Lock()
+	gradeSummaryPrev = gradeSummary{}
+	gradeSummaryHasPrev = false
+	gradeSummaryPrevMu.Unlock()
+
+	s1 := gradeSummary{running: 5, tiers: map[string]int{"A": 2, "B": 1, "F": 1}}
+	if got := s1.changesLine(); !contains(got, "(first snapshot)") {
+		t.Fatalf("first round: %q", got)
+	}
+
+	s2 := gradeSummary{running: 6, tiers: map[string]int{"A": 3, "B": 1, "F": 0}}
+	got := s2.changesLine()
+	if !contains(got, "+A 1") {
+		t.Fatalf("expected +A 1 in diff: %q", got)
+	}
+	if !contains(got, "-F 1") {
+		t.Fatalf("expected -F 1 in diff: %q", got)
+	}
+	if !contains(got, "1running") {
+		t.Fatalf("expected 1running in diff: %q", got)
+	}
+
+	// Third round identical to the second: no changes.
+	s3 := gradeSummary{running: 6, tiers: map[string]int{"A": 3, "B": 1, "F": 0}}
+	if got := s3.changesLine(); !contains(got, "changes vs last round: none") {
+		t.Fatalf("no-op round: %q", got)
+	}
+}
+
+// TestRunProxyGradeSummaryOnce_WritesSummary is the happy-path companion
+// to the two skip-path regression tests above: with grading enabled, the
+// kill switch on, and a real tracked proxy, the runner must actually
+// produce and persist a snapshot (tier/sources/changes/scores lines to
+// grades.log) and install the delta baseline. Before this test, only the
+// two skip branches of runProxyGradeSummaryOnce were covered (41.2%),
+// never the success path that does the real work.
+func TestRunProxyGradeSummaryOnce_WritesSummary(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resetProxyGradesConfigCache()
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "file", Score: 0.95, Graded: true, LastGraded: time.Now()},
+		"2.2.2.2:1080": {Health: "up", Source: "internal", Score: 0.40, Graded: true, LastGraded: time.Now()},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	gradeSummaryPrevMu.Lock()
+	gradeSummaryHasPrev = false
+	gradeSummaryPrevMu.Unlock()
+
+	runProxyGradeSummaryOnce()
+
+	gradeSummaryPrevMu.Lock()
+	hasPrev := gradeSummaryHasPrev
+	gradeSummaryPrevMu.Unlock()
+	if !hasPrev {
+		t.Fatal("successful round did not install the delta baseline")
+	}
+
+	files, err := os.ReadDir(filepath.Join(dir, "grades"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("grades log not written: files=%v err=%v", files, err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "grades", files[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(b)
+	if !contains(content, "[proxy][grade] running:") {
+		t.Fatalf("tier line missing: %q", content)
+	}
+	if !contains(content, "[proxy][grade] sources:") {
+		t.Fatalf("sources line missing: %q", content)
+	}
+	if !contains(content, "[proxy][grade] scores:") {
+		t.Fatalf("scores line missing: %q", content)
+	}
+}
+
+// TestRunProxyGradeSummaryOnce_SkipsWhenDisabled covers the cfg.enabled()
+// == false branch, distinct from the kill-switch (proxy_probe.json)
+// branch already covered elsewhere.
+func TestRunProxyGradeSummaryOnce_SkipsWhenDisabled(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Write the override directly (not via writeGradesOverride, which
+	// calls withTempHome itself and would swap HOME out from under the
+	// proxy.state already written below into this dir).
+	if err := os.WriteFile(filepath.Join(dir, "proxy_grades.json"), []byte(`{"enabled": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resetProxyGradesConfigCache()
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "file", Score: 0.95, Graded: true},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	gradeSummaryPrevMu.Lock()
+	gradeSummaryHasPrev = false
+	gradeSummaryPrevMu.Unlock()
+
+	runProxyGradeSummaryOnce()
+
+	gradeSummaryPrevMu.Lock()
+	hasPrev := gradeSummaryHasPrev
+	gradeSummaryPrevMu.Unlock()
+	if hasPrev {
+		t.Fatal("disabled config still ran the summary")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "grades")); !os.IsNotExist(err) {
+		t.Fatalf("grades dir created despite enabled=false (err=%v)", err)
+	}
+}
