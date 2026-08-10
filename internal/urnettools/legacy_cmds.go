@@ -376,8 +376,10 @@ func restartAfterDropin(p Provider) error {
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
 		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).Run()
-		return nil
+		// Propagate the restart error like the system-unit branch below —
+		// an operator writing a drop-in override must learn when the
+		// provider never actually restarted (Sonnet MEDIUM-2).
+		return exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).Run()
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	return exec.Command("systemctl", "restart", p.Unit).Run()

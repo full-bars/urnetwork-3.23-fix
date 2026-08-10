@@ -346,10 +346,16 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		return fmt.Errorf("extract %s: %w", relPath, err)
 	}
 
-	// Version check the staged binary.
+	// Structural sanity-check the staged binary WITHOUT executing it.
+	// Running a freshly downloaded artifact (e.g. `staged --version`) is
+	// code execution of a remote file — the same class of defect the hub
+	// path guards with isELFExecutable (coderabbit critical). sha256
+	// already guarantees the artifact matches the requested tag, so an
+	// ELF-magic check is the right ceiling here: it confirms we extracted
+	// a real binary, not a script or corrupted file.
 	staged := filepath.Join(extractDir, "provider")
-	if v := providerVersion(staged); v != cfg.Tag {
-		return fmt.Errorf("staged binary reports %q, expected %q — aborting", v, cfg.Tag)
+	if !isELFExecutable(staged) {
+		return fmt.Errorf("staged binary %s is not an ELF executable (corrupted or wrong asset) — refusing to install", staged)
 	}
 
 	// Backup current binary with a nanosecond-timestamped name so repeated
