@@ -1,8 +1,16 @@
 package urnettools
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -204,3 +212,59 @@ func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
 		t.Errorf("stage dir must not be created when digest is missing (err=%v)", err)
 	}
 }
+
+// TestUpdateProviderRefusesNonELFStagedBinary pins the MEDIUM-1 fix: the
+// provider update path must sanity-check the extracted binary
+// STRUCTURALLY (isELFExecutable), never by executing it. A staged file
+// that is not an ELF executable must abort the install — even when the
+// download+digest+extract pipeline succeeds.
+func TestUpdateProviderRefusesNonELFStagedBinary(t *testing.T) {
+	dir := t.TempDir()
+	// Build a gzipped tarball whose linux/<arch>/provider is a shell script
+	// (not an ELF binary), serve it over HTTP, and feed a matching digest
+	// so the only thing that can stop the install is the structural check.
+	rel := tarRelPath(runtime.GOOS, runtimeGOARCH())
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: rel, Mode: 0o755, Size: int64(len(shellScript)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(shellScript)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var gzBuf bytes.Buffer
+	gz := gzip.NewWriter(&gzBuf)
+	if _, err := gz.Write(tarBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(gzBuf.Bytes()))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(gzBuf.Bytes())
+	}))
+	defer srv.Close()
+
+	cfg := updateConfig{
+		Tag:      "v9.9.9-test",
+		Digest:   digest,
+		AssetURL: srv.URL + "/urnetwork-provider-v9.9.9-test.tar.gz",
+		StageDir: filepath.Join(dir, "stage"),
+	}
+	err := updateProvider(Provider{Binary: filepath.Join(dir, "provider")}, cfg)
+	if err == nil {
+		t.Fatal("updateProvider must refuse a non-ELF staged binary")
+	}
+	if !strings.Contains(err.Error(), "not an ELF executable") {
+		t.Fatalf("error must say the staged binary is not ELF, got: %v", err)
+	}
+}
+
+const shellScript = "#!/bin/sh\necho not-a-binary\n"
