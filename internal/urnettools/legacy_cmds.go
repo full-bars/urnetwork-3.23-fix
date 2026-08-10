@@ -369,6 +369,11 @@ func unitDropinDir(p Provider) (string, error) {
 
 // restartAfterDropin reloads systemd and restarts the provider's unit.
 func restartAfterDropin(p Provider) error {
+	// Same guard as unitCommand: an empty unit must be rejected before any
+	// systemctl invocation (coderabbit minor on the coverage pass).
+	if p.Unit == "" {
+		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
+	}
 	if isUserUnit(p.Unit) && p.User != "" {
 		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
 		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).Run()
