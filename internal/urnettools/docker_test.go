@@ -49,18 +49,23 @@ func TestDockerImageVersion(t *testing.T) {
 	}
 }
 
-// TestTailLines trims a buffer to the last N lines (n is a string like the
-// docker logs --tail flag). Always returns a trailing newline.
-func TestTailLines(t *testing.T) {
-	in := "a\nb\nc\nd\ne\n"
-	if got := tailLines(in, "2"); got != "d\ne\n" {
-		t.Errorf("tailLines(in,2) = %q, want %q", got, "d\ne\n")
+// TestParseLogLineCount covers the optional trailing line-count argument
+// (default 250, positive integers only).
+func TestParseLogLineCount(t *testing.T) {
+	if got, err := parseLogLineCount(nil); err != nil || got != defaultLogTailLines {
+		t.Errorf("parseLogLineCount(nil) = %d, %v; want %d, nil", got, err, defaultLogTailLines)
 	}
-	if got := tailLines(in, "10"); got != in {
-		t.Errorf("tailLines(in,10) = %q, want full input", got)
+	if got, err := parseLogLineCount([]string{"50"}); err != nil || got != 50 {
+		t.Errorf("parseLogLineCount([50]) = %d, %v; want 50, nil", got, err)
 	}
-	if got := tailLines("", "2"); got != "\n" {
-		t.Errorf("tailLines(empty,2) = %q, want %q", got, "\n")
+	if _, err := parseLogLineCount([]string{"0"}); err == nil {
+		t.Error("parseLogLineCount([0]) = nil error; want error")
+	}
+	if _, err := parseLogLineCount([]string{"-3"}); err == nil {
+		t.Error("parseLogLineCount([-3]) = nil error; want error")
+	}
+	if _, err := parseLogLineCount([]string{"abc"}); err == nil {
+		t.Error("parseLogLineCount([abc]) = nil error; want error")
 	}
 }
 

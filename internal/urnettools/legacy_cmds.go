@@ -115,6 +115,25 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	return unitCommand(p, "restart")
 }
 
+// errWithDockerHint wraps a no-provider error with a pointer to the docker
+// variant when provider containers exist: the systemd/process tool cannot
+// tail their logs, but `urnet-docker logs` can (its interactive picker
+// lists them).
+func errWithDockerHint(err error) error {
+	docker := DiscoverDocker()
+	if len(docker) == 0 {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%v\n", err)
+	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
+	for _, p := range docker {
+		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.Network)
+	}
+	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
+	return fmt.Errorf("%s", b.String())
+}
+
 // cmdLogs streams logs for the provider: RAMLOGS-aware (reads /dev/shm)
 // when the unit has URNETWORK_RAMLOGS=1 / a RAM profile, else journald.
 func cmdLogs(args []string) error {
@@ -124,7 +143,7 @@ func cmdLogs(args []string) error {
 	}
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
-		return err
+		return errWithDockerHint(err)
 	}
 	if providerUsesRamlogs(p) {
 		// Stream from the RAM buffer on the box.
