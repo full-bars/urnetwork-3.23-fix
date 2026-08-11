@@ -124,7 +124,7 @@ func selectTargetInteractive(providers []Provider, t Target) (Provider, error) {
 			return Provider{}, err
 		}
 		if len(chosen) != 1 {
-			return Provider{}, fmt.Errorf("expected exactly one provider, got %d", len(chosen))
+			return Provider{}, fmt.Errorf("read-only command requires exactly one provider, got %d", len(chosen))
 		}
 		return chosen[0], nil
 	}

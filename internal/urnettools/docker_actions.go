@@ -43,15 +43,13 @@ func containerFollowFile(name, path string, n int) error {
 	return cmd.Run()
 }
 
-// containerReadFileSafe reads a file from a container, tolerating errors
-// (returns "", err when the read fails — caller decides fallback).
-func containerReadFileSafe(name, path string) (string, error) {
-	cmd := exec.Command(dockerCLI(), "exec", name, "cat", path)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+// containerFileNonEmpty reports whether a file exists and has content inside
+// a container, via `docker exec <name> test -s <path>`. Cheap existence
+// check: avoids cat-ing a multi-MB RAMLOG purely to test emptiness before
+// streaming it (review round).
+func containerFileNonEmpty(name, path string) bool {
+	cmd := exec.Command(dockerCLI(), "exec", name, "test", "-s", path)
+	return cmd.Run() == nil
 }
 
 // containerIDByName resolves a container name to its ID via docker ps (used

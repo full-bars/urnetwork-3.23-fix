@@ -67,6 +67,12 @@ func TestParseLogLineCount(t *testing.T) {
 	if _, err := parseLogLineCount([]string{"abc"}); err == nil {
 		t.Error("parseLogLineCount([abc]) = nil error; want error")
 	}
+	if _, err := parseLogLineCount([]string{"3.5"}); err == nil {
+		t.Error("parseLogLineCount([3.5]) = nil error; want error")
+	}
+	if _, err := parseLogLineCount([]string{"99999999999999999999"}); err == nil {
+		t.Error("parseLogLineCount([overflow]) = nil error; want error")
+	}
 }
 
 // TestSplitExecArgs covers the exec argument-splitting logic (the pure
