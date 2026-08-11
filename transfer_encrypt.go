@@ -514,9 +514,10 @@ type EncryptionSettings struct {
 	// plaintext. Sessions never block sequences; whether to accept plaintext
 	// is the caller's choice via `Encrypt`.
 	//
-	// A negative value (the default) disables the timeout: the handshake runs
-	// until it completes or the session is closed. The watcher is armed only
-	// for a strictly positive duration.
+	// A negative value disables the timeout: the handshake runs until it
+	// completes or the session is closed. The shipped default is 60s (bounded
+	// establishment); the watcher is armed only for a strictly positive
+	// duration.
 	TlsTimeout time.Duration
 	// NewPeerClientPublicKeyFetcher, when non-nil, is invoked once per per-peer
 	// session at creation with the peer's ClientId. The returned per-session
@@ -606,11 +607,15 @@ type EncryptionSettings struct {
 func DefaultEncryptionSettings() *EncryptionSettings {
 	return &EncryptionSettings{
 		Mode: EncryptionModeOff,
-		// fork deviation: TlsTimeout stays -1 (disabled) here; upstream ships
-		// 60s in DefaultEncryptionSettings. Flipping the default is a fork
-		// decision, not part of the encryption-mode port (upstream's parent
-		// already had 60s, so the port does not change it).
-		TlsTimeout:                    -1, // negative disables the handshake timeout
+		// Bound establishment: a departed peer, undeliverable TLS flight,
+		// missing identity proof, or missing contract key must fail to
+		// plaintext instead of retaining epoch workers and resending a 16KB
+		// ClientHello indefinitely. On timeout the epoch fails (cipher-nil,
+		// plaintext per the opportunistic contract) and a later acquire
+		// restarts a fresh epoch, so a transient wedge retries cleanly.
+		// Upstream's shipped default (the fork previously disabled it with
+		// -1, which also silenced the establishment-bound diagnostic).
+		TlsTimeout:                    60 * time.Second,
 		RequiredCipherPollInterval:    DefaultRequiredCipherPollInterval,
 		EncryptionControlUseCompanion: true,
 		// 0 reaps a standalone session immediately at refs==0 (<0 keeps it
