@@ -114,22 +114,27 @@ func TestInstallBinaryMissingSource(t *testing.T) {
 // TestRestartAfterDropinSystemUnitPropagatesError exercises the system-unit
 // branch of restartAfterDropin against a unit that cannot exist, pinning
 // the Sonnet MEDIUM-2 fix: systemctl's failure must reach the caller.
+// A fake unit name reliably errors on any Linux host, so err==nil is a
+// hard failure — NOT a pass-through log (Sonnet final-gate HIGH: the
+// t.Log form would stay green if the fix were reverted to
+// `_ = ...Run(); return nil`).
 func TestRestartAfterDropinSystemUnitPropagatesError(t *testing.T) {
 	p := Provider{Unit: "urnet-tools-test-fake-unit-r2.service"}
 	err := restartAfterDropin(p)
 	if err == nil {
-		t.Log("restartAfterDropin returned nil — systemctl may have succeeded unexpectedly in this environment")
+		t.Fatal("restartAfterDropin must propagate systemctl restart error for a fake unit (MEDIUM-2)")
 	}
 }
 
 // TestRestartAfterDropinUserUnitPropagatesError exercises the user-unit
 // branch of restartAfterDropin (isUserUnit + p.User set), which is exactly
 // the branch the round-2 fix changed from `_ = ...Run(); return nil` to
-// returning the restart error directly.
+// returning the restart error directly. Same hard-fail discipline: a fake
+// user unit cannot exist, so nil means the error was swallowed (regression).
 func TestRestartAfterDropinUserUnitPropagatesError(t *testing.T) {
 	p := Provider{Unit: "urnet-tools-test-fake-user-unit-r2.service", User: "urnet-tools-test-fake-user-r2"}
 	err := restartAfterDropin(p)
 	if err == nil {
-		t.Log("restartAfterDropin (user branch) returned nil — systemctl may have succeeded unexpectedly in this environment")
+		t.Fatal("restartAfterDropin (user branch) must propagate systemctl restart error for a fake unit (MEDIUM-2)")
 	}
 }
