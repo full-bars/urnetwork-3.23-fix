@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +24,23 @@ const (
 	shmImportantLogMaxSize = 1 * 1024 * 1024 // 1MB target cap
 )
 
+// ramlogsTailHint returns a copy-pasteable command to follow the shm log:
+//   - `URNETWORK_CONTAINER_NAME` (deployment-pinned, e.g. "urfix") when set;
+//   - the container ID (hostname) when running inside Docker — `docker exec`
+//     accepts the container ID, so the hint works without knowing the --name;
+//   - a plain `tail -f` on bare metal, where a docker hint would be wrong.
+func ramlogsTailHint() string {
+	if name := strings.TrimSpace(os.Getenv("URNETWORK_CONTAINER_NAME")); name != "" {
+		return fmt.Sprintf("docker exec %s tail -f %s", name, shmLogPath)
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		if host, err := os.Hostname(); err == nil && host != "" {
+			return fmt.Sprintf("docker exec %s tail -f %s", host, shmLogPath)
+		}
+	}
+	return fmt.Sprintf("tail -f %s", shmLogPath)
+}
+
 func initSHMLogger() {
 	// O_APPEND preserves log across restarts so post-mortem analysis is possible.
 	f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -32,7 +50,7 @@ func initSHMLogger() {
 	}
 	f.Write([]byte(fmt.Sprintf("\n--- provider restarted at %s ---\n", time.Now().Format(time.RFC3339))))
 	f.Write([]byte(fmt.Sprintf("[ramlogs] Active at %s\n", shmLogPath)))
-	f.Write([]byte(fmt.Sprintf("[ramlogs] View: docker exec <container> tail -f %s\n", shmLogPath)))
+	f.Write([]byte(fmt.Sprintf("[ramlogs] View: %s\n", ramlogsTailHint())))
 
 	// Print the same notice to the pre-redirect stdout/stderr, before the
 	// dup2 below severs them from wherever they currently flow. For the
@@ -44,7 +62,7 @@ func initSHMLogger() {
 	// since the redirect applies process-wide, not just to the long-running
 	// command.
 	fmt.Fprintf(os.Stdout, "[ramlogs] output redirected to %s\n", shmLogPath)
-	fmt.Fprintf(os.Stdout, "[ramlogs] view with: docker exec <container> tail -f %s\n", shmLogPath)
+	fmt.Fprintf(os.Stdout, "[ramlogs] view with: %s\n", ramlogsTailHint())
 
 	r, w, err := os.Pipe()
 	if err != nil {
