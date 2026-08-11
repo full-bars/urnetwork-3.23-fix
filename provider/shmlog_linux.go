@@ -24,6 +24,11 @@ const (
 	shmImportantLogMaxSize = 1 * 1024 * 1024 // 1MB target cap
 )
 
+// ramlogsDockerEnvPath is the marker file that identifies a Docker container
+// (/.dockerenv). A var so tests can point it at a temp file and exercise the
+// container-ID fallback without root.
+var ramlogsDockerEnvPath = "/.dockerenv"
+
 // ramlogsTailHint returns a copy-pasteable command to follow the shm log:
 //   - `URNETWORK_CONTAINER_NAME` (deployment-pinned, e.g. "urfix") when set;
 //   - the container ID (hostname) when running inside Docker — `docker exec`
@@ -33,7 +38,7 @@ func ramlogsTailHint() string {
 	if name := strings.TrimSpace(os.Getenv("URNETWORK_CONTAINER_NAME")); name != "" {
 		return fmt.Sprintf("docker exec %s tail -f %s", name, shmLogPath)
 	}
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	if _, err := os.Stat(ramlogsDockerEnvPath); err == nil {
 		if host, err := os.Hostname(); err == nil && host != "" {
 			return fmt.Sprintf("docker exec %s tail -f %s", host, shmLogPath)
 		}

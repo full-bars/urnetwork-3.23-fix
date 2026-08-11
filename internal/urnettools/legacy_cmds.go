@@ -118,8 +118,14 @@ func cmdRestart(args []string, force, dryRun bool) error {
 // errWithDockerHint wraps a no-provider error with a pointer to the docker
 // variant when provider containers exist: the systemd/process tool cannot
 // tail their logs, but `urnet-docker logs` can (its interactive picker
-// lists them).
+// lists them). Only fires when Discover() found ZERO systemd providers —
+// when systemd providers exist, a selectTarget error is a target problem
+// (typo/ambiguity), not a wrong-tool problem, and pointing at docker would
+// mislead (review MEDIUM).
 func errWithDockerHint(err error) error {
+	if len(Discover()) > 0 {
+		return err
+	}
 	docker := DiscoverDocker()
 	if len(docker) == 0 {
 		return err
