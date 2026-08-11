@@ -489,6 +489,12 @@ var ErrEncryptionRequiredNotEstablished = errors.New(
 	"encryption required: session not established with peer",
 )
 
+// DefaultRequiredCipherPollInterval is the fallback poll interval for the
+// EncryptionModeRequired send gate when `RequiredCipherPollInterval` is unset
+// (zero/negative) on the settings. A constant so the default and the
+// session-level fallback (`RequiredCipherPollInterval`) cannot diverge.
+const DefaultRequiredCipherPollInterval = 20 * time.Millisecond
+
 // EncryptionSettings configures the per-peer TLS sessions managed by an
 // `EncryptionSessionManager`.
 type EncryptionSettings struct {
@@ -605,7 +611,7 @@ func DefaultEncryptionSettings() *EncryptionSettings {
 		// decision, not part of the encryption-mode port (upstream's parent
 		// already had 60s, so the port does not change it).
 		TlsTimeout:                    -1, // negative disables the handshake timeout
-		RequiredCipherPollInterval:    20 * time.Millisecond,
+		RequiredCipherPollInterval:    DefaultRequiredCipherPollInterval,
 		EncryptionControlUseCompanion: true,
 		// 0 reaps a standalone session immediately at refs==0 (<0 keeps it
 		// forever, >0 idle-reaps after the timeout). DefaultClientSettings
@@ -1704,7 +1710,7 @@ func (self *peerEncryptionSession) RequiredCipherPollInterval() time.Duration {
 	if self.settings != nil && 0 < self.settings.RequiredCipherPollInterval {
 		return self.settings.RequiredCipherPollInterval
 	}
-	return 20 * time.Millisecond
+	return DefaultRequiredCipherPollInterval
 }
 
 // TlsTimeoutSetting returns the session's establishment timeout setting
