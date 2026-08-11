@@ -104,7 +104,7 @@ Unlike traditional services that run as root, this build defaults to a **systemd
 
 ## 🛠️ Post-Install Commands
 
-The installation includes the `urnet-tools` suite for management:
+The installation includes the `urnet-tools` suite for management. Since v3.23.0-fix.27.0 this is the **provider-aware Go binary** — on multi-provider machines, pass a target (`--unit` / `--user` / `--network` / `--network-id` / `--state-dir`) or the tool refuses. See [urnet-tools-go.md](urnet-tools-go.md).
 
 | Command | Description |
 | :--- | :--- |
@@ -138,7 +138,7 @@ powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
 | Component | Location |
 |-----------|----------|
 | Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
-| Management scripts | `%LOCALAPPDATA%\urnetwork\provider\urnet-tools.ps1` + `urnetwork-updater.ps1` |
+| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) + `urnetwork-updater.ps1` |
 | State directory | `%USERPROFILE%\.urnetwork\` |
 | Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
 | PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
@@ -153,26 +153,26 @@ urnetwork auth
 urnetwork provide
 
 # Start in background
-urnet-tools.ps1 start
+urnet-tools start
 
 # Manage proxies
-urnet-tools.ps1 proxy add C:\Users\You\proxies.txt
-urnet-tools.ps1 proxy refresh
-urnet-tools.ps1 proxy summary
+urnet-tools proxy add C:\Users\You\proxies.txt
+urnet-tools proxy refresh
+urnet-tools proxy summary
 
 # View logs
-urnet-tools.ps1 logs
+urnet-tools logs
 
 # Hot-restart toggle
-urnet-tools.ps1 hot-restart on
-urnet-tools.ps1 hot-restart off
+urnet-tools hot-restart on
+urnet-tools hot-restart off
 
 # Session save/load
-urnet-tools.ps1 session save C:\Users\You\backup.urnsession
-urnet-tools.ps1 session load C:\Users\You\backup.urnsession
+urnet-tools session save C:\Users\You\backup.urnsession
+urnet-tools session load C:\Users\You\backup.urnsession
 
 # Update
-urnet-tools.ps1 update
+urnet-tools update
 ```
 
 ## 📊 System Auditor & Host Optimization

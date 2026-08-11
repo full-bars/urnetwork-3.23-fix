@@ -43,6 +43,44 @@ be admitted to the auth queue. A score at or above `preferred_bar`
 stage-0 but fail stage-1 never spawn, and are reported separately from
 dead proxies in the auth gate's summary.
 
+---
+
+## 🎓 A-F Quality Tiers (v3.23.0-fix.27.0+)
+
+Every URL-source proxy that clears the stage-1 gate is assigned a letter
+grade from its score:
+
+| Grade | Score |
+|---|---|
+| A | `>= 0.9` |
+| B | `>= 0.8` |
+| C | `>= 0.7` |
+| D | `>= 0.6` |
+| F | `< 0.6` |
+
+- **Admission funnel**: candidates from all sources are pooled and added
+  best-first up to the cache cap, instead of per-source in whatever order
+  sources happen to be processed.
+- **Best-overall cache eviction**: when the cache is full, eviction
+  compares candidates across all sources by tier — a full cache keeps the
+  fleet's highest-tier proxies regardless of source.
+- **Per-cycle grade breakdown** is logged (`admitted by tier`, `probe grade
+  breakdown`, `cap eviction`, `reaper: refreshed grade`).
+- **Fetch probing**: each cycle probes only newly-seen addresses; the
+  reaper's stale sweep refreshes grades on already-cached proxies.
+- **Cross-source duplicates** are table-probed once per cycle.
+
+## 🎓 Paid / File-List Proxy Grading (v3.23.0-fix.27.0+)
+
+Proxies from `--proxy_file` or the internal config bypass the URL
+admission gate by construction. A background sweep grades every non-URL
+proxy the box serves with the same stage-1 table probe on the same 1-3h
+stale cadence, persisting Score/Graded/Failed/LastGraded into
+`proxy.state`. **Read-only by construction**: grades never gate admission,
+never evict, and never feed give-up/cleanup — a graded F keeps serving
+exactly as it did before. `proxy_probe.json enabled=false` skips the sweep
+entirely.
+
 **Credentialed URL entries**: RFC 1929 auth (`host:port:user:pass`) is
 carried through both the stage-0 and stage-1 probes, so paid/credentialed
 URL-source entries are graded on the same footing as free ones.
