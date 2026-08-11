@@ -227,6 +227,8 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			entry.LastGraded = probeDone
 			if r.table.Decidable {
 				oldTier := ""
+				oldScore := entry.Score
+				wasGraded := entry.Graded // capture BEFORE the write below (HIGH-1)
 				if entry.Graded {
 					oldTier = proxyGradeTier(entry.Score)
 				}
@@ -239,6 +241,8 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					tierChanges++
 					importantLogf("[proxy][grade] paid %s graded %s (score %.2f, %d/%d)\n",
 						r.addr, newTier, r.table.Score, r.table.OK, r.table.SampleWidth)
+					// Per-address delta line into grades.log history too.
+					emitProxyGradeDelta(r.addr, oldTier, newTier, oldScore, r.table.Score, wasGraded)
 				}
 			}
 			state.Proxies[r.addr] = entry
