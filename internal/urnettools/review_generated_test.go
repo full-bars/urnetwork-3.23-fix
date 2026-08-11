@@ -98,8 +98,44 @@ func (e *testErrAmbiguous) Error() string { return e.msg }
 
 func TestErrWithDockerHint_PassThroughWhenNoDocker(t *testing.T) {
 	ambiguous := &testErrAmbiguous{msg: `target unit "x" is ambiguous (2 matches); use a more specific target`}
-	got := errWithDockerHint(ambiguous)
+	got := errWithDockerHint(ambiguous, 0)
 	if got.Error() != ambiguous.msg {
 		t.Fatalf("errWithDockerHint with no docker containers should pass the error through unchanged, got %q", got.Error())
+	}
+}
+
+// TestErrWithDockerHint_SystemdPresentSuppressesHint pins the round-1 gate:
+// when systemd providers exist, the docker hint must be suppressed even if
+// docker containers are present — the error is a target problem, not a
+// wrong-tool problem.
+func TestErrWithDockerHint_SystemdPresentSuppressesHint(t *testing.T) {
+	orig := discoverDockerFn
+	defer func() { discoverDockerFn = orig }()
+	discoverDockerFn = func() []Provider {
+		return []Provider{{Unit: "urfix"}}
+	}
+
+	msg := `target unit "urnetwork.service" matches no running provider`
+	got := errWithDockerHint(&testErrAmbiguous{msg: msg}, 1)
+	if got.Error() != msg {
+		t.Fatalf("hint must be suppressed when systemd providers exist, got %q", got.Error())
+	}
+	if strings.Contains(got.Error(), "urnet-docker") {
+		t.Fatalf("no docker hint expected when systemd providers exist, got %q", got.Error())
+	}
+}
+
+// TestErrWithDockerHint_NoSystemdDockerPresentHints pins the positive branch:
+// zero systemd providers + docker containers present -> the hint fires.
+func TestErrWithDockerHint_NoSystemdDockerPresentHints(t *testing.T) {
+	orig := discoverDockerFn
+	defer func() { discoverDockerFn = orig }()
+	discoverDockerFn = func() []Provider {
+		return []Provider{{Unit: "urfix"}}
+	}
+
+	got := errWithDockerHint(&testErrAmbiguous{msg: "no providers found on this box"}, 0)
+	if !strings.Contains(got.Error(), "urnet-docker") {
+		t.Fatalf("expected a docker hint when no systemd providers exist, got %q", got.Error())
 	}
 }
