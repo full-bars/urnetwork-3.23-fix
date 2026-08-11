@@ -1,0 +1,594 @@
+package urnettools
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+)
+
+// updateConfig holds the release metadata for the update command.
+type updateConfig struct {
+	// Tag is the release tag to install, e.g. "v3.23.0-fix.26.8".
+	Tag string
+	// Digest is the sha256 of the release tarball asset (hex). When empty,
+	// integrity verification is skipped (not recommended).
+	Digest string
+	// AssetURL is the download URL for the tarball.
+	AssetURL string
+	// StageDir is where downloads/extraction happen. MUST be on real disk —
+	// /tmp is frequently a small tmpfs and the multi-platform tarball
+	// overflows it (the 2026-08-09 failure).
+	StageDir string
+}
+
+// newStageDir creates a private 0700 staging directory for one update.
+// Stage on real disk, NOT /tmp (frequently a small tmpfs that the
+// multi-platform tarball overflows — the 2026-08-09 failure). Windows has
+// no /var/tmp; use the system temp dir there (free-review major). A
+// predictable path could be pre-created by a local user who then swaps the
+// tarball between verify and extract (coderabbit critical).
+func newStageDir() (string, error) {
+	parent := "/var/tmp"
+	if runtime.GOOS == "windows" {
+		parent = os.TempDir()
+	}
+	stageDir, err := os.MkdirTemp(parent, "urnet-stage-")
+	if err != nil {
+		return "", fmt.Errorf("create staging directory: %w", err)
+	}
+	return stageDir, nil
+}
+
+// cmdUpdate updates one or more providers' binaries, then restarts the unit
+// that actually owns each (system-level or user-level — never the wrong
+// one). Destructive gate applies per provider.
+//
+// Interactive-first: with no --tag it fetches the latest release from
+// GitHub and prompts; with multiple providers and no target it shows the
+// numbered picker. Non-interactive (no TTY) refuses ambiguity unless an
+// explicit target or --include is given — scripts must be explicit.
+func cmdUpdate(args []string, force, dryRun bool) error {
+	// LENIENT target parse: update defines its own flags (--tag, --digest,
+	// --url, --include, --exclude, --all, --select) which the loop below
+	// consumes. Strict parsing here would reject them as unknown before
+	// the loop ever runs (opus5 F1: every update flag was dead). Leftover
+	// unknown --flags are rejected AFTER the loop instead.
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	cfg := updateConfig{}
+	// Parse --tag/--digest/--url and batch-selection overrides.
+	var include, exclude []string
+	all := false
+	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--tag":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--tag requires a value")
+			}
+			cfg.Tag = rest[i+1]
+			i++
+		case "--digest":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--digest requires a value")
+			}
+			cfg.Digest = rest[i+1]
+			i++
+		case "--url":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--url requires a value")
+			}
+			cfg.AssetURL = rest[i+1]
+			i++
+		case "--include":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--include requires a value (comma-separated labels)")
+			}
+			include = splitLabels(rest[i+1])
+			i++
+		case "--exclude":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("--exclude requires a value (comma-separated labels)")
+			}
+			exclude = splitLabels(rest[i+1])
+			i++
+		case "--all", "-all":
+			all = true
+		case "--select":
+			interactive = !force // --select forces the picker unless -f
+		default:
+			// Accept the = form (--include=a,b) as well as the space form.
+			if strings.HasPrefix(rest[i], "--include=") {
+				include = splitLabels(strings.TrimPrefix(rest[i], "--include="))
+			} else if strings.HasPrefix(rest[i], "--exclude=") {
+				exclude = splitLabels(strings.TrimPrefix(rest[i], "--exclude="))
+			} else if strings.HasPrefix(rest[i], "-") {
+				// Unknown --flag (typo like --netwrok): reject AFTER the
+				// command's own flags were consumed (review finding L2).
+				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select)", rest[i])
+			} else {
+				return fmt.Errorf("unexpected argument %q for update", rest[i])
+			}
+		}
+	}
+
+	providers := Discover()
+	var chosen []Provider
+	if all {
+		// --all means every provider on the box, no ambiguity. It conflicts
+		// with an explicit target — error rather than silently discarding
+		// it (review finding M4).
+		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
+		}
+		if len(providers) == 0 {
+			return fmt.Errorf("no providers found on this box")
+		}
+		chosen = providers
+	} else {
+		var err error
+		chosen, err = selectTargets(providers, t, include, exclude, interactive)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Resolve the release: --tag wins; otherwise fetch latest.
+	if cfg.Tag == "" {
+		rel, rerr := latestRelease()
+		if rerr != nil {
+			return rerr
+		}
+		cfg.Tag = rel.Tag
+		if cfg.Digest == "" {
+			cfg.Digest = rel.Digest
+		}
+		if cfg.AssetURL == "" {
+			cfg.AssetURL = rel.URL
+		}
+	} else if cfg.Digest == "" {
+		// --tag without --digest: resolve the digest from the release API
+		// so the download is always verified (never silently skipped —
+		// the staged binary would be executed as the provider user).
+		rel, rerr := fetchReleaseByTag(cfg.Tag)
+		if rerr != nil {
+			return rerr
+		}
+		cfg.Digest = rel.Digest
+		if cfg.AssetURL == "" {
+			cfg.AssetURL = rel.URL
+		}
+	}
+
+	// Confirm version choice interactively unless -f or dry-run already
+	// covers it (dry-run prints without acting).
+	if !force && !dryRun {
+		yes, cerr := confirmVersion(cfg.Tag, chosen)
+		if cerr != nil {
+			return cerr
+		}
+		if !yes {
+			return nil
+		}
+	}
+
+	// Confirm once for the whole set, listing every provider.
+	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run
+	}
+
+	// Validate EVERY provider's preconditions before touching any of them —
+	// a single missing binary path must not abort after earlier providers
+	// were already updated (free-review major).
+	for _, p := range chosen {
+		if p.Binary == "" {
+			return fmt.Errorf("provider %s has no resolvable binary path — nothing updated", providerLabel(p))
+		}
+	}
+
+	// Create the private staging dir ONLY now — after dry-run, cancellation,
+	// and no-op paths. A dry run or declined confirm must not create (and
+	// then remove) a temp dir or fail on staging permissions (coderabbit
+	// minor).
+	stageDir, serr := newStageDir()
+	if serr != nil {
+		return serr
+	}
+	// Private staging dir is created per-update; always clean it up.
+	defer os.RemoveAll(stageDir)
+	cfg.StageDir = stageDir
+
+	failures := 0
+	for _, p := range chosen {
+		if p.Version == cfg.Tag {
+			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
+			continue
+		}
+		if err := updateProvider(p, cfg); err != nil {
+			// Continue the batch; report all failures at the end rather
+			// than aborting mid-fleet (free-review major).
+			fmt.Fprintf(os.Stderr, "update %s failed: %v\n", providerLabel(p), err)
+			failures++
+		}
+	}
+	if failures > 0 {
+		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
+	}
+	return nil
+}
+
+// confirmVersion prompts "update to <tag>?" for the chosen set. Returns
+// (true, nil) on yes; (false, nil) on no/abort.
+func confirmVersion(tag string, providers []Provider) (bool, error) {
+	fmt.Printf("Latest release: %s", tag)
+	if len(providers) > 0 {
+		fmt.Printf("  (targeting %d provider(s))", len(providers))
+	}
+	fmt.Println()
+	for _, p := range providers {
+		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
+	}
+	fmt.Print("Update to this version? [Y/n]: ")
+	line, err := stdinReader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" || line == "y" || line == "yes" {
+		return true, nil
+	}
+	fmt.Println("aborted")
+	return false, nil
+}
+
+// orDash renders empty strings as "-".
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// forceInteractive reports whether prompts/pickers should be enabled. With
+// -f we never prompt — scripts must be fully explicit.
+func forceInteractive(force bool) bool {
+	return !force && isTTY()
+}
+
+// isTTY reports whether stdin is a terminal (interactive session).
+func isTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// splitLabels splits a comma-separated label list.
+func splitLabels(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// updateProvider performs the surgical binary swap for one provider:
+//  1. Stage the tarball on real disk (never /tmp tmpfs).
+//  2. Verify sha256 against the release digest when provided.
+//  3. Extract ONLY linux/$arch/provider — not the whole multi-platform
+//     tarball (bloat + the tmpfs overflow root cause).
+//  4. Back up the current binary.
+//  5. Swap with the provider user's ownership.
+//  6. Restart the unit that OWNS the running process (systemd unit name, or
+//     fall back to restarting by user-level unit, or plain process signal).
+//
+// This is the exact recipe proven on 2026-08-09 for taco's fleet.
+func updateProvider(p Provider, cfg updateConfig) error {
+	// A digest is MANDATORY: without it the downloaded binary is executed
+	// (version check + install, often as the provider user) with no
+	// integrity verification. Check BEFORE any staging side effects — the
+	// flag parser and release lookup both ensure a digest is resolved;
+	// this is the last line of defense.
+	if cfg.Digest == "" {
+		return fmt.Errorf("update: no sha256 digest for %s; refusing unverified download", cfg.Tag)
+	}
+	if err := os.MkdirAll(cfg.StageDir, 0o755); err != nil {
+		return fmt.Errorf("stage dir: %w", err)
+	}
+	arch := runtimeGOARCH()
+	relPath := tarRelPath(runtime.GOOS, arch)
+
+	url := cfg.AssetURL
+	if url == "" {
+		url = fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", cfg.Tag, cfg.Tag)
+	}
+	tarball := filepath.Join(cfg.StageDir, cfg.Tag+".tar.gz")
+
+	fmt.Printf("downloading %s\n", url)
+	if err := downloadFile(url, tarball); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	if err := verifySHA256(tarball, cfg.Digest); err != nil {
+		return err
+	}
+	fmt.Println("sha256 verified")
+
+	// Extract only the needed arch's provider binary.
+	extractDir := filepath.Join(cfg.StageDir, "extract-"+cfg.Tag)
+	if err := os.RemoveAll(extractDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		return err
+	}
+	if err := extractSingleFile(tarball, relPath, filepath.Join(extractDir, "provider")); err != nil {
+		return fmt.Errorf("extract %s: %w", relPath, err)
+	}
+
+	// Structural sanity-check the staged binary WITHOUT executing it.
+	// Running a freshly downloaded artifact (e.g. `staged --version`) is
+	// code execution of a remote file — the same class of defect the hub
+	// path guards with isELFExecutable (coderabbit critical). sha256
+	// already guarantees the artifact matches the requested tag, so an
+	// ELF-magic check is the right ceiling here: it confirms we extracted
+	// a real binary, not a script or corrupted file.
+	staged := filepath.Join(extractDir, "provider")
+	if !isELFExecutable(staged) {
+		return fmt.Errorf("staged binary %s is not an ELF executable (corrupted or wrong asset) — refusing to install", staged)
+	}
+
+	// Backup current binary with a nanosecond-timestamped name so repeated
+	// updates never collide (review finding M2; coderabbit minor: second
+	// precision let two updates in one second reuse the older backup).
+	backup := backupName(p.Binary, time.Now())
+	if _, err := os.Stat(backup); err == nil {
+		// Same-instant collision: fail loudly rather than silently reusing
+		// the older backup and losing the immediate previous binary.
+		return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
+	} else if !os.IsNotExist(err) {
+		// Non-NotExist error (permissions, etc.) — treat as a real
+		// failure, not "already backed up" (free-review minor).
+		return fmt.Errorf("backup stat: %w", err)
+	}
+	if err := copyFile(p.Binary, backup); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
+
+	// Swap with ownership preserved for the provider user.
+	if err := installBinary(staged, p.Binary, p.User); err != nil {
+		return fmt.Errorf("swap binary: %w", err)
+	}
+	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
+
+	// Restart the unit that owns the running process.
+	return restartProvider(p)
+}
+
+// restartProvider restarts the systemd unit (system or user level) that owns
+// the provider process. Falls back gracefully when systemd is unavailable.
+func restartProvider(p Provider) error {
+	if p.Unit != "" {
+		// System-level units are owned by root; user-level units run in the
+		// user's session. Try the system manager first, then the user one,
+		// then the PID-signal fallback.
+		if out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput(); err == nil {
+			fmt.Printf("restarted %s\n", p.Unit)
+			return nil
+		} else if strings.Contains(string(out), "not found") || strings.Contains(string(out), "No such") {
+			// Not a system unit — fall through to user-level.
+		} else {
+			return fmt.Errorf("systemctl restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+		}
+		if p.User != "" {
+			// User-level unit in the owning user's session (the missing
+			// path — previously fell straight to PID signaling, which
+			// cannot restart a stopped user unit).
+			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).CombinedOutput(); err == nil {
+				fmt.Printf("restarted %s (user %s)\n", p.Unit, p.User)
+				return nil
+			} else if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+	if p.User != "" && p.PID > 0 {
+		// No systemd ownership resolved: signal the process directly.
+		proc, err := os.FindProcess(p.PID)
+		if err == nil {
+			if err := proc.Signal(os.Interrupt); err == nil {
+				fmt.Printf("sent SIGINT to pid %d (provider will restart under its unit)\n", p.PID)
+				time.Sleep(2 * time.Second)
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("could not restart provider %s — restart the owning unit manually", providerLabel(p))
+}
+
+// downloadFile fetches url into path (atomic-ish: temp file + rename).
+func downloadFile(url, path string) error {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+	}
+	tmp := path + ".part"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, resp.Body)
+	f.Close()
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// verifySHA256 checks the file's sha256 against the expected hex digest.
+func verifySHA256(path, want string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 mismatch: got %s want %s", got, want)
+	}
+	return nil
+}
+
+// tarRelPath returns the in-archive path of the provider binary for goos.
+//
+// Tar headers always use forward slashes regardless of host OS; using
+// filepath.Join here would produce backslashes on Windows and the
+// in-archive lookup would never match (free-review critical).
+func tarRelPath(goos, arch string) string {
+	if goos == "windows" {
+		return path.Join("windows", arch, "provider.exe")
+	}
+	return path.Join("linux", arch, "provider")
+}
+
+// extractSingleFile extracts exactly one file from a .tar.gz to dst.
+func extractSingleFile(tarball, relPath, dst string) error {
+	f, err := os.Open(tarball)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.Name == relPath || strings.TrimPrefix(hdr.Name, "./") == relPath {
+			out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+			if err != nil {
+				return err
+			}
+			_, cerr := io.Copy(out, tr)
+			out.Close()
+			return cerr
+		}
+	}
+	return fmt.Errorf("path %s not found in tarball", relPath)
+}
+
+// installBinary copies src to dst preserving ownership for the given user,
+// then atomically renames into place.
+//
+// The write goes to dst+".new" (same directory, so same filesystem) and is
+// os.Rename'd over dst — never O_TRUNC in place. The running provider may
+// still be executing from dst during an update; overwriting that inode in
+// place risks SIGBUS/SIGSEGV on demand-paging (review finding H2), while
+// rename(2) leaves the old inode serving already-open processes and only
+// new execve's see the new file.
+func installBinary(src, dst, user string) error {
+	newPath := dst + ".new"
+	if err := copyFile(src, newPath); err != nil {
+		return err
+	}
+	if err := os.Chmod(newPath, 0o755); err != nil {
+		return err
+	}
+	if user != "" && os.Geteuid() == 0 {
+		// Resolve uid/gid via id(1) — portable without cgo.
+		uidOut, err := exec.Command("id", "-u", user).Output()
+		if err != nil {
+			return fmt.Errorf("resolve uid for %s: %w", user, err)
+		}
+		gidOut, err := exec.Command("id", "-g", user).Output()
+		if err != nil {
+			return fmt.Errorf("resolve gid for %s: %w", user, err)
+		}
+		uid := strings.TrimSpace(string(uidOut))
+		gid := strings.TrimSpace(string(gidOut))
+		if err := exec.Command("chown", uid+":"+gid, newPath).Run(); err != nil {
+			return fmt.Errorf("chown %s: %w", newPath, err)
+		}
+	}
+	if err := os.Rename(newPath, dst); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
+	}
+	return nil
+}
+
+// backupName returns the timestamped backup path for a binary — distinct
+// names even for repeated updates within the same second are NOT guaranteed
+// at second resolution, but the timestamp carries the wall clock so backups
+// never collide across seconds (review finding M2). Extracted as a pure
+// helper so tests call production logic (coderabbit).
+func backupName(binary string, at time.Time) string {
+	return binary + ".bak-" + at.UTC().Format("20060102T150405.000000000Z")
+}
+
+// copyFile copies src to dst preserving mode.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	_, cerr := io.Copy(out, in)
+	if cerr != nil {
+		out.Close()
+		return cerr
+	}
+	// Close flushes buffered data — a disk-full or I/O error here would
+	// otherwise be lost and the copy reported successful (free-review
+	// major: copyFile produces the backup AND the .new binary).
+	if cerr = out.Close(); cerr != nil {
+		return fmt.Errorf("close %s: %w", dst, cerr)
+	}
+	return nil
+}
