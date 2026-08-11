@@ -82,27 +82,27 @@ func TestMultiClientChannelPqe(t *testing.T) {
 
 	// no profile: encryption stays off
 	clientSettings := newChannelClientSettings(nil)
-	assert.Equal(t, false, clientSettings.EncryptionSettings.Encrypt)
+	assert.Equal(t, EncryptionModeOff, clientSettings.EncryptionSettings.Mode)
 
 	// profile without pqe: encryption stays off
 	clientSettings = newChannelClientSettings(&PerformanceProfile{
 		WindowType:  WindowTypeAuto,
 		AllowDirect: true,
 	})
-	assert.Equal(t, false, clientSettings.EncryptionSettings.Encrypt)
+	assert.Equal(t, EncryptionModeOff, clientSettings.EncryptionSettings.Mode)
 
-	// pqe on an auto profile enables the e2e sessions
+	// pqe on an auto profile fail-closes the e2e sessions
 	clientSettings = newChannelClientSettings(&PerformanceProfile{
 		WindowType:            WindowTypeAuto,
 		PostQuantumEncryption: true,
 	})
-	assert.Equal(t, true, clientSettings.EncryptionSettings.Encrypt)
+	assert.Equal(t, EncryptionModeRequired, clientSettings.EncryptionSettings.Mode)
 
-	// pqe on a fixed profile enables the e2e sessions
+	// pqe on a fixed profile fail-closes the e2e sessions
 	clientSettings = newChannelClientSettings(&PerformanceProfile{
 		WindowType:            WindowTypeSpeed,
 		WindowSize:            DefaultWindowSizeSettings(),
 		PostQuantumEncryption: true,
 	})
-	assert.Equal(t, true, clientSettings.EncryptionSettings.Encrypt)
+	assert.Equal(t, EncryptionModeRequired, clientSettings.EncryptionSettings.Mode)
 }
