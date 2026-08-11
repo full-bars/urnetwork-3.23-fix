@@ -232,4 +232,23 @@ func TestRunDockerNoContainers(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no providers found") {
 		t.Errorf("RunDocker([exec urnet-tools status]) = %v, want \"no providers found\"", err)
 	}
+	// -- separator: everything after it is the container command (may
+	// contain its own flags); an explicit --unit target on a box with no
+	// containers errors as no-matching-provider (more precise than the
+	// no-target "no providers found").
+	err = RunDocker([]string{"exec", "--unit", "x", "--", "urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"})
+	if err == nil || !strings.Contains(err.Error(), "matches no running provider") {
+		t.Errorf("RunDocker([exec --unit x -- cmd...]) = %v, want \"matches no running provider\"", err)
+	}
+	// Unknown flag BEFORE the command must error loudly (was silently
+	// dropped before the -- separator fix), with a hint to use --.
+	err = RunDocker([]string{"exec", "--unit", "x", "--verbose", "urnet-tools"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--") {
+		t.Errorf("RunDocker([exec --unit x --verbose cmd]) = %v, want unknown-flag error with -- hint", err)
+	}
+	// Inner -f before the command: same refusal (must not be swallowed).
+	err = RunDocker([]string{"exec", "--unit", "x", "-f", "urnet-tools"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("RunDocker([exec --unit x -f cmd]) = %v, want unknown-flag error", err)
+	}
 }
