@@ -8,8 +8,9 @@ import (
 // TestIsDockerCandidate covers the container image/name recognition rules.
 func TestIsDockerCandidate(t *testing.T) {
 	cases := []struct {
-		image, name string
-		want        bool
+		image string
+		name  string
+		want  bool
 	}{
 		{"ghcr.io/full-bars/urnetwork-3.23-fix:latest", "urnet", true},
 		{"urnetwork-3.23-fix:stable", "provider1", true},
@@ -25,60 +26,48 @@ func TestIsDockerCandidate(t *testing.T) {
 	}
 }
 
-// TestDockerImageVersion extracts the version from an image tag.
+// TestDockerImageVersion extracts the version from an image tag (only
+// version-like tags; latest/stable/nightly/dev and bare tags return "").
 func TestDockerImageVersion(t *testing.T) {
-	cases := map[string]string{
-		"ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.26.8": "v3.23.0-fix.26.8",
-		"urnetwork-3.23-fix:stable":                             "",
-		"urnetwork-3.23-fix:latest":                             "",
-		"urnetwork-3.23-fix":                                    "",
+	cases := []struct {
+		image string
+		want  string
+	}{
+		{"ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.27.0", "v3.23.0-fix.27.0"},
+		{"probe-test:mainnet", ""}, // plain tag, not version-like
+		{"nginx:latest", ""},       // latest is not a version
+		{"redis:7", ""},            // bare digit, not version-like
+		{"urnetwork:stable", ""},   // stable is not a version
+		{"urnetwork:v3.23.0-fix.26", "v3.23.0-fix.26"},
 	}
-	for img, want := range cases {
-		if got := dockerImageVersion(img); got != want {
-			t.Errorf("dockerImageVersion(%q) = %q, want %q", img, got, want)
+	for _, c := range cases {
+		if got := dockerImageVersion(c.image); got != c.want {
+			t.Errorf("dockerImageVersion(%q) = %q, want %q", c.image, got, c.want)
 		}
 	}
 }
 
-// TestTailLines verifies the logs tail helper.
+// TestTailLines trims a buffer to the last N lines (n is a string like the
+// docker logs --tail flag). Always returns a trailing newline.
 func TestTailLines(t *testing.T) {
 	in := "a\nb\nc\nd\ne\n"
 	if got := tailLines(in, "2"); got != "d\ne\n" {
-		t.Errorf("tailLines 2 = %q", got)
+		t.Errorf("tailLines(in,2) = %q, want %q", got, "d\ne\n")
 	}
-	if got := tailLines(in, "99"); got != in {
-		t.Errorf("tailLines 99 should return everything, got %q", got)
+	if got := tailLines(in, "10"); got != in {
+		t.Errorf("tailLines(in,10) = %q, want full input", got)
 	}
-	if got := tailLines("single", "1"); got != "single\n" {
-		t.Errorf("tailLines single = %q", got)
+	if got := tailLines("", "2"); got != "\n" {
+		t.Errorf("tailLines(empty,2) = %q, want %q", got, "\n")
 	}
-}
-
-// TestDockerProviderIdentity builds a Provider from a fake container record
-// (unit-testable without a docker daemon).
-func TestDockerProviderIdentity(t *testing.T) {
-	c := dockerContainer{
-		ID:    "abc123",
-		Name:  "urnet",
-		Image: "ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.26.8",
-		State: "running",
-	}
-	p, err := dockerProvider(c)
-	if err != nil {
-		// Without a real docker daemon this errors on containerReadFile —
-		// the container plumbing is not unit-testable offline; the pure
-		// parts (version parse, candidate match) are covered above.
-		t.Logf("dockerProvider requires a live docker daemon: %v", err)
-		return
-	}
-	_ = p
 }
 
 // TestSplitExecArgs covers the exec argument-splitting logic (the pure
 // helper behind cmdDockerExec). Mimo HIGH-1: the integration tests only
 // exercised error paths (no docker daemon), so the actual -- separator
 // forwarding of rest... was never verified. This pins the slice math
-// directly without docker.
+// directly without docker. Coderabbit: also pins the trailing-flag panic
+// guard and the inner-help forwarding.
 func TestSplitExecArgs(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -87,18 +76,31 @@ func TestSplitExecArgs(t *testing.T) {
 		wantRest []string
 		wantErr  string
 	}{
+		// -- separator forwarding (mimo HIGH-1 happy path)
 		{"sep-first-no-target", []string{"--", "urnet-tools", "status"}, nil, []string{"urnet-tools", "status"}, ""},
 		{"sep-flag-first-word", []string{"--", "-f", "urnet-tools"}, nil, []string{"-f", "urnet-tools"}, ""},
 		{"sep-flags-with-values", []string{"--", "urnet-tools", "--proxy_file=/tmp/p.txt"}, nil, []string{"urnet-tools", "--proxy_file=/tmp/p.txt"}, ""},
 		{"sep-empty-command", []string{"--unit", "x", "--"}, []string{"--unit", "x"}, nil, ""},
 		{"sep-only", []string{"--"}, nil, nil, ""},
 		{"sep-multiple-inner-flags", []string{"--", "urnet-tools", "--verbose", "cmd"}, nil, []string{"urnet-tools", "--verbose", "cmd"}, ""},
+		// no-separator forms (backward compat)
 		{"no-sep-command-first", []string{"urnet-tools", "status"}, nil, []string{"urnet-tools", "status"}, ""},
 		{"no-sep-target-first", []string{"--unit", "x", "urnet-tools", "--proxy_file=/tmp/p.txt"}, []string{"--unit", "x"}, []string{"urnet-tools", "--proxy_file=/tmp/p.txt"}, ""},
+		// unknown leading flags must error loudly (not be swallowed)
 		{"unknown-dash-flag", []string{"--verbose", "cmd"}, nil, nil, "unknown flag"},
 		{"unknown-short-flag", []string{"-f", "cmd"}, nil, nil, "unknown flag"},
 		{"unknown-flag-with-target", []string{"--unit", "x", "--verbose", "urnet-tools"}, []string{"--unit", "x"}, nil, "unknown flag"},
 		{"empty", nil, nil, nil, ""},
+		// Coderabbit critical: a trailing recognized target flag (no value)
+		// must error, not panic on the slice below.
+		{"trailing-unit-no-value", []string{"--unit"}, nil, nil, "requires a value"},
+		{"trailing-unit-no-value-after-target", []string{"--unit", "x", "--network"}, []string{"--unit", "x"}, nil, "requires a value"},
+		// Coderabbit major: -h/--help AFTER the -- separator belongs to the
+		// container command and must be forwarded, not intercepted.
+		{"help-after-sep-forwarded", []string{"--", "urnet-tools", "--help"}, nil, []string{"urnet-tools", "--help"}, ""},
+		{"help-after-sep-with-target", []string{"--unit", "x", "--", "urnet-tools", "--help"}, []string{"--unit", "x"}, []string{"urnet-tools", "--help"}, ""},
+		// -h/--help BEFORE the separator (no --) is docker help (errHelpShown).
+		{"help-before-sep", []string{"--unit", "x", "--help"}, nil, nil, "help shown"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
