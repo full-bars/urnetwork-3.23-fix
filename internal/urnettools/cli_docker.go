@@ -289,7 +289,7 @@ func cmdDockerLogs(args []string) error {
 		return err
 	}
 	// Prefer the RAMLOG file when the container runs with URNETWORK_RAMLOGS.
-	if out, err := containerReadFileSafe(p.Unit, "/dev/shm/urnetwork.log"); err == nil && len(out) > 0 {
+	if containerFileNonEmpty(p.Unit, "/dev/shm/urnetwork.log") {
 		return containerFollowFile(p.Unit, "/dev/shm/urnetwork.log", n)
 	}
 	return containerLogsFollow(p.Unit, n)
