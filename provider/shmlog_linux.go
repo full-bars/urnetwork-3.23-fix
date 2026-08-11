@@ -26,7 +26,9 @@ const (
 
 // ramlogsDockerEnvPath is the marker file that identifies a Docker container
 // (/.dockerenv). A var so tests can point it at a temp file and exercise the
-// container-ID fallback without root.
+// container-ID fallback without root. TEST-ONLY mutation point: not
+// concurrency-safe (tests restore it via defer; keep t.Parallel out of the
+// shmlog tests).
 var ramlogsDockerEnvPath = "/.dockerenv"
 
 // ramlogsTailHint returns a copy-pasteable command to follow the shm log:

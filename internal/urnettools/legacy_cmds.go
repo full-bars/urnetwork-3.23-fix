@@ -115,18 +115,23 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	return unitCommand(p, "restart")
 }
 
+// discoverDockerFn is the docker-provider discovery function, as a var so
+// errWithDockerHint's docker branch is testable without a live daemon.
+var discoverDockerFn = DiscoverDocker
+
 // errWithDockerHint wraps a no-provider error with a pointer to the docker
 // variant when provider containers exist: the systemd/process tool cannot
 // tail their logs, but `urnet-docker logs` can (its interactive picker
-// lists them). Only fires when Discover() found ZERO systemd providers —
-// when systemd providers exist, a selectTarget error is a target problem
-// (typo/ambiguity), not a wrong-tool problem, and pointing at docker would
-// mislead (review MEDIUM).
-func errWithDockerHint(err error) error {
-	if len(Discover()) > 0 {
+// lists them). Only fires when systemdProviderCount is ZERO — when systemd
+// providers exist, a selectTarget error is a target problem (typo/
+// ambiguity), not a wrong-tool problem, and pointing at docker would
+// mislead (review MEDIUM). The count is threaded from the caller (which
+// already fetched Discover()) to avoid re-running the discovery pipeline.
+func errWithDockerHint(err error, systemdProviderCount int) error {
+	if systemdProviderCount > 0 {
 		return err
 	}
-	docker := DiscoverDocker()
+	docker := discoverDockerFn()
 	if len(docker) == 0 {
 		return err
 	}
@@ -147,9 +152,10 @@ func cmdLogs(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, err := selectTarget(providers, t)
 	if err != nil {
-		return errWithDockerHint(err)
+		return errWithDockerHint(err, len(providers))
 	}
 	if providerUsesRamlogs(p) {
 		// Stream from the RAM buffer on the box.
