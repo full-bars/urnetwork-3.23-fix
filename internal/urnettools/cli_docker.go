@@ -79,7 +79,9 @@ Usage: urnet-docker <command> [flags]
 Commands:
   providers              list all provider containers (identified by in-container JWT)
   status [target]        detailed status of one container
-  exec <cmd...> [target] run a command inside the container (e.g. urnet-tools proxy add ...)
+  exec <cmd...> [target] run a command inside the container; use "--" before
+                          the command to pass inner flags verbatim, e.g.
+                          urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
   restart [target]       restart the container
   logs [target]          follow the container's logs (RAMLOGS-aware)
 
@@ -149,22 +151,23 @@ func cmdDockerStatus(args []string) error {
 // `--proxy_file=` before delegation).
 func cmdDockerExec(args []string) error {
 	// Split at the first non-flag token: target flags before it, command
-	// after it.
-	split := 0
-	for split < len(args) && strings.HasPrefix(args[split], "-") {
-		if args[split] == "--unit" || args[split] == "--user" || args[split] == "--network" || args[split] == "--network-id" || args[split] == "--state-dir" {
-			split += 2 // flag + value
-		} else {
-			split++
-		}
+	// after it. A `--` separator forwards everything after it VERBATIM to
+	// the container command (docker/git/ssh convention) so inner-command
+	// flags like -f or --verbose can never be mistaken for urnet-docker
+	// flags or silently dropped.
+	pre, rest, err := splitExecArgs(args)
+	if err == errHelpShown {
+		return nil
 	}
-	t, _, err := parseTargetFlags(args[:split])
 	if err != nil {
 		return err
 	}
-	rest := args[split:]
+	t, _, err := parseTargetFlags(pre)
+	if err != nil {
+		return err
+	}
 	if len(rest) == 0 {
-		return fmt.Errorf("exec requires a command, e.g. 'urnet-docker exec --unit urnet urnet-tools proxy add --proxy_file=/tmp/p.txt'")
+		return fmt.Errorf("exec requires a command, e.g. 'urnet-docker exec --unit urnet -- urnet-tools proxy add --proxy_file=/tmp/p.txt'")
 	}
 	providers := DiscoverDocker()
 	p, err := selectTarget(providers, t)
@@ -173,6 +176,42 @@ func cmdDockerExec(args []string) error {
 	}
 	// p.Unit holds the container name; delegate the command verbatim.
 	return containerExecByName(p.Unit, rest...)
+}
+
+// splitExecArgs divides exec arguments into the pre-command urnet-docker
+// targeting flags and the verbatim in-container command. A `--` separator
+// puts EVERYTHING after it into the command (docker/git/ssh convention);
+// without it, the command starts at the first non-flag token. Unknown
+// leading flags are refused (never silently dropped) with a hint to use --.
+func splitExecArgs(args []string) (pre, rest []string, err error) {
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep >= 0 {
+		return args[:sep], args[sep+1:], nil
+	}
+	split := 0
+	for split < len(args) && strings.HasPrefix(args[split], "-") {
+		switch args[split] {
+		case "--unit", "--user", "--network", "--network-id", "--state-dir":
+			split += 2 // flag + value
+		case "-h", "--help":
+			// Belt-and-suspenders: RunDocker already handles -h/--help via
+			// hasHelpFlag before dispatching, but keep it here so a direct
+			// call never misroutes help into a delegated action.
+			return nil, nil, errHelpShown
+		default:
+			// Unknown leading flag: refuse rather than silently drop it
+			// (the rewrite's own philosophy — a flag that vanishes can
+			// mask a real action). Suggest the -- separator.
+			return nil, nil, fmt.Errorf("unknown flag %q before exec command — use `--` to pass flags to the container command, e.g. 'urnet-docker exec --unit <name> -- <cmd> -f'", args[split])
+		}
+	}
+	return args[:split], args[split:], nil
 }
 
 // cmdDockerRestart restarts a container (destructive gate applies).

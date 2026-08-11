@@ -1,6 +1,9 @@
 package urnettools
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestIsDockerCandidate covers the container image/name recognition rules.
 func TestIsDockerCandidate(t *testing.T) {
@@ -69,4 +72,62 @@ func TestDockerProviderIdentity(t *testing.T) {
 		return
 	}
 	_ = p
+}
+
+// TestSplitExecArgs covers the exec argument-splitting logic (the pure
+// helper behind cmdDockerExec). Mimo HIGH-1: the integration tests only
+// exercised error paths (no docker daemon), so the actual -- separator
+// forwarding of rest... was never verified. This pins the slice math
+// directly without docker.
+func TestSplitExecArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantPre  []string
+		wantRest []string
+		wantErr  string
+	}{
+		{"sep-first-no-target", []string{"--", "urnet-tools", "status"}, nil, []string{"urnet-tools", "status"}, ""},
+		{"sep-flag-first-word", []string{"--", "-f", "urnet-tools"}, nil, []string{"-f", "urnet-tools"}, ""},
+		{"sep-flags-with-values", []string{"--", "urnet-tools", "--proxy_file=/tmp/p.txt"}, nil, []string{"urnet-tools", "--proxy_file=/tmp/p.txt"}, ""},
+		{"sep-empty-command", []string{"--unit", "x", "--"}, []string{"--unit", "x"}, nil, ""},
+		{"sep-only", []string{"--"}, nil, nil, ""},
+		{"sep-multiple-inner-flags", []string{"--", "urnet-tools", "--verbose", "cmd"}, nil, []string{"urnet-tools", "--verbose", "cmd"}, ""},
+		{"no-sep-command-first", []string{"urnet-tools", "status"}, nil, []string{"urnet-tools", "status"}, ""},
+		{"no-sep-target-first", []string{"--unit", "x", "urnet-tools", "--proxy_file=/tmp/p.txt"}, []string{"--unit", "x"}, []string{"urnet-tools", "--proxy_file=/tmp/p.txt"}, ""},
+		{"unknown-dash-flag", []string{"--verbose", "cmd"}, nil, nil, "unknown flag"},
+		{"unknown-short-flag", []string{"-f", "cmd"}, nil, nil, "unknown flag"},
+		{"unknown-flag-with-target", []string{"--unit", "x", "--verbose", "urnet-tools"}, []string{"--unit", "x"}, nil, "unknown flag"},
+		{"empty", nil, nil, nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pre, rest, err := splitExecArgs(c.args)
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("splitExecArgs(%v) err = %v, want contains %q", c.args, err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("splitExecArgs(%v) unexpected err: %v", c.args, err)
+			}
+			if len(pre) != len(c.wantPre) {
+				t.Fatalf("splitExecArgs(%v) pre = %v, want %v", c.args, pre, c.wantPre)
+			}
+			if len(rest) != len(c.wantRest) {
+				t.Fatalf("splitExecArgs(%v) rest = %v, want %v", c.args, rest, c.wantRest)
+			}
+			for i := range pre {
+				if pre[i] != c.wantPre[i] {
+					t.Fatalf("splitExecArgs(%v) pre[%d] = %q, want %q", c.args, i, pre[i], c.wantPre[i])
+				}
+			}
+			for i := range rest {
+				if rest[i] != c.wantRest[i] {
+					t.Fatalf("splitExecArgs(%v) rest[%d] = %q, want %q", c.args, i, rest[i], c.wantRest[i])
+				}
+			}
+		})
+	}
 }
