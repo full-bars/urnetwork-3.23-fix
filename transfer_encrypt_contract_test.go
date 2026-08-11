@@ -231,7 +231,7 @@ func TestSendReceiveEncryptedWithContracts(t *testing.T) {
 		s.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
-		s.EncryptionSettings.Encrypt = true
+		s.EncryptionSettings.Mode = EncryptionModeOpportunistic
 		// Generous relative to the other 60s wall-clock budgets in this test
 		// (GapTimeout/IdleTimeout above) — under `go test -race ./...` for the
 		// full package, this handshake has occasionally missed a 30s deadline
@@ -446,7 +446,7 @@ func TestEncryptedCompanionSessionsCreateSeparateContracts(t *testing.T) {
 		s.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
-		s.EncryptionSettings.Encrypt = true
+		s.EncryptionSettings.Mode = EncryptionModeOpportunistic
 		// See makeSettings above: generous relative to the other 60s budgets
 		// here, to absorb CI scheduling contention under `-race ./...`.
 		s.EncryptionSettings.TlsTimeout = 90 * time.Second

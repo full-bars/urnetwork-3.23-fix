@@ -619,16 +619,16 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 func applyTestEncryptionSettings(clientSettings *ClientSettings, encMode encryptionMode) {
 	switch encMode {
 	case encryptionModeOff:
-		clientSettings.EncryptionSettings.Encrypt = false
+		clientSettings.EncryptionSettings.Mode = EncryptionModeOff
 	case encryptionModeOn, encryptionModeOnAllowFallback:
-		clientSettings.EncryptionSettings.Encrypt = true
+		clientSettings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 		clientSettings.EncryptionSettings.TlsTimeout = 60 * time.Second
 	case encryptionModeFallback:
 		// sender enables encryption with a tight timeout but the receiver
 		// has encryption disabled, so the handshake never completes; the
 		// session stays in the cipher-nil state and all traffic flows in
 		// plaintext.
-		clientSettings.EncryptionSettings.Encrypt = true
+		clientSettings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 		clientSettings.EncryptionSettings.TlsTimeout = 50 * time.Millisecond
 	}
 }
