@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +24,45 @@ const (
 	shmImportantLogMaxSize = 1 * 1024 * 1024 // 1MB target cap
 )
 
+// ramlogsDockerEnvPath is the marker file that identifies a Docker container
+// (/.dockerenv). A var so tests can point it at a temp file and exercise the
+// container-ID fallback without root. TEST-ONLY mutation point: not
+// concurrency-safe (tests restore it via defer; keep t.Parallel out of the
+// shmlog tests).
+var ramlogsDockerEnvPath = "/.dockerenv"
+
+// ramlogsTailHint returns a copy-pasteable command to follow the shm log:
+//   - `URNETWORK_CONTAINER_NAME` (deployment-pinned, e.g. "urfix") when set;
+//   - the container ID (hostname) when running inside Docker — `docker exec`
+//     accepts the container ID, so the hint works without knowing the --name;
+//   - a plain `tail -f` on bare metal, where a docker hint would be wrong.
+func ramlogsTailHint() string {
+	if name := strings.TrimSpace(os.Getenv("URNETWORK_CONTAINER_NAME")); name != "" {
+		return fmt.Sprintf("docker exec %s tail -f %s", name, shmLogPath)
+	}
+	if _, err := os.Stat(ramlogsDockerEnvPath); err == nil {
+		if host, err := os.Hostname(); err == nil && host != "" {
+			return fmt.Sprintf("docker exec %s tail -f %s", host, shmLogPath)
+		}
+	}
+	return fmt.Sprintf("tail -f %s", shmLogPath)
+}
+
+// ramlogsTailHintWithTemplate returns the resolved hint; when the context is
+// docker it is followed by the universal `<container>` template, so an
+// operator whose container is named differently still has the form to copy
+// (the resolved line is the primary copy-paste command).
+func ramlogsTailHintWithTemplate() string {
+	resolved := ramlogsTailHint()
+	if strings.HasPrefix(resolved, "docker exec ") {
+		return fmt.Sprintf(
+			"%s\n[ramlogs] (any container name: docker exec <container> tail -f %s)",
+			resolved, shmLogPath,
+		)
+	}
+	return resolved
+}
+
 func initSHMLogger() {
 	// O_APPEND preserves log across restarts so post-mortem analysis is possible.
 	f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -32,7 +72,7 @@ func initSHMLogger() {
 	}
 	f.Write([]byte(fmt.Sprintf("\n--- provider restarted at %s ---\n", time.Now().Format(time.RFC3339))))
 	f.Write([]byte(fmt.Sprintf("[ramlogs] Active at %s\n", shmLogPath)))
-	f.Write([]byte(fmt.Sprintf("[ramlogs] View: docker exec <container> tail -f %s\n", shmLogPath)))
+	f.Write([]byte(fmt.Sprintf("[ramlogs] View: %s\n", ramlogsTailHintWithTemplate())))
 
 	// Print the same notice to the pre-redirect stdout/stderr, before the
 	// dup2 below severs them from wherever they currently flow. For the
@@ -44,7 +84,7 @@ func initSHMLogger() {
 	// since the redirect applies process-wide, not just to the long-running
 	// command.
 	fmt.Fprintf(os.Stdout, "[ramlogs] output redirected to %s\n", shmLogPath)
-	fmt.Fprintf(os.Stdout, "[ramlogs] view with: docker exec <container> tail -f %s\n", shmLogPath)
+	fmt.Fprintf(os.Stdout, "[ramlogs] view with: %s\n", ramlogsTailHintWithTemplate())
 
 	r, w, err := os.Pipe()
 	if err != nil {

@@ -1,9 +1,9 @@
 package urnettools
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -24,34 +24,32 @@ func containerRestartByName(name string) error {
 	return cmd.Run()
 }
 
-// containerLogs tails docker logs for a container.
-func containerLogs(name, n string) error {
-	cmd := exec.Command(dockerCLI(), "logs", "--tail", n, name)
+// containerLogsFollow tails a container's docker logs: the last n lines, then
+// follow (docker logs --tail N -f).
+func containerLogsFollow(name string, n int) error {
+	cmd := exec.Command(dockerCLI(), "logs", "--tail", strconv.Itoa(n), "-f", name)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// containerReadFileSafe reads a file from a container, tolerating errors
-// (returns "", err when the read fails — caller decides fallback).
-func containerReadFileSafe(name, path string) (string, error) {
-	cmd := exec.Command(dockerCLI(), "exec", name, "cat", path)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+// containerFollowFile tails a file inside a container via docker exec: the
+// last n lines, then follow. Used for the RAMLOG (/dev/shm) when the
+// container runs with URNETWORK_RAMLOGS.
+func containerFollowFile(name, path string, n int) error {
+	cmd := exec.Command(dockerCLI(), "exec", name, "tail", "-n", strconv.Itoa(n), "-f", path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
-// tailLines returns the last n lines of s.
-func tailLines(s, n string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	count := 0
-	fmt.Sscanf(n, "%d", &count)
-	if count <= 0 || count > len(lines) {
-		count = len(lines)
-	}
-	return strings.Join(lines[len(lines)-count:], "\n") + "\n"
+// containerFileNonEmpty reports whether a file exists and has content inside
+// a container, via `docker exec <name> test -s <path>`. Cheap existence
+// check: avoids cat-ing a multi-MB RAMLOG purely to test emptiness before
+// streaming it (review round).
+func containerFileNonEmpty(name, path string) bool {
+	cmd := exec.Command(dockerCLI(), "exec", name, "test", "-s", path)
+	return cmd.Run() == nil
 }
 
 // containerIDByName resolves a container name to its ID via docker ps (used
