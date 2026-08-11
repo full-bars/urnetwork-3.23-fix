@@ -2012,6 +2012,17 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	// establishment outlasts the budget. Holding the idle condition open while
 	// waiting keeps the sequence (and the session it references) alive through
 	// the establishment it is waiting on.
+	//
+	// Liveness invariant: the restartHandshake nudge below must run every poll
+	// cycle — it is what delivers the handshake goroutine's Pack call before
+	// the run loop's idle timer fires. The idle timer takes packMutex.Lock()
+	// (writer-priority RWMutex), so a pending writer can momentarily block new
+	// RLocks including the handshake's; that is bounded — the gate holds the
+	// idle condition open so the sequence is never reaped mid-wait, and a
+	// Close unblocks the parked send within one poll because Close cancels the
+	// sequence ctx before taking the write lock. Server-role sequences never
+	// carry application payload through this gate (only ForceUnwrapped
+	// controls), so only the client role needs the restart nudge.
 	if !sendPack.ForceUnwrapped && self.session != nil && self.session.RequireEncryption() {
 		enterTime := time.Now()
 		blockedNotified := false
