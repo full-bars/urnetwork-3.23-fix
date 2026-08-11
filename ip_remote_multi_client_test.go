@@ -186,7 +186,13 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 
 	timeout := 1 * time.Second
 	if testing.Short() {
-		timeout = 10 * time.Millisecond
+		// Must span >= 3 bucket durations (bucket = 100ms below): the stats
+		// reader omits the latest two (possibly partial) buckets, so 10ms of
+		// activity left zero buckets and the bucketCount assertion below was a
+		// coin flip — a deterministic failure on local -short runs (20/20),
+		// masked in CI only when -race scheduling stretched the span across a
+		// bucket boundary.
+		timeout = 300 * time.Millisecond
 	}
 
 	m := 6
