@@ -32,7 +32,7 @@ func newTestSessionForIdentityProof(t *testing.T) (
 	ctx, cancel := context.WithCancel(context.Background())
 
 	settings := DefaultClientSettings()
-	settings.EncryptionSettings.Encrypt = true
+	settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 
 	var err error
@@ -283,7 +283,7 @@ func TestIsAwaitingClientFinishedClientRole(t *testing.T) {
 	defer cancel()
 
 	settings := DefaultClientSettings()
-	settings.EncryptionSettings.Encrypt = true
+	settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 	defer client.Cancel()
 
@@ -375,7 +375,7 @@ func TestSetPeerClientPublicKeyWrongSize(t *testing.T) {
 func newTestEncryptionSession(t *testing.T, role sequenceTlsRole) (*peerEncryptionSession, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	settings := DefaultClientSettings()
-	settings.EncryptionSettings.Encrypt = true
+	settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 	settings.EncryptionSettings.TlsTimeout = 2 * time.Second
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 	keyManager, err := NewClientKeyManager(ctx, client)
@@ -527,7 +527,7 @@ func TestReleasedSessionRemovedFromManager(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	settings := DefaultClientSettings()
-	settings.EncryptionSettings.Encrypt = true
+	settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 	settings.EncryptionSettings.TlsTimeout = 2 * time.Second
 	// Short idle timeout so the reap is observable quickly. The session is kept
 	// registered for this long after its last reference drops, then the Run
@@ -595,7 +595,7 @@ func TestAcquireForSendRestartPolicy(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			settings := DefaultClientSettings()
-			settings.EncryptionSettings.Encrypt = true
+			settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
 			settings.EncryptionSettings.TlsTimeout = 2 * time.Second
 			client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 			defer client.Cancel()
