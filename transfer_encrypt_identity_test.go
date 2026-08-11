@@ -50,7 +50,7 @@ func TestPeerIdentitiesEstablishedAndVerified(t *testing.T) {
 		s.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
 		s.ForwardBufferSettings.SequenceBufferSize = 0
 		s.ForwardBufferSettings.IdleTimeout = 1 * time.Second
-		s.EncryptionSettings.Encrypt = true
+		s.EncryptionSettings.Mode = EncryptionModeOpportunistic
 		s.EncryptionSettings.TlsTimeout = 30 * time.Second
 		s.EncryptionSettings.EncryptionControlUseCompanion = false
 		return s

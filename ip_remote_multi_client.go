@@ -2935,13 +2935,17 @@ func newMultiClientChannel(
 	clientSettings := generator.NewClientSettings()
 	clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
 	if performanceProfile != nil && performanceProfile.PostQuantumEncryption {
-		// pqe: opportunistic per-peer e2e sessions (post-quantum key
-		// exchange). A provider without session support falls back to
-		// plaintext at this layer.
+		// pqe: the user asked for post-quantum e2e, so this consumer runs
+		// fail-closed (EncryptionModeRequired) — application traffic to a
+		// destination that cannot establish a session is held and retried, never
+		// sent in the clear. A provider that lacks session support therefore
+		// carries no application data for this client rather than downgrading it
+		// to plaintext the operator could read. (The provider side runs
+		// Opportunistic so it keeps serving non-pqe consumers.)
 		if clientSettings.EncryptionSettings == nil {
 			clientSettings.EncryptionSettings = DefaultEncryptionSettings()
 		}
-		clientSettings.EncryptionSettings.Encrypt = true
+		clientSettings.EncryptionSettings.Mode = EncryptionModeRequired
 	}
 
 	client, err := generator.NewClient(
