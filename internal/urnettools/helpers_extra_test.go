@@ -529,8 +529,11 @@ func TestContainerHelpersNoDocker(t *testing.T) {
 	if err := containerRestartByName("whatever"); err == nil {
 		t.Error("containerRestartByName with no docker binary should error")
 	}
-	if err := containerLogs("whatever", "50"); err == nil {
-		t.Error("containerLogs with no docker binary should error")
+	if err := containerLogsFollow("whatever", 50); err == nil {
+		t.Error("containerLogsFollow with no docker binary should error")
+	}
+	if err := containerFollowFile("whatever", "/dev/shm/urnetwork.log", 50); err == nil {
+		t.Error("containerFollowFile with no docker binary should error")
 	}
 	if out, err := containerReadFileSafe("whatever", "/etc/hostname"); err == nil {
 		t.Errorf("containerReadFileSafe with no docker binary should error, got out=%q", out)

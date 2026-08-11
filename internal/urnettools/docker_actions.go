@@ -1,9 +1,9 @@
 package urnettools
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -24,9 +24,20 @@ func containerRestartByName(name string) error {
 	return cmd.Run()
 }
 
-// containerLogs tails docker logs for a container.
-func containerLogs(name, n string) error {
-	cmd := exec.Command(dockerCLI(), "logs", "--tail", n, name)
+// containerLogsFollow tails a container's docker logs: the last n lines, then
+// follow (docker logs --tail N -f).
+func containerLogsFollow(name string, n int) error {
+	cmd := exec.Command(dockerCLI(), "logs", "--tail", strconv.Itoa(n), "-f", name)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// containerFollowFile tails a file inside a container via docker exec: the
+// last n lines, then follow. Used for the RAMLOG (/dev/shm) when the
+// container runs with URNETWORK_RAMLOGS.
+func containerFollowFile(name, path string, n int) error {
+	cmd := exec.Command(dockerCLI(), "exec", name, "tail", "-n", strconv.Itoa(n), "-f", path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -41,17 +52,6 @@ func containerReadFileSafe(name, path string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
-}
-
-// tailLines returns the last n lines of s.
-func tailLines(s, n string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	count := 0
-	fmt.Sscanf(n, "%d", &count)
-	if count <= 0 || count > len(lines) {
-		count = len(lines)
-	}
-	return strings.Join(lines[len(lines)-count:], "\n") + "\n"
 }
 
 // containerIDByName resolves a container name to its ID via docker ps (used
