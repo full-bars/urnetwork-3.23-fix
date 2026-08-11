@@ -116,7 +116,7 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout. 
 
 - `provider/` — the traffic-relay binary that serves proxies and earns money
 - `hub/` — standalone dashboard server that collects fleet metrics
-- `scripts/Provider_Install_Linux.sh` — the installer that doubles as the `urnet-tools` CLI
+- `cmd/urnet-tools` + `cmd/urnet-docker` + `internal/urnettools/` — the provider-aware Go fleet-ops tool (v3.23.0-fix.27.0+; the shell installer `scripts/Provider_Install_Linux.sh` remains the installer but no longer doubles as the CLI)
 - `docs/` — user-facing documentation (Installation, Configuration, Proxies, Hub, etc.)
 - `Dockerfile` — provider Docker image
 - `hub/Dockerfile` — hub Docker image

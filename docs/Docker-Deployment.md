@@ -382,12 +382,13 @@ docker exec -it <container> sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null
 docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/report_url"'
 ```
 
-Or use the PowerShell wrapper (`urnet-tools.ps1`) which handles `docker exec` transparently:
-```powershell
-urnet-tools report http://HUB_IP:8080
-urnet-tools report
-urnet-tools report off
+Or use the Go `urnet-docker` binary (v3.23.0-fix.27.0+) which handles `docker exec` transparently — it discovers provider containers and delegates commands into them:
+```sh
+urnet-docker report http://HUB_IP:8080
+urnet-docker report
+urnet-docker report off
 ```
+(The legacy PowerShell wrapper `urnet-tools.ps1` is deprecated; the Go binary replaces it on every platform.)
 
 ## ♻️ Hot-Restart
 
