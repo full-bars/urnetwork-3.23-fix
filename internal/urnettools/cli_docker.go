@@ -3,9 +3,26 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 )
+
+// defaultLogTailLines is how many lines `logs` prints before following.
+const defaultLogTailLines = 250
+
+// parseLogLineCount parses the optional trailing line-count argument; the
+// default is defaultLogTailLines.
+func parseLogLineCount(rest []string) (int, error) {
+	if len(rest) == 0 {
+		return defaultLogTailLines, nil
+	}
+	n, err := strconv.Atoi(rest[0])
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid line count %q (want a positive integer)", rest[0])
+	}
+	return n, nil
+}
 
 // RunDocker is the CLI entry point for the urnet-docker binary. It mirrors
 // urnet-tools' targeting/confirm-gate philosophy but discovers docker
@@ -86,7 +103,9 @@ Commands:
   exec <cmd...>           command-first form still works (target flags optional;
                           required when more than one provider container exists)
   restart [target]       restart the container
-  logs [target]          follow the container's logs (RAMLOGS-aware)
+  logs [target] [N]    follow the container's logs (last N lines, default 250;
+                          RAMLOGS-aware: streams /dev/shm when enabled, else docker logs;
+                          interactive picker when multiple providers)
 
 Targeting flags (required when more than one provider container exists):
   --unit <name>          container name (mapped to Unit)
@@ -129,7 +148,7 @@ func cmdDockerStatus(args []string) error {
 		return err
 	}
 	providers := DiscoverDocker()
-	p, err := selectTarget(providers, t)
+	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
 	}
@@ -177,7 +196,7 @@ func cmdDockerExec(args []string) error {
 		return fmt.Errorf("exec requires a command, e.g. 'urnet-docker exec -- urnet-tools proxy add --proxy_file=/tmp/p.txt'")
 	}
 	providers := DiscoverDocker()
-	p, err := selectTarget(providers, t)
+	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
 	}
@@ -250,28 +269,28 @@ func cmdDockerRestart(args []string, force, dryRun bool) error {
 	return containerRestartByName(p.Unit)
 }
 
-// cmdDockerLogs tails logs for the targeted container. When the container
-// runs with URNETWORK_RAMLOGS, this reads /dev/shm inside the container via
-// docker exec; otherwise it uses docker logs.
+// cmdDockerLogs tails logs for the targeted container: the last N lines
+// (default 250), then follow. When the container runs with URNETWORK_RAMLOGS
+// this streams /dev/shm/urnetwork.log via `docker exec <name> tail -n N -f`;
+// otherwise it falls back to `docker logs --tail N -f`. Multiple provider
+// containers with no target pop the interactive picker.
 func cmdDockerLogs(args []string) error {
 	t, rest, err := dockerTargetFromArgs(args)
 	if err != nil {
 		return err
 	}
-	n := "200"
-	if len(rest) > 0 {
-		n = rest[0]
-	}
-	providers := DiscoverDocker()
-	p, err := selectTarget(providers, t)
+	n, err := parseLogLineCount(rest)
 	if err != nil {
 		return err
 	}
-	// Prefer RAMLOGS file if present; fall back to docker logs.
-	out, err := containerReadFileSafe(p.Unit, "/dev/shm/urnetwork.log")
-	if err == nil && len(out) > 0 {
-		fmt.Print(tailLines(out, n))
-		return nil
+	providers := DiscoverDocker()
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
 	}
-	return containerLogs(p.Unit, n)
+	// Prefer the RAMLOG file when the container runs with URNETWORK_RAMLOGS.
+	if containerFileNonEmpty(p.Unit, "/dev/shm/urnetwork.log") {
+		return containerFollowFile(p.Unit, "/dev/shm/urnetwork.log", n)
+	}
+	return containerLogsFollow(p.Unit, n)
 }

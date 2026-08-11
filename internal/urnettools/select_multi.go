@@ -105,6 +105,31 @@ func selectByLabels(providers []Provider, labels []string) ([]Provider, error) {
 	return out, nil
 }
 
+// selectTargetInteractive resolves ONE provider for a read-only command:
+// an explicit target resolves strictly (never prompts), the sole provider is
+// auto-selected without prompting, and multiple providers with no target pop
+// the interactive picker.
+func selectTargetInteractive(providers []Provider, t Target) (Provider, error) {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+		return selectTarget(providers, t)
+	}
+	switch len(providers) {
+	case 0:
+		return Provider{}, fmt.Errorf("no providers found on this box")
+	case 1:
+		return providers[0], nil
+	default:
+		chosen, err := selectTargets(providers, t, nil, nil, true)
+		if err != nil {
+			return Provider{}, err
+		}
+		if len(chosen) != 1 {
+			return Provider{}, fmt.Errorf("read-only command requires exactly one provider, got %d", len(chosen))
+		}
+		return chosen[0], nil
+	}
+}
+
 // interactivePick shows a numbered list and prompts the operator to choose
 // entries (comma/space separated numbers, "all", or empty for none).
 func interactivePick(providers []Provider) ([]Provider, error) {
