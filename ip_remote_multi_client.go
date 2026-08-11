@@ -2940,8 +2940,8 @@ func newMultiClientChannel(
 		// destination that cannot establish a session is held and retried, never
 		// sent in the clear. A provider that lacks session support therefore
 		// carries no application data for this client rather than downgrading it
-		// to plaintext the operator could read. (The provider side runs
-		// Opportunistic so it keeps serving non-pqe consumers.)
+		// to plaintext the operator could read. (The provider side, configured
+		// separately, runs Opportunistic so it keeps serving non-pqe consumers.)
 		if clientSettings.EncryptionSettings == nil {
 			clientSettings.EncryptionSettings = DefaultEncryptionSettings()
 		}
