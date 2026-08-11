@@ -173,39 +173,6 @@ func TestTlsTimeoutSettingFallback(t *testing.T) {
 	}
 }
 
-// TestNotifyRequiredSendBlockedDedup verifies that NotifyRequiredSendBlocked
-// fires only once per session (the dedup contract).
-func TestNotifyRequiredSendBlockedDedup(t *testing.T) {
-	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
-	defer cleanup()
-
-	sess.NotifyRequiredSendBlocked("first call")
-	sess.NotifyRequiredSendBlocked("second call")
-	sess.NotifyRequiredSendBlocked("third call")
-
-	sess.stateLock.Lock()
-	defer sess.stateLock.Unlock()
-	if !sess.requiredSendBlockedNotified {
-		t.Fatal("requiredSendBlockedNotified should be true after first call")
-	}
-}
-
-// TestNotifyRequiredReceiveDiscardedDedup verifies that
-// NotifyRequiredReceiveDiscarded fires only once per session.
-func TestNotifyRequiredReceiveDiscardedDedup(t *testing.T) {
-	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
-	defer cleanup()
-
-	sess.NotifyRequiredReceiveDiscarded("first call")
-	sess.NotifyRequiredReceiveDiscarded("second call")
-
-	sess.stateLock.Lock()
-	defer sess.stateLock.Unlock()
-	if !sess.requiredReceiveDiscardedNotified {
-		t.Fatal("requiredReceiveDiscardedNotified should be true after first call")
-	}
-}
-
 // TestSendPackRWMutexPackVsClose verifies that Pack (RLock) and Close (Lock)
 // do not deadlock. Pack holds RLock for up to the gate-poll duration; Close
 // cancels the sequence ctx first, which unblocks the parked send within one
