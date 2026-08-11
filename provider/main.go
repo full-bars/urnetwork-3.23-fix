@@ -2970,6 +2970,10 @@ func provide(opts docopt.Opts) {
 	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
 	// non-URL proxies read-only on the 1-3h stale sweep (design note).
 	go runPaidProxyGrader(ctx, apiProbeHost, apiProbePort)
+	// Periodic A-F grade summary of the RUNNING proxy set (design 2026-08-09):
+	// running/per-source/changes/scores lines (important + disk + grades.log)
+	// and a ramlog-only next-probe countdown. Pure-read, never probes.
+	go runProxyGradeSummary(ctx)
 	go pruneURLProxyBlacklist(ctx)
 	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
 	go runPressureMonitor(ctx, selfHealEnabled)
