@@ -392,11 +392,21 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	return t, rest, nil
 }
 
-// cmdProviders lists every provider on the box as a table.
+// cmdProviders lists every provider on the box as a table. When no systemd
+// providers exist but docker provider containers do, it says so and points
+// at urnet-docker (which has its own providers listing).
 func cmdProviders(args []string) error {
 	providers := Discover()
 	if len(providers) == 0 {
-		fmt.Println("no providers found on this box")
+		docker := DiscoverDocker()
+		if len(docker) == 0 {
+			fmt.Println("no providers found on this box")
+			return nil
+		}
+		fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
+		for _, p := range docker {
+			fmt.Printf("  %s  net=%s\n", p.Unit, p.Network)
+		}
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
