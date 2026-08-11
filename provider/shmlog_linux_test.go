@@ -14,6 +14,13 @@ func TestRamlogsTailHintEnvOverride(t *testing.T) {
 	if got != want {
 		t.Fatalf("ramlogsTailHint() with env set = %q, want %q", got, want)
 	}
+
+	// Option A display: the resolved line first, then the universal template.
+	got2 := ramlogsTailHintWithTemplate()
+	want2 := want + "\n[ramlogs] (any container name: docker exec <container> tail -f /dev/shm/urnetwork.log)"
+	if got2 != want2 {
+		t.Fatalf("ramlogsTailHintWithTemplate() = %q, want %q", got2, want2)
+	}
 }
 
 func TestRamlogsTailHintBareMetal(t *testing.T) {
