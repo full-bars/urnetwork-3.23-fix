@@ -447,12 +447,62 @@ func generateSequenceTlsCertificate() (tls.Certificate, error) {
 	}, nil
 }
 
+// EncryptionMode selects the per-peer session policy for an
+// `EncryptionSessionManager`.
+type EncryptionMode int
+
+const (
+	// EncryptionModeOff disables the per-peer session layer entirely: the
+	// manager is inert and every read/write is plaintext (unwrapped). This is
+	// the zero value, so a zero EncryptionSettings encrypts nothing.
+	EncryptionModeOff EncryptionMode = iota
+	// EncryptionModeOpportunistic seals traffic to a peer once a session
+	// establishes and falls back to plaintext until then — or permanently, if
+	// the handshake / identity-proof exchange never completes. This is the
+	// historical `Encrypt = true` behavior: confidentiality when available,
+	// availability otherwise. It is the right mode for a provider that must
+	// keep serving older peers that cannot establish a session.
+	EncryptionModeOpportunistic
+	// EncryptionModeRequired refuses to expose application data in plaintext to
+	// or from any peer for which a session is expected. On send, application
+	// frames are held back (returned as a write error, so the reliable resend
+	// loop keeps retrying) until the cipher establishes or the sequence times
+	// out — never emitted in the clear. On receive, a plaintext application
+	// pack from such a peer is dropped and audited, closing the downgrade
+	// vector where an attacker strips encryption and sends plaintext.
+	//
+	// Handshake control frames (ForceUnwrapped), acks, and control-plane /
+	// no-session peers are always exempt: the gate covers application payload,
+	// not the scaffolding that bootstraps and acknowledges it. The cost is
+	// availability — a peer that cannot establish a session carries no
+	// application traffic at all rather than falling back to plaintext.
+	EncryptionModeRequired
+)
+
+// ErrEncryptionRequiredNotEstablished is returned by the send path when
+// `EncryptionModeRequired` refuses an application send because the per-peer
+// session did not establish within the caller's timeout (or the caller asked
+// for a non-blocking send while unestablished). Nothing was enqueued and
+// nothing will be retried; the caller can retry, rotate destinations, or
+// surface the condition. Distinguishable with `errors.Is`.
+var ErrEncryptionRequiredNotEstablished = errors.New(
+	"encryption required: session not established with peer",
+)
+
+// DefaultRequiredCipherPollInterval is the fallback poll interval for the
+// EncryptionModeRequired send gate when `RequiredCipherPollInterval` is unset
+// (zero/negative) on the settings. A constant so the default and the
+// session-level fallback (`RequiredCipherPollInterval`) cannot diverge.
+const DefaultRequiredCipherPollInterval = 20 * time.Millisecond
+
 // EncryptionSettings configures the per-peer TLS sessions managed by an
 // `EncryptionSessionManager`.
 type EncryptionSettings struct {
-	// Enable per-peer TLS encryption between sequences. When false, the
-	// session manager is inert and all reads/writes are unwrapped.
-	Encrypt bool
+	// Mode selects the per-peer session policy: Off (inert, all plaintext),
+	// Opportunistic (seal when a session establishes, else plaintext), or
+	// Required (never expose application data in plaintext to/from a peer for
+	// which a session is expected). See EncryptionMode.
+	Mode EncryptionMode
 	// TLS config used when local is in the TLS-client role for a peer.
 	// When nil, a permissive default with InsecureSkipVerify is used.
 	ClientTlsConfig *tls.Config
@@ -514,6 +564,13 @@ type EncryptionSettings struct {
 	ProvideTlsCertificatePem []byte
 	ProvideTlsPrivateKeyPem  []byte
 
+	// RequiredCipherPollInterval is how often a send blocked by the
+	// EncryptionModeRequired entry gate (`SendSequence.Pack`) re-checks the
+	// per-peer cipher. Establishment is a rare, bounded window (TlsTimeout),
+	// so a coarse poll keeps the gate free of subscription plumbing on the
+	// enqueue path. Zero or negative falls back to the default interval.
+	RequiredCipherPollInterval time.Duration
+
 	// EncryptionControlUseCompanion, when true (default), sends
 	// EncryptedControl handshake packs as companion-contract traffic.
 	// This is required for asymmetric contract setups where the TLS
@@ -548,8 +605,13 @@ type EncryptionSettings struct {
 
 func DefaultEncryptionSettings() *EncryptionSettings {
 	return &EncryptionSettings{
-		Encrypt:                       false,
+		Mode: EncryptionModeOff,
+		// fork deviation: TlsTimeout stays -1 (disabled) here; upstream ships
+		// 60s in DefaultEncryptionSettings. Flipping the default is a fork
+		// decision, not part of the encryption-mode port (upstream's parent
+		// already had 60s, so the port does not change it).
 		TlsTimeout:                    -1, // negative disables the handshake timeout
+		RequiredCipherPollInterval:    DefaultRequiredCipherPollInterval,
 		EncryptionControlUseCompanion: true,
 		// 0 reaps a standalone session immediately at refs==0 (<0 keeps it
 		// forever, >0 idle-reaps after the timeout). DefaultClientSettings
@@ -688,6 +750,12 @@ type peerEncryptionSession struct {
 	// lull reuses the live cipher instead of churning a fresh handshake.
 	// Protected by stateLock.
 	lastActivityTime time.Time
+	// requiredSendBlockedNotified / requiredReceiveDiscardedNotified dedup
+	// their respective Required-mode gate logs to once per session; both
+	// reset when the session seals (scope 3's notifySessionSealed). Protected
+	// by stateLock.
+	requiredSendBlockedNotified      bool
+	requiredReceiveDiscardedNotified bool
 	// peerClientPublicKey is the peer's long-lived Ed25519 public identity key,
 	// set via `SetPeerClientPublicKey` (from the SendSequence after a contract
 	// for the peer arrives). nil until a contract has been seen; until then any
@@ -1606,19 +1674,92 @@ func (self *peerEncryptionSession) Cipher() *sequenceCipher {
 		}
 		return nil
 	}
-	// A send must not wrap under the previous (established) epoch while a new
-	// handshake is in flight — fall back to plaintext until the new epoch
-	// establishes. The receiver keeps the previous epoch in `decryptCiphers`, so
-	// frames already on the wire under it stay decryptable; this asymmetry
-	// (sends drop the old epoch on a restart, receives keep it) lets a rekey
-	// proceed without the sender wrapping under an epoch the peer may have
-	// already moved past. In particular the contract-open ride-along is sent in
-	// the clear during a restart, so the contract always opens.
-	if self.handshakeInFlightLocked() {
-		self.client.log.V(2).Infof("[tls]%s Cipher()=nil: new handshake in flight\n", self.logTag)
-		return nil
-	}
+	// Rekey continuity (ported from upstream d2553e06): while a replacement
+	// handshake is in flight the established epoch's cipher keeps serving, so a
+	// rekey never reopens a plaintext window. The receiver retains the outgoing
+	// epoch's cipher through the swap (`decryptCiphers` returns [established,
+	// prior]), so these frames stay readable; a frame that races a double
+	// promotion (or a peer that lost its session entirely and is rebuilding)
+	// fails to decrypt, drops, and is resent wrapped under whatever epoch is
+	// current at resend time — a bounded delivery delay (establishment + a
+	// resend interval) traded for never downgrading to plaintext mid-rekey.
+	//
+	// History: this branch used to return nil (plaintext fallback) so the
+	// contract-open ride-along would always open in the clear during a
+	// restart. That rationale is obsolete: the contract-open is now pinned
+	// ForceUnwrapped at queue time when the cipher is down and queued unpinned
+	// (wrapping normally) when it is up, so it no longer depends on this
+	// branch leaking plaintext.
 	return self.establishedEpoch.derivedTlsCipher
+}
+
+// RequireEncryption reports whether this session runs in
+// `EncryptionModeRequired`. When true, the send path must not fall back to
+// plaintext for application data (see `SendSequence.Pack` and
+// `writeMaybeWrappedBytes`): a nil cipher means "wait or refuse", not "send in
+// the clear".
+func (self *peerEncryptionSession) RequireEncryption() bool {
+	return self.settings != nil && self.settings.Mode == EncryptionModeRequired
+}
+
+// RequiredCipherPollInterval returns the interval at which a send blocked by
+// the EncryptionModeRequired entry gate re-checks `Cipher()`. An unset
+// (zero/negative) setting falls back to the `DefaultEncryptionSettings` value
+// rather than zero, which would spin the gate hot.
+func (self *peerEncryptionSession) RequiredCipherPollInterval() time.Duration {
+	if self.settings != nil && 0 < self.settings.RequiredCipherPollInterval {
+		return self.settings.RequiredCipherPollInterval
+	}
+	return DefaultRequiredCipherPollInterval
+}
+
+// TlsTimeoutSetting returns the session's establishment timeout setting
+// (`EncryptionSettings.TlsTimeout`), 0 when no settings are configured. The
+// Required entry gate uses it as the "waited suspiciously long" threshold for
+// the once-per-session blocked log.
+func (self *peerEncryptionSession) TlsTimeoutSetting() time.Duration {
+	if self.settings != nil {
+		return self.settings.TlsTimeout
+	}
+	return 0
+}
+
+// NotifyRequiredSendBlocked logs — once per unsealed session — that an
+// application send was refused (or has waited past `TlsTimeout`) under
+// `EncryptionModeRequired` because the peer session is not established.
+// Ported from upstream d2553e06 without the EncryptionEvent dispatch (that is
+// scope 3); the dedup flag resets when the session seals.
+func (self *peerEncryptionSession) NotifyRequiredSendBlocked(reason string) {
+	fire := func() bool {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		if self.requiredSendBlockedNotified {
+			return false
+		}
+		self.requiredSendBlockedNotified = true
+		return true
+	}()
+	if fire && self.client != nil {
+		self.client.log.Errorf("[tls]%s required-encryption send blocked: %s\n", self.logTag, reason)
+	}
+}
+
+// NotifyRequiredReceiveDiscarded logs — once per unsealed session — that
+// inbound plaintext application frames from the peer were discarded by the
+// receive gate under `EncryptionModeRequired`.
+func (self *peerEncryptionSession) NotifyRequiredReceiveDiscarded(reason string) {
+	fire := func() bool {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		if self.requiredReceiveDiscardedNotified {
+			return false
+		}
+		self.requiredReceiveDiscardedNotified = true
+		return true
+	}()
+	if fire && self.client != nil {
+		self.client.log.Errorf("[tls]%s required-encryption receive discarded: %s\n", self.logTag, reason)
+	}
 }
 
 // decryptCiphers returns the candidate ciphers for unwrapping an inbound
@@ -2053,7 +2194,7 @@ func NewEncryptionSessionManager(ctx context.Context, client *Client, clientKeyM
 
 		peerIdentityChangeCallbacks: NewCallbackList[func()](),
 	}
-	if settings.Encrypt {
+	if settings.Mode != EncryptionModeOff {
 		serverTlsConfig, selfCertPem, selfPrivateKeyPem, err := resolveReceiveTlsConfig(
 			settings.ServerTlsConfig,
 			settings.ProvideTlsCertificatePem,
@@ -2208,7 +2349,7 @@ func (self *EncryptionSessionManager) ClientTlsConfig() *tls.Config {
 // SetProvideTlsKeyMaterial replaces the local sequence-level TLS identity
 // and republishes the EncryptedKey commitment.
 func (self *EncryptionSessionManager) SetProvideTlsKeyMaterial(certPem []byte, keyPem []byte) error {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	if len(certPem) == 0 && len(keyPem) == 0 {
@@ -2258,6 +2399,16 @@ func (self *EncryptionSessionManager) Settings() *EncryptionSettings {
 	return self.settings
 }
 
+// RequireEncryption reports whether the manager runs in
+// `EncryptionModeRequired`, i.e. application data must never flow in plaintext
+// to or from a peer for which a session is expected. The send and receive
+// fail-closed gates consult this; peers exempted by SendNoSession /
+// ReceiveNoSession (control-plane, self) are unaffected because no session is
+// expected for them.
+func (self *EncryptionSessionManager) RequireEncryption() bool {
+	return self.settings != nil && self.settings.Mode == EncryptionModeRequired
+}
+
 // SendNoSession reports whether a SendSequence to `destinationId` should run
 // without a per-peer encryption session — i.e. in plaintext, even when
 // `Encrypt` is true. This is the encryption analog of
@@ -2290,7 +2441,7 @@ func (self *EncryptionSessionManager) ReceiveNoSession(sourceId Id) bool {
 // concurrent `Release` can't tear the session down between the two — the
 // revival race that produced "no encryption session for peer".
 func (self *EncryptionSessionManager) acquireSession(peerId Id, role sequenceTlsRole, companion bool) *peerEncryptionSession {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	if (peerId == Id{}) {
@@ -2370,7 +2521,7 @@ func (self *EncryptionSessionManager) getOrCreateWithLock(peerId Id, role sequen
 // changing its reference count, or nil if none exists or encryption is
 // disabled.
 func (self *EncryptionSessionManager) Lookup(peerId Id, role sequenceTlsRole, companion bool) *peerEncryptionSession {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	self.stateLock.Lock()
@@ -2383,7 +2534,7 @@ func (self *EncryptionSessionManager) Lookup(peerId Id, role sequenceTlsRole, co
 // trial-decrypt a wrapped frame that carries no role hint. Does not change
 // reference counts.
 func (self *EncryptionSessionManager) sessionsForPeer(peerId Id) []*peerEncryptionSession {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	self.stateLock.Lock()
@@ -2404,7 +2555,7 @@ func (self *EncryptionSessionManager) sessionsForPeer(peerId Id) []*peerEncrypti
 // to trial-decrypt a wrapped frame that carries a role hint but no companion
 // hint — both companion sessions of the complement role are candidates.
 func (self *EncryptionSessionManager) sessionsForPeerRole(peerId Id, role sequenceTlsRole) []*peerEncryptionSession {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	self.stateLock.Lock()
@@ -2425,7 +2576,7 @@ func (self *EncryptionSessionManager) sessionsForPeerRole(peerId Id, role sequen
 // identity companion comes from the control itself, so a created server session
 // echoes it on replies and the initiator's reply state matches.
 func (self *EncryptionSessionManager) DeliverEncryptedControl(peerId Id, role sequenceTlsRole, ec *protocol.EncryptedControl) {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return
 	}
 	if (peerId == Id{}) {
@@ -2480,7 +2631,7 @@ func (self *peerEncryptionSession) verifiedPeerIdentity() (ed25519.PublicKey, bo
 // PeerIdentities returns the peers with an established, identity-verified
 // session, deduplicated by peer id across roles and companion modes.
 func (self *EncryptionSessionManager) PeerIdentities() []*PeerIdentity {
-	if !self.settings.Encrypt {
+	if self.settings.Mode == EncryptionModeOff {
 		return nil
 	}
 	sessions := func() []*peerEncryptionSession {
