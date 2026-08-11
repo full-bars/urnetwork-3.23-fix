@@ -54,12 +54,24 @@ urnetwork-3.23-fix/
 │   ├── provider-redirect/         # provider.fullbars.xyz -> GitHub 301 redirect
 │   └── README.md                  # Routes, deploy notes, wrangler usage
 │
-├── scripts/                      # Installer and test scripts
-│   ├── Provider_Install_Linux.sh # One-command provider install for Linux
+├── cmd/                         # Go binaries (v3.23.0-fix.27.0+)
+│   ├── urnet-tools/             # Provider-aware fleet ops tool (process/systemd)
+│   └── urnet-docker/            # Container variant (docker exec delegation)
+│
+├── internal/urnettools/         # Shared Go core for the urnet-tools binaries
+│   ├── cli.go                   # Dispatch, flag parsing, confirm gates
+│   ├── target.go                # Targeting (--unit/--user/--network/--network-id/--state-dir)
+│   ├── discover.go              # Provider discovery (/proc + systemd units)
+│   ├── update.go                # Interactive-first update, digest verify, atomic swap
+│   ├── legacy_cmds.go           # Parity commands (lifecycle, tuning, hub, optimize)
+│   └── ...                      # + tests (~73)
+│
+├── scripts/                      # Installer and test scripts (installer stays shell)
+│   ├── Provider_Install_Linux.sh # One-command provider install for Linux (installs the Go urnet-tools)
 │   ├── Provider_Install_Win32.ps1
 │   ├── Provider_Uninstall_Linux.sh
 │   ├── Provider_Uninstall_Win32.ps1
-│   ├── urnet-tools.ps1           # Windows provider management helper
+│   ├── urnet-tools.ps1           # Windows helper — DEPRECATED, retired in Phase 2 (use the Go binary)
 │   ├── urnetwork-updater.ps1     # Windows auto-updater
 │   ├── test_provider_install.sh  # CI: validates installer script logic
 │   └── test_fallback_logic.sh    # CI: validates fallback behavior

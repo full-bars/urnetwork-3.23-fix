@@ -109,10 +109,10 @@ Same behavior as Linux — JWT saved to `~/.urnetwork/jwt`, hot-restart on by de
 
 ### 3. Add proxies
 
-Same file format as the systemd method above. macOS's `urnet-tools` wrapper is a separate, smaller script than Linux's — as of this writing its `proxy` subcommand only supports `refresh`, `remove-dead`, and `summary` (no `add`, `clear`, `health`, or `traffic`, and no `turbo`/`eco`/`optimize`/`ramlogs` tuning commands at all). To add proxies, call the provider binary directly instead of the wrapper:
+Same file format as the systemd method above. Since v3.23.0-fix.27.0, `urnet-tools` is the provider-aware Go binary on every platform — macOS, Linux, and Windows share one codebase with the full command surface (no more platform-specific wrapper limitations):
 
 ```sh
-~/.local/share/urnetwork-provider/bin/urnetwork proxy add --proxy_file=~/proxies.txt -f
+urnet-tools proxy add ~/proxies.txt
 ```
 
 ### 4. Start and verify
@@ -136,7 +136,7 @@ powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 
 No admin rights required. This installs:
 - The provider binary at `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe`
-- Management scripts (`urnet-tools.ps1`, `urnetwork-updater.ps1`) alongside it
+- The `urnet-tools` Go management binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) and `urnetwork-updater.ps1` alongside it
 - A Startup shortcut so the provider launches on login
 - Configuration directory at `%USERPROFILE%\.urnetwork\`
 
