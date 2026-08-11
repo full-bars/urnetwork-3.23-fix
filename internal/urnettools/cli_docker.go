@@ -83,6 +83,8 @@ Commands:
                           (--unit/--network/etc) must precede the command; use "--" to
                           forward inner flags verbatim, e.g.
                           urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
+  exec <cmd...>           command-first form still works (target flags optional;
+                          required when more than one provider container exists)
   restart [target]       restart the container
   logs [target]          follow the container's logs (RAMLOGS-aware)
 
@@ -158,6 +160,10 @@ func cmdDockerExec(args []string) error {
 	// flags or silently dropped.
 	pre, rest, err := splitExecArgs(args)
 	if err == errHelpShown {
+		// Print the usage on pre-separator help — exiting silently on
+		// `exec --unit x --help` reads as a no-op, not documentation
+		// (Sonnet final review MEDIUM).
+		usageDocker()
 		return nil
 	}
 	if err != nil {

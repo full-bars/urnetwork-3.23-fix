@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -101,7 +103,40 @@ func TestSplitExecArgs(t *testing.T) {
 		{"help-after-sep-with-target", []string{"--unit", "x", "--", "urnet-tools", "--help"}, []string{"--unit", "x"}, []string{"urnet-tools", "--help"}, ""},
 		// -h/--help BEFORE the separator (no --) is docker help (errHelpShown).
 		{"help-before-sep", []string{"--unit", "x", "--help"}, nil, nil, "help shown"},
+		{"help-bare-long", []string{"--help"}, nil, nil, "help shown"},
+		{"help-bare-short", []string{"-h"}, nil, nil, "help shown"},
+		{"help-after-target-no-sep", []string{"--unit", "x", "-h"}, nil, nil, "help shown"},
+		// command-first multi-arg form still works
+		{"command-first-multi-arg", []string{"urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"}, nil, []string{"urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"}, ""},
+		// equals-form is NOT recognized (pre-existing limitation, documented)
+		{"equals-form-rejected", []string{"--unit=x", "cmd"}, nil, nil, "unknown flag"},
+		// target flags after -- are forwarded verbatim (not parsed)
+		{"inner-target-like-flag-forwarded", []string{"--", "--unit", "y", "cmd"}, nil, []string{"--unit", "y", "cmd"}, ""},
+		{"target-then-sep-then-inner-target", []string{"--unit", "x", "--", "--unit", "y"}, []string{"--unit", "x"}, []string{"--unit", "y"}, ""},
 	}
+
+	// Sonnet final-review MEDIUM: pre-separator --help must PRINT usage
+	// (side effect), not just return the sentinel silently. RunDocker
+	// already covers bare exec --help via hasHelpFlag; this covers the
+	// --unit x --help form that goes through splitExecArgs.
+	t.Run("pre-sep-help-prints-usage", func(t *testing.T) {
+		old := os.Stderr
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stderr = w
+		defer func() { os.Stderr = old }()
+		err = cmdDockerExec([]string{"--unit", "x", "--help"})
+		w.Close()
+		out, _ := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("cmdDockerExec([--unit x --help]) err = %v, want nil", err)
+		}
+		if !strings.Contains(string(out), "urnet-docker") {
+			t.Fatalf("cmdDockerExec([--unit x --help]) did not print usage, got %q", string(out))
+		}
+	})
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			pre, rest, err := splitExecArgs(c.args)
