@@ -8,6 +8,45 @@ All notable changes to this project are documented here.
 
 ### Added
 
+**Paid/free probe divergence + earn-skip** (#357): stage-1 table probing splits into two cadences. Paid/file proxies move to a wider stale window (6h calm / 3h hot vs the URL 3h/1h) and are skipped entirely when they show a positive billable delta within the last 15 minutes — earn-skip — with a hard 24h force-probe ceiling and never-graded proxies always probed, so fail-fast can never be starved. The first URL fetch + probe pass is deferred 20s after process start, so a crash-looping box can never re-fetch/re-probe on every restart. The grade summary's stale ratio picks its freshness window per entry source. Needs a fleet deploy — probe cadence and probe spend change on every box at redeploy time.
+
+### Fixed
+
+**Earn-skip dead in production** (#357): the earn tracker stored per-address earning state under `ProxyHealthSnapshot`'s formatted `proxy[N] (addr)` keys while the paid grader looked up raw addresses — keys never matched, so earn-skip never fired and every paid proxy was always probed. Keys are now normalized on ingest and lookup, the tests drive the tracker through the real snapshot API, and per-address state is pruned to the live proxy set (and cleared when the health set empties).
+
+## [v3.23.0-fix.28.0] — 2026-08-12
+
+### Added
+
+**In-process per-proxy client-JWT renewal** (#356): the beta backend (and mainnet's new token format) mints 24-hour JWTs; previously each proxy's client JWT was minted once at startup and never renewed in-process, so after ~24h of uptime every proxy's token expired, all auths 401'd, and providers silently became black holes. The provider now renews each proxy's client JWT 12h before expiry (hourly retry, immediate on 401), re-signing the SAME client_id through `/network/auth-client` so server-side reputation is preserved; a process-wide mutex + shared rate limiter prevent API stampedes; a no-op on backends still issuing long-lived tokens.
+
+**EncryptionMode tri-state port (scope 2)** (#350): Off/Opportunistic/Required mode with fail-closed gates; bounded per-peer TLS establishment (60s handshake timeout default, was unbounded) (#353).
+
+**urnet-docker exec flag forwarding** (#349, #352): a `--` separator forwards inner flags verbatim; unknown leading flags error instead of being silently dropped; the ramlogs hint resolves the real container name; `urnet-docker logs` follows the right provider.
+
+### Fixed
+
+**window-stats test flake under -short** (#354): deterministic bucket span.
+
+## [v3.23.0-fix.27.0] — 2026-08-09
+
+### Added
+
+**A-F proxy quality tiers + best-overall cache eviction** (#343): every URL-source proxy that survives the stage-1 gate is assigned a letter grade (A >= 0.9, B >= 0.8, C >= 0.7, D >= 0.6, F < 0.6); all sources' candidates pool into a single best-first admission funnel up to the cap; the cache evicts lowest-grade entries when full; the fetch cycle probes only new addresses while the reaper's stale sweep refreshes cached grades.
+
+**Read-only grading for paid/file-list proxies** (#344): a background sweep grades every non-URL proxy the box serves with the same stage-1 table probe on the same 1-3h stale cadence, persisting Score/Graded/Failed/LastGraded into `proxy.state`. Read-only by construction — grades never gate admission, evict, or feed give-up/cleanup.
+
+**Periodic A-F grade summary + grades.log history** (#346): every 5 minutes (configurable via `proxy_grades.json interval_sec`) the provider logs a running tier snapshot — per-source A-F breakdown, changes vs the previous round, median/p95/min score stats, next-probe countdown — and per-proxy tier changes emit delta lines into the important buffer and a durable per-day history at `~/.urnetwork/grades/` (retention default 7 days).
+
+**Provider-aware `urnet-tools` rewritten in Go** (#345): the fleet ops tool is now a single Go codebase (`urnet-tools` for process/systemd, `urnet-docker` for containers) that discovers real running providers, identifies each by its JWT network identity, refuses ambiguous targets with an inventory table, and gates destructive ops behind a confirm prompt. All 25 legacy subcommands dispatch with verified parity.
+
+### Breaking Changes
+
+- **`urnet-tools` is now a Go binary** (#345): drop-in at the same path; operators on multi-provider boxes must now specify a target (`--unit` / `--user` / `--network` / `--network-id` / `--state-dir`) — the tool refuses to guess.
+
+
+### Added
+
 **A-F letter-grade proxy quality tiers** (#343): Every URL-source proxy that survives the stage-1 gate is assigned a letter grade (A >= 0.9, B >= 0.8, C >= 0.7, D >= 0.6, F < 0.6). Best-overall cache eviction keeps the highest-tier proxies when the cache is full; all sources' candidates pool into a single A-to-F admission funnel (best-first up to the cap); the fetch cycle probes only new addresses while the reaper's stale sweep refreshes cached grades; a per-cycle A-F grade breakdown is logged. Cross-source duplicates are probed once per cycle; the eviction tie-break uses the grade score. Seven review passes (two CodeRabbit rounds plus independent passes) closed the fetch-logging phantom lines, cross-source duplicate probing, reaper-refresh herd, and eviction-tie-break gaps. Needs a fleet deploy.
 
 **Read-only grading for paid/file-list proxies** (#344): Proxies from `--proxy_file` / the internal config bypass the URL admission gate by construction and were previously invisible to the quality system. A background sweep now grades every non-URL proxy the box serves with the same stage-1 table probe on the same 1-3h stale cadence, persisting Score/Graded/Failed/LastGraded into `proxy.state` (omitempty — same field shape as the URL store). Read-only by construction: only the grade fields are written; admission, eviction, give-up, and cleanup never read them, so a graded F keeps serving exactly as it did before. `proxy_probe.json enabled=false` skips the sweep entirely. Needs a fleet deploy.
