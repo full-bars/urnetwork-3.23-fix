@@ -360,6 +360,92 @@ func listenSocks5ApiOKTLS(t *testing.T, leaf *tls.Certificate) (addr string, cle
 	return ln.Addr().String(), func() { ln.Close() }
 }
 
+// TestProxyProbeTLSClientConfig_DefaultConfig pins the production seam's
+// stock behavior (no test override installed): ServerName is pinned to the
+// apiHost passed in, TLS 1.2 is the floor, and RootCAs is left nil so the
+// system trust store is used. Any drift here (e.g. a nil ServerName, or a
+// non-nil RootCAs that silently narrows/widens trust) would change what the
+// probe accepts as a valid API certificate without any of the MITM tests
+// noticing, since they all install their own override.
+func TestProxyProbeTLSClientConfig_DefaultConfig(t *testing.T) {
+	cfg := proxyProbeTLSClientConfig("api.bringyour.com")
+	if cfg.ServerName != "api.bringyour.com" {
+		t.Errorf("ServerName = %q, want %q", cfg.ServerName, "api.bringyour.com")
+	}
+	if cfg.MinVersion != tls.VersionTLS12 {
+		t.Errorf("MinVersion = %v, want tls.VersionTLS12", cfg.MinVersion)
+	}
+	if cfg.RootCAs != nil {
+		t.Errorf("RootCAs = %v, want nil (system pool)", cfg.RootCAs)
+	}
+}
+
+// TestProbeProxy_TLSHandshakeFailsOnAbruptClose exercises a different
+// failure mode through stage 3 than TestProbeProxy_TLSVerifyRejectsMITM:
+// instead of presenting an untrusted certificate, the fake closes the
+// connection the instant CONNECT succeeds, before any TLS bytes are
+// exchanged (leaf=nil, like the pre-TLS-probe fakes). A proxy that closes
+// the tunnel this abruptly cannot be transparently relaying TLS either, so
+// HandshakeContext errors out (EOF, not a verification failure) and the
+// probe must still land on probeTLSFailed — any TLS-stage error is
+// classified the same way, not just a certificate-verification error.
+func TestProbeProxy_TLSHandshakeFailsOnAbruptClose(t *testing.T) {
+	addr, cleanup := listenSocks5TLSOnce(t, nil)
+	defer cleanup()
+
+	res := probeProxy(context.Background(), addr, "", "", "127.0.0.1", 1)
+	if res != probeTLSFailed {
+		t.Fatalf("abrupt close after CONNECT: result = %v, want probeTLSFailed (apiReachable=%v, socks5Only=%v, dead=%v)",
+			res, probeAPIReachable, probeSocks5Only, probeDead)
+	}
+}
+
+// TestProbeAndFilterProxyURLLines_MixedResultsPartitionCorrectly drives
+// probeAndFilterProxyURLLines across all four probeResult outcomes in one
+// batch, pinning that: (1) only the genuinely transparent proxy lands in
+// apiOK, (2) both the TLS-intercepting proxy and the plain socks5-only
+// proxy are routed to the SAME retry bucket (so the reaper's failure-count
+// lifecycle can retire either), and (3) the dead line is dropped from both
+// buckets entirely. Order within socks5Only is preserved by original line
+// index (the function's own result-collection loop is sequential over
+// indices), regardless of which goroutine finishes probing first.
+func TestProbeAndFilterProxyURLLines_MixedResultsPartitionCorrectly(t *testing.T) {
+	ca := newTestCA(t)
+	trustedLeaf := issueLeafForHost(t, ca, "127.0.0.1")
+	withProbeTLSRoot(t, ca)
+
+	apiOKAddr, apiOKCleanup := listenSocks5ApiOKTLS(t, &trustedLeaf)
+	defer apiOKCleanup()
+
+	// Signed by the trusted test CA, but the SAN doesn't cover "127.0.0.1"
+	// (no IP SAN at all) — a MITM proxy reusing a plausible-looking cert
+	// for the wrong host, same failure class (verification error) as a
+	// fully untrusted cert but via a different mismatch reason.
+	mismatchedLeaf := ca.issueLeaf(t, []string{"interceptor.example"})
+	tlsFailedAddr, tlsFailedCleanup := listenSocks5TLSOnce(t, &mismatchedLeaf)
+	defer tlsFailedCleanup()
+
+	socks5OnlyAddr, socks5OnlyCleanup := listenSocks5Once(t)
+	defer socks5OnlyCleanup()
+
+	deadAddr := closedPortAddr(t)
+
+	lines := []string{apiOKAddr, tlsFailedAddr, socks5OnlyAddr, deadAddr}
+	apiOK, socks5Only := probeAndFilterProxyURLLines(context.Background(), lines, "127.0.0.1", 1)
+
+	if len(apiOK) != 1 || apiOK[0] != apiOKAddr {
+		t.Fatalf("apiOK: got %v, want exactly [%s]", apiOK, apiOKAddr)
+	}
+	if len(socks5Only) != 2 || socks5Only[0] != tlsFailedAddr || socks5Only[1] != socks5OnlyAddr {
+		t.Fatalf("socks5Only: got %v, want [%s, %s] (order preserved by line index)", socks5Only, tlsFailedAddr, socks5OnlyAddr)
+	}
+	for _, addr := range append(append([]string{}, apiOK...), socks5Only...) {
+		if addr == deadAddr {
+			t.Fatalf("dead address %s must not appear in either bucket", deadAddr)
+		}
+	}
+}
+
 // listenSocks5SmartTLS is listenSocks5Smart (CONNECT 0x00 only for ok IPs)
 // plus a TLS server behind successful CONNECTs.
 func listenSocks5SmartTLS(t *testing.T, okIPs map[string]bool, leaf *tls.Certificate) (addr string, cleanup func()) {

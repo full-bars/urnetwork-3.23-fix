@@ -300,3 +300,43 @@ func TestRunURLProxyReaperOnce_DoesNotOverwriteFresherEntry(t *testing.T) {
 		t.Errorf("%s: LastProbe = %v, want %v (the concurrently-written fresh timestamp) — got overwritten by the reaper", addr, entry.LastProbe, freshTime)
 	}
 }
+
+// TestRunURLProxyReaperOnce_TLSFailedLivenessPathBlacklistsAtBoundary pins
+// the liveness-path (wasProbeOK=false) handling of probeTLSFailed added
+// alongside the stale-reprobe path in runURLProxyReaperOnce: a candidate
+// already sitting at proxyAPIMaxFails-1 consecutive fails that fails TLS
+// verification again must cross the threshold and be blacklisted within a
+// SINGLE reaper call. This is independent of, and does not need, the
+// multi-cycle build-up exercised by
+// TestReview_ReaperBlacklistsTLSFailedAfterThree (which starts from a
+// once-good ProbeOK=true entry and reaches the liveness path only after an
+// initial stale-reprobe demotion); here the entry starts directly on the
+// liveness path (ProbeOK=false) to isolate that switch case's boundary
+// condition on its own.
+func TestRunURLProxyReaperOnce_TLSFailedLivenessPathBlacklistsAtBoundary(t *testing.T) {
+	withTempHome(t)
+
+	ca := newTestCA(t)
+	leaf := ca.issueLeaf(t, []string{"interceptor.example"})
+	addr, _, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
+	defer cleanup()
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: false, ProbeFails: proxyAPIMaxFails - 1, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Cache[addr]; ok {
+		t.Fatalf("expected TLS-failing proxy at the fail boundary to be blacklisted in one cycle, got %+v", got.Cache[addr])
+	}
+	if _, ok := got.Blacklist[addr]; !ok {
+		t.Fatal("expected TLS-failing proxy to be recorded in the persistent blacklist")
+	}
+}
