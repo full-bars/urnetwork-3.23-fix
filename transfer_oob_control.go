@@ -3,6 +3,8 @@ package connect
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 
 	"encoding/base64"
 
@@ -27,6 +29,12 @@ type OutOfBandControl interface {
 
 type ApiOutOfBandControl struct {
 	api *BringYourApi
+	// audit401Count counts 401 responses observed by SendControl since the
+	// last reset. The provider's client-JWT renewal watcher uses it as an
+	// immediate-renewal trigger: a 401 on the OOB path means the bearer
+	// client JWT was rejected (expired or revoked), and waiting up to an
+	// hour for the next scheduled renewal keeps the proxy a black hole.
+	audit401Count atomic.Uint64
 }
 
 func NewApiOutOfBandControl(
@@ -46,6 +54,24 @@ func NewApiOutOfBandControlWithApi(api *BringYourApi) *ApiOutOfBandControl {
 	return &ApiOutOfBandControl{
 		api: api,
 	}
+}
+
+// SetByJwt updates the bearer token used by future out-of-band control
+// requests. Long-lived clients call this when their renewable client JWT is
+// rotated; BringYourApi provides the synchronization for concurrent sends.
+func (self *ApiOutOfBandControl) SetByJwt(byJwt string) {
+	self.api.SetByJwt(byJwt)
+}
+
+// Audit401Count returns how many 401 responses SendControl has observed since
+// the last reset.
+func (self *ApiOutOfBandControl) Audit401Count() uint64 {
+	return self.audit401Count.Load()
+}
+
+// ResetAudit401Count zeroes the 401 counter.
+func (self *ApiOutOfBandControl) ResetAudit401Count() {
+	self.audit401Count.Store(0)
 }
 
 // SendControl consumes the caller's frames: their MessageBytes are returned
@@ -86,6 +112,9 @@ func (self *ApiOutOfBandControl) SendControl(
 		},
 		NewApiCallback(func(result *ConnectControlResult, err error) {
 			if err != nil {
+				if strings.Contains(err.Error(), "401") {
+					self.audit401Count.Add(1)
+				}
 				safeCallback(nil, err)
 				return
 			}
