@@ -14,7 +14,6 @@ echo "======================================"
 # verify, install) is exercised indirectly via the digest-extraction and
 # PATH-check snippets tested separately below, without ever touching the
 # network.
-sed '/^# --- resolve latest release tag ---$/,$d' scripts/install-urnet-docker.sh > /tmp/urnet_docker_lib.sh
 
 # Use a private temp file for the sourced lib so parallel test runs never
 # collide on a shared /tmp path, and always clean it up (verified 2026-08-12
@@ -218,6 +217,18 @@ test_digest_extraction_jq() {
     local missing_digest
     missing_digest="$(printf "%s" "$json" | jq -r --arg a "$missing_asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://')"
     assert_eq "" "$missing_digest" "jq digest extraction yields empty for a missing asset (release predates tool binaries)"
+
+    # A JSON null digest (assets uploaded before digest support) must also
+    # yield empty, not the literal "null" — the production script normalizes
+    # via '.digest // ""' plus a null|None case guard (verified 2026-08-12
+    # review). This pins that path so a regression can't cause a download +
+    # sha256 mismatch instead of the clean fallback.
+    local null_json='{"tag_name": "v9.9.9", "assets": [
+        {"name": "old-tool.tar.gz", "digest": null}
+    ]}'
+    local null_digest
+    null_digest="$(printf "%s" "$null_json" | jq -r --arg a "old-tool.tar.gz" '.assets[] | select(.name == $a) | .digest // ""' 2>/dev/null | sed 's/^sha256://')"
+    assert_eq "" "$null_digest" "jq digest extraction yields empty for a JSON null digest (pre-digest asset)"
 }
 test_digest_extraction_jq
 
@@ -280,8 +291,6 @@ test_path_note_logic() {
     fi
 }
 test_path_note_logic
-
-rm -f /tmp/urnet_docker_lib.sh
 
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
