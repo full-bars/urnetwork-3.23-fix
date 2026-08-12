@@ -217,6 +217,63 @@ func TestCollectProxyGradeSummary_StaleBySource(t *testing.T) {
 	}
 }
 
+// TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag pins the
+// coderabbit finding: an address whose first-seen provenance tag says
+// "url" but which IS in the current paid/file desired set is served as a
+// file proxy (file wins in mergeProxyURLCache) and graded by the paid
+// grader — the summary must bucket it by the PAID owner (ProxyEntry
+// grade + paid stale window), never the URL cache grade + URL window.
+func TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte("9.9.9.9:1080:u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The URL cache holds a DIFFERENT (better) grade for the same
+	// address — using it would be the bug.
+	urlState := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"9.9.9.9:1080": {Score: 0.9, Graded: true, LastProbe: time.Now()},
+	}}
+	if err := writeProxyURLStateTo(filepath.Join(dir, "proxy_url.json"), urlState); err != nil {
+		t.Fatal(err)
+	}
+	// Entry tagged "url" (stale first-seen provenance) but in the paid
+	// file: paid-owned. Paid grade 0.8 -> B tier; 4h old -> fresh by the
+	// paid window (6h calm).
+	state := &ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			"9.9.9.9:1080": {Health: "up", Source: "url", Graded: true, Score: 0.8, LastGraded: time.Now().Add(-4 * time.Hour)},
+		},
+	}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
+	if s.tiers["B"] != 1 {
+		t.Fatalf("paid owner grade must be used: tiers=%v, want B=1 (file ownership overrides the url tag)", s.tiers)
+	}
+	if s.tiers["A"] != 0 {
+		t.Fatalf("URL cache grade must NOT be used for a paid-owned address: tiers=%v, want A=0", s.tiers)
+	}
+	if s.sources["file"]["B"] != 1 {
+		t.Fatalf("paid-owned address must bucket under file: sources=%v", s.sources)
+	}
+	if s.sources["url"] != nil {
+		t.Fatalf("paid-owned address must not bucket under url: sources=%v", s.sources)
+	}
+	if s.stale != 0 {
+		t.Fatalf("stale: %d, want 0 (4h-old paid grade is fresh by the paid window)", s.stale)
+	}
+}
+
 func TestEmitProxyGradeDelta(t *testing.T) {
 	home := withTempHome(t)
 	dir := filepath.Join(home, ".urnetwork")
