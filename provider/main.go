@@ -3221,6 +3221,56 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
+// newProviderAuthClientArgsForRenewal builds the AuthNetworkClientArgs used to
+// RENEW an existing per-proxy client identity. Unlike the mint path
+// (newProviderAuthClientArgs), it carries ClientId so the server updates the
+// existing network_client row and signs a fresh JWT for the SAME
+// client_id/device_id — preserving server-side reliability reputation.
+// SourceClientId stays nil: proxies remain independent top-level clients.
+func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id) *connect.AuthNetworkClientArgs {
+	return &connect.AuthNetworkClientArgs{
+		ClientId:    &clientId,
+		Description: description,
+		DeviceSpec:  "",
+	}
+}
+
+// renewClientJWT renews the per-proxy client JWT for an existing client
+// identity, using the account JWT as the Bearer credential. Returns the fresh
+// client JWT (same client_id claim), or an error. It mirrors the auth-client
+// call in provideAuth but with ClientId set — the renewal path.
+func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.Id, description string) (string, error) {
+	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
+	api.SetByJwt(byJwt)
+
+	callback, channel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
+	api.AuthNetworkClient(newProviderAuthClientArgsForRenewal(description, clientId), callback)
+
+	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result = <-channel:
+	}
+	if result.Error != nil {
+		return "", fmt.Errorf("auth-client renewal api error: %w", result.Error)
+	}
+	if result.Result == nil {
+		return "", fmt.Errorf("empty result from auth-client renewal API")
+	}
+	if result.Result.Error != nil {
+		return "", fmt.Errorf("auth-client renewal rejected: %s", result.Result.Error.Message)
+	}
+	if result.Result.ByClientJwt == "" {
+		return "", fmt.Errorf("empty by_client_jwt in renewal response")
+	}
+	if !jwtContainsClientId(result.Result.ByClientJwt) {
+		return "", fmt.Errorf("regression guard: renewal returned a JWT without client_id claim")
+	}
+	return result.Result.ByClientJwt, nil
+}
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
