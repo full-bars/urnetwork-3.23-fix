@@ -2780,9 +2780,10 @@ func provide(opts docopt.Opts) {
 		// them for long-lived providers. Without this, every proxy's client
 		// JWT expires ~24h after start and the provider becomes a black hole
 		// (audit/contract OOB 401s, no new contracts). The watcher renews each
-		// proxy's JWT 12h before expiry (hourly retry) and immediately on a
-		// 401, preserving the client_id identity. On backends still issuing
-		// long-lived tokens the 12h threshold never fires — a no-op.
+		// proxy's JWT 12h before expiry (hourly retry), immediately on a 401,
+		// and at startup if the reused token is already expired, preserving
+		// the client_id identity. On backends still issuing long-lived tokens
+		// the 12h threshold never fires — a no-op.
 		renewNow := make(chan struct{}, 1)
 		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
 			IdentityKey:    identityKey,
@@ -2794,6 +2795,7 @@ func provide(opts docopt.Opts) {
 			Transport:      platformTransport,
 			RenewNow:       renewNow,
 			ProxyIndex:     proxyIndex,
+			InstanceId:     instanceId,
 		})
 
 		var bw *connect.ProxyBandwidth
