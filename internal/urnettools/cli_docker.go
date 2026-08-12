@@ -66,6 +66,12 @@ func RunDocker(args []string) error {
 		// Docker containers update by pulling new images (out of this
 		// tool's scope); `urnet-docker update` refreshes the TOOL binary
 		// itself. Host-side only — never executed inside a container.
+		// Help must show the DOCKER usage (the shared parseGlobalFlags
+		// would print the urnet-tools one — verified 2026-08-12 review).
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
 			return nil

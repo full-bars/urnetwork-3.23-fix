@@ -37,11 +37,22 @@ func TestToolAssetName(t *testing.T) {
 	}
 }
 
-// fakeELF returns bytes that pass the isELFExecutable structural check
-// without being a real binary (magic + padding).
+// fakeELF returns bytes that pass the HOST platform's structural check
+// without being a real binary (magic + padding). The magic follows
+// runtime.GOOS so the swap tests run on linux, darwin, and windows — the
+// ELF-only fixture would be rejected as "not a <goos> executable" on
+// darwin/windows hosts (verified 2026-08-12 review).
 func fakeELF(payload string) []byte {
-	b := append([]byte{0x7f, 'E', 'L', 'F'}, []byte(payload)...)
-	return b
+	var magic []byte
+	switch runtime.GOOS {
+	case "darwin":
+		magic = []byte{0xcf, 0xfa, 0xed, 0xfe} // MH_MAGIC_64 (little-endian on disk)
+	case "windows":
+		magic = []byte{'M', 'Z'}
+	default:
+		magic = []byte{0x7f, 'E', 'L', 'F'}
+	}
+	return append(magic, []byte(payload)...)
 }
 
 // serveTool spins up an httptest server serving toolBytes as the release
