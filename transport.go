@@ -343,7 +343,10 @@ type PlatformTransport struct {
 	routeManager   *RouteManager
 
 	platformUrl string
-	auth        *ClientAuth
+	// auth is written at runtime by the client-JWT renewal watcher (SetAuth)
+	// and read by connection dial paths; atomic so readers never observe a
+	// torn/stale pointer without paying for the state lock on hot paths.
+	auth atomic.Pointer[ClientAuth]
 
 	settings *PlatformTransportSettings
 
@@ -427,23 +430,26 @@ func NewPlatformTransportWithTargetMode(
 		clientStrategy:       clientStrategy,
 		routeManager:         routeManager,
 		platformUrl:          platformUrl,
-		auth:                 auth,
 		settings:             settings,
 		availableModeMonitor: NewMonitor(),
 		availableModes:       map[TransportMode]bool{},
 		targetMode:           targetMode,
 		mode:                 NewMonitorValue[TransportMode](TransportModeNone),
 	}
+	transport.auth.Store(auth)
 	go HandleError(transport.run, cancel)
 	return transport
 }
 
 // the auth is used on future connections
 func (self *PlatformTransport) SetAuth(auth *ClientAuth) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+	self.auth.Store(auth)
+}
 
-	self.auth = auth
+// getAuth returns the current auth credential. It is safe for concurrent use
+// with SetAuth (the client-JWT renewal watcher rotates the bearer at runtime).
+func (self *PlatformTransport) getAuth() *ClientAuth {
+	return self.auth.Load()
 }
 
 func (self *PlatformTransport) setModeAvailable(mode TransportMode, available bool) {
@@ -625,7 +631,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	// connect and update route manager for this transport
 	defer self.cancel()
 
-	clientId, _ := self.auth.ClientId()
+	clientId, _ := self.getAuth().ClientId()
 
 	if 0 < initialTimeout {
 		select {
@@ -657,9 +663,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		connect := func() (*websocket.Conn, error) {
 			header := http.Header{}
 			if self.settings.V2H1Auth {
-				header.Add("Authorization", fmt.Sprintf("Bearer %s", self.auth.ByJwt))
-				header.Add("X-UR-AppVersion", self.auth.AppVersion)
-				header.Add("X-UR-InstanceId", self.auth.InstanceId.String())
+				header.Add("Authorization", fmt.Sprintf("Bearer %s", self.getAuth().ByJwt))
+				header.Add("X-UR-AppVersion", self.getAuth().AppVersion)
+				header.Add("X-UR-InstanceId", self.getAuth().InstanceId.String())
 				header.Add("X-UR-TransportVersion", fmt.Sprintf("%d", TransportVersion))
 			}
 
@@ -677,9 +683,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 			if !self.settings.V2H1Auth {
 				authBytes, err := EncodeFrame(&protocol.Auth{
-					ByJwt:      self.auth.ByJwt,
-					AppVersion: self.auth.AppVersion,
-					InstanceId: self.auth.InstanceId.Bytes(),
+					ByJwt:      self.getAuth().ByJwt,
+					AppVersion: self.getAuth().AppVersion,
+					InstanceId: self.getAuth().InstanceId.Bytes(),
 				}, self.settings.ProtocolVersion)
 				if err != nil {
 					return nil, err
@@ -1126,17 +1132,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		panic(fmt.Errorf("Bad slow multiple: %d", slowMultiple))
 	}
 
-	clientId, _ := self.auth.ClientId()
-
-	authBytes, err := EncodeFrame(&protocol.Auth{
-		ByJwt:      self.auth.ByJwt,
-		AppVersion: self.auth.AppVersion,
-		InstanceId: self.auth.InstanceId.Bytes(),
-	}, self.settings.ProtocolVersion)
-	if err != nil {
-		return
-	}
-	defer MessagePoolReturn(authBytes)
+	clientId, _ := self.getAuth().ClientId()
 
 	if 0 < initialTimeout {
 		select {
@@ -1281,6 +1277,24 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 
 			framer := NewFramer(self.settings.FramerSettings)
+
+			// Encode the auth frame per dial attempt, not once for the whole
+			// reconnect loop: SetAuth rotates the JWT in place, and a
+			// transport that presents the startup token forever (the old
+			// behavior) would keep the stale credential after renewal.
+			// Mirrors runH1, which rebuilds the frame inside its connect
+			// closure. The echo verification below compares against the same
+			// per-attempt bytes, so the snapshot is consistent.
+			auth := self.getAuth()
+			authBytes, err := EncodeFrame(&protocol.Auth{
+				ByJwt:      auth.ByJwt,
+				AppVersion: auth.AppVersion,
+				InstanceId: auth.InstanceId.Bytes(),
+			}, self.settings.ProtocolVersion)
+			if err != nil {
+				return nil, err
+			}
+			defer MessagePoolReturn(authBytes)
 
 			stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.AuthTimeout))
 			if err := framer.Write(stream, authBytes); err != nil {
