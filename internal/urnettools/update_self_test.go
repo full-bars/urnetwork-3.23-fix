@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -283,10 +282,12 @@ func TestRunToolSelfUpdateSkipsWithoutDigest(t *testing.T) {
 	}
 }
 
-// TestRunToolSelfUpdateReportsButDoesNotFail: a self-update failure returns
-// an error (which cmdUpdate reports), proving the isolation contract: the
-// leg's failure must NOT be able to fail the provider update command.
-func TestRunToolSelfUpdateReportsButDoesNotFail(t *testing.T) {
+// TestRunToolSelfUpdateReportsFailure: the leg returns a non-nil error when
+// the self-update download fails. (The isolation contract — that cmdUpdate
+// reports this error without failing the command — is a cmdUpdate-level
+// behavior; this test pins the leg's own contract: it surfaces the failure
+// as an error rather than swallowing it.)
+func TestRunToolSelfUpdateReportsFailure(t *testing.T) {
 	cfg := updateConfig{
 		Tag:          "v9.9.9",
 		ToolAsset:    "urnet-tools-linux-amd64",
@@ -298,22 +299,16 @@ func TestRunToolSelfUpdateReportsButDoesNotFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("runToolSelfUpdate = nil, want error from failed download")
 	}
-	// The contract: this error is REPORTED, not propagated as command failure.
-	// cmdUpdate prints it and returns provider-update status only. Simulate
-	// that call shape here:
-	var cmdErr error
-	if legErr := runToolSelfUpdate(cfg); legErr != nil {
-		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", legErr)
-	}
-	if cmdErr != nil {
-		t.Fatalf("cmdErr = %v, want nil (self-update failure must not fail the command)", cmdErr)
-	}
 }
 
 // TestToolDigestResolvedFromSameRelease: cmdUpdate populates cfg.ToolDigest
-// from the release's asset list using the running tool's asset name. This
-// pins the "same release, same tag" wiring (the tool digest must come from
-// the SAME release the providers are updating to).
+// from the release's asset list using the tool's asset name. This pins the
+// "same release, same tag" wiring (the tool digest must come from the SAME
+// release the providers are updating to). The asset name is hardcoded here
+// because the wiring under test is "digest lookup by name", not "name
+// derivation" (that's covered by TestRunningToolAssetName) — deriving it
+// from the live test binary would make the assertion dead under go test
+// (verified 2026-08-12 closure review).
 func TestToolDigestResolvedFromSameRelease(t *testing.T) {
 	rel := &releaseInfo{
 		Tag: "v9.9.9",
@@ -322,18 +317,8 @@ func TestToolDigestResolvedFromSameRelease(t *testing.T) {
 			{Name: "urnet-tools-linux-amd64", Digest: "sha256:bbb"},
 		},
 	}
-	// The production expression used in cmdUpdate:
-	asset, err := runningToolAssetName()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Asset name depends on the host; resolve the same way production does
-	// and require the digest to be present when the asset IS in the list.
-	if rel.Assets[1].Name == asset {
-		got := digestForAsset(rel.Assets, asset)
-		if got != "bbb" {
-			t.Errorf("digestForAsset(%s) = %q, want %q", asset, got, "bbb")
-		}
+	if got := digestForAsset(rel.Assets, "urnet-tools-linux-amd64"); got != "bbb" {
+		t.Errorf("digestForAsset(urnet-tools-linux-amd64) = %q, want %q", got, "bbb")
 	}
 	// Missing asset → empty digest (skip, not fail).
 	if got := digestForAsset(rel.Assets, "urnet-tools-linux-arm64"); got != "" {
