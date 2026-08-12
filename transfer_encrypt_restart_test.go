@@ -81,3 +81,41 @@ func TestRestartHandshakeLeavesInFlightEpochAlone(t *testing.T) {
 		t.Fatal("an in-flight handshake must not be replaced by restartHandshake")
 	}
 }
+
+// TestRestartHandshakeRebuildsFailedInitialEpoch pins the cooldown-timestamp
+// fix: an epoch STARTED by restartHandshake (the initial epoch, or a normal
+// rekey) must not stamp lastHandshakeFailureTime, so if it fails quickly the
+// next restartHandshake rebuilds it immediately. Previously the timestamp was
+// stamped on every call that reached the rebuild path, so a fast failure of
+// the initial epoch was wrongly suppressed by the cooldown — its first retry
+// could be delayed up to restartHandshakeCooldown.
+func TestRestartHandshakeRebuildsFailedInitialEpoch(t *testing.T) {
+	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
+	defer cleanup()
+
+	// Start the initial epoch through restartHandshake itself (not
+	// injectTestEpoch), so any timestamp stamping on the start path is
+	// exercised.
+	sess.restartHandshake()
+	first := sess.currentEpoch()
+	if first == nil {
+		t.Fatal("precondition: restartHandshake must start an initial epoch")
+	}
+
+	// Mark that epoch failed, as if the handshake failed quickly (well within
+	// restartHandshakeCooldown of the start).
+	sess.stateLock.Lock()
+	first.handshakeErr = errors.New("fast fail")
+	sess.stateLock.Unlock()
+
+	// The next restartHandshake must rebuild immediately: the initial start
+	// did not stamp a failure time, so the cooldown cannot suppress the
+	// first retry of a failed epoch.
+	sess.restartHandshake()
+	if sess.currentEpoch() == first {
+		t.Fatal("restartHandshake must rebuild a failed initial epoch immediately, not pace its first retry")
+	}
+	if e := sess.currentEpoch(); e == nil || e.handshakeErr != nil || e.identityFailed {
+		t.Fatal("replacement epoch must be a fresh in-flight handshake")
+	}
+}

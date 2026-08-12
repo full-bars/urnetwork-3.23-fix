@@ -54,6 +54,14 @@ func testingNewEmptyMultiClientChannel(t *testing.T, settings *MultiClientSettin
 	)
 	assert.Equal(t, nil, err)
 
+	// newMultiClientChannel spawns background goroutines (detectBlackhole,
+	// ping) that read the stats state under stateLock, and registers a
+	// receive callback on the client. Registering Close — not just context
+	// cancellation — stops those goroutines and unsubscribes the client's
+	// resources so tests that mutate eventBuckets directly don't race and
+	// don't leak goroutines into the next test.
+	t.Cleanup(func() { clientChannel.Close() })
+
 	return clientChannel
 }
 
@@ -95,7 +103,12 @@ func TestWindowStatsCoalesceOmitsLatestTwoBucketsDeterministic(t *testing.T) {
 	}
 
 	for _, c := range cases {
+		// The background detectBlackhole goroutine reads eventBuckets under
+		// stateLock, so the direct write must take it too (see the helper's
+		// t.Cleanup note).
+		clientChannel.stateLock.Lock()
 		clientChannel.eventBuckets = makeBuckets(c.bucketsIn)
+		clientChannel.stateLock.Unlock()
 		stats, err := clientChannel.windowStatsWithCoalesce(false)
 		assert.Equal(t, nil, err)
 		assert.Equal(t, c.wantBucketCount, stats.bucketCount)
