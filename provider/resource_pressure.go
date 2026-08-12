@@ -408,6 +408,18 @@ const (
 
 	reaperStaleCalm = 3 * time.Hour // matches the pre-pressure fixed value
 	reaperStaleHot  = 1 * time.Hour
+
+	// Paid/file proxies get a WIDER stale window than URL-sourced proxies:
+	// the operator pays for the bandwidth their probes consume, and paid
+	// proxies are stable by construction (they are in the desired file set,
+	// never evicted for free newcomers, and their client IDs are preserved
+	// across restarts so backend reputation accrues). URL-sourced proxies
+	// are free to probe aggressively; paid ones should be re-probed only
+	// when genuinely suspect. 6h calm / 3h hot is 3x wider than the URL
+	// window's 3h/1h — with the earn-skip in runPaidProxyGradeOnce, a paid
+	// proxy that is actively relaying traffic is never probed at all.
+	paidStaleCalm = 6 * time.Hour
+	paidStaleHot  = 3 * time.Hour
 )
 
 // cleanupIntervalScale shrinks the cleanup interval as pressure rises —
@@ -423,6 +435,17 @@ func cleanupIntervalScale(pressure float64) float64 {
 func reaperStaleThreshold(pressure float64) time.Duration {
 	t := normalizeRamp(pressure, cleanupScaleStart, cleanupScaleFull)
 	return reaperStaleCalm - time.Duration(t*float64(reaperStaleCalm-reaperStaleHot))
+}
+
+// paidStaleThreshold is the same shape for the PAID/file-proxy window, which
+// is deliberately wider: the operator pays for paid-probe bandwidth, and paid
+// proxies are stable by construction, so they should be re-probed far less
+// often than URL-sourced ones. Combined with the earn-skip in
+// runPaidProxyGradeOnce (a proxy with live billable traffic is skipped
+// entirely), this drives paid probe spend toward zero in steady state.
+func paidStaleThreshold(pressure float64) time.Duration {
+	t := normalizeRamp(pressure, cleanupScaleStart, cleanupScaleFull)
+	return paidStaleCalm - time.Duration(t*float64(paidStaleCalm-paidStaleHot))
 }
 
 // aimdStep computes the next target pool size. cacheSize anchors growth so
