@@ -1285,10 +1285,11 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// Mirrors runH1, which rebuilds the frame inside its connect
 			// closure. The echo verification below compares against the same
 			// per-attempt bytes, so the snapshot is consistent.
+			auth := self.getAuth()
 			authBytes, err := EncodeFrame(&protocol.Auth{
-				ByJwt:      self.getAuth().ByJwt,
-				AppVersion: self.getAuth().AppVersion,
-				InstanceId: self.getAuth().InstanceId.Bytes(),
+				ByJwt:      auth.ByJwt,
+				AppVersion: auth.AppVersion,
+				InstanceId: auth.InstanceId.Bytes(),
 			}, self.settings.ProtocolVersion)
 			if err != nil {
 				return nil, err
