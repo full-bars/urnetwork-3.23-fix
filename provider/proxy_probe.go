@@ -41,6 +41,17 @@ const (
 	// for unproven or stale entries.
 	proxyReaperInterval = 5 * time.Minute
 
+	// probeStartupCooldown is how long a freshly-started process must stay
+	// alive before the URL fetcher is allowed to run its first fetch +
+	// stage-1 probe pass. A crash-looping box (bad binary, SELinux exec
+	// trap, OOM) restarts every RestartSec seconds and would otherwise
+	// re-fetch + re-probe on every restart — the probe-amplification loop.
+	// Deferring the first fetch past this window means a box that cannot
+	// stay up never probes at all; a healthy box waits a few seconds and
+	// then fetches exactly once as normal. Must be > the systemd
+	// RestartSec (5s) so a crash-loop cannot reach the fetch.
+	probeStartupCooldown = 20 * time.Second
+
 	// proxyBlacklistCooldown is how long an address stays on the Blacklist
 	// before the pruner removes it, giving it a chance to re-enter via a
 	// fresh fetch cycle.

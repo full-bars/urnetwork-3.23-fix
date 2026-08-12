@@ -98,7 +98,10 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			desired = readProxySettings()
 		}
 
-		staleAfter := reaperStaleThreshold(currentPressure())
+		// PAID window, not the URL window: paid proxies are stable and the
+		// operator pays for their probe bandwidth, so they are re-probed far
+		// less often (6h calm / 3h hot vs the URL 3h/1h).
+		staleAfter := paidStaleThreshold(currentPressure())
 		now := time.Now()
 		for _, s := range desired {
 			// Only proxies the box actually tracks (has a ProxyEntry) are
@@ -117,7 +120,20 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// in mergeProxyURLCache), so it is graded here even if a
 			// stale first-seen tag says "url" (independent review HIGH finding).
 			if !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) < staleAfter {
-				continue // fresh grade; ride the 1-3h stale window
+				continue // fresh grade; ride the paid stale window
+			}
+			// Earn-skip: a paid proxy with live billable traffic is
+			// demonstrably alive — the backend is routing real sessions
+			// through it. Probing it would spend paid bandwidth to learn
+			// what the traffic already proves. Only re-probe a paid proxy
+			// once it has been QUIET (no billable bytes) for the full
+			// stale window. The grade clock is NOT advanced here, so a
+			// proxy that earns continuously is simply never probed; the
+			// moment it goes quiet, the normal stale check applies.
+			if bw := connect.ProxyBandwidthByAddress(s.Address); bw != nil {
+				if bw.BillableRx.Load()+bw.BillableTx.Load() > 0 {
+					continue // earning — skip the probe, save the bandwidth
+				}
 			}
 			t := gradeTarget{addr: s.Address, snapshotGradedAt: entry.LastGraded}
 			if s.Auth != nil {
