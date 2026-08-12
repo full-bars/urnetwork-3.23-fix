@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -416,6 +417,47 @@ func TestRunProxyURLFetcher_StopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("runProxyURLFetcher did not stop after context cancellation")
+	}
+}
+
+// TestRunProxyURLFetcher_StartupCooldownDefersFirstFetch pins the
+// probe-amplification fix: even once file-proxy warmup is done, the first
+// fetch must NOT happen until probeStartupCooldown has elapsed. A
+// crash-looping process that never lives that long must never reach the
+// fetch. This test cancels the context well within the cooldown window and
+// asserts the URL server never received a single request.
+func TestRunProxyURLFetcher_StartupCooldownDefersFirstFetch(t *testing.T) {
+	withTempHome(t)
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Write([]byte("1.2.3.4:1080\n"))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runProxyURLFetcher(ctx, []string{srv.URL}, time.Hour, 0, "", 0, true)
+		close(done)
+	}()
+
+	// Cancel well within the 20s cooldown; the fetcher must still be
+	// parked in the cooldown select, not mid-fetch.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runProxyURLFetcher did not stop after context cancellation during the startup cooldown")
+	}
+
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("fetcher made %d request(s) before the startup cooldown elapsed — the cooldown must defer the first fetch", n)
 	}
 }
 

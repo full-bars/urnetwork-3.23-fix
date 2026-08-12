@@ -105,6 +105,105 @@ func TestEarnTracker_PrunesChurnedAddresses(t *testing.T) {
 	}
 }
 
+// TestProxyKeyAddress_NormalizesFormats pins proxyKeyAddress's contract
+// directly: formatted "proxy[N] (addr)" keys (the shape
+// connect.ProxyHealthSnapshot actually produces) normalize to the raw
+// address, while a raw address (no " (" separator) passes through
+// unchanged.
+func TestProxyKeyAddress_NormalizesFormats(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{"formatted key", "proxy[3] (198.51.100.1:443)", "198.51.100.1:443"},
+		{"formatted key, index 0", "proxy[0] (10.0.0.1:1080)", "10.0.0.1:1080"},
+		{"raw address", "198.51.100.1:443", "198.51.100.1:443"},
+		{"raw address with no port", "198.51.100.1", "198.51.100.1"},
+		{"empty string", "", ""},
+	}
+	for _, c := range cases {
+		if got := proxyKeyAddress(c.key); got != c.want {
+			t.Errorf("%s: proxyKeyAddress(%q) = %q, want %q", c.name, c.key, got, c.want)
+		}
+	}
+}
+
+// TestEarnTracker_EarnedSince_UnknownAddress pins the never-seen default:
+// an address the tracker has never observed must report false (not
+// earning) rather than panicking or defaulting to true — an unknown
+// address must never be treated as protected by earn-skip.
+func TestEarnTracker_EarnedSince_UnknownAddress(t *testing.T) {
+	tr := newPerProxyEarnTracker()
+	if tr.EarnedSince("203.0.113.99:443", time.Hour) {
+		t.Fatal("never-seen address must not be reported as earning")
+	}
+	if _, ok := tr.LastEarned("203.0.113.99:443"); ok {
+		t.Fatal("never-seen address must report ok=false from LastEarned")
+	}
+}
+
+// TestEarnTracker_EarnedSince_WindowBoundary pins the <= boundary of the
+// EarnedSince window check: an earn event exactly at (or just inside) the
+// window must count, one just past it must not.
+func TestEarnTracker_EarnedSince_WindowBoundary(t *testing.T) {
+	tr := newPerProxyEarnTracker()
+	const addr = "203.0.113.5:443"
+	const window = time.Minute
+
+	tr.mu.Lock()
+	tr.lastEarned[addr] = time.Now().Add(-window + time.Second)
+	tr.mu.Unlock()
+	if !tr.EarnedSince(addr, window) {
+		t.Fatal("an earn event just inside the window must count")
+	}
+
+	tr.mu.Lock()
+	tr.lastEarned[addr] = time.Now().Add(-window - time.Second)
+	tr.mu.Unlock()
+	if tr.EarnedSince(addr, window) {
+		t.Fatal("an earn event just outside the window must not count")
+	}
+}
+
+// TestEarnTracker_MultipleAddressesIndependent pins that Update tracks
+// each address's earn state independently within a single snapshot: one
+// address earning must not mark an unrelated, non-earning address as
+// earning too.
+func TestEarnTracker_MultipleAddressesIndependent(t *testing.T) {
+	tr := newPerProxyEarnTracker()
+	const earning = "203.0.113.10:443"
+	const quiet = "203.0.113.11:443"
+	bwEarning := &connect.ProxyBandwidth{}
+	bwQuiet := &connect.ProxyBandwidth{}
+
+	tr.Update(map[string]*connect.ProxyBandwidth{earning: bwEarning, quiet: bwQuiet})
+	bwEarning.BillableTx.Store(2048) // only the "earning" address advances
+	tr.Update(map[string]*connect.ProxyBandwidth{earning: bwEarning, quiet: bwQuiet})
+
+	if !tr.EarnedSince(earning, time.Minute) {
+		t.Fatal("address with a positive delta must be marked earned")
+	}
+	if tr.EarnedSince(quiet, time.Minute) {
+		t.Fatal("address with no delta must not be marked earned, regardless of a sibling's activity")
+	}
+}
+
+// TestEarnTracker_ZeroDeltaTickIsNotEarned pins that an unchanged
+// cumulative counter (cum == prev, no traffic since the last tick) is
+// never treated as earning — only a strictly positive delta counts.
+func TestEarnTracker_ZeroDeltaTickIsNotEarned(t *testing.T) {
+	tr := newPerProxyEarnTracker()
+	const addr = "203.0.113.12:443"
+	bw := &connect.ProxyBandwidth{}
+	bw.BillableRx.Store(1000)
+	tr.Update(map[string]*connect.ProxyBandwidth{addr: bw}) // baseline at 1000
+	tr.Update(map[string]*connect.ProxyBandwidth{addr: bw}) // still 1000: no delta
+	if tr.EarnedSince(addr, time.Minute) {
+		t.Fatal("an unchanged cumulative counter must not be treated as earning")
+	}
+}
+
 // TestEarnTracker_BackwardsCounterIsNotEarned pins the proxy-restart
 // rule: a counter that goes backwards (proxy restarted and reset its
 // counters) is a zero-delta tick, never an earn event.
