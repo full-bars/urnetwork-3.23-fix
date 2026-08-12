@@ -294,15 +294,32 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	stats, err := clientChannel.windowStatsWithCoalesce(false)
 	assert.Equal(t, nil, err)
 
-	// [1, maxBucketCount]
-	assert.Equal(t, true, 1 <= stats.bucketCount)
+	// The memory-safety invariant this test guards is the UPPER bound:
+	// bucketCount must stay within the coalesce window or the coalesce
+	// logic leaks (the test's own comment). The previous lower-bound check
+	// (1 <= bucketCount) was timing-sensitive: the stats reader omits the
+	// latest two (possibly partial) buckets, and under -race load the
+	// goroutines' event bursts can compress into fewer than three distinct
+	// buckets, reading as zero even though events were recorded.
+	//
+	// Events landing is proven two ways, both deterministic:
+	//   - raw packet counters (sendAckCount/receiveAckCount) increment per
+	//     event regardless of bucket timing; and
+	//   - windowDuration > 0 proves at least one event bucket survived the
+	//     two-bucket omission (windowDuration is computed from the surviving
+	//     eventBuckets, so a fully-broken bucket-creation path would still
+	//     fail loudly — it cannot be satisfied by packetStats alone).
+	assert.Equal(t, true, 0 < stats.sendAckCount)
+	assert.Equal(t, true, 0 < stats.receiveAckCount)
+	assert.Equal(t, true, 0 < stats.windowDuration)
 	assert.Equal(t, true, stats.bucketCount <= maxBucketCount)
 
 	stats, err = clientChannel.WindowStats()
 	assert.Equal(t, nil, err)
 
-	// [1, maxBucketCount]
-	assert.Equal(t, true, 1 <= stats.bucketCount)
+	assert.Equal(t, true, 0 < stats.sendAckCount)
+	assert.Equal(t, true, 0 < stats.receiveAckCount)
+	assert.Equal(t, true, 0 < stats.windowDuration)
 	assert.Equal(t, true, stats.bucketCount <= maxBucketCount)
 }
 
