@@ -3569,6 +3569,19 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 			return
 		}
 		if connect.ProxyAuthFailureCount(proxyIndex) >= revokedIdentityAuthFailureThreshold {
+			// Re-check the renewal signal AFTER the failure-count check: the
+			// renewal watcher may have closed revocationDone while this
+			// goroutine was between its select and this eviction decision
+			// (renewal writes the store then closes the channel synchronously,
+			// but we could have already passed the select). Without this
+			// double-check, a successfully renewed identity could be evicted
+			// out from under the reconnecting transport.
+			select {
+			case <-revocationDone:
+				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+				return
+			default:
+			}
 			if delErr := globalClientJWTStore.Delete(identityKey); delErr != nil {
 				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", identityKey, delErr)
 			} else {
