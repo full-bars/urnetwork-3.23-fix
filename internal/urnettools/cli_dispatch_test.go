@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -253,39 +255,73 @@ func TestRunDockerNoContainers(t *testing.T) {
 	}
 }
 
+// captureStderr runs fn with os.Stderr redirected to a buffer and returns
+// what was written. Usage/help output goes to stderr (cli.go usage(),
+// cli_docker.go usageDocker()), so asserting on it proves WHICH usage was
+// printed — a nil-error check alone lets a regression to the wrong tool's
+// help pass (verified 2026-08-12 review).
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	fn()
+	w.Close()
+	b, _ := io.ReadAll(r)
+	return string(b)
+}
+
 // TestRunSelfUpdateHelp: `self-update`/`selfupdate` (and their -h/--help)
-// must be dispatched by Run() to cmdSelfUpdate and print help without
-// touching the network or prompting.
+// must be dispatched by Run() to cmdSelfUpdate and print the urnet-tools
+// usage without touching the network or prompting.
 func TestRunSelfUpdateHelp(t *testing.T) {
 	for _, cmd := range []string{"self-update", "selfupdate"} {
 		for _, flag := range []string{"-h", "--help"} {
-			if err := Run([]string{cmd, flag}); err != nil {
-				t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
+			out := captureStderr(t, func() {
+				if err := Run([]string{cmd, flag}); err != nil {
+					t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
+				}
+			})
+			if !strings.Contains(out, "urnet-tools — provider-aware") {
+				t.Errorf("Run([%q %q]) stderr = %q, want urnet-tools usage", cmd, flag, out)
 			}
 		}
 	}
 }
 
 // TestRunDockerUpdateHelp: RunDocker's `update`/`self-update`/`selfupdate`
-// aliases all route to the same cmdSelfUpdate as Run()'s self-update.
+// aliases all route to cmdSelfUpdate and must print the DOCKER usage — a
+// regression to the shared parseGlobalFlags' urnet-tools usage must fail
+// here (verified 2026-08-12 review).
 func TestRunDockerUpdateHelp(t *testing.T) {
 	for _, cmd := range []string{"update", "self-update", "selfupdate"} {
 		for _, flag := range []string{"-h", "--help"} {
-			if err := RunDocker([]string{cmd, flag}); err != nil {
-				t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
+			out := captureStderr(t, func() {
+				if err := RunDocker([]string{cmd, flag}); err != nil {
+					t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
+				}
+			})
+			if !strings.Contains(out, "urnet-docker — docker-container") {
+				t.Errorf("RunDocker([%q %q]) stderr = %q, want urnet-docker usage", cmd, flag, out)
 			}
 		}
 	}
 }
 
 // TestRunSelfUpdateUnknownFlagPropagates: an unrecognized flag reaching
-// cmdSelfUpdate via Run()'s dispatch must surface cmdSelfUpdate's own
-// "unknown flag" error, proving parseGlobalFlags leaves subcommand-specific
-// flags in rest for self-update just as it does for other subcommands.
+// cmdSelfUpdate via Run()'s dispatch must surface cmdSelfUpdate's OWN
+// self-update-specific error ("for self-update"), proving parseGlobalFlags
+// leaves subcommand-specific flags in rest for self-update just as it does
+// for other subcommands — a generic "unknown flag" from the global parser
+// would not prove the dispatch (verified 2026-08-12 review).
 func TestRunSelfUpdateUnknownFlagPropagates(t *testing.T) {
 	err := Run([]string{"self-update", "--bogus"})
-	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
-		t.Errorf("Run([self-update --bogus]) = %v, want \"unknown flag\"", err)
+	if err == nil || !strings.Contains(err.Error(), "for self-update") {
+		t.Errorf("Run([self-update --bogus]) = %v, want self-update-specific unknown-flag error", err)
 	}
 }
 
@@ -294,8 +330,8 @@ func TestRunSelfUpdateUnknownFlagPropagates(t *testing.T) {
 func TestRunDockerSelfUpdateUnknownFlagPropagates(t *testing.T) {
 	for _, cmd := range []string{"update", "self-update", "selfupdate"} {
 		err := RunDocker([]string{cmd, "--bogus"})
-		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
-			t.Errorf("RunDocker([%q --bogus]) = %v, want \"unknown flag\"", cmd, err)
+		if err == nil || !strings.Contains(err.Error(), "for self-update") {
+			t.Errorf("RunDocker([%q --bogus]) = %v, want self-update-specific unknown-flag error", cmd, err)
 		}
 	}
 }
