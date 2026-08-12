@@ -258,11 +258,14 @@ jobs:
           cp tool_tmp/darwin/arm64/urnet-tools urnet-tools-darwin-arm64 2>/dev/null || true
           cp tool_tmp/darwin/amd64/urnet-docker urnet-docker-darwin-amd64 2>/dev/null || true
           cp tool_tmp/darwin/arm64/urnet-docker urnet-docker-darwin-arm64 2>/dev/null || true
-          # windows (downloaded as "urnet-tools", rename to .exe for the asset)
-          cp tool_tmp/windows/amd64/urnet-tools urnet-tools-windows-amd64.exe 2>/dev/null || true
-          cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64.exe 2>/dev/null || true
-          cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64.exe 2>/dev/null || true
-          cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64.exe 2>/dev/null || true
+          # windows (assets are BARE — no .exe suffix; matches toolAssetName,
+          # runningToolAssetName and the installers. Verified 2026-08-12
+          # review: a .exe suffix made the asset name disagree with every
+          # consumer. The uploaded FILE is still the PE binary.)
+          cp tool_tmp/windows/amd64/urnet-tools urnet-tools-windows-amd64 2>/dev/null || true
+          cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64 2>/dev/null || true
+          cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64 2>/dev/null || true
+          cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64 2>/dev/null || true
 
       - name: Create provider tarballs
         run: |

@@ -170,7 +170,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 		cfg.Tag = rel.Tag
 		if cfg.Digest == "" {
-			cfg.Digest = rel.Digest
+			cfg.Digest = rel.ProviderDigest
 		}
 		if cfg.AssetURL == "" {
 			cfg.AssetURL = rel.URL
@@ -184,7 +184,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		if rerr != nil {
 			return rerr
 		}
-		cfg.Digest = rel.Digest
+		cfg.Digest = rel.ProviderDigest
 		if cfg.AssetURL == "" {
 			cfg.AssetURL = rel.URL
 		}
@@ -195,11 +195,18 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// A fully explicit --tag+--digest invocation (rel == nil, no API call)
 	// cannot resolve the tool digest — skip the self-update leg there rather
 	// than failing the provider update.
-	cfg.ToolAsset = runningToolAssetName()
-	if rel != nil {
-		cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
+	toolAsset, terr := runningToolAssetName()
+	if terr != nil {
+		// Can't even resolve which tool we are; skip the self-update leg
+		// rather than risk targeting the wrong asset. Providers still update.
+		fmt.Printf("tool self-update skipped (%v)\n", terr)
 	} else {
-		fmt.Printf("tool self-update skipped (explicit --digest, no asset list)\n")
+		cfg.ToolAsset = toolAsset
+		if rel != nil {
+			cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
+		} else {
+			fmt.Printf("tool self-update skipped (explicit --digest, no asset list)\n")
+		}
 	}
 
 	// Confirm version choice interactively unless -f or dry-run already
@@ -262,18 +269,26 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// A failure here is reported but does NOT fail the command — providers
 	// were the primary job and may have succeeded; the tool can be retried
 	// (e.g. `urnet-tools self-update`) without touching providers.
-	if cfg.ToolDigest != "" {
-		if err := selfUpdateTool(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
-		}
-	} else {
-		fmt.Println("tool self-update skipped (release has no tool asset)")
+	if err := runToolSelfUpdate(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
 	}
 
 	if failures > 0 {
 		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
 	}
 	return nil
+}
+
+// runToolSelfUpdate executes the tool self-update leg after provider
+// updates. It returns the self-update error (which cmdUpdate reports but
+// does NOT fail the command on), or nil when the leg was skipped (release
+// predates tool assets — nothing verified to install).
+func runToolSelfUpdate(cfg updateConfig) error {
+	if cfg.ToolDigest == "" {
+		fmt.Println("tool self-update skipped (release has no tool asset)")
+		return nil
+	}
+	return selfUpdateTool(cfg)
 }
 
 // cmdSelfUpdate updates ONLY the tool binary itself (urnet-tools or
@@ -327,7 +342,11 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 			return err
 		}
 	}
-	cfg.ToolAsset = runningToolAssetName()
+	toolAsset, terr := runningToolAssetName()
+	if terr != nil {
+		return fmt.Errorf("self-update: %w", terr)
+	}
+	cfg.ToolAsset = toolAsset
 	if rel != nil && cfg.ToolDigest == "" {
 		cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
 	}
@@ -478,13 +497,14 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Structural sanity-check the staged binary WITHOUT executing it.
 	// Running a freshly downloaded artifact (e.g. `staged --version`) is
 	// code execution of a remote file — the same class of defect the hub
-	// path guards with isELFExecutable (coderabbit critical). sha256
+	// path guards with isRecognizedExecutable (coderabbit critical). sha256
 	// already guarantees the artifact matches the requested tag, so an
-	// ELF-magic check is the right ceiling here: it confirms we extracted
-	// a real binary, not a script or corrupted file.
+	// ELF/Mach-O/PE magic check is the right ceiling here: it confirms we
+	// extracted a real binary for this platform, not a script or corrupted
+	// file.
 	staged := filepath.Join(extractDir, "provider")
-	if !isELFExecutable(staged) {
-		return fmt.Errorf("staged binary %s is not an ELF executable (corrupted or wrong asset) — refusing to install", staged)
+	if !isRecognizedExecutable(staged) {
+		return fmt.Errorf("staged binary %s is not a %s executable (corrupted or wrong asset) — refusing to install", staged, runtime.GOOS)
 	}
 
 	// Backup current binary with a nanosecond-timestamped name so repeated
@@ -731,15 +751,23 @@ func toolAssetName(base, goos, arch string) string {
 
 // runningToolAssetName derives the asset name from the ACTUAL running
 // binary's base name, so the same code serves urnet-tools and urnet-docker
-// without hardcoding which tool is updating.
-func runningToolAssetName() string {
-	base := "urnet-tools"
-	if exe, err := os.Executable(); err == nil {
-		if b := filepath.Base(exe); b != "" {
-			base = b
-		}
+// without hardcoding which tool is updating. On Windows os.Executable()
+// returns a name ending in .exe; the trailing .exe is stripped because
+// release assets are bare (a mismatch here would look for the wrong asset —
+// verified 2026-08-12 review). Returns an error rather than silently
+// falling back to a default base name, which could target the WRONG tool's
+// asset (urnet-tools vs urnet-docker).
+func runningToolAssetName() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve own executable: %w", err)
 	}
-	return toolAssetName(base, runtime.GOOS, runtimeGOARCH())
+	base := filepath.Base(exe)
+	base = strings.TrimSuffix(base, ".exe")
+	if base == "" {
+		return "", fmt.Errorf("empty executable base name for %q", exe)
+	}
+	return toolAssetName(base, runtime.GOOS, runtimeGOARCH()), nil
 }
 
 // toolAssetURL is the release download URL for a tool asset.
@@ -775,8 +803,10 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	if cfg.ToolDigest == "" {
 		// Release predates tool assets (pre-v3.23.0-fix.28). Skipping is
 		// correct — there is nothing verified to install. Providers still
-		// update via the tarball path.
-		return fmt.Errorf("no sha256 digest for %s asset %q; release predates tool assets (skipping)", cfg.Tag, cfg.ToolAsset)
+		// update via the tarball path. This is a skip, not a failure: the
+		// caller (cmdUpdate) checks ToolDigest != "" before invoking and
+		// prints "skipped" itself; this guard exists for direct callers.
+		return fmt.Errorf("no sha256 digest for %s asset %q; release predates tool assets — nothing to update", cfg.Tag, cfg.ToolAsset)
 	}
 	if err := os.MkdirAll(cfg.StageDir, 0o755); err != nil {
 		return fmt.Errorf("stage dir: %w", err)
@@ -802,8 +832,8 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		return err
 	}
 	fmt.Println("tool sha256 verified")
-	if !isELFExecutable(staged) {
-		return fmt.Errorf("staged tool %s is not an ELF executable (corrupted or wrong asset) — refusing to install", staged)
+	if !isRecognizedExecutable(staged) {
+		return fmt.Errorf("staged tool %s is not a %s executable (corrupted or wrong asset) — refusing to install", staged, runtime.GOOS)
 	}
 
 	backup := backupName(exePath, time.Now())

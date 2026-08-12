@@ -10,9 +10,12 @@ import (
 
 // releaseInfo describes the latest release fetched from GitHub.
 type releaseInfo struct {
-	Tag    string
-	Digest string // sha256 of the urnetwork-provider-<tag>.tar.gz asset
-	URL    string
+	Tag string
+	// ProviderDigest is the sha256 of the urnetwork-provider-<tag>.tar.gz
+	// asset (hex). Named explicitly: the tool's OWN asset digest is separate
+	// and resolved via digestForAsset(Assets, ...), never from this field.
+	ProviderDigest string
+	URL            string
 	// Assets is the full asset list of the release. Tool self-update uses it
 	// to look up the digest of the tool's OWN asset (urnet-tools-<os>-<arch>
 	// or urnet-docker-<os>-<arch>), which is separate from the provider
@@ -62,8 +65,8 @@ func fetchLatestRelease() (*releaseInfo, error) {
 	// ERROR, not a silent skip — an unverified download would be executed
 	// as the provider user (free-review critical).
 	wantName := "urnetwork-provider-" + rj.TagName + ".tar.gz"
-	info.Digest = digestForAsset(rj.Assets, wantName)
-	if info.Digest == "" {
+	info.ProviderDigest = digestForAsset(rj.Assets, wantName)
+	if info.ProviderDigest == "" {
 		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", rj.TagName, wantName)
 	}
 	return info, nil
@@ -106,8 +109,8 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 		Assets: rj.Assets,
 	}
 	wantName := "urnetwork-provider-" + tag + ".tar.gz"
-	info.Digest = digestForAsset(rj.Assets, wantName)
-	if info.Digest == "" {
+	info.ProviderDigest = digestForAsset(rj.Assets, wantName)
+	if info.ProviderDigest == "" {
 		return nil, fmt.Errorf("release %s: asset %s has no sha256 digest; refusing unverified download", tag, wantName)
 	}
 	return info, nil
