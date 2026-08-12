@@ -365,14 +365,17 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 		recentCutoff := timeNowHour() - 26 // last 26h for live last-seen
 
 		type row struct {
-			Addr    string  `json:"addr"`
-			Traffic uint64  `json:"traffic"`
-			Acq     int64   `json:"acq"`
-			Denied  int64   `json:"denied"`
-			LastDay int64   `json:"last_day"`
-			WinPct  float64 `json:"win_pct"`
-			Score   float64 `json:"score"`
-			Status  string  `json:"status"` // "active" or "dead Nd ago"
+			Addr       string  `json:"addr"`
+			Traffic    uint64  `json:"traffic"`
+			Acq        int64   `json:"acq"`
+			Denied     int64   `json:"denied"`
+			LastDay    int64   `json:"last_day"`
+			WinPct     float64 `json:"win_pct"`
+			Score      float64 `json:"score"`
+			Status     string  `json:"status"` // "active" or "dead Nd ago"
+			Tier       string  `json:"tier,omitempty"`
+			Graded     bool    `json:"graded"`
+			LastGraded int64   `json:"last_graded,omitempty"`
 		}
 
 		rows, err := s.db.Query(`
@@ -381,7 +384,9 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 			       COALESCE(SUM(f.acq),0) AS acq, COALESCE(SUM(f.denied),0) AS denied,
 			       CAST(MAX(COALESCE(f.day, 0), COALESCE(live.last_hour / 24, 0)) AS INTEGER) AS last_day,
 			       (CAST(COALESCE(SUM(f.acq),0) AS REAL) / CASE WHEN (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) = 0 THEN 1 ELSE (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) END) AS win_pct,
-			       (CAST(COALESCE(SUM(f.acq),0) AS REAL) / CASE WHEN (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) = 0 THEN 1 ELSE (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) END) * LN(1 + COALESCE(SUM(f.rx),0)+COALESCE(SUM(f.tx),0)) AS score
+			       (CAST(COALESCE(SUM(f.acq),0) AS REAL) / CASE WHEN (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) = 0 THEN 1 ELSE (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) END) * LN(1 + COALESCE(SUM(f.rx),0)+COALESCE(SUM(f.tx),0)) AS score,
+			       COALESCE(g.tier, '') AS tier, COALESCE(g.graded, 0) AS graded,
+			       COALESCE(g.last_graded, 0) AS last_graded
 			FROM proxies p
 			LEFT JOIN proxy_fleet_daily f ON f.proxy_id = p.id AND f.day >= ?
 			LEFT JOIN (
@@ -390,6 +395,22 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 				WHERE hour >= ?
 				GROUP BY proxy_id
 			) live ON live.proxy_id = p.id
+			LEFT JOIN (
+				-- Latest grade per proxy across all nodes. ROW_NUMBER picks
+				-- the newest hour first, then the newest last_graded within
+				-- that hour, so a fleet with several nodes grading the same
+				-- address shows the freshest verdict rather than an
+				-- arbitrary one.
+				SELECT proxy_id, tier, graded, last_graded
+				FROM (
+					SELECT proxy_id, tier, graded, last_graded,
+					       ROW_NUMBER() OVER (
+					           PARTITION BY proxy_id
+					           ORDER BY hour DESC, last_graded DESC
+					       ) AS rn
+					FROM proxy_grades
+				) WHERE rn = 1
+			) g ON g.proxy_id = p.id
 			WHERE f.proxy_id IS NOT NULL
 			GROUP BY p.id
 			HAVING (COALESCE(SUM(f.acq),0)+COALESCE(SUM(f.denied),0)) >= 20
@@ -405,7 +426,7 @@ func handleProxiesBest(s *store) http.HandlerFunc {
 		for rows.Next() {
 			var r row
 			var traffic int64
-			if err := rows.Scan(&r.Addr, &traffic, &r.Acq, &r.Denied, &r.LastDay, &r.WinPct, &r.Score); err != nil {
+			if err := rows.Scan(&r.Addr, &traffic, &r.Acq, &r.Denied, &r.LastDay, &r.WinPct, &r.Score, &r.Tier, &r.Graded, &r.LastGraded); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}

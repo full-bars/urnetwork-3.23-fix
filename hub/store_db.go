@@ -85,6 +85,26 @@ CREATE INDEX IF NOT EXISTS idx_pnh_hour ON proxy_node_hourly(hour);
 CREATE INDEX IF NOT EXISTS idx_pnh_proxy ON proxy_node_hourly(proxy_id);
 CREATE INDEX IF NOT EXISTS idx_pnh_hour_proxy ON proxy_node_hourly(hour, proxy_id);
 
+-- A-F grades surfaced from the provider's grading pipeline (roadmap step
+-- 3). One row per (node, proxy, hour): the latest report in an hour
+-- overwrites (latest-wins), earlier hours stay as history. Grades change
+-- on a 1-3h cadence, so hourly granularity is natural. ungraded proxies
+-- never get a row (the provider omits grade fields for them).
+CREATE TABLE IF NOT EXISTS proxy_grades (
+  node_id      TEXT    NOT NULL,
+  proxy_id     INTEGER NOT NULL,
+  hour         INTEGER NOT NULL,
+  tier         TEXT    NOT NULL,
+  score        REAL    NOT NULL,
+  graded       INTEGER NOT NULL DEFAULT 0,
+  failed       TEXT    NOT NULL DEFAULT '[]', -- JSON array of failed hostnames
+  last_graded  INTEGER NOT NULL DEFAULT 0,    -- unix ts, 0 = never
+  PRIMARY KEY (node_id, proxy_id, hour)
+);
+CREATE INDEX IF NOT EXISTS idx_pg_proxy ON proxy_grades(proxy_id);
+CREATE INDEX IF NOT EXISTS idx_pg_hour ON proxy_grades(hour);
+CREATE INDEX IF NOT EXISTS idx_pg_proxy_hour ON proxy_grades(proxy_id, hour);
+
 -- Tier 2: per-node per-proxy daily, rolled up from tier 1 as it ages.
 -- day is epoch-days (hour/24).
 CREATE TABLE IF NOT EXISTS proxy_node_daily (
@@ -297,6 +317,41 @@ func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64
 	return
 }
 
+// validGradeTier reports whether a tier string is one of the letters the
+// provider's proxyGradeTier produces (A-F). The hub allowlists tier on
+// ingest because the field is attacker-influenced (any authenticated
+// node's report body) and is rendered unescaped into dashboard HTML later
+// (final-review HIGH); anything outside A-F is rejected rather than stored.
+func validGradeTier(tier string) bool {
+	switch tier {
+	case "A", "B", "C", "D", "F":
+		return true
+	default:
+		return false
+	}
+}
+
+// sanitizeProxyGrades nulls attacker-influenced grade fields on every proxy
+// of a freshly-decoded report, BEFORE the report enters the in-memory store
+// or the DB. Tier is rendered unescaped into dashboard innerHTML (Best
+// Proxies table and the node drawer, which serves the raw in-memory
+// report), so a crafted tier must never survive ingest. A proxy whose tier
+// is not a genuine A-F letter is demoted to ungraded (final-review
+// CRITICAL: the persist-side allowlist alone left the drawer path exposed).
+func sanitizeProxyGrades(proxies []proxyReport) {
+	for i := range proxies {
+		p := &proxies[i]
+		if !p.Graded {
+			continue
+		}
+		if !validGradeTier(p.Tier) {
+			p.Graded = false
+			p.Tier = ""
+			p.Score = 0
+		}
+	}
+}
+
 // persist writes a single report to the database: the current node row, a
 // gzipped proxy snapshot, and the current hour's rollup. It is called from
 // store.upsert while holding s.mu, after the in-memory cache has been updated.
@@ -345,6 +400,57 @@ func (s *store) persist(state *nodeState) error {
 			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
 		}
 		hourlyRows = append(hourlyRows, hourlyRow{proxyID: proxyID, d: d})
+	}
+
+	// Grade rows are collected separately from the hourly deltas: a graded
+	// proxy with zero traffic this interval still needs its grade upserted
+	// (grades change on a 1-3h cadence while traffic may be idle), and an
+	// ungraded proxy never gets a grade row. Same pre-tx interning rule as
+	// hourlyRows — internProxy writes through s.db, so it must not run while
+	// the tx below holds SQLite's write lock.
+	type gradeRow struct {
+		proxyID    int64
+		tier       string
+		score      float64
+		graded     bool
+		failedJSON string
+		lastGraded int64
+	}
+	var gradeRows []gradeRow
+	for i := range state.Proxies {
+		p := &state.Proxies[i]
+		// A graded proxy must carry a valid tier letter. The tier field is
+		// attacker-influenced (any authenticated node's report body) and is
+		// rendered unescaped into the dashboard innerHTML later, so it is
+		// allowlisted to exactly the letters proxyGradeTier produces
+		// (final-review HIGH: the round-1 check only rejected the empty
+		// string, leaving a stored-XSS path for a crafted tier value).
+		if !p.Graded || !validGradeTier(p.Tier) || p.Address == "" {
+			continue
+		}
+		proxyID, err := s.internProxy(p.Address)
+		if err != nil {
+			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
+		}
+		failed := p.Failed
+		if failed == nil {
+			// Normalize to an empty JSON array so stored values are
+			// consistently "[]" rather than a mix of "null" (json.Marshal
+			// of nil) and the column default "[]" (free-review LOW).
+			failed = []string{}
+		}
+		failedJSON, err := json.Marshal(failed)
+		if err != nil {
+			return fmt.Errorf("marshal grade failed list for %s: %w", p.Address, err)
+		}
+		gradeRows = append(gradeRows, gradeRow{
+			proxyID:    proxyID,
+			tier:       p.Tier,
+			score:      p.Score,
+			graded:     p.Graded,
+			failedJSON: string(failedJSON),
+			lastGraded: p.LastGraded,
+		})
 	}
 
 	tx, err := s.db.Begin()
@@ -422,6 +528,19 @@ func (s *store) persist(state *nodeState) error {
 		}
 	}
 
+	for _, row := range gradeRows {
+		if _, err := tx.Exec(`
+			INSERT INTO proxy_grades (node_id, proxy_id, hour, tier, score, graded, failed, last_graded)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, proxy_id, hour) DO UPDATE SET
+				tier=excluded.tier, score=excluded.score, graded=excluded.graded,
+				failed=excluded.failed, last_graded=excluded.last_graded`,
+			state.NodeID, row.proxyID, hour, row.tier, row.score, row.graded, row.failedJSON, row.lastGraded,
+		); err != nil {
+			return fmt.Errorf("upsert proxy grade: %w", err)
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -443,6 +562,7 @@ func (s *store) deleteFromDB(nodeID string) error {
 		`DELETE FROM node_hourly WHERE node_id = ?`,
 		`DELETE FROM proxy_node_hourly WHERE node_id = ?`,
 		`DELETE FROM proxy_node_daily WHERE node_id = ?`,
+		`DELETE FROM proxy_grades WHERE node_id = ?`,
 	} {
 		if _, err := tx.Exec(q, nodeID); err != nil {
 			return err
@@ -666,6 +786,12 @@ func (s *store) pruneHourly() (int64, error) {
 var (
 	retainHourlyDays  = envInt("URNETWORK_HUB_RETAIN_HOURLY_DAYS", 90)
 	retainDailyMonths = envInt("URNETWORK_HUB_RETAIN_DAILY_MONTHS", 13)
+	// retainGradeDays bounds proxy_grades history. The dashboard only ever
+	// surfaces the latest grade per (node, proxy); grades change on a 1-3h
+	// cadence, so 7 days of hourly history is generous. Default is not
+	// env-configurable — unlike the traffic tables, grade history has no
+	// analytics consumer that would want a longer window.
+	retainGradeDays = 7
 )
 
 func envInt(key string, def int) int {
@@ -837,6 +963,24 @@ func (s *store) pruneProxyDaily() (int64, error) {
 	return res.RowsAffected()
 }
 
+// pruneProxyGrades deletes proxy_grades rows older than the grade retention
+// window. Grades change on a 1-3h cadence and the best-proxies join only
+// surfaces the latest hour per (node, proxy), so keeping a week of hourly
+// history is generous while bounding the table the ROW_NUMBER subquery
+// scans on every /api/proxies/best call (free-review MEDIUM: the table was
+// previously never pruned).
+func (s *store) pruneProxyGrades() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoffHour := nowFunc().Unix()/3600 - int64(retainGradeDays*24)
+	res, err := s.db.Exec(`DELETE FROM proxy_grades WHERE hour <= ?`, cutoffHour)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // startRetention launches the background retention and eviction loops.
 // Stale node eviction runs every 5 minutes, snapshot pruning hourly,
 // proxy hourly → daily rollup + hourly prune hourly, daily prune daily,
@@ -848,6 +992,7 @@ func (s *store) startRetention(ctx context.Context) {
 	go retentionLoop(ctx, time.Hour, "proxy-daily-rollup", s.rollupProxyDaily)
 	go retentionLoop(ctx, time.Hour, "proxy-hourly-prune", s.pruneProxyHourly)
 	go retentionLoop(ctx, time.Hour, "proxy-fleet-hourly-prune", s.pruneProxyFleetHourly)
+	go retentionLoop(ctx, 24*time.Hour, "proxy-grades-prune", s.pruneProxyGrades)
 	go retentionLoop(ctx, 24*time.Hour, "node_hourly", s.pruneHourly)
 	go retentionLoop(ctx, 24*time.Hour, "proxy-daily-prune", s.pruneProxyDaily)
 	go retentionLoop(ctx, 24*time.Hour, "nodes", s.pruneNodes)
