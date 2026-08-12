@@ -319,7 +319,7 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 			cfg.ToolAssetURL = args[i+1]
 			i++
 		case "--help", "-h":
-			fmt.Println("Usage: urnet-tools self-update [--tag <version>] [--digest <sha256>]")
+			fmt.Printf("Usage: %s self-update [--tag <version>] [--digest <sha256>]\n", programName())
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q for self-update (--tag/--digest/--url)", args[i])
@@ -749,6 +749,21 @@ func toolAssetName(base, goos, arch string) string {
 	return fmt.Sprintf("%s-%s-%s", base, goos, arch)
 }
 
+// programName returns the invoked binary's base name without a .exe suffix
+// (urnet-tools or urnet-docker). Used for help text and messages that must
+// name the tool the user actually invoked — a hardcoded "urnet-tools" is
+// wrong when urnet-docker routes into the same code (verified 2026-08-12
+// review).
+func programName() string {
+	base := "urnet-tools"
+	if exe, err := os.Executable(); err == nil {
+		if b := filepath.Base(exe); b != "" {
+			base = strings.TrimSuffix(b, ".exe")
+		}
+	}
+	return base
+}
+
 // runningToolAssetName derives the asset name from the ACTUAL running
 // binary's base name, so the same code serves urnet-tools and urnet-docker
 // without hardcoding which tool is updating. On Windows os.Executable()
@@ -822,6 +837,11 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		return nil
 	}
 
+	// A previous update's .old file may still exist (Windows keeps it locked
+	// until the updater process exits). Sweep it now — we are running, so the
+	// prior updater has exited.
+	cleanupStaleBackups(exePath)
+
 	url := cfg.ToolAssetURL
 	if url == "" {
 		url = toolAssetURL(cfg.Tag, cfg.ToolAsset)
@@ -845,19 +865,47 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("backup stat: %w", err)
 	}
-	if err := copyFile(exePath, backup); err != nil {
-		return fmt.Errorf("backup tool: %w", err)
+
+	// Windows-safe swap: rename the running executable ASIDE first, then
+	// install the staged binary at the freed path. On Windows you cannot
+	// rename a .new over a running .exe (the kernel locks the image section),
+	// but you CAN rename the running executable itself to a .old name — the
+	// standard self-update pattern. On failure the original is restored from
+	// .old; on success .old is left for removal after process exit (the next
+	// invocation cleans stale .old files).
+	if err := os.Rename(exePath, backup); err != nil {
+		return fmt.Errorf("move current tool aside: %w", err)
 	}
-	fmt.Printf("backed up %s -> %s\n", exePath, backup)
+	fmt.Printf("moved %s -> %s\n", exePath, backup)
 
 	// Swap in place. The tool runs as the invoking user (root or the
 	// operator), so no chown is needed — installBinary with user="" keeps
 	// current ownership.
 	if err := installBinary(staged, exePath, ""); err != nil {
+		// Restore the original before giving up — an update that fails
+		// mid-swap must not leave the tool missing.
+		if rerr := os.Rename(backup, exePath); rerr != nil {
+			return fmt.Errorf("swap tool binary: %v (restore from %s failed: %v)", err, backup, rerr)
+		}
 		return fmt.Errorf("swap tool binary: %w", err)
 	}
 	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
 	return nil
+}
+
+// cleanupStaleBackups removes .bak-* files left by earlier self-update
+// swaps. On Windows a .old file stays locked by the process that created it
+// until that process exits; because THIS process is running, any previous
+// updater has exited and its .old is removable. Best-effort only — cleanup
+// must never fail an update.
+func cleanupStaleBackups(exePath string) {
+	matches, err := filepath.Glob(exePath + ".bak-*")
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }
 
 // fileSHA256 returns the hex sha256 of a file ("" on error).

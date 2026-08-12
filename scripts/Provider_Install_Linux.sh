@@ -228,7 +228,7 @@ get_asset_digest_from_api_response ()
 {
     asset="$2"
     if command -v jq > /dev/null; then
-        digest="$(printf "%s" "$1" | tr -d '\000-\037' | jq -r --arg a "$asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null)"
+        digest="$(printf "%s" "$1" | tr -d '\000-\037' | jq -r --arg a "$asset" '.assets[] | select(.name == $a) | .digest // ""' 2>/dev/null)"
     elif command -v python3 > /dev/null; then
         digest="$(printf "%s" "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
 try:
@@ -236,7 +236,7 @@ try:
     asset = sys.argv[1]
     for a in data.get("assets", []):
         if a.get("name") == asset:
-            print(a.get("digest", ""))
+            print(a.get("digest") or "")
             break
 except (json.JSONDecodeError, KeyError):
     print("")
@@ -247,7 +247,13 @@ except (json.JSONDecodeError, KeyError):
     fi
 
     # The release API digest field is "sha256:<hex>"; strip the prefix so
-    # sha256sum comparison works.
+    # sha256sum comparison works. A JSON null digest (assets uploaded before
+    # digest support) yields the literal "null"/"None" — normalize those to
+    # empty so callers take the documented pre-digest fallback instead of
+    # downloading and hitting a sha256 mismatch (verified 2026-08-12 review).
+    case "$digest" in
+        null|None) digest="" ;;
+    esac
     echo "$digest" | sed 's/^sha256://'
 }
 
