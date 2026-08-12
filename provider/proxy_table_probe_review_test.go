@@ -1001,6 +1001,91 @@ func TestReview_ReaperRefreshesStaleGrade(t *testing.T) {
 	}
 }
 
+// REGRESSION (independent review, CRITICAL). A once-good proxy
+// (ProbeOK=true) that later turns hostile (starts MITM-intercepting TLS)
+// must be demoted by the stale re-probe path — the wasProbeOK apply switch
+// must handle probeTLSFailed exactly like probeDead/probeSocks5Only, or
+// the hostile node stays in the pool forever (silent no-op, re-probed
+// every cycle).
+func TestReview_ReaperStaleReprobeDemotesTLSFailed(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	// The fake answers CONNECT 0x00 but presents a cert that does NOT
+	// verify for the apiHost — a proxy that passed admission earlier and
+	// has since turned hostile.
+	ca := newTestCA(t)
+	leaf := ca.issueLeaf(t, []string{"interceptor.example"})
+	addr, _, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
+	defer cleanup()
+
+	// Seed it as a once-good cached entry: ProbeOK=true, stale LastProbe
+	// so the reaper's stale sweep picks it up this cycle.
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 1.0, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := got.Cache[addr]
+	if !ok {
+		t.Fatal("entry must remain cached after demotion (blacklist needs 3 fails)")
+	}
+	if entry.ProbeOK {
+		t.Fatalf("hostile once-good proxy must be demoted from ProbeOK, got %+v", entry)
+	}
+	if entry.ProbeFails != 1 {
+		t.Fatalf("expected ProbeFails=1 after first stale TLS-verify failure, got %+v", entry)
+	}
+	if !entry.LastProbe.After(time.Now().Add(-time.Minute)) {
+		t.Error("LastProbe must be re-stamped on the stale TLS-verify demotion")
+	}
+}
+
+// TestReview_ReaperBlacklistsTLSFailedAfterThree pins the full retirement
+// path: a TLS-failing proxy accumulates ProbeFails across reaper cycles and
+// is blacklisted (removed from the cache) once it reaches proxyAPIMaxFails.
+func TestReview_ReaperBlacklistsTLSFailedAfterThree(t *testing.T) {
+	withTempHome(t)
+	resetProbeConfigCache()
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
+
+	ca := newTestCA(t)
+	leaf := ca.issueLeaf(t, []string{"interceptor.example"})
+	addr, _, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
+	defer cleanup()
+
+	// Start already demoted with 2 fails: the next reaper cycle pushes it
+	// to 3 and blacklists.
+	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: false, Graded: true, Score: 1.0, ProbeFails: 2, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}
+	if err := writeProxyURLState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err := readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Cache[addr]; ok {
+		t.Fatalf("TLS-failing proxy must be blacklisted (removed from cache) after %d fails, got %+v", proxyAPIMaxFails, got.Cache[addr])
+	}
+	if _, ok := got.Blacklist[addr]; !ok {
+		t.Fatal("TLS-failing proxy must be recorded in the persistent blacklist")
+	}
+}
+
 // REGRESSION (Opus review, MEDIUM #3). The 32/cycle grade-refresh budget
 // must land on the OLDEST grades, and a budget loser (stage-0 liveness
 // passed, table probe skipped) must NOT get its LastProbe re-stamped —

@@ -212,7 +212,7 @@ var proxyProbeTLSClientConfig = func(serverName string) *tls.Config {
 	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
 }
 
-// probeProxy performs a two-stage check on a single proxy address:
+// probeProxy performs a three-stage check on a single proxy address:
 //  1. SOCKS5 greeting (is this actually a SOCKS5 proxy?)
 //  2. SOCKS5 CONNECT to api.bringyour.com:443 (can the proxy reach the API?)
 //  3. TLS handshake through the proxy to the API host (does the proxy
@@ -298,8 +298,15 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 	// with 0x00 just like a real one (it passed stage 2) but terminates TLS
 	// itself and presents its own certificate; verification fails and the
 	// proxy is classified probeTLSFailed so it is never admitted to the
-	// pool. The same tunnel is reused — no new TCP connection.
+	// pool. The same tunnel is reused — no new TCP connection. A fresh
+	// deadline is set so a slow-but-valid handshake is not starved by the
+	// residual stage-2 CONNECT budget, and the TLS conn is closed on every
+	// exit path (defer) so the wrapped socket tears down cleanly.
+	if err := conn.SetDeadline(time.Now().Add(proxyAPIAccessTimeout)); err != nil {
+		tlog("[proxy][probe] warn: could not set stage-3 deadline: %v\n", err)
+	}
 	tlsConn := tls.Client(conn, proxyProbeTLSClientConfig(apiHost))
+	defer tlsConn.Close()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return probeTLSFailed
 	}
