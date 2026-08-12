@@ -299,3 +299,275 @@ func TestRunProxyJWTWatcherSkipsHealthyToken(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// TestRunProxyJWTWatcherKeepsOldTokenOnClientLimitExceeded pins the
+// HTTP-200-with-result.Error path (ClientLimitExceeded): the watcher must
+// keep the old token so the hourly retry can try again.
+func TestRunProxyJWTWatcherKeepsOldTokenOnClientLimitExceeded(t *testing.T) {
+	setTestHome(t)
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	old := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(1 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy", clientJWTEntry{
+		ByClientJWT: old,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	// Script the server-side rejection: HTTP 200 body carrying result.Error.
+	ts.scriptedResponse.Store(&connect.AuthNetworkClientResult{
+		Error: &connect.AuthNetworkClientError{
+			ClientLimitExceeded: true,
+			Message:             "Client limit exceeded.",
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "jwt", ts.srv.URL),
+			RenewNow:       make(chan struct{}, 1),
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	tick <- time.Now()
+	time.Sleep(300 * time.Millisecond)
+
+	entry, ok := store.Get("proxy")
+	if !ok {
+		t.Fatal("store entry missing after ClientLimitExceeded renewal failure")
+	}
+	if entry.ByClientJWT != old {
+		t.Fatalf("store token changed after ClientLimitExceeded — must keep the old token for retry")
+	}
+	cancel()
+	<-done
+}
+
+// TestRunProxyJWTWatcherMissingAccountJWTDoesNotPanic pins the readAccountJWT
+// failure path: no ~/.urnetwork/jwt on disk → the watcher logs and skips,
+// leaving the store untouched and the process alive.
+func TestRunProxyJWTWatcherMissingAccountJWTDoesNotPanic(t *testing.T) {
+	// HOME points at an EMPTY temp dir (no .urnetwork/jwt).
+	emptyHome := t.TempDir()
+	t.Setenv("HOME", emptyHome)
+	t.Setenv("USERPROFILE", emptyHome)
+
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	old := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(1 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy", clientJWTEntry{
+		ByClientJWT: old,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "jwt", ts.srv.URL),
+			RenewNow:       make(chan struct{}, 1),
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	tick <- time.Now()
+	time.Sleep(300 * time.Millisecond)
+
+	entry, ok := store.Get("proxy")
+	if !ok {
+		t.Fatal("store entry missing")
+	}
+	if entry.ByClientJWT != old {
+		t.Fatalf("store token changed — watcher must not renew without an account JWT")
+	}
+	cancel()
+	<-done
+}
+
+// TestRunProxyJWTWatcherRejectsJwtMissingClientId pins the regression guard:
+// a renewal response whose JWT lacks a client_id claim must be rejected and
+// the old token kept.
+func TestRunProxyJWTWatcherRejectsJwtMissingClientId(t *testing.T) {
+	setTestHome(t)
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	old := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(1 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy", clientJWTEntry{
+		ByClientJWT: old,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	// The fake server omits the client_id claim from the returned JWT.
+	ts.omitClientIdClaim.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "jwt", ts.srv.URL),
+			RenewNow:       make(chan struct{}, 1),
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	tick <- time.Now()
+	time.Sleep(300 * time.Millisecond)
+
+	entry, ok := store.Get("proxy")
+	if !ok {
+		t.Fatal("store entry missing")
+	}
+	if entry.ByClientJWT != old {
+		t.Fatalf("store token changed — renewal returning a JWT without client_id must be rejected")
+	}
+	cancel()
+	<-done
+}
+
+// TestRunProxyJWTWatcherRetriesOnStorePutFailure pins the HIGH-2 finding: a
+// renewal whose store write fails must NOT reset the 401 counter, so the next
+// 401 re-triggers renewal instead of silently accepting the in-memory swap.
+//
+// Setup: the global store points at an unwritable path (Put always fails),
+// so the ONLY renewal trigger available is the 401 counter — a clean
+// isolation of the "counter must stay armed on persistence failure" behavior.
+func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
+	setTestHome(t)
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	// Unwritable store: a read-only parent dir → Put's WriteFile fails on
+	// every call (flushLocked's MkdirAll succeeds, then WriteFile is denied).
+	roDir := t.TempDir()
+	if err := os.Chmod(roDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0700) })
+	brokenStore := newClientJWTStore(roDir + "/client_jwts.json")
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = brokenStore
+	defer func() { globalClientJWTStore = oldStore }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	oob := connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "dead-jwt", ts.srv.URL)
+	renewNow := make(chan struct{}, 1)
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            oob,
+			RenewNow:       renewNow,
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	// Fire one 401 through the OOB → counter becomes 1.
+	if err := ts.forceOob401(oob); err != nil {
+		t.Fatal(err)
+	}
+	// First renewNow: renewal runs, Put fails → counter must stay armed.
+	renewNow <- struct{}{}
+	time.Sleep(300 * time.Millisecond)
+	first := ts.totalRequests.Load()
+	if first == 0 {
+		t.Fatal("first renewal never hit the auth-client endpoint")
+	}
+
+	// Second renewNow: if the counter had been reset, nothing would fire
+	// (the exp check is disabled — currentJwt is empty on a broken store).
+	renewNow <- struct{}{}
+	time.Sleep(300 * time.Millisecond)
+	second := ts.totalRequests.Load()
+	if second <= first {
+		t.Fatalf("401 counter was reset after a failed store write: requests %d -> %d — next 401 must re-trigger renewal", first, second)
+	}
+	cancel()
+	<-done
+}
