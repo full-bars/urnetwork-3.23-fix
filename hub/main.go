@@ -1843,7 +1843,7 @@ function renderProxyDrawer() {
   var html = '<table id="drawer-table"><thead><tr>';
   cols.forEach(function(col){var arrow=col.key===d.col?(d.dir===-1?' &#9660;':' &#9650;'):'';html+='<th'+(col.num?' class="num"':'')+' onclick="sortDrawer(\''+col.key+'\')">'+col.label+arrow+'</th>';});
   html+='</tr></thead><tbody>';
-  d.data.forEach(function(p){var gradeCell=p.graded?'<span class="grade-badge grade-'+p.tier+'">'+p.tier+'</span>':'<span class="grade-none">—</span>';html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td class="num">'+gradeCell+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
+  d.data.forEach(function(p){var gradeCell=p.graded?'<span class="grade-badge grade-'+p.tier+'">'+p.tier+'</span>':'<span class="grade-none">—</span>';html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td>'+gradeCell+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
   html+='</tbody></table>';
   document.getElementById('drawer-body').innerHTML = html;
 }
