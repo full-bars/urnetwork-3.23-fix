@@ -763,6 +763,9 @@ func runningToolAssetName() (string, error) {
 		return "", fmt.Errorf("resolve own executable: %w", err)
 	}
 	base := filepath.Base(exe)
+	// Strip a trailing .exe — Windows-convention: os.Executable() returns
+	// the .exe name there, but release assets are bare. On non-Windows hosts
+	// this is a no-op for any real tool binary (none ship with .exe names).
 	base = strings.TrimSuffix(base, ".exe")
 	if base == "" {
 		return "", fmt.Errorf("empty executable base name for %q", exe)
