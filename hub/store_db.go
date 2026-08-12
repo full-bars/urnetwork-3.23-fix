@@ -738,6 +738,12 @@ func (s *store) pruneHourly() (int64, error) {
 var (
 	retainHourlyDays  = envInt("URNETWORK_HUB_RETAIN_HOURLY_DAYS", 90)
 	retainDailyMonths = envInt("URNETWORK_HUB_RETAIN_DAILY_MONTHS", 13)
+	// retainGradeDays bounds proxy_grades history. The dashboard only ever
+	// surfaces the latest grade per (node, proxy); grades change on a 1-3h
+	// cadence, so 7 days of hourly history is generous. Default is not
+	// env-configurable — unlike the traffic tables, grade history has no
+	// analytics consumer that would want a longer window.
+	retainGradeDays = 7
 )
 
 func envInt(key string, def int) int {
@@ -909,6 +915,24 @@ func (s *store) pruneProxyDaily() (int64, error) {
 	return res.RowsAffected()
 }
 
+// pruneProxyGrades deletes proxy_grades rows older than the grade retention
+// window. Grades change on a 1-3h cadence and the best-proxies join only
+// surfaces the latest hour per (node, proxy), so keeping a week of hourly
+// history is generous while bounding the table the ROW_NUMBER subquery
+// scans on every /api/proxies/best call (free-review MEDIUM: the table was
+// previously never pruned).
+func (s *store) pruneProxyGrades() (int64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	cutoffHour := nowFunc().Unix()/3600 - int64(retainGradeDays*24)
+	res, err := s.db.Exec(`DELETE FROM proxy_grades WHERE hour <= ?`, cutoffHour)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // startRetention launches the background retention and eviction loops.
 // Stale node eviction runs every 5 minutes, snapshot pruning hourly,
 // proxy hourly → daily rollup + hourly prune hourly, daily prune daily,
@@ -920,6 +944,7 @@ func (s *store) startRetention(ctx context.Context) {
 	go retentionLoop(ctx, time.Hour, "proxy-daily-rollup", s.rollupProxyDaily)
 	go retentionLoop(ctx, time.Hour, "proxy-hourly-prune", s.pruneProxyHourly)
 	go retentionLoop(ctx, time.Hour, "proxy-fleet-hourly-prune", s.pruneProxyFleetHourly)
+	go retentionLoop(ctx, 24*time.Hour, "proxy-grades-prune", s.pruneProxyGrades)
 	go retentionLoop(ctx, 24*time.Hour, "node_hourly", s.pruneHourly)
 	go retentionLoop(ctx, 24*time.Hour, "proxy-daily-prune", s.pruneProxyDaily)
 	go retentionLoop(ctx, 24*time.Hour, "nodes", s.pruneNodes)
