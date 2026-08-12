@@ -60,7 +60,10 @@ func TestProbeAndGradeProxyURLLines_QualifiedGetsGrade(t *testing.T) {
 	if apiIP == nil {
 		t.Skip("could not resolve api.bringyour.com; DNS required for this test")
 	}
-	addr, cleanup := listenSocks5ConnectOnce(t, 0x00)
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	addr, cleanup := listenSocks5ConnectOnceTLS(t, 0x00, &leaf)
 	defer cleanup()
 
 	cfg := defaultProxyTableProbeConfig()
@@ -134,7 +137,10 @@ func TestProbeAndGradeProxyURLLines_BelowBarNotQualified(t *testing.T) {
 	if apiIP == nil {
 		t.Skip("could not resolve api.bringyour.com; DNS required for this test")
 	}
-	addr, cleanup := listenSocks5Smart(t, map[string]bool{apiIP.String(): true})
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	addr, cleanup := listenSocks5SmartTLS(t, map[string]bool{apiIP.String(): true}, &leaf)
 	defer cleanup()
 
 	cfg := defaultProxyTableProbeConfig()
@@ -201,7 +207,10 @@ func TestFetchAndMergeProxyURLs_GradedPersistence(t *testing.T) {
 	}
 
 	// One proxy that passes everything (qualified), one dead (dropped).
-	goodAddr, cleanup := listenSocks5ConnectOnce(t, 0x00)
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	goodAddr, cleanup := listenSocks5ConnectOnceTLS(t, 0x00, &leaf)
 	defer cleanup()
 	deadAddr := closedPortAddr(t)
 
@@ -250,7 +259,10 @@ func TestFetchAndMergeProxyURLs_AllBelowBarNothingAdmitted(t *testing.T) {
 	if apiIP == nil {
 		t.Skip("could not resolve api.bringyour.com; DNS required for this test")
 	}
-	smartAddr, cleanup := listenSocks5Smart(t, map[string]bool{apiIP.String(): true})
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	smartAddr, cleanup := listenSocks5SmartTLS(t, map[string]bool{apiIP.String(): true}, &leaf)
 	defer cleanup()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

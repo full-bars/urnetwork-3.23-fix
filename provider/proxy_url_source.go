@@ -956,6 +956,25 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					tlog("[proxy][url] reaper: blacklisted %s (%s, %d fails)\n", r.addr, reason, entry.ProbeFails)
 				}
 				changed = true
+
+			case probeTLSFailed:
+				// TLS verification through the proxy failed — the proxy
+				// intercepts/terminates TLS (MITM) instead of relaying it.
+				// This is a hard rejection: a hostile node must not stay in
+				// the pool even if it currently relays client traffic, so
+				// unlike probeSocks5Only there is NO isLive escape here.
+				entry.ProbeOK = false
+				entry.ProbeFails++
+				state.Cache[r.addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
+					}
+					state.Blacklist[r.addr] = time.Now().UTC()
+					delete(state.Cache, r.addr)
+					tlog("[proxy][url] reaper: blacklisted %s (tls-verify, %d fails)\n", r.addr, entry.ProbeFails)
+				}
+				changed = true
 			}
 		}
 
