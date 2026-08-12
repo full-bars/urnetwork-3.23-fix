@@ -66,10 +66,12 @@ func TestRunProxyJWTWatcherRenewsOnTransportAuthFailures(t *testing.T) {
 		})
 	}()
 
-	// Let the watcher's synchronous startup check run (with 0 failures
-	// recorded yet) before we record NEW failures, so the baseline it
-	// snapshots is 0 and the failures below are all counted as "new".
-	time.Sleep(50 * time.Millisecond)
+	// Deterministic sync instead of a sleep: the first tick blocks until the
+	// watcher's select loop is ready — by which point the startup check has
+	// run and authFailureBaseline (0 failures) has been captured. Recording
+	// the failures only after that guarantees they are all counted as "new"
+	// relative to the baseline; the second tick then triggers evaluation.
+	tick <- time.Now()
 
 	for i := 0; i < revokedIdentityAuthFailureThreshold; i++ {
 		connect.RecordProxyAuthFailure(proxyIndex, errors.New("401 Unauthorized"))
