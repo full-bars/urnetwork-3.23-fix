@@ -1263,6 +1263,11 @@ func runEarningWindows(ctx context.Context) {
 
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 
+		// Feed the per-address earn tracker so the paid grader's earn-skip
+		// sees the same liveness signal the [earn] log reports in aggregate,
+		// but keyed by proxy address (delta-based, never cumulative).
+		globalPerProxyEarnTracker.Update(bw)
+
 		var cum uint64
 		for _, p := range bw {
 			cum += p.BillableRx.Load() + p.BillableTx.Load()
