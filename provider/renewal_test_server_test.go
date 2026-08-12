@@ -26,6 +26,13 @@ type renewalTestServer struct {
 	totalRequests atomic.Int32
 	// clientIdSeen is the last ClientId the auth-client request carried
 	clientIdSeen atomic.Value // string
+	// scriptedResponse, when non-nil, is returned verbatim (as JSON) for the
+	// next /network/auth-client request — used to simulate ClientLimitExceeded
+	// and other server-side rejections that arrive as HTTP 200 + result.Error.
+	scriptedResponse atomic.Value // *connect.AuthNetworkClientResult
+	// omitClientIdClaim, when true, makes the fake success response omit the
+	// client_id claim (regression guard L3).
+	omitClientIdClaim atomic.Bool
 }
 
 func newRenewalTestServer(t *testing.T) *renewalTestServer {
@@ -55,9 +62,21 @@ func newRenewalTestServer(t *testing.T) *renewalTestServer {
 				return
 			}
 			ts.clientIdSeen.Store(args.ClientId.String())
+
+			// Scripted server-side rejection (HTTP 200 + result.Error)?
+			// Sticky: every auth-client attempt gets it until the test
+			// clears it, so the watcher cannot slip through on retry.
+			if scripted, ok := ts.scriptedResponse.Load().(*connect.AuthNetworkClientResult); ok && scripted != nil {
+				_ = json.NewEncoder(w).Encode(scripted)
+				return
+			}
+
 			claims := map[string]interface{}{
 				"client_id": args.ClientId.String(),
 				"exp":       float64(time.Now().Add(24 * time.Hour).Unix()),
+			}
+			if ts.omitClientIdClaim.Load() {
+				delete(claims, "client_id")
 			}
 			_ = json.NewEncoder(w).Encode(&connect.AuthNetworkClientResult{
 				ByClientJwt: createFakeJWTWithClaims(claims),

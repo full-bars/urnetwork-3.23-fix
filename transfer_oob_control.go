@@ -44,14 +44,16 @@ type ApiOutOfBandControl struct {
 
 // isUnauthorizedError reports whether err represents an HTTP 401 rejection.
 // The transport builds these as fmt.Errorf("%s: %s", res.Status, body) where
-// res.Status is e.g. "401 Unauthorized" — matching both the code and the
-// phrase covers the error being wrapped or the body omitting the status line.
+// res.Status is the canonical Go status line "401 Unauthorized". We match
+// that exact phrase — never the bare "401" (which appears in unrelated
+// bodies like "502 Bad Gateway: upstream returned 401 for port 401" and
+// would trigger a false renewal storm) and never the bare "Unauthorized"
+// (which appears in 400-level bodies like "unauthorized access attempt").
 func isUnauthorizedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized")
+	return strings.Contains(err.Error(), "401 Unauthorized")
 }
 
 // SetOn401 registers a callback invoked on every 401 observed by SendControl.
