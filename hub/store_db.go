@@ -317,6 +317,20 @@ func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64
 	return
 }
 
+// validGradeTier reports whether a tier string is one of the letters the
+// provider's proxyGradeTier produces (A-F). The hub allowlists tier on
+// ingest because the field is attacker-influenced (any authenticated
+// node's report body) and is rendered unescaped into dashboard HTML later
+// (final-review HIGH); anything outside A-F is rejected rather than stored.
+func validGradeTier(tier string) bool {
+	switch tier {
+	case "A", "B", "C", "D", "F":
+		return true
+	default:
+		return false
+	}
+}
+
 // persist writes a single report to the database: the current node row, a
 // gzipped proxy snapshot, and the current hour's rollup. It is called from
 // store.upsert while holding s.mu, after the in-memory cache has been updated.
@@ -384,11 +398,13 @@ func (s *store) persist(state *nodeState) error {
 	var gradeRows []gradeRow
 	for i := range state.Proxies {
 		p := &state.Proxies[i]
-		// A graded proxy must carry a tier letter; a malformed report with
-		// Graded=true and an empty tier would otherwise store an empty
-		// string that renders a broken `.grade-` badge (free-review LOW).
-		// Skip the row entirely — the grade was not usable.
-		if !p.Graded || p.Tier == "" || p.Address == "" {
+		// A graded proxy must carry a valid tier letter. The tier field is
+		// attacker-influenced (any authenticated node's report body) and is
+		// rendered unescaped into the dashboard innerHTML later, so it is
+		// allowlisted to exactly the letters proxyGradeTier produces
+		// (final-review HIGH: the round-1 check only rejected the empty
+		// string, leaving a stored-XSS path for a crafted tier value).
+		if !p.Graded || !validGradeTier(p.Tier) || p.Address == "" {
 			continue
 		}
 		proxyID, err := s.internProxy(p.Address)
