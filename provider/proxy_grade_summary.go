@@ -252,8 +252,8 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 		// still be bucketed from proxy.state.
 		urlState = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
 	}
-	// Freshness window PER SOURCE: URL-tagged entries are refreshed by the
-	// URL reaper on the URL stale window; paid/file/internal entries by the
+	// Freshness window PER SOURCE: URL-owned entries are refreshed by the
+	// URL reaper on the URL stale window; paid/file-owned entries by the
 	// paid grader on the wider paid window. The summary's stale ratio must
 	// agree with whoever owns each entry's refresh cadence — one shared
 	// number would mislabel URL entries as fresh long after their owner
@@ -261,6 +261,32 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// the paid grader would touch them (independent review finding).
 	pressure := currentPressure()
 	now := time.Now()
+
+	// Effective ownership follows the SAME desired-set rule the paid
+	// grader uses ("the desired set IS the ownership definition"): an
+	// address in the paid file/internal set is served as a file proxy
+	// (file wins in mergeProxyURLCache) even when its first-seen
+	// provenance tag says "url", and it is graded by the paid grader
+	// into its ProxyEntry. The summary must therefore bucket such an
+	// address by the PAID owner — reading the URL cache grade and URL
+	// window for it would report a grade the paid grader never produced
+	// for that ownership (independent review finding). On a desired-set
+	// read error the summary falls back to the state tags (read-only;
+	// the worst case is a stale bucket, not a wrong write).
+	desired := map[string]struct{}{}
+	if state.Source != "" {
+		if ds, err := readProxySettingsFromFile(state.Source); err != nil {
+			tlog("[proxy][grade] warning: %v (summary falls back to state tags)\n", err)
+		} else {
+			for _, s := range ds {
+				desired[s.Address] = struct{}{}
+			}
+		}
+	} else {
+		for _, s := range readProxySettings() {
+			desired[s.Address] = struct{}{}
+		}
+	}
 
 	for addr, entry := range state.Proxies {
 		s.tracked++
@@ -273,6 +299,10 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 		var graded bool
 		var lastProbe time.Time
 		src := entry.Source
+		if _, ok := desired[addr]; ok {
+			// Paid/file ownership overrides a stale URL provenance tag.
+			src = "file"
+		}
 		if src == "url" {
 			if ue, ok := urlState.Cache[addr]; ok {
 				score, graded = ue.Score, ue.Graded

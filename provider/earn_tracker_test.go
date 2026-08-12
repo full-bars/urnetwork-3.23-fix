@@ -204,6 +204,34 @@ func TestEarnTracker_ZeroDeltaTickIsNotEarned(t *testing.T) {
 	}
 }
 
+// TestEarnTracker_EmptySnapshotPrunesAll pins the coderabbit finding:
+// Update with an empty (or nil) snapshot must prune ALL per-address
+// state — this is what the runEarningWindows empty-health-set branch
+// calls so proxies that disappear (health count drops to 0) cannot keep
+// stale "earning" state that would wrongly suppress a later probe.
+func TestEarnTracker_EmptySnapshotPrunesAll(t *testing.T) {
+	tr := newPerProxyEarnTracker()
+	const addr = "203.0.113.4:443"
+	bw := &connect.ProxyBandwidth{}
+	tr.Update(map[string]*connect.ProxyBandwidth{addr: bw})
+	bw.BillableRx.Store(1024)
+	tr.Update(map[string]*connect.ProxyBandwidth{addr: bw})
+	if !tr.EarnedSince(addr, time.Minute) {
+		t.Fatal("addr must be earning before the empty snapshot")
+	}
+	// Empty health set: every address must be pruned.
+	tr.Update(nil)
+	if tr.EarnedSince(addr, time.Minute) {
+		t.Fatal("empty snapshot must prune the earning state — a re-added proxy must not look 'earning' from stale state")
+	}
+	if _, ok := tr.LastEarned(addr); ok {
+		t.Fatal("empty snapshot must prune lastEarned")
+	}
+	if _, ok := tr.prevCum[addr]; ok {
+		t.Fatal("empty snapshot must prune prevCum")
+	}
+}
+
 // TestEarnTracker_BackwardsCounterIsNotEarned pins the proxy-restart
 // rule: a counter that goes backwards (proxy restarted and reset its
 // counters) is a zero-delta tick, never an earn event.

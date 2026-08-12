@@ -292,3 +292,46 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 		t.Fatalf("never-graded proxy must receive a grade after its first probe, got %+v", e)
 	}
 }
+
+// TestPaidProxyGrader_ProbesAfterEmptyHealthSet pins the coderabbit
+// finding end-to-end: when the health set empties (ProxyHealthCount==0),
+// runEarningWindows clears the earn tracker via Update(nil) so a proxy
+// re-added afterwards cannot be earn-skipped from STALE earning state —
+// the required probe must fire. The grader must treat a cleared tracker
+// exactly like a never-seen address.
+func TestPaidProxyGrader_ProbesAfterEmptyHealthSet(t *testing.T) {
+	home := withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load())
+
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			// Stale but within the 24h ceiling — earn-skip would be the
+			// only reason to skip; the cleared tracker must not provide
+			// that reason.
+			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark the proxy as having earned recently, then simulate the
+	// empty-health-set path runEarningWindows now takes: clear the
+	// tracker. A re-added proxy must not inherit stale earning state.
+	seedEarnTracker(t, addr)
+	globalPerProxyEarnTracker.Update(nil)
+
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	if n := connects.Load(); n == 0 {
+		t.Fatal("paid proxy was not probed after the health set emptied — stale earning state must not suppress the required probe")
+	}
+}
