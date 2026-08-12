@@ -3,6 +3,8 @@ package connect
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -160,5 +162,32 @@ func TestApiOutOfBandControlOn401Callback(t *testing.T) {
 	case <-okNotify:
 		t.Fatal("on401 callback fired for a successful send")
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestIsUnauthorizedError pins the false-positive fix: only the canonical
+// "401 Unauthorized" status line matches — bare "401" or "Unauthorized" in
+// a body must NOT (a "502 Bad Gateway: upstream returned 401 for port 401"
+// error would otherwise trigger a spurious renewal storm).
+func TestIsUnauthorizedError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"canonical 401", errors.New("401 Unauthorized: bad token"), true},
+		{"wrapped canonical 401", fmt.Errorf("renewal: %w", errors.New("401 Unauthorized: bad token")), true},
+		{"bare 401 in body", errors.New("502 Bad Gateway: upstream returned 401 for port 401"), false},
+		{"bare Unauthorized in body", errors.New("400 Bad Request: unauthorized access attempt"), false},
+		{"200 ok", errors.New("200 OK"), false},
+		{"empty", errors.New(""), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUnauthorizedError(tc.err); got != tc.want {
+				t.Fatalf("isUnauthorizedError(%q) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
