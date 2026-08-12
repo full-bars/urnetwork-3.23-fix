@@ -134,9 +134,11 @@ func TestProxiesBestIncludesGrade(t *testing.T) {
 		}
 	}
 
-	// Grades: p1 = A, p2 = ungraded (no row).
+	// Grades: p1 = A, p2 = ungraded (no row). hourStart converts the
+	// epoch-hour back to hour-aligned unix seconds for the last_graded column.
+	hourStart := now * 3600
 	s.db.Exec(`INSERT INTO proxy_grades (node_id, proxy_id, hour, tier, score, graded, last_graded)
-		VALUES ('n1', ?, ?, 'A', 0.95, 1, ?)`, p1, now, now*3600)
+		VALUES ('n1', ?, ?, 'A', 0.95, 1, ?)`, p1, now, hourStart)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/proxies/best", handleProxiesBest(s))
