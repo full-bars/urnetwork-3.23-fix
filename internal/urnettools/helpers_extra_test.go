@@ -505,7 +505,7 @@ func TestLatestReleaseCache(t *testing.T) {
 	origInfo, origTime := cachedLatest, cachedLatestTime
 	defer func() { cachedLatest, cachedLatestTime = origInfo, origTime }()
 
-	cachedLatest = &releaseInfo{Tag: "v9.9.9-cached", Digest: "abc", URL: "http://example.invalid/x"}
+	cachedLatest = &releaseInfo{Tag: "v9.9.9-cached", ProviderDigest: "abc", URL: "http://example.invalid/x"}
 	cachedLatestTime = time.Now()
 
 	info, err := latestRelease()

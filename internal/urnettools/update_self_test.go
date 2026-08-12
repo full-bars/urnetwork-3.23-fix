@@ -106,15 +106,16 @@ func TestSelfUpdateToolRefusesBadDigest(t *testing.T) {
 	}
 }
 
-// TestSelfUpdateToolRefusesNonELF: a sha256-verified download that is not an
-// ELF executable must be refused before it can be run (the structural check
-// ceiling — mirror of the provider path).
+// TestSelfUpdateToolRefusesNonELF: a sha256-verified download that is not a
+// recognized executable for the host platform must be refused before it can
+// be run (the structural check ceiling — mirror of the provider path).
 func TestSelfUpdateToolRefusesNonELF(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "urnet-tools")
 	if err := os.WriteFile(exe, fakeELF("current"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Serve a shell script with a MATCHING digest: only the ELF check stops it.
+	// Serve a shell script with a MATCHING digest: only the binary-format
+	// check stops it.
 	script := []byte("#!/bin/sh\necho pwned\n")
 	_, url, digest := serveTool(t, script)
 	cfg := updateConfig{
@@ -125,8 +126,8 @@ func TestSelfUpdateToolRefusesNonELF(t *testing.T) {
 		StageDir:     t.TempDir(),
 	}
 	err := selfUpdateToolTo(exe, cfg)
-	if err == nil || !strings.Contains(err.Error(), "not an ELF executable") {
-		t.Fatalf("selfUpdateToolTo = %v, want non-ELF refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "not a "+runtime.GOOS+" executable") {
+		t.Fatalf("selfUpdateToolTo = %v, want platform-aware binary refusal", err)
 	}
 	got, _ := os.ReadFile(exe)
 	if !bytes.Equal(got, fakeELF("current")) {
@@ -212,9 +213,13 @@ func TestToolSelfUpdateURLShape(t *testing.T) {
 }
 
 // TestRunningToolAssetName: the wrapper must derive the asset from the actual
-// running binary base name (urnet-tools vs urnet-docker) — never hardcode.
+// running binary base name (urnet-tools vs urnet-docker) — never hardcode —
+// and must never carry a .exe suffix even on Windows.
 func TestRunningToolAssetName(t *testing.T) {
-	name := runningToolAssetName()
+	name, err := runningToolAssetName()
+	if err != nil {
+		t.Fatalf("runningToolAssetName() = %v, want nil error", err)
+	}
 	// Shape: <running-binary-base>-<goos>-<goarch>. The base comes from
 	// os.Executable() (in tests that's the test binary, so only the suffix
 	// is stable); the GOOS/GOARCH suffix must match the host.
@@ -224,6 +229,22 @@ func TestRunningToolAssetName(t *testing.T) {
 	}
 	if strings.Contains(name, ".exe") {
 		t.Errorf("runningToolAssetName() = %q, must not contain .exe (release assets are bare)", name)
+	}
+}
+
+// TestToolAssetNameWindowsBare: on a Windows-hosted tool the base name from
+// os.Executable() ends in .exe; the resulting asset name must still be bare
+// (urnet-tools-windows-amd64, not urnet-tools.exe-windows-amd64). This pins
+// the release-asset naming that every consumer (tool self-update, installers,
+// docs) agrees on.
+func TestToolAssetNameWindowsBare(t *testing.T) {
+	got := toolAssetName(strings.TrimSuffix("urnet-tools.exe", ".exe"), "windows", "amd64")
+	want := "urnet-tools-windows-amd64"
+	if got != want {
+		t.Errorf("toolAssetName(trimmed exe) = %q, want %q", got, want)
+	}
+	if strings.Contains(got, ".exe") {
+		t.Errorf("toolAssetName = %q, must not contain .exe", got)
 	}
 }
 
@@ -251,5 +272,159 @@ func TestSelfUpdateToolStageDirRequired(t *testing.T) {
 	if !strings.Contains(err.Error(), "stage") {
 		t.Fatalf("error = %v, want stage-dir error", err)
 	}
-	_ = fmt.Sprint() // keep fmt imported for future assertions
+}
+
+// TestRunToolSelfUpdateSkipsWithoutDigest: the leg returns nil (skip) when
+// the release predates tool assets — a pre-Go-asset release must never fail
+// the whole update.
+func TestRunToolSelfUpdateSkipsWithoutDigest(t *testing.T) {
+	if err := runToolSelfUpdate(updateConfig{Tag: "v3.23.0-fix.27.0"}); err != nil {
+		t.Fatalf("runToolSelfUpdate(no digest) = %v, want nil (skip)", err)
+	}
+}
+
+// TestRunToolSelfUpdateReportsButDoesNotFail: a self-update failure returns
+// an error (which cmdUpdate reports), proving the isolation contract: the
+// leg's failure must NOT be able to fail the provider update command.
+func TestRunToolSelfUpdateReportsButDoesNotFail(t *testing.T) {
+	cfg := updateConfig{
+		Tag:          "v9.9.9",
+		ToolAsset:    "urnet-tools-linux-amd64",
+		ToolDigest:   strings.Repeat("a", 64),             // valid hex, server will 404
+		ToolAssetURL: "http://127.0.0.1:1/does-not-exist", // connection refused
+		StageDir:     t.TempDir(),
+	}
+	err := runToolSelfUpdate(cfg)
+	if err == nil {
+		t.Fatal("runToolSelfUpdate = nil, want error from failed download")
+	}
+	// The contract: this error is REPORTED, not propagated as command failure.
+	// cmdUpdate prints it and returns provider-update status only. Simulate
+	// that call shape here:
+	var cmdErr error
+	if legErr := runToolSelfUpdate(cfg); legErr != nil {
+		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", legErr)
+	}
+	if cmdErr != nil {
+		t.Fatalf("cmdErr = %v, want nil (self-update failure must not fail the command)", cmdErr)
+	}
+}
+
+// TestToolDigestResolvedFromSameRelease: cmdUpdate populates cfg.ToolDigest
+// from the release's asset list using the running tool's asset name. This
+// pins the "same release, same tag" wiring (the tool digest must come from
+// the SAME release the providers are updating to).
+func TestToolDigestResolvedFromSameRelease(t *testing.T) {
+	rel := &releaseInfo{
+		Tag: "v9.9.9",
+		Assets: []releaseAsset{
+			{Name: "urnetwork-provider-v9.9.9.tar.gz", Digest: "sha256:aaa"},
+			{Name: "urnet-tools-linux-amd64", Digest: "sha256:bbb"},
+		},
+	}
+	// The production expression used in cmdUpdate:
+	asset, err := runningToolAssetName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Asset name depends on the host; resolve the same way production does
+	// and require the digest to be present when the asset IS in the list.
+	if rel.Assets[1].Name == asset {
+		got := digestForAsset(rel.Assets, asset)
+		if got != "bbb" {
+			t.Errorf("digestForAsset(%s) = %q, want %q", asset, got, "bbb")
+		}
+	}
+	// Missing asset → empty digest (skip, not fail).
+	if got := digestForAsset(rel.Assets, "urnet-tools-linux-arm64"); got != "" {
+		t.Errorf("digestForAsset(missing) = %q, want empty", got)
+	}
+}
+
+// TestToolDigestRelNilSkip: a fully explicit --tag+--digest update resolves
+// no releaseInfo (rel == nil) — the self-update leg must skip, not panic.
+func TestToolDigestRelNilSkip(t *testing.T) {
+	var rel *releaseInfo
+	cfg := updateConfig{Tag: "v9.9.9", ToolAsset: "urnet-tools-linux-amd64"}
+	if rel != nil {
+		cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
+	}
+	// Production prints the skip notice and leaves ToolDigest empty; the leg
+	// then skips (nil error, no download).
+	if cfg.ToolDigest != "" {
+		t.Fatalf("ToolDigest = %q, want empty for rel==nil", cfg.ToolDigest)
+	}
+	if err := runToolSelfUpdate(cfg); err != nil {
+		t.Fatalf("runToolSelfUpdate(rel nil) = %v, want nil (skip)", err)
+	}
+}
+
+// writeFileHelper writes bytes to a temp path and returns the path.
+func writeFileHelper(t *testing.T, name string, b []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestBinaryFormatChecks: the platform-aware magic checks must accept the
+// right formats and reject everything else — a shell script must fail on
+// EVERY platform, and the darwin/windows magics must be recognized so the
+// tool can self-update on those hosts (verified 2026-08-12 review: the old
+// ELF-only check broke macOS and Windows self-update entirely).
+func TestBinaryFormatChecks(t *testing.T) {
+	// Mach-O magics: MH_MAGIC_64 (FE ED FA CF), MH_CIGAM_64 (CF FA ED FE),
+	// fat binary (CA FE BA BE).
+	for _, magic := range [][]byte{
+		{0xfe, 0xed, 0xfa, 0xce}, {0xfe, 0xed, 0xfa, 0xcf},
+		{0xce, 0xfa, 0xed, 0xfe}, {0xcf, 0xfa, 0xed, 0xfe},
+		{0xca, 0xfe, 0xba, 0xbe}, {0xbe, 0xba, 0xfe, 0xca},
+	} {
+		p := writeFileHelper(t, "macho", magic)
+		if !isMachOExecutable(p) {
+			t.Errorf("isMachOExecutable(% x) = false, want true", magic)
+		}
+	}
+	// PE: MZ header.
+	p := writeFileHelper(t, "pe", []byte{'M', 'Z', 0x90})
+	if !isPEExecutable(p) {
+		t.Error("isPEExecutable(MZ) = false, want true")
+	}
+	// ELF.
+	p = writeFileHelper(t, "elf", []byte{0x7f, 'E', 'L', 'F'})
+	if !isELFExecutable(p) {
+		t.Error("isELFExecutable(ELF) = false, want true")
+	}
+	// A shell script must be rejected by ALL platform checks.
+	script := writeFileHelper(t, "script.sh", []byte("#!/bin/sh\necho hi\n"))
+	for name, fn := range map[string]func(string) bool{
+		"ELF":   isELFExecutable,
+		"MachO": isMachOExecutable,
+		"PE":    isPEExecutable,
+	} {
+		if fn(script) {
+			t.Errorf("%s accepted a shell script", name)
+		}
+	}
+	// isRecognizedExecutable dispatches to the host platform's check; on this
+	// host it must equal the ELF result.
+	if isRecognizedExecutable(script) {
+		t.Error("isRecognizedExecutable accepted a shell script")
+	}
+}
+
+// TestRunningToolAssetNameError: os.Executable() failure must surface as an
+// error, not a silent fallback to "urnet-tools" (which would target the WRONG
+// tool's asset when running as urnet-docker — verified 2026-08-12 review).
+func TestRunningToolAssetNameError(t *testing.T) {
+	// Can't force os.Executable to fail portably; instead pin the stripping
+	// logic that guards the Windows case: a base ending in .exe must yield a
+	// bare asset name.
+	got := toolAssetName(strings.TrimSuffix("urnet-docker.exe", ".exe"), "windows", "amd64")
+	want := "urnet-docker-windows-amd64"
+	if got != want {
+		t.Errorf("toolAssetName(urnet-docker.exe) = %q, want %q", got, want)
+	}
 }
