@@ -587,7 +587,10 @@ func TestReview_AdmissionHonoursRuntimePassBarOverride(t *testing.T) {
 // credentialed forms) collapse to ONE address key and pay ONE stage-1 pass.
 func TestReview_DuplicateAddressIsTableProbedOnce(t *testing.T) {
 	repFor := func(n int) byte { return 0x00 }
-	addr, connects, cleanup := listenSocks5Sequenced(t, repFor)
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	addr, connects, cleanup := listenSocks5SequencedTLS(t, repFor, &leaf)
 	defer cleanup()
 
 	cfg := defaultProxyTableProbeConfig()
@@ -721,7 +724,10 @@ func TestReview_KillSwitchDisablesGate(t *testing.T) {
 
 	// fetch-time grading must also be skipped: a stage-0 survivor fetched
 	// while disabled gets Qualified=true and NO score persisted.
-	goodAddr, cleanup2 := listenSocks5ConnectOnce(t, 0x00)
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "api.bringyour.com")
+	withProbeTLSRoot(t, ca)
+	goodAddr, cleanup2 := listenSocks5ConnectOnceTLS(t, 0x00, &leaf)
 	defer cleanup2()
 	writeReviewProbeOverride(t, map[string]any{"enabled": false, "sample_width": 3, "timeout_ms": 400})
 	resetAdmissionStateCache()
@@ -954,7 +960,10 @@ func TestReview_ReaperRefreshesStaleGrade(t *testing.T) {
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
 
-	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "1.2.3.4")
+	withProbeTLSRoot(t, ca)
+	addr, connects, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
 	defer cleanup()
 
 	// Seed the box's probe DNS cache so the sampled targets resolve
@@ -1009,8 +1018,11 @@ func TestReview_ReaperRefreshBudgetOldestFirst(t *testing.T) {
 	const n = refreshBudget + 1 // 33
 
 	var addrs []string
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "1.2.3.4")
+	withProbeTLSRoot(t, ca)
 	for i := 0; i < n; i++ {
-		addr, _, cleanup := listenSocks5Sequenced(t, func(conn int) byte { return 0x00 })
+		addr, _, cleanup := listenSocks5SequencedTLS(t, func(conn int) byte { return 0x00 }, &leaf)
 		defer cleanup()
 		addrs = append(addrs, addr)
 	}
@@ -1068,7 +1080,10 @@ func TestReview_FetchCrossSourceDuplicateProbedOnce(t *testing.T) {
 	resetProbeConfigCache()
 	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 4, "timeout_ms": 500})
 
-	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "1.2.3.4")
+	withProbeTLSRoot(t, ca)
+	addr, connects, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
 	defer cleanup()
 
 	// fetchAndMergeProxyURLs advances the pass counter once at the start of
