@@ -175,6 +175,15 @@ type proxyReport struct {
 	MaxAge            int64  `json:"max_age_s"`
 	ContractsAcquired int64  `json:"contracts_acquired"`
 	ContractsDenied   int64  `json:"contracts_denied"`
+
+	// A-F grade surfaced from the provider's grading pipeline (roadmap
+	// step 3). Mirrors the provider report payload; only present when the
+	// proxy has been graded.
+	Score      float64  `json:"score,omitempty"`
+	Graded     bool     `json:"graded,omitempty"`
+	Failed     []string `json:"failed,omitempty"`
+	Tier       string   `json:"tier,omitempty"`
+	LastGraded int64    `json:"last_graded,omitempty"` // unix ts, 0 = never
 }
 
 type systemMetrics struct {
@@ -1384,6 +1393,13 @@ tr.expandable:hover { background: #1a2332; }
 .status-badge.connecting { background: rgba(96,165,250,0.15); color: #60a5fa; }
 .status-badge.degraded { background: rgba(250,204,21,0.15); color: #facc15; }
 .status-badge.dead { background: rgba(239,68,68,0.15); color: #ef4444; }
+.grade-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; }
+.grade-none { color: #475569; font-size: 11px; }
+.grade-A { background: rgba(74,222,128,0.18); color: #4ade80; }
+.grade-B { background: rgba(163,230,53,0.18); color: #a3e635; }
+.grade-C { background: rgba(250,204,21,0.18); color: #facc15; }
+.grade-D { background: rgba(251,146,60,0.18); color: #fb923c; }
+.grade-F { background: rgba(239,68,68,0.18); color: #ef4444; }
 .sort-arrow { margin-left: 4px; font-size: 10px; }
 .remove-btn { cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 16px; line-height: 1; color: #64748b; }
 .remove-btn:hover { background: rgba(239,68,68,0.2); color: #ef4444; }
@@ -1584,7 +1600,7 @@ tr.expandable:hover { background: #1a2332; }
 <label style="font-size:11px;color:#94a3b8;cursor:pointer"><input type="checkbox" id="hide-dead" onchange="loadBestProxies()"> Hide dead</label>
 <span class="info" id="best-info">Loading...</span>
 </div>
-<div class="table-wrap"><table><thead><tr><th class="num">#</th><th onclick="sortBest('addr')" style="cursor:pointer">Address</th><th class="num" onclick="sortBest('score')" style="cursor:pointer">Score</th><th class="num" onclick="sortBest('win_pct')" style="cursor:pointer">Win%</th><th class="num" onclick="sortBest('traffic')" style="cursor:pointer">Traffic</th><th class="num" onclick="sortBest('contracts')" style="cursor:pointer">Contracts</th><th onclick="sortBest('last_day')" style="cursor:pointer">Last seen</th><th onclick="sortBest('status')" style="cursor:pointer">Status</th></tr></thead><tbody id="best-body"><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th class="num">#</th><th onclick="sortBest('addr')" style="cursor:pointer">Address</th><th class="num" onclick="sortBest('tier')" style="cursor:pointer">Grade</th><th class="num" onclick="sortBest('score')" style="cursor:pointer">Score</th><th class="num" onclick="sortBest('win_pct')" style="cursor:pointer">Win%</th><th class="num" onclick="sortBest('traffic')" style="cursor:pointer">Traffic</th><th class="num" onclick="sortBest('contracts')" style="cursor:pointer">Contracts</th><th onclick="sortBest('last_day')" style="cursor:pointer">Last seen</th><th onclick="sortBest('status')" style="cursor:pointer">Status</th></tr></thead><tbody id="best-body"><tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody></table></div>
 </div>
 
 </main>
@@ -1652,9 +1668,10 @@ function renderBest() {
     var traffic = r.traffic > 1099511627776 ? (r.traffic/1099511627776).toFixed(1)+'T' : r.traffic > 1073741824 ? (r.traffic/1073741824).toFixed(1)+'G' : r.traffic > 1048576 ? (r.traffic/1048576).toFixed(1)+'M' : r.traffic > 1024 ? (r.traffic/1024).toFixed(1)+'K' : r.traffic;
     var lastSeen = r.last_day === (Math.floor(Date.now()/86400000)) ? 'today' : ((Math.floor(Date.now()/86400000) - r.last_day) + 'd ago');
     var statusDot = r.status === 'active' ? '<span class="dot alive" style="background:#22c55e"></span>' : '<span class="dot" style="background:#64748b"></span>';
-    html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
+    var gradeCell = r.graded ? '<span class="grade-badge grade-' + r.tier + '">' + r.tier + '</span>' : '<span class="grade-none">—</span>';
+    html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + gradeCell + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
   }
-  tbody.innerHTML = html || '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>';
+  tbody.innerHTML = html || '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>';
 }
 function loadBestProxies() {
   if (!document.getElementById('page-best').classList.contains('active')) return;
@@ -1666,7 +1683,7 @@ function loadBestProxies() {
     if (thisSeq !== bestRequestSeq) return;
     if (!rows || rows.length === 0) { bestRows = []; renderBest(); document.getElementById('best-info').textContent = '0 proxies'; return; }
     // Store with sortable keys including derived fields
-    bestRows = rows.map(function(r){ return { addr: r.addr, score: r.score, win_pct: r.win_pct, traffic: r.traffic, acq: r.acq, denied: r.denied, contracts: (r.acq||0)+(r.denied||0), last_day: r.last_day, status: r.status }; });
+    bestRows = rows.map(function(r){ return { addr: r.addr, tier: r.graded ? r.tier : '', graded: !!r.graded, score: r.score, win_pct: r.win_pct, traffic: r.traffic, acq: r.acq, denied: r.denied, contracts: (r.acq||0)+(r.denied||0), last_day: r.last_day, status: r.status }; });
     renderBest();
     document.getElementById('best-info').textContent = rows.length + ' proxies';
   }).catch(function(){
@@ -1821,12 +1838,12 @@ function openDrawer(id) {
 function renderProxyDrawer() {
   var d = proxyDrawer;
   var sortOrder = {up:0,connecting:1,degraded:2,dead:3};
-  var cols = [{key:'id',label:'ID',num:false},{key:'addr',label:'Address',num:false},{key:'status',label:'Status',num:false,fn:function(p){return sortOrder[p.status]||9;}},{key:'clients',label:'Clients',num:true},{key:'max_age_s',label:'Age',num:true},{key:'rx',label:'RX',num:true},{key:'tx',label:'TX',num:true},{key:'bill_rx',label:'Bill RX',num:true},{key:'bill_tx',label:'Bill TX',num:true},{key:'contracts_acquired',label:'Won',num:true},{key:'contracts_denied',label:'Lost',num:true}];
+  var cols = [{key:'id',label:'ID',num:false},{key:'addr',label:'Address',num:false},{key:'grade',label:'Grade',num:false,fn:function(p){if(!p.graded)return 0;return {A:6,B:5,C:4,D:3,F:2}[p.tier]||1;}},{key:'status',label:'Status',num:false,fn:function(p){return sortOrder[p.status]||9;}},{key:'clients',label:'Clients',num:true},{key:'max_age_s',label:'Age',num:true},{key:'rx',label:'RX',num:true},{key:'tx',label:'TX',num:true},{key:'bill_rx',label:'Bill RX',num:true},{key:'bill_tx',label:'Bill TX',num:true},{key:'contracts_acquired',label:'Won',num:true},{key:'contracts_denied',label:'Lost',num:true}];
   d.data.sort(function(a,b){var col=cols.find(function(c){return c.key===d.col;});var va=col&&col.fn?col.fn(a):a[d.col];var vb=col&&col.fn?col.fn(b):b[d.col];if(typeof va==='number')return d.dir*(va-vb);return d.dir*String(va).localeCompare(String(vb));});
   var html = '<table id="drawer-table"><thead><tr>';
   cols.forEach(function(col){var arrow=col.key===d.col?(d.dir===-1?' &#9660;':' &#9650;'):'';html+='<th'+(col.num?' class="num"':'')+' onclick="sortDrawer(\''+col.key+'\')">'+col.label+arrow+'</th>';});
   html+='</tr></thead><tbody>';
-  d.data.forEach(function(p){html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
+  d.data.forEach(function(p){var gradeCell=p.graded?'<span class="grade-badge grade-'+p.tier+'">'+p.tier+'</span>':'<span class="grade-none">—</span>';html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td class="num">'+gradeCell+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
   html+='</tbody></table>';
   document.getElementById('drawer-body').innerHTML = html;
 }
