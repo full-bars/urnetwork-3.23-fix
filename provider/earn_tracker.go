@@ -39,6 +39,12 @@ func newPerProxyEarnTracker() *perProxyEarnTracker {
 // production (review CRITICAL). Raw-address keys pass through unchanged
 // (a raw address contains no " (" separator, so parseProxyString returns
 // no address half and the key is used as-is).
+//
+// The native "direct" proxy (proxy[0] (direct)) normalizes to "direct".
+// It never relays billable traffic through the SOCKS5 pipeline, so its
+// billable counters stay zero and it is never marked earning — which is
+// correct: the direct proxy is not a paid proxy and must never be
+// earn-skipped.
 func proxyKeyAddress(key string) string {
 	// parseProxyString splits "proxy[N] (addr)" on " (" and returns the
 	// second half as the address. A raw address has no such split, so it
