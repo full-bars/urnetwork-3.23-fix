@@ -35,6 +35,40 @@ type ApiOutOfBandControl struct {
 	// client JWT was rejected (expired or revoked), and waiting up to an
 	// hour for the next scheduled renewal keeps the proxy a black hole.
 	audit401Count atomic.Uint64
+	// on401, when set, is invoked (non-blocking) whenever SendControl
+	// observes a 401. The renewal watcher registers a callback that pings its
+	// renew-now channel, so a 401 triggers immediate renewal instead of
+	// waiting for the next hourly tick.
+	on401 atomic.Value // func()
+}
+
+// isUnauthorizedError reports whether err represents an HTTP 401 rejection.
+// The transport builds these as fmt.Errorf("%s: %s", res.Status, body) where
+// res.Status is e.g. "401 Unauthorized" — matching both the code and the
+// phrase covers the error being wrapped or the body omitting the status line.
+func isUnauthorizedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized")
+}
+
+// SetOn401 registers a callback invoked on every 401 observed by SendControl.
+// The callback must not block; it runs synchronously on the SendControl
+// callback goroutine.
+func (self *ApiOutOfBandControl) SetOn401(fn func()) {
+	if fn == nil {
+		self.on401.Store((func())(nil))
+		return
+	}
+	self.on401.Store(fn)
+}
+
+func (self *ApiOutOfBandControl) fireOn401() {
+	if fn, ok := self.on401.Load().(func()); ok && fn != nil {
+		fn()
+	}
 }
 
 func NewApiOutOfBandControl(
@@ -112,8 +146,9 @@ func (self *ApiOutOfBandControl) SendControl(
 		},
 		NewApiCallback(func(result *ConnectControlResult, err error) {
 			if err != nil {
-				if strings.Contains(err.Error(), "401") {
+				if isUnauthorizedError(err) {
 					self.audit401Count.Add(1)
+					self.fireOn401()
 				}
 				safeCallback(nil, err)
 				return
