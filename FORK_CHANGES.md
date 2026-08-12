@@ -2506,7 +2506,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: ✅ v3.23.0-fix.28.1 (PR #357).
 
-## 112. Tool Distribution — Release Assets, Installers, and Self-Update (PR #361)
+## 112. Tool Distribution — Release Assets, Installers, and Self-Update (PR #362)
 
 **Purpose**: The Go tool from #345 was merged but never shipped: `release.yml` built only provider+hub, the release tarballs still carried the legacy shell script as `urnet-tools`, the Docker image baked the shell variant, and the systemd installer self-copied the shell script. Docker-only users (half the user base) had no supported way to get `urnet-docker` at all. This PR wires up the distribution path the design doc (§8, §10, §11) specified but never landed.
 
@@ -2525,4 +2525,4 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **How to Identify in New Upstream**: N/A — fork-native tooling.
 
-**Status**: ✅ PR #361 (branch `feat/urnet-tools-shipping`). Needs a fleet deploy for the installer change; new tool assets ship with the next tagged release.
+**Status**: ✅ PR #362 (branch `feat/urnet-tools-shipping`). Needs a fleet deploy for the installer change; new tool assets ship with the next tagged release.
