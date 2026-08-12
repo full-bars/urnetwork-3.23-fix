@@ -944,7 +944,15 @@ func (self *peerEncryptionSession) restartHandshake() {
 		time.Since(self.lastHandshakeFailureTime) < restartHandshakeCooldown {
 		return
 	}
-	self.lastHandshakeFailureTime = time.Now()
+	// Stamp the failure time only when actually replacing a FAILED epoch. An
+	// initial epoch or a normal rekey epoch leaves it zero, so if either of
+	// those fails quickly its first retry is not suppressed by a timestamp
+	// taken at epoch start — the first rebuild after a failure is always
+	// immediate, later ones paced by restartHandshakeCooldown.
+	if self.epoch != nil && self.epoch != self.establishedEpoch &&
+		(self.epoch.handshakeErr != nil || self.epoch.identityFailed) {
+		self.lastHandshakeFailureTime = time.Now()
+	}
 	self.buildAndStartEpochWithLock()
 }
 
