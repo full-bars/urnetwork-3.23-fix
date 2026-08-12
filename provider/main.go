@@ -521,6 +521,29 @@ func jwtNetworkId(byJwt string) (string, bool) {
 	return networkId, ok
 }
 
+// accountNetworkId extracts the network_id claim from an account JWT (may be
+// empty for malformed tokens — the store treats a mismatch as mint-fresh).
+func accountNetworkId(byJwt string) string {
+	if nid, ok := jwtNetworkId(byJwt); ok {
+		return nid
+	}
+	return ""
+}
+
+// readAccountJWT reads the account (network) JWT from disk. The account-JWT
+// refresher may have rotated it, so renewal reads it fresh on every attempt.
+func readAccountJWT() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".urnetwork", "jwt"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func printNetworkIdCmd(opts docopt.Opts) {
 	filePath, _ := opts.String("<file>")
 	data, err := os.ReadFile(filePath)
@@ -2737,7 +2760,7 @@ func provide(opts docopt.Opts) {
 			InstanceId: instanceId,
 			AppVersion: RequireVersion(),
 		}
-		connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		if reused {
@@ -2751,6 +2774,27 @@ func provide(opts docopt.Opts) {
 			// fresh instead of repeating a dead identity indefinitely.
 			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex)
 		}
+
+		// In-process client-JWT renewal: the beta backend (and mainnet's new
+		// token format) now mints 24h client JWTs, and nothing upstream renews
+		// them for long-lived providers. Without this, every proxy's client
+		// JWT expires ~24h after start and the provider becomes a black hole
+		// (audit/contract OOB 401s, no new contracts). The watcher renews each
+		// proxy's JWT 12h before expiry (hourly retry) and immediately on a
+		// 401, preserving the client_id identity. On backends still issuing
+		// long-lived tokens the 12h threshold never fires — a no-op.
+		renewNow := make(chan struct{}, 1)
+		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
+			IdentityKey:    identityKey,
+			ClientID:       clientId,
+			Description:    providerDescription(nodeName),
+			ApiURL:         apiUrl,
+			ClientStrategy: clientStrategy,
+			OOB:            clientOob,
+			Transport:      platformTransport,
+			RenewNow:       renewNow,
+			ProxyIndex:     proxyIndex,
+		})
 
 		var bw *connect.ProxyBandwidth
 		if proxySettings != nil {
@@ -3221,6 +3265,46 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
+// providerDescription builds the display-name string sent as the client
+// description at mint AND renewal time: "Identity [Version]", where Identity
+// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
+// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
+// redacted IP for container-id gibberish names. Kept as ONE helper so mint
+// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
+// the server UPDATEs the row's description on renewal, so divergence would
+// silently rename the device in the dashboard.
+func providerDescription(nodeName string) string {
+	displayName := nodeName
+	hostname, _ := os.Hostname()
+	if displayName == "" {
+		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
+			displayName = hostHostname
+		} else {
+			displayName = hostname
+		}
+	}
+	isContainerID := containerIDRe.MatchString(displayName)
+	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
+
+	var dashboardLabel string
+	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
+		parts := strings.Split(ip4.String(), ".")
+		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
+		if displayName == "" || isContainerID {
+			dashboardLabel = redactedIP
+		} else {
+			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
+		}
+	} else {
+		if displayName == "" || isContainerID {
+			dashboardLabel = "provider"
+		} else {
+			dashboardLabel = displayName
+		}
+	}
+	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+}
+
 // newProviderAuthClientArgsForRenewal builds the AuthNetworkClientArgs used to
 // RENEW an existing per-proxy client identity. Unlike the mint path
 // (newProviderAuthClientArgs), it carries ClientId so the server updates the
@@ -3334,48 +3418,10 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
-	// 1. Determine Display Name
-	displayName := nodeName
-	hostname, _ := os.Hostname()
-
-	// 2. Allow override via HOST_HOSTNAME (for Docker users passing host $(hostname))
-	if displayName == "" {
-		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
-			displayName = hostHostname
-		} else {
-			displayName = hostname
-		}
-	}
-
-	// 3. Filter Gibberish (12-char hex container IDs)
-	isContainerID := containerIDRe.MatchString(displayName)
-	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
-
-	// 4. Build Compact Dashboard Label
-	var dashboardLabel string
-
-	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
-		parts := strings.Split(ip4.String(), ".")
-		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
-
-		if displayName == "" || isContainerID {
-			// Scenario: No useful name. Identity is just the Redacted IP.
-			dashboardLabel = redactedIP
-		} else {
-			// Scenario: We have a useful name. Identity is "Name @ RedactedIP".
-			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
-		}
-	} else {
-		// Fallback for no IP connectivity
-		if displayName == "" || isContainerID {
-			dashboardLabel = "provider"
-		} else {
-			dashboardLabel = displayName
-		}
-	}
-
-	// 5. Final Description: "Identity [Version]"
-	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	// Final Description: "Identity [Version]" — computed by the shared helper
+	// so mint (here) and in-process renewal (runProxyJWTWatcher) always send
+	// the same string; the server UPDATEs the row's description on renewal.
+	description := providerDescription(nodeName)
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
