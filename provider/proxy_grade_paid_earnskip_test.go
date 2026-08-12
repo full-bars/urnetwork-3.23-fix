@@ -2,23 +2,39 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/urnetwork/connect"
 )
 
+// earnTrackerTestSeq supplies a distinct health index per seedEarnTracker
+// call so tests can never collide on a shared RegisterProxyBandwidth index
+// (previously a hardcoded 9999).
+var earnTrackerTestSeq atomic.Uint64
+
 // seedEarnTracker marks addr as having earned "now" in the per-address
 // tracker (delta-based), which is what the paid grader's earn-skip reads.
-func seedEarnTracker(addr string) {
-	bw := connect.RegisterProxyBandwidth(9999) // distinct test index
+// It feeds the tracker the SAME formatted key shape production uses —
+// connect.ProxyHealthSnapshot keys its bandwidth map with
+// "proxy[N] (addr)" (formatProxyEntry) — so these tests exercise the real
+// key format and would catch a regression to raw-address seeding (the
+// snapshot-key CRITICAL that made earn-skip dead in production).
+func seedEarnTracker(t *testing.T, addr string) {
+	t.Helper()
+	idx := int(earnTrackerTestSeq.Add(1))
+	bw := connect.RegisterProxyBandwidth(idx)
+	t.Cleanup(func() { connect.UnregisterProxy(idx) })
+	key := fmt.Sprintf("proxy[%d] (%s)", idx, addr)
 	// First Update establishes the baseline (prevCum = 0, no delta yet).
-	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{addr: bw})
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{key: bw})
 	// Second Update advances the counter: a positive delta is now recorded.
 	bw.BillableRx.Store(1024 * 1024)
-	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{addr: bw})
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{key: bw})
 }
 
 // TestPaidProxyGrader_SkipsEarningProxy pins the earn-skip: a paid proxy
@@ -50,8 +66,7 @@ func TestPaidProxyGrader_SkipsEarningProxy(t *testing.T) {
 	}
 
 	// Mark the proxy as having earned recently.
-	seedEarnTracker(addr)
-	defer connect.UnregisterProxy(9999)
+	seedEarnTracker(t, addr)
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
@@ -133,12 +148,56 @@ func TestPaidProxyGrader_ForceProbeCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seedEarnTracker(addr)
-	defer connect.UnregisterProxy(9999)
+	seedEarnTracker(t, addr)
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
 	if n := connects.Load(); n == 0 {
 		t.Fatal("earning proxy past the force-probe ceiling was not probed — the 24h ceiling must win over earn-skip")
+	}
+}
+
+// TestPaidProxyGrader_ProbesNeverGradedEarningProxy pins the review
+// CRITICAL: a paid proxy with NO grade at all (LastGraded zero) that
+// happens to be earning must STILL be probed. Earn-skip must never
+// prevent the FIRST grade — the force-probe ceiling is keyed off
+// LastGraded, so a never-graded proxy would otherwise be skipped
+// forever and stay ungraded indefinitely.
+func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
+	home := withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load())
+
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			// NEVER graded (LastGraded zero), but actively earning:
+			// earn-skip must not suppress the first probe.
+			addr: {ID: 4, Health: "up", Source: "file"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark the proxy as having earned recently.
+	seedEarnTracker(t, addr)
+
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	// The never-graded earning proxy must be probed.
+	if n := connects.Load(); n == 0 {
+		t.Fatal("never-graded earning proxy was not probed — the first grade must never be suppressed by earn-skip")
+	}
+	// And it must now carry a grade.
+	state, _ := readProxyState()
+	if e, ok := state.Proxies[addr]; !ok || !e.Graded {
+		t.Fatalf("never-graded proxy must receive a grade after its first probe, got %+v", e)
 	}
 }
