@@ -713,6 +713,13 @@ func handleReport(s *store) http.HandlerFunc {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+		// Sanitize attacker-influenced grade fields BEFORE the report enters
+		// the in-memory store (which the node drawer serves raw) or the DB.
+		// Tier is rendered unescaped into dashboard innerHTML later, so any
+		// value outside the A-F letters a real provider produces is nulled
+		// and the grade dropped (final-review CRITICAL: the persist-side
+		// allowlist alone left the drawer path exposed).
+		sanitizeProxyGrades(ns.Proxies)
 		if ns.NodeID == "" {
 			http.Error(w, "missing node_id", 400)
 			return
@@ -1668,7 +1675,7 @@ function renderBest() {
     var traffic = r.traffic > 1099511627776 ? (r.traffic/1099511627776).toFixed(1)+'T' : r.traffic > 1073741824 ? (r.traffic/1073741824).toFixed(1)+'G' : r.traffic > 1048576 ? (r.traffic/1048576).toFixed(1)+'M' : r.traffic > 1024 ? (r.traffic/1024).toFixed(1)+'K' : r.traffic;
     var lastSeen = r.last_day === (Math.floor(Date.now()/86400000)) ? 'today' : ((Math.floor(Date.now()/86400000) - r.last_day) + 'd ago');
     var statusDot = r.status === 'active' ? '<span class="dot alive" style="background:#22c55e"></span>' : '<span class="dot" style="background:#64748b"></span>';
-    var gradeCell = r.graded ? '<span class="grade-badge grade-' + r.tier + '">' + r.tier + '</span>' : '<span class="grade-none">—</span>';
+    var gradeCell = r.graded ? '<span class="grade-badge grade-' + esc(r.tier) + '">' + esc(r.tier) + '</span>' : '<span class="grade-none">—</span>';
     html += '<tr><td>' + (i+1) + '</td><td>' + r.addr + '</td><td class="num">' + gradeCell + '</td><td class="num">' + r.score.toFixed(2) + '</td><td class="num ' + cl + '">' + r.win_pct.toFixed(1) + '%</td><td class="num">' + traffic + '</td><td class="num">' + r.acq + '/' + r.denied + '</td><td>' + lastSeen + '</td><td>' + statusDot + r.status + '</td></tr>';
   }
   tbody.innerHTML = html || '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No proxy data yet</td></tr>';
@@ -1843,7 +1850,7 @@ function renderProxyDrawer() {
   var html = '<table id="drawer-table"><thead><tr>';
   cols.forEach(function(col){var arrow=col.key===d.col?(d.dir===-1?' &#9660;':' &#9650;'):'';html+='<th'+(col.num?' class="num"':'')+' onclick="sortDrawer(\''+col.key+'\')">'+col.label+arrow+'</th>';});
   html+='</tr></thead><tbody>';
-  d.data.forEach(function(p){var gradeCell=p.graded?'<span class="grade-badge grade-'+p.tier+'">'+p.tier+'</span>':'<span class="grade-none">—</span>';html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td>'+gradeCell+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
+  d.data.forEach(function(p){var gradeCell=p.graded?'<span class="grade-badge grade-'+esc(p.tier)+'">'+esc(p.tier)+'</span>':'<span class="grade-none">—</span>';html+='<tr><td class="num-mono">'+p.id+'</td><td class="truncate">'+p.addr+'</td><td>'+gradeCell+'</td><td><span class="proxy-status '+p.status+'"></span>'+p.status+'</td><td class="num">'+p.clients+'</td><td class="num">'+fmtAge(p.max_age_s)+'</td><td class="num">'+fmtBytes(p.rx)+'</td><td class="num">'+fmtBytes(p.tx)+'</td><td class="num">'+fmtBytes(p.bill_rx)+'</td><td class="num">'+fmtBytes(p.bill_tx)+'</td><td class="num">'+(p.contracts_acquired||0)+'</td><td class="num">'+(p.contracts_denied||0)+'</td></tr>';});
   html+='</tbody></table>';
   document.getElementById('drawer-body').innerHTML = html;
 }
@@ -1925,6 +1932,7 @@ function removeNode(nodeId) {
 
 // === Utility ===
 function fmtBytes(b){if(!b&&b!==0)return '0 B';if(b<1024)return b+' B';var u='KMGTPE',i=-1,n=b;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(1)+' '+u[i]+'B';}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function fmtAge(s){if(!s||s===0)return'&mdash;';if(s<60)return s+'s';if(s<3600)return Math.round(s/60)+'m';return Math.round(s/3600)+'h';}
 function fmtAgo(ts){if(!ts)return'never';var d=(Date.now()-new Date(ts).getTime())/1000;if(d<10)return'now';if(d<60)return Math.round(d)+'s';if(d<3600)return Math.round(d/60)+'m';return Math.round(d/3600)+'h';}
 function fmtUptime(s){if(!s)return'0s';var h=Math.floor(s/3600),d=Math.floor(h/24);if(d>0)return d+'d '+(h%24)+'h';if(h>0)return h+'h';return Math.floor(s/60)+'m';}

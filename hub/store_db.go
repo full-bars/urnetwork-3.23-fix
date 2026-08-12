@@ -331,6 +331,27 @@ func validGradeTier(tier string) bool {
 	}
 }
 
+// sanitizeProxyGrades nulls attacker-influenced grade fields on every proxy
+// of a freshly-decoded report, BEFORE the report enters the in-memory store
+// or the DB. Tier is rendered unescaped into dashboard innerHTML (Best
+// Proxies table and the node drawer, which serves the raw in-memory
+// report), so a crafted tier must never survive ingest. A proxy whose tier
+// is not a genuine A-F letter is demoted to ungraded (final-review
+// CRITICAL: the persist-side allowlist alone left the drawer path exposed).
+func sanitizeProxyGrades(proxies []proxyReport) {
+	for i := range proxies {
+		p := &proxies[i]
+		if !p.Graded {
+			continue
+		}
+		if !validGradeTier(p.Tier) {
+			p.Graded = false
+			p.Tier = ""
+			p.Score = 0
+		}
+	}
+}
+
 // persist writes a single report to the database: the current node row, a
 // gzipped proxy snapshot, and the current hour's rollup. It is called from
 // store.upsert while holding s.mu, after the in-memory cache has been updated.
