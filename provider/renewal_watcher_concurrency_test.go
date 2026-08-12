@@ -102,10 +102,14 @@ func TestRunProxyJWTWatcherMutexSerializesRenewals(t *testing.T) {
 	}
 	cancel()
 
+	// Fresh deadline: time.After delivers exactly one value, and the polling
+	// loop above may have consumed the first one — reusing it would let the
+	// second loop block until the package timeout instead of failing fast.
+	finishDeadline := time.After(10 * time.Second)
 	for i := 0; i < n; i++ {
 		select {
 		case <-done:
-		case <-deadline:
+		case <-finishDeadline:
 			t.Fatal("watchers did not all finish")
 		}
 	}

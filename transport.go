@@ -1134,16 +1134,6 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 	clientId, _ := self.getAuth().ClientId()
 
-	authBytes, err := EncodeFrame(&protocol.Auth{
-		ByJwt:      self.getAuth().ByJwt,
-		AppVersion: self.getAuth().AppVersion,
-		InstanceId: self.getAuth().InstanceId.Bytes(),
-	}, self.settings.ProtocolVersion)
-	if err != nil {
-		return
-	}
-	defer MessagePoolReturn(authBytes)
-
 	if 0 < initialTimeout {
 		select {
 		case <-self.ctx.Done():
@@ -1287,6 +1277,23 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 
 			framer := NewFramer(self.settings.FramerSettings)
+
+			// Encode the auth frame per dial attempt, not once for the whole
+			// reconnect loop: SetAuth rotates the JWT in place, and a
+			// transport that presents the startup token forever (the old
+			// behavior) would keep the stale credential after renewal.
+			// Mirrors runH1, which rebuilds the frame inside its connect
+			// closure. The echo verification below compares against the same
+			// per-attempt bytes, so the snapshot is consistent.
+			authBytes, err := EncodeFrame(&protocol.Auth{
+				ByJwt:      self.getAuth().ByJwt,
+				AppVersion: self.getAuth().AppVersion,
+				InstanceId: self.getAuth().InstanceId.Bytes(),
+			}, self.settings.ProtocolVersion)
+			if err != nil {
+				return nil, err
+			}
+			defer MessagePoolReturn(authBytes)
 
 			stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.AuthTimeout))
 			if err := framer.Write(stream, authBytes); err != nil {
