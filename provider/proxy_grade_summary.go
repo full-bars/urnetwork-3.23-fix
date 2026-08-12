@@ -237,7 +237,12 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 		// still be bucketed from proxy.state.
 		urlState = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
 	}
-	staleAfter := reaperStaleThreshold(currentPressure())
+	// PAID window for the dashboard freshness bucketing: this summary
+	// buckets the same paid/file proxies the grader manages, so it must
+	// agree on what "fresh" means — a proxy graded 6h ago is fresh by the
+	// paid window, and the summary should not mark it stale hours before
+	// the grader would re-probe it. The URL reaper keeps the URL window.
+	staleAfter := paidStaleThreshold(currentPressure())
 	now := time.Now()
 
 	for addr, entry := range state.Proxies {
