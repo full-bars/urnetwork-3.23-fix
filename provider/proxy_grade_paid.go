@@ -122,18 +122,24 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			if !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) < staleAfter {
 				continue // fresh grade; ride the paid stale window
 			}
-			// Earn-skip: a paid proxy with live billable traffic is
-			// demonstrably alive — the backend is routing real sessions
-			// through it. Probing it would spend paid bandwidth to learn
-			// what the traffic already proves. Only re-probe a paid proxy
-			// once it has been QUIET (no billable bytes) for the full
-			// stale window. The grade clock is NOT advanced here, so a
-			// proxy that earns continuously is simply never probed; the
-			// moment it goes quiet, the normal stale check applies.
-			if bw := connect.ProxyBandwidthByAddress(s.Address); bw != nil {
-				if bw.BillableRx.Load()+bw.BillableTx.Load() > 0 {
-					continue // earning — skip the probe, save the bandwidth
-				}
+			// Earn-skip (delta-based): a paid proxy with RECENT billable
+			// traffic is demonstrably alive — the backend is routing real
+			// sessions through it. Probing it would spend paid bandwidth to
+			// learn what the traffic already proves. The signal is the
+			// per-address earn tracker (positive billable delta within
+			// paidEarnWindow), NEVER the raw cumulative counter: a
+			// cumulative-only check would let a proxy that earned once
+			// early then died look "earning" forever and never be re-probed
+			// (Sonnet review finding 2c).
+			//
+			// Hard ceiling: even an actively-earning proxy is force-probed
+			// at least once per paidForceProbeCeiling (24h) so the fail-fast
+			// path can never be starved — "earning" suppresses probes, but
+			// only for a bounded time (findings 2c/4b).
+			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Address, paidEarnWindow)
+			forceProbeDue := !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) >= paidForceProbeCeiling
+			if earnedRecently && !forceProbeDue {
+				continue // earning and not past the ceiling — save the bandwidth
 			}
 			t := gradeTarget{addr: s.Address, snapshotGradedAt: entry.LastGraded}
 			if s.Auth != nil {
