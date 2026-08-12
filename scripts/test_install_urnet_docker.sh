@@ -34,7 +34,10 @@ assert_eq() {
 
 # --- TEST 1: arch detection maps uname -m to Go arch names ---
 test_arch_detection() {
-    local cases="x86_64:amd64 amd64:amd64 aarch64:arm64 arm64:arm64 i386:386 i686:386"
+    # 32-bit x86 is REJECTED, not mapped to "386": the release matrix builds
+    # amd64/arm64 only, so a 386 mapping guarantees a misleading missing-asset
+    # error later (verified 2026-08-12 review). Tested separately below.
+    local cases="x86_64:amd64 amd64:amd64 aarch64:arm64 arm64:arm64"
     for c in $cases; do
         local machine="${c%%:*}"
         local want="${c##*:}"
@@ -49,6 +52,25 @@ test_arch_detection() {
     done
 }
 test_arch_detection
+
+# --- TEST 1b: 32-bit x86 refuses with a clear error (not mapped to 386) ---
+test_arch_32bit_rejected() {
+    for machine in i386 i686; do
+        local out rc
+        out=$(bash -c "
+            uname() { case \"\$1\" in -m) echo '$machine';; -s) echo 'Linux';; esac; }
+            id() { echo '1000'; }
+            source /tmp/urnet_docker_lib.sh
+        " 2>&1) && rc=0 || rc=$?
+        if [ "$rc" -eq 1 ] && case "$out" in *"32-bit x86 is not supported"*) true;; *) false;; esac; then
+            echo "✅ PASS: uname -m '$machine' rejected with the 32-bit message"
+        else
+            echo "❌ FAIL: uname -m '$machine' rc=$rc out=$out"
+            FAILS=$((FAILS + 1))
+        fi
+    done
+}
+test_arch_32bit_rejected
 
 # --- TEST 2: unsupported architecture refuses with a clear error ---
 test_arch_unsupported() {
