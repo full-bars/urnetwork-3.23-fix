@@ -85,6 +85,26 @@ CREATE INDEX IF NOT EXISTS idx_pnh_hour ON proxy_node_hourly(hour);
 CREATE INDEX IF NOT EXISTS idx_pnh_proxy ON proxy_node_hourly(proxy_id);
 CREATE INDEX IF NOT EXISTS idx_pnh_hour_proxy ON proxy_node_hourly(hour, proxy_id);
 
+-- A-F grades surfaced from the provider's grading pipeline (roadmap step
+-- 3). One row per (node, proxy, hour): the latest report in an hour
+-- overwrites (latest-wins), earlier hours stay as history. Grades change
+-- on a 1-3h cadence, so hourly granularity is natural. ungraded proxies
+-- never get a row (the provider omits grade fields for them).
+CREATE TABLE IF NOT EXISTS proxy_grades (
+  node_id      TEXT    NOT NULL,
+  proxy_id     INTEGER NOT NULL,
+  hour         INTEGER NOT NULL,
+  tier         TEXT    NOT NULL,
+  score        REAL    NOT NULL,
+  graded       INTEGER NOT NULL DEFAULT 0,
+  failed       TEXT    NOT NULL DEFAULT '[]', -- JSON array of failed hostnames
+  last_graded  INTEGER NOT NULL DEFAULT 0,    -- unix ts, 0 = never
+  PRIMARY KEY (node_id, proxy_id, hour)
+);
+CREATE INDEX IF NOT EXISTS idx_pg_proxy ON proxy_grades(proxy_id);
+CREATE INDEX IF NOT EXISTS idx_pg_hour ON proxy_grades(hour);
+CREATE INDEX IF NOT EXISTS idx_pg_proxy_hour ON proxy_grades(proxy_id, hour);
+
 -- Tier 2: per-node per-proxy daily, rolled up from tier 1 as it ages.
 -- day is epoch-days (hour/24).
 CREATE TABLE IF NOT EXISTS proxy_node_daily (
@@ -347,6 +367,44 @@ func (s *store) persist(state *nodeState) error {
 		hourlyRows = append(hourlyRows, hourlyRow{proxyID: proxyID, d: d})
 	}
 
+	// Grade rows are collected separately from the hourly deltas: a graded
+	// proxy with zero traffic this interval still needs its grade upserted
+	// (grades change on a 1-3h cadence while traffic may be idle), and an
+	// ungraded proxy never gets a grade row. Same pre-tx interning rule as
+	// hourlyRows — internProxy writes through s.db, so it must not run while
+	// the tx below holds SQLite's write lock.
+	type gradeRow struct {
+		proxyID    int64
+		tier       string
+		score      float64
+		graded     bool
+		failedJSON string
+		lastGraded int64
+	}
+	var gradeRows []gradeRow
+	for i := range state.Proxies {
+		p := &state.Proxies[i]
+		if !p.Graded || p.Address == "" {
+			continue
+		}
+		proxyID, err := s.internProxy(p.Address)
+		if err != nil {
+			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
+		}
+		failedJSON, err := json.Marshal(p.Failed)
+		if err != nil {
+			return fmt.Errorf("marshal grade failed list for %s: %w", p.Address, err)
+		}
+		gradeRows = append(gradeRows, gradeRow{
+			proxyID:    proxyID,
+			tier:       p.Tier,
+			score:      p.Score,
+			graded:     p.Graded,
+			failedJSON: string(failedJSON),
+			lastGraded: p.LastGraded,
+		})
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -422,6 +480,19 @@ func (s *store) persist(state *nodeState) error {
 		}
 	}
 
+	for _, row := range gradeRows {
+		if _, err := tx.Exec(`
+			INSERT INTO proxy_grades (node_id, proxy_id, hour, tier, score, graded, failed, last_graded)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, proxy_id, hour) DO UPDATE SET
+				tier=excluded.tier, score=excluded.score, graded=excluded.graded,
+				failed=excluded.failed, last_graded=excluded.last_graded`,
+			state.NodeID, row.proxyID, hour, row.tier, row.score, row.graded, row.failedJSON, row.lastGraded,
+		); err != nil {
+			return fmt.Errorf("upsert proxy grade: %w", err)
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -443,6 +514,7 @@ func (s *store) deleteFromDB(nodeID string) error {
 		`DELETE FROM node_hourly WHERE node_id = ?`,
 		`DELETE FROM proxy_node_hourly WHERE node_id = ?`,
 		`DELETE FROM proxy_node_daily WHERE node_id = ?`,
+		`DELETE FROM proxy_grades WHERE node_id = ?`,
 	} {
 		if _, err := tx.Exec(q, nodeID); err != nil {
 			return err
