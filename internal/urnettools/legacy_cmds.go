@@ -369,7 +369,8 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
-// code execution of a remote file (coderabbit critical).
+// code execution of a remote file (coderabbit critical). Linux-only check;
+// see isRecognizedExecutable for the platform-aware form.
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -381,6 +382,69 @@ func isELFExecutable(path string) bool {
 		return false
 	}
 	return magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F'
+}
+
+// isMachOExecutable reports whether path starts with a Mach-O magic (darwin
+// binaries: MH_MAGIC_64 0xFEEDFACF / MH_MAGIC 0xFEEDFACE, plus the byte-
+// swapped and fat-binary forms 0xCEFAEDFE / 0xCFFAEDFE / 0xCAFEBABE /
+// 0xBEBAFECA). The tool cross-compiles for darwin, so a downloaded darwin
+// binary must pass a Mach-O check, not the ELF one.
+func isMachOExecutable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	switch {
+	case magic[0] == 0xfe && magic[1] == 0xed && magic[2] == 0xfa && (magic[3] == 0xce || magic[3] == 0xcf):
+		return true // MH_MAGIC_64 / MH_MAGIC (little-endian)
+	case magic[0] == 0xce && magic[1] == 0xfa && magic[2] == 0xed && magic[3] == 0xfe:
+		return true // MH_CIGAM (big-endian)
+	case magic[0] == 0xcf && magic[1] == 0xfa && magic[2] == 0xed && magic[3] == 0xfe:
+		return true // MH_CIGAM_64 (big-endian)
+	case magic[0] == 0xca && magic[1] == 0xfe && magic[2] == 0xba && magic[3] == 0xbe:
+		return true // FAT_MAGIC (universal binary)
+	case magic[0] == 0xbe && magic[1] == 0xba && magic[2] == 0xfe && magic[3] == 0xca:
+		return true // FAT_CIGAM (universal binary, swapped)
+	}
+	return false
+}
+
+// isPEExecutable reports whether path starts with the MZ header of a PE
+// (Windows) executable.
+func isPEExecutable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [2]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 'M' && magic[1] == 'Z'
+}
+
+// isRecognizedExecutable is the platform-aware structural check for a
+// downloaded binary: ELF on linux, Mach-O on darwin, PE on windows. It
+// never executes the file — it only confirms the magic matches the platform
+// we are about to install for (coderabbit critical: the provider path
+// guards with this same ceiling). A wrong-format artifact (a shell script,
+// a corrupt download, or a binary built for another OS) is refused before
+// it can be swapped into place.
+func isRecognizedExecutable(path string) bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return isMachOExecutable(path)
+	case "windows":
+		return isPEExecutable(path)
+	default:
+		return isELFExecutable(path)
+	}
 }
 
 // unitDropinDir returns the drop-in dir for the provider's unit.
@@ -446,9 +510,9 @@ func cmdHubInstall(p Provider, rest []string) error {
 	if err := os.Chmod(hubBin, 0o755); err != nil {
 		return err
 	}
-	if !isELFExecutable(hubBin) {
+	if !isRecognizedExecutable(hubBin) {
 		os.Remove(hubBin)
-		return fmt.Errorf("hub download: %s is not an ELF executable (corrupted or wrong asset)", hubBin)
+		return fmt.Errorf("hub download: %s is not a %s executable (corrupted or wrong asset)", hubBin, runtime.GOOS)
 	}
 	// User-level systemd unit for the hub.
 	home := homeForUser(p.User)
