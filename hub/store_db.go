@@ -384,14 +384,25 @@ func (s *store) persist(state *nodeState) error {
 	var gradeRows []gradeRow
 	for i := range state.Proxies {
 		p := &state.Proxies[i]
-		if !p.Graded || p.Address == "" {
+		// A graded proxy must carry a tier letter; a malformed report with
+		// Graded=true and an empty tier would otherwise store an empty
+		// string that renders a broken `.grade-` badge (free-review LOW).
+		// Skip the row entirely — the grade was not usable.
+		if !p.Graded || p.Tier == "" || p.Address == "" {
 			continue
 		}
 		proxyID, err := s.internProxy(p.Address)
 		if err != nil {
 			return fmt.Errorf("intern proxy %s: %w", p.Address, err)
 		}
-		failedJSON, err := json.Marshal(p.Failed)
+		failed := p.Failed
+		if failed == nil {
+			// Normalize to an empty JSON array so stored values are
+			// consistently "[]" rather than a mix of "null" (json.Marshal
+			// of nil) and the column default "[]" (free-review LOW).
+			failed = []string{}
+		}
+		failedJSON, err := json.Marshal(failed)
 		if err != nil {
 			return fmt.Errorf("marshal grade failed list for %s: %w", p.Address, err)
 		}
