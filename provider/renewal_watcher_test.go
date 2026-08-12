@@ -127,12 +127,12 @@ func TestRunProxyJWTWatcherRenewsOn401(t *testing.T) {
 		})
 	}()
 
-	// Fire a SendControl that the fake server answers 401 -> counter goes to 1.
+	// Fire a SendControl that the fake server answers 401. The OOB's on401
+	// callback (registered by the watcher) signals renewNow automatically —
+	// this exercises the production fast-path, not a manual channel send.
 	if err := ts.forceOob401(oob); err != nil {
 		t.Fatal(err)
 	}
-	// Deliver the renew-now signal.
-	renewNow <- struct{}{}
 
 	deadline := time.After(5 * time.Second)
 	for {
@@ -145,6 +145,126 @@ func TestRunProxyJWTWatcherRenewsOn401(t *testing.T) {
 			t.Fatal("watcher did not renew on 401 fast-path")
 		case <-time.After(20 * time.Millisecond):
 		}
+	}
+	cancel()
+	<-done
+}
+
+func TestRunProxyJWTWatcherRenewsExpiredAtStartup(t *testing.T) {
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	// Already-expired token: a hot-restart that reused this would be a black
+	// hole; the watcher must renew on its startup check, not the first tick.
+	expired := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(-1 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy-c", clientJWTEntry{
+		ByClientJWT: expired,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now().Add(-25 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	renewNow := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy-c",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "jwt", ts.srv.URL),
+			RenewNow:       renewNow,
+			ProxyIndex:     0,
+		})
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		entry, ok := store.Get("proxy-c")
+		if ok && entry.ByClientJWT != expired {
+			break // renewed by startup check
+		}
+		select {
+		case <-deadline:
+			t.Fatal("watcher did not renew the already-expired token at startup")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+}
+
+func TestRunProxyJWTWatcherSkipsHealthyToken(t *testing.T) {
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	// Token expiring in 30h: far outside the 12h threshold, no 401s — the
+	// watcher must NOT renew on a tick.
+	healthy := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(30 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy-d", clientJWTEntry{
+		ByClientJWT: healthy,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	renewNow := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy-d",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "jwt", ts.srv.URL),
+			RenewNow:       renewNow,
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	tick <- time.Now()
+	time.Sleep(200 * time.Millisecond)
+
+	entry, ok := store.Get("proxy-d")
+	if !ok {
+		t.Fatal("store entry missing")
+	}
+	if entry.ByClientJWT != healthy {
+		t.Fatalf("healthy token was renewed — watcher must skip tokens outside the 12h window")
 	}
 	cancel()
 	<-done

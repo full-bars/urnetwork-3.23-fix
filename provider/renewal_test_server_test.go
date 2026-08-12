@@ -20,7 +20,7 @@ type renewalTestServer struct {
 	srv      *httptest.Server
 	force401 atomic.Bool
 	// concurrent counts overlapping /network/auth-client requests
-	concurrent   atomic.Int32
+	concurrent    atomic.Int32
 	maxConcurrent atomic.Int32
 	// clientIdSeen is the last ClientId the auth-client request carried
 	clientIdSeen atomic.Value // string
