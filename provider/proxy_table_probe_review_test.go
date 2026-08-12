@@ -1051,8 +1051,12 @@ func TestReview_ReaperStaleReprobeDemotesTLSFailed(t *testing.T) {
 }
 
 // TestReview_ReaperBlacklistsTLSFailedAfterThree pins the full retirement
-// path: a TLS-failing proxy accumulates ProbeFails across reaper cycles and
-// is blacklisted (removed from the cache) once it reaches proxyAPIMaxFails.
+// lifecycle: a once-good (ProbeOK=true) proxy that turns hostile is demoted
+// on its stale re-probe (wasProbeOK -> probeTLSFailed, ProbeFails=1), then
+// the liveness path accumulates ProbeFails across subsequent cycles until it
+// reaches proxyAPIMaxFails and is blacklisted (removed from the cache).
+// The reaper skips candidates with fresh LastProbe, so the timestamp is
+// re-seeded between cycles to simulate the passing of reaper intervals.
 func TestReview_ReaperBlacklistsTLSFailedAfterThree(t *testing.T) {
 	withTempHome(t)
 	resetProbeConfigCache()
@@ -1063,23 +1067,58 @@ func TestReview_ReaperBlacklistsTLSFailedAfterThree(t *testing.T) {
 	addr, _, cleanup := listenSocks5SequencedTLS(t, func(n int) byte { return 0x00 }, &leaf)
 	defer cleanup()
 
-	// Start already demoted with 2 fails: the next reaper cycle pushes it
-	// to 3 and blacklists.
-	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
-		addr: {ProbeOK: false, Graded: true, Score: 1.0, ProbeFails: 2, LastProbe: time.Now().Add(-24 * time.Hour)},
-	}}
-	if err := writeProxyURLState(state); err != nil {
+	// Cycle 1: starts as a once-good entry. Stale-reprobe demotes it.
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		addr: {ProbeOK: true, Graded: true, Score: 1.0, ProbeFails: 0, LastProbe: time.Now().Add(-24 * time.Hour)},
+	}}); err != nil {
 		t.Fatal(err)
 	}
-
 	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
 
 	got, err := readProxyURLState()
 	if err != nil {
 		t.Fatal(err)
 	}
+	entry, ok := got.Cache[addr]
+	if !ok {
+		t.Fatalf("cycle 1: entry must remain cached (blacklist needs %d fails), got %+v", proxyAPIMaxFails, got.Cache)
+	}
+	if entry.ProbeOK || entry.ProbeFails != 1 {
+		t.Fatalf("cycle 1: expected demoted ProbeOK=false ProbeFails=1, got %+v", entry)
+	}
+
+	// Cycle 2: liveness path (ProbeOK=false) increments to 2.
+	entry.LastProbe = time.Now().Add(-24 * time.Hour) // re-seed so the reaper picks it up
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{addr: entry}}); err != nil {
+		t.Fatal(err)
+	}
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err = readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok = got.Cache[addr]
+	if !ok {
+		t.Fatalf("cycle 2: entry must still be cached at %d fails, got %+v", proxyAPIMaxFails-1, got.Cache)
+	}
+	if entry.ProbeFails != 2 {
+		t.Fatalf("cycle 2: expected ProbeFails=2, got %+v", entry)
+	}
+
+	// Cycle 3: reaches proxyAPIMaxFails -> blacklisted, removed from cache.
+	entry.LastProbe = time.Now().Add(-24 * time.Hour)
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{addr: entry}}); err != nil {
+		t.Fatal(err)
+	}
+	runURLProxyReaperOnce(context.Background(), "1.2.3.4", 443)
+
+	got, err = readProxyURLState()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := got.Cache[addr]; ok {
-		t.Fatalf("TLS-failing proxy must be blacklisted (removed from cache) after %d fails, got %+v", proxyAPIMaxFails, got.Cache[addr])
+		t.Fatalf("cycle 3: TLS-failing proxy must be blacklisted (removed from cache) after %d fails, got %+v", proxyAPIMaxFails, got.Cache[addr])
 	}
 	if _, ok := got.Blacklist[addr]; !ok {
 		t.Fatal("TLS-failing proxy must be recorded in the persistent blacklist")
