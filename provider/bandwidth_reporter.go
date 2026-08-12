@@ -368,9 +368,18 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 	// small (hundreds of entries) and the report loop covers every proxy
 	// the box serves. A read failure (transient IO, first boot before the
 	// stores exist) simply means no grades this round — the report itself
-	// must not fail because grading data is unavailable.
-	paidState, _ := readProxyState()
-	urlState, _ := readProxyURLState()
+	// must not fail because grading data is unavailable. Log the failure
+	// (plain tlog, not importantLogf: this fires once per report interval
+	// while broken, and the reaper precedent is that recurring-state noise
+	// stays out of the important buffer).
+	paidState, err := readProxyState()
+	if err != nil {
+		tlog("[proxy][grade] report: read proxy.state: %v (grades omitted this round)\n", err)
+	}
+	urlState, err := readProxyURLState()
+	if err != nil {
+		tlog("[proxy][grade] report: read proxy_url.json: %v (grades omitted this round)\n", err)
+	}
 
 	proxies := make([]proxyReport, 0, len(bandwidth))
 	for key, bw := range bandwidth {
