@@ -13,6 +13,11 @@ type releaseInfo struct {
 	Tag    string
 	Digest string // sha256 of the urnetwork-provider-<tag>.tar.gz asset
 	URL    string
+	// Assets is the full asset list of the release. Tool self-update uses it
+	// to look up the digest of the tool's OWN asset (urnet-tools-<os>-<arch>
+	// or urnet-docker-<os>-<arch>), which is separate from the provider
+	// tarball digest.
+	Assets []releaseAsset
 }
 
 // releaseAsset is the subset of the GitHub release asset JSON we need.
@@ -48,8 +53,9 @@ func fetchLatestRelease() (*releaseInfo, error) {
 		return nil, fmt.Errorf("release response missing tag_name")
 	}
 	info := &releaseInfo{
-		Tag: rj.TagName,
-		URL: fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", rj.TagName, rj.TagName),
+		Tag:    rj.TagName,
+		URL:    fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", rj.TagName, rj.TagName),
+		Assets: rj.Assets,
 	}
 	// The release API digest field is "sha256:<hex>"; strip the prefix and
 	// match the exact asset name. A missing asset or missing digest is an
@@ -95,8 +101,9 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 		return nil, fmt.Errorf("decode release %s: %w", tag, err)
 	}
 	info := &releaseInfo{
-		Tag: tag,
-		URL: fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", tag, tag),
+		Tag:    tag,
+		URL:    fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", tag, tag),
+		Assets: rj.Assets,
 	}
 	wantName := "urnetwork-provider-" + tag + ".tar.gz"
 	info.Digest = digestForAsset(rj.Assets, wantName)

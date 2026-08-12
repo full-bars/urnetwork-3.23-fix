@@ -106,6 +106,48 @@ test_do_install_rate_limit() {
 }
 test_do_install_rate_limit
 
+# --- TEST 4: get_asset_digest_from_api_response ---
+test_asset_digest_jq() {
+    local json='{"tag_name": "v3.23.0-fix.28.0", "assets": [
+        {"name": "urnetwork-provider-v3.23.0-fix.28.0.tar.gz", "digest": "sha256:abc123"},
+        {"name": "urnet-tools-linux-amd64", "digest": "sha256:def456"}
+    ]}'
+    local res=$(get_asset_digest_from_api_response "$json" "urnet-tools-linux-amd64")
+    assert_eq "def456" "$res" "digest extraction strips sha256: prefix and finds the named asset"
+}
+
+test_asset_digest_missing() {
+    local json='{"tag_name": "v3.23.0-fix.27.0", "assets": [
+        {"name": "urnetwork-provider-v3.23.0-fix.27.0.tar.gz", "digest": "sha256:abc123"}
+    ]}'
+    local res=$(get_asset_digest_from_api_response "$json" "urnet-tools-linux-amd64")
+    assert_eq "" "$res" "missing asset yields empty digest (caller falls back to shell script)"
+}
+test_asset_digest_jq
+test_asset_digest_missing
+
+# --- TEST 5: verify_sha256_file ---
+test_sha256_verify() {
+    local tmpfile=$(mktemp)
+    echo "tool-binary-content" > "$tmpfile"
+    local good=$(sha256sum "$tmpfile" | awk '{print $1}')
+    local rc_good=1 rc_bad=0
+    if verify_sha256_file "$tmpfile" "$good"; then
+        rc_good=0
+    fi
+    if ! verify_sha256_file "$tmpfile" "$(printf '%.64s' 0000000000000000000000000000000000000000000000000000000000000000)"; then
+        rc_bad=1
+    fi
+    rm -f "$tmpfile"
+    if [ "$rc_good" -eq 0 ] && [ "$rc_bad" -eq 1 ]; then
+        echo "✅ PASS: verify_sha256_file accepts matching digest, rejects mismatch"
+    else
+        echo "❌ FAIL: verify_sha256_file rc_good=$rc_good rc_bad=$rc_bad"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_sha256_verify
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
