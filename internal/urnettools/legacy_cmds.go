@@ -401,11 +401,15 @@ func isMachOExecutable(path string) bool {
 	}
 	switch {
 	case magic[0] == 0xfe && magic[1] == 0xed && magic[2] == 0xfa && (magic[3] == 0xce || magic[3] == 0xcf):
-		return true // MH_MAGIC_64 / MH_MAGIC (little-endian)
+		return true // MH_CIGAM / MH_CIGAM_64 (byte-swapped big-endian)
 	case magic[0] == 0xce && magic[1] == 0xfa && magic[2] == 0xed && magic[3] == 0xfe:
-		return true // MH_CIGAM (big-endian)
+		return true // MH_MAGIC (little-endian on disk)
 	case magic[0] == 0xcf && magic[1] == 0xfa && magic[2] == 0xed && magic[3] == 0xfe:
-		return true // MH_CIGAM_64 (big-endian)
+		// MH_MAGIC_64 — the little-endian on-disk byte sequence of the
+		// host-order constant. This is the branch real Go darwin/amd64 and
+		// darwin/arm64 binaries hit (verified by cross-compiling and dumping
+		// the first bytes: cf fa ed fe). NOT a big-endian case.
+		return true
 	case magic[0] == 0xca && magic[1] == 0xfe && magic[2] == 0xba && magic[3] == 0xbe:
 		return true // FAT_MAGIC (universal binary)
 	case magic[0] == 0xbe && magic[1] == 0xba && magic[2] == 0xfe && magic[3] == 0xca:
