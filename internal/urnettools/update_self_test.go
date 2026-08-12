@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestToolAssetName: the release asset name for a tool binary follows the
@@ -410,5 +411,100 @@ func TestRunningToolAssetNameExeStripping(t *testing.T) {
 	want := "urnet-docker-windows-amd64"
 	if got != want {
 		t.Errorf("toolAssetName(urnet-docker.exe) = %q, want %q", got, want)
+	}
+}
+
+// TestCmdSelfUpdateFlagErrors: cmdSelfUpdate must reject malformed flags
+// (missing values, unknown flags) before ever touching the network or
+// prompting — the CLI-facing wrapper around the self-update machinery.
+func TestCmdSelfUpdateFlagErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"missing --tag value", []string{"--tag"}, "--tag requires a value"},
+		{"missing --digest value", []string{"--digest"}, "--digest requires a value"},
+		{"missing --url value", []string{"--url"}, "--url requires a value"},
+		{"unknown flag", []string{"--bogus"}, `unknown flag "--bogus" for self-update`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := cmdSelfUpdate(c.args, false, false)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("cmdSelfUpdate(%v) = %v, want error containing %q", c.args, err, c.want)
+			}
+		})
+	}
+}
+
+// TestCmdSelfUpdateHelp: --help/-h must print usage and return nil without
+// resolving a release, prompting, or touching the network — help must never
+// execute a side effect.
+func TestCmdSelfUpdateHelp(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		if err := cmdSelfUpdate([]string{flag}, false, false); err != nil {
+			t.Errorf("cmdSelfUpdate([%q]) = %v, want nil (help must never execute)", flag, err)
+		}
+	}
+}
+
+// TestCmdSelfUpdateDryRunExplicitTagDigest: with both --tag and --digest
+// given explicitly, cmdSelfUpdate never needs to resolve a release over the
+// network at all; in dry-run mode it must report and return nil, never
+// prompting or invoking selfUpdateTool.
+func TestCmdSelfUpdateDryRunExplicitTagDigest(t *testing.T) {
+	err := cmdSelfUpdate([]string{"--tag", "v9.9.9", "--digest", strings.Repeat("a", 64)}, false, true)
+	if err != nil {
+		t.Fatalf("cmdSelfUpdate dry-run with explicit tag+digest = %v, want nil", err)
+	}
+}
+
+// TestCmdSelfUpdateResolvesFromCachedLatestRelease: with no --tag given,
+// cmdSelfUpdate resolves via latestRelease(); pre-populating the package
+// cache (the same save/restore pattern used elsewhere for latestRelease)
+// lets this run entirely offline and still exercise the "find my own
+// asset's digest in the release's Assets list" path.
+func TestCmdSelfUpdateResolvesFromCachedLatestRelease(t *testing.T) {
+	origInfo, origTime := cachedLatest, cachedLatestTime
+	defer func() { cachedLatest, cachedLatestTime = origInfo, origTime }()
+
+	asset, err := runningToolAssetName()
+	if err != nil {
+		t.Fatalf("runningToolAssetName: %v", err)
+	}
+	cachedLatest = &releaseInfo{
+		Tag: "v9.9.9-selfupdate-cached",
+		Assets: []releaseAsset{
+			{Name: asset, Digest: "sha256:" + strings.Repeat("b", 64)},
+		},
+	}
+	cachedLatestTime = time.Now()
+
+	err = cmdSelfUpdate(nil, false, true) // dry-run: no --tag => latestRelease() hits the cache
+	if err != nil {
+		t.Fatalf("cmdSelfUpdate(dry-run, cached release) = %v, want nil", err)
+	}
+}
+
+// TestCmdSelfUpdateNoToolAssetErrors: a release with assets present but none
+// matching this tool's asset name must be a hard refusal ("release predates
+// tool assets"), not a silent skip — mirrors the supply-chain-safety
+// invariant already enforced for the provider digest in release.go.
+func TestCmdSelfUpdateNoToolAssetErrors(t *testing.T) {
+	origInfo, origTime := cachedLatest, cachedLatestTime
+	defer func() { cachedLatest, cachedLatestTime = origInfo, origTime }()
+
+	cachedLatest = &releaseInfo{
+		Tag: "v9.9.9-selfupdate-noasset",
+		Assets: []releaseAsset{
+			{Name: "urnetwork-provider-v9.9.9-selfupdate-noasset.tar.gz", Digest: "sha256:" + strings.Repeat("c", 64)},
+		},
+	}
+	cachedLatestTime = time.Now()
+
+	err := cmdSelfUpdate(nil, false, true)
+	if err == nil || !strings.Contains(err.Error(), "release predates tool assets") {
+		t.Fatalf("cmdSelfUpdate(no tool asset) = %v, want 'release predates tool assets' error", err)
 	}
 }

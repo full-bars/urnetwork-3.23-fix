@@ -148,6 +148,67 @@ test_sha256_verify() {
 }
 test_sha256_verify
 
+# --- TEST 6: get_asset_digest_from_api_response (Python3 fallback) ---
+# Mirrors test_version_python's approach: `command -v jq` inside the sourced
+# function bypasses shell aliases/functions, so this exercises the exact
+# python3 one-liner (with the asset-name argv match) directly to confirm its
+# JSON parsing and digest-selection logic independent of jq.
+test_asset_digest_python_fallback() {
+    local json='{"tag_name": "v3.23.0-fix.28.0", "assets": [
+        {"name": "urnetwork-provider-v3.23.0-fix.28.0.tar.gz", "digest": "sha256:abc123"},
+        {"name": "urnet-tools-linux-amd64", "digest": "sha256:def456"}
+    ]}'
+    local res=$(printf "%s" "$json" | tr -d '\000-\037' | python3 -c 'import sys, json;
+try:
+    data = json.load(sys.stdin)
+    asset = sys.argv[1]
+    for a in data.get("assets", []):
+        if a.get("name") == asset:
+            print(a.get("digest", ""))
+            break
+except (json.JSONDecodeError, KeyError):
+    print("")
+' "urnet-tools-linux-amd64" 2>/dev/null | sed 's/^sha256://')
+    assert_eq "def456" "$res" "Python3 fallback digest extraction finds the named asset and strips sha256:"
+}
+test_asset_digest_python_fallback
+
+# --- TEST 7: verify_sha256_file edge cases ---
+# A missing file must fail closed (return 1), never treated as "verified"
+# or attempt to hash a nonexistent path.
+test_verify_sha256_missing_file() {
+    local rc=1
+    if verify_sha256_file "/tmp/urnet-test-does-not-exist-9f3a" "$(printf '%.64s' 0000000000000000000000000000000000000000000000000000000000000000)"; then
+        rc=0
+    fi
+    if [ "$rc" -eq 1 ]; then
+        echo "✅ PASS: verify_sha256_file fails closed on a missing file"
+    else
+        echo "❌ FAIL: verify_sha256_file returned success for a missing file"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_verify_sha256_missing_file
+
+# An empty expected digest (release predates tool assets, or lookup failed)
+# must also fail closed rather than being treated as "nothing to check".
+test_verify_sha256_empty_digest() {
+    local tmpfile=$(mktemp)
+    echo "tool-binary-content" > "$tmpfile"
+    local rc=1
+    if verify_sha256_file "$tmpfile" ""; then
+        rc=0
+    fi
+    rm -f "$tmpfile"
+    if [ "$rc" -eq 1 ]; then
+        echo "✅ PASS: verify_sha256_file fails closed on an empty expected digest"
+    else
+        echo "❌ FAIL: verify_sha256_file returned success for an empty expected digest"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_verify_sha256_empty_digest
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
