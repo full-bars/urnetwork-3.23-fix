@@ -252,3 +252,50 @@ func TestRunDockerNoContainers(t *testing.T) {
 		t.Errorf("RunDocker([exec --unit x -f cmd]) = %v, want unknown-flag error", err)
 	}
 }
+
+// TestRunSelfUpdateHelp: `self-update`/`selfupdate` (and their -h/--help)
+// must be dispatched by Run() to cmdSelfUpdate and print help without
+// touching the network or prompting.
+func TestRunSelfUpdateHelp(t *testing.T) {
+	for _, cmd := range []string{"self-update", "selfupdate"} {
+		for _, flag := range []string{"-h", "--help"} {
+			if err := Run([]string{cmd, flag}); err != nil {
+				t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
+			}
+		}
+	}
+}
+
+// TestRunDockerUpdateHelp: RunDocker's `update`/`self-update`/`selfupdate`
+// aliases all route to the same cmdSelfUpdate as Run()'s self-update.
+func TestRunDockerUpdateHelp(t *testing.T) {
+	for _, cmd := range []string{"update", "self-update", "selfupdate"} {
+		for _, flag := range []string{"-h", "--help"} {
+			if err := RunDocker([]string{cmd, flag}); err != nil {
+				t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
+			}
+		}
+	}
+}
+
+// TestRunSelfUpdateUnknownFlagPropagates: an unrecognized flag reaching
+// cmdSelfUpdate via Run()'s dispatch must surface cmdSelfUpdate's own
+// "unknown flag" error, proving parseGlobalFlags leaves subcommand-specific
+// flags in rest for self-update just as it does for other subcommands.
+func TestRunSelfUpdateUnknownFlagPropagates(t *testing.T) {
+	err := Run([]string{"self-update", "--bogus"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("Run([self-update --bogus]) = %v, want \"unknown flag\"", err)
+	}
+}
+
+// TestRunDockerSelfUpdateUnknownFlagPropagates mirrors the above for
+// RunDocker's update/self-update/selfupdate aliases.
+func TestRunDockerSelfUpdateUnknownFlagPropagates(t *testing.T) {
+	for _, cmd := range []string{"update", "self-update", "selfupdate"} {
+		err := RunDocker([]string{cmd, "--bogus"})
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("RunDocker([%q --bogus]) = %v, want \"unknown flag\"", cmd, err)
+		}
+	}
+}
