@@ -885,7 +885,7 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		// Restore the original before giving up — an update that fails
 		// mid-swap must not leave the tool missing.
 		if rerr := os.Rename(backup, exePath); rerr != nil {
-			return fmt.Errorf("swap tool binary: %v (restore from %s failed: %v)", err, backup, rerr)
+			return fmt.Errorf("swap tool binary: %w (restore from %s failed: %v)", err, backup, rerr)
 		}
 		return fmt.Errorf("swap tool binary: %w", err)
 	}
