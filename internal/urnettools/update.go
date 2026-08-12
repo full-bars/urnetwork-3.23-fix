@@ -30,6 +30,18 @@ type updateConfig struct {
 	// /tmp is frequently a small tmpfs and the multi-platform tarball
 	// overflows it (the 2026-08-09 failure).
 	StageDir string
+	// ToolAsset is the release asset name of THIS tool binary
+	// (urnet-tools-<os>-<arch> or urnet-docker-<os>-<arch>). Populated by
+	// cmdUpdate from the release's asset list.
+	ToolAsset string
+	// ToolDigest is the sha256 (hex) of the ToolAsset, resolved from the
+	// release API. Empty means the release predates tool assets — the
+	// self-update leg then skips rather than unverified-downloads.
+	ToolDigest string
+	// ToolAssetURL is the download URL for the tool's own asset. Distinct
+	// from AssetURL (the provider tarball): the self-update leg must NEVER
+	// reuse AssetURL, which is provider-scoped.
+	ToolAssetURL string
 }
 
 // newStageDir creates a private 0700 staging directory for one update.
@@ -146,9 +158,13 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 
-	// Resolve the release: --tag wins; otherwise fetch latest.
+	// Resolve the release: --tag wins; otherwise fetch latest. The resolved
+	// releaseInfo is kept so the tool's own asset digest can be looked up
+	// from the SAME release (self-update leg below).
+	var rel *releaseInfo
 	if cfg.Tag == "" {
-		rel, rerr := latestRelease()
+		var rerr error
+		rel, rerr = latestRelease()
 		if rerr != nil {
 			return rerr
 		}
@@ -163,7 +179,8 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		// --tag without --digest: resolve the digest from the release API
 		// so the download is always verified (never silently skipped —
 		// the staged binary would be executed as the provider user).
-		rel, rerr := fetchReleaseByTag(cfg.Tag)
+		var rerr error
+		rel, rerr = fetchReleaseByTag(cfg.Tag)
 		if rerr != nil {
 			return rerr
 		}
@@ -171,6 +188,18 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		if cfg.AssetURL == "" {
 			cfg.AssetURL = rel.URL
 		}
+	}
+
+	// Tool self-update asset + digest, resolved from the same release. When
+	// the release predates tool assets the digest is empty and the leg skips.
+	// A fully explicit --tag+--digest invocation (rel == nil, no API call)
+	// cannot resolve the tool digest — skip the self-update leg there rather
+	// than failing the provider update.
+	cfg.ToolAsset = runningToolAssetName()
+	if rel != nil {
+		cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
+	} else {
+		fmt.Printf("tool self-update skipped (explicit --digest, no asset list)\n")
 	}
 
 	// Confirm version choice interactively unless -f or dry-run already
@@ -228,10 +257,110 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			failures++
 		}
 	}
+
+	// Self-update leg: refresh the tool binary itself from the same release.
+	// A failure here is reported but does NOT fail the command — providers
+	// were the primary job and may have succeeded; the tool can be retried
+	// (e.g. `urnet-tools self-update`) without touching providers.
+	if cfg.ToolDigest != "" {
+		if err := selfUpdateTool(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
+		}
+	} else {
+		fmt.Println("tool self-update skipped (release has no tool asset)")
+	}
+
 	if failures > 0 {
 		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
 	}
 	return nil
+}
+
+// cmdSelfUpdate updates ONLY the tool binary itself (urnet-tools or
+// urnet-docker) to the latest release — no provider discovery, no restart.
+// This is the machine/script path for keeping the tool fresh on boxes where
+// providers run elsewhere (docker hosts) or where `update`'s provider leg
+// should not run.
+func cmdSelfUpdate(args []string, force, dryRun bool) error {
+	cfg := updateConfig{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--tag":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--tag requires a value")
+			}
+			cfg.Tag = args[i+1]
+			i++
+		case "--digest":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--digest requires a value")
+			}
+			cfg.ToolDigest = args[i+1]
+			i++
+		case "--url":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--url requires a value")
+			}
+			cfg.ToolAssetURL = args[i+1]
+			i++
+		case "--help", "-h":
+			fmt.Println("Usage: urnet-tools self-update [--tag <version>] [--digest <sha256>]")
+			return nil
+		default:
+			return fmt.Errorf("unknown flag %q for self-update (--tag/--digest/--url)", args[i])
+		}
+	}
+
+	// Resolve the release + tool asset digest.
+	var rel *releaseInfo
+	if cfg.Tag == "" {
+		var err error
+		rel, err = latestRelease()
+		if err != nil {
+			return err
+		}
+		cfg.Tag = rel.Tag
+	} else if cfg.ToolDigest == "" {
+		var err error
+		rel, err = fetchReleaseByTag(cfg.Tag)
+		if err != nil {
+			return err
+		}
+	}
+	cfg.ToolAsset = runningToolAssetName()
+	if rel != nil && cfg.ToolDigest == "" {
+		cfg.ToolDigest = digestForAsset(rel.Assets, cfg.ToolAsset)
+	}
+
+	if cfg.ToolDigest == "" {
+		return fmt.Errorf("self-update: no sha256 digest for %s asset %q; release predates tool assets", cfg.Tag, cfg.ToolAsset)
+	}
+
+	if dryRun {
+		fmt.Printf("would update %s -> %s (sha256 verified)\n", cfg.ToolAsset, cfg.Tag)
+		return nil
+	}
+	if !force {
+		fmt.Printf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag)
+		line, err := stdinReader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		line = strings.TrimSpace(strings.ToLower(line))
+		if line != "" && line != "y" && line != "yes" {
+			fmt.Println("aborted")
+			return nil
+		}
+	}
+
+	stageDir, err := newStageDir()
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stageDir)
+	cfg.StageDir = stageDir
+
+	return selfUpdateTool(cfg)
 }
 
 // confirmVersion prompts "update to <tag>?" for the chosen set. Returns
@@ -591,4 +720,123 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("close %s: %w", dst, cerr)
 	}
 	return nil
+}
+
+// toolAssetName returns the release asset name for a tool binary:
+// <base>-<os>-<arch> (e.g. urnet-tools-linux-amd64). Release assets are
+// bare binaries — never a .exe suffix, even on Windows.
+func toolAssetName(base, goos, arch string) string {
+	return fmt.Sprintf("%s-%s-%s", base, goos, arch)
+}
+
+// runningToolAssetName derives the asset name from the ACTUAL running
+// binary's base name, so the same code serves urnet-tools and urnet-docker
+// without hardcoding which tool is updating.
+func runningToolAssetName() string {
+	base := "urnet-tools"
+	if exe, err := os.Executable(); err == nil {
+		if b := filepath.Base(exe); b != "" {
+			base = b
+		}
+	}
+	return toolAssetName(base, runtime.GOOS, runtimeGOARCH())
+}
+
+// toolAssetURL is the release download URL for a tool asset.
+func toolAssetURL(tag, asset string) string {
+	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, asset)
+}
+
+// selfUpdateTool updates the running tool binary (urnet-tools or
+// urnet-docker) in place from the release's tool asset. This is what makes
+// the Go tool self-sustaining: `update` refreshes BOTH the providers AND the
+// tool binary, so a box never needs the shell installer again.
+//
+// The flow mirrors updateProvider's safety shape: digest MANDATORY, sha256
+// verify, ELF structural check, timestamped backup, atomic rename swap. The
+// one deliberate difference: if the release predates tool assets (no digest),
+// we SKIP with a notice instead of refusing the whole update — an old
+// release can still update providers without a tool asset.
+func selfUpdateTool(cfg updateConfig) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve own executable: %w", err)
+	}
+	return selfUpdateToolTo(exe, cfg)
+}
+
+// selfUpdateToolTo is the testable core of selfUpdateTool: swap the binary
+// at exePath (not necessarily os.Executable) from cfg.ToolAssetURL with
+// cfg.ToolDigest verification. See selfUpdateTool for the skip semantics.
+func selfUpdateToolTo(exePath string, cfg updateConfig) error {
+	if cfg.StageDir == "" {
+		return fmt.Errorf("self-update: stage dir required (real disk, not /tmp)")
+	}
+	if cfg.ToolDigest == "" {
+		// Release predates tool assets (pre-v3.23.0-fix.28). Skipping is
+		// correct — there is nothing verified to install. Providers still
+		// update via the tarball path.
+		return fmt.Errorf("no sha256 digest for %s asset %q; release predates tool assets (skipping)", cfg.Tag, cfg.ToolAsset)
+	}
+	if err := os.MkdirAll(cfg.StageDir, 0o755); err != nil {
+		return fmt.Errorf("stage dir: %w", err)
+	}
+
+	// Skip when already current: compare the installed binary against the
+	// release digest BEFORE downloading (no point re-downloading ourselves).
+	if cur, err := fileSHA256(exePath); err == nil && strings.EqualFold(cur, cfg.ToolDigest) {
+		fmt.Printf("tool %s already on %s\n", cfg.ToolAsset, cfg.Tag)
+		return nil
+	}
+
+	url := cfg.ToolAssetURL
+	if url == "" {
+		url = toolAssetURL(cfg.Tag, cfg.ToolAsset)
+	}
+	staged := filepath.Join(cfg.StageDir, cfg.ToolAsset)
+	fmt.Printf("downloading %s\n", url)
+	if err := downloadFile(url, staged); err != nil {
+		return fmt.Errorf("download tool: %w", err)
+	}
+	if err := verifySHA256(staged, cfg.ToolDigest); err != nil {
+		return err
+	}
+	fmt.Println("tool sha256 verified")
+	if !isELFExecutable(staged) {
+		return fmt.Errorf("staged tool %s is not an ELF executable (corrupted or wrong asset) — refusing to install", staged)
+	}
+
+	backup := backupName(exePath, time.Now())
+	if _, err := os.Stat(backup); err == nil {
+		return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("backup stat: %w", err)
+	}
+	if err := copyFile(exePath, backup); err != nil {
+		return fmt.Errorf("backup tool: %w", err)
+	}
+	fmt.Printf("backed up %s -> %s\n", exePath, backup)
+
+	// Swap in place. The tool runs as the invoking user (root or the
+	// operator), so no chown is needed — installBinary with user="" keeps
+	// current ownership.
+	if err := installBinary(staged, exePath, ""); err != nil {
+		return fmt.Errorf("swap tool binary: %w", err)
+	}
+	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
+	return nil
+}
+
+// fileSHA256 returns the hex sha256 of a file ("" on error).
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
