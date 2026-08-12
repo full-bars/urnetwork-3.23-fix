@@ -157,6 +157,97 @@ func TestPaidProxyGrader_ForceProbeCeiling(t *testing.T) {
 	}
 }
 
+// TestPaidProxyGrader_EarnedTooLongAgoIsProbed pins that earn-skip reads
+// the WINDOWED signal (EarnedSince(addr, paidEarnWindow)), not "has this
+// address ever earned in this process". A proxy that earned once but not
+// within the last paidEarnWindow (15m) is no longer "actively earning" and
+// must be probed like any other stale, quiet proxy.
+func TestPaidProxyGrader_EarnedTooLongAgoIsProbed(t *testing.T) {
+	home := withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	// Seed a WINDOW of pass values, not just the current one: this test
+	// (unlike the ceiling tests above) actually reaches the probe, since
+	// earn-skip does not suppress it, so it needs the same robustness as
+	// TestPaidProxyGrader_UndecidableKeepsPriorGrade — see the comment
+	// there for why a single Load() is flaky under `go test ./...`.
+	base := tableProbePassCounter.Load()
+	passes := make([]uint64, 0, 8)
+	for i := uint64(0); i < 8; i++ {
+		passes = append(passes, base+i)
+	}
+	seedProbeDNSForAddress(t, addr, passes...)
+
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			// Stale (past 6h) but within the 24h ceiling.
+			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The proxy earned once, but well outside paidEarnWindow (15m) — it
+	// must no longer be treated as "actively earning".
+	globalPerProxyEarnTracker.mu.Lock()
+	globalPerProxyEarnTracker.lastEarned[addr] = time.Now().Add(-paidEarnWindow - time.Hour)
+	globalPerProxyEarnTracker.mu.Unlock()
+	t.Cleanup(func() {
+		globalPerProxyEarnTracker.mu.Lock()
+		delete(globalPerProxyEarnTracker.lastEarned, addr)
+		globalPerProxyEarnTracker.mu.Unlock()
+	})
+
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	if n := connects.Load(); n == 0 {
+		t.Fatal("a proxy that earned outside paidEarnWindow must be probed — earn-skip is a RECENCY signal, not a lifetime one")
+	}
+}
+
+// TestPaidProxyGrader_JustUnderForceProbeCeilingStillSkipped pins the
+// other side of the ceiling boundary: an earning proxy whose grade is
+// stale but still (barely) under paidForceProbeCeiling must continue to
+// be skipped — the ceiling only overrides earn-skip once it is actually
+// reached, not preemptively.
+func TestPaidProxyGrader_JustUnderForceProbeCeilingStillSkipped(t *testing.T) {
+	home := withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	seedProbeDNSForAddress(t, addr, tableProbePassCounter.Load())
+
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// One hour shy of the 24h ceiling: still earning must suppress the probe.
+	if err := writeProxyState(&ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			addr: {ID: 6, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling + time.Hour)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	seedEarnTracker(t, addr)
+
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	if n := connects.Load(); n != 0 {
+		t.Fatalf("earning proxy just under the force-probe ceiling was probed %d times — the ceiling must not fire early", n)
+	}
+}
+
 // TestPaidProxyGrader_ProbesNeverGradedEarningProxy pins the review
 // CRITICAL: a paid proxy with NO grade at all (LastGraded zero) that
 // happens to be earning must STILL be probed. Earn-skip must never
