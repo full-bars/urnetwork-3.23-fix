@@ -912,6 +912,19 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					state.Cache[r.addr] = entry
 					tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale re-probe\n", r.addr)
 					changed = true
+				case probeTLSFailed:
+					// A once-good proxy that now fails TLS verification has
+					// turned hostile (MITM/interceptor). Demote it on the
+					// stale re-probe exactly like a dead/socks5-only result —
+					// a hostile node must not stay in the pool even though
+					// it was admitted earlier (no isLive escape exists on
+					// this path by construction).
+					entry.LastProbe = time.Now()
+					entry.ProbeOK = false
+					entry.ProbeFails = 1
+					state.Cache[r.addr] = entry
+					tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale TLS-verify failure\n", r.addr)
+					changed = true
 				}
 				continue
 			}
