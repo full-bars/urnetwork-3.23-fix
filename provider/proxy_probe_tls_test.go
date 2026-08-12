@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"sync/atomic"
@@ -43,7 +44,7 @@ func listenSocks5TLSOnce(t *testing.T, leaf *tls.Certificate) (addr string, clea
 					return
 				}
 				connectFrame := make([]byte, 10)
-				if _, err := c.Read(connectFrame); err != nil {
+				if _, err := io.ReadFull(c, connectFrame); err != nil {
 					return
 				}
 				if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
@@ -55,6 +56,10 @@ func listenSocks5TLSOnce(t *testing.T, leaf *tls.Certificate) (addr string, clea
 				tlsSrv := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{*leaf}})
 				// A real MITM/transparent server completes the handshake;
 				// the client decides whether the presented chain verifies.
+				// The deadline keeps a probe that closes after CONNECT
+				// without a ClientHello from blocking this goroutine for
+				// the rest of the test binary run.
+				tlsSrv.SetDeadline(time.Now().Add(2 * time.Second))
 				tlsSrv.Handshake()
 			}(conn)
 		}
@@ -121,12 +126,14 @@ func TestProbeProxy_TLSVerifySkipsWhenNoAPIHost(t *testing.T) {
 	addr, cleanup := listenSocks5TLSOnce(t, &leaf)
 	defer cleanup()
 
-	// Empty apiHost → CONNECT stage can't resolve a target, so this returns
-	// socks5-only regardless of the TLS fake. The point is it must NOT
-	// block or crash trying to handshake.
+	// Empty apiHost → CONNECT stage can't resolve a target, so the probe
+	// returns the cheap-gate verdict without ever attempting TLS. Pin the
+	// exact result so the skip behavior is asserted directly, not as a
+	// two-of-four exclusion.
 	res := probeProxy(context.Background(), addr, "", "", "", 0)
-	if res == probeTLSFailed || res == probeAPIReachable {
-		t.Fatalf("empty apiHost: result = %v, want socks5-only/dead class", res)
+	if res != probeSocks5Only {
+		t.Fatalf("empty apiHost: result = %v, want probeSocks5Only (tlsFailed=%v, apiReachable=%v, dead=%v)",
+			res, probeTLSFailed, probeAPIReachable, probeDead)
 	}
 }
 
@@ -213,14 +220,14 @@ func withProbeTLSRoot(t *testing.T, ca *testCA) {
 // corrupts the ClientHello). Returns true on success.
 func readSocks5Greeting(c net.Conn) bool {
 	hdr := make([]byte, 2)
-	if _, err := c.Read(hdr); err != nil {
+	if _, err := io.ReadFull(c, hdr); err != nil {
 		return false
 	}
 	if hdr[0] != 0x05 || hdr[1] == 0 {
 		return false
 	}
 	methods := make([]byte, int(hdr[1]))
-	if _, err := c.Read(methods); err != nil {
+	if _, err := io.ReadFull(c, methods); err != nil {
 		return false
 	}
 	return true
@@ -269,7 +276,7 @@ func listenSocks5ConnectOnceTLS(t *testing.T, rep byte, leaf *tls.Certificate) (
 				}
 				c.Write([]byte{0x05, 0x00}) // greeting: no auth
 				connectFrame := make([]byte, 10)
-				if _, err := c.Read(connectFrame); err != nil {
+				if _, err := io.ReadFull(c, connectFrame); err != nil {
 					return
 				}
 				resp := []byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
@@ -304,7 +311,7 @@ func listenSocks5SequencedTLS(t *testing.T, repFor func(n int) byte, leaf *tls.C
 				}
 				c.Write([]byte{0x05, 0x00})
 				frame := make([]byte, 10)
-				if _, err := c.Read(frame); err != nil {
+				if _, err := io.ReadFull(c, frame); err != nil {
 					return
 				}
 				rep := repFor(int(n.Add(1)))
@@ -343,7 +350,7 @@ func listenSocks5ApiOKTLS(t *testing.T, leaf *tls.Certificate) (addr string, cle
 					return
 				}
 				connectFrame := make([]byte, 10)
-				if _, err := c.Read(connectFrame); err != nil {
+				if _, err := io.ReadFull(c, connectFrame); err != nil {
 					return
 				}
 				c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
@@ -374,11 +381,11 @@ func listenSocks5SmartTLS(t *testing.T, okIPs map[string]bool, leaf *tls.Certifi
 				}
 				c.Write([]byte{0x05, 0x00})
 				frame := make([]byte, 10)
-				if _, err := c.Read(frame); err != nil {
+				if _, err := io.ReadFull(c, frame); err != nil {
 					return
 				}
 				rep := byte(0x05)
-				if len(frame) == 10 && frame[3] == 0x01 && okIPs[net.IP(frame[4:8]).String()] {
+				if frame[3] == 0x01 && okIPs[net.IP(frame[4:8]).String()] {
 					rep = 0x00
 				}
 				resp := []byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
