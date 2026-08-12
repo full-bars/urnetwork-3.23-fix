@@ -521,6 +521,44 @@ func jwtNetworkId(byJwt string) (string, bool) {
 	return networkId, ok
 }
 
+// jwtClientId extracts the client_id claim from a client JWT, if present.
+func jwtClientId(byJwt string) string {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return ""
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return ""
+	}
+	clientId, _ := claims["client_id"].(string)
+	return clientId
+}
+
+// accountNetworkId extracts the network_id claim from an account JWT (may be
+// empty for malformed tokens — the store treats a mismatch as mint-fresh).
+func accountNetworkId(byJwt string) string {
+	if nid, ok := jwtNetworkId(byJwt); ok {
+		return nid
+	}
+	return ""
+}
+
+// readAccountJWT reads the account (network) JWT from disk. The account-JWT
+// refresher may have rotated it, so renewal reads it fresh on every attempt.
+func readAccountJWT() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".urnetwork", "jwt"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func printNetworkIdCmd(opts docopt.Opts) {
 	filePath, _ := opts.String("<file>")
 	data, err := os.ReadFile(filePath)
@@ -2737,8 +2775,14 @@ func provide(opts docopt.Opts) {
 			InstanceId: instanceId,
 			AppVersion: RequireVersion(),
 		}
-		connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 		// go platformTransport.Run(connectClient.RouteManager())
+
+		// The renewal watcher closes revocationDone on a successful renewal:
+		// the identity is then demonstrably alive, and the revocation watcher
+		// must stop before it evicts the fresh entry while the transport is
+		// still reconnecting.
+		revocationDone := make(chan struct{})
 
 		if reused {
 			// The reuse path in provideAuth never contacts the server, so a
@@ -2749,8 +2793,33 @@ func provide(opts docopt.Opts) {
 			// authenticates even once, auth failures keep piling up) and
 			// evict the persisted entry so the next mint attempt starts
 			// fresh instead of repeating a dead identity indefinitely.
-			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex)
+			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex, revocationDone)
 		}
+
+		// In-process client-JWT renewal: the beta backend (and mainnet's new
+		// token format) now mints 24h client JWTs, and nothing upstream renews
+		// them for long-lived providers. Without this, every proxy's client
+		// JWT expires ~24h after start and the provider becomes a black hole
+		// (audit/contract OOB 401s, no new contracts). The watcher renews each
+		// proxy's JWT 12h before expiry (hourly retry), immediately on a 401,
+		// and at startup if the reused token is already expired, preserving
+		// the client_id identity. On backends still issuing long-lived tokens
+		// the 12h threshold never fires — a no-op.
+		renewNow := make(chan struct{}, 1)
+		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
+			IdentityKey:    identityKey,
+			ClientID:       clientId,
+			CurrentJWT:     byClientJwt,
+			Description:    providerDescription(nodeName),
+			ApiURL:         apiUrl,
+			ClientStrategy: clientStrategy,
+			OOB:            clientOob,
+			Transport:      platformTransport,
+			RenewNow:       renewNow,
+			ProxyIndex:     proxyIndex,
+			InstanceId:     instanceId,
+			RevocationDone: revocationDone,
+		})
 
 		var bw *connect.ProxyBandwidth
 		if proxySettings != nil {
@@ -3221,6 +3290,110 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
+// providerDescription builds the display-name string sent as the client
+// description at mint AND renewal time: "Identity [Version]", where Identity
+// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
+// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
+// redacted IP for container-id gibberish names. Kept as ONE helper so mint
+// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
+// the server UPDATEs the row's description on renewal, so divergence would
+// silently rename the device in the dashboard.
+func providerDescription(nodeName string) string {
+	displayName := nodeName
+	hostname, _ := os.Hostname()
+	if displayName == "" {
+		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
+			displayName = hostHostname
+		} else {
+			displayName = hostname
+		}
+	}
+	isContainerID := containerIDRe.MatchString(displayName)
+	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
+
+	var dashboardLabel string
+	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
+		parts := strings.Split(ip4.String(), ".")
+		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
+		if displayName == "" || isContainerID {
+			dashboardLabel = redactedIP
+		} else {
+			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
+		}
+	} else {
+		if displayName == "" || isContainerID {
+			dashboardLabel = "provider"
+		} else {
+			dashboardLabel = displayName
+		}
+	}
+	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+}
+
+// newProviderAuthClientArgsForRenewal builds the AuthNetworkClientArgs used to
+// RENEW an existing per-proxy client identity. Unlike the mint path
+// (newProviderAuthClientArgs), it carries ClientId so the server updates the
+// existing network_client row and signs a fresh JWT for the SAME
+// client_id/device_id — preserving server-side reliability reputation.
+// SourceClientId stays nil: proxies remain independent top-level clients.
+func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id) *connect.AuthNetworkClientArgs {
+	return &connect.AuthNetworkClientArgs{
+		ClientId:    &clientId,
+		Description: description,
+		DeviceSpec:  "",
+	}
+}
+
+// renewClientJWT renews the per-proxy client JWT for an existing client
+// identity, using the account JWT as the Bearer credential. Returns the fresh
+// client JWT (same client_id claim), or an error. It mirrors the auth-client
+// call in provideAuth but with ClientId set — the renewal path.
+//
+// clientStrategy MUST be the proxy's own strategy (the one carrying
+// ProxySettings): the mint path dials the API through the proxy, and renewal
+// must egress the same way or it fails on any box that reaches the API only
+// via its proxy, and would correlate the whole fleet to one host IP.
+func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.Id, description string, clientStrategy *connect.ClientStrategy) (string, error) {
+	if clientStrategy == nil {
+		clientStrategy = connect.NewClientStrategyWithDefaults(ctx)
+	}
+	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
+	api.SetByJwt(byJwt)
+
+	callback, channel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
+	api.AuthNetworkClient(newProviderAuthClientArgsForRenewal(description, clientId), callback)
+
+	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result = <-channel:
+	}
+	if result.Error != nil {
+		return "", fmt.Errorf("auth-client renewal api error: %w", result.Error)
+	}
+	if result.Result == nil {
+		return "", fmt.Errorf("empty result from auth-client renewal API")
+	}
+	if result.Result.Error != nil {
+		return "", fmt.Errorf("auth-client renewal rejected: %s", result.Result.Error.Message)
+	}
+	if result.Result.ByClientJwt == "" {
+		return "", fmt.Errorf("empty by_client_jwt in renewal response")
+	}
+	if !jwtContainsClientId(result.Result.ByClientJwt) {
+		return "", fmt.Errorf("regression guard: renewal returned a JWT without client_id claim")
+	}
+	// The whole "true renewal" premise rests on the server honoring the
+	// supplied ClientId. If it returns a valid JWT for a DIFFERENT client
+	// (row deleted, revoked, future server mints new), hot-swapping it would
+	// split the running client's identity and poison the store forever.
+	if got := jwtClientId(result.Result.ByClientJwt); got != clientId.String() {
+		return "", fmt.Errorf("renewal returned client_id %q, want %q — refusing to swap", got, clientId.String())
+	}
+	return result.Result.ByClientJwt, nil
+}
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -3284,48 +3457,10 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 
 	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
-	// 1. Determine Display Name
-	displayName := nodeName
-	hostname, _ := os.Hostname()
-
-	// 2. Allow override via HOST_HOSTNAME (for Docker users passing host $(hostname))
-	if displayName == "" {
-		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
-			displayName = hostHostname
-		} else {
-			displayName = hostname
-		}
-	}
-
-	// 3. Filter Gibberish (12-char hex container IDs)
-	isContainerID := containerIDRe.MatchString(displayName)
-	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
-
-	// 4. Build Compact Dashboard Label
-	var dashboardLabel string
-
-	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
-		parts := strings.Split(ip4.String(), ".")
-		redactedIP := fmt.Sprintf("%s.x.x.%s", parts[0], parts[3])
-
-		if displayName == "" || isContainerID {
-			// Scenario: No useful name. Identity is just the Redacted IP.
-			dashboardLabel = redactedIP
-		} else {
-			// Scenario: We have a useful name. Identity is "Name @ RedactedIP".
-			dashboardLabel = fmt.Sprintf("%s @ %s", displayName, redactedIP)
-		}
-	} else {
-		// Fallback for no IP connectivity
-		if displayName == "" || isContainerID {
-			dashboardLabel = "provider"
-		} else {
-			dashboardLabel = displayName
-		}
-	}
-
-	// 5. Final Description: "Identity [Version]"
-	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	// Final Description: "Identity [Version]" — computed by the shared helper
+	// so mint (here) and in-process renewal (runProxyJWTWatcher) always send
+	// the same string; the server UPDATEs the row's description on renewal.
+	description := providerDescription(nodeName)
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
@@ -3413,12 +3548,20 @@ const revokedIdentityAuthFailureThreshold = 5
 // failing to authenticate and never once comes up. See the call site for
 // why this can't be detected any other way: the reuse path is intentionally
 // server-round-trip-free, so nothing else observes a server-side rejection.
-func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int) {
+//
+// revocationDone, when non-nil, is closed by the renewal watcher on a
+// successful renewal: the identity is then demonstrably alive (the server
+// just re-signed it), so this watcher stops before it evicts the fresh entry
+// while the transport is still reconnecting.
+func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int, revocationDone <-chan struct{}) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-revocationDone:
+			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
 			return
 		case <-ticker.C:
 		}
@@ -3427,6 +3570,19 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 			return
 		}
 		if connect.ProxyAuthFailureCount(proxyIndex) >= revokedIdentityAuthFailureThreshold {
+			// Re-check the renewal signal AFTER the failure-count check: the
+			// renewal watcher may have closed revocationDone while this
+			// goroutine was between its select and this eviction decision
+			// (renewal writes the store then closes the channel synchronously,
+			// but we could have already passed the select). Without this
+			// double-check, a successfully renewed identity could be evicted
+			// out from under the reconnecting transport.
+			select {
+			case <-revocationDone:
+				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+				return
+			default:
+			}
 			if delErr := globalClientJWTStore.Delete(identityKey); delErr != nil {
 				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", identityKey, delErr)
 			} else {
