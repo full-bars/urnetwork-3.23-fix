@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.27.0
+**Current Version**: v3.23.0-fix.28.1
 
 ---
 
@@ -2437,3 +2437,71 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: ✅ Phase 1 shipped in v3.23.0-fix.27.0 (PR #345, merged 2026-08-09). Phase 2 (retire `.ps1` + docker shell variant) and Phase 3 (installer in Go) tracked in URN-TOOLS-GO-DESIGN.md §7.
 
+
+## 108. In-Process Per-Proxy Client-JWT Renewal (PR #356)
+
+**Purpose**: The backend (beta first, then mainnet's new token format) switched to 24-hour JWTs (exp−iat=86400, standard claims). The fork minted each proxy's client JWT once at process start and never renewed it in-process — after ~24h of uptime every proxy's token expired, audit/contract-OOB/transport auths all 401'd, and the provider silently became a black hole (registered, proxies up, no contracts, earnings decay to zero).
+
+**Files Modified**: `provider/main.go` (`newProviderAuthClientArgsForRenewal`, `renewClientJWT`, watcher wiring), `provider/renewal_watcher.go` (new), `transfer_oob_control.go` (`SetByJwt` rotation hook + atomic 401 counter), `provider/client_jwt_store.go` (SetByJwt persistence), tests.
+
+**Change**:
+- Per-proxy watcher: renews when the client JWT's `exp` is within 12h (hourly retry) or immediately on a 401 fast-path; startup check renews an already-expired reused token.
+- Renewal calls `/network/auth-client` WITH the existing `ClientId`, so the server UPDATEs the same network_client row and re-signs the same client_id/device_id — reputation preserved (a nil ClientId would mint a throwaway identity).
+- Process-wide `renewalMutex` + shared auth rate limiter serialize auth-client calls on 50-60 proxy boxes; failed renewals keep the old token and retry.
+- EXP-DRIVEN, not interval-driven: a no-op on backends still issuing long-lived tokens, so mainnet is unaffected.
+- Revocation-watcher coordination: successful renewal stands down the pre-existing revocation watcher for that identity.
+
+**Effect**: Shipped in v3.23.0-fix.28.0. Fixes the recurring beta 401 storms / black holes. Needs a fleet deploy to take effect on boxes.
+
+**How to Identify in New Upstream**: Upstream has the `ApiOutOfBandControl.SetByJwt` hook + `PlatformTransport.SetAuth` but no provider dir and no renewal loop; the fork's watcher is fork-native.
+
+**Status**: ✅ Shipped in v3.23.0-fix.28.0 (PR #356, merged 2026-08-11). Canary verified.
+
+## 109. EncryptionMode Tri-State + Bounded TLS Establishment (PR #350, #353)
+
+**Purpose**: Port upstream's EncryptionMode (Off/Opportunistic/Required) with fail-closed gates, and bound per-peer TLS establishment to a 60s handshake timeout (was unbounded) so departed peers cannot retain workers/goroutines.
+
+**Files Modified**: `transfer_encrypt.go` (EncryptionMode enum, Required-mode send/receive gates, EncryptionEvent/PeerEncryptionState callbacks, RequiredCipherPollInterval), `transport.go`, `transfer.go` (`SendSequence.packMutex` → RWMutex so a parked Required-mode send cannot deadlock the handshake), tests.
+
+**Change**: Tri-state encryption mode with a poll-driven fail-closed gate in Required mode; handshake establishment bounded by default (60s). The fork kept its own TlsTimeout default (fork deviation; upstream's parent value differs).
+
+**Effect**: Shipped in v3.23.0-fix.28.0. Requires a fleet deploy.
+
+**How to Identify in New Upstream**: The EncryptionMode port maps to upstream d2553e06; compare the packMutex RWMutex shape and the fork's TlsTimeout default before reconciling.
+
+**Status**: ✅ Shipped in v3.23.0-fix.28.0 (PR #350, #353). Scope 3 (post-quantum key exchange hardening) tracked separately.
+
+## 110. urnet-docker exec Flag Forwarding + ramlogs Container-Name Resolution (PR #349, #352)
+
+**Purpose**: `urnet-docker exec` silently dropped unknown leading flags (an inner `-f`/`--verbose` before the executable vanished); the ramlogs hint printed a literal `<container>` placeholder that was not copy-pasteable inside a container.
+
+**Files Modified**: `internal/urnettools/cli_docker.go` (splitExecArgs), `provider/shmlog_linux.go` (ramlogsTailHint).
+
+**Change**:
+- `exec` uses a `--` separator: everything after it forwards verbatim to the container command; unknown leading flags ERROR with a hint (never silently swallowed); a trailing target flag missing its value errors "requires a value" instead of panicking.
+- ramlogs hint resolves the real container name: `URNETWORK_CONTAINER_NAME` env (opt-in), else the container ID via `os.Hostname()` when inside Docker, else a plain tail path on bare metal.
+
+**Effect**: Shipped in v3.23.0-fix.28.0.
+
+**How to Identify in New Upstream**: N/A — fork-native tooling.
+
+**Status**: ✅ Shipped in v3.23.0-fix.28.0 (PR #349, #352).
+
+## 111. Paid/Free Probe Divergence — Earn-Skip, Wider Paid Stale Window, URL Startup Cooldown (PR #357)
+
+**Purpose**: Paid/file proxies cost the operator real money per stage-1 table probe; in steady state a paid proxy that is actively relaying traffic was still re-probed on the same cadence as free URL proxies. Divergence makes paid probe spend proportional to suspicion, and a startup cooldown closes a probe-amplification loop for crash-looping boxes.
+
+**Files Modified**: `provider/earn_tracker.go` (new per-address delta tracker), `provider/proxy_grade_paid.go` (earn-skip, never-graded force-probe, paid stale window), `provider/resource_pressure.go` (paidStaleCalm/Hot), `provider/proxy_probe.go` + `provider/proxy_url_source.go` (probeStartupCooldown), `provider/proxy_grade_summary.go` (per-source windows + desired-set ownership), `provider/main.go` (tracker feed, empty-health-set prune), tests.
+
+**Change**:
+- Paid/file stale window 6h calm / 3h hot (vs URL 3h/1h), pressure-ramped.
+- Earn-skip: a paid proxy with a positive billable delta within 15m is not re-probed; the signal is the per-address DELTA (never the raw cumulative counter — a proxy that earned once then died must not look "earning" forever); a hard 24h force-probe ceiling and never-graded-always-probe keep fail-fast honest.
+- The tracker normalizes `ProxyHealthSnapshot`'s formatted `proxy[N] (addr)` keys to raw addresses (previously the keys never matched the grader's lookups — earn-skip was dead code in production); maps are pruned to the live proxy set and cleared when the health set empties.
+- URL startup cooldown: first fetch + probe deferred 20s after process start; a crash-looping box (5s restarts) never re-probes.
+- Grade summary: per-source freshness windows (URL vs paid) and desired-set ownership resolution (file ownership overrides a stale "url" provenance tag).
+
+**Effect**: Shipped in v3.23.0-fix.28.1. Requires a fleet deploy — probe cadence and probe spend change on every box at redeploy time.
+
+**How to Identify in New Upstream**: N/A — fork-native design; upstream has no per-proxy earn tracking.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #357).
