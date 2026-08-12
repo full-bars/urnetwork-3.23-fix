@@ -38,8 +38,13 @@ const proxyJWTRenewTimeout = 30 * time.Second
 // proxyJWTWatcherConfig carries everything the per-proxy renewal watcher
 // needs. Every field except Tick is populated by the provideWithProxy wiring.
 type proxyJWTWatcherConfig struct {
-	IdentityKey    string
-	ClientID       connect.Id
+	IdentityKey string
+	ClientID    connect.Id
+	// CurrentJWT is the live client JWT the proxy started with. It seeds the
+	// watcher's expiry decision so a store-write failure at startup cannot
+	// leave currentJwt empty (which would disable the exp-driven renewal).
+	// Falls back to the store entry when empty.
+	CurrentJWT     string
 	Description    string
 	ApiURL         string
 	ClientStrategy *connect.ClientStrategy
@@ -91,15 +96,14 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 
 	// Wire the immediate 401 trigger: when the OOB control sees a 401 it
 	// pings renewNow (non-blocking), so renewal fires at once instead of
-	// waiting up to an hour for the next tick.
-	if cfg.OOB != nil {
-		cfg.OOB.SetOn401(func() {
-			select {
-			case cfg.RenewNow <- struct{}{}:
-			default:
-			}
-		})
-	}
+	// waiting up to an hour for the next tick. OOB is required (every
+	// production and test config supplies it).
+	cfg.OOB.SetOn401(func() {
+		select {
+		case cfg.RenewNow <- struct{}{}:
+		default:
+		}
+	})
 
 	renew := func() bool {
 		accountJWT, err := readAccountJWT()
@@ -189,10 +193,14 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 	// entry can vanish (mint-time Put failure, revocation-watcher eviction,
 	// disk error), which would silently disable the exp-driven check. The
 	// store remains the persistence sink; the live copy is the source of
-	// truth for the expiry decision.
-	currentJwt := ""
-	if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
-		currentJwt = entry.ByClientJWT
+	// truth for the expiry decision. Prefer the JWT the proxy actually
+	// started with (CurrentJWT) — it is in scope at the call site and can't
+	// be missing due to a store write failure.
+	currentJwt := cfg.CurrentJWT
+	if currentJwt == "" {
+		if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
+			currentJwt = entry.ByClientJWT
+		}
 	}
 
 	// H-4: snapshot the transport auth-failure count at startup and refresh
@@ -207,7 +215,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 	}
 
 	renewIfNeeded := func(reason string) {
-		need := cfg.OOB != nil && cfg.OOB.Audit401Count() > 0
+		need := cfg.OOB.Audit401Count() > 0
 		if !need && cfg.ProxyIndex >= 0 && connect.ProxyAuthFailureCount(cfg.ProxyIndex)-authFailureBaseline >= revokedIdentityAuthFailureThreshold {
 			// The transport auth path is separate from the OOB; repeated
 			// transport auth failures mean the bearer is being rejected at

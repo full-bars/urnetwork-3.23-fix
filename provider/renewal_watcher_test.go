@@ -509,6 +509,12 @@ func TestRunProxyJWTWatcherRejectsJwtMissingClientId(t *testing.T) {
 // so the ONLY renewal trigger available is the 401 counter — a clean
 // isolation of the "counter must stay armed on persistence failure" behavior.
 func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
+	// Read-only dir does not block writes for UID 0 (CI images often run as
+	// root, bypassing mode bits) — the Put-failure premise doesn't hold
+	// there, so skip rather than fail confusingly.
+	if os.Geteuid() == 0 {
+		t.Skip("store-write-failure premise requires non-root (mode bits bypassed by UID 0)")
+	}
 	setTestHome(t)
 	ts := newRenewalTestServer(t)
 	defer ts.srv.Close()
