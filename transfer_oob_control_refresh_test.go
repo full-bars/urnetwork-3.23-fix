@@ -165,6 +165,93 @@ func TestApiOutOfBandControlOn401Callback(t *testing.T) {
 	}
 }
 
+// TestApiOutOfBandControlDoesNotCountNon401ErrorsAsUnauthorized is an
+// integration-level companion to TestIsUnauthorizedError: a real 502 response
+// whose body happens to mention "401" must not increment audit401Count or
+// fire the on401 callback, since SendControl feeds errors through
+// isUnauthorizedError before counting them.
+func TestApiOutOfBandControlDoesNotCountNon401ErrorsAsUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream returned 401 for port 401"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	control := NewApiOutOfBandControl(ctx, NewClientStrategyWithDefaults(ctx), "jwt", server.URL)
+
+	notify := make(chan struct{}, 1)
+	control.SetOn401(func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	})
+
+	done := make(chan error, 1)
+	control.SendControl([]*protocol.Frame{}, func(_ []*protocol.Frame, err error) { done <- err })
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for a 502 response")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send timed out")
+	}
+
+	if got := control.Audit401Count(); got != 0 {
+		t.Fatalf("Audit401Count = %d after a non-401 error, want 0", got)
+	}
+	select {
+	case <-notify:
+		t.Fatal("on401 callback fired for a non-401 (502) error")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestApiOutOfBandControlSetOn401Nil pins that SetOn401(nil) clears any
+// previously registered callback rather than panicking on the next 401.
+func TestApiOutOfBandControlSetOn401Nil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(&ConnectControlResult{})
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	control := NewApiOutOfBandControl(ctx, NewClientStrategyWithDefaults(ctx), "jwt", server.URL)
+
+	notify := make(chan struct{}, 1)
+	control.SetOn401(func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	})
+	// Clear it before any 401 arrives.
+	control.SetOn401(nil)
+
+	done := make(chan error, 1)
+	control.SendControl([]*protocol.Frame{}, func(_ []*protocol.Frame, err error) { done <- err })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("send timed out")
+	}
+
+	// The counter must still increment even with no callback registered.
+	if got := control.Audit401Count(); got != 1 {
+		t.Fatalf("Audit401Count = %d, want 1", got)
+	}
+	select {
+	case <-notify:
+		t.Fatal("on401 callback fired after being cleared with SetOn401(nil)")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestIsUnauthorizedError pins the false-positive fix: only the canonical
 // "401 Unauthorized" status line matches — bare "401" or "Unauthorized" in
 // a body must NOT (a "502 Bad Gateway: upstream returned 401 for port 401"
