@@ -114,7 +114,19 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		renewCtx, cancel := context.WithTimeout(ctx, proxyJWTRenewTimeout)
 		defer cancel()
 
+		// H-2: route through the shared adaptive rate limiter (same AIMD
+		// throttle as the mint path). Without this, a 401 storm drives one
+		// renewal per backend-401 — the fast-path fires as fast as the
+		// backend rejects, and the mutex serializes but does not rate-limit.
+		if err := globalAuthRateLimiter.Wait(renewCtx); err != nil {
+			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal skipped: rate limiter: %v\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			return false
+		}
+
 		newJwt, err := renewClientJWT(renewCtx, cfg.ApiURL, accountJWT, cfg.ClientID, cfg.Description, cfg.ClientStrategy)
+		// Feed the outcome back so the limiter's AIMD adjusts (429s halve
+		// the rate, sustained success creeps it back up).
+		globalAuthRateLimiter.ReportResult(err)
 		if err != nil {
 			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
 			return false
@@ -143,7 +155,14 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			NetworkID:   networkID,
 			MintedAt:    time.Now(),
 		}); err != nil {
-			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal OK but store write failed: %v\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal OK in memory but store write failed: %v — keeping old token armed for retry\n",
+				cfg.ProxyIndex, cfg.IdentityKey, err)
+			// Do NOT ResetAudit401Count and do NOT stand down the revocation
+			// watcher: the in-memory swap is live but the persistence failed, so
+			// a restart would load the old (expiring) token. Keep the 401 counter
+			// armed and currentJwt on the old token so the next trigger renews
+			// again; the disk failure is logged loudly above.
+			return false
 		}
 		cfg.OOB.ResetAudit401Count()
 		// The identity is demonstrably alive (server just re-signed it), so
@@ -176,9 +195,20 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		currentJwt = entry.ByClientJWT
 	}
 
+	// H-4: snapshot the transport auth-failure count at startup and refresh
+	// it after every successful renewal. ProxyAuthFailureCount is a CUMULATIVE
+	// lifetime counter — comparing it raw against the threshold would renew
+	// every hour forever once a flaky spell crossed 5 at any point. Comparing
+	// against a baseline means only NEW failures since the last renewal
+	// trigger the transport-auth fast path.
+	authFailureBaseline := int64(0)
+	if cfg.ProxyIndex >= 0 {
+		authFailureBaseline = connect.ProxyAuthFailureCount(cfg.ProxyIndex)
+	}
+
 	renewIfNeeded := func(reason string) {
 		need := cfg.OOB != nil && cfg.OOB.Audit401Count() > 0
-		if !need && cfg.ProxyIndex >= 0 && connect.ProxyAuthFailureCount(cfg.ProxyIndex) >= revokedIdentityAuthFailureThreshold {
+		if !need && cfg.ProxyIndex >= 0 && connect.ProxyAuthFailureCount(cfg.ProxyIndex)-authFailureBaseline >= revokedIdentityAuthFailureThreshold {
 			// The transport auth path is separate from the OOB; repeated
 			// transport auth failures mean the bearer is being rejected at
 			// the data-plane level even if no OOB call has fired.
@@ -194,6 +224,9 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			if renew() {
 				if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
 					currentJwt = entry.ByClientJWT
+				}
+				if cfg.ProxyIndex >= 0 {
+					authFailureBaseline = connect.ProxyAuthFailureCount(cfg.ProxyIndex)
 				}
 			}
 		}
