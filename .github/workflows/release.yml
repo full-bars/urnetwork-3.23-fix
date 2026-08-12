@@ -249,23 +249,27 @@ jobs:
           # self-update + installers fetch exactly this name from the release.
           find tool_tmp -type f \( -name "urnet-tools*" -o -name "urnet-docker*" \) -exec chmod +x {} \;
           # linux
-          cp tool_tmp/linux/amd64/urnet-tools urnet-tools-linux-amd64 2>/dev/null || true
-          cp tool_tmp/linux/arm64/urnet-tools urnet-tools-linux-arm64 2>/dev/null || true
-          cp tool_tmp/linux/amd64/urnet-docker urnet-docker-linux-amd64 2>/dev/null || true
-          cp tool_tmp/linux/arm64/urnet-docker urnet-docker-linux-arm64 2>/dev/null || true
+          cp tool_tmp/linux/amd64/urnet-tools urnet-tools-linux-amd64
+          cp tool_tmp/linux/arm64/urnet-tools urnet-tools-linux-arm64
+          cp tool_tmp/linux/amd64/urnet-docker urnet-docker-linux-amd64
+          cp tool_tmp/linux/arm64/urnet-docker urnet-docker-linux-arm64
           # darwin
-          cp tool_tmp/darwin/amd64/urnet-tools urnet-tools-darwin-amd64 2>/dev/null || true
-          cp tool_tmp/darwin/arm64/urnet-tools urnet-tools-darwin-arm64 2>/dev/null || true
-          cp tool_tmp/darwin/amd64/urnet-docker urnet-docker-darwin-amd64 2>/dev/null || true
-          cp tool_tmp/darwin/arm64/urnet-docker urnet-docker-darwin-arm64 2>/dev/null || true
+          cp tool_tmp/darwin/amd64/urnet-tools urnet-tools-darwin-amd64
+          cp tool_tmp/darwin/arm64/urnet-tools urnet-tools-darwin-arm64
+          cp tool_tmp/darwin/amd64/urnet-docker urnet-docker-darwin-amd64
+          cp tool_tmp/darwin/arm64/urnet-docker urnet-docker-darwin-arm64
           # windows (assets are BARE — no .exe suffix; matches toolAssetName,
           # runningToolAssetName and the installers. Verified 2026-08-12
           # review: a .exe suffix made the asset name disagree with every
           # consumer. The uploaded FILE is still the PE binary.)
-          cp tool_tmp/windows/amd64/urnet-tools urnet-tools-windows-amd64 2>/dev/null || true
-          cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64 2>/dev/null || true
-          cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64 2>/dev/null || true
-          cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64 2>/dev/null || true
+          cp tool_tmp/windows/amd64/urnet-tools urnet-tools-windows-amd64
+          cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64
+          cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64
+          cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64
+          # NOTE: these copies are deliberately NOT suppressed with || true —
+          # a missing/renamed tool artifact must fail the release BEFORE it
+          # publishes, not ship a release that breaks installers + self-update
+          # (verified 2026-08-12 review).
 
       - name: Create provider tarballs
         run: |

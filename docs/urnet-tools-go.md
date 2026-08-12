@@ -70,7 +70,7 @@ Rules:
 
 ## Getting the tool
 
-Three supported paths (v3.23.0-fix.28+):
+Three supported paths (v3.23.0-fix.28+ — the Go tool assets ship with every release from v3.23.0-fix.28 onward; older releases and 32-bit x86 hosts fall back to the legacy shell tool):
 
 | Deployment | How the tool is installed |
 |---|---|

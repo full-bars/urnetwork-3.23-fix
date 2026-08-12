@@ -2521,7 +2521,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Platform-aware binary checks** (`legacy_cmds.go`): the structural sanity check on downloaded binaries now accepts ELF (linux), Mach-O (darwin), and PE (windows) instead of ELF only — the old check rejected every macOS/Windows self-update, and the same latent defect existed in the provider tarball and hub download paths. The darwin magic bytes were verified against real cross-compiled binaries.
 - `releaseInfo` carries the full asset list so the tool's own asset digest resolves from the same release JSON; the provider tarball digest field renamed `ProviderDigest` for clarity.
 
-**Effect**: Every install path hands off to the Go tool, and the Go tool keeps itself current. Docker-only users: `curl -fSsL .../install-urnet-docker.sh | sh`, then `urnet-docker update` going forward.
+**Effect**: Every install path hands off to the Go tool where the release carries it (v3.23.0-fix.28+); older releases and 32-bit x86 hosts retain the legacy shell fallback. The Go tool keeps itself current. Docker-only users: `curl -fSsL .../install-urnet-docker.sh | sh`, then `urnet-docker update` going forward.
 
 **How to Identify in New Upstream**: N/A — fork-native tooling.
 

@@ -26,10 +26,17 @@ REPO="full-bars/urnetwork-3.23-fix"
 pr_err() { printf "install-urnet-docker: %s\n" "$*" >&2; }
 
 # --- arch detection (Go names) ---
+# The release matrix builds tool assets for amd64 and arm64 only; a 32-bit
+# x86 host has no asset to fetch, so reject it explicitly rather than
+# mapping to "386" and failing later with a misleading missing-asset error
+# (verified 2026-08-12 review).
 case "$(uname -m 2>/dev/null)" in
     x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
-    i386|i686) ARCH="386" ;;
+    i386|i686)
+        pr_err "32-bit x86 is not supported — release assets are built for amd64 and arm64 only"
+        exit 1
+        ;;
     *)
         pr_err "unsupported architecture: $(uname -m)"
         exit 1
