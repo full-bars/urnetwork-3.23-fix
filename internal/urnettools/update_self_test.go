@@ -415,13 +415,12 @@ func TestBinaryFormatChecks(t *testing.T) {
 	}
 }
 
-// TestRunningToolAssetNameError: os.Executable() failure must surface as an
-// error, not a silent fallback to "urnet-tools" (which would target the WRONG
-// tool's asset when running as urnet-docker — verified 2026-08-12 review).
-func TestRunningToolAssetNameError(t *testing.T) {
-	// Can't force os.Executable to fail portably; instead pin the stripping
-	// logic that guards the Windows case: a base ending in .exe must yield a
-	// bare asset name.
+// TestRunningToolAssetNameExeStripping: a base ending in .exe (what
+// os.Executable returns on Windows) must yield a bare asset name — the
+// release assets never carry .exe. The true error path of runningToolAssetName
+// (os.Executable failure) is not portably forceable in a unit test; the strip
+// logic is the testable half of that function's Windows contract.
+func TestRunningToolAssetNameExeStripping(t *testing.T) {
 	got := toolAssetName(strings.TrimSuffix("urnet-docker.exe", ".exe"), "windows", "amd64")
 	want := "urnet-docker-windows-amd64"
 	if got != want {
