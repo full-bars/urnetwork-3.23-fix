@@ -36,8 +36,7 @@ func listenSocks5TLSOnce(t *testing.T, leaf *tls.Certificate) (addr string, clea
 			}
 			go func(c net.Conn) {
 				defer c.Close()
-				greet := make([]byte, 3)
-				if _, err := c.Read(greet); err != nil {
+				if !readSocks5Greeting(c) {
 					return
 				}
 				if _, err := c.Write([]byte{0x05, 0x00}); err != nil {
@@ -370,8 +369,7 @@ func listenSocks5SmartTLS(t *testing.T, okIPs map[string]bool, leaf *tls.Certifi
 			}
 			go func(c net.Conn) {
 				defer c.Close()
-				buf := make([]byte, 3)
-				if _, err := c.Read(buf); err != nil {
+				if !readSocks5Greeting(c) {
 					return
 				}
 				c.Write([]byte{0x05, 0x00})
