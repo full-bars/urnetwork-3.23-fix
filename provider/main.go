@@ -521,6 +521,21 @@ func jwtNetworkId(byJwt string) (string, bool) {
 	return networkId, ok
 }
 
+// jwtClientId extracts the client_id claim from a client JWT, if present.
+func jwtClientId(byJwt string) string {
+	parser := gojwt.NewParser()
+	tok, _, err := parser.ParseUnverified(byJwt, gojwt.MapClaims{})
+	if err != nil {
+		return ""
+	}
+	claims, ok := tok.Claims.(gojwt.MapClaims)
+	if !ok {
+		return ""
+	}
+	clientId, _ := claims["client_id"].(string)
+	return clientId
+}
+
 // accountNetworkId extracts the network_id claim from an account JWT (may be
 // empty for malformed tokens — the store treats a mismatch as mint-fresh).
 func accountNetworkId(byJwt string) string {
@@ -2763,6 +2778,12 @@ func provide(opts docopt.Opts) {
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 		// go platformTransport.Run(connectClient.RouteManager())
 
+		// The renewal watcher closes revocationDone on a successful renewal:
+		// the identity is then demonstrably alive, and the revocation watcher
+		// must stop before it evicts the fresh entry while the transport is
+		// still reconnecting.
+		revocationDone := make(chan struct{})
+
 		if reused {
 			// The reuse path in provideAuth never contacts the server, so a
 			// client_id that was revoked server-side for a reason other than
@@ -2772,7 +2793,7 @@ func provide(opts docopt.Opts) {
 			// authenticates even once, auth failures keep piling up) and
 			// evict the persisted entry so the next mint attempt starts
 			// fresh instead of repeating a dead identity indefinitely.
-			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex)
+			go watchReusedIdentityForRevocation(proxyCtx, identityKey, proxyIndex, revocationDone)
 		}
 
 		// In-process client-JWT renewal: the beta backend (and mainnet's new
@@ -2796,6 +2817,7 @@ func provide(opts docopt.Opts) {
 			RenewNow:       renewNow,
 			ProxyIndex:     proxyIndex,
 			InstanceId:     instanceId,
+			RevocationDone: revocationDone,
 		})
 
 		var bw *connect.ProxyBandwidth
@@ -3325,8 +3347,15 @@ func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id
 // identity, using the account JWT as the Bearer credential. Returns the fresh
 // client JWT (same client_id claim), or an error. It mirrors the auth-client
 // call in provideAuth but with ClientId set — the renewal path.
-func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.Id, description string) (string, error) {
-	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+//
+// clientStrategy MUST be the proxy's own strategy (the one carrying
+// ProxySettings): the mint path dials the API through the proxy, and renewal
+// must egress the same way or it fails on any box that reaches the API only
+// via its proxy, and would correlate the whole fleet to one host IP.
+func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.Id, description string, clientStrategy *connect.ClientStrategy) (string, error) {
+	if clientStrategy == nil {
+		clientStrategy = connect.NewClientStrategyWithDefaults(ctx)
+	}
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 
@@ -3353,6 +3382,13 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	}
 	if !jwtContainsClientId(result.Result.ByClientJwt) {
 		return "", fmt.Errorf("regression guard: renewal returned a JWT without client_id claim")
+	}
+	// The whole "true renewal" premise rests on the server honoring the
+	// supplied ClientId. If it returns a valid JWT for a DIFFERENT client
+	// (row deleted, revoked, future server mints new), hot-swapping it would
+	// split the running client's identity and poison the store forever.
+	if got := jwtClientId(result.Result.ByClientJwt); got != clientId.String() {
+		return "", fmt.Errorf("renewal returned client_id %q, want %q — refusing to swap", got, clientId.String())
 	}
 	return result.Result.ByClientJwt, nil
 }
@@ -3511,12 +3547,20 @@ const revokedIdentityAuthFailureThreshold = 5
 // failing to authenticate and never once comes up. See the call site for
 // why this can't be detected any other way: the reuse path is intentionally
 // server-round-trip-free, so nothing else observes a server-side rejection.
-func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int) {
+//
+// revocationDone, when non-nil, is closed by the renewal watcher on a
+// successful renewal: the identity is then demonstrably alive (the server
+// just re-signed it), so this watcher stops before it evicts the fresh entry
+// while the transport is still reconnecting.
+func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int, revocationDone <-chan struct{}) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-revocationDone:
+			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
 			return
 		case <-ticker.C:
 		}

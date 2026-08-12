@@ -55,6 +55,12 @@ type proxyJWTWatcherConfig struct {
 	// reused on every renewal so the server sees a stable session identity
 	// instead of a fresh one per token rotation.
 	InstanceId connect.Id
+	// RevocationDone, when set, is closed by a successful renewal so the
+	// pre-existing revocation watcher (watchReusedIdentityForRevocation)
+	// stops racing the renewal watcher on the same store entry: without it,
+	// a renewed-but-not-yet-reconnected proxy could be evicted as
+	// "never authenticated" and the entry deleted under the fresh token.
+	RevocationDone chan struct{}
 }
 
 // runProxyJWTWatcher renews the proxy's client JWT before it expires and
@@ -108,7 +114,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		renewCtx, cancel := context.WithTimeout(ctx, proxyJWTRenewTimeout)
 		defer cancel()
 
-		newJwt, err := renewClientJWT(renewCtx, cfg.ApiURL, accountJWT, cfg.ClientID, cfg.Description)
+		newJwt, err := renewClientJWT(renewCtx, cfg.ApiURL, accountJWT, cfg.ClientID, cfg.Description, cfg.ClientStrategy)
 		if err != nil {
 			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
 			return false
@@ -140,6 +146,16 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal OK but store write failed: %v\n", cfg.ProxyIndex, cfg.IdentityKey, err)
 		}
 		cfg.OOB.ResetAudit401Count()
+		// The identity is demonstrably alive (server just re-signed it), so
+		// the revocation watcher must stand down — otherwise it can evict
+		// this entry while the transport is still reconnecting.
+		if cfg.RevocationDone != nil {
+			select {
+			case <-cfg.RevocationDone:
+			default:
+				close(cfg.RevocationDone)
+			}
+		}
 		if exp := parseJWTExpiryTime(newJwt); exp != nil {
 			tlog("🔁 [jwt-renew] proxy[%d] %s renewed client JWT (client_id %s, exp %s)\n",
 				cfg.ProxyIndex, cfg.IdentityKey, cfg.ClientID, formatDuration(time.Until(*exp)))
@@ -150,6 +166,16 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		return true
 	}
 
+	// H2: track the live token in the watcher, not just the store. A store
+	// entry can vanish (mint-time Put failure, revocation-watcher eviction,
+	// disk error), which would silently disable the exp-driven check. The
+	// store remains the persistence sink; the live copy is the source of
+	// truth for the expiry decision.
+	currentJwt := ""
+	if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
+		currentJwt = entry.ByClientJWT
+	}
+
 	renewIfNeeded := func(reason string) {
 		need := cfg.OOB != nil && cfg.OOB.Audit401Count() > 0
 		if !need && cfg.ProxyIndex >= 0 && connect.ProxyAuthFailureCount(cfg.ProxyIndex) >= revokedIdentityAuthFailureThreshold {
@@ -158,16 +184,18 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			// the data-plane level even if no OOB call has fired.
 			need = true
 		}
-		if !need {
-			if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
-				if exp := parseJWTExpiryTime(entry.ByClientJWT); exp != nil && time.Until(*exp) < proxyJWTRenewBefore {
-					need = true
-				}
+		if !need && currentJwt != "" {
+			if exp := parseJWTExpiryTime(currentJwt); exp != nil && time.Until(*exp) < proxyJWTRenewBefore {
+				need = true
 			}
 		}
 		if need {
 			tlog("🔁 [jwt-renew] proxy[%d] %s renewal trigger: %s\n", cfg.ProxyIndex, cfg.IdentityKey, reason)
-			renew()
+			if renew() {
+				if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
+					currentJwt = entry.ByClientJWT
+				}
+			}
 		}
 	}
 

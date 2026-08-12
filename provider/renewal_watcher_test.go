@@ -2,13 +2,40 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/urnetwork/connect"
 )
 
+// setTestHome points HOME at a temp dir containing a fake account JWT, so
+// readAccountJWT() (used by the renewal watcher) resolves inside the test and
+// never touches the developer's real ~/.urnetwork/jwt. Returns the temp dir.
+func setTestHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	// Account JWT: any token with a network_id claim is enough — the fake
+	// auth-client server ignores the Bearer and issues a fresh client JWT.
+	accountJwt := createFakeJWTWithClaims(map[string]interface{}{
+		"network_id": "net-1",
+		"exp":        float64(time.Now().Add(48 * time.Hour).Unix()),
+	})
+	urnetworkDir := filepath.Join(dir, ".urnetwork")
+	if err := os.MkdirAll(urnetworkDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(urnetworkDir, "jwt"), []byte(accountJwt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestRunProxyJWTWatcherRenewsOnExpiry(t *testing.T) {
+	setTestHome(t)
 	ts := newRenewalTestServer(t)
 	defer ts.srv.Close()
 
@@ -77,6 +104,7 @@ func TestRunProxyJWTWatcherRenewsOnExpiry(t *testing.T) {
 }
 
 func TestRunProxyJWTWatcherRenewsOn401(t *testing.T) {
+	setTestHome(t)
 	// The fake server returns 401 for the FIRST OOB control call (so the OOB
 	// counter increments), then 200 for the renewal auth-client call.
 	ts := newRenewalTestServer(t)
@@ -151,6 +179,7 @@ func TestRunProxyJWTWatcherRenewsOn401(t *testing.T) {
 }
 
 func TestRunProxyJWTWatcherRenewsExpiredAtStartup(t *testing.T) {
+	setTestHome(t)
 	ts := newRenewalTestServer(t)
 	defer ts.srv.Close()
 
@@ -211,6 +240,7 @@ func TestRunProxyJWTWatcherRenewsExpiredAtStartup(t *testing.T) {
 }
 
 func TestRunProxyJWTWatcherSkipsHealthyToken(t *testing.T) {
+	setTestHome(t)
 	ts := newRenewalTestServer(t)
 	defer ts.srv.Close()
 

@@ -15,6 +15,7 @@ import (
 // /network/auth-client request is in flight at any time (a box with 50-60
 // proxies must not stampede the API).
 func TestRunProxyJWTWatcherMutexSerializesRenewals(t *testing.T) {
+	setTestHome(t)
 	ts := newRenewalTestServer(t)
 	defer ts.srv.Close()
 
@@ -74,13 +75,33 @@ func TestRunProxyJWTWatcherMutexSerializesRenewals(t *testing.T) {
 		ticks[i] <- time.Now()
 	}
 
-	// Renewals are synchronous inside each watcher's tick handler, so by the
-	// time all five renewals have logged, the API calls have completed. Give
-	// them a moment, then cancel so the watchers exit and signal done.
-	time.Sleep(500 * time.Millisecond)
+	// Poll the store until all five entries carry a fresh token (the watchers
+	// renew synchronously in their tick handlers, but polling instead of
+	// sleeping makes this robust under CI load). Then cancel so the watchers
+	// exit and signal done.
+	deadline := time.After(10 * time.Second)
+	allRenewed := func() bool {
+		for i := 0; i < n; i++ {
+			key := "proxy-" + string(rune('a'+i))
+			entry, ok := store.Get(key)
+			if !ok {
+				return false
+			}
+			if exp := parseJWTExpiryTime(entry.ByClientJWT); exp == nil || time.Until(*exp) < 20*time.Hour {
+				return false
+			}
+		}
+		return true
+	}
+	for !allRenewed() {
+		select {
+		case <-deadline:
+			t.Fatal("not all watchers renewed their tokens")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 	cancel()
 
-	deadline := time.After(10 * time.Second)
 	for i := 0; i < n; i++ {
 		select {
 		case <-done:
@@ -90,12 +111,14 @@ func TestRunProxyJWTWatcherMutexSerializesRenewals(t *testing.T) {
 	}
 
 	ts.assertMaxConcurrent(t, 1)
+	ts.assertTotalRequests(t, n)
 }
 
 // TestRunProxyJWTWatcherKeepsOldTokenOnFailure verifies a failed renewal
 // leaves the store untouched (old token still cached) so the hourly retry can
 // try again — no data loss, no panic.
 func TestRunProxyJWTWatcherKeepsOldTokenOnFailure(t *testing.T) {
+	setTestHome(t)
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/network/auth-client" {
 			http.Error(w, "boom", http.StatusInternalServerError)
