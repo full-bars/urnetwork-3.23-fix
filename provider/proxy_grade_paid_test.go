@@ -321,7 +321,19 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
 	defer cleanup()
 	// Force every sampled host unresolvable -> Total=0 -> undecidable.
-	seedProbeDNSFailForAddress(t, addr, tableProbePassCounter.Load())
+	// Seed a WINDOW of pass values, not just the current one: the pass
+	// counter advances on every URL fetch cycle, and another test in this
+	// binary (or a background fetcher) can increment it between this seed
+	// and the probe's Load(). Seeding only Load() made the test flaky under
+	// `go test ./...` — the probe would read a higher pass, resolve a target
+	// it was never seeded to fail, and make one CONNECT. 8 covers any
+	// realistic number of interleaved increments.
+	base := tableProbePassCounter.Load()
+	passes := make([]uint64, 0, 8)
+	for i := uint64(0); i < 8; i++ {
+		passes = append(passes, base+i)
+	}
+	seedProbeDNSFailForAddress(t, addr, passes...)
 
 	src := filepath.Join(home, "paid.txt")
 	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
