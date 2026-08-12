@@ -87,7 +87,14 @@ func listenSlowThenClose(t *testing.T, delay time.Duration) (addr string, cleanu
 func TestFetchAndMergeProxyURLs_MarksApiOKAndSocks5OnlyCorrectly(t *testing.T) {
 	withTempHome(t)
 
-	apiOKAddr, apiOKCleanup := listenSocks5ApiOK(t)
+	// The api-ok fake must now be a faithful transparent proxy: CONNECT
+	// succeeds AND the tunnel terminates in a TLS server whose cert the
+	// probe trusts (stage 3 of probeProxy verifies TLS through the proxy).
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "127.0.0.1")
+	withProbeTLSRoot(t, ca)
+
+	apiOKAddr, apiOKCleanup := listenSocks5ApiOKTLS(t, &leaf)
 	defer apiOKCleanup()
 	socks5OnlyAddr, socks5OnlyCleanup := listenSocks5Once(t)
 	defer socks5OnlyCleanup()
