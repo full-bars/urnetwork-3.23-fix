@@ -44,6 +44,8 @@ func TestRenewClientJWTPreservesClientId(t *testing.T) {
 		}
 		if args.ClientId == nil {
 			t.Errorf("renewal must send ClientId")
+			http.Error(w, "missing client_id", http.StatusBadRequest)
+			return
 		}
 		claims := map[string]interface{}{
 			"client_id": args.ClientId.String(),
@@ -76,6 +78,10 @@ func TestRenewClientJWTPreservesSameClientIdValue(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&args)
 		if args.ClientId != nil {
 			gotClientId = args.ClientId.String()
+		} else {
+			t.Errorf("renewal must send ClientId")
+			http.Error(w, "missing client_id", http.StatusBadRequest)
+			return
 		}
 		claims := map[string]interface{}{
 			"client_id": args.ClientId.String(),

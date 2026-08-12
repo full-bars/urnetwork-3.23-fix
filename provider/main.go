@@ -2809,6 +2809,7 @@ func provide(opts docopt.Opts) {
 		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
 			IdentityKey:    identityKey,
 			ClientID:       clientId,
+			CurrentJWT:     byClientJwt,
 			Description:    providerDescription(nodeName),
 			ApiURL:         apiUrl,
 			ClientStrategy: clientStrategy,
