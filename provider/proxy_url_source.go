@@ -611,7 +611,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			// never actually tested (findings C1 and C2). Such entries
 			// keep their prior grade (or the ungraded state).
 			if g, ok := grades[addr]; ok {
-				applyProxyGradeToEntry(&entry, g)
+				applyProxyGradeToEntry(&entry, g, time.Now())
 			}
 			if c.grade.Qualified {
 				entry.ProbeOK = true
@@ -883,6 +883,10 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 						entry.Score = r.table.Score
 						entry.Graded = true
 						entry.Failed = capFailedList(r.table.Failed)
+						// Genuine stage-1 refresh — advance the grade clock so
+						// the hub dashboard's last_graded reflects this re-grade
+						// (mirrors applyProxyGradeToEntry on the fetch path).
+						entry.LastGraded = time.Now()
 						refreshedGrades++
 						if oldTier != newTier {
 							tierChanges++

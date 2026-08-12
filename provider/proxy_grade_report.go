@@ -18,10 +18,7 @@ type proxyGradeInfo struct {
 // over the URL store (proxy_url.json, ProxyURLEntry) when both are graded —
 // a paid proxy that also appears in a free URL list is owned, so the
 // deliberate config grade is the meaningful one. ok=false when neither
-// store has a graded entry for the address. The URL store has no
-// LastGraded field; its LastProbe is re-stamped exactly when the table
-// probe runs (reaper refresh), so it is the URL store's de-facto
-// last-graded timestamp.
+// store has a graded entry for the address.
 func proxyGradeFor(addr string, paid *ProxyState, url *ProxyURLState) (proxyGradeInfo, bool) {
 	if paid != nil {
 		if entry, ok := paid.Proxies[addr]; ok && entry.Graded {
@@ -45,8 +42,8 @@ func proxyGradeFor(addr string, paid *ProxyState, url *ProxyURLState) (proxyGrad
 				Failed: entry.Failed,
 				Tier:   proxyGradeTier(entry.Score),
 			}
-			if !entry.LastProbe.IsZero() {
-				info.LastGraded = entry.LastProbe.Unix()
+			if !entry.LastGraded.IsZero() {
+				info.LastGraded = entry.LastGraded.Unix()
 			}
 			return info, true
 		}
