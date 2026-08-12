@@ -16,6 +16,14 @@ echo "======================================"
 # network.
 sed '/^# --- resolve latest release tag ---$/,$d' scripts/install-urnet-docker.sh > /tmp/urnet_docker_lib.sh
 
+# Use a private temp file for the sourced lib so parallel test runs never
+# collide on a shared /tmp path, and always clean it up (verified 2026-08-12
+# review). Child shells reference it via LIB_FILE.
+LIB_FILE="$(mktemp)"
+trap 'rm -f "$LIB_FILE"' EXIT
+sed '/^# --- resolve latest release tag ---$/,$d' scripts/install-urnet-docker.sh > "$LIB_FILE"
+export LIB_FILE
+
 FAILS=0
 
 assert_eq() {
@@ -45,7 +53,7 @@ test_arch_detection() {
         got=$(bash -c "
             uname() { case \"\$1\" in -m) echo '$machine';; -s) echo 'Linux';; esac; }
             id() { echo '1000'; }
-            source /tmp/urnet_docker_lib.sh
+            source "$LIB_FILE"
             echo \"\$ARCH\"
         ")
         assert_eq "$want" "$got" "uname -m '$machine' maps to ARCH '$want'"
@@ -60,7 +68,7 @@ test_arch_32bit_rejected() {
         out=$(bash -c "
             uname() { case \"\$1\" in -m) echo '$machine';; -s) echo 'Linux';; esac; }
             id() { echo '1000'; }
-            source /tmp/urnet_docker_lib.sh
+            source "$LIB_FILE"
         " 2>&1) && rc=0 || rc=$?
         if [ "$rc" -eq 1 ] && case "$out" in *"32-bit x86 is not supported"*) true;; *) false;; esac; then
             echo "✅ PASS: uname -m '$machine' rejected with the 32-bit message"
@@ -78,7 +86,7 @@ test_arch_unsupported() {
     out=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'riscv64';; -s) echo 'Linux';; esac; }
         id() { echo '1000'; }
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
     " 2>&1) && rc=0 || rc=$?
     if [ "$rc" -eq 1 ] && case "$out" in *"unsupported architecture: riscv64"*) true;; *) false;; esac; then
         echo "✅ PASS: unsupported architecture refuses with exit 1 and a clear message"
@@ -96,7 +104,7 @@ test_os_detection() {
         got=$(bash -c "
             uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo '$os_name';; esac; }
             id() { echo '1000'; }
-            source /tmp/urnet_docker_lib.sh
+            source "$LIB_FILE"
             echo \"\$OS\"
         ")
         assert_eq "$(printf '%s' "$os_name" | tr '[:upper:]' '[:lower:]')" "$got" "uname -s '$os_name' resolves to lowercase OS '$got'"
@@ -109,7 +117,7 @@ test_os_unsupported() {
     out=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Windows';; esac; }
         id() { echo '1000'; }
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
     " 2>&1) && rc=0 || rc=$?
     if [ "$rc" -eq 1 ] && case "$out" in *"unsupported OS: windows"*) true;; *) false;; esac; then
         echo "✅ PASS: unsupported OS refuses with exit 1 and a clear message"
@@ -126,7 +134,7 @@ test_tool_default_and_override() {
     got_default=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
         id() { echo '1000'; }
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
         echo \"\$TOOL\"
     ")
     assert_eq "urnet-docker" "$got_default" "TOOL defaults to urnet-docker with no argument"
@@ -134,7 +142,7 @@ test_tool_default_and_override() {
     got_override=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
         id() { echo '1000'; }
-        source /tmp/urnet_docker_lib.sh urnet-tools
+        source "$LIB_FILE" urnet-tools
         echo \"\$TOOL\"
     ")
     assert_eq "urnet-tools" "$got_override" "TOOL is overridden by the first argument (urnet-tools)"
@@ -147,7 +155,7 @@ test_asset_name() {
     got=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'arm64';; -s) echo 'Darwin';; esac; }
         id() { echo '1000'; }
-        source /tmp/urnet_docker_lib.sh urnet-tools
+        source "$LIB_FILE" urnet-tools
         echo \"\$ASSET\"
     ")
     assert_eq "urnet-tools-darwin-arm64" "$got" "ASSET composes tool-os-arch (never carries .exe on any platform)"
@@ -160,7 +168,7 @@ test_install_dir_resolution() {
     got_root=$(bash -c "
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
         id() { echo '0'; }
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
         echo \"\$INSTALL_DIR\"
     ")
     assert_eq "/usr/local/bin" "$got_root" "root (id -u = 0) installs to /usr/local/bin"
@@ -169,7 +177,7 @@ test_install_dir_resolution() {
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
         id() { echo '1000'; }
         HOME=/home/testuser
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
         echo \"\$INSTALL_DIR\"
     ")
     assert_eq "/home/testuser/.local/bin" "$got_nonroot" "non-root installs to \$HOME/.local/bin"
@@ -178,7 +186,7 @@ test_install_dir_resolution() {
         uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
         id() { echo '1000'; }
         PREFIX=/opt/custom
-        source /tmp/urnet_docker_lib.sh
+        source "$LIB_FILE"
         echo \"\$INSTALL_DIR\"
     ")
     assert_eq "/opt/custom" "$got_prefix" "\$PREFIX overrides the default install dir even as non-root"
@@ -191,6 +199,12 @@ test_install_dir_resolution
 # so exercise the exact jq invocation used in the script against a release
 # JSON fixture, both for a present and a missing asset.
 test_digest_extraction_jq() {
+    # Skip cleanly when jq is unavailable (the production script falls back
+    # to python3 then; this test is jq-specific — verified 2026-08-12 review).
+    if ! command -v jq > /dev/null 2>&1; then
+        echo "⊘ SKIP: jq not installed, skipping jq digest-extraction test"
+        return 0
+    fi
     local json='{"tag_name": "v9.9.9", "assets": [
         {"name": "urnetwork-provider-v9.9.9.tar.gz", "digest": "sha256:abc123"},
         {"name": "urnet-docker-linux-amd64", "digest": "sha256:def456"}
