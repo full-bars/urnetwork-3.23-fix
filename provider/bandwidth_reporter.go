@@ -47,6 +47,15 @@ type proxyReport struct {
 	MaxAge            int64  `json:"max_age_s"`
 	ContractsAcquired int64  `json:"contracts_acquired"`
 	ContractsDenied   int64  `json:"contracts_denied"`
+
+	// A-F grade surfaced from the provider's grading pipeline (roadmap
+	// step 3). Only present when the proxy has been graded; omitempty keeps
+	// ungraded proxies (and older hubs) on the exact legacy payload shape.
+	Score      float64  `json:"score,omitempty"`
+	Graded     bool     `json:"graded,omitempty"`
+	Failed     []string `json:"failed,omitempty"`
+	Tier       string   `json:"tier,omitempty"`
+	LastGraded int64    `json:"last_graded,omitempty"` // unix ts, 0 = never
 }
 
 type systemMetrics struct {
@@ -355,6 +364,23 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 		connectingSet[c] = true
 	}
 
+	// Grade stores are read once per report, not per proxy: both files are
+	// small (hundreds of entries) and the report loop covers every proxy
+	// the box serves. A read failure (transient IO, first boot before the
+	// stores exist) simply means no grades this round — the report itself
+	// must not fail because grading data is unavailable. Log the failure
+	// (plain tlog, not importantLogf: this fires once per report interval
+	// while broken, and the reaper precedent is that recurring-state noise
+	// stays out of the important buffer).
+	paidState, err := readProxyState()
+	if err != nil {
+		tlog("[proxy][grade] report: read proxy.state: %v (grades omitted this round)\n", err)
+	}
+	urlState, err := readProxyURLState()
+	if err != nil {
+		tlog("[proxy][grade] report: read proxy_url.json: %v (grades omitted this round)\n", err)
+	}
+
 	proxies := make([]proxyReport, 0, len(bandwidth))
 	for key, bw := range bandwidth {
 		_, ip := parseProxyString(key)
@@ -375,7 +401,7 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			}
 		}
 
-		proxies = append(proxies, proxyReport{
+		pr := proxyReport{
 			ID:                key,
 			Address:           ip,
 			Status:            status,
@@ -387,7 +413,15 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			MaxAge:            int64(bw.MaxAge().Seconds()),
 			ContractsAcquired: cAcquired,
 			ContractsDenied:   cDenied,
-		})
+		}
+		if g, ok := proxyGradeFor(ip, paidState, urlState); ok {
+			pr.Score = g.Score
+			pr.Graded = true
+			pr.Failed = g.Failed
+			pr.Tier = g.Tier
+			pr.LastGraded = g.LastGraded
+		}
+		proxies = append(proxies, pr)
 	}
 
 	return bandwidthReport{

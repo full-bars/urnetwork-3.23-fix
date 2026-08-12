@@ -78,6 +78,12 @@ type ProxyURLEntry struct {
 	// Failed lists the target hostnames that did not answer the last
 	// stage-1 pass, for diagnostics and fleet reporting.
 	Failed []string `json:"failed,omitempty"`
+	// LastGraded is when the last GENUINE stage-1 grade landed for this
+	// entry (distinct from LastProbe, which is also bumped by liveness-only
+	// re-checks — fetch re-encounters and reaper demotions). Mirror of the
+	// paid store's ProxyEntry.LastGraded so fleet grading surfaces an honest
+	// "when was this actually graded" timestamp on the hub dashboard.
+	LastGraded time.Time `json:"last_graded,omitempty"`
 }
 
 func proxyURLStatePath() (string, error) {
@@ -340,7 +346,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 				// (self-review finding). The Decidable && !Socks5Only gate
 				// applies only to the persisted Score/Graded/Failed.
 				entry.ProbeOK = g.Qualified
-				applyProxyGradeToEntry(&entry, g)
+				applyProxyGradeToEntry(&entry, g, time.Now())
 			}
 		}
 		state.Cache[address] = entry
@@ -360,11 +366,17 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 // not socks5-only (C1/C2: an empty or cancelled pass leaves the prior grade
 // intact). Shared by the merge insert path and the fetch cache-update loop so
 // the persist rule cannot drift (coderabbit review).
-func applyProxyGradeToEntry(entry *ProxyURLEntry, g proxyURLGrade) {
+func applyProxyGradeToEntry(entry *ProxyURLEntry, g proxyURLGrade, gradedAt time.Time) {
 	if g.Decidable && !g.Socks5Only {
 		entry.Score = g.Score
 		entry.Graded = true
 		entry.Failed = capFailedList(g.Failed)
+		// Stamp the grade time ONLY on a genuine stage-1 verdict. A
+		// socks5-only or undecidable probe never reaches here, so
+		// LastGraded stays at its prior value (or zero = never graded)
+		// and the hub dashboard never shows a fresh-looking timestamp
+		// for a proxy whose grade did not actually change.
+		entry.LastGraded = gradedAt
 	}
 }
 
