@@ -22,6 +22,8 @@ type renewalTestServer struct {
 	// concurrent counts overlapping /network/auth-client requests
 	concurrent    atomic.Int32
 	maxConcurrent atomic.Int32
+	// total counts every /network/auth-client request (for ">= n happened" asserts)
+	totalRequests atomic.Int32
 	// clientIdSeen is the last ClientId the auth-client request carried
 	clientIdSeen atomic.Value // string
 }
@@ -31,6 +33,7 @@ func newRenewalTestServer(t *testing.T) *renewalTestServer {
 	ts.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/network/auth-client":
+			ts.totalRequests.Add(1)
 			cur := ts.concurrent.Add(1)
 			defer ts.concurrent.Add(-1)
 			for {
@@ -102,5 +105,14 @@ func (ts *renewalTestServer) assertMaxConcurrent(t *testing.T, n int32) {
 	t.Helper()
 	if got := ts.maxConcurrent.Load(); got > n {
 		t.Fatalf("max concurrent auth-client requests = %d, want <= %d", got, n)
+	}
+}
+
+// assertTotalRequests asserts that at least n auth-client requests happened
+// (a concurrency bound is vacuous if zero requests were made).
+func (ts *renewalTestServer) assertTotalRequests(t *testing.T, n int32) {
+	t.Helper()
+	if got := ts.totalRequests.Load(); got < n {
+		t.Fatalf("total auth-client requests = %d, want >= %d", got, n)
 	}
 }

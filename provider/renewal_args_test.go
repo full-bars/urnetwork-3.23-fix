@@ -56,7 +56,7 @@ func TestRenewClientJWTPreservesClientId(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	byJwt, err := renewClientJWT(ctx, server.URL, "account-jwt", connect.NewId(), "test")
+	byJwt, err := renewClientJWT(ctx, server.URL, "account-jwt", connect.NewId(), "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestRenewClientJWTPreservesSameClientIdValue(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	byJwt, err := renewClientJWT(ctx, server.URL, "account-jwt", clientId, "test")
+	byJwt, err := renewClientJWT(ctx, server.URL, "account-jwt", clientId, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +99,31 @@ func TestRenewClientJWTPreservesSameClientIdValue(t *testing.T) {
 	claims := decodeFakeJWTClaims(t, byJwt)
 	if claims["client_id"] != clientId.String() {
 		t.Fatalf("renewed JWT client_id = %v, want %q", claims["client_id"], clientId.String())
+	}
+}
+
+func TestRenewClientJWTRejectsDifferentClientId(t *testing.T) {
+	expected := connect.NewId()
+	other := connect.NewId()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Server fails to honor the supplied ClientId and mints a NEW client.
+		claims := map[string]interface{}{
+			"client_id": other.String(),
+			"exp":       float64(time.Now().Add(24 * time.Hour).Unix()),
+		}
+		_ = json.NewEncoder(w).Encode(&connect.AuthNetworkClientResult{
+			ByClientJwt: createFakeJWTWithClaims(claims),
+		})
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	byJwt, err := renewClientJWT(ctx, server.URL, "account-jwt", expected, "test", nil)
+	if err == nil {
+		t.Fatalf("expected error when renewal returns a different client_id (got %q)", byJwt)
+	}
+	if byJwt != "" {
+		t.Fatalf("renewal must not return a token for a different client_id")
 	}
 }
 
