@@ -570,3 +570,86 @@ func TestMultiClientPQERequiresSaneEncryptionIdleTimeout(t *testing.T) {
 		t.Fatalf("PQE IdleTimeout %v is not a sane bounded horizon", gotEncryptionIdleTimeout)
 	}
 }
+
+func TestMultiClientRemoveClientDoesNotClobberSuccessorUpdate(t *testing.T) {
+	// Regression (Opus HIGH finding on the #370 leak fix): removeClient
+	// cancels a still-registered update's ctx, and a packet arriving
+	// afterwards replaces it in the path map with a fresh update. The stale
+	// teardown goroutine's unconditional `delete(ip4PathUpdates, ip4Path)`
+	// then removed the SUCCESSOR's entry — orphaning a live update whose
+	// packets would split across exit clients and break the flow. The
+	// teardown closure now verifies it is still the registered update
+	// before deleting.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	settings := DefaultMultiClientSettings()
+	settings.SequenceIdleTimeout = 2 * time.Minute // keep goroutine1 parked
+	settings.DestinationAffinity = false           // skip the affinity block in reserveUpdate (needs self.config)
+
+	multiClient := &RemoteUserNatMultiClient{
+		ctx:              ctx,
+		cancel:           cancel,
+		settings:         settings,
+		log:              NewNoopLogger(),
+		clientUpdates:    map[*multiClientChannel]map[*multiClientChannelUpdate]bool{},
+		ip4PathUpdates:   map[Ip4Path]*multiClientChannelUpdate{},
+		ip6PathUpdates:   map[Ip6Path]*multiClientChannelUpdate{},
+		affinityIp4Paths: map[Ip4Path]map[Ip4Path]time.Time{},
+		affinityIp6Paths: map[Ip6Path]map[Ip6Path]time.Time{},
+	}
+
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	client := &multiClientChannel{ctx: clientCtx, cancel: clientCancel}
+
+	ipPath := &IpPath{Version: 4}
+	ip4Path := ipPath.ToIp4Path()
+
+	// Real reserveUpdate path: creates update1 and spawns its teardown
+	// goroutine (parked in waitForIdleUpdate, 120s idle, ctx live).
+	update1, _ := multiClient.reserveUpdate(ipPath)
+	if multiClient.ip4PathUpdates[ip4Path] != update1 {
+		t.Fatal("precondition: update1 must be the registered update")
+	}
+	update1.client = client
+	multiClient.clientUpdates[client] = map[*multiClientChannelUpdate]bool{update1: true}
+
+	// removeClient cancels update1's ctx (the leak fix) but does NOT touch
+	// the path map — update1 is still registered there.
+	multiClient.removeClient(client)
+
+	// A packet for the same 5-tuple arrives: reserveUpdate would see
+	// update1.IsDone() and replace it. Register the successor under the
+	// lock while the stale goroutine is still parked, mirroring that
+	// replacement deterministically.
+	update2 := newMultiClientChannelUpdate(ctx, ipPath)
+	multiClient.stateLock.Lock()
+	multiClient.ip4PathUpdates[ip4Path] = update2
+	multiClient.stateLock.Unlock()
+
+	// Let the stale goroutine run its teardown closure (it wakes on
+	// update1's cancelled ctx). Without the supersede guard it commits the
+	// unconditional delete and ip4PathUpdates[ip4Path] becomes nil (the
+	// clobber); with the guard it stays update2. Poll for the clobber
+	// signature so the mutation fails fast, otherwise wait out the window.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		multiClient.stateLock.Lock()
+		cur := multiClient.ip4PathUpdates[ip4Path]
+		multiClient.stateLock.Unlock()
+		if cur == nil {
+			break // stale goroutine committed the delete
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	multiClient.stateLock.Lock()
+	cur := multiClient.ip4PathUpdates[ip4Path]
+	multiClient.stateLock.Unlock()
+	if cur != update2 {
+		t.Fatalf("stale teardown goroutine clobbered the successor: ip4PathUpdates[path] = %p, want update2 %p (live successor must stay registered)", cur, update2)
+	}
+	if update2.ctx.Err() != nil {
+		t.Fatal("successor update2 ctx must not be cancelled")
+	}
+}
