@@ -98,7 +98,10 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			desired = readProxySettings()
 		}
 
-		staleAfter := reaperStaleThreshold(currentPressure())
+		// PAID window, not the URL window: paid proxies are stable and the
+		// operator pays for their probe bandwidth, so they are re-probed far
+		// less often (6h calm / 3h hot vs the URL 3h/1h).
+		paidStaleAfter := paidStaleThreshold(currentPressure())
 		now := time.Now()
 		for _, s := range desired {
 			// Only proxies the box actually tracks (has a ProxyEntry) are
@@ -116,8 +119,30 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// the file/internal set is served as a file proxy (file wins
 			// in mergeProxyURLCache), so it is graded here even if a
 			// stale first-seen tag says "url" (independent review HIGH finding).
-			if !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) < staleAfter {
-				continue // fresh grade; ride the 1-3h stale window
+			if !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) < paidStaleAfter {
+				continue // fresh grade; ride the paid stale window
+			}
+			// Earn-skip (delta-based): a paid proxy with RECENT billable
+			// traffic is demonstrably alive — the backend is routing real
+			// sessions through it. Probing it would spend paid bandwidth to
+			// learn what the traffic already proves. The signal is the
+			// per-address earn tracker (positive billable delta within
+			// paidEarnWindow), NEVER the raw cumulative counter: a
+			// cumulative-only check would let a proxy that earned once
+			// early then died look "earning" forever and never be re-probed
+			// (Sonnet review finding 2c).
+			//
+			// Hard ceiling: even an actively-earning proxy is force-probed
+			// at least once per paidForceProbeCeiling (24h) so the fail-fast
+			// path can never be starved — "earning" suppresses probes, but
+			// only for a bounded time (findings 2c/4b). A NEVER-graded
+			// proxy (LastGraded zero) is always force-probed: earn-skip
+			// must never prevent the FIRST grade, or an earning proxy with
+			// no grade stays ungraded forever (review CRITICAL).
+			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Address, paidEarnWindow)
+			forceProbeDue := entry.LastGraded.IsZero() || now.Sub(entry.LastGraded) >= paidForceProbeCeiling
+			if earnedRecently && !forceProbeDue {
+				continue // earning and not past the ceiling — save the bandwidth
 			}
 			t := gradeTarget{addr: s.Address, snapshotGradedAt: entry.LastGraded}
 			if s.Auth != nil {

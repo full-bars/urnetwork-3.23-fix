@@ -123,6 +123,38 @@ func TestReaperStaleThreshold(t *testing.T) {
 	}
 }
 
+// TestPaidStaleThreshold pins the PAID/file-proxy stale window (6h calm /
+// 3h hot), deliberately 3x wider than the URL window (reaperStaleThreshold)
+// since the operator pays for paid-probe bandwidth and paid proxies are
+// stable by construction.
+func TestPaidStaleThreshold(t *testing.T) {
+	if v := paidStaleThreshold(0); v != 6*time.Hour {
+		t.Fatalf("calm: %v", v)
+	}
+	if v := paidStaleThreshold(0.9); v != 3*time.Hour {
+		t.Fatalf("high: %v", v)
+	}
+	// Same ramp anchors as reaperStaleThreshold (cleanupScaleStart/Full):
+	// below the start anchor stays fully calm.
+	if v := paidStaleThreshold(cleanupScaleStart); v != 6*time.Hour {
+		t.Fatalf("at ramp start: %v", v)
+	}
+	// Midpoint of the ramp: halfway between 6h and 3h.
+	mid := cleanupScaleStart + (cleanupScaleFull-cleanupScaleStart)/2
+	if v := paidStaleThreshold(mid); v != 6*time.Hour-90*time.Minute {
+		t.Fatalf("midpoint: %v", v)
+	}
+	// The paid window must always be >= the URL window at the same
+	// pressure, or the paid/free divergence this feature exists for is
+	// broken.
+	for _, p := range []float64{0, 0.3, 0.5, 0.8, 1.0} {
+		if paidStaleThreshold(p) < reaperStaleThreshold(p) {
+			t.Fatalf("pressure %.2f: paid window %v must be >= URL window %v",
+				p, paidStaleThreshold(p), reaperStaleThreshold(p))
+		}
+	}
+}
+
 func TestAimdStep(t *testing.T) {
 	// calm growth, capped by ceiling
 	if v := aimdStep(100, 100, 0.1, 500); v != 125 {

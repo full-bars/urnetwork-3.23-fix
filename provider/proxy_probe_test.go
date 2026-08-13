@@ -127,6 +127,20 @@ func TestFilterReachableProxyURLLines_KeepsOnlyReachable(t *testing.T) {
 	}
 }
 
+// TestProbeStartupCooldown_ExceedsSystemdRestartSec pins the safety
+// invariant documented on probeStartupCooldown: it must stay strictly
+// greater than the systemd unit's RestartSec (5s, see
+// internal/urnettools/legacy_cmds.go), or a crash-looping process could
+// live long enough between restarts to reach the deferred fetch and
+// re-trigger the very probe-amplification loop the cooldown exists to
+// prevent.
+func TestProbeStartupCooldown_ExceedsSystemdRestartSec(t *testing.T) {
+	const systemdRestartSec = 5 * time.Second
+	if probeStartupCooldown <= systemdRestartSec {
+		t.Fatalf("probeStartupCooldown (%v) must be > systemd RestartSec (%v)", probeStartupCooldown, systemdRestartSec)
+	}
+}
+
 func TestFilterReachableProxyURLLines_EmptyInput(t *testing.T) {
 	apiOK, socks5Only := probeAndFilterProxyURLLines(context.Background(), nil, "", 0)
 	if len(apiOK) != 0 || len(socks5Only) != 0 {

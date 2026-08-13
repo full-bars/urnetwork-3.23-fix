@@ -162,6 +162,118 @@ func TestCollectProxyGradeSummary_Stale(t *testing.T) {
 	}
 }
 
+// TestGradeSummaryStaleAfter_PerSource pins the per-source stale-window
+// decision (independent review finding): URL-tagged entries must be
+// judged against the URL reaper's window (reaperStaleThreshold), and
+// paid/file/internal entries against the paid window — the summary's
+// stale ratio must agree with whoever owns the entry's refresh cadence.
+func TestGradeSummaryStaleAfter_PerSource(t *testing.T) {
+	if got := gradeSummaryStaleAfter("url", 0); got != reaperStaleThreshold(0) {
+		t.Fatalf("url source: got %v, want URL reaper window %v", got, reaperStaleThreshold(0))
+	}
+	for _, src := range []string{"file", "internal", ""} {
+		if got := gradeSummaryStaleAfter(src, 0); got != paidStaleThreshold(0) {
+			t.Fatalf("source %q: got %v, want paid window %v", src, got, paidStaleThreshold(0))
+		}
+	}
+	// The URL window must be strictly narrower than the paid window at
+	// the same pressure, or the paid/free divergence is meaningless.
+	if !(reaperStaleThreshold(0) < paidStaleThreshold(0)) {
+		t.Fatal("URL window must be narrower than the paid window")
+	}
+}
+
+// TestCollectProxyGradeSummary_StaleBySource exercises the per-source
+// window through the collector: a URL entry 4h old is stale by the URL
+// reaper window (3h calm) while a paid entry 4h old is still fresh by
+// the paid window (6h calm) — only the URL one counts as stale.
+// (Calm-pressure test, consistent with the rest of the suite.)
+func TestCollectProxyGradeSummary_StaleBySource(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fourHours := time.Now().Add(-4 * time.Hour)
+	urlState := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"1.1.1.1:1080": {Score: 0.9, Graded: true, LastProbe: fourHours},
+	}}
+	if err := writeProxyURLStateTo(filepath.Join(dir, "proxy_url.json"), urlState); err != nil {
+		t.Fatal(err)
+	}
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"1.1.1.1:1080": {Health: "up", Source: "url"},
+		"5.5.5.5:1080": {Health: "up", Source: "file", Graded: true, Score: 0.8, LastGraded: fourHours},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
+	if s.stale != 1 {
+		t.Fatalf("stale: %d, want 1 (URL entry stale by URL window; paid entry fresh by paid window)", s.stale)
+	}
+}
+
+// TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag pins the
+// coderabbit finding: an address whose first-seen provenance tag says
+// "url" but which IS in the current paid/file desired set is served as a
+// file proxy (file wins in mergeProxyURLCache) and graded by the paid
+// grader — the summary must bucket it by the PAID owner (ProxyEntry
+// grade + paid stale window), never the URL cache grade + URL window.
+func TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte("9.9.9.9:1080:u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The URL cache holds a DIFFERENT (better) grade for the same
+	// address — using it would be the bug.
+	urlState := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"9.9.9.9:1080": {Score: 0.9, Graded: true, LastProbe: time.Now()},
+	}}
+	if err := writeProxyURLStateTo(filepath.Join(dir, "proxy_url.json"), urlState); err != nil {
+		t.Fatal(err)
+	}
+	// Entry tagged "url" (stale first-seen provenance) but in the paid
+	// file: paid-owned. Paid grade 0.8 -> B tier; 4h old -> fresh by the
+	// paid window (6h calm).
+	state := &ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			"9.9.9.9:1080": {Health: "up", Source: "url", Graded: true, Score: 0.8, LastGraded: time.Now().Add(-4 * time.Hour)},
+		},
+	}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
+	if s.tiers["B"] != 1 {
+		t.Fatalf("paid owner grade must be used: tiers=%v, want B=1 (file ownership overrides the url tag)", s.tiers)
+	}
+	if s.tiers["A"] != 0 {
+		t.Fatalf("URL cache grade must NOT be used for a paid-owned address: tiers=%v, want A=0", s.tiers)
+	}
+	if s.sources["file"]["B"] != 1 {
+		t.Fatalf("paid-owned address must bucket under file: sources=%v", s.sources)
+	}
+	if s.sources["url"] != nil {
+		t.Fatalf("paid-owned address must not bucket under url: sources=%v", s.sources)
+	}
+	if s.stale != 0 {
+		t.Fatalf("stale: %d, want 0 (4h-old paid grade is fresh by the paid window)", s.stale)
+	}
+}
+
 func TestEmitProxyGradeDelta(t *testing.T) {
 	home := withTempHome(t)
 	dir := filepath.Join(home, ".urnetwork")
