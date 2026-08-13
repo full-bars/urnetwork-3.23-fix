@@ -8,6 +8,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+**Hub A-F grade surfacing** (#360): the provider's report payload now carries each proxy's grade (`score/graded/failed/tier/last_graded`, omitempty), the hub ingests it into a new `proxy_grades` store (latest-wins per node+proxy per hour, 7-day retention), and the dashboard renders a color-coded A-F **Grade** column — distinct from the existing traffic-composite **Score** column. URL-store grade timestamps are honest: a real `LastGraded` field stamped only on genuine stage-1 grades, never on liveness-only probes. Grade tiers are sanitized to exactly A-F at ingest plus HTML-escaping at both render sites (stored-XSS hardening). Needs a fleet deploy — provider binary + hub image both change.
+
 **Paid/free probe divergence + earn-skip** (#357): stage-1 table probing splits into two cadences. Paid/file proxies move to a wider stale window (6h calm / 3h hot vs the URL 3h/1h) and are skipped entirely when they show a positive billable delta within the last 15 minutes — earn-skip — with a hard 24h force-probe ceiling and never-graded proxies always probed, so fail-fast can never be starved. The first URL fetch + probe pass is deferred 20s after process start, so a crash-looping box can never re-fetch/re-probe on every restart. The grade summary's stale ratio picks its freshness window per entry source. Needs a fleet deploy — probe cadence and probe spend change on every box at redeploy time.
 
 ### Fixed
