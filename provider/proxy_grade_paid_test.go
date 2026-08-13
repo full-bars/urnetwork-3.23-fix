@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -321,19 +322,36 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
 	defer cleanup()
 	// Force every sampled host unresolvable -> Total=0 -> undecidable.
-	// Seed a WINDOW of pass values, not just the current one: the pass
-	// counter advances on every URL fetch cycle, and another test in this
-	// binary (or a background fetcher) can increment it between this seed
-	// and the probe's Load(). Seeding only Load() made the test flaky under
-	// `go test ./...` — the probe would read a higher pass, resolve a target
-	// it was never seeded to fail, and make one CONNECT. 8 covers any
-	// realistic number of interleaved increments.
-	base := tableProbePassCounter.Load()
-	passes := make([]uint64, 0, 8)
-	for i := uint64(0); i < 8; i++ {
-		passes = append(passes, base+i)
-	}
-	seedProbeDNSFailForAddress(t, addr, passes...)
+	//
+	// The probe samples a host block derived from
+	// (fnv(address) + tableProbePassCounter.Load()) with SampleWidth
+	// rotation. Two independent hazards make a window-of-passes seed
+	// (previously 8) flaky:
+	//
+	// 1. The host table contains literal IPs (1.1.1.1, 8.8.8.8, 9.9.9.9)
+	//    at fixed indices, and resolveProbeTarget short-circuits literal IPs
+	//    BEFORE consulting the DNS cache (net.ParseIP fast path) — a seeded
+	//    fail can never make them unresolvable. A pass whose block includes
+	//    one always dials it, and the 0-CONNECT assertion below fails
+	//    regardless of any seeding. The rotation puts a literal IP in the
+	//    block for ~4.7% of passes (observed 5/40 failures in isolation).
+	// 2. URL fetch cycles from other tests' leaked background fetchers
+	//    advance the counter between seeding and the probe's Load(), so the
+	//    probe can read a pass outside the seeded window.
+	//
+	// Deterministic fix: PIN the counter to a pass whose block is
+	// hostname-only (no literal IP — always exists within a few passes of
+	// any address since consecutive passes walk the table one block apart),
+	// seed exactly that pass, and restore the old value afterwards. The
+	// probe reads exactly what was seeded, and the residual race window
+	// (a background Add() between the Store and the probe's Load) is
+	// covered by seeding the next two passes as well — all hostname-only
+	// by the same rotation argument.
+	origPass := tableProbePassCounter.Load()
+	pinnedPass := tableProbePassPinnedUndecidable(addr)
+	tableProbePassCounter.Store(pinnedPass)
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
+	seedProbeDNSFailForAddress(t, addr, pinnedPass, pinnedPass+1, pinnedPass+2)
 
 	src := filepath.Join(home, "paid.txt")
 	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
@@ -364,6 +382,30 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	if n := connects.Load(); n != 0 {
 		t.Fatalf("expected 0 CONNECTs (all sampled targets unresolvable), got %d", n)
 	}
+}
+
+// tableProbePassPinnedUndecidable returns the first pass >= 0 whose sampled
+// block for address contains no literal-IP target (which resolveProbeTarget
+// resolves without consulting the DNS cache, so a seeded fail can never
+// block it). Consecutive passes walk the table one block (SampleWidth) apart,
+// and the literal IPs occupy a fixed small set of indices, so a hostname-only
+// pass always exists within a few passes of any address.
+func tableProbePassPinnedUndecidable(address string) uint64 {
+	cfg := resolveProxyTableProbeConfig()
+	for pass := uint64(0); pass < 64; pass++ {
+		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		hasLiteral := false
+		for _, h := range hosts {
+			if net.ParseIP(h) != nil {
+				hasLiteral = true
+				break
+			}
+		}
+		if !hasLiteral {
+			return pass
+		}
+	}
+	return 0 // unreachable: hostname-only passes are dense; fall back safely
 }
 
 // TestPaidGradeSettingsMatch pins the stale-settings guard used at apply
