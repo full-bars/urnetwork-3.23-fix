@@ -119,3 +119,64 @@ func TestRestartHandshakeRebuildsFailedInitialEpoch(t *testing.T) {
 		t.Fatal("replacement epoch must be a fresh in-flight handshake")
 	}
 }
+
+// TestHandshakeTimeoutWatcherFreesParkedRunHandshake pins the leak-fix:
+// when the watchdog fires at TlsTimeout, it must cancel the epoch's ctx so
+// the parked runHandshake worker (blocked in sequenceTlsTransport.Read with
+// no deadline) is freed instead of lingering until a rebuild or session
+// close. completeHandshake alone only records the failure — the ctx cancel
+// is what wakes the blocked Read.
+func TestHandshakeTimeoutWatcherFreesParkedRunHandshake(t *testing.T) {
+	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
+	defer cleanup()
+
+	// An in-flight epoch with no handshake error, as if the peer is silent
+	// and the handshake never completes.
+	e := injectTestEpoch(sess, false, nil)
+	if e.ctx.Err() != nil {
+		t.Fatal("precondition: injected epoch ctx must not be cancelled")
+	}
+
+	// Watchdog path: it should record the failure AND cancel the epoch ctx.
+	// Use a short TlsTimeout so the test doesn't wait the default 2s.
+	sess.settings.TlsTimeout = 50 * time.Millisecond
+	sess.handshakeTimeoutWatcher(e)
+
+	if e.handshakeErr == nil {
+		t.Fatal("timeout must record a handshake error")
+	}
+	select {
+	case <-e.ctx.Done():
+		// freed — the parked runHandshake Read observes ctx.Done() and exits
+	default:
+		t.Fatal("epoch ctx not cancelled after timeout — runHandshake worker stays parked")
+	}
+}
+
+// TestHandshakeTimeoutWatcherDoesNotCancelEstablishedEpoch pins the
+// race-sibling: if the handshake completes concurrently with the timeout
+// firing, completeHandshake no-ops (its done() gate) and the epoch is
+// established — cancelling its ctx would tear down a live cipher. The
+// watchdog must only cancel when the timeout actually recorded the failure.
+func TestHandshakeTimeoutWatcherDoesNotCancelEstablishedEpoch(t *testing.T) {
+	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
+	defer cleanup()
+
+	// A completed epoch (handshakeDone closed) standing in for a handshake
+	// that finished just as the timeout fired.
+	e := injectTestEpoch(sess, true, nil)
+	if e.ctx.Err() != nil {
+		t.Fatal("precondition: established epoch ctx must start uncancelled")
+	}
+
+	sess.settings.TlsTimeout = 50 * time.Millisecond
+	sess.handshakeTimeoutWatcher(e)
+
+	// The invariant: a handshake that completed must keep its ctx alive.
+	select {
+	case <-e.ctx.Done():
+		t.Fatal("established epoch ctx was cancelled by the watchdog — live cipher torn down")
+	default:
+		// correct: completed handshake is left alone
+	}
+}
