@@ -68,9 +68,22 @@ Rules:
 - **Linux**: socket buffers + FD limit, plus the ephemeral-port pool (`net.ipv4.ip_local_port_range`) and TIME_WAIT recycling (`net.ipv4.tcp_fin_timeout`) — the two knobs that matter at proxy-scale connection churn.
 - **Windows**: `netsh` dynamic port pool + `TcpTimedWaitDelay` registry equivalent.
 
+## Getting the tool
+
+Three supported paths (v3.23.0-fix.28+ — the Go tool assets ship with every release from v3.23.0-fix.28 onward; older releases and 32-bit x86 hosts fall back to the legacy shell tool):
+
+| Deployment | How the tool is installed |
+|---|---|
+| systemd / native provider | `Provider_Install_Linux.sh` now installs the Go `urnet-tools` binary (sha256-verified against the release API). Fresh installs and `update` both hand off to the Go tool — the shell script is only a fallback for releases that predate the Go asset. |
+| docker-only providers | Run the standalone host-side installer: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh \| sh` — installs `urnet-docker` to `/usr/local/bin` (or `~/.local/bin`), sha256-verified. Same script can install `urnet-tools` with `sh -s -- urnet-tools`. |
+| macOS | `Provider_Install_Mac.sh` installs the Go `urnet-tools-darwin-<arch>` binary (sha256-verified via `shasum`), falling back to the legacy wrapper. |
+
+The Go tool is self-updating: `urnet-tools update` refreshes providers **and** its own binary; `urnet-docker update` / `urnet-tools self-update` refresh only the tool. Release assets are named `urnet-tools-<os>-<arch>` and `urnet-docker-<os>-<arch>` (e.g. `urnet-tools-linux-amd64`), attached to every release.
+
 ## Migration status
 
 - ✅ Phase 1 (this doc): tool subcommands in Go. Installer (`Provider_Install_Linux.sh`) stays shell.
+- ✅ Tool distribution: Go binaries shipped as release assets; installers fetch them digest-verified; tool self-updates via `update`/`self-update`.
 - 🔜 Phase 2: retire `urnet-tools.ps1` and the docker shell variant.
 - 🔜 Phase 3: installer logic in Go.
 

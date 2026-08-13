@@ -262,8 +262,8 @@ func TestUpdateProviderRefusesNonELFStagedBinary(t *testing.T) {
 	if err == nil {
 		t.Fatal("updateProvider must refuse a non-ELF staged binary")
 	}
-	if !strings.Contains(err.Error(), "not an ELF executable") {
-		t.Fatalf("error must say the staged binary is not ELF, got: %v", err)
+	if !strings.Contains(err.Error(), "not a "+runtime.GOOS+" executable") {
+		t.Fatalf("error must say the staged binary is not a %s executable, got: %v", runtime.GOOS, err)
 	}
 }
 

@@ -49,6 +49,20 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdUpdate(rest2, force, dryRun)
+	case "self-update", "selfupdate":
+		// Tool-only update: refresh the urnet-tools binary itself without
+		// touching any provider. Uses the same release resolution + digest
+		// verification as `update`'s self-update leg, but never restarts or
+		// swaps providers. Works on boxes with zero providers (e.g. a
+		// docker-managed host where only the tool is installed).
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdSelfUpdate(rest2, force, dryRun)
 	case "proxy":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -262,6 +276,7 @@ Commands:
   providers              list all providers on this box (all users, JWT identity)
   status [target]        detailed status of one provider
   update [target]        update provider(s) to latest (interactive; --tag to pin)
+  self-update            update this tool binary itself (no providers touched)
   proxy add|clear|remove|refresh [target]   manage proxies
   summary [target]       fleet-style summary for one provider
   report <url> [target]  set hub URL at runtime
