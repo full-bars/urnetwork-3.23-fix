@@ -890,6 +890,30 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 							}
 						}
 
+						// removeClient can cancel a still-registered update (the
+						// leak fix), and a packet arriving afterwards replaces it
+						// in the path map with a fresh update. If we are no
+						// longer the registered update for this path, we were
+						// superseded: the successor owns the map entry and the
+						// affinity registrations. Deleting them here would
+						// orphan the live successor — its packets would split
+						// across exit clients and break the flow. Leave the
+						// successor's state alone; our ctx is already cancelled
+						// so rstFlow below is suppressed.
+						if cur, ok := self.ip4PathUpdates[ip4Path]; !ok || cur != update {
+							return true
+						}
+
+						// removeClient can cancel a still-registered update (the
+						// leak fix), and a packet arriving afterwards replaces it
+						// in the path map with a fresh update. If we are no
+						// longer the registered update for this path, we were
+						// superseded: the successor owns the map entry and the
+						// affinity registrations. Deleting them here would
+						// orphan the live successor — its packets would split
+						// across exit clients and break the flow. Leave the
+						// successor's state alone; our ctx is already cancelled
+						// so rstFlow below is suppressed.
 						client = update.client
 						update.client = nil
 
@@ -988,6 +1012,14 @@ func (self *RemoteUserNatMultiClient) reserveUpdate(
 								// updated since wait for idle
 								return false
 							}
+						}
+
+						// Superseded-by-successor guard (see the ip4 branch):
+						// leave a fresh update's map entry and affinity
+						// registrations alone when removeClient cancelled us
+						// while we were still registered.
+						if cur, ok := self.ip6PathUpdates[ip6Path]; !ok || cur != update {
+							return true
 						}
 
 						client = update.client
