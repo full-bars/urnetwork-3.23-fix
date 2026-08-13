@@ -184,15 +184,22 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = 100 * time.Millisecond
+	settings.StatsWindowDuration = 1 * time.Second
+	settings.BlackholeTimeout = 300 * time.Second
+
 	timeout := 1 * time.Second
 	if testing.Short() {
-		// Must span >= 3 bucket durations (bucket = 100ms below): the stats
-		// reader omits the latest two (possibly partial) buckets, so 10ms of
-		// activity left zero buckets and the bucketCount assertion below was a
-		// coin flip — a deterministic failure on local -short runs (20/20),
-		// masked in CI only when -race scheduling stretched the span across a
-		// bucket boundary.
-		timeout = 300 * time.Millisecond
+		// Must span >= 3 bucket durations: the stats reader omits the latest
+		// two (possibly partial) buckets, so 10ms of activity left zero
+		// buckets and the bucketCount assertion below was a coin flip — a
+		// deterministic failure on local -short runs (20/20), masked in CI
+		// only when -race scheduling stretched the span across a bucket
+		// boundary. Derived from the bucket duration (4x = one spare bucket
+		// over the 3-bucket minimum) so the relationship self-documents and
+		// stays correct if the bucket duration ever changes.
+		timeout = 4 * settings.StatsWindowBucketDuration
 	}
 
 	m := 6
@@ -232,11 +239,6 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	contractStatus := func(contractStatus *ContractStatus) {
 		// Do nothing
 	}
-
-	settings := DefaultMultiClientSettings()
-	settings.StatsWindowBucketDuration = 100 * time.Millisecond
-	settings.StatsWindowDuration = 1 * time.Second
-	settings.BlackholeTimeout = 300 * time.Second
 
 	// the coalesce logic trims from the last event in a bucket
 	// if events are uniformly distributed in a bucket, this means there will be an extra bucket
