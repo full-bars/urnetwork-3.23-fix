@@ -653,3 +653,67 @@ func TestMultiClientRemoveClientDoesNotClobberSuccessorUpdate(t *testing.T) {
 		t.Fatal("successor update2 ctx must not be cancelled")
 	}
 }
+
+func TestMultiClientChannelCancelUnsubscribesReceiveCallback(t *testing.T) {
+	// Regression (leak-hunt item 6): Cancel() called self.cancel() and
+	// client.Cancel() but never clientReceiveUnsub(), unlike Close(). A
+	// Cancel-only path (client eviction, shuffle, replacedClient) left the
+	// receive callback registered on the client, retaining the dead
+	// channel's callback chain until the next resize — a bounded but
+	// steady retention. Cancel must unsubscribe like Close does.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	generator := &TestMultiClientGenerator{
+		nextDestinations: func(count int, excludedDestinations []MultiHopId, rankMode string) (map[MultiHopId]DestinationStats, error) {
+			return nil, nil
+		},
+		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
+			return &MultiClientGeneratorClientArgs{ClientId: NewId(), ClientAuth: nil}, nil
+		},
+		removeClientArgs:     func(args *MultiClientGeneratorClientArgs) {},
+		removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {},
+		newClientSettings:    DefaultClientSettings,
+		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+			return NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings), nil
+		},
+	}
+
+	clientReceivePacket := func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
+	}
+	contractStatus := func(contractStatus *ContractStatus) {}
+
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = 20 * time.Millisecond
+	settings.StatsWindowDuration = 60 * time.Millisecond
+	settings.BlackholeTimeout = 300 * time.Second
+
+	args, err := generator.NewClientArgs()
+	assert.Equal(t, nil, err)
+	channelArgs := &multiClientChannelArgs{
+		MultiClientGeneratorClientArgs: *args,
+		Destination:                    RequireMultiHopId(NewId()),
+	}
+
+	clientChannel, err := newMultiClientChannel(
+		ctx, channelArgs, generator, clientReceivePacket,
+		DefaultIngressSecurityPolicy(), contractStatus,
+		func(contractStatsEvents []*ContractStatsEvent) {}, func() {}, nil, settings,
+	)
+	assert.Equal(t, nil, err)
+
+	client := clientChannel.client
+	before := len(client.receiveCallbacks.Get())
+	if before == 0 {
+		t.Fatal("precondition: expected at least one receive callback after construction")
+	}
+
+	clientChannel.Cancel()
+
+	after := len(client.receiveCallbacks.Get())
+	// The channel registered exactly one callback at construction
+	// (clientChannel.clientReceive). Cancel must remove it.
+	if after != before-1 {
+		t.Fatalf("Cancel() must unsubscribe the channel's receive callback like Close() — before=%d after=%d (dead channel's callback retained until next resize)", before, after)
+	}
+}
