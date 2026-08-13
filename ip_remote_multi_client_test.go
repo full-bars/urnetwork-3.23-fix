@@ -495,3 +495,78 @@ func TestMultiClientRemoveClientCancelsUpdateCtx(t *testing.T) {
 		t.Fatal("removeClient must delete the client's updates map")
 	}
 }
+
+func TestMultiClientPQERequiresSaneEncryptionIdleTimeout(t *testing.T) {
+	// Regression (leak-hunt item 2): the PQE/Required path replaced a nil
+	// EncryptionSettings with DefaultEncryptionSettings(), which ships
+	// IdleTimeout == 0. With that value, Release() defers deletion while a
+	// handshake is in flight but Run() never arms CancelIfIdle (it requires
+	// 0 < IdleTimeout) — so once the handshake settles, a refs==0 session
+	// stays registered forever (zombie). The fix derives the same
+	// sequence-bounded idle horizon DefaultClientSettings uses, arming the
+	// reap loop so the session is eventually reaped.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = 100 * time.Millisecond
+	settings.StatsWindowDuration = 1 * time.Second
+
+	var gotEncryptionIdleTimeout time.Duration
+	// Generator that returns a ClientSettings with EncryptionSettings == nil,
+	// the exact precondition that triggers the DefaultEncryptionSettings()
+	// replacement in the PQE path. The newClient callback receives the
+	// settings AFTER newMultiClientChannel applied the PQE fix, so it is the
+	// ground truth for what the session will run with.
+	generator := &TestMultiClientGenerator{
+		nextDestinations: func(count int, excludedDestinations []MultiHopId, rankMode string) (map[MultiHopId]DestinationStats, error) {
+			return map[MultiHopId]DestinationStats{}, nil
+		},
+		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
+			return &MultiClientGeneratorClientArgs{ClientId: NewId(), ClientAuth: nil}, nil
+		},
+		removeClientArgs:     func(args *MultiClientGeneratorClientArgs) {},
+		removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {},
+		newClientSettings: func() *ClientSettings {
+			s := DefaultClientSettings()
+			s.EncryptionSettings = nil // the nil precondition
+			return s
+		},
+		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+			if clientSettings.EncryptionSettings != nil {
+				gotEncryptionIdleTimeout = clientSettings.EncryptionSettings.IdleTimeout
+			}
+			return NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings), nil
+		},
+	}
+
+	channelArgs := &multiClientChannelArgs{
+		MultiClientGeneratorClientArgs: MultiClientGeneratorClientArgs{ClientId: NewId()},
+		Destination:                    RequireMultiHopId(NewId()),
+	}
+	pqe := &PerformanceProfile{PostQuantumEncryption: true}
+
+	clientChannel, err := newMultiClientChannel(
+		ctx, channelArgs, generator,
+		func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
+		},
+		DefaultIngressSecurityPolicy(),
+		func(contractStatus *ContractStatus) {},
+		func(contractStatsEvents []*ContractStatsEvent) {},
+		func() {}, pqe, settings,
+	)
+	if err != nil {
+		t.Fatalf("newMultiClientChannel: %s", err)
+	}
+	defer clientChannel.Close()
+
+	// The session settings the PQE path installed must arm the reap loop
+	// (0 < IdleTimeout), otherwise refs==0 sessions become zombies. The
+	// timeout must also be bounded (a sane horizon, not "keep forever").
+	if gotEncryptionIdleTimeout <= 0 {
+		t.Fatalf("PQE path must install a positive EncryptionSettings.IdleTimeout (got %v) so the CancelIfIdle reap loop is armed — with the old 0 default, refs==0 sessions became zombies", gotEncryptionIdleTimeout)
+	}
+	if gotEncryptionIdleTimeout > 24*time.Hour {
+		t.Fatalf("PQE IdleTimeout %v is not a sane bounded horizon", gotEncryptionIdleTimeout)
+	}
+}
