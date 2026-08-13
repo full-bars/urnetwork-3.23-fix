@@ -364,8 +364,19 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	p := Provider{Unit: "urnetwork-beta.service", User: "urnetwork-beta"}
 	args := unitCommandArgs(p, "restart")
-	if len(args) < 2 || args[0] != "systemctl" || args[len(args)-1] != "restart" {
-		t.Fatalf("unitCommandArgs(restart) = %v, want systemctl ... restart", args)
+	// The unit name must be the final argument before any extras. The exact
+	// form depends on whether the test env treats the unit as user-level
+	// (systemctl --user -M <user>@ ...) or system-level (systemctl ...),
+	// but BOTH must end with the unit — systemctl errors "Too few
+	// arguments" without it (gauntlet finding).
+	if len(args) < 3 {
+		t.Fatalf("unitCommandArgs(restart) = %v, want systemctl ... restart <unit>", args)
+	}
+	if args[0] != "systemctl" {
+		t.Fatalf("unitCommandArgs(restart) = %v, want systemctl first", args)
+	}
+	if args[len(args)-1] != p.Unit {
+		t.Fatalf("unitCommandArgs(restart) = %v, want final arg = unit %q (systemctl errors without it)", args, p.Unit)
 	}
 	// The delegation must NOT be "<provider> hot-restart": assert the Go
 	// tool's command surface no longer routes hot-restart to
