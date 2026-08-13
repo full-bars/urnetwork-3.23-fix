@@ -2953,6 +2953,22 @@ func newMultiClientChannel(
 		// separately, runs Opportunistic so it keeps serving non-pqe consumers.)
 		if clientSettings.EncryptionSettings == nil {
 			clientSettings.EncryptionSettings = DefaultEncryptionSettings()
+			// DefaultEncryptionSettings ships IdleTimeout == 0 ("reap a
+			// standalone session immediately at refs==0"). For this consumer
+			// that is a zombie landmine: Release() defers deletion while a
+			// handshake is in flight (the session must stay registered so the
+			// next send reuses it instead of churning a fresh ClientHello),
+			// but Run() only arms its CancelIfIdle reap loop when
+			// 0 < IdleTimeout — so with the 0 default, once the handshake
+			// settles (success or failure) the refs==0 session is never
+			// reaped and stays registered forever. Derive the same
+			// sequence-bounded idle horizon DefaultClientSettings uses, so
+			// the reap loop is armed and the session outlives the sequences
+			// that ref-hold it without leaking indefinitely.
+			clientSettings.EncryptionSettings.IdleTimeout = max(
+				clientSettings.SendBufferSettings.IdleTimeout,
+				clientSettings.ReceiveBufferSettings.IdleTimeout,
+			)
 		}
 		clientSettings.EncryptionSettings.Mode = EncryptionModeRequired
 	}
