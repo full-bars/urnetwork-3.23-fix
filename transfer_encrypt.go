@@ -495,6 +495,12 @@ var ErrEncryptionRequiredNotEstablished = errors.New(
 // session-level fallback (`RequiredCipherPollInterval`) cannot diverge.
 const DefaultRequiredCipherPollInterval = 20 * time.Millisecond
 
+// restartHandshakeCooldown paces rebuilds of a FAILED handshake epoch so a
+// fast-failing peer does not spawn a new handshake every sealed write or poll
+// tick. A silent peer is naturally paced by TlsTimeout (the epoch only fails
+// once per establishment attempt); this bounds the fast-fail case.
+const restartHandshakeCooldown = 5 * time.Second
+
 // EncryptionSettings configures the per-peer TLS sessions managed by an
 // `EncryptionSessionManager`.
 type EncryptionSettings struct {
@@ -755,6 +761,12 @@ type peerEncryptionSession struct {
 	// lull reuses the live cipher instead of churning a fresh handshake.
 	// Protected by stateLock.
 	lastActivityTime time.Time
+	// lastHandshakeFailureTime is when the current epoch's handshake last
+	// failed (set by restartHandshake when it replaces a failed epoch, and by
+	// completeHandshake/identity-verification failures via the rebuild path).
+	// Used to pace failed-epoch rebuilds (restartHandshakeCooldown). Guarded
+	// by stateLock; zero until the first rebuild.
+	lastHandshakeFailureTime time.Time
 	// requiredSendBlockedNotified / requiredReceiveDiscardedNotified dedup
 	// their respective Required-mode gate logs to once per session; both
 	// reset when the session seals (scope 3's notifySessionSealed). Protected
@@ -914,10 +926,32 @@ func (self *peerEncryptionSession) startEpoch() {
 func (self *peerEncryptionSession) restartHandshake() {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	if self.epoch != nil && self.epoch != self.establishedEpoch {
-		// a handshake is already in flight; let it finish rather than
-		// thrash a new one on every send sequence
+	// A genuinely in-flight (not yet failed) handshake is left to complete so
+	// repeated send sequences don't thrash it.
+	if self.handshakeInFlightLocked() {
 		return
+	}
+	// A FAILED epoch (handshakeErr or identityFailed) is dead, not in flight:
+	// rebuild it, or a parked Required-mode send / rekey path calling this
+	// every poll tick or sealed write would never get a second attempt
+	// (review HIGH — routine once the 60s TlsTimeout fails epochs against
+	// departed peers, whereas the old -1 default rarely produced a failed
+	// epoch at all). Rebuilds are paced: the first rebuild after a failure
+	// happens immediately, later ones at most once per restartHandshakeCooldown.
+	if self.epoch != nil && self.epoch != self.establishedEpoch &&
+		(self.epoch.handshakeErr != nil || self.epoch.identityFailed) &&
+		!self.lastHandshakeFailureTime.IsZero() &&
+		time.Since(self.lastHandshakeFailureTime) < restartHandshakeCooldown {
+		return
+	}
+	// Stamp the failure time only when actually replacing a FAILED epoch. An
+	// initial epoch or a normal rekey epoch leaves it zero, so if either of
+	// those fails quickly its first retry is not suppressed by a timestamp
+	// taken at epoch start — the first rebuild after a failure is always
+	// immediate, later ones paced by restartHandshakeCooldown.
+	if self.epoch != nil && self.epoch != self.establishedEpoch &&
+		(self.epoch.handshakeErr != nil || self.epoch.identityFailed) {
+		self.lastHandshakeFailureTime = time.Now()
 	}
 	self.buildAndStartEpochWithLock()
 }
