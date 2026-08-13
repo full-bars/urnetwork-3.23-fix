@@ -31,16 +31,20 @@ func unitCommand(p Provider, action string, extra ...string) error {
 }
 
 // unitCommandArgs builds the systemctl argv for an action on the provider's
-// unit: system units use "systemctl <action>"; user units are scoped to the
-// owning user's session via "--user -M <user>@". Extracted as a pure helper
-// so tests can pin the argv shape without running systemctl (coderabbit:
-// tests must call production logic, not reimplement it).
+// unit: system units use "systemctl <action> <unit>"; user units are scoped
+// to the owning user's session via "--user -M <user>@ <action> <unit>". The
+// unit name is ALWAYS the final argument — systemctl errors "Too few
+// arguments" without it (gauntlet finding: hot-restart printed that error;
+// the pre-fix unitCommandArgs omitted the unit entirely).
 func unitCommandArgs(p Provider, action string, extra ...string) []string {
+	if p.Unit == "" {
+		return []string{"systemctl", action}
+	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		args := []string{"systemctl", "--user", "-M", p.User + "@", action}
+		args := []string{"systemctl", "--user", "-M", p.User + "@", action, p.Unit}
 		return append(args, extra...)
 	}
-	args := []string{"systemctl", action}
+	args := []string{"systemctl", action, p.Unit}
 	return append(args, extra...)
 }
 
