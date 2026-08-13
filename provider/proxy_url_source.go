@@ -916,6 +916,19 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					state.Cache[r.addr] = entry
 					tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale re-probe\n", r.addr)
 					changed = true
+				case probeTLSFailed:
+					// A once-good proxy that now fails TLS verification has
+					// turned hostile (MITM/interceptor). Demote it on the
+					// stale re-probe exactly like a dead/socks5-only result —
+					// a hostile node must not stay in the pool even though
+					// it was admitted earlier (no isLive escape exists on
+					// this path by construction).
+					entry.LastProbe = time.Now()
+					entry.ProbeOK = false
+					entry.ProbeFails = 1
+					state.Cache[r.addr] = entry
+					tlog("[proxy][url] reaper: demoted %s from ProbeOK after stale TLS-verify failure\n", r.addr)
+					changed = true
 				}
 				continue
 			}
@@ -958,6 +971,25 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 						reason = "dead"
 					}
 					tlog("[proxy][url] reaper: blacklisted %s (%s, %d fails)\n", r.addr, reason, entry.ProbeFails)
+				}
+				changed = true
+
+			case probeTLSFailed:
+				// TLS verification through the proxy failed — the proxy
+				// intercepts/terminates TLS (MITM) instead of relaying it.
+				// This is a hard rejection: a hostile node must not stay in
+				// the pool even if it currently relays client traffic, so
+				// unlike probeSocks5Only there is NO isLive escape here.
+				entry.ProbeOK = false
+				entry.ProbeFails++
+				state.Cache[r.addr] = entry
+				if entry.ProbeFails >= proxyAPIMaxFails {
+					if state.Blacklist == nil {
+						state.Blacklist = map[string]time.Time{}
+					}
+					state.Blacklist[r.addr] = time.Now().UTC()
+					delete(state.Cache, r.addr)
+					tlog("[proxy][url] reaper: blacklisted %s (tls-verify, %d fails)\n", r.addr, entry.ProbeFails)
 				}
 				changed = true
 			}
