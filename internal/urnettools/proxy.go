@@ -52,6 +52,32 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
+	// -h/--help anywhere in the proxy args shows proxy help and returns
+	// without executing (gauntlet finding BUG-2 + Sonnet review: help can
+	// appear at any position, e.g. `proxy add <file> --help` or
+	// `proxy refresh --force -h` — the latter previously reached the
+	// interactive picker and blocked on EOF).
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			fmt.Fprintf(os.Stderr, `urnet-tools proxy — manage a provider's proxies
+
+Usage: urnet-tools proxy <subcommand> [target] [flags]
+
+Subcommands:
+  add <file>             add proxies from a proxy file (host:port[:user:pass])
+  clear                  remove all proxies
+  remove                 remove proxies (--all, or target-specific)
+  refresh                re-read the proxy source (--force to force)
+  health                 proxy health from state files (single target)
+  traffic                proxy traffic from state files (single target)
+  remove-dead            remove dead/degraded proxies (single target)
+
+Targets and batch flags work as for other commands (--unit/--user/--network,
+--all/--include/--exclude/--select). See 'urnet-tools help' for targeting.
+`)
+			return nil
+		}
+	}
 	// LENIENT target parse for ALL subcommands: proxy defines its own
 	// batch flags (--all/--select/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
