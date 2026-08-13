@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"io"
 	mathrand "math/rand"
@@ -17,6 +18,7 @@ const (
 	probeDead         probeResult = iota // TCP unreachable or not SOCKS5
 	probeSocks5Only                      // speaks SOCKS5 but CONNECT to api failed
 	probeAPIReachable                    // both SOCKS5 and API CONNECT succeeded
+	probeTLSFailed                       // CONNECT succeeded but TLS to api did not verify (MITM/intercepting)
 )
 
 const (
@@ -213,18 +215,32 @@ func resolveAPIProbeAddr(host string, port uint16) (net.IP, uint16) {
 	return apiProbeAddr.ip, apiProbeAddr.port
 }
 
-// probeProxy performs a two-stage check on a single proxy address:
+// proxyProbeTLSClientConfig builds the TLS client config used to verify the
+// API connection through a candidate proxy. Production uses the system root
+// pool with SNI pinned to the API host. Tests override it to inject a test
+// CA (see proxy_probe_tls_test.go); the seam is restored per-test.
+var proxyProbeTLSClientConfig = func(serverName string) *tls.Config {
+	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+}
+
+// probeProxy performs a three-stage check on a single proxy address:
 //  1. SOCKS5 greeting (is this actually a SOCKS5 proxy?)
 //  2. SOCKS5 CONNECT to api.bringyour.com:443 (can the proxy reach the API?)
+//  3. TLS handshake through the proxy to the API host (does the proxy
+//     relay TLS transparently, or does it terminate/intercept the
+//     connection? A MITM proxy answers CONNECT with 0x00 like a real one
+//     but presents its own certificate at the TLS layer — verification
+//     fails and the proxy is classified probeTLSFailed, so an interceptor
+//     is never admitted to the pool).
 //
-// Both stages reuse one TCP connection. A random stagger up to
-// proxyProbeStagger is applied before dialing to smooth batch bursts.
-// The API destination IP is resolved once and cached across probes.
-// Credentials (user/password) are honoured via RFC 1929 so credentialed
-// entries are probed on the same terms the real auth path will use.
-// Reads use io.ReadFull and the greeting method byte is inspected, so a
-// partial reply or "no acceptable method" (0xFF) is not mistaken for a
-// live proxy (finding H1).
+// Both stage 1 and stage 2 reuse one TCP connection; stage 3 (TLS) reuses
+// the same tunnel. A random stagger up to proxyProbeStagger is applied
+// before dialing to smooth batch bursts. The API destination IP is
+// resolved once and cached across probes. Credentials (user/password) are
+// honoured via RFC 1929 so credentialed entries are probed on the same
+// terms the real auth path will use. Reads use io.ReadFull and the
+// greeting method byte is inspected, so a partial reply or "no acceptable
+// method" (0xFF) is not mistaken for a live proxy (finding H1).
 func probeProxy(ctx context.Context, address, user, password string, apiHost string, apiPort uint16) probeResult {
 	stagger := time.Duration(mathrand.Intn(int(proxyProbeStagger)))
 	timer := time.NewTimer(stagger)
@@ -282,10 +298,30 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 	// (review #9/10). Anything else — truncated, wrong version, REP != 0x00 —
 	// means the API CONNECT failed: the proxy speaks SOCKS5 but cannot reach
 	// the API, which is socks5-only.
-	if readSocks5ConnectReply(conn) {
-		return probeAPIReachable
+	if !readSocks5ConnectReply(conn) {
+		return probeSocks5Only
 	}
-	return probeSocks5Only
+
+	// Stage 3: TLS handshake through the proxy to the API host. A real
+	// SOCKS5 proxy is transparent to TLS — the handshake bytes flow between
+	// us and the API server untouched, so verification succeeds against the
+	// server's real certificate. A MITM/intercepting proxy answers CONNECT
+	// with 0x00 just like a real one (it passed stage 2) but terminates TLS
+	// itself and presents its own certificate; verification fails and the
+	// proxy is classified probeTLSFailed so it is never admitted to the
+	// pool. The same tunnel is reused — no new TCP connection. A fresh
+	// deadline is set so a slow-but-valid handshake is not starved by the
+	// residual stage-2 CONNECT budget, and the TLS conn is closed on every
+	// exit path (defer) so the wrapped socket tears down cleanly.
+	if err := conn.SetDeadline(time.Now().Add(proxyAPIAccessTimeout)); err != nil {
+		tlog("[proxy][probe] warn: could not set stage-3 deadline: %v\n", err)
+	}
+	tlsConn := tls.Client(conn, proxyProbeTLSClientConfig(apiHost))
+	defer tlsConn.Close()
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return probeTLSFailed
+	}
+	return probeAPIReachable
 }
 
 // probeProxySocks5 is a light wrapper around probeProxy that returns true
@@ -336,7 +372,11 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 		switch r.r {
 		case probeAPIReachable:
 			apiOK = append(apiOK, lines[i])
-		case probeSocks5Only:
+		case probeSocks5Only, probeTLSFailed:
+			// probeTLSFailed (CONNECT ok, TLS verify failed = MITM/interceptor)
+			// is surfaced through the same retry bucket so the reaper's
+			// failure-count → blacklist lifecycle retires it — it must never
+			// be admitted to the pool.
 			socks5Only = append(socks5Only, lines[i])
 		}
 	}
