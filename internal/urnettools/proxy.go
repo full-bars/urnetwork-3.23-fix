@@ -169,6 +169,15 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "refresh":
 		opArgs = []string{"proxy", "refresh"}
+		// The dispatcher's parseGlobalFlags consumes -f/--force as the
+		// GLOBAL force flag before cmdProxy runs, so a `refresh --force`
+		// invocation never forwards --force to the provider binary — the
+		// provider's warmup gate then refuses (exit 52) even though the
+		// operator asked to force (gauntlet finding BUG-9). Re-add it
+		// when the global force flag was set.
+		if force {
+			opArgs = append(opArgs, "--force")
+		}
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
 	case "add-source", "remove-source":
