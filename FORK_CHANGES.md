@@ -2505,3 +2505,22 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A — fork-native design; upstream has no per-proxy earn tracking.
 
 **Status**: ✅ v3.23.0-fix.28.1 (PR #357).
+
+## 113. Hub A-F Grade Surfacing — Report Payload, proxy_grades Store, Dashboard (PR #360)
+
+**Purpose**: The provider boxes compute A-F grades for every proxy they serve (stage-1 table probe; paid/file-list proxies graded on the same cadence), but the hub never received them — the fleet dashboard was blind to the whole grading system, and its existing "Score" column is a different traffic-composite metric (`win% × ln(1+traffic)`). This closes the gap end-to-end.
+
+**Files Modified**: `provider/` (report payload grade fields + `proxyGradeFor` helper + URL-store `LastGraded`), `hub/` (proxy_grades store, ingest sanitization, dashboard Grade column), tests.
+
+**Change**:
+- `proxyReport` gains `score/graded/failed/tier/last_graded` (omitempty — legacy payload shape preserved for ungraded proxies and older hubs). Grades resolved by a pure `proxyGradeFor(addr, paid, url)` helper: the paid/file store (`proxy.state`) wins over the URL store when both are graded.
+- URL-store grade timestamps are honest: a real `LastGraded` field, stamped only when a genuine stage-1 grade lands; liveness-only `LastProbe` bumps never advance it.
+- Hub ingests into a new `proxy_grades` table keyed `(node_id, proxy_id, hour)` — latest report in an hour overwrites (latest-wins), earlier hours stay as history; 7-day retention keeps the best-proxies join bounded.
+- Ingest hardening: grade tiers sanitized to exactly A-F before the in-memory store or the DB (the field is attacker-influenced — any authenticated node's report body — and rendered into dashboard HTML); both render sites additionally HTML-escape.
+- Dashboard: color-coded A-F Grade column (badges) in the Best Proxies table (sortable) and the node drawer; the existing Score column is untouched and stays labeled.
+
+**Effect**: Shipped. The dashboard's Grade column is a NEW metric — distinct from the traffic-composite Score column; never compare them directly.
+
+**How to Identify in New Upstream**: N/A — the fork's report/schema/hub are not shared with `urnetwork/connect`.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #360). Needs a fleet deploy — provider binary + hub image both change.
