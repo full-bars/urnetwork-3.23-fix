@@ -394,3 +394,53 @@ func TestMultiClientChannelSendNackCoalesceDoesNotLeak(t *testing.T) {
 
 	assert.Equal(t, 0, nackCountAfterEviction)
 }
+
+func TestMultiClientChannelSourceCountRefcountPrunesOnEviction(t *testing.T) {
+	// Regression: addSource incremented sourceCount[source] per PACKET while
+	// the bucket path set is deduped; eviction decrements once per (bucket,
+	// path). A source that sent N packets inside a single bucket left a
+	// phantom N-1 count that survived eviction, so the (destination, source)
+	// entry was never pruned — monotonic growth of ip4DestinationSourceCount
+	// per dest/source pair, inflating window-resize sizing and ulimit
+	// warnings downstream.
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = time.Minute
+	settings.StatsWindowDuration = 2 * time.Minute
+
+	clientChannel := &multiClientChannel{
+		settings:                  settings,
+		packetStats:               &clientWindowStats{},
+		ip4DestinationSourceCount: map[Ip4Path]map[Ip4Path]int{},
+		ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
+	}
+
+	// One source, one destination, many packets — all land in the same bucket.
+	packet, _ := udp4Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	for i := 0; i < 100; i += 1 {
+		clientChannel.addSource(ipPath)
+	}
+
+	ip4Path := ipPath.ToIp4Path()
+	source := ip4Path.Source()
+	destination := ip4Path.Destination()
+
+	// The refcount must be 1 (one bucket holds this path), not 100 (packets).
+	clientChannel.stateLock.Lock()
+	count := clientChannel.ip4DestinationSourceCount[destination][source]
+	clientChannel.stateLock.Unlock()
+	assert.Equal(t, 1, count)
+
+	// Age the bucket out of the window and coalesce: the entry must prune.
+	clientChannel.stateLock.Lock()
+	clientChannel.eventBuckets[0].eventTime = time.Now().Add(-3 * settings.StatsWindowDuration)
+	clientChannel.coalesceEventBuckets()
+	clientChannel.stateLock.Unlock()
+
+	clientChannel.stateLock.Lock()
+	_, stillThere := clientChannel.ip4DestinationSourceCount[destination][source]
+	clientChannel.stateLock.Unlock()
+	assert.Equal(t, false, stillThere)
+}
