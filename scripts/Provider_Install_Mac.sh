@@ -221,9 +221,45 @@ do_install() {
     # Remove quarantine attribute
     xattr -d com.apple.quarantine "$provider_bin" 2>/dev/null || true
 
-    # Install the tools wrapper (download from GitHub — curl|sh means $0 isn't a file path)
-    curl -fsSL "$github_raw/scripts/Provider_Install_Mac.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
-    chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+    # Install the tool: the Go urnet-tools binary (v3.23.0-fix.28+) shipped
+    # as a release asset, digest-verified; fall back to the legacy shell
+    # wrapper for releases that predate the Go asset.
+    tool_asset="urnet-tools-darwin-$goarch"
+    tool_digest=""
+    if command -v jq > /dev/null 2>&1; then
+        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | jq -r --arg a "$tool_asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://' || true)"
+    elif command -v python3 > /dev/null 2>&1; then
+        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((a.get("digest","").replace("sha256:","") for a in d.get("assets",[]) if a.get("name")==sys.argv[1]), ""))' "$tool_asset" 2>/dev/null || true)"
+    fi
+
+    if [ -n "$tool_digest" ]; then
+        if curl -fsSL "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
+            if command -v shasum > /dev/null 2>&1; then
+                actual="$(shasum -a 256 "$tmpdir/$tool_asset" | awk '{print $1}')"
+            elif command -v openssl > /dev/null 2>&1; then
+                actual="$(openssl dgst -sha256 "$tmpdir/$tool_asset" | awk '{print $2}')"
+            else
+                actual=""
+            fi
+            if [ -n "$actual" ] && [ "$actual" = "$tool_digest" ]; then
+                mv -f "$tmpdir/$tool_asset" "$install_path/bin/urnet-tools"
+                chmod 755 "$install_path/bin/urnet-tools"
+                xattr -d com.apple.quarantine "$install_path/bin/urnet-tools" 2>/dev/null || true
+            else
+                pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
+                curl -fsSL "$github_raw/scripts/Provider_Install_Mac.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+                chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+            fi
+        else
+            pr_warn "urnet-tools download failed, falling back to shell wrapper"
+            curl -fsSL "$github_raw/scripts/Provider_Install_Mac.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+            chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+        fi
+    else
+        # Release predates the Go tool asset — legacy wrapper.
+        curl -fsSL "$github_raw/scripts/Provider_Install_Mac.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+        chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+    fi
 
     # Create launchd plist
     mkdir -p "$(dirname "$plist_path")"

@@ -15,6 +15,10 @@ import (
 	"github.com/urnetwork/connect/internal/urnettools"
 )
 
+// Version is stamped at release build time (-X main.Version=...). Keep the
+// var: release.yml's ldflags require it.
+var Version = "dev"
+
 func main() {
 	if err := urnettools.RunDocker(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "urnet-docker: %v\n", err)

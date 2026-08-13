@@ -2506,6 +2506,27 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: ✅ v3.23.0-fix.28.1 (PR #357).
 
+## 112. Tool Distribution — Release Assets, Installers, and Self-Update (PR #362)
+
+**Purpose**: The Go tool from #345 was merged but never shipped: `release.yml` built only provider+hub, the release tarballs still carried the legacy shell script as `urnet-tools`, the Docker image baked the shell variant, and the systemd installer self-copied the shell script. Docker-only users (half the user base) had no supported way to get `urnet-docker` at all. This PR wires up the distribution path the design doc (§8, §10, §11) specified but never landed.
+
+**Files Modified**: `.github/workflows/release.yml`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `scripts/install-urnet-docker.sh` (new), `cmd/urnet-tools/main.go`, `cmd/urnet-docker/main.go`, `internal/urnettools/update.go`, `internal/urnettools/release.go`, `internal/urnettools/legacy_cmds.go`, `internal/urnettools/cli.go`, `internal/urnettools/cli_docker.go`, `docs/urnet-tools-go.md`, `docs/Docker-Deployment.md`, `CHANGELOG.md`
+
+**Change**:
+- `release.yml` now builds `cmd/urnet-tools` and `cmd/urnet-docker` for the full matrix and attaches them as standalone release assets named `urnet-tools-<os>-<arch>` / `urnet-docker-<os>-<arch>` (e.g. `urnet-tools-linux-amd64`, bare — no `.exe` even on Windows). GitHub's release API publishes a sha256 `digest` per asset, which the installers and the tool's own self-update verify.
+- `Provider_Install_Linux.sh`: fresh installs and `update`/`reinstall` now fetch the Go `urnet-tools-linux-<arch>` binary, verify its sha256 against the release API digest, and install it at `bin/urnet-tools` — a one-time handoff from the shell wrapper to the Go tool. Falls back to the legacy self-copy shell script only for releases that predate the Go asset (or 386 hosts).
+- `Provider_Install_Mac.sh`: same swap for `urnet-tools-darwin-<arch>` (verified via `shasum -a 256`), legacy wrapper fallback.
+- `scripts/install-urnet-docker.sh` (new): standalone host-side installer for docker-only users — `curl ... | sh` detects os/arch, resolves the latest release, downloads the tool asset, verifies sha256, installs to `/usr/local/bin` (or `~/.local/bin` when not root). Same script can install `urnet-tools` with `sh -s -- urnet-tools`.
+- **Tool self-update** (`update.go`): `urnet-tools update` now also refreshes the tool binary itself from the same release (digest-verified, structural check, timestamped backup, atomic rename) — a failure there is reported but does not fail the provider updates. New `self-update`/`selfupdate` subcommand updates ONLY the tool (works on boxes with zero providers). `urnet-docker update` = tool self-update (containers update by image pull).
+- **Platform-aware binary checks** (`legacy_cmds.go`): the structural sanity check on downloaded binaries now accepts ELF (linux), Mach-O (darwin), and PE (windows) instead of ELF only — the old check rejected every macOS/Windows self-update, and the same latent defect existed in the provider tarball and hub download paths. The darwin magic bytes were verified against real cross-compiled binaries.
+- `releaseInfo` carries the full asset list so the tool's own asset digest resolves from the same release JSON; the provider tarball digest field renamed `ProviderDigest` for clarity.
+
+**Effect**: Every install path hands off to the Go tool where the release carries it (v3.23.0-fix.28+); older releases and 32-bit x86 hosts retain the legacy shell fallback. The Go tool keeps itself current. Docker-only users: `curl -fSsL .../install-urnet-docker.sh | sh`, then `urnet-docker update` going forward.
+
+**How to Identify in New Upstream**: N/A — fork-native tooling.
+
+**Status**: ✅ PR #362. Needs a fleet deploy for the installer change; new tool assets ship with the next tagged release.
+
 ## 113. Hub A-F Grade Surfacing — Report Payload, proxy_grades Store, Dashboard (PR #360)
 
 **Purpose**: The provider boxes compute A-F grades for every proxy they serve (stage-1 table probe; paid/file-list proxies graded on the same cadence), but the hub never received them — the fleet dashboard was blind to the whole grading system, and its existing "Score" column is a different traffic-composite metric (`win% × ln(1+traffic)`). This closes the gap end-to-end.

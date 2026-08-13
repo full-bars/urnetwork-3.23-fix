@@ -220,6 +220,63 @@ except (json.JSONDecodeError, KeyError):
     echo "$latest_version"
 }
 
+# get_asset_digest_from_api_response extracts the sha256 digest (hex,
+# "sha256:" prefix stripped) for a named release asset from the release
+# JSON. Empty when the asset is absent — callers treat that as "release
+# predates this asset" and fall back.
+get_asset_digest_from_api_response ()
+{
+    asset="$2"
+    if command -v jq > /dev/null; then
+        digest="$(printf "%s" "$1" | tr -d '\000-\037' | jq -r --arg a "$asset" '.assets[] | select(.name == $a) | .digest // ""' 2>/dev/null)"
+    elif command -v python3 > /dev/null; then
+        digest="$(printf "%s" "$1" | tr -d '\000-\037' | python3 -c 'import sys, json;
+try:
+    data = json.load(sys.stdin)
+    asset = sys.argv[1]
+    for a in data.get("assets", []):
+        if a.get("name") == asset:
+            print(a.get("digest") or "")
+            break
+except (json.JSONDecodeError, KeyError):
+    print("")
+' "$asset" 2>/dev/null)"
+    else
+        pr_err "Neither python3 nor jq is available"
+        exit 1
+    fi
+
+    # The release API digest field is "sha256:<hex>"; strip the prefix so
+    # sha256sum comparison works. A JSON null digest (assets uploaded before
+    # digest support) yields the literal "null"/"None" — normalize those to
+    # empty so callers take the documented pre-digest fallback instead of
+    # downloading and hitting a sha256 mismatch (verified 2026-08-12 review).
+    case "$digest" in
+        null|None) digest="" ;;
+    esac
+    echo "$digest" | sed 's/^sha256://'
+}
+
+# verify_sha256_file checks a file's sha256 against the expected hex digest.
+# Returns 0 on match, 1 on mismatch/missing tools.
+verify_sha256_file ()
+{
+    file="$1"
+    expected="$2"
+    if [ -z "$expected" ] || [ ! -f "$file" ]; then
+        return 1
+    fi
+    if command -v sha256sum > /dev/null; then
+        actual="$(sha256sum "$file" | awk '{print $1}')"
+    elif command -v openssl > /dev/null; then
+        actual="$(openssl dgst -sha256 "$file" | awk '{print $2}')"
+    else
+        pr_err "Neither sha256sum nor openssl is available; cannot verify downloaded tool"
+        return 1
+    fi
+    [ "$actual" = "$expected" ]
+}
+
 # shellcheck disable=SC2317
 get_release_date_from_api_response () 
 {   
@@ -1171,50 +1228,107 @@ do_install ()
 
     cd "$script_rundir" || exit 1
 
-    # Priority: tarball-bundled script > GitHub fetch > running script
-    if [ -f "$workdir/urnet-tools" ]; then
-        script="$(cat "$workdir/urnet-tools" 2>/dev/null)"
-    fi
+    # --- urnet-tools install ---
+    # The tool is now a Go binary shipped as a standalone release asset
+    # (urnet-tools-<os>-<arch>, v3.23.0-fix.28+). Prefer it — digest-verified
+    # against the release API — and fall back to the legacy self-copy shell
+    # script only for releases that predate the Go asset. The Go tool is
+    # self-updating (`urnet-tools update` refreshes its own binary), so this
+    # shell path is a one-time handoff.
+    tool_installed=0
+    if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
+        tool_asset="urnet-tools-linux-$arch"
+        tool_dl_url="https://dl.fullbars.xyz/releases/download/$tag/$tool_asset"
+        tool_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset"
 
-    if [ -z "$script" ]; then
-        if [ "$original_operation" = "update" ] || [ "$original_operation" = "reinstall" ]; then
-            pr_info "Fetching latest urnet-tools from GitHub..."
-            if ! script="$(network_fetch "$urnet_install_url")"; then
-                pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
-                script="$(cat "$0" 2>/dev/null)"
+        # Resolve the digest from the release API. Empty digest = the release
+        # predates tool assets (or the asset is missing) → fall back to shell.
+        tool_digest=""
+        if release_json="$(network_fetch "$api_base/releases/tags/$tag" 2>/dev/null)"; then
+            tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"
+        fi
+
+        if [ -n "$tool_digest" ]; then
+            pr_info "Installing Go urnet-tools binary (%s)..." "$tool_asset"
+            if download_asset "$tool_dl_url" "$workdir/$tool_asset"; then
+                if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
+                    # Bypass 'Text file busy' like the provider swap above.
+                    mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                    cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
+                    chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
+                    rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                    tool_installed=1
+                else
+                    pr_warn "urnet-tools sha256 mismatch, falling back to shell script"
+                fi
+            else
+                pr_warn "Primary tool download failed, trying GitHub mirror..."
+                if download_asset "$tool_mirror_url" "$workdir/$tool_asset"; then
+                    if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
+                        mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                        cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
+                        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
+                        rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                        tool_installed=1
+                    else
+                        pr_warn "urnet-tools sha256 mismatch (mirror), falling back to shell script"
+                    fi
+                else
+                    pr_warn "Mirror tool download failed, falling back to shell script"
+                fi
             fi
         fi
     fi
 
-    if [ -z "$script" ]; then
-        script="$(cat "$0" 2>/dev/null)"
+    if [ "$tool_installed" -ne 1 ]; then
+        # Legacy fallback: self-copy the shell script (releases that predate
+        # the Go tool asset, or 386 hosts with no Go asset).
+        # Priority: tarball-bundled script > GitHub fetch > running script
+        script=""
+        if [ -f "$workdir/urnet-tools" ]; then
+            script="$(cat "$workdir/urnet-tools" 2>/dev/null)"
+        fi
+
         if [ -z "$script" ]; then
-            pr_info "Fetching urnet-tools from GitHub..."
-            script="$(network_fetch "$urnet_install_url")"
+            if [ "$original_operation" = "update" ] || [ "$original_operation" = "reinstall" ]; then
+                pr_info "Fetching latest urnet-tools from GitHub..."
+                if ! script="$(network_fetch "$urnet_install_url")"; then
+                    pr_err "Failed to fetch latest urnet-tools from GitHub, using current version"
+                    script="$(cat "$0" 2>/dev/null)"
+                fi
+            fi
         fi
-    fi
 
-    cd "$workdir" || exit 1
-
-    if [ -f "urnet-tools" ]; then
-        script_override="$(cat "urnet-tools" 2>/dev/null)"
-        if [ -n "$script_override" ]; then
-            script="$script_override"
+        if [ -z "$script" ]; then
+            script="$(cat "$0" 2>/dev/null)"
+            if [ -z "$script" ]; then
+                pr_info "Fetching urnet-tools from GitHub..."
+                script="$(network_fetch "$urnet_install_url")"
+            fi
         fi
+
+        cd "$workdir" || exit 1
+
+        if [ -f "urnet-tools" ]; then
+            script_override="$(cat "urnet-tools" 2>/dev/null)"
+            if [ -n "$script_override" ]; then
+                script="$script_override"
+            fi
+        fi
+
+        if [ -z "$script" ]; then
+            pr_err "Invalid script contents"
+            exit 1
+        fi
+
+        rm -f "$install_path/bin/urnet-tools"
+        printf "%s\n" "$script" > "$install_path/bin/urnet-tools"
+        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
+
+        # Note: the GitHub-fetched script above (from main branch) is the canonical
+        # version. The tarball copy is NOT used here to avoid overwriting with stale
+        # bundled content that may lack the latest fix.
     fi
-
-    if [ -z "$script" ]; then
-        pr_err "Invalid script contents"
-        exit 1
-    fi
-
-    rm -f "$install_path/bin/urnet-tools"
-    printf "%s\n" "$script" > "$install_path/bin/urnet-tools"
-    chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
-
-    # Note: the GitHub-fetched script above (from main branch) is the canonical
-    # version. The tarball copy is NOT used here to avoid overwriting with stale
-    # bundled content that may lack the latest fix.
 
     echo "$version_to_install" > "$install_path/.version"
     echo "$release_date" > "$install_path/.date"
