@@ -3843,6 +3843,13 @@ func (self *multiClientChannel) Cancel() {
 	self.addError(errors.New("Done."))
 	self.cancel()
 	self.client.Cancel()
+
+	// Unsubscribe the receive callback like Close does. Without this a
+	// Cancel-only path (client eviction, shuffle, replacedClient) left the
+	// callback registered, retaining the dead client's callback chain until
+	// the next resize — a bounded but steady retention. Remove is
+	// idempotent, so a later Close unsubscribing again is a no-op.
+	self.clientReceiveUnsub()
 }
 
 func (self *multiClientChannel) Close() {
