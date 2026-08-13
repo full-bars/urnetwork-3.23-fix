@@ -727,3 +727,59 @@ func TestMinimumMessageLenLimitFitsWorstCaseHandshake(t *testing.T) {
 }
 
 // FIXME TestAckTimeout
+
+func TestSendEncryptedControlReturnsPoolBufferOnCancel(t *testing.T) {
+	// Regression (leak-hunt item 5): the SendEncryptedControl retry loop
+	// exited via ctx.Done without returning ecBytes (a message-pool buffer
+	// from ProtoMarshal). Pack only takes ownership of MessageBytes on
+	// success; on every failed Pack the caller retains ownership, so each
+	// ctx.Done exit leaked one pooled buffer. Verify the pool's return
+	// ratio for the bucket the EC marshals into stays at 1.0 across a run
+	// that exercises the cancel path.
+	ResetMessagePoolStats()
+
+	// A client whose SendBuffer ctx we cancel so Pack fails; the call ctx
+	// passed to SendEncryptedControl stays live so the function proceeds
+	// past its entry gate, takes the buffer, and only then hits the
+	// retry-loop ctx.Done exit.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clientSettings := DefaultClientSettings()
+	clientSettings.SendBufferSettings.SequenceBufferSize = 0
+	clientSettings.SendBufferSettings.AckBufferSize = 0
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
+	defer client.Cancel()
+
+	// Pack fails because the SendBuffer's ctx is done (Pack returns false
+	// immediately at its ctx.Done check). The retry loop then selects the
+	// same self.ctx.Done branch.
+	cancel()
+
+	peerId := NewId()
+	ec := &protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
+		Payload:     make([]byte, 64),
+		SessionRole: protocol.SequenceRole_SequenceRoleClient,
+	}
+
+	callCtx := context.Background()
+	const attempts = 50
+	for i := 0; i < attempts; i++ {
+		ok := client.sendBuffer.SendEncryptedControl(callCtx, peerId, sequenceTlsRoleClient, ec, false, false)
+		if ok {
+			t.Fatal("SendEncryptedControl must fail when the send buffer ctx is cancelled")
+		}
+	}
+
+	// Every attempt took a buffer (ProtoMarshal) and must have returned it.
+	// All EncryptedControls of this size land in the 2048 pool bucket.
+	stats := MessagePoolStats()
+	ratio, ok := stats[2048][0]
+	if !ok {
+		t.Fatal("expected the 2048 pool bucket to be exercised")
+	}
+	if ratio < 0.99 {
+		t.Fatalf("pool bucket 2048 return ratio = %.2f after %d cancel-path attempts — pooled buffers leaked (want ~1.0)", ratio, attempts)
+	}
+}
