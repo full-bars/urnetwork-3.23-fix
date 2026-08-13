@@ -20,6 +20,7 @@ import (
 var Version = "dev"
 
 func main() {
+	urnettools.ToolVersion = Version
 	if err := urnettools.RunDocker(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "urnet-docker: %v\n", err)
 		os.Exit(1)

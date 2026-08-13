@@ -4,10 +4,16 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 )
+
+// ToolVersion is the build-stamped tool version, wired from main.Version by
+// cmd/urnet-tools and cmd/urnet-docker at startup. Default "dev" for
+// un-stamped builds. Printed by the version command.
+var ToolVersion = "dev"
 
 // Run is the CLI entry point. It parses subcommands and dispatches. The
 // legacy shell dispatcher bug — `--help` executing a destructive op — cannot
@@ -18,6 +24,11 @@ func Run(args []string) error {
 		return nil
 	}
 	op := args[0]
+	switch op {
+	case "version", "--version", "-v":
+		fmt.Println(ToolVersion)
+		return nil
+	}
 	rest := args[1:]
 	switch op {
 	case "providers", "list", "ps":
@@ -64,6 +75,18 @@ func Run(args []string) error {
 		}
 		return cmdSelfUpdate(rest2, force, dryRun)
 	case "proxy":
+		// Let `proxy -h/--help` and `proxy <sub> ... -h/--help` reach
+		// cmdProxy's proxy-specific help instead of being intercepted as
+		// global help (gauntlet finding BUG-2: nested help showed root
+		// usage). Help at ANY position in the proxy args wants proxy help —
+		// parseGlobalFlags scans all positions, so the interception must
+		// too, else `proxy add <file> --help` still falls through to root
+		// usage (Sonnet review finding).
+		for _, a := range rest {
+			if a == "-h" || a == "--help" {
+				return cmdProxy(rest, false, false)
+			}
+		}
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
 			return nil
@@ -89,7 +112,7 @@ func Run(args []string) error {
 		if herr != nil {
 			return herr
 		}
-		return cmdSimpleDelegation("report", rest2)
+		return cmdReport(rest2)
 	case "hot-restart", "hotrestart":
 		rest2, herr := parseDelegationArgs(rest)
 		if herr == errHelpShown {
@@ -98,7 +121,7 @@ func Run(args []string) error {
 		if herr != nil {
 			return herr
 		}
-		return cmdSimpleDelegation("hot-restart", rest2)
+		return cmdHotRestart(rest2)
 	case "start":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -227,9 +250,12 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 	return force, dryRun, rest, nil
 }
 
-// cmdSimpleDelegation handles the pass-through commands (summary, report,
-// hot-restart): resolve the targeted provider, then delegate the exact
-// subcommand to that provider's binary.
+// cmdSimpleDelegation handles the pass-through commands (summary):
+// resolve the targeted provider, then delegate the exact subcommand to that
+// provider's binary. report and hot-restart have real implementations (see
+// cmdReport / cmdHotRestart) because the provider binary has no report or
+// hot-restart subcommands — delegating to it printed the provider's auth
+// usage and did nothing (gauntlet findings BUG-4).
 func cmdSimpleDelegation(sub string, args []string) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -240,9 +266,63 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Delegate: <binary> <sub> <rest...>
-	cmdArgs := append([]string{sub}, rest...)
+	// The provider nests summary under the proxy branch: `provider proxy
+	// summary`, not `provider summary` (gauntlet finding BUG-5). Build the
+	// nested argv; everything else stays flat.
+	cmdArgs := append([]string{"proxy", sub}, rest...)
 	return providerSubcommand(p, cmdArgs...)
+}
+
+// cmdReport implements `urnet-tools report <url> [target]`: it writes the
+// hub-report URL override file (~/.urnetwork/report_url) in the provider's
+// state dir. The provider's bandwidth reporter re-reads that file every
+// tick, so the change takes effect without a restart. The provider binary
+// has NO report subcommand — delegating to it printed auth usage and did
+// nothing (gauntlet finding BUG-4).
+func cmdReport(args []string) error {
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	providers := Discover()
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if len(rest) < 1 {
+		return fmt.Errorf("report requires a URL (use 'report off' to disable)")
+	}
+	url := rest[0]
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	path := filepath.Join(p.StateDir, "report_url")
+	if err := os.WriteFile(path, []byte(url+"\n"), 0600); err != nil {
+		return fmt.Errorf("write %s: %v", path, err)
+	}
+	fmt.Printf("report URL for %s set to %q (effective on the reporter's next tick)\n", providerLabel(p), url)
+	return nil
+}
+
+// cmdHotRestart implements `urnet-tools hot-restart [target]`: it restarts
+// the provider's systemd unit. The provider binary has NO hot-restart
+// subcommand — its hot-restart behavior is a config/env toggle
+// (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
+// auth usage and did nothing (gauntlet finding BUG-4).
+func cmdHotRestart(args []string) error {
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	providers := Discover()
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("hot-restart takes no arguments (got %v)", rest)
+	}
+	return unitCommand(p, "restart")
 }
 
 // parseDelegationArgs guards -h/--help for the pass-through commands
@@ -281,6 +361,8 @@ Commands:
   summary [target]       fleet-style summary for one provider
   report <url> [target]  set hub URL at runtime
   hot-restart [target]   restart one provider's unit
+  logs [target] [N]      show recent provider logs (N lines, default 250)
+  version                print this tool's version
 
 Providers are identified three ways (use any):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
