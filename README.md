@@ -52,6 +52,7 @@ Choose your platform:
 | 🍎 macOS (launchd) | [`curl -fSsL https://dl.fullbars.xyz/install-mac.sh \| sh`](https://dl.fullbars.xyz/install-mac.sh) | manual — see [docs/Installation.md](docs/Installation.md) |
 | 🪟 Windows (PowerShell) | [`irm https://dl.fullbars.xyz/install-win.ps1 \| iex`](https://dl.fullbars.xyz/install-win.ps1) | [`irm https://dl.fullbars.xyz/uninstall-win.ps1 \| iex`](https://dl.fullbars.xyz/uninstall-win.ps1) |
 | 🐋 Docker | `docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest` | `docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest` |
+| 🐋 Docker (manage) | [`curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh \| sh`](https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh) | `rm /usr/local/bin/urnet-docker` (root) or `rm ~/.local/bin/urnet-docker` (non-root) |
 
 After installation, authenticate and start providing:
 
@@ -65,6 +66,8 @@ urnet-tools auto on
 
 > [!NOTE]
 > Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
+>
+> Docker-only deployments: the provider runs in a container, but the management tool (`urnet-docker`) runs **on the docker host, outside the container**. Install it with the one-liner above (or `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools` for the systemd variant). The tool self-updates afterward (`urnet-docker update`).
 
 ### 🐋 Docker (Production-Ready)
 

@@ -62,6 +62,24 @@ func RunDocker(args []string) error {
 			return err
 		}
 		return cmdDockerRestart(rest2, force, dryRun)
+	case "update", "self-update", "selfupdate":
+		// Docker containers update by pulling new images (out of this
+		// tool's scope); `urnet-docker update` refreshes the TOOL binary
+		// itself. Host-side only — never executed inside a container.
+		// Help must show the DOCKER usage (the shared parseGlobalFlags
+		// would print the urnet-tools one — verified 2026-08-12 review).
+		if hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdSelfUpdate(rest2, force, dryRun)
 	case "logs":
 		if hasHelpFlag(rest) {
 			usageDocker()
@@ -103,6 +121,7 @@ Commands:
   exec <cmd...>           command-first form still works (target flags optional;
                           required when more than one provider container exists)
   restart [target]       restart the container
+  update                 update this tool binary itself (containers update by image pull)
   logs [target] [N]    follow the container's logs (last N lines, default 250;
                           RAMLOGS-aware: streams /dev/shm when enabled, else docker logs;
                           interactive picker when multiple providers)

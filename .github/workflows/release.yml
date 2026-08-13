@@ -55,6 +55,22 @@ jobs:
           -ldflags "-s -w -X main.Version=${VERSION}" \
           -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/
 
+      - name: Build urnet-tools (Go tool)
+        run: |
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+          go build -trimpath \
+          -ldflags "-s -w -X main.Version=${VERSION}" \
+          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/
+
+      - name: Build urnet-docker (Go tool, container variant)
+        run: |
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+          go build -trimpath \
+          -ldflags "-s -w -X main.Version=${VERSION}" \
+          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/
+
       - name: Upload provider artifact
         uses: actions/upload-artifact@v4
         with:
@@ -66,6 +82,18 @@ jobs:
         with:
           name: hub-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub
+
+      - name: Upload urnet-tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: urnet-tools-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools
+
+      - name: Upload urnet-docker artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: urnet-docker-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker
 
   create-release:
     name: Create Release
@@ -125,6 +153,78 @@ jobs:
           name: hub-linux-arm64
           path: hub_tmp/arm64/
 
+      - name: Download urnet-tools linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-amd64
+          path: tool_tmp/linux/amd64/
+
+      - name: Download urnet-tools linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-arm64
+          path: tool_tmp/linux/arm64/
+
+      - name: Download urnet-tools darwin amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-darwin-amd64
+          path: tool_tmp/darwin/amd64/
+
+      - name: Download urnet-tools darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-darwin-arm64
+          path: tool_tmp/darwin/arm64/
+
+      - name: Download urnet-tools windows amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-windows-amd64
+          path: tool_tmp/windows/amd64/
+
+      - name: Download urnet-tools windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-windows-arm64
+          path: tool_tmp/windows/arm64/
+
+      - name: Download urnet-docker linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-amd64
+          path: tool_tmp/linux/amd64/
+
+      - name: Download urnet-docker linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-arm64
+          path: tool_tmp/linux/arm64/
+
+      - name: Download urnet-docker darwin amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-darwin-amd64
+          path: tool_tmp/darwin/amd64/
+
+      - name: Download urnet-docker darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-darwin-arm64
+          path: tool_tmp/darwin/arm64/
+
+      - name: Download urnet-docker windows amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-windows-amd64
+          path: tool_tmp/windows/amd64/
+
+      - name: Download urnet-docker windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-windows-arm64
+          path: tool_tmp/windows/arm64/
+
       - name: Prepare binaries
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
@@ -144,6 +244,32 @@ jobs:
           mv hub_tmp/arm64/hub-linux-arm64 hub_tmp/arm64/hub 2>/dev/null || true
           cp hub_tmp/amd64/hub urnetwork-hub-${VERSION}-linux-amd64
           cp hub_tmp/arm64/hub urnetwork-hub-${VERSION}-linux-arm64
+          # Stamp tool binaries as standalone release assets named
+          # <tool>-<os>-<arch> (e.g. urnet-tools-linux-amd64). The Go tool's
+          # self-update + installers fetch exactly this name from the release.
+          find tool_tmp -type f \( -name "urnet-tools*" -o -name "urnet-docker*" \) -exec chmod +x {} \;
+          # linux
+          cp tool_tmp/linux/amd64/urnet-tools urnet-tools-linux-amd64
+          cp tool_tmp/linux/arm64/urnet-tools urnet-tools-linux-arm64
+          cp tool_tmp/linux/amd64/urnet-docker urnet-docker-linux-amd64
+          cp tool_tmp/linux/arm64/urnet-docker urnet-docker-linux-arm64
+          # darwin
+          cp tool_tmp/darwin/amd64/urnet-tools urnet-tools-darwin-amd64
+          cp tool_tmp/darwin/arm64/urnet-tools urnet-tools-darwin-arm64
+          cp tool_tmp/darwin/amd64/urnet-docker urnet-docker-darwin-amd64
+          cp tool_tmp/darwin/arm64/urnet-docker urnet-docker-darwin-arm64
+          # windows (assets are BARE — no .exe suffix; matches toolAssetName,
+          # runningToolAssetName and the installers. Verified 2026-08-12
+          # review: a .exe suffix made the asset name disagree with every
+          # consumer. The uploaded FILE is still the PE binary.)
+          cp tool_tmp/windows/amd64/urnet-tools urnet-tools-windows-amd64
+          cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64
+          cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64
+          cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64
+          # NOTE: these copies are deliberately NOT suppressed with || true —
+          # a missing/renamed tool artifact must fail the release BEFORE it
+          # publishes, not ship a release that breaks installers + self-update
+          # (verified 2026-08-12 review).
 
       - name: Create provider tarballs
         run: |
@@ -205,6 +331,8 @@ jobs:
             urnetwork-provider-*.tar.gz
             urnetwork-hub-*-linux-amd64
             urnetwork-hub-*-linux-arm64
+            urnet-tools-*
+            urnet-docker-*
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           body_path: ${{ steps.body_src.outputs.path }}
