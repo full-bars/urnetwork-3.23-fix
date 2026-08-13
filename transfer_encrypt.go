@@ -1037,6 +1037,20 @@ func (self *peerEncryptionSession) handshakeTimeoutWatcher(e *tlsHandshakeEpoch)
 	case <-time.After(self.settings.TlsTimeout):
 		// give the run loop a synthetic timeout error if it hasn't completed
 		self.completeHandshake(e, fmt.Errorf("tls handshake timeout after %s", self.settings.TlsTimeout))
+		// completeHandshake can no-op through its done() gate if the
+		// handshake finished concurrently — the epoch is then established and
+		// its ctx must stay alive to serve the cipher. Only when the timeout
+		// actually recorded a failure (handshakeErr set) is the epoch dead,
+		// and only then cancel its ctx: that is what frees the parked
+		// runHandshake worker, which is otherwise stuck in
+		// sequenceTlsTransport.Read (no deadline) until a rebuild or session
+		// close.
+		self.stateLock.Lock()
+		failed := e.handshakeErr != nil
+		self.stateLock.Unlock()
+		if failed {
+			e.cancel()
+		}
 	}
 }
 
