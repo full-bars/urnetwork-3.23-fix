@@ -444,3 +444,54 @@ func TestMultiClientChannelSourceCountRefcountPrunesOnEviction(t *testing.T) {
 	clientChannel.stateLock.Unlock()
 	assert.Equal(t, false, stillThere)
 }
+
+func TestMultiClientRemoveClientCancelsUpdateCtx(t *testing.T) {
+	// Regression (leak-hunt item 4): removeClient nulled update.client but
+	// never cancelled update.ctx, so the update's per-flow teardown
+	// goroutine stayed parked in waitForIdleUpdate (time.After up to
+	// SequenceIdleTimeout=120s) and could not observe the client removal
+	// until the idle timer fired. Every client removal stranded one
+	// goroutine + one timer for the full idle timeout. The fix cancels the
+	// ctx so the teardown goroutine wakes immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	settings := DefaultMultiClientSettings()
+	settings.SequenceIdleTimeout = 2 * time.Minute // default; any value works
+
+	// A minimal generator-free construction: only the fields removeClient
+	// touches (stateLock, clientUpdates, log, ctx) plus the maps the
+	// constructor initializes are needed.
+	multiClient := &RemoteUserNatMultiClient{
+		ctx:              ctx,
+		cancel:           cancel,
+		settings:         settings,
+		log:              NewNoopLogger(),
+		clientUpdates:    map[*multiClientChannel]map[*multiClientChannelUpdate]bool{},
+		ip4PathUpdates:   map[Ip4Path]*multiClientChannelUpdate{},
+		ip6PathUpdates:   map[Ip6Path]*multiClientChannelUpdate{},
+		affinityIp4Paths: map[Ip4Path]map[Ip4Path]time.Time{},
+		affinityIp6Paths: map[Ip6Path]map[Ip6Path]time.Time{},
+	}
+
+	// A client — removeClient only needs IsDone() (ctx) and pointer identity.
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	client := &multiClientChannel{ctx: clientCtx, cancel: clientCancel}
+
+	// A hand-built update bound to that client, with a live ctx.
+	update := newMultiClientChannelUpdate(ctx, &IpPath{Version: 4})
+	update.client = client
+	multiClient.clientUpdates[client] = map[*multiClientChannelUpdate]bool{update: true}
+
+	multiClient.removeClient(client)
+
+	select {
+	case <-update.ctx.Done():
+		// fixed: the update ctx is cancelled, teardown goroutine wakes now
+	default:
+		t.Fatal("removeClient must cancel the update ctx so the parked teardown goroutine wakes immediately, not after SequenceIdleTimeout")
+	}
+	if multiClient.clientUpdates[client] != nil {
+		t.Fatal("removeClient must delete the client's updates map")
+	}
+}

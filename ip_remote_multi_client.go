@@ -1111,6 +1111,15 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 			for update, _ := range updates {
 				if update.client == client {
 					update.client = nil
+					// The update's per-flow teardown goroutine is parked in
+					// waitForIdleUpdate (time.After up to SequenceIdleTimeout,
+					// default 120s) and can only observe the client removal
+					// when the idle timer fires — cancelling the ctx wakes it
+					// immediately (waitForIdleUpdate returns on ctx.Done, the
+					// loop's updateDone check tears the flow down cleanly).
+					// Without this, every client removal strands one goroutine
+					// and one timer for the full idle timeout.
+					update.cancel()
 
 					if packet, ok := ipOosRst(update.ipPath.Reverse()); ok {
 						rstPacket := &receivePacket{
