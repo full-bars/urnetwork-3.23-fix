@@ -357,7 +357,7 @@ Commands:
   status [target]        detailed status of one provider
   update [target]        update provider(s) to latest (interactive; --tag to pin)
   self-update            update this tool binary itself (no providers touched)
-  proxy add|clear|remove|refresh [target]   manage proxies
+  proxy add|clear|remove|refresh|add-source|remove-source [target]   manage proxies
   summary [target]       fleet-style summary for one provider
   report <url> [target]  set hub URL at runtime
   hot-restart [target]   restart one provider's unit
