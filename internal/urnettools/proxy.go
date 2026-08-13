@@ -68,6 +68,8 @@ Subcommands:
   clear                  remove all proxies
   remove                 remove proxies (--all, or target-specific)
   refresh                re-read the proxy source (--force to force)
+  add-source <url>       add a URL proxy source (fetched + cached)
+  remove-source <url>    remove a URL proxy source
   health                 proxy health from state files (single target)
   traffic                proxy traffic from state files (single target)
   remove-dead            remove dead/degraded proxies (single target)
@@ -169,6 +171,24 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		opArgs = []string{"proxy", "refresh"}
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
+	case "add-source", "remove-source":
+		// URL-source management (gauntlet finding BUG-8): the provider
+		// binary implements `provider proxy add-source <url>` /
+		// `remove-source <url>`, but the Go tool previously had no such
+		// subcommand, so URL proxies (a core fleet feature) were
+		// unmanageable through the new tool. Single-target (a URL source
+		// is per-provider), like health/traffic.
+		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
+		}
+		if len(positionals) < 1 {
+			return fmt.Errorf("proxy %s requires a URL", sub)
+		}
+		p, err := selectTarget(providers, t)
+		if err != nil {
+			return err
+		}
+		return providerSubcommand(p, append([]string{"proxy", sub}, positionals...)...)
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
@@ -193,7 +213,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead|add-source|remove-source)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.
