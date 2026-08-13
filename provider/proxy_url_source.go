@@ -1051,6 +1051,18 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		}
 	}
 
+	// Startup cooldown: a process that crash-loops (bad binary, SELinux
+	// exec trap, OOM) must NOT re-fetch + re-probe the URL lists on every
+	// 5s restart — that is the probe-amplification loop. The first fetch is
+	// deferred until the process has been alive probeStartupCooldown, so a
+	// crash-looping box can never reach it. A healthy box waits a few
+	// seconds, then fetches once as normal.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(probeStartupCooldown):
+	}
+
 	// The initial fetch is always allowed (cold-start / starvation escape).
 	fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
 	lastFetch := time.Now()

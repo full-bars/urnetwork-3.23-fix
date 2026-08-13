@@ -1246,7 +1246,7 @@ func runEarningWindows(ctx context.Context) {
 	var prevCum uint64
 	var prevSet bool
 
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(earnCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -1258,10 +1258,20 @@ func runEarningWindows(ctx context.Context) {
 
 		if connect.ProxyHealthCount() == 0 {
 			prevSet = false
+			// No live proxies: clear the per-address earn tracker too, so
+			// an address that re-appears later cannot inherit stale
+			// "earning" state that would wrongly suppress its first paid
+			// probe (an empty snapshot prunes every address).
+			globalPerProxyEarnTracker.Update(nil)
 			continue
 		}
 
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+
+		// Feed the per-address earn tracker so the paid grader's earn-skip
+		// sees the same liveness signal the [earn] log reports in aggregate,
+		// but keyed by proxy address (delta-based, never cumulative).
+		globalPerProxyEarnTracker.Update(bw)
 
 		var cum uint64
 		for _, p := range bw {
