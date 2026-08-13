@@ -3386,6 +3386,15 @@ func (self *multiClientChannel) addSource(ipPath *IpPath) {
 		if eventBucket.ip4Paths == nil {
 			eventBucket.ip4Paths = map[Ip4Path]bool{}
 		}
+		if _, exists := eventBucket.ip4Paths[ip4Path]; exists {
+			// The path is already recorded in this bucket; the source-count
+			// refcount was incremented when it was first added, and eviction
+			// decrements once per (bucket, path). Counting again here would
+			// inflate the refcount beyond what eviction ever subtracts, so a
+			// (destination, source) pair that only ever sent packets inside a
+			// single bucket would never be pruned (phantom growth).
+			return
+		}
 		eventBucket.ip4Paths[ip4Path] = true
 
 		source := ip4Path.Source()
@@ -3402,6 +3411,11 @@ func (self *multiClientChannel) addSource(ipPath *IpPath) {
 
 		if eventBucket.ip6Paths == nil {
 			eventBucket.ip6Paths = map[Ip6Path]bool{}
+		}
+		if _, exists := eventBucket.ip6Paths[ip6Path]; exists {
+			// See the ip4 branch: the refcount is per (bucket, path), so a
+			// path already present in this bucket must not be counted again.
+			return
 		}
 		eventBucket.ip6Paths[ip6Path] = true
 
