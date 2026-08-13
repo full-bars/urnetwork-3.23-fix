@@ -1725,12 +1725,20 @@ func (self *SendBuffer) SendEncryptedControl(ctx context.Context, peerId Id, rol
 	}
 	for {
 		if success, _ := self.Pack(sendPack, self.client.settings.BufferTimeout); success {
+			// Pack accepted the frame: the send sequence now owns
+			// MessageBytes and returns it to the pool after transmission.
 			return true
 		}
 		select {
 		case <-ctx.Done():
+			// Pack never accepted the frame, so ownership of ecBytes stayed
+			// with this caller; return it to the pool instead of leaking one
+			// buffer per teardown race. (MessagePoolReturn no-ops safely if
+			// MarshalAppend reallocated and ecBytes is not a pooled buffer.)
+			MessagePoolReturn(ecBytes)
 			return false
 		case <-self.ctx.Done():
+			MessagePoolReturn(ecBytes)
 			return false
 		default:
 		}
