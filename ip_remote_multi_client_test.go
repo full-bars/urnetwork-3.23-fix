@@ -265,7 +265,15 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 		cancelCtxs = append(cancelCtxs, cancelCtx)
 		go func() {
 			defer cancel()
-			for endTime := time.Now().Add(timeout); time.Now().Before(endTime); {
+			// Guarantee at least one full pass of activity even if the
+			// scheduler starves this goroutine past the timeout (CI runs
+			// the whole suite in parallel under -race). The assertions
+			// below require events to have landed; a wall-clock-gated loop
+			// can return having done zero work if the goroutine only gets
+			// scheduled after endTime, which reads sendAckCount == 0 and
+			// fails spuriously (observed on CI, unreproducible locally).
+			endTime := time.Now().Add(timeout)
+			for {
 				for s := 0; s < m; s += 1 {
 					for i := 0; i < n; i += 1 {
 						for j := 0; j < n; j += 1 {
@@ -279,11 +287,13 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 									clientChannel.addSendAck(1)
 									clientChannel.addReceiveAck(1)
 									clientChannel.addSource(ipPath)
-
 								}
 							}
 						}
 					}
+				}
+				if !time.Now().Before(endTime) {
+					break
 				}
 			}
 		}()
