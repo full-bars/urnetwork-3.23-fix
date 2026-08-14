@@ -384,11 +384,11 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	if err := Run([]string{"hot-restart", "--help"}); err != nil {
 		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
 	}
-	// The confirm gate must exist: a non-force hot-restart with no stdin
-	// (EOF) must be refused, not silently restart (Sonnet review finding).
-	// Assert the error is the CONFIRMATION refusal, not a no-provider error
-	// — this pins the gate specifically (mutation: removing the gate makes
-	// this fail).
+	// The confirm gate must exist: a non-force restart with no stdin (EOF)
+	// must be refused, not silently restart (Sonnet review finding). Test
+	// confirmGate directly — deterministic, no discovery dependency (CI has
+	// no provider; Run(["hot-restart"]) would error at discovery before the
+	// gate, which is env-dependent). cmdHotRestart calls this same gate.
 	oldStdin := os.Stdin
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -396,12 +396,16 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	}
 	os.Stdin = r
 	w.Close() // EOF — no confirmation typed
-	runErr := Run([]string{"hot-restart"})
+	_, gateErr := confirmGate("restart "+p.Unit, p, false, false)
 	os.Stdin = oldStdin
-	if runErr == nil {
-		t.Fatal("hot-restart without --force and with EOF confirmation must error (refused), not silently restart")
+	if gateErr == nil {
+		t.Fatal("confirmGate with EOF must refuse (non-nil error), not silently proceed")
 	}
-	if !strings.Contains(runErr.Error(), "read confirmation") && !strings.Contains(runErr.Error(), "confirmation did not match") {
-		t.Fatalf("hot-restart EOF error = %v, want the confirmation-refusal error (gate must be what refuses)", runErr)
+	if !strings.Contains(gateErr.Error(), "read confirmation") && !strings.Contains(gateErr.Error(), "confirmation did not match") {
+		t.Fatalf("confirmGate EOF error = %v, want the confirmation-refusal error", gateErr)
+	}
+	// Force must bypass the gate.
+	if ok, err := confirmGate("restart "+p.Unit, p, true, false); err != nil || !ok {
+		t.Fatalf("confirmGate with force = (%v, %v), want (true, nil)", ok, err)
 	}
 }
