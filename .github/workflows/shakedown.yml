@@ -95,7 +95,7 @@ jobs:
           # Minimal DO helper: create 1CPU/1GB droplet, wait, run, delete.
           # Size is HARD-PINNED; anything else aborts and deletes.
           # SSH access uses an EPHEMERAL keypair minted in this job and
-          # provisioned via the DO API at droplet creation — no static key.
+          # provisioned via the DO API at droplet creation. No static key.
           set -u
           SIZE_SLUG="s-1vcpu-1gb"; EXPECTED_VCPUS=1; EXPECTED_MEMORY_MB=1024
           REGION="${REGION:-nyc3}"
@@ -141,12 +141,12 @@ jobs:
           SIZE=$(echo "$SPEC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('size',{}).get('slug',''))" 2>/dev/null)
           echo "spec: vcpus=$VCPUS mem=${MEM}MB slug=$SIZE"
           if [ "$VCPUS" != "$EXPECTED_VCPUS" ] || [ "$MEM" != "$EXPECTED_MEMORY_MB" ] || [ "$SIZE" != "$SIZE_SLUG" ]; then
-            echo "ERROR: droplet not the cheap spec — deleting and aborting"; exit 1
+            echo "ERROR: droplet not the cheap spec. Deleting and aborting"; exit 1
           fi
 
           SSHOPTS="-i /tmp/sshkey/id_shakedown -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
 
-          # Wait for SSH — require a PUBLIC IPv4 (private-only droplets cannot
+          # Wait for SSH. Require a PUBLIC IPv4 (private-only droplets cannot
           # be reached by the runner; caught here and deleted by cleanup).
           IP=""
           for i in $(seq 1 40); do
@@ -157,20 +157,23 @@ jobs:
             fi
             sleep 10
           done
-          [ -n "$IP" ] || { echo "ERROR: no public IPv4 / never reachable — aborting (cleanup deletes)"; exit 1; }
+          [ -n "$IP" ] || { echo "ERROR: no public IPv4 / never reachable. Aborting (cleanup deletes)"; exit 1; }
 
           # Ship JWT + shakedown, run under watchdog (MUST-FIX 18: propagate
-          # the shakedown.s Tier-1 exit code so a RELEASE_BLOCKED fails the job)
+          # the shakedown's Tier-1 exit code so a RELEASE_BLOCKED fails the job)
           scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
           scp $SSHOPTS .github/scripts/shakedown.sh root@$IP:/tmp/shakedown.sh
           # EXPECTED_VERSION is written by the workflow's env expansion below.
-          timeout 7200 ssh $SSHOPTS root@$IP "chmod +x /tmp/shakedown.sh && EXPECTED_VERSION='${EXPECTED_VERSION}' /tmp/shakedown.sh /tmp/gauntlet.jwt"
-          GAUNT_RC=$?
-          echo "shakedown exit code: $GAUNT_RC"
+          # Watchdog 7800s (130m): hub sections add ~5 min; the job cap is
+          # 150m so there is headroom. A truncated run yields a partial
+          # report the AI reviewer then grades.
+          timeout 7800 ssh $SSHOPTS root@$IP "chmod +x /tmp/shakedown.sh && EXPECTED_VERSION='${EXPECTED_VERSION}' /tmp/shakedown.sh /tmp/gauntlet.jwt"
+          SHAKE_RC=$?
+          echo "shakedown exit code: $SHAKE_RC"
           # Collect report BEFORE trap deletes
           ssh $SSHOPTS root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.txt 2>/dev/null || true
           echo "REPORT_READY"
-          exit $GAUNT_RC
+          exit $SHAKE_RC
           SCRIPT
           chmod +x /tmp/do.sh
 
@@ -196,7 +199,7 @@ jobs:
             echo "AI review skipped (no GEMINI_API_KEY)"
             exit 0
           fi
-          # Read the report OUTSIDE the heredoc — a $() inside the quoted
+          # Read the report OUTSIDE the heredoc. A $() inside the quoted
           # heredoc is sent literally to the API and fails (observed live).
           REPORT_TEXT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           python3 - "$REPORT_TEXT" << 'PAYLOAD' > /tmp/ai_review_payload.json
