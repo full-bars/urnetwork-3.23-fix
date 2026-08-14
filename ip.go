@@ -78,7 +78,14 @@ type parsedTcp struct {
 	ackNumber       uint32
 	windowSize      uint16
 	options         []byte
-	payload         []byte
+	enableMss         bool
+	mss               uint32
+	enableWindowScale bool
+	windowScale       uint32
+	enableTimestamp   bool
+	timestampValue    uint32
+	timestampEcho     uint32
+	payload           []byte
 }
 
 func (self *parsedTcp) flagsString() string {
@@ -179,10 +186,64 @@ func parseTcpPacket(sourceIp net.IP, destinationIp net.IP, transport []byte, tcp
 	tcp.ack = (flags & 0x10) != 0
 	tcp.windowSize = binary.BigEndian.Uint16(transport[14:16])
 	tcp.options = transport[TcpHeaderSizeWithoutExtensions:headerByteCount]
+	parseTcpOptions(tcp)
 	tcp.payload = transport[headerByteCount:]
 	return true
 }
 
+// Extracts the options needed by the synthetic provider endpoint. Unknown
+// options remain opaque, and malformed tails stop parsing without turning an
+// otherwise valid TCP segment into a malformed IP packet.
+func parseTcpOptions(tcp *parsedTcp) {
+	tcp.enableMss = false
+	tcp.mss = 0
+	tcp.enableWindowScale = false
+	tcp.windowScale = 0
+	tcp.enableTimestamp = false
+	tcp.timestampValue = 0
+	tcp.timestampEcho = 0
+	for optionIndex := 0; optionIndex < len(tcp.options); {
+		switch tcp.options[optionIndex] {
+		case 0:
+			return
+		case 1:
+			optionIndex += 1
+		default:
+			if len(tcp.options) < optionIndex+2 {
+				return
+			}
+			optionByteCount := int(tcp.options[optionIndex+1])
+			if optionByteCount < 2 || len(tcp.options) < optionIndex+optionByteCount {
+				return
+			}
+			switch tcp.options[optionIndex] {
+			case 2:
+				if optionByteCount == 4 {
+					mss := binary.BigEndian.Uint16(tcp.options[optionIndex+2 : optionIndex+4])
+					if mss != 0 {
+						tcp.enableMss = true
+						tcp.mss = uint32(mss)
+					}
+				}
+			case 3:
+				if optionByteCount == 3 {
+					tcp.enableWindowScale = true
+					tcp.windowScale = min(uint32(tcp.options[optionIndex+2]), 14)
+				}
+			case 8:
+				if optionByteCount == 10 {
+					tcp.enableTimestamp = true
+					tcp.timestampValue = binary.BigEndian.Uint32(tcp.options[optionIndex+2 : optionIndex+6])
+					tcp.timestampEcho = binary.BigEndian.Uint32(tcp.options[optionIndex+6 : optionIndex+10])
+				}
+			}
+			optionIndex += optionByteCount
+		}
+	}
+}
+
+// ParseTcpWindowScaleOpts returns the window scale from a SYN's options.
+// Retained for backward compatibility; new code should use parseTcpOptions.
 func ParseTcpWindowScaleOpts(opts []byte) (bool, uint32) {
 	for i := 0; i < len(opts); {
 		kind := opts[i]
@@ -1986,6 +2047,11 @@ func (self *TcpSequence) Run() {
 
 					self.enableWindowScale, self.receiveWindowScale = ParseTcpWindowScaleOpts(sendItem.tcp.options)
 					self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
+					self.enableTimestamp = sendItem.tcp.enableTimestamp
+					self.timestampRecent = sendItem.tcp.timestampValue
+					if sendItem.tcp.enableMss {
+						self.peerMss = sendItem.tcp.mss
+					}
 					if self.enableWindowScale {
 						// compute the window scale to fit the window size in uint16
 						bits := math.Log2(float64(self.tcpBufferSettings.MaxWindowSize) / float64(math.MaxUint16))
@@ -2446,6 +2512,7 @@ func (self *TcpSequence) Run() {
 					if self.receiveSeqAck <= sendItem.tcp.ackNumber {
 						self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
 						self.receiveSeqAck = sendItem.tcp.ackNumber
+						self.updateTimestampRecentWithLock(sendItem.tcp)
 						receiveAckCond.Broadcast()
 					}
 				}
@@ -2592,6 +2659,13 @@ type ConnectionState struct {
 	enableWindowScale  bool
 	windowSize         uint32
 	windowScale        uint32
+	enableTimestamp    bool
+	timestampRecent    uint32
+	timestampOffset    uint32
+	peerMss            uint32
+	// Tests provide an exact timestamp without sleeping. Nil uses elapsed
+	// monotonic process time and is a production no-op.
+	timestampValueForTest func() uint32
 	// encodedWindowSize  uint16
 
 	userLimited
@@ -2613,6 +2687,37 @@ func (self *ConnectionState) encodedWindowSize() uint16 {
 		uint32(self.windowSize>>self.windowScale),
 		uint32(math.MaxUint16),
 	))
+}
+
+const tcpTimestampOptionByteCount = 12
+
+var tcpTimestampEpoch = time.Now()
+
+// Returns a nonzero millisecond timestamp for RFC 7323 packets. TCP compares
+// these values modulo 32 bits, so process-relative monotonic time is enough.
+func (self *ConnectionState) timestampValue() uint32 {
+	if self.timestampValueForTest != nil {
+		return self.timestampValueForTest()
+	}
+	return self.timestampOffset + uint32(time.Since(tcpTimestampEpoch)/time.Millisecond) + 1
+}
+
+// Tracks the newest timestamp observed from the source. The sequence mutex
+// must be held. Reordered older packets do not move the echoed value backward.
+func (self *ConnectionState) updateTimestampRecentWithLock(tcp *parsedTcp) {
+	if !self.enableTimestamp || !tcp.enableTimestamp {
+		return
+	}
+	// RFC 7323 updates the recent timestamp only when the segment begins at or
+	// before the greatest cumulative acknowledgement already sent. A future
+	// out-of-order segment is reconsidered when its gap closes; accepting its
+	// timestamp here would move the echo clock ahead of the receive frontier.
+	if 0 < int32(tcp.seq-self.sendSeq) {
+		return
+	}
+	if self.timestampRecent == 0 || 0 <= int32(tcp.timestampValue-self.timestampRecent) {
+		self.timestampRecent = tcp.timestampValue
+	}
 }
 
 func (self *ConnectionState) SynAck() ([]byte, error) {
