@@ -220,7 +220,11 @@ func parseTcpOptions(tcp *parsedTcp) {
 			case 2:
 				if optionByteCount == 4 {
 					mss := binary.BigEndian.Uint16(tcp.options[optionIndex+2 : optionIndex+4])
-					if mss != 0 {
+					// RFC 879 fallback is 536; accept anything at or above it.
+					// A tiny peer MSS (e.g. 1) would otherwise force near-
+					// single-byte segments for the life of the connection
+					// (Sonnet review finding).
+					if mss >= 536 {
 						tcp.enableMss = true
 						tcp.mss = uint32(mss)
 					}
@@ -242,36 +246,9 @@ func parseTcpOptions(tcp *parsedTcp) {
 	}
 }
 
-// ParseTcpWindowScaleOpts returns the window scale from a SYN's options.
-// Retained for backward compatibility; new code should use parseTcpOptions.
-func ParseTcpWindowScaleOpts(opts []byte) (bool, uint32) {
-	for i := 0; i < len(opts); {
-		kind := opts[i]
-		if kind == 0 {
-			break
-		}
-		if kind == 1 {
-			i += 1
-			continue
-		}
-		if i+1 >= len(opts) {
-			break
-		}
-		length := opts[i+1]
-		if length < 2 || i+int(length) > len(opts) {
-			break
-		}
-		if kind == 3 && length >= 3 {
-			shift := uint32(opts[i+2])
-			if 14 < shift {
-				shift = 14
-			}
-			return true, shift
-		}
-		i += int(length)
-	}
-	return false, 0
-}
+// ParseTcpWindowScaleOpts is gone. Use parseTcpOptions (the unified parser),
+// which extracts MSS (kind 2), window scale (kind 3), and timestamps (kind 8)
+// into parsedTcp fields.
 
 const (
 	tcpFlagFin = byte(0x01)
@@ -383,6 +360,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
 		MinWindowSize:       uint32(kib(4)),
+		InitialWindowSize:   scaledPow2WindowSize(mib(1), kib(4), kib(128)),
 		MaxWindowSize:       uint32(mib(4)),
 		UserLimit:           0,
 		ConnectSettings:     *DefaultConnectSettings(),
@@ -1605,8 +1583,10 @@ type TcpBufferSettings struct {
 	// `WindowSize / 2^WindowScale` must fit in uint16
 	// see https://datatracker.ietf.org/doc/html/rfc1323#page-8
 	WindowScale uint32
-	// the initial window size
+	// the minimum window size after backpressure-driven contraction
 	MinWindowSize uint32
+	// the initial window after the literal, unscaled SYN handshake window
+	InitialWindowSize uint32
 	// `MaxWindowSize` should be a power of 2 multiple of `MinWindowSize`
 	MaxWindowSize uint32
 	// the number of open sockets per user
@@ -1876,6 +1856,16 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	tcpBufferSettings *TcpBufferSettings) *TcpSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
+	initialWindowSize := tcpBufferSettings.InitialWindowSize
+	if initialWindowSize == 0 {
+		initialWindowSize = tcpBufferSettings.MinWindowSize
+	}
+	initialWindowSize = min(
+		max(initialWindowSize, tcpBufferSettings.MinWindowSize),
+		tcpBufferSettings.MaxWindowSize,
+	)
+	timestampOffset := mathrand.Uint32()
+
 	// e2e-pqe merge: upstream now inlines ConnectionState in the struct below
 	// (window settings preserved there); keep the fork's `sequence :=` form so
 	// the active-connection accounting tail still works.
@@ -1895,12 +1885,13 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 			sourcePort:      sourcePort,
 			destinationIp:   destinationIp,
 			destinationPort: destinationPort,
-			// the window size starts at the fixed value
+			// The SYN advertises the protocol's literal 16-bit ceiling. The first
+			// post-handshake ACK can immediately advertise this larger scaled
+			// warmup window instead of spending several RTTs doubling from 4 KiB.
 			enableWindowScale: false,
-			// FIXME start this at initial window size, and it grows up to max window size
-			// FIXME initial window size should be ~4k, set max window size as a 2^amount multiplier of initial size
-			windowSize:  tcpBufferSettings.MinWindowSize,
-			windowScale: 0,
+			windowSize:        initialWindowSize,
+			windowScale:       0,
+			timestampOffset:   timestampOffset,
 
 			userLimited: userLimited{
 				lastActivityTime: time.Now(),
@@ -2045,7 +2036,8 @@ func (self *TcpSequence) Run() {
 					self.receiveSeq = sendItem.tcp.seq
 					self.receiveSeqAck = sendItem.tcp.seq
 
-					self.enableWindowScale, self.receiveWindowScale = ParseTcpWindowScaleOpts(sendItem.tcp.options)
+					self.enableWindowScale = sendItem.tcp.enableWindowScale
+					self.receiveWindowScale = sendItem.tcp.windowScale
 					self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
 					self.enableTimestamp = sendItem.tcp.enableTimestamp
 					self.timestampRecent = sendItem.tcp.timestampValue
@@ -2066,7 +2058,7 @@ func (self *TcpSequence) Run() {
 					}
 					self.log.V(2).Infof("[init]window=%d/%d, receive=%d/%d\n", self.windowSize, self.windowScale, self.receiveWindowSize, self.receiveWindowScale)
 
-					packet, packetErr = self.SynAck()
+					packet, packetErr = self.SynAck(self.tcpBufferSettings.Mtu)
 					self.receiveSeq += 1
 				}()
 
@@ -2703,16 +2695,12 @@ func (self *ConnectionState) timestampValue() uint32 {
 }
 
 // Tracks the newest timestamp observed from the source. The sequence mutex
-// must be held. Reordered older packets do not move the echoed value backward.
+// must be held, and the caller must already have established that the segment
+// is at the receive frontier (the Run loop drops out-of-order segments as
+// retransmits before reaching the ACK branch). Reordered older packets do not
+// move the echoed value backward.
 func (self *ConnectionState) updateTimestampRecentWithLock(tcp *parsedTcp) {
 	if !self.enableTimestamp || !tcp.enableTimestamp {
-		return
-	}
-	// RFC 7323 updates the recent timestamp only when the segment begins at or
-	// before the greatest cumulative acknowledgement already sent. A future
-	// out-of-order segment is reconsidered when its gap closes; accepting its
-	// timestamp here would move the echo clock ahead of the receive frontier.
-	if 0 < int32(tcp.seq-self.sendSeq) {
 		return
 	}
 	if self.timestampRecent == 0 || 0 <= int32(tcp.timestampValue-self.timestampRecent) {
@@ -2720,7 +2708,7 @@ func (self *ConnectionState) updateTimestampRecentWithLock(tcp *parsedTcp) {
 	}
 }
 
-func (self *ConnectionState) SynAck() ([]byte, error) {
+func (self *ConnectionState) SynAck(mtu int) ([]byte, error) {
 	var ipHeaderByteCount int
 	switch self.ipVersion {
 	case 4:
@@ -2729,19 +2717,44 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	var optsBytes []byte
+	// MSS (kind 2, length 4), optional window scale (kind 3, length 3), and
+	// timestamp (kind 8, length 10), zero padded to a header word.
+	optionsByteCount := 4
 	if self.enableWindowScale {
-		windowScaleBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(windowScaleBytes[0:4], self.windowScale)
-		// options must be padded to a 4-byte boundary to match writeTcpHeader's
-		// data-offset (headerWordCount) computation; make() zero-fills the pad,
-		// which reads as an EOL terminator (kind 0)
-		const optionsByteCount = 3
-		paddedOptionsByteCount := (optionsByteCount + 3) &^ 3
-		optsBytes = make([]byte, paddedOptionsByteCount)
-		optsBytes[0] = 3
-		optsBytes[1] = 3
-		optsBytes[2] = windowScaleBytes[3]
+		optionsByteCount += 3
+	}
+	if self.enableTimestamp {
+		optionsByteCount += 10
+	}
+	paddedOptionsByteCount := (optionsByteCount + 3) &^ 3
+
+	optsBytes := make([]byte, paddedOptionsByteCount)
+	// MSS: the largest segment we accept, derived from the MTU. A header that
+	// cannot fit the fixed IP+TCP overhead fails loudly rather than wrapping
+	// to a bogus MSS advertisement (mirrors DataPackets' bounds check).
+	mss := mtu - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
+	if mss <= 0 {
+		return nil, fmt.Errorf("mtu %d is too small for IP+TCP headers (%d bytes)", mtu, ipHeaderByteCount+TcpHeaderSizeWithoutExtensions)
+	}
+	optsBytes[0] = 2
+	optsBytes[1] = 4
+	binary.BigEndian.PutUint16(optsBytes[2:4], uint16(mss))
+	optionIndex := 4
+	if self.enableTimestamp {
+		optsBytes[optionIndex] = 8
+		optsBytes[optionIndex+1] = 10
+		binary.BigEndian.PutUint32(optsBytes[optionIndex+2:optionIndex+6], self.timestampValue())
+		binary.BigEndian.PutUint32(optsBytes[optionIndex+6:optionIndex+10], self.timestampRecent)
+		optionIndex += 10
+	}
+	if self.enableWindowScale {
+		if self.enableTimestamp {
+			optsBytes[optionIndex] = 1
+			optionIndex += 1
+		}
+		optsBytes[optionIndex] = 3
+		optsBytes[optionIndex+1] = 3
+		optsBytes[optionIndex+2] = byte(self.windowScale)
 	}
 
 	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions + len(optsBytes)
@@ -2754,7 +2767,9 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 	}
 
 	flags := tcpFlagSyn | tcpFlagAck
-	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), optsBytes)
+	// RFC 7323 applies the negotiated scale only after the handshake. A SYN's
+	// Window field is always the literal, unscaled 16-bit value.
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, uint16(min(self.windowSize, uint32(math.MaxUint16))), optsBytes)
 
 	// checksum covers the full segment (header + options), not just the fixed header
 	tcpBytes := packet[ipHeaderByteCount:]
@@ -2851,10 +2866,18 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 	}
 
 	headerByteCount := ipHeaderByteCount + TcpHeaderSizeWithoutExtensions
+	if self.enableTimestamp {
+		headerByteCount += tcpTimestampOptionByteCount
+	}
 	if mtu <= headerByteCount {
 		return nil, fmt.Errorf("mtu %d is too small for IP+TCP headers (%d bytes)", mtu, headerByteCount)
 	}
 	packetByteCount := mtu - headerByteCount
+	if self.peerMss != 0 {
+		optionByteCount := headerByteCount - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
+		packetByteCount = min(packetByteCount, int(self.peerMss)-optionByteCount)
+	}
+	packetByteCount = max(1, packetByteCount)
 	if n <= packetByteCount {
 		pkt := self.tcpPacket(payload[0:n], self.receiveSeq)
 		return [][]byte{pkt}, nil
@@ -2878,6 +2901,9 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 	}
 
 	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions
+	if self.enableTimestamp {
+		tcpHeaderByteCount += tcpTimestampOptionByteCount
+	}
 	totalLen := ipHeaderByteCount + tcpHeaderByteCount + len(payload)
 	packet := MessagePoolGet(totalLen)
 	switch self.ipVersion {
@@ -2887,7 +2913,18 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), nil)
+	options := make([]byte, tcpHeaderByteCount-TcpHeaderSizeWithoutExtensions)
+	optionIndex := 0
+	if self.enableTimestamp {
+		options[optionIndex] = 1
+		options[optionIndex+1] = 1
+		options[optionIndex+2] = 8
+		options[optionIndex+3] = 10
+		binary.BigEndian.PutUint32(options[optionIndex+4:optionIndex+8], self.timestampValue())
+		binary.BigEndian.PutUint32(options[optionIndex+8:optionIndex+12], self.timestampRecent)
+		optionIndex += tcpTimestampOptionByteCount
+	}
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), options)
 	copy(packet[ipHeaderByteCount+tcpHeaderByteCount:], payload)
 
 	// checksum covers the full segment (header + payload), not just the header
