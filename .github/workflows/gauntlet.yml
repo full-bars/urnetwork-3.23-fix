@@ -147,10 +147,39 @@ jobs:
           cat /tmp/gauntlet-report.txt 2>/dev/null || echo "(no report)"
           echo "::endgroup::"
 
+      - name: AI review of gauntlet report
+        if: always()
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Classify each gauntlet line: product bug vs environment blocker
+          # vs test-script issue. Writes a summary to the artifact + step log.
+          REPORT=$(cat /tmp/gauntlet-report.txt 2>/dev/null || echo "no report")
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "AI review skipped (no GEMINI_API_KEY)"
+            exit 0
+          fi
+          cat > /tmp/ai_review_payload.json << 'PAYLOAD'
+          {
+            "contents": [{
+              "parts": [{"text": "You are a release engineer triaging a pre-release gauntlet report. Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). For each, say why in one sentence. Then give a one-line verdict: RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n$(cat /tmp/gauntlet-report.txt 2>/dev/null)"}]
+            }]
+          }
+          PAYLOAD
+          curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" -d @/tmp/ai_review_payload.json \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['candidates'][0]['content']['parts'][0]['text'])" \
+            > /tmp/gauntlet-ai-review.txt 2>/dev/null || echo "AI review failed (API error)"
+          echo "::group::AI Gauntlet Review"
+          cat /tmp/gauntlet-ai-review.txt 2>/dev/null || echo "(no review)"
+          echo "::endgroup::"
+
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gauntlet-report
-          path: /tmp/gauntlet-report.txt
+          path: |
+            /tmp/gauntlet-report.txt
+            /tmp/gauntlet-ai-review.txt
           if-no-files-found: ignore
