@@ -416,16 +416,7 @@ func orDash(s string) string {
 // forceInteractive reports whether prompts/pickers should be enabled. With
 // -f we never prompt — scripts must be fully explicit.
 func forceInteractive(force bool) bool {
-	return !force && isTTY()
-}
-
-// isTTY reports whether stdin is a terminal (interactive session).
-func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return !force && stdinIsInteractive()
 }
 
 // splitLabels splits a comma-separated label list.
