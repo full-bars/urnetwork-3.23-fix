@@ -14,6 +14,7 @@ import (
 // strictly, sole provider auto-selects without prompting, and multiple
 // providers with no target pop the interactive picker.
 func TestSelectTargetInteractive_NoCoverageInPR(t *testing.T) {
+	forceInteractiveForTest(t)
 	p1 := Provider{Unit: "urnetwork-1.service", User: "u1", Network: "net1", StateDir: "/s1"}
 	p2 := Provider{Unit: "urnetwork-2.service", User: "u2", Network: "net2", StateDir: "/s2"}
 

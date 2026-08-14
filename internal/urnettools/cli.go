@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // ToolVersion is the build-stamped tool version, wired from main.Version by
@@ -596,19 +598,25 @@ func cmdStatus(args []string) error {
 // (free-review HIGH, mimo-v2.5).
 var stdinReader = bufio.NewReader(os.Stdin)
 
-// stdinIsInteractive reports whether stdin is a terminal (character device).
-// Every confirm prompt MUST gate on this BEFORE reading: a ReadString on an
-// open-but-silent pipe (cron, CI, MCP exec, a shell that left stdin open)
-// blocks forever — it never sees EOF, so the err != nil path never fires.
-// Non-interactive runs must use -f/--force (or --yes); refusing with a clear
-// message beats hanging (gauntlet finding BUG-14: self-update blocked on
-// read(0) for minutes).
+// stdinIsInteractiveOverride, when non-nil, replaces the terminal check.
+// Tests that feed stdin via a substituted reader (strings.Reader, pipe) set
+// this to true so the shared-reader behavior is testable without a real TTY.
+var stdinIsInteractiveOverride func() bool
+
+// stdinIsInteractive reports whether stdin is a terminal. Every confirm
+// prompt MUST gate on this BEFORE reading: a ReadString on an open-but-silent
+// pipe (cron, CI, MCP exec, a shell that left stdin open) blocks forever — it
+// never sees EOF, so the err != nil path never fires. Non-interactive runs
+// must use -f/--force (or --yes); refusing with a clear message beats hanging
+// (gauntlet finding BUG-14: self-update blocked on read(0) for minutes).
+// Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
+// misclassifies /dev/zero and other char devices as terminals (CodeRabbit
+// review finding).
 func stdinIsInteractive() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
+	if stdinIsInteractiveOverride != nil {
+		return stdinIsInteractiveOverride()
 	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // confirmStdinRead performs one confirmation line read, refusing cleanly on

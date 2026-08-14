@@ -2903,12 +2903,15 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 	}
 	packetByteCount := mtu - headerByteCount
 	if self.peerMss != 0 {
-		// RFC 879/6691: MSS is data-only — it excludes TCP headers and
-		// options on BOTH sides. Our outgoing timestamp option already
-		// reduces packetByteCount via headerByteCount, so clamping to the
-		// peer's raw MSS (not MSS minus our option bytes) is correct
-		// (mimo review finding — upstream's subtraction double-counted).
-		packetByteCount = min(packetByteCount, int(self.peerMss))
+		// The peer's advertised MSS is the max DATA it accepts (RFC 879/
+		// 6691 data-only semantics). But at the MTU boundary our outgoing
+		// timestamp option makes the wire segment larger than the peer's
+		// path MTU budget, risking fragmentation/drop. Subtract our option
+		// bytes from the data budget when clamping (CodeRabbit review
+		// finding; conservative at the boundary). Floor at 1 so a tiny
+		// option overhead can never force a zero/negative payload.
+		optionByteCount := headerByteCount - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
+		packetByteCount = min(packetByteCount, max(1, int(self.peerMss)-optionByteCount))
 	}
 	packetByteCount = max(1, packetByteCount)
 	if n <= packetByteCount {
