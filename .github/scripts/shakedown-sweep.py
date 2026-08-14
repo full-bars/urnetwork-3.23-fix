@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Shakedown droplet sweeper — out-of-band orphan guarantee.
+
+The shakedown workflow deletes its own droplet on every normal path, but a
+runner eviction, job-timeout SIGKILL, or DO API failure can orphan a droplet
+with no one to delete it. DigitalOcean has no built-in auto-expire.
+
+This script is the backstop. It lists all droplets tagged shakedown-ci and
+destroys any older than the cutoff, then reaps stale shakedown-ci SSH keys.
+
+Usage: shakedown-sweep.py [--max-age-hours N]
+Env:  DIGITAL_OCEAN_TOKEN (the DO API token)
+"""
+
+import datetime
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+API = "https://api.digitalocean.com/v2"
+DEFAULT_MAX_AGE_HOURS = 3.0
+
+
+def req(path, method="GET", auth=""):
+    r = urllib.request.Request(API + path, method=method, headers={"Authorization": auth})
+    try:
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            body = resp.read()
+            return resp.status, json.loads(body) if body else {}
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except Exception as e:
+        return getattr(e, "code", 0), {}
+
+
+def main():
+    token = os.environ.get("DIGITAL_OCEAN_TOKEN", "")
+    if not token:
+        print("::error::DIGITAL_OCEAN_TOKEN not set — cannot sweep")
+        return 1
+    auth = "Bearer " + token
+
+    max_hours = DEFAULT_MAX_AGE_HOURS
+    for arg in sys.argv[1:]:
+        if arg.startswith("--max-age-hours="):
+            max_hours = float(arg.split("=", 1)[1])
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=max_hours)
+
+    # --- Sweep droplets tagged shakedown-ci ---
+    page = 1
+    found = 0
+    destroyed = 0
+    list_failed = False
+    while True:
+        code, data = req("/droplets?tag_name=shakedown-ci&per_page=200&page={}".format(page), auth=auth)
+        if code != 200:
+            print("::error::list droplets failed HTTP {}".format(code))
+            list_failed = True
+            break
+        droplets = data.get("droplets", [])
+        if not droplets:
+            break
+        for d in droplets:
+            found += 1
+            created = datetime.datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
+            if created < cutoff:
+                did = d["id"]
+                code, _ = req("/droplets/{}".format(did), method="DELETE", auth=auth)
+                print("Sweep: destroy {} ({}, created {}) HTTP {}".format(did, d["name"], d["created_at"], code))
+                if code in (200, 204):
+                    destroyed += 1
+            else:
+                print("Sweep: keep {} ({}) — age within {}h".format(d["id"], d["name"], max_hours))
+        page += 1
+        if page > 50:  # 10k droplets max, safety
+            break
+    print("Sweep summary: found={} destroyed={}".format(found, destroyed))
+    # A failed list means the sweep could not verify — fail LOUD so the
+    # scheduled job shows red instead of silently-green with orphans at risk
+    # (DS R3 S4).
+    if list_failed:
+        return 1
+
+    # --- Reap stale shakedown-ci SSH keys ---
+    code, data = req("/account/keys?per_page=200", auth=auth)
+    if code == 200:
+        for k in data.get("ssh_keys", []):
+            if k.get("name", "").startswith("shakedown-ci-"):
+                created = datetime.datetime.fromisoformat(k["created_at"].replace("Z", "+00:00"))
+                if created < cutoff:
+                    code, _ = req("/account/keys/{}".format(k["id"]), method="DELETE", auth=auth)
+                    print("Sweep: remove stale key {} ({}) HTTP {}".format(k["id"], k["name"], code))
+    print("Sweep: key reap done")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

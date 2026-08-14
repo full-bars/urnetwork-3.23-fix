@@ -49,7 +49,11 @@ run_check() {
 }
 
 # j: search the provider journal (full, no -n window).
-j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
+# j: search the provider journal with a bounded window. Full-journal reads
+# on a 5s cadence are heavy on 1GB (Opus SHOULD-FIX 14).
+j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "${J_SINCE:-30 min ago}" 2>/dev/null; }
+# j_full: unbounded journal (self-test calibration, panic sweep).
+j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
 
 # journal_line_count: total journal lines (snapshot marker for polling).
 journal_line_count() { j | wc -l; }
@@ -82,7 +86,12 @@ echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
 # MUST-FIX 10: EXPECTED_VERSION comes from the workflow (GITHUB_REF_NAME for
 # tag-triggered runs, latest release for manual). Derive the base for the
 # version greps; align the fresh install to it so tag runs test THE TAG.
-EXPECTED_VERSION="${EXPECTED_VERSION:-v3.23.0-fix.29.0}"
+# MUST-FIX: fail loud if EXPECTED_VERSION is unset. A silent default
+# would test the wrong release while reporting green.
+if [ -z "${EXPECTED_VERSION:-}" ]; then
+  echo "FAIL: EXPECTED_VERSION not set (workflow must pass it)" | tee -a "$REPORT"
+  exit 75
+fi
 EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
 V=$(/home/urnet/.local/share/urnetwork-provider/bin/urnet-tools version 2>&1 | head -1)
 echo "TOOL_VERSION: $V" >> "$REPORT"
@@ -125,7 +134,9 @@ if [ "$NON_STARTER" = "1" ]; then
   echo "NON-STARTER: connectivity failed. Not running the rest of the suite" | tee -a "$REPORT"
   echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP NON_STARTER=1" | tee -a "$REPORT"
   echo "SHAKEDOWN END $(date -u +%FT%TZ)" >> "$REPORT"
-  exit 0
+  # Exit 75 = ENV_BLOCKER: connectivity failed, not a product verdict.
+  # The workflow maps 75 to neutral + retry, never RELEASE_BLOCKED.
+  exit 75
 fi
 echo "preflight OK. Continuing suite" | tee -a "$REPORT"
 
@@ -163,8 +174,17 @@ fi
 # lines (see section I); its calibration is the SELECT_TOTAL/SELECT_FAILS
 # subtraction being nonzero on a known-good journal.
 section "SELF-TEST (pattern calibration)"
-J=$(j)
+J=$(j_full)   # self-test needs the full startup sequence, not a window
 SELF_TEST_FAIL=0
+# Binding calibration (Opus MUST-FIX 3): SELF_TEST_FAIL must not just be
+# printed — dependent assertions MUST know which patterns are trustworthy.
+# CALIBRATED_CLIENT_ID / CALIBRATED_SELECT / CALIBRATED_STAGE1 / CALIBRATED_JWT
+# gate their dependent checks: an uncalibrated pattern -> SKIP, structurally
+# forbidden from setting TIER1_FAIL (a rotted regex must not block a release).
+CALIBRATED_CLIENT_ID=0
+CALIBRATED_SELECT=0
+CALIBRATED_STAGE1=0
+CALIBRATED_JWT=0
 for pat in \
   "client_id: [0-9a-f-]+ \((new|reused)\)" \
   "\[net\]\[s\]select:.*dur=[0-9]+ms" \
@@ -172,6 +192,12 @@ for pat in \
   "\[jwt\] refresh OK"; do
   if echo "$J" | grep -qE "$pat"; then
     ok "self-test pattern present: $pat"
+    case "$pat" in
+      *client_id*) CALIBRATED_CLIENT_ID=1 ;;
+      *select:*)   CALIBRATED_SELECT=1 ;;
+      *stage-1*)   CALIBRATED_STAGE1=1 ;;
+      *jwt*)       CALIBRATED_JWT=1 ;;
+    esac
   else
     echo "SELF-TEST-FAIL: pattern missing in known-good journal: $pat" | tee -a "$REPORT"
     SELF_TEST_FAIL=1
@@ -181,6 +207,7 @@ SEL_T=$(echo "$J" | grep -cE "\[net\]\[s\]select:.*dur=[0-9]+ms")
 SEL_F=$(echo "$J" | grep -cE "\[net\]\[s\]select:.* = .*dur=[0-9]+ms")
 if [ $((SEL_T - SEL_F)) -gt 0 ]; then
   ok "self-test [net][s]select subtraction calibrated ($((SEL_T - SEL_F)) of $SEL_T)"
+  CALIBRATED_SELECT=1
 else
   echo "SELF-TEST-FAIL: [net][s]select subtraction empty on known-good journal (total=$SEL_T fails=$SEL_F)" | tee -a "$REPORT"
   SELF_TEST_FAIL=1
@@ -240,12 +267,18 @@ section "E2. Admission pipeline (Tier 1)"
 # Q4 principle: gate on STRUCTURAL signals (a line exists, an exit is 0),
 # never on the QUANTITY of live free proxies.
 CID_LINES=$(j | grep -cE "client_id: [0-9a-f-]+ \((new|reused)\)")
-if [ "${CID_LINES:-0}" -gt 0 ]; then
+if [ "$CALIBRATED_CLIENT_ID" != "1" ]; then
+  echo "SKIP: client identity check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
+  SKIP=$((SKIP+1))
+elif [ "${CID_LINES:-0}" -gt 0 ]; then
   ok "client identities minted ($CID_LINES lines)"
 else
   t1bad "no client identities minted (admission pipeline broken?)"
 fi
-if j | grep -qE "stage-1 table probe config: enabled=true"; then
+if [ "$CALIBRATED_STAGE1" != "1" ]; then
+  echo "SKIP: stage-1 probe check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
+  SKIP=$((SKIP+1))
+elif j | grep -qE "stage-1 table probe config: enabled=true"; then
   ok "stage-1 probe enabled"
 else
   t1bad "stage-1 probe NOT enabled (kill switch stuck?)"
@@ -262,14 +295,14 @@ fi
 # ---------- F. Docker path ----------
 section "F. Docker"
 apt-get update -qq >/dev/null 2>&1
-run_check "docker installed" bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
+run_check "docker installed" timeout 600 bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
 sh /tmp/install-docker.sh 2>&1 | grep -q "sha256 verified" && ok "install-urnet-docker.sh verified" || bad "docker installer"
 run_check "urnet-docker version" /usr/local/bin/urnet-docker version 2>&1
 mkdir -p /tmp/docker-state && cp /home/urnet/.urnetwork/jwt /tmp/docker-state/jwt && cp /home/urnet/.urnetwork/network.json /tmp/docker-state/network.json
 # MUST-FIX 10: pull the EXPECTED image tag, not :latest (which lags a tag
 # push). The image tag follows the release tag.
-run_check "image pulled" docker pull "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" 2>&1
+run_check "image pulled" timeout 300 docker pull "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" 2>&1
 # MUST-FIX 6 (docker): pass the cap into the container via env var.
 docker run -d --name urnetwork-test -v /tmp/docker-state:/root/.urnetwork -e PROXY_URL_MAX=200 -e BUILD=jwt "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" >/dev/null 2>&1
 sleep 8
@@ -419,7 +452,14 @@ section "I. Control-plane ([net][s]select)"
 SELECT_TOTAL=$(j | grep -cE "\[net\]\[s\]select:.*dur=[0-9]+ms")
 SELECT_FAILS=$(j | grep -cE "\[net\]\[s\]select:.* = .*dur=[0-9]+ms")
 SELECT_HITS=$((SELECT_TOTAL - SELECT_FAILS))
-[ "${SELECT_HITS:-0}" -gt 0 ] && ok "[net][s]select success lines ($SELECT_HITS of $SELECT_TOTAL)" || bad "[net][s]select success missing (total=$SELECT_TOTAL fails=$SELECT_FAILS)"
+if [ "$CALIBRATED_SELECT" != "1" ]; then
+  echo "SKIP: [net][s]select check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
+  SKIP=$((SKIP+1))
+elif [ "${SELECT_HITS:-0}" -gt 0 ]; then
+  ok "[net][s]select success lines ($SELECT_HITS of $SELECT_TOTAL)"
+else
+  bad "[net][s]select success missing (total=$SELECT_TOTAL fails=$SELECT_FAILS)"
+fi
 
 # ---------- K. Source-switch (remove one source, re-add, verify recovery) ----------
 section "K. Source-switch"
@@ -519,11 +559,26 @@ run_check "seeded dead+good proxies for reaper" urnet-tools proxy add /tmp/rd-pr
 # Resource sampling every 5m (SHOULD-FIX 13): RSS/fd/threads as a leak
 # regression signal. Plus log-rate (14) and panic/restart sweep (11).
 P2_START=$(date +%s)
+# MUST-FIX 5 (Opus): the poll deadline from the workflow must be able to
+# shrink Phase 2 so the run finishes before the job cap instead of being
+# guillotined mid-remove-dead. DEADLINE_EPOCH is optional; when absent use
+# the full 70-min window.
 P2_END=$((P2_START + 4200))   # 70 min observation
+if [ -n "${DEADLINE_EPOCH:-}" ]; then
+  SHRUNK_END=$((DEADLINE_EPOCH - 600))   # 10 min teardown reserve
+  if [ "$SHRUNK_END" -lt "$P2_END" ]; then
+    P2_END=$SHRUNK_END
+    echo "INFO: Phase 2 window shrunk to $(date -u -d @$P2_END +%T)Z by job deadline" | tee -a "$REPORT"
+  fi
+fi
+# Total samples = window / 300s, for the n/N completion assertion.
+P2_TOTAL=$(( (P2_END - P2_START) / 300 ))
 SAMPLE_N=0
 PROC_PID=""
 while [ "$(date +%s)" -lt "$P2_END" ]; do
   SAMPLE_N=$((SAMPLE_N+1))
+  # Heartbeat for the workflow poller (SHOULD-FIX 11): mtime > 15 min = STALLED.
+  touch /tmp/shakedown.heartbeat
   PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
   if [ -n "$PROC_PID" ]; then
     RSS=$(awk '/VmRSS/{print $2}' /proc/$PROC_PID/status 2>/dev/null || echo 0)
@@ -531,15 +586,21 @@ while [ "$(date +%s)" -lt "$P2_END" ]; do
     THREADS=$(awk '/Threads/{print $2}' /proc/$PROC_PID/status 2>/dev/null || echo 0)
     CACHED2=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(len(d.get('cache',{})))" 2>/dev/null || echo 0)
     UP2=$(urnet-tools summary 2>&1 | grep -oE "Up: +[0-9]+" | grep -oE "[0-9]+" | tail -1)
-    echo "SAMPLE $SAMPLE_N: rss=${RSS}kB fds=$FDS threads=$THREADS cache=$CACHED2 up=${UP2:-0}" | tee -a "$REPORT"
+    echo "SAMPLE $SAMPLE_N/$P2_TOTAL: rss=${RSS}kB fds=$FDS threads=$THREADS cache=$CACHED2 up=${UP2:-0}" | tee -a "$REPORT"
   else
-    echo "SAMPLE $SAMPLE_N: provider process NOT RUNNING (pid missing!)" | tee -a "$REPORT"
+    echo "SAMPLE $SAMPLE_N/$P2_TOTAL: provider process NOT RUNNING (pid missing!)" | tee -a "$REPORT"
   fi
   # MUST-FIX 11: panic/fatal/SIGSEGV grep. This is the highest-value zero-cost check.
   PANICS=$(j | grep -cE "panic:|fatal error:|SIGSEGV|goroutine [0-9]+ \[running\]")
   [ "${PANICS:-0}" -gt 0 ] && { t1bad "panic/fatal/SIGSEGV in journal ($PANICS hits)"; break; }
   sleep 300
 done
+# MUST-FIX 9 (Opus): a truncated soak must never be invisible. If the window
+# did not complete (early break on panic, or deadline guillotine), say so as
+# TEST_SCRIPT instead of silently grading the partial window PASS.
+if [ "$SAMPLE_N" -lt "$P2_TOTAL" ]; then
+  echo "WARN: Phase 2 completed $SAMPLE_N/$P2_TOTAL samples (truncated window). Signals below are partial." | tee -a "$REPORT"
+fi
 N_RESTARTS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show urnetwork.service -p NRestarts 2>/dev/null | cut -d= -f2)
 [ -n "$N_RESTARTS" ] && echo "INFO: systemd NRestarts=$N_RESTARTS (script issued ~9 restarts)" | tee -a "$REPORT"
 if [ -n "${N_RESTARTS:-}" ] && [ "${N_RESTARTS:-0}" -gt 12 ]; then
