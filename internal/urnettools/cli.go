@@ -673,7 +673,6 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 	if force {
 		return true, nil
 	}
-	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
 	line, err := confirmStdinRead("Type 'yes' to continue: ")
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)

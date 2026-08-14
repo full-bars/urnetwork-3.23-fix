@@ -1315,3 +1315,56 @@ func TestSeqNumIncrementAcrossDataPackets(t *testing.T) {
 			seq0, payloadLen0, seq1)
 	}
 }
+
+func TestSynAckWithTimestamp(t *testing.T) {
+	// Timestamp option (kind 8, len 10) layout: MSS(4) + TS(10) padded to 16
+	// option bytes -> header 36 bytes, data offset 9 words (mimo finding:
+	// no test covered enableTimestamp=true).
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               100,
+		receiveSeq:            200,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       42,
+		timestampValueForTest: func() uint32 { return 7 },
+		enableWindowScale:     false,
+	}
+
+	packet, err := cs.SynAck(DefaultMtu)
+	if err != nil {
+		t.Fatalf("SynAck (TS) failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	if dataOffset != 36 {
+		t.Fatalf("SynAck (TS) data offset: want 36 (MSS+TS), got %d", dataOffset)
+	}
+
+	// Verify the timestamp option bytes: NOP? no — TS starts at offset 4
+	// (after MSS), kind 8 len 10, TSval=7, TSecr=42.
+	opts := tcpBytes[TcpHeaderSizeWithoutExtensions:dataOffset]
+	if opts[0] != 2 || opts[1] != 4 {
+		t.Fatalf("MSS option missing: %v", opts[:4])
+	}
+	if opts[4] != 8 || opts[5] != 10 {
+		t.Fatalf("TS option header missing: %v", opts[4:6])
+	}
+	tsval := binary.BigEndian.Uint32(opts[6:10])
+	tsecr := binary.BigEndian.Uint32(opts[10:14])
+	if tsval != 7 || tsecr != 42 {
+		t.Fatalf("TS val/echo: want 7/42, got %d/%d", tsval, tsecr)
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("SynAck (TS) TCP checksum verification failed")
+	}
+}
