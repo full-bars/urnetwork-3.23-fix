@@ -116,16 +116,18 @@ jobs:
 
           SSHOPTS="-i /tmp/sshkey/id_gauntlet -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
 
-          # Wait for SSH
+          # Wait for SSH — require a PUBLIC IPv4 (private-only droplets cannot
+          # be reached by the runner; caught here and deleted by cleanup).
           IP=""
           for i in $(seq 1 40); do
-            IP=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID" | python3 -c "import sys,json;n=json.load(sys.stdin).get('droplet',{}).get('networks',{}).get('v4',[]);print(n[0]['ip_address'] if n else '')" 2>/dev/null)
+            SPEC2=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID")
+            IP=$(echo "$SPEC2" | python3 -c "import sys,json;n=[x for x in json.load(sys.stdin).get('droplet',{}).get('networks',{}).get('v4',[]) if x.get('type')=='public'];print(n[0]['ip_address'] if n else '')" 2>/dev/null)
             if [ -n "$IP" ] && ssh $SSHOPTS root@$IP true 2>/dev/null; then
-              echo "SSH up: $IP"; break
+              echo "SSH up (public): $IP"; break
             fi
             sleep 10
           done
-          [ -n "$IP" ] || { echo "droplet never reachable"; exit 1; }
+          [ -n "$IP" ] || { echo "ERROR: no public IPv4 / never reachable — aborting (cleanup deletes)"; exit 1; }
 
           # Ship JWT + gauntlet, run under watchdog
           scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
