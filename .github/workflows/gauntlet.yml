@@ -64,23 +64,41 @@ jobs:
           #!/bin/bash
           # Minimal DO helper: create 1CPU/1GB droplet, wait, run, delete.
           # Size is HARD-PINNED; anything else aborts and deletes.
+          # SSH access uses an EPHEMERAL keypair minted in this job and
+          # provisioned via the DO API at droplet creation — no static key.
           set -u
           SIZE_SLUG="s-1vcpu-1gb"; EXPECTED_VCPUS=1; EXPECTED_MEMORY_MB=1024
           REGION="${REGION:-nyc3}"
           API="https://api.digitalocean.com/v2"
           AUTH="Authorization: Bearer ${DO_TOKEN}"
           DROPLET_ID=""
+          KEY_ID=""
           cleanup() {
             if [ -n "$DROPLET_ID" ]; then
               echo "CLEANUP: deleting droplet $DROPLET_ID"
               curl -s -X DELETE -H "$AUTH" "$API/droplets/$DROPLET_ID" -o /dev/null -w "delete HTTP %{http_code}\n"
             fi
+            if [ -n "$KEY_ID" ]; then
+              echo "CLEANUP: removing ephemeral SSH key $KEY_ID"
+              curl -s -X DELETE -H "$AUTH" "$API/account/keys/$KEY_ID" -o /dev/null -w "key delete HTTP %{http_code}\n"
+            fi
           }
           trap cleanup EXIT
 
+          # --- Ephemeral SSH keypair for this run ---
+          mkdir -p /tmp/sshkey && ssh-keygen -t ed25519 -f /tmp/sshkey/id_gauntlet -N "" -C "gauntlet-ci" >/dev/null 2>&1
+          PUBKEY=$(cat /tmp/sshkey/id_gauntlet.pub)
+          KEYJSON=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"name\":\"gauntlet-ci-$(date +%s)\",\"public_key\":\"$PUBKEY\"}" \
+            "$API/account/keys")
+          KEY_ID=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('id',''))" 2>/dev/null)
+          FINGERPRINT=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('fingerprint',''))" 2>/dev/null)
+          [ -n "$FINGERPRINT" ] || { echo "SSH key upload failed: $KEYJSON"; exit 1; }
+          echo "ephemeral key ready (id=$KEY_ID fp=${FINGERPRINT:0:12}...)"
+
           echo "creating droplet (size=$SIZE_SLUG region=$REGION)"
           CREATE=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"name\":\"gauntlet-$(date +%s)\",\"region\":\"$REGION\",\"size\":\"$SIZE_SLUG\",\"image\":\"ubuntu-24-04-x64\",\"backups\":false,\"ipv6\":false,\"monitoring\":false}" \
+            -d "{\"name\":\"gauntlet-$(date +%s)\",\"region\":\"$REGION\",\"size\":\"$SIZE_SLUG\",\"image\":\"ubuntu-24-04-x64\",\"ssh_keys\":[\"$FINGERPRINT\"],\"backups\":false,\"ipv6\":false,\"monitoring\":false}" \
             "$API/droplets")
           DROPLET_ID=$(echo "$CREATE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('id',''))" 2>/dev/null)
           [ -n "$DROPLET_ID" ] || { echo "create failed: $CREATE"; exit 1; }
@@ -96,11 +114,13 @@ jobs:
             echo "ERROR: droplet not the cheap spec — deleting and aborting"; exit 1
           fi
 
+          SSHOPTS="-i /tmp/sshkey/id_gauntlet -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
+
           # Wait for SSH
           IP=""
           for i in $(seq 1 40); do
             IP=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID" | python3 -c "import sys,json;n=json.load(sys.stdin).get('droplet',{}).get('networks',{}).get('v4',[]);print(n[0]['ip_address'] if n else '')" 2>/dev/null)
-            if [ -n "$IP" ] && ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@$IP true 2>/dev/null; then
+            if [ -n "$IP" ] && ssh $SSHOPTS root@$IP true 2>/dev/null; then
               echo "SSH up: $IP"; break
             fi
             sleep 10
@@ -108,12 +128,12 @@ jobs:
           [ -n "$IP" ] || { echo "droplet never reachable"; exit 1; }
 
           # Ship JWT + gauntlet, run under watchdog
-          scp -o StrictHostKeyChecking=no /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
-          scp -o StrictHostKeyChecking=no .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
-          timeout 2700 ssh root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
+          scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
+          scp $SSHOPTS .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
+          timeout 2700 ssh $SSHOPTS root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
 
           # Collect report BEFORE trap deletes
-          ssh -o StrictHostKeyChecking=no root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
+          ssh $SSHOPTS root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
           echo "REPORT_READY"
           SCRIPT
           chmod +x /tmp/do.sh
