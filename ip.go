@@ -2874,8 +2874,12 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 	}
 	packetByteCount := mtu - headerByteCount
 	if self.peerMss != 0 {
-		optionByteCount := headerByteCount - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
-		packetByteCount = min(packetByteCount, int(self.peerMss)-optionByteCount)
+		// RFC 879/6691: MSS is data-only — it excludes TCP headers and
+		// options on BOTH sides. Our outgoing timestamp option already
+		// reduces packetByteCount via headerByteCount, so clamping to the
+		// peer's raw MSS (not MSS minus our option bytes) is correct
+		// (mimo review finding — upstream's subtraction double-counted).
+		packetByteCount = min(packetByteCount, int(self.peerMss))
 	}
 	packetByteCount = max(1, packetByteCount)
 	if n <= packetByteCount {
