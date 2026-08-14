@@ -1,25 +1,25 @@
 #!/bin/bash
-# gauntlet.sh — the v29 pre-release gauntlet, runs ON the droplet after boot.
+# shakedown.sh. The v29 pre-release shakedown. Runs ON the droplet after boot.
 # Executed as root on a fresh 1CPU/1GB Ubuntu droplet. Tests the full
 # regular-person install flow, Go tooling, proxy paths, URL sources with real
 # free proxies, egress, and docker.
 #
-# Called by do_gauntlet.sh with: $1 = JWT file path (already on the box)
+# Called by the shakedown workflow with: $1 = JWT file path (already on the box)
 #
 # DESIGN (Opus review 2026-08-14 folded):
 #  - Every assertion is exit-status-first, text-second (structural fix).
 #  - Self-test phase verifies each log pattern against a KNOWN-GOOD startup
-#    so the gauntlet's own regexes cannot silently rot into false blocks.
+#    so the shakedown's own regexes cannot silently rot into false blocks.
 #  - Phase 1 (0-20m): install/auth/CLI/proxy/docker(rm at end)/identity/
-#    update-tag/self-update — everything that restarts the provider.
+#    update-tag/self-update. Everything that restarts the provider.
 #  - Phase 2 (20-100m): final restart, seed blackhole, uninterrupted
 #    observation with resource sampling every 5m, 10m refresh, remove-dead
 #    --yes at the end (~110m total). Watchdog ~7200s in the workflow.
 #  - No billable traffic: mainnet provider with free proxies, but no real
-#    clients. Accepted explicitly — checks use logs/state/CLI only.
+#    clients. Accepted explicitly. Checks use logs/state/CLI only.
 set -u
 JWT_FILE="${1:-/tmp/gauntlet.jwt}"
-REPORT="/tmp/gauntlet-report.txt"
+REPORT="/tmp/shakedown-report.txt"
 PASS=0; FAIL=0; SKIP=0
 # Tier-1 failures are hard blocks: any panic/fatal/OOM/structural miss.
 TIER1_FAIL=0
@@ -57,7 +57,7 @@ journal_line_count() { j | wc -l; }
 # wait_client_id: poll for a client_id line that appears AFTER the given
 # marker line count (a NEW journal entry from a restart). The provider runs a
 # synchronous up-to-1GB O_SYNC disk audit at every provide start (audit.go,
-# 10-60s on 1CPU) — fixed sleeps false-fail; poll instead (DeepSeek #8).
+# 10-60s on 1CPU). Fixed sleeps false-fail. Poll instead.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
@@ -78,7 +78,7 @@ restart_provider() {
   runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 }
 
-echo "GAUNTLET START $(date -u +%FT%TZ)" > "$REPORT"
+echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
 # MUST-FIX 10: EXPECTED_VERSION comes from the workflow (GITHUB_REF_NAME for
 # tag-triggered runs, latest release for manual). Derive the base for the
 # version greps; align the fresh install to it so tag runs test THE TAG.
@@ -122,12 +122,12 @@ else
   bad "github NOT reachable (non-starter)"; NON_STARTER=1
 fi
 if [ "$NON_STARTER" = "1" ]; then
-  echo "NON-STARTER: connectivity failed — not running the rest of the suite" | tee -a "$REPORT"
+  echo "NON-STARTER: connectivity failed. Not running the rest of the suite" | tee -a "$REPORT"
   echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP NON_STARTER=1" | tee -a "$REPORT"
-  echo "GAUNTLET END $(date -u +%FT%TZ)" >> "$REPORT"
+  echo "SHAKEDOWN END $(date -u +%FT%TZ)" >> "$REPORT"
   exit 0
 fi
-echo "preflight OK — continuing suite" | tee -a "$REPORT"
+echo "preflight OK. Continuing suite" | tee -a "$REPORT"
 
 # ---------- B. Auth ----------
 section "B. Auth"
@@ -143,7 +143,7 @@ printf '10m\n' > /home/urnet/.urnetwork/proxy_url_refresh
 chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/jwt
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
-# MUST-FIX 8 (DeepSeek): poll for client_id instead of sleep 8 — the provider
+# MUST-FIX 8: poll for client_id instead of sleep 8. The provider
 # runs a synchronous up-to-1GB O_SYNC disk audit at provide start (10-60s on
 # 1CPU/1GB). A fixed sleep false-fails a Tier-1 check.
 CID=$(wait_client_id 0 120)
@@ -157,9 +157,9 @@ fi
 
 # ---------- SELF-TEST: pattern calibration on a known-good startup ----------
 # Structural fix (Opus insight): every assertion below greps a log pattern.
-# If a pattern is wrong, the gauntlet's failure is indistinguishable from the
+# If a pattern is wrong, the shakedown's failure is indistinguishable from the
 # product failing. So verify each pattern against THIS known-good journal now.
-# NOTE: [net][s]select has NO single-regex form — success = total minus fail
+# NOTE: [net][s]select has no single-regex form. Success = total minus fail
 # lines (see section I); its calibration is the SELECT_TOTAL/SELECT_FAILS
 # subtraction being nonzero on a known-good journal.
 section "SELF-TEST (pattern calibration)"
@@ -190,7 +190,7 @@ fi
 # ---------- C. Go tool basics ----------
 section "C. Go tool"
 V=$(urnet-tools version 2>&1)
-echo "$V" | grep -qE "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V) — want $EXPECTED_BASE"
+echo "$V" | grep -qE "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V). Version must match $EXPECTED_BASE"
 run_check "providers discovers the account" urnet-tools providers 2>&1
 run_check "status running" urnet-tools status 2>&1
 run_check "proxy health cmd" urnet-tools proxy health 2>&1
@@ -206,7 +206,7 @@ python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy'));assert
 # ---------- E. URL sources (real free proxies) ----------
 section "E. URL sources + egress"
 # MUST-FIX 6: socks5-only lists only. proxifly 'all' is 2300+ entries,
-# mostly http/socks4 (skipped), uncapped in the one-shot CLI fetch — hours +
+# mostly http/socks4 (skipped), uncapped in the one-shot CLI fetch. Hours +
 # OOM risk on 1GB. proxifly socks5-only is 148 entries, monosans 102.
 # The CLI one-shot fetch ignores proxy_url_max by design (main.go:4413),
 # so each add-source gets a 900s belt-and-braces timeout.
@@ -232,7 +232,7 @@ echo "INFO: cache after first cycle: $CACHED" | tee -a "$REPORT"
 if grep -q "FAIL: auth" "$REPORT"; then
   skip "URL cache (auth failed earlier)"
 else
-  [ "${CACHED:-0}" -gt 0 ] && ok "URL cache populated ($CACHED)" || echo "INFO: cache empty yet — Phase 2 observation follows" | tee -a "$REPORT"
+  [ "${CACHED:-0}" -gt 0 ] && ok "URL cache populated ($CACHED)" || echo "INFO: cache is empty. Phase 2 observation follows" | tee -a "$REPORT"
 fi
 
 # ---------- E2. Admission pipeline (Tier 1) ----------
@@ -276,7 +276,7 @@ sleep 8
 docker ps --format "{{.Names}}" | grep -q urnetwork-test && ok "container up" || bad "container"
 run_check "urnet-docker providers" /usr/local/bin/urnet-docker providers 2>&1
 run_check "urnet-docker restart -f" /usr/local/bin/urnet-docker restart urnetwork-test -f 2>&1
-# MUST-FIX 7: while the container is up, the box is multi-provider — the Go
+# MUST-FIX 7: while the container is up, the box is multi-provider. The Go
 # tool MUST refuse without a target (lock in the real behavior).
 if urnet-tools status >/dev/null 2>&1; then
   bad "multi-provider ambiguity NOT refused (expected REFUSED with 2 providers)"
@@ -286,6 +286,102 @@ fi
 # MUST-FIX 7: remove the container NOW so later sections are single-provider
 # again (K/L/M/N/O all call urnet-tools with no target).
 docker rm -f urnetwork-test >/dev/null 2>&1 && ok "docker container removed (single-provider restored)" || bad "docker rm"
+
+# ---------- G. Hub (systemd) ----------
+section "G. Hub (systemd)"
+# Hub coverage (user request 2026-08-14).
+# Install the hub binary and the systemd unit via urnet-tools.
+# Start the unit and verify that the dashboard serves.
+# Verify that the provider reports into the hub.
+# The hub also ships as a docker image (ghcr.io/full-bars/urnetwork-3.23-fix-hub,
+# pushed by hub-build.yml). Section G2 tests the container path.
+# MUST-FIX: pin the hub to the release under test. Without --tag, hub install
+# resolves the latest release, which lags on tag-triggered runs.
+run_check "hub install (pinned)" urnet-tools hub install "--tag=$EXPECTED_VERSION" 2>&1
+if [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnetwork-hub ]; then
+  ok "hub binary installed"
+else
+  bad "hub binary missing after hub install"
+fi
+# MUST-FIX: hub install writes the unit but does not reload systemd. The start
+# can fail on a fresh unit without daemon-reload.
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload 2>&1 && ok "hub daemon-reload" || bad "hub daemon-reload"
+HUB_START=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork-hub.service 2>&1); HUB_RC=$?
+[ "$HUB_RC" -eq 0 ] && ok "hub unit started (exit 0)" || { bad "hub unit start (exit $HUB_RC)"; echo "$HUB_START" | tail -3 | tee -a "$REPORT"; }
+sleep 5
+# MUST-FIX: the dashboard check must assert a real 200. With no
+# URNETWORK_HUB_DASHBOARD_PASS the dashboard is unauthenticated. curl -f -w
+# emits 000 on transport failure, so a non-empty check can never fail.
+HUB_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/ 2>/dev/null)
+[ "$HUB_HTTP" = "200" ] && ok "hub dashboard serves (HTTP 200)" || bad "hub dashboard not 200 (HTTP ${HUB_HTTP:-none})"
+# Point the provider at the hub. report <url> writes ~/.urnetwork/report_url.
+# The reporter re-reads the file live. No provider restart happens. The
+# Phase 2 uptime clock stays untouched.
+# Speed the reporter up. The default interval is 5m. The override file
+# report_interval drops it to 10s (the minimum).
+run_check "report URL set to local hub" urnet-tools report http://127.0.0.1:8080 2>&1
+printf '10s\n' > /home/urnet/.urnetwork/report_interval && chown urnet:urnet /home/urnet/.urnetwork/report_interval
+# MUST-FIX: the interval override only takes effect ON THE NEXT TICK, and the
+# ticker is at the 5m default. Restart the provider so the 10s interval
+# applies from the first tick. Phase 2 has not started yet, so this restart
+# does not disturb the remove-dead uptime clock.
+MARK=$(restart_provider)
+CID=$(wait_client_id "$MARK" 120)
+[ -n "$CID" ] && ok "provider restarted for 10s report cadence (client_id ${CID:0:12}…)" || bad "provider restart after report_interval"
+# MUST-FIX: grep the REAL receive line. The hub prints at startup
+# "WARNING URNETWORK_HUB_TOKEN not set ... /api/report ...", which matches a
+# bare report|bandwidth grep. The receive signal is "report from <node>".
+HUB_REPORT_OK=0
+for i in $(seq 1 36); do
+  if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork-hub.service --no-pager 2>/dev/null | grep -qE "^report from "; then
+    HUB_REPORT_OK=1; break
+  fi
+  sleep 10
+done
+if [ "$HUB_REPORT_OK" = "1" ]; then
+  ok "hub received provider report"
+else
+  echo "WARN: no report from line in hub journal within 360s (signal only)" | tee -a "$REPORT"
+fi
+# Restore the default report interval. The rest of the run must not spam the hub.
+rm -f /home/urnet/.urnetwork/report_interval
+# MUST-FIX: clear the report URL. Otherwise the provider keeps POSTing to a
+# dead 127.0.0.1:8080 every 15s for the remaining ~100 min.
+run_check "report URL cleared" urnet-tools report off 2>&1
+# Stop the hub unit. Leave the box tidy for the provider tests.
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork-hub.service 2>&1 && ok "hub unit stopped" || bad "hub unit stop"
+
+# ---------- G2. Hub (docker) ----------
+section "G2. Hub (docker)"
+# The hub docker image is ghcr.io/full-bars/urnetwork-3.23-fix-hub.
+# The entrypoint listens on :8080 and writes to /data.
+# A /data volume must persist the SQLite database.
+# The image versions independently of the provider release (hub-docker-v*
+# tags; :latest = current main). :latest is the only tag pushed today.
+HUB_IMG="ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest"
+# MUST-FIX: unbounded docker pull can eat the watchdog. Cap it.
+run_check "hub image pulled" timeout 300 docker pull "$HUB_IMG" 2>&1
+# Record the digest so a later FAIL is attributable to a specific image.
+HUB_DIGEST=$(docker inspect -f '{{index .RepoDigests 0}}' "$HUB_IMG" 2>/dev/null || echo "unknown")
+echo "  hub image digest: $HUB_DIGEST" | tee -a "$REPORT"
+# MUST-FIX: clear stale data from a prior run. A leftover hub.db would make
+# the volume check pass without the current container writing anything.
+rm -rf /tmp/hub-data && mkdir -p /tmp/hub-data
+# MUST-FIX: bind to loopback. The droplet is public; with no
+# URNETWORK_HUB_TOKEN / URNETWORK_HUB_DASHBOARD_PASS, /api/report accepts
+# writes from anyone on 0.0.0.0.
+docker run -d --name hub-test -p 127.0.0.1:18080:8080 -v /tmp/hub-data:/data "$HUB_IMG" >/dev/null 2>&1
+sleep 6
+docker ps --format "{{.Names}}" | grep -q hub-test && ok "hub container up" || bad "hub container"
+# The dashboard must serve on the mapped port. Assert a real 200.
+HUB2_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18080/ 2>/dev/null)
+[ "$HUB2_HTTP" = "200" ] && ok "hub container dashboard serves (HTTP 200)" || bad "hub container dashboard not 200 (HTTP ${HUB2_HTTP:-none})"
+# MUST-FIX: the /data check must assert on the HOST side. openStore creates
+# hub.db unconditionally in-container, so docker exec ls passes even if the
+# bind mount silently failed.
+[ -f /tmp/hub-data/hub.db ] && ok "hub container wrote database (host /tmp/hub-data/hub.db)" || bad "hub container no database on host volume"
+# Remove the container. Leave the box tidy.
+timeout 30 docker rm -f hub-test >/dev/null 2>&1 && ok "hub container removed" || bad "hub container rm"
 
 # ---------- H. Hot-restart + client identity lifecycle ----------
 section "H. Hot-restart + identity"
@@ -318,7 +414,7 @@ section "I. Control-plane ([net][s]select)"
 # (fail lines: `... clients=0 = Post "..." ... dur=15000ms (17 suppressed)`).
 # Do NOT grep success=[1-9] alone: that's the dialer's CUMULATIVE lifetime
 # counter, so a fail line on a dialer with prior successes also prints
-# success=44 — over-matching (DeepSeek verified the field exists; Opus's
+# success=44. Over-matching. (The cumulative counter over-reports.)
 # "no success= field" was wrong; both single-grep forms are lossy).
 SELECT_TOTAL=$(j | grep -cE "\[net\]\[s\]select:.*dur=[0-9]+ms")
 SELECT_FAILS=$(j | grep -cE "\[net\]\[s\]select:.* = .*dur=[0-9]+ms")
@@ -336,7 +432,7 @@ SRC_AFTER_RE=$(urnet-tools summary 2>&1 | grep -oE "Source URLs: +[0-9]+" | grep
 
 # ---------- L. Hot-restart toggle (real mechanism: env + /proc) ----------
 section "L. Hot-restart toggle (env)"
-# MUST-FIX 9: `urnet-tools hot-restart on|off` does NOT exist — the Go tool's
+# MUST-FIX 9: `urnet-tools hot-restart on|off` does not exist. The Go tool's
 # hot-restart takes no arguments (it's a unit restart). The real toggle is
 # URNETWORK_HOT_RESTART=0 (main.go:505). Test the mechanism that exists:
 # write the env via the systemd override, verify it reaches the process.
@@ -387,7 +483,7 @@ echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
 if [ -n "$BIN_VER" ] && echo "$BIN_VER" | grep -q "$EXPECTED_BASE"; then
   ok "update --tag produced a versioned binary ($BIN_VER)"
 else
-  bad "update --tag binary version missing/unexpected ($BIN_VER) — want $EXPECTED_BASE"
+  bad "update --tag binary version missing/unexpected ($BIN_VER). Version must match $EXPECTED_BASE"
 fi
 run_check "restored to latest" urnet-tools update -f 2>&1
 
@@ -395,7 +491,7 @@ run_check "restored to latest" urnet-tools update -f 2>&1
 section "N. exclude + refresh --force"
 # MUST-FIX 8: `ok || bad` could never fail (ok returns 0). Real assertions:
 # refresh --force must exit 0. proxy exclude is a BINARY subcommand, NOT a Go
-# tool subcommand (real gap, same class as old BUG-8) — assert the tool
+# tool subcommand (real gap, same class as old BUG-8). Assert the tool
 # refuses loudly rather than silently doing nothing.
 run_check "proxy refresh --force" urnet-tools proxy refresh --force 2>&1
 if urnet-tools proxy exclude 1.1.1.1 >/dev/null 2>&1; then
@@ -410,7 +506,7 @@ section "P. Self-update"
 run_check "self-update -f" urnet-tools self-update -f 2>&1
 
 # ============ PHASE 2: long observation (20-100m) ============
-section "PHASE 2 START — long observation window"
+section "PHASE 2 START: long observation window"
 # MUST-FIX 3/Q5: remove-dead needs >= 65m of UNINTERRUPTED uptime. The final
 # restart below resets StartedAt, and NO further restarts happen until the
 # remove-dead call at the end (~110m in). Seed the blackhole NOW so the
@@ -439,7 +535,7 @@ while [ "$(date +%s)" -lt "$P2_END" ]; do
   else
     echo "SAMPLE $SAMPLE_N: provider process NOT RUNNING (pid missing!)" | tee -a "$REPORT"
   fi
-  # MUST-FIX 11: panic/fatal/SIGSEGV grep — highest-value zero-cost check.
+  # MUST-FIX 11: panic/fatal/SIGSEGV grep. This is the highest-value zero-cost check.
   PANICS=$(j | grep -cE "panic:|fatal error:|SIGSEGV|goroutine [0-9]+ \[running\]")
   [ "${PANICS:-0}" -gt 0 ] && { t1bad "panic/fatal/SIGSEGV in journal ($PANICS hits)"; break; }
   sleep 300
@@ -447,7 +543,7 @@ done
 N_RESTARTS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show urnetwork.service -p NRestarts 2>/dev/null | cut -d= -f2)
 [ -n "$N_RESTARTS" ] && echo "INFO: systemd NRestarts=$N_RESTARTS (script issued ~9 restarts)" | tee -a "$REPORT"
 if [ -n "${N_RESTARTS:-}" ] && [ "${N_RESTARTS:-0}" -gt 12 ]; then
-  t1bad "NRestarts=$N_RESTARTS — provider crash-looping beyond script restarts"
+  t1bad "NRestarts=$N_RESTARTS. Provider crash-looping beyond script restarts"
 fi
 OOM_HITS=$(journalctl -k --no-pager 2>/dev/null | grep -ci "out of memory")
 [ "${OOM_HITS:-0}" -gt 0 ] && t1bad "kernel OOM kill detected ($OOM_HITS)" || ok "no kernel OOM kills"
@@ -466,11 +562,11 @@ fi
 if [ "${UP_FINAL:-0}" -gt 0 ]; then
   ok "proxies UP at end of observation ($UP_FINAL)"
 elif [ "${CACHED_FINAL:-0}" -gt 20 ]; then
-  t1bad "Up=0 with cache>20 — probe passed but admission never ran"
+  t1bad "Up=0 with cache>20. Probe passed but admission never ran"
 elif [ "${CACHED_FINAL:-0}" -eq 0 ]; then
-  skip "Up=0 with cache=0 — ENV_BLOCKER (rerun once); no free proxies upstream"
+  skip "Up=0 with cache=0. ENV_BLOCKER (rerun once). No free proxies upstream"
 else
-  echo "WARN: Up=0 with small cache ($CACHED_FINAL) — signal only, not a gate" | tee -a "$REPORT"
+  echo "WARN: Up=0 with small cache ($CACHED_FINAL). Signal only. Not a gate" | tee -a "$REPORT"
 fi
 
 # ---------- O. proxy remove-dead (65m gate + --yes) ----------
@@ -481,7 +577,7 @@ section "O. proxy remove-dead"
 UPTIME_S=$(( $(date +%s) - P2_START ))
 echo "  provider uptime at remove-dead: ${UPTIME_S}s ($((UPTIME_S/60))m)" | tee -a "$REPORT"
 if [ "$UPTIME_S" -lt 3900 ]; then
-  skip "remove-dead: uptime ${UPTIME_S}s < 65m gate — cannot run"
+  skip "remove-dead: uptime ${UPTIME_S}s < 65m gate. Cannot run"
 else
   RD_OUT=$(urnet-tools proxy remove-dead --yes 2>&1); RD_RC=$?
   echo "  remove-dead exit=$RD_RC" | tee -a "$REPORT"
@@ -489,9 +585,9 @@ else
   if [ "$RD_RC" -eq 0 ]; then
     ok "remove-dead --yes ran clean (exit 0)"
   elif [ "$RD_RC" -eq 61 ]; then
-    bad "remove-dead exit 61 — 65m uptime gate (timing regression?)"
+    bad "remove-dead exit 61. 65m uptime gate (timing regression?)"
   elif [ "$RD_RC" -eq 60 ]; then
-    bad "remove-dead exit 60 — provider not running"
+    bad "remove-dead exit 60. Provider not running"
   else
     bad "remove-dead exit $RD_RC (unexpected)"
   fi
@@ -499,7 +595,7 @@ else
   if [ "${STILL_DEAD:-1}" = "0" ]; then
     ok "remove-dead pruned the blackholed proxy"
   else
-    echo "WARN: 192.0.2.1:9 still present after remove-dead — reaper may not have confirmed dead (signal only)" | tee -a "$REPORT"
+    echo "WARN: 192.0.2.1:9 still present after remove-dead. Reaper may not have confirmed dead (signal only)" | tee -a "$REPORT"
   fi
 fi
 
@@ -522,7 +618,7 @@ fi
 # ---------- Summary ----------
 section "SUMMARY"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP TIER1_FAIL=$TIER1_FAIL" | tee -a "$REPORT"
-echo "GAUNTLET END $(date -u +%FT%TZ)" >> "$REPORT"
+echo "SHAKEDOWN END $(date -u +%FT%TZ)" >> "$REPORT"
 # MUST-FIX 18: exit non-zero on Tier-1 FAILs so the workflow can gate on it.
 [ "$TIER1_FAIL" = "1" ] && exit 1
 exit 0
