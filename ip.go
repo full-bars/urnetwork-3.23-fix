@@ -65,19 +65,19 @@ type parsedUdp struct {
 }
 
 type parsedTcp struct {
-	sourceIp        net.IP
-	destinationIp   net.IP
-	sourcePort      TCPPort
-	destinationPort TCPPort
-	fin             bool
-	syn             bool
-	rst             bool
-	psh             bool
-	ack             bool
-	seq             uint32
-	ackNumber       uint32
-	windowSize      uint16
-	options         []byte
+	sourceIp          net.IP
+	destinationIp     net.IP
+	sourcePort        TCPPort
+	destinationPort   TCPPort
+	fin               bool
+	syn               bool
+	rst               bool
+	psh               bool
+	ack               bool
+	seq               uint32
+	ackNumber         uint32
+	windowSize        uint16
+	options           []byte
 	enableMss         bool
 	mss               uint32
 	enableWindowScale bool
