@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.29.1] — 2026-08-14
+
+### Added
+
+**RFC 7323 TCP timestamps, MSS negotiation, and initial-window warmup** (#380): the provider's TCP stack ports upstream perfvar's option handling. A unified option parser now reads MSS, window scale, and timestamp together, replacing the old window-scale-only parser. Timestamps negotiate from the peer's SYN and emit on every non-RST segment (SYN-ACK, data, pure ACK, FIN-ACK), backed by a monotonic clock and a reorder guard. DataPackets now clamp payload to the peer's advertised MSS (RFC 879/6691 data-only semantics, 536 floor). A new InitialWindowSize setting scales with the memory budget, is power-of-two, and clamps between 4 KiB and 128 KiB; the SYN advertises the literal unscaled window per RFC 7323, then the post-handshake ACK jumps to the warmup window. The fork keeps its existing 4 KiB/4 MiB low-RAM window profile rather than following upstream's move to 64 KiB/16 MiB. ReadBufferByteCount now accounts for the timestamp option so full IPv6 reads no longer split into a runt tail segment. Multiple independent reviews covered the port; new tests span the window-scale table (9 cases), MSS+timestamp extraction, malformed-tail parsing, SynAck layouts, timestamp bytes, PureAck TSopt, and DataPackets timestamp segmentation. Needs a fleet deploy. This is the only provider binary change in this release.
+
+**VirusTotal scan of release binaries** (#381): release binaries are scanned before publishing with a two-tier gate. Zero to two detections pass (the known stripped-Go false-positive band), three to ten ship but are flagged for review, eleven or more block the release. The scan writes a report receipt with a per-artifact PASS/REVIEW/FAIL table and VirusTotal permalinks.
+
+**ClamAV scan of release binaries** (#383): an EICAR self-test plus a clamscan pass over all 20 release binaries, run after the VirusTotal scan as a quota-free second opinion.
+
+**Pre-release shakedown workflow** (#384-390): the gauntlet workflow is rebuilt and renamed to shakedown. It runs on a disposable 1 CPU/1 GB DigitalOcean droplet with guaranteed cleanup (trap plus job timeout), and covers a fresh install, auth, the Go tool, the full proxy lifecycle, URL sources against real free proxies, the admission pipeline, docker, the hub under systemd and docker, hot-restart identity, update --tag, self-update, a long observation phase with resource sampling, and clean shutdown. Tier-1 failures exit non-zero and fail the job; tag-triggered runs test the exact release being cut. The range along the way adds an apt-get update before the docker install, skips URL checks when auth failed, adds a report review step, posts the run verdict to a Discord webhook, adds a preflight connectivity gate, requires a public IPv4 before SSH, fixes the auth-check window to read the full journal, annotates Wacatac.C!ml as a confirmed false positive, and adds hub coverage for both systemd and docker. A full run takes about 2 hours, bounded by a watchdog and job timeout.
+
+### Fixed
+
+**DoH tests hung on live server lookups** (#382): TestDohQuery and TestDohCache queried live public DoH servers for a hostname that does not resolve, so the retry loop hung. A local httptest server now serves canned Google-style JSON DoH responses, and the tests fail fast instead of retrying forever.
+
 ## [v3.23.0-fix.29.0] — 2026-08-14
 
 ### Added

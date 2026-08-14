@@ -2666,3 +2666,46 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A — the Go tooling is fork-native (upstream still ships the shell tool).
 
 **Status**: ✅ v3.23.0-fix.29.0 (PR #376). Needs a fleet deploy — the Go tool binaries ship as release assets with this release.
+
+---
+
+## 122. TCP Stack Port — RFC 7323 Timestamps, MSS Negotiation, Initial-Window Warmup (PR #380)
+
+**Purpose**: The provider's TCP option handling was window-scale-only. Upstream perfvar had since added RFC 7323 timestamps, MSS-aware segmentation, and an initial-window warmup path, none of which this fork carried. Without timestamps and correct MSS clamping, the stack under-negotiates against modern peers and loses the round-trip-time and PAWS protections RFC 7323 provides.
+
+**Files Modified**: TCP option parsing and segmentation paths (unified MSS/window-scale/timestamp option parser), DataPackets segmentation, ReadBufferByteCount accounting, InitialWindowSize setting, plus new tests covering window-scale table cases, MSS+timestamp extraction, malformed-tail parsing, SynAck layouts, timestamp bytes, PureAck TSopt, and DataPackets timestamp segmentation.
+
+**Change**:
+- Unified TCP option parser reads MSS, window scale, and timestamp together, replacing the old window-scale-only parser.
+- RFC 7323 timestamps negotiate from the peer's SYN and emit on every non-RST segment (SYN-ACK, data, pure ACK, FIN-ACK), backed by a monotonic clock and a reorder guard.
+- Peer-MSS-aware segmentation: DataPackets clamp payload to the peer's advertised MSS (RFC 879/6691 data-only semantics), with a 536-byte floor.
+- New InitialWindowSize setting: memory-budget scaled, power-of-two, clamped to 4 KiB-128 KiB. The SYN advertises the literal unscaled window per RFC 7323; the post-handshake ACK then jumps to the warmup window.
+- The fork keeps its existing 4 KiB/4 MiB low-RAM window profile rather than following upstream's move to 64 KiB/16 MiB.
+- ReadBufferByteCount now accounts for the timestamp option, so full IPv6 reads no longer split into a runt tail segment.
+
+**Effect**: Shipped. This is the only provider binary code change in v3.23.0-fix.29.1. Multiple independent review passes covered the port; the existing test suite plus new tests (window-scale table across 9 cases, MSS+timestamp extraction, malformed-tail parsing, SynAck layouts, timestamp bytes, PureAck TSopt, DataPackets timestamp segmentation) all pass.
+
+**How to Identify in New Upstream**: Compare the fork's unified TCP option parser and timestamp/MSS handling against upstream perfvar's current state. If upstream changes its low-RAM window profile again, reconcile against this fork's deliberately-retained 4 KiB/4 MiB profile before porting further.
+
+**Status**: ✅ v3.23.0-fix.29.1 (PR #380). Needs a fleet deploy — operators must redeploy provider nodes for this change to take effect.
+
+---
+
+## 123. Release Tooling and Pre-Release Shakedown (PR #381-390)
+
+**Purpose**: Release binaries shipped with no automated malware scanning, the DoH test suite could hang indefinitely on live server lookups, and the gauntlet workflow (the pre-release droplet test) needed further hardening before it could be trusted as a release gate.
+
+**Files Modified**: CI workflow files for release scanning and the shakedown workflow (formerly gauntlet), DoH test files (hermetic httptest server replacing live server queries).
+
+**Change**:
+- VirusTotal scan of release binaries (#381): two-tier gate, 0-2 detections pass, 3-10 ship flagged for review, 11+ blocks the release; writes a scan report receipt with per-artifact PASS/REVIEW/FAIL table and permalinks.
+- DoH test fix (#382): TestDohQuery/TestDohCache now use a local httptest server serving canned Google-style JSON DoH responses instead of querying live public DoH servers for a hostname that does not resolve, so the tests fail fast instead of hanging on a retry loop.
+- ClamAV scan of release binaries (#383): EICAR self-test plus clamscan over all 20 release binaries, run after the VirusTotal scan as a quota-free second opinion.
+- Pre-release shakedown workflow build-out (#384-390): the workflow itself on a disposable 1 CPU/1 GB DigitalOcean droplet with guaranteed cleanup; apt-get update before docker install; skip URL checks when auth failed; report review step; Discord webhook verdict posting; preflight connectivity gate; public IPv4 requirement before SSH; full-journal auth-check window fix; Wacatac.C!ml false-positive annotation; exit-status-first assertions and a self-test phase; hub coverage for systemd and docker; rename from gauntlet to shakedown.
+- The shakedown covers a fresh install, auth, the Go tool, the full proxy lifecycle, URL sources against real free proxies, the admission pipeline, docker, the hub under systemd and docker, hot-restart identity, update --tag, self-update, a long observation phase with resource sampling, and clean shutdown. Tier-1 failures exit non-zero and fail the job. A full run takes about 2 hours, bounded by a watchdog and job timeout.
+
+**Effect**: Shipped. Release binaries now get two independent malware scans before publishing. The DoH test suite no longer hangs in CI. The shakedown workflow is a trustworthy pre-release gate that exercises a full fresh-install path against a live droplet before a tag ships.
+
+**How to Identify in New Upstream**: N/A. This is fork-native release tooling with no upstream equivalent.
+
+**Status**: ✅ v3.23.0-fix.29.1 (PR #381-390). CI-only, no fleet deploy needed for the pipeline itself. Entry 122's TCP port above is the deploy item in this release.
