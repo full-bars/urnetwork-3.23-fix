@@ -257,8 +257,24 @@ ok "proxy exclude ran" || bad "proxy exclude"
 urnet-tools proxy refresh --force 2>&1 | head -1 >/dev/null
 ok "proxy refresh --force ran" || bad "proxy refresh --force"
 
-# ---------- O. Self-update ----------
-section "O. Self-update"
+# ---------- O. proxy remove-dead (2h window makes reaper cycles feasible) ----------
+section "O. proxy remove-dead"
+# Seed a deliberately-unreachable proxy (RFC 5737 TEST-NET blackhole) + a
+# reachable one. The reaper needs ~3 failed cycles to mark it dead.
+printf '192.0.2.1:9\n8.8.8.8:443\n' > /tmp/rd-proxies.txt
+urnet-tools proxy add /tmp/rd-proxies.txt 2>&1 | grep -q "added server" && ok "seeded dead+good proxies" || bad "seed proxies"
+# Give the reaper time to mark the dead one (3 failed cycles). With the 2h
+# window and the health/probe cadence this is ~5-8 min; wait 300s.
+sleep 300
+DEAD_COUNT=$(urnet-tools proxy health 2>&1 | grep -oE "Dead: +[0-9]+" | grep -oE "[0-9]+")
+[ -n "$DEAD_COUNT" ] && echo "  dead count after reaper: $DEAD_COUNT" | tee -a "$REPORT"
+urnet-tools proxy remove-dead -f 2>&1 | head -2 >/dev/null
+# After remove-dead, the dead addr should be gone from the active proxy set.
+STILL_DEAD=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy'));print(1 if '192.0.2.1:9' in d.get('servers',{}) else 0)" 2>/dev/null || echo 1)
+[ "${STILL_DEAD:-1}" = "0" ] && ok "remove-dead pruned the blackholed proxy" || bad "remove-dead left the dead proxy (or reaper never marked it)"
+
+# ---------- P. Self-update ----------
+section "P. Self-update"
 urnet-tools self-update -f 2>&1 | grep -qE "already on|updated" && ok "self-update -f" || bad "self-update"
 
 # ---------- Summary ----------
