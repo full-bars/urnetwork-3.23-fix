@@ -21,6 +21,7 @@ import (
 var Version = "dev"
 
 func main() {
+	urnettools.ToolVersion = Version
 	if err := urnettools.Run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "urnet-tools: %v\n", err)
 		os.Exit(1)
