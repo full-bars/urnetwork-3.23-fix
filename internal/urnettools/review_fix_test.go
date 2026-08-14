@@ -416,7 +416,7 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 // Regression for gauntlet BUG-14: self-update blocked on read(0) for minutes
 // because ReadString on an open pipe never sees EOF.
 func TestConfirmStdinReadNonInteractiveRefuses(t *testing.T) {
-	// Point os.Stdin at an open pipe that never delivers data: a char-device
+	// Point os.Stdin at an open pipe that never delivers data: the terminal
 	// check must see it as non-interactive and refuse BEFORE reading. The
 	// read itself would otherwise block forever (BUG-14).
 	oldStdin := os.Stdin
