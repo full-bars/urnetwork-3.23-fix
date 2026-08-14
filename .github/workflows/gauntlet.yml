@@ -159,12 +159,17 @@ jobs:
             echo "AI review skipped (no GEMINI_API_KEY)"
             exit 0
           fi
-          cat > /tmp/ai_review_payload.json << 'PAYLOAD'
-          {
-            "contents": [{
-              "parts": [{"text": "You are a release engineer triaging a pre-release gauntlet report. Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). For each, say why in one sentence. Then give a one-line verdict: RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n$(cat /tmp/gauntlet-report.txt 2>/dev/null)"}]
-            }]
-          }
+          # Read the report OUTSIDE the heredoc — a $() inside the quoted
+          # heredoc is sent literally to the API and fails (observed live).
+          REPORT_TEXT=$(cat /tmp/gauntlet-report.txt 2>/dev/null || echo "no report")
+          python3 - "$REPORT_TEXT" << 'PAYLOAD' > /tmp/ai_review_payload.json
+          import json, sys
+          text = ("You are a release engineer triaging a pre-release gauntlet report. "
+                  "Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), "
+                  "ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). "
+                  "For each, say why in one sentence. Then give a one-line verdict: "
+                  "RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n" + sys.argv[1])
+          print(json.dumps({"contents": [{"parts": [{"text": text}]}]}))
           PAYLOAD
           curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
             -H "Content-Type: application/json" -d @/tmp/ai_review_payload.json \
@@ -173,6 +178,36 @@ jobs:
           echo "::group::AI Gauntlet Review"
           cat /tmp/gauntlet-ai-review.txt 2>/dev/null || echo "(no review)"
           echo "::endgroup::"
+
+      - name: Post gauntlet verdict to Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          VERDICT=$(grep -oE "RELEASE_(BLOCKED|OK)" /tmp/gauntlet-ai-review.txt 2>/dev/null | head -1)
+          VERDICT="${VERDICT:-NO_REVIEW}"
+          PASS=$(grep -c "^PASS:" /tmp/gauntlet-report.txt 2>/dev/null || echo 0)
+          FAIL=$(grep -c "^FAIL:" /tmp/gauntlet-report.txt 2>/dev/null || echo 0)
+          SUMMARY=$(grep -E "^(PASS|FAIL|SKIP):" /tmp/gauntlet-report.txt 2>/dev/null | head -12 | tr '\n' '\n')
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "Discord skip (no webhook)"
+            exit 0
+          fi
+          python3 - "$DISCORD_WEBHOOK" << 'PY'
+          import json, sys, urllib.request
+          webhook = sys.argv[1]
+          try:
+              review = open('/tmp/gauntlet-ai-review.txt').read().strip()
+          except Exception:
+              review = "(no review)"
+          # Strip ANSI, keep terse
+          lines = [l for l in review.splitlines() if l.strip()][:18]
+          body = "**Pre-release gauntlet run**\n" + "\n".join(lines[:14])
+          payload = {"content": body[:1900]}
+          req = urllib.request.Request(webhook, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req, timeout=15)
+          print("posted")
+          PY
 
       - name: Upload report artifact
         if: always()
