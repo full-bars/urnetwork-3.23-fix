@@ -2644,3 +2644,25 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: Any test asserting "all sampled targets unresolvable" against a table containing literal IPs is unfixable-by-seeding; pin the pass to a hostname-only block.
 
 **Status**: ✅ v3.23.0-fix.28.1 (PR #364, #368). No fleet deploy — test-only.
+
+## 121. Go-Tool Gauntlet — 8 Field-Tested Fixes for the Rewritten urnet-tools/urnet-docker (PR #376)
+
+**Purpose**: The Go tool rewrite from #345 was merged and shipped, but its delegation assumptions and CLI surface had never been exercised against a live provider. A field gauntlet on a fresh droplet against the live beta network found 8 real bugs — several of them silently breaking core fleet operations (URL proxy management, hub reporting, provider restarts).
+
+**Files Modified**: `cmd/urnet-tools/main.go`, `cmd/urnet-docker/main.go`, `internal/urnettools/cli.go`, `internal/urnettools/cli_docker.go`, `internal/urnettools/proxy.go`, `internal/urnettools/legacy_cmds.go`, tests.
+
+**Change**:
+- **version command**: `version`/`--version`/`-v` now print the stamped tool version (previously errored "unknown command" even though main.Version is stamped via ldflags). ToolVersion package var wired from main.Version in both cmd mains.
+- **report**: previously delegated to `<provider> report`, which does not exist in the provider CLI (auth/provide/proxy/wallet/claim/logs/summary) — printed auth usage, did nothing. Now writes `~/.urnetwork/report_url` in the provider's state dir, the documented override the bandwidth reporter re-reads every tick (no restart). Written 0644 so a provider running as a different user than the tool can read it (root tool + urnetwork-beta service is the fleet norm).
+- **hot-restart**: previously delegated to `<provider> hot-restart` (does not exist). Now restarts the provider's systemd unit via unitCommand, behind the same confirm gate as cmdRestart (`--force`/dry-run supported through the dispatcher's global flags).
+- **systemctl argv**: `unitCommandArgs` built `systemctl <action>` WITHOUT the unit name — start/stop/restart/hot-restart all failed with "Too few arguments". The unit is now always the final argument (system: `systemctl <action> <unit>`; user: `systemctl --user -M <user>@ <action> <unit>`).
+- **summary**: delegated as `<provider> summary` but the provider nests it under proxy (`provider proxy summary`). cmdSimpleDelegation now builds `["proxy", sub]`.
+- **proxy add-source / remove-source**: URL proxy sources (a core fleet feature) were entirely unmanageable through the Go tool. Both are now single-target delegations to `provider proxy add-source <url>` / `remove-source <url>`.
+- **proxy refresh --force**: the dispatcher's parseGlobalFlags consumed `-f`/`--force` as the global force flag before cmdProxy ran, so the provider never received it — the warmup gate (exit 52) was never bypassed. cmdProxy now re-adds `--force` to the refresh opArgs when the global force flag was set.
+- **proxy help**: `-h`/`--help` at ANY position in proxy args shows proxy-specific help and never executes. Previously showed root usage, was rejected as an unknown flag, or — for `proxy refresh --force -h` — reached the interactive picker and blocked on EOF.
+
+**Effect**: Shipped. Every fix was live-verified on the droplet (version prints, report writes the file, hot-restart restarts the unit with identity reuse, summary prints the real proxy summary, add-source fetches + probes, refresh --force bypasses warmup, help never hangs). The full `update -f` flow (download → sha256 verify → backup → install → restart) also verified end-to-end. Docker container deploy (BUILD=jwt), urnet-docker exec/restart/logs verified.
+
+**How to Identify in New Upstream**: N/A — the Go tooling is fork-native (upstream still ships the shell tool).
+
+**Status**: ✅ v3.23.0-fix.29.0 (PR #376). Needs a fleet deploy — the Go tool binaries ship as release assets with this release.
