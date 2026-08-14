@@ -25,6 +25,32 @@ bash -n /tmp/install.sh && ok "installer syntax" || bad "installer syntax"
 [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnet-tools ] && ok "Go urnet-tools installed" || bad "Go urnet-tools missing"
 URN="runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/\$(id -u urnet)"
 
+# ---------- A2. Preflight: internet + API reachability (non-starters) ----------
+section "A2. Preflight connectivity"
+# If the box has no internet, or cannot reach the urnetwork API, everything
+# downstream is meaningless. Fail hard with a NON-STARTER verdict instead of
+# confusing mid-suite FAILs.
+NON_STARTER=0
+if timeout 15 curl -fsS -o /dev/null -w "%{http_code}" https://api.bringyour.com/auth/verify-send 2>/dev/null | grep -qE "^[0-9]{3}$"; then
+  ok "internet + api.bringyour.com reachable"
+else
+  bad "api.bringyour.com NOT reachable (non-starter)"
+  NON_STARTER=1
+fi
+if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/README.md 2>/dev/null; then
+  ok "github reachable"
+else
+  bad "github NOT reachable (non-starter)"
+  NON_STARTER=1
+fi
+if [ "$NON_STARTER" = "1" ]; then
+  echo "NON-STARTER: connectivity failed — not running the rest of the suite" | tee -a "$REPORT"
+  echo "PASS=$PASS FAIL=$FAIL NON_STARTER=1" | tee -a "$REPORT"
+  echo "GAUNTLET END $(date -u +%FT%TZ)" >> "$REPORT"
+  exit 0
+fi
+echo "preflight OK — continuing suite" | tee -a "$REPORT"
+
 # ---------- B. Auth ----------
 section "B. Auth"
 mkdir -p /home/urnet/.urnetwork
