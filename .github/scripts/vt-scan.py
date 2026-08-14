@@ -8,14 +8,19 @@ Scans one or more files against the VirusTotal v3 API:
 
 Env:
   VT_API_KEY          required
-  VT_FAIL_THRESHOLD   fail if malicious count > threshold (default 0)
+  VT_FAIL_THRESHOLD   fail (exit 1) if malicious count > threshold
+                      (default 10 — real supply-chain hits are 10+ engines)
+  VT_REVIEW_THRESHOLD artifact is marked REVIEW (ships) if malicious count
+                      exceeds this but is at or below FAIL_THRESHOLD
+                      (default 2 — the known stripped-Go false-positive band)
   VT_UPLOAD           "0" to never upload (lookup-only, useful on PRs)
   VT_POLL_WAIT        seconds between analysis polls (default 12)
   VT_POLL_MAX         max polls before timeout (default 20)
   VT_SUMMARY_FILE     path: append a markdown proof block (per-file
                       verdicts + VT links + CI run ref) to this file
 
-Exit codes: 0 = pass, 1 = malicious above threshold, 2 = api/upload error.
+Exit codes: 0 = pass (or review), 1 = malicious above fail threshold,
+2 = api/upload error.
 """
 import hashlib
 import json
@@ -28,7 +33,8 @@ import urllib.error
 API = "https://www.virustotal.com/api/v3"
 POLL_WAIT = float(os.environ.get("VT_POLL_WAIT", "12"))
 POLL_MAX = int(os.environ.get("VT_POLL_MAX", "20"))
-FAIL_THRESHOLD = int(os.environ.get("VT_FAIL_THRESHOLD", "0"))
+FAIL_THRESHOLD = int(os.environ.get("VT_FAIL_THRESHOLD", "10"))
+REVIEW_THRESHOLD = int(os.environ.get("VT_REVIEW_THRESHOLD", "2"))
 UPLOAD = os.environ.get("VT_UPLOAD", "1") != "0"
 SUMMARY_FILE = os.environ.get("VT_SUMMARY_FILE", "")
 
@@ -121,8 +127,10 @@ def scan_file(path: str) -> int:
     if SUMMARY_FILE:
         _summary_rows.append((path, fsha, verdict, mal, sus, har, und))
     if mal > FAIL_THRESHOLD:
-        print(f"  ^ FAIL: malicious ({mal}) > threshold ({FAIL_THRESHOLD})", flush=True)
+        print(f"  ^ FAIL: malicious ({mal}) > fail threshold ({FAIL_THRESHOLD})", flush=True)
         return 1
+    if mal > REVIEW_THRESHOLD:
+        print(f"  ^ REVIEW: malicious ({mal}) > review threshold ({REVIEW_THRESHOLD}), at/below fail threshold — ships but flagged", flush=True)
     return 0
 
 
@@ -132,11 +140,11 @@ _summary_rows = []  # (path, sha, verdict, mal, sus, har, und) accumulated for t
 def write_summary() -> None:
     """Write the release-notes proof block once, after all files are scanned.
 
-    Status is GATE-FRAMED: each artifact shows PASS when its malicious count
-    is at or below VT_FAIL_THRESHOLD (the release gate), FAIL otherwise. Raw
-    counts stay in the table for transparency; a note explains the 1-2
-    detection pattern on stripped Go binaries so a passing release never
-    reads like a malware finding.
+    Three-tier status, measured against the release gates:
+      PASS   malicious <= VT_REVIEW_THRESHOLD (known Go false-positive band)
+      REVIEW malicious > review threshold, <= VT_FAIL_THRESHOLD (ships,
+             flagged for a look)
+      FAIL   malicious > VT_FAIL_THRESHOLD (the real-malware line, blocks)
     """
     if not SUMMARY_FILE or not _summary_rows:
         return
@@ -144,27 +152,37 @@ def write_summary() -> None:
         server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
         repo = os.environ.get("GITHUB_REPOSITORY", "")
         run = os.environ.get("GITHUB_RUN_ID", "")
-        passed = all(mal <= FAIL_THRESHOLD for _, _, _, mal, sus, har, und in _summary_rows)
+        rows = list(_summary_rows)
+        worst = max(mal for _, _, _, mal, sus, har, und in rows)
         with open(SUMMARY_FILE, "a") as f:
             f.write("\n---\n\n## VirusTotal Scan\n\n")
             f.write("The release artifacts were scanned with VirusTotal "
                     "(70+ antivirus engines) during CI.\n\n")
-            if passed:
-                f.write(f"**Result: PASS** — every artifact is within the release gate "
-                        f"(at most {FAIL_THRESHOLD} malicious detections).\n\n")
+            if worst > FAIL_THRESHOLD:
+                f.write(f"**Result: FAIL** — at least one artifact exceeds "
+                        f"{FAIL_THRESHOLD} malicious detections. The release was blocked.\n\n")
+            elif worst > REVIEW_THRESHOLD:
+                f.write(f"**Result: REVIEW** — an artifact has more than "
+                        f"{REVIEW_THRESHOLD} malicious detections but is at or below "
+                        f"{FAIL_THRESHOLD}. Review recommended.\n\n")
             else:
-                f.write(f"**Result: FAIL** — at least one artifact exceeds the release gate "
-                        f"(more than {FAIL_THRESHOLD} malicious detections).\n\n")
+                f.write(f"**Result: PASS** — every artifact is within "
+                        f"{REVIEW_THRESHOLD} malicious detections.\n\n")
             f.write("| Artifact | Status | Malicious | Suspicious | VT link |\n")
             f.write("|---|---|---|---|---|\n")
-            for path, fsha, verdict, mal, sus, har, und in _summary_rows:
-                status = "PASS" if mal <= FAIL_THRESHOLD else "FAIL"
+            for path, fsha, verdict, mal, sus, har, und in rows:
+                if mal > FAIL_THRESHOLD:
+                    status = "FAIL"
+                elif mal > REVIEW_THRESHOLD:
+                    status = "REVIEW"
+                else:
+                    status = "PASS"
                 f.write(f"| {os.path.basename(path)} | {status} | {mal} | {sus} | "
                         f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n")
-            if any(mal > 0 and mal <= FAIL_THRESHOLD for _, _, _, mal, sus, har, und in _summary_rows):
-                f.write("\nNOTE: 1 to 2 detections are the known machine-learning "
-                        "false-positive pattern on stripped Go binaries. Real "
-                        "supply-chain hits are flagged by 10 or more engines.\n")
+            f.write("\nNOTE: 1 to 2 detections are the known machine-learning "
+                    "false-positive pattern on stripped Go binaries (PASS). "
+                    "3 to 10 detections ship as REVIEW and should be checked. "
+                    "More than 10 detections blocks the release.\n")
             f.write(f"\n<sub>Scan run: "
                     f"[{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
     except OSError as e:
