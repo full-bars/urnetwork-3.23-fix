@@ -272,7 +272,6 @@ jobs:
           # (verified 2026-08-12 review).
 
       - name: VirusTotal scan of release binaries
-        if: ${{ secrets.VIRUS_TOTAL != '' }}
         env:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL }}
           VT_FAIL_THRESHOLD: "10"
@@ -283,6 +282,10 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ -z "${VT_API_KEY:-}" ]; then
+            echo "VIRUS_TOTAL secret not set, skipping VirusTotal scan"
+            exit 0
+          fi
           VERSION=${GITHUB_REF_NAME:-latest}
           # Scan every binary that ships in the release: provider (all 6
           # platforms), hub (linux amd64/arm64), urnet-tools + urnet-docker
