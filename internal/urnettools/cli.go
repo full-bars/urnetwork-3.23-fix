@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // ToolVersion is the build-stamped tool version, wired from main.Version by
@@ -596,6 +598,43 @@ func cmdStatus(args []string) error {
 // (free-review HIGH, mimo-v2.5).
 var stdinReader = bufio.NewReader(os.Stdin)
 
+// stdinIsInteractiveOverride, when non-nil, replaces the terminal check.
+// Tests that feed stdin via a substituted reader (strings.Reader, pipe) set
+// this to true so the shared-reader behavior is testable without a real TTY.
+// Unsynchronized package global: tests that touch it MUST NOT call
+// t.Parallel() (none do today — keep it that way).
+var stdinIsInteractiveOverride func() bool
+
+// stdinIsInteractive reports whether stdin is a terminal. Every confirm
+// prompt MUST gate on this BEFORE reading: a ReadString on an open-but-silent
+// pipe (cron, CI, MCP exec, a shell that left stdin open) blocks forever — it
+// never sees EOF, so the err != nil path never fires. Non-interactive runs
+// must use -f/--force (or --yes); refusing with a clear message beats hanging
+// (gauntlet finding BUG-14: self-update blocked on read(0) for minutes).
+// Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
+// misclassifies /dev/zero and other char devices as terminals (CodeRabbit
+// review finding).
+func stdinIsInteractive() bool {
+	if stdinIsInteractiveOverride != nil {
+		return stdinIsInteractiveOverride()
+	}
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// confirmStdinRead performs one confirmation line read, refusing cleanly on
+// non-interactive stdin instead of blocking. Shared by every prompt.
+func confirmStdinRead(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	if !stdinIsInteractive() {
+		return "", fmt.Errorf("stdin is not a terminal; use -f/--force to skip the prompt (or --yes where supported)")
+	}
+	line, err := stdinReader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return line, nil
+}
+
 // confirmGateMulti is the batch variant of confirmGate: it lists every
 // provider in the chosen set before the yes/no prompt.
 //
@@ -616,8 +655,7 @@ func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, 
 	if force {
 		return true, nil
 	}
-	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
-	line, err := stdinReader.ReadString('\n')
+	line, err := confirmStdinRead("Type 'yes' to continue: ")
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
@@ -645,8 +683,7 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 	if force {
 		return true, nil
 	}
-	fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
-	line, err := stdinReader.ReadString('\n')
+	line, err := confirmStdinRead("Type 'yes' to continue: ")
 	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}

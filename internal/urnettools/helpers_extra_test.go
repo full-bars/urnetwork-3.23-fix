@@ -107,6 +107,7 @@ func TestProviderLabelStateDirOnly(t *testing.T) {
 // TestInteractivePick covers numeric selection, "all", empty input, invalid
 // tokens, out-of-range numbers, and de-duplication — 0% before this.
 func TestInteractivePick(t *testing.T) {
+	forceInteractiveForTest(t)
 	providers := []Provider{
 		{Unit: "a.service"}, {Unit: "b.service"}, {Unit: "c.service"},
 	}
@@ -183,21 +184,22 @@ func TestOrDash(t *testing.T) {
 }
 
 // TestForceInteractiveAndIsTTY: force=true must always disable interactivity
-// regardless of the terminal; force=false must defer to isTTY().
+// regardless of the terminal; force=false must defer to stdinIsInteractive().
 func TestForceInteractiveAndIsTTY(t *testing.T) {
 	if forceInteractive(true) {
 		t.Error("forceInteractive(true) must always be false")
 	}
-	if got, want := forceInteractive(false), isTTY(); got != want {
-		t.Errorf("forceInteractive(false) = %v, want isTTY() = %v", got, want)
+	if got, want := forceInteractive(false), stdinIsInteractive(); got != want {
+		t.Errorf("forceInteractive(false) = %v, want stdinIsInteractive() = %v", got, want)
 	}
-	// isTTY must not panic regardless of what stdin currently is.
-	_ = isTTY()
+	// stdinIsInteractive must not panic regardless of what stdin currently is.
+	_ = stdinIsInteractive()
 }
 
 // TestConfirmVersion covers the yes/no/default/abort branches of
 // confirmVersion, which had 0% coverage.
 func TestConfirmVersion(t *testing.T) {
+	forceInteractiveForTest(t)
 	orig := stdinReader
 	defer func() { stdinReader = orig }()
 
@@ -236,6 +238,7 @@ func TestConfirmVersion(t *testing.T) {
 // TestConfirmGateMulti covers force/dry-run/interactive-confirm/abort
 // branches — 0% before this.
 func TestConfirmGateMulti(t *testing.T) {
+	forceInteractiveForTest(t)
 	targets := []Provider{{Unit: "a.service", User: "u1"}, {Unit: "b.service", User: "u2"}}
 
 	ok, err := confirmGateMulti("test op", targets, true, false)
