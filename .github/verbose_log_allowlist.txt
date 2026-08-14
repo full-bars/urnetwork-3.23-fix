@@ -10,6 +10,7 @@
 "[init]receive SYN+ACK\n"
 "[init]send(%d)\n"
 "[init]tcp connect error = %s\n"
+"[init]synack error = %s\n"
 "[init]tcp connect\n"
 "[init]udp connect error = %s\n"
 "[init]udp connect\n"
