@@ -90,6 +90,11 @@ python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy'));assert
 
 # ---------- E. URL source (real free proxies) ----------
 section "E. URL sources + egress"
+# Speed up the URL pipeline: the default refresh is 1h; for the gauntlet we
+# want to observe fetch->probe->grade->admit within the run, so set a 3m
+# cadence via the installer-supported runtime override file (re-read live).
+printf '3m\n' > /home/urnet/.urnetwork/proxy_url_refresh
+chown urnet:urnet /home/urnet/.urnetwork/proxy_url_refresh
 urnet-tools proxy add-source https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt 2>&1 | grep -q "added source" && ok "add-source" || bad "add-source"
 urnet-tools summary 2>&1 | grep -q "Source URLs:        1" && ok "source registered" || bad "source registered"
 # Give the fetch+probe time (slow on 1CPU: 4s per target)
