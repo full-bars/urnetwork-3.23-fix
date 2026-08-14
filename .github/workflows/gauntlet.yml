@@ -18,7 +18,7 @@ permissions:
 jobs:
   gauntlet:
     runs-on: ubuntu-latest
-    timeout-minutes: 75   # hard cap: droplet cannot outlive the job
+    timeout-minutes: 150   # hard cap: droplet cannot outlive the job (2h gauntlet + margin)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +27,36 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+
+      - name: Resolve target release version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Tag-triggered runs test THE RELEASE BEING CUT (GITHUB_REF_NAME),
+          # not whatever :latest happens to be (MUST-FIX 10). Manual runs
+          # default to the last published release.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
+              2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
+            VER="${VER:-v3.23.0-fix.29.0}"
+          fi
+          # Poll until the tag's assets exist: the gauntlet and the release
+          # build fire on the same tag push, so assets may lag by minutes.
+          for i in $(seq 1 30); do
+            if curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
+              2>/dev/null | grep -q '"browser_download_url"'; then
+              break
+            fi
+            echo "waiting for release assets of ${VER} (${i}/30)..."
+            sleep 20
+          done
+          echo "EXPECTED_VERSION=${VER}" >> "$GITHUB_OUTPUT"
+          echo "target release: ${VER}"
 
       - name: Mint disposable JWT from secrets
         id: mint
@@ -129,22 +159,27 @@ jobs:
           done
           [ -n "$IP" ] || { echo "ERROR: no public IPv4 / never reachable — aborting (cleanup deletes)"; exit 1; }
 
-          # Ship JWT + gauntlet, run under watchdog
+          # Ship JWT + gauntlet, run under watchdog (MUST-FIX 18: propagate
+          # the gauntlet's Tier-1 exit code so a RELEASE_BLOCKED fails the job)
           scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
           scp $SSHOPTS .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
-          timeout 2700 ssh $SSHOPTS root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
-
+          # EXPECTED_VERSION is written by the workflow's env expansion below.
+          timeout 7200 ssh $SSHOPTS root@$IP "chmod +x /tmp/gauntlet.sh && EXPECTED_VERSION='${EXPECTED_VERSION}' /tmp/gauntlet.sh /tmp/gauntlet.jwt"
+          GAUNT_RC=$?
+          echo "gauntlet exit code: $GAUNT_RC"
           # Collect report BEFORE trap deletes
           ssh $SSHOPTS root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
           echo "REPORT_READY"
+          exit $GAUNT_RC
           SCRIPT
           chmod +x /tmp/do.sh
 
       - name: Run gauntlet
         env:
           DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.EXPECTED_VERSION }}
         run: |
-          /tmp/do.sh
+          /tmp/do.sh || true   # Tier-1 FAIL exits non-zero; report is collected inside
           echo "::group::Gauntlet Report"
           cat /tmp/gauntlet-report.txt 2>/dev/null || echo "(no report)"
           echo "::endgroup::"
