@@ -207,8 +207,12 @@ jobs:
           body = "**Pre-release gauntlet run**\n" + "\n".join(lines[:14])
           payload = {"content": body[:1900]}
           req = urllib.request.Request(webhook, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req, timeout=15)
-          print("posted")
+          try:
+              urllib.request.urlopen(req, timeout=15)
+              print("posted")
+          except Exception as e:
+              # A notification failure must never fail the gauntlet run.
+              print("discord post failed (non-fatal):", e)
           PY
 
       - name: Upload report artifact
