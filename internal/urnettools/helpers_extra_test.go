@@ -184,16 +184,16 @@ func TestOrDash(t *testing.T) {
 }
 
 // TestForceInteractiveAndIsTTY: force=true must always disable interactivity
-// regardless of the terminal; force=false must defer to isTTY().
+// regardless of the terminal; force=false must defer to stdinIsInteractive().
 func TestForceInteractiveAndIsTTY(t *testing.T) {
 	if forceInteractive(true) {
 		t.Error("forceInteractive(true) must always be false")
 	}
-	if got, want := forceInteractive(false), isTTY(); got != want {
-		t.Errorf("forceInteractive(false) = %v, want isTTY() = %v", got, want)
+	if got, want := forceInteractive(false), stdinIsInteractive(); got != want {
+		t.Errorf("forceInteractive(false) = %v, want stdinIsInteractive() = %v", got, want)
 	}
-	// isTTY must not panic regardless of what stdin currently is.
-	_ = isTTY()
+	// stdinIsInteractive must not panic regardless of what stdin currently is.
+	_ = stdinIsInteractive()
 }
 
 // TestConfirmVersion covers the yes/no/default/abort branches of

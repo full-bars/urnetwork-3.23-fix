@@ -601,6 +601,8 @@ var stdinReader = bufio.NewReader(os.Stdin)
 // stdinIsInteractiveOverride, when non-nil, replaces the terminal check.
 // Tests that feed stdin via a substituted reader (strings.Reader, pipe) set
 // this to true so the shared-reader behavior is testable without a real TTY.
+// Unsynchronized package global: tests that touch it MUST NOT call
+// t.Parallel() (none do today — keep it that way).
 var stdinIsInteractiveOverride func() bool
 
 // stdinIsInteractive reports whether stdin is a terminal. Every confirm
