@@ -54,3 +54,26 @@ func MemoryScaledCount(unscaledCount int, floorCount int) int {
 	scaledCount := int(memoryScale() * float64(unscaledCount))
 	return max(floorCount, scaledCount)
 }
+
+// scaledPow2WindowSize scales a base window size by the memory budget and
+// returns a power-of-two value clamped to [minWindowSize, maxWindowSize].
+// Used for the TCP initial window: a memory-constrained box starts flows at a
+// smaller warmup window, a RAM-rich box at the full base.
+func scaledPow2WindowSize(baseByteCount, minWindowSize, maxWindowSize ByteCount) uint32 {
+	scaled := MemoryScaledByteCount(baseByteCount, minWindowSize)
+	if scaled < minWindowSize {
+		scaled = minWindowSize
+	}
+	if maxWindowSize < scaled {
+		scaled = maxWindowSize
+	}
+	// Round down to a power of two (clamped >= min).
+	v := uint32(1)
+	for v*2 <= uint32(scaled) {
+		v *= 2
+	}
+	if v < uint32(minWindowSize) {
+		v = uint32(minWindowSize)
+	}
+	return v
+}

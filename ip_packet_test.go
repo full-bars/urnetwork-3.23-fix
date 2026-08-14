@@ -80,7 +80,7 @@ func TestSynAckChecksumCoversOptions(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck failed: %v", err)
 	}
@@ -94,8 +94,9 @@ func TestSynAckChecksumCoversOptions(t *testing.T) {
 	}
 
 	dataOffset := int(tcpBytes[12]>>4) * 4
-	if dataOffset != 24 {
-		t.Fatalf("SynAck data offset: want 24, got %d", dataOffset)
+	// MSS (4) + window scale (3) + NOP pad = 8 option bytes; header 28.
+	if dataOffset != 28 {
+		t.Fatalf("SynAck data offset: want 28 (MSS+WS options), got %d", dataOffset)
 	}
 }
 
@@ -355,100 +356,64 @@ func TestParseTcpSynWithWindowScale(t *testing.T) {
 	}
 }
 
-func TestParseTcpWindowScaleOpts_Nil(t *testing.T) {
-	found, shift := ParseTcpWindowScaleOpts(nil)
-	if found {
-		t.Fatal("expected no window scale found for nil options")
+func TestParseTcpOptionsWindowScale(t *testing.T) {
+	// Table-driven coverage of the unified option parser's window-scale
+	// extraction. parseTcpOptions replaced ParseTcpWindowScaleOpts; these
+	// cases preserve the legacy parser's behavioral coverage against the
+	// new API (nil, empty, NOPs, EOL, unknown options, cap at 14).
+	cases := []struct {
+		name string
+		opts []byte
+		want bool
+		ws   uint32
+	}{
+		{"nil", nil, false, 0},
+		{"empty", []byte{}, false, 0},
+		{"with-window-scale", []byte{3, 3, 7}, true, 7},
+		{"capped-at-14", []byte{3, 3, 20}, true, 14},
+		{"nop-before", []byte{1, 3, 3, 7}, true, 7},
+		{"eol-stops", []byte{0, 3, 3, 7}, false, 0},
+		{"eol-after", []byte{3, 3, 5, 0}, true, 5},
+		{"unknown-option", []byte{5, 3, 1, 3, 3, 7}, true, 7},
+		{"multiple-nops", []byte{1, 1, 1, 3, 3, 3}, true, 3},
 	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_Empty(t *testing.T) {
-	found, shift := ParseTcpWindowScaleOpts([]byte{})
-	if found {
-		t.Fatal("expected no window scale for empty options")
-	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_WithWindowScale(t *testing.T) {
-	opts := []byte{3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale")
-	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_WindowScaleCappedAt14(t *testing.T) {
-	opts := []byte{3, 3, 20}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale")
-	}
-	if shift != 14 {
-		t.Fatalf("window scale: want 14 (capped), got %d", shift)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tcp := &parsedTcp{options: c.opts}
+			parseTcpOptions(tcp)
+			if tcp.enableWindowScale != c.want {
+				t.Fatalf("enableWindowScale: want %v, got %v", c.want, tcp.enableWindowScale)
+			}
+			if tcp.windowScale != c.ws {
+				t.Fatalf("windowScale: want %d, got %d", c.ws, tcp.windowScale)
+			}
+		})
 	}
 }
 
-func TestParseTcpWindowScaleOpts_NopBeforeWindowScale(t *testing.T) {
-	opts := []byte{1, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after NOP")
+func TestParseTcpOptionsMssAndTimestamp(t *testing.T) {
+	// MSS (kind 2, len 4) and timestamp (kind 8, len 10) extraction.
+	tcp := &parsedTcp{options: []byte{
+		2, 4, 0x05, 0xb4, // MSS 1460
+		1,                // NOP
+		8, 10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, // TSval=1 TSecr=2
+	}}
+	parseTcpOptions(tcp)
+	if !tcp.enableMss || tcp.mss != 1460 {
+		t.Fatalf("MSS: want enable=1460, got enable=%v mss=%d", tcp.enableMss, tcp.mss)
 	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_Eol(t *testing.T) {
-	opts := []byte{0, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if found {
-		t.Fatal("expected no window scale (EOL stops parsing)")
-	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
+	if !tcp.enableTimestamp || tcp.timestampValue != 1 || tcp.timestampEcho != 2 {
+		t.Fatalf("timestamp: want val=1 echo=2, got enable=%v val=%d echo=%d", tcp.enableTimestamp, tcp.timestampValue, tcp.timestampEcho)
 	}
 }
 
-func TestParseTcpWindowScaleOpts_EolAfterOptions(t *testing.T) {
-	opts := []byte{3, 3, 5, 0}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale before EOL")
-	}
-	if shift != 5 {
-		t.Fatalf("window scale: want 5, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_UnknownOption(t *testing.T) {
-	opts := []byte{5, 3, 1, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after unknown option")
-	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_MultipleNops(t *testing.T) {
-	opts := []byte{1, 1, 1, 3, 3, 3}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after multiple NOPs")
-	}
-	if shift != 3 {
-		t.Fatalf("window scale: want 3, got %d", shift)
+func TestParseTcpOptionsMalformedTail(t *testing.T) {
+	// A malformed option tail must stop parsing without corrupting the
+	// options already extracted (the parse must not panic).
+	tcp := &parsedTcp{options: []byte{2, 4, 0x05, 0xb4, 3, 4, 0x07}}
+	parseTcpOptions(tcp)
+	if !tcp.enableMss || tcp.mss != 1460 {
+		t.Fatalf("MSS before malformed tail: want 1460, got %d", tcp.mss)
 	}
 }
 
@@ -662,7 +627,7 @@ func TestSynAckDataOffsetMatchesOptions(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck failed: %v", err)
 	}
@@ -769,7 +734,7 @@ func TestSynAckIPv6(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck IPv6 failed: %v", err)
 	}
@@ -958,7 +923,7 @@ func TestSynAckNoWindowScale(t *testing.T) {
 		enableWindowScale: false,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck (no WS) failed: %v", err)
 	}
@@ -976,8 +941,9 @@ func TestSynAckNoWindowScale(t *testing.T) {
 	}
 
 	dataOffset := int(tcpBytes[12]>>4) * 4
-	if dataOffset != TcpHeaderSizeWithoutExtensions {
-		t.Fatalf("SynAck (no WS) data offset: want %d, got %d", TcpHeaderSizeWithoutExtensions, dataOffset)
+	// MSS (4) always advertised; no WS, no TS -> header 24.
+	if dataOffset != TcpHeaderSizeWithoutExtensions+4 {
+		t.Fatalf("SynAck (no WS) data offset: want %d (MSS only), got %d", TcpHeaderSizeWithoutExtensions+4, dataOffset)
 	}
 }
 
@@ -1269,12 +1235,13 @@ func TestParseTcpWindowScaleCombined(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			found, shift := ParseTcpWindowScaleOpts(tc.opts)
-			if found != tc.wantFound {
-				t.Fatalf("found: want %v, got %v", tc.wantFound, found)
+			tcp := &parsedTcp{options: tc.opts}
+			parseTcpOptions(tcp)
+			if tcp.enableWindowScale != tc.wantFound {
+				t.Fatalf("found: want %v, got %v", tc.wantFound, tcp.enableWindowScale)
 			}
-			if shift != tc.wantShift {
-				t.Fatalf("shift: want %d, got %d", tc.wantShift, shift)
+			if tcp.windowScale != tc.wantShift {
+				t.Fatalf("shift: want %d, got %d", tc.wantShift, tcp.windowScale)
 			}
 		})
 	}
