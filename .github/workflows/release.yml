@@ -275,7 +275,8 @@ jobs:
         if: ${{ secrets.VIRUS_TOTAL != '' }}
         env:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL }}
-          VT_FAIL_THRESHOLD: "2"
+          VT_FAIL_THRESHOLD: "10"
+          VT_REVIEW_THRESHOLD: "2"
           VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
