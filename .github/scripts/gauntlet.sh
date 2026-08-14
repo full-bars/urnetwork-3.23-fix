@@ -36,12 +36,12 @@ chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
 sleep 8
-if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 20 2>/dev/null | grep -qE "client_id: .* (new|reused)"; then
+if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -qE "client_id: .* (new|reused)"; then
   ok "auth (client_id minted)"
 else
   # Dump the journal so a failure is diagnosable (timing vs real auth issue).
   echo "--- provider journal (auth failed) ---" | tee -a "$REPORT"
-  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 25 2>/dev/null | tail -25 | tee -a "$REPORT"
+  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 30 2>/dev/null | tail -30 | tee -a "$REPORT"
   bad "auth"
 fi
 export PATH=/home/urnet/.local/share/urnetwork-provider/bin:$PATH
