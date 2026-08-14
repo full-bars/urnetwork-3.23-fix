@@ -1,6 +1,6 @@
-name: Pre-Release Gauntlet
+name: Pre-Release Shakedown
 
-# Runs the full v29+ pre-release gauntlet on a disposable 1CPU/1GB DO droplet:
+# Runs the full v29+ pre-release shakedown on a disposable 1CPU/1GB DO droplet:
 # fresh install -> auth -> Go tool -> proxies -> URL sources -> egress -> docker.
 # The droplet is ALWAYS deleted, even on failure (trap + job timeout).
 #
@@ -16,9 +16,9 @@ permissions:
   contents: read
 
 jobs:
-  gauntlet:
+  shakedown:
     runs-on: ubuntu-latest
-    timeout-minutes: 150   # hard cap: droplet cannot outlive the job (2h gauntlet + margin)
+    timeout-minutes: 150   # hard cap: droplet cannot outlive the job (2h shakedown + margin)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
             VER="${VER:-v3.23.0-fix.29.0}"
           fi
-          # Poll until the tag's assets exist: the gauntlet and the release
+          # Poll until the tag's assets exist: the shakedown and the release
           # build fire on the same tag push, so assets may lag by minutes.
           for i in $(seq 1 30); do
             if curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -65,10 +65,10 @@ jobs:
           GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
           DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
         run: |
-          # Build the provider binary and mint a fresh JWT for the gauntlet
+          # Build the provider binary and mint a fresh JWT for the shakedown
           # account. The credentials are injected by GitHub, never written
           # to files or echoed.
-          go build -ldflags "-X main.Version=gauntlet-mint" -o /tmp/provider ./provider/
+          go build -ldflags "-X main.Version=shakedown-mint" -o /tmp/provider ./provider/
           mkdir -p /tmp/mint
           HOME=/tmp/mint /tmp/provider auth \
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
@@ -116,10 +116,10 @@ jobs:
           trap cleanup EXIT
 
           # --- Ephemeral SSH keypair for this run ---
-          mkdir -p /tmp/sshkey && ssh-keygen -t ed25519 -f /tmp/sshkey/id_gauntlet -N "" -C "gauntlet-ci" >/dev/null 2>&1
-          PUBKEY=$(cat /tmp/sshkey/id_gauntlet.pub)
+          mkdir -p /tmp/sshkey && ssh-keygen -t ed25519 -f /tmp/sshkey/id_shakedown -N "" -C "shakedown-ci" >/dev/null 2>&1
+          PUBKEY=$(cat /tmp/sshkey/id_shakedown.pub)
           KEYJSON=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"name\":\"gauntlet-ci-$(date +%s)\",\"public_key\":\"$PUBKEY\"}" \
+            -d "{\"name\":\"shakedown-ci-$(date +%s)\",\"public_key\":\"$PUBKEY\"}" \
             "$API/account/keys")
           KEY_ID=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('id',''))" 2>/dev/null)
           FINGERPRINT=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('fingerprint',''))" 2>/dev/null)
@@ -128,7 +128,7 @@ jobs:
 
           echo "creating droplet (size=$SIZE_SLUG region=$REGION)"
           CREATE=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"name\":\"gauntlet-$(date +%s)\",\"region\":\"$REGION\",\"size\":\"$SIZE_SLUG\",\"image\":\"ubuntu-24-04-x64\",\"ssh_keys\":[\"$FINGERPRINT\"],\"backups\":false,\"ipv6\":false,\"monitoring\":false}" \
+            -d "{\"name\":\"shakedown-$(date +%s)\",\"region\":\"$REGION\",\"size\":\"$SIZE_SLUG\",\"image\":\"ubuntu-24-04-x64\",\"ssh_keys\":[\"$FINGERPRINT\"],\"backups\":false,\"ipv6\":false,\"monitoring\":false}" \
             "$API/droplets")
           DROPLET_ID=$(echo "$CREATE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('id',''))" 2>/dev/null)
           [ -n "$DROPLET_ID" ] || { echo "create failed: $CREATE"; exit 1; }
@@ -144,7 +144,7 @@ jobs:
             echo "ERROR: droplet not the cheap spec — deleting and aborting"; exit 1
           fi
 
-          SSHOPTS="-i /tmp/sshkey/id_gauntlet -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
+          SSHOPTS="-i /tmp/sshkey/id_shakedown -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
 
           # Wait for SSH — require a PUBLIC IPv4 (private-only droplets cannot
           # be reached by the runner; caught here and deleted by cleanup).
@@ -159,51 +159,51 @@ jobs:
           done
           [ -n "$IP" ] || { echo "ERROR: no public IPv4 / never reachable — aborting (cleanup deletes)"; exit 1; }
 
-          # Ship JWT + gauntlet, run under watchdog (MUST-FIX 18: propagate
-          # the gauntlet's Tier-1 exit code so a RELEASE_BLOCKED fails the job)
+          # Ship JWT + shakedown, run under watchdog (MUST-FIX 18: propagate
+          # the shakedown.s Tier-1 exit code so a RELEASE_BLOCKED fails the job)
           scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
-          scp $SSHOPTS .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
+          scp $SSHOPTS .github/scripts/shakedown.sh root@$IP:/tmp/shakedown.sh
           # EXPECTED_VERSION is written by the workflow's env expansion below.
-          timeout 7200 ssh $SSHOPTS root@$IP "chmod +x /tmp/gauntlet.sh && EXPECTED_VERSION='${EXPECTED_VERSION}' /tmp/gauntlet.sh /tmp/gauntlet.jwt"
+          timeout 7200 ssh $SSHOPTS root@$IP "chmod +x /tmp/shakedown.sh && EXPECTED_VERSION='${EXPECTED_VERSION}' /tmp/shakedown.sh /tmp/gauntlet.jwt"
           GAUNT_RC=$?
-          echo "gauntlet exit code: $GAUNT_RC"
+          echo "shakedown exit code: $GAUNT_RC"
           # Collect report BEFORE trap deletes
-          ssh $SSHOPTS root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
+          ssh $SSHOPTS root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.txt 2>/dev/null || true
           echo "REPORT_READY"
           exit $GAUNT_RC
           SCRIPT
           chmod +x /tmp/do.sh
 
-      - name: Run gauntlet
+      - name: Run shakedown
         env:
           DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
           EXPECTED_VERSION: ${{ steps.version.outputs.EXPECTED_VERSION }}
         run: |
           /tmp/do.sh || true   # Tier-1 FAIL exits non-zero; report is collected inside
-          echo "::group::Gauntlet Report"
-          cat /tmp/gauntlet-report.txt 2>/dev/null || echo "(no report)"
+          echo "::group::Shakedown Report"
+          cat /tmp/shakedown-report.txt 2>/dev/null || echo "(no report)"
           echo "::endgroup::"
 
-      - name: AI review of gauntlet report
+      - name: AI review of shakedown report
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Classify each gauntlet line: product bug vs environment blocker
+          # Classify each shakedown line: product bug vs environment blocker
           # vs test-script issue. Writes a summary to the artifact + step log.
-          REPORT=$(cat /tmp/gauntlet-report.txt 2>/dev/null || echo "no report")
+          REPORT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           if [ -z "$GEMINI_API_KEY" ]; then
             echo "AI review skipped (no GEMINI_API_KEY)"
             exit 0
           fi
           # Read the report OUTSIDE the heredoc — a $() inside the quoted
           # heredoc is sent literally to the API and fails (observed live).
-          REPORT_TEXT=$(cat /tmp/gauntlet-report.txt 2>/dev/null || echo "no report")
+          REPORT_TEXT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           python3 - "$REPORT_TEXT" << 'PAYLOAD' > /tmp/ai_review_payload.json
           import json, sys
-          text = ("You are a release engineer triaging a pre-release gauntlet report. "
+          text = ("You are a release engineer triaging a pre-release shakedown report. "
                   "Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), "
-                  "ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). "
+                  "ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the shakedown script itself). "
                   "For each, say why in one sentence. Then give a one-line verdict: "
                   "RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n" + sys.argv[1])
           print(json.dumps({"contents": [{"parts": [{"text": text}]}]}))
@@ -211,21 +211,21 @@ jobs:
           curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
             -H "Content-Type: application/json" -d @/tmp/ai_review_payload.json \
             | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['candidates'][0]['content']['parts'][0]['text'])" \
-            > /tmp/gauntlet-ai-review.txt 2>/dev/null || echo "AI review failed (API error)"
-          echo "::group::AI Gauntlet Review"
-          cat /tmp/gauntlet-ai-review.txt 2>/dev/null || echo "(no review)"
+            > /tmp/shakedown-ai-review.txt 2>/dev/null || echo "AI review failed (API error)"
+          echo "::group::AI Shakedown Review"
+          cat /tmp/shakedown-ai-review.txt 2>/dev/null || echo "(no review)"
           echo "::endgroup::"
 
-      - name: Post gauntlet verdict to Discord
+      - name: Post shakedown verdict to Discord
         if: always()
         env:
           DISCORD_WEBHOOK: ${{ secrets.GAUNTLET_WEBHOOK }}
         run: |
-          VERDICT=$(grep -oE "RELEASE_(BLOCKED|OK)" /tmp/gauntlet-ai-review.txt 2>/dev/null | head -1)
+          VERDICT=$(grep -oE "RELEASE_(BLOCKED|OK)" /tmp/shakedown-ai-review.txt 2>/dev/null | head -1)
           VERDICT="${VERDICT:-NO_REVIEW}"
-          PASS=$(grep -c "^PASS:" /tmp/gauntlet-report.txt 2>/dev/null || echo 0)
-          FAIL=$(grep -c "^FAIL:" /tmp/gauntlet-report.txt 2>/dev/null || echo 0)
-          SUMMARY=$(grep -E "^(PASS|FAIL|SKIP):" /tmp/gauntlet-report.txt 2>/dev/null | head -12 | tr '\n' '\n')
+          PASS=$(grep -c "^PASS:" /tmp/shakedown-report.txt 2>/dev/null || echo 0)
+          FAIL=$(grep -c "^FAIL:" /tmp/shakedown-report.txt 2>/dev/null || echo 0)
+          SUMMARY=$(grep -E "^(PASS|FAIL|SKIP):" /tmp/shakedown-report.txt 2>/dev/null | head -12 | tr '\n' '\n')
           if [ -z "$DISCORD_WEBHOOK" ]; then
             echo "Discord skip (no webhook)"
             exit 0
@@ -234,19 +234,19 @@ jobs:
           import json, sys, urllib.request
           webhook = sys.argv[1]
           try:
-              review = open('/tmp/gauntlet-ai-review.txt').read().strip()
+              review = open('/tmp/shakedown-ai-review.txt').read().strip()
           except Exception:
               review = "(no review)"
           # Strip ANSI, keep terse
           lines = [l for l in review.splitlines() if l.strip()][:18]
-          body = "**Pre-release gauntlet run**\n" + "\n".join(lines[:14])
+          body = "**Pre-release shakedown run**\n" + "\n".join(lines[:14])
           payload = {"content": body[:1900]}
           req = urllib.request.Request(webhook, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
           try:
               urllib.request.urlopen(req, timeout=15)
               print("posted")
           except Exception as e:
-              # A notification failure must never fail the gauntlet run.
+              # A notification failure must never fail the shakedown run.
               print("discord post failed (non-fatal):", e)
           PY
 
@@ -254,8 +254,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gauntlet-report
+          name: shakedown-report
           path: |
-            /tmp/gauntlet-report.txt
-            /tmp/gauntlet-ai-review.txt
+            /tmp/shakedown-report.txt
+            /tmp/shakedown-ai-review.txt
           if-no-files-found: ignore
