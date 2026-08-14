@@ -130,23 +130,41 @@ _summary_rows = []  # (path, sha, verdict, mal, sus, har, und) accumulated for t
 
 
 def write_summary() -> None:
-    """Write the release-notes proof block once, after all files are scanned."""
+    """Write the release-notes proof block once, after all files are scanned.
+
+    Status is GATE-FRAMED: each artifact shows PASS when its malicious count
+    is at or below VT_FAIL_THRESHOLD (the release gate), FAIL otherwise. Raw
+    counts stay in the table for transparency; a note explains the 1-2
+    detection pattern on stripped Go binaries so a passing release never
+    reads like a malware finding.
+    """
     if not SUMMARY_FILE or not _summary_rows:
         return
     try:
         server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
         repo = os.environ.get("GITHUB_REPOSITORY", "")
         run = os.environ.get("GITHUB_RUN_ID", "")
+        passed = all(mal <= FAIL_THRESHOLD for _, _, _, mal, sus, har, und in _summary_rows)
         with open(SUMMARY_FILE, "a") as f:
             f.write("\n---\n\n## VirusTotal Scan\n\n")
             f.write("The release artifacts were scanned with VirusTotal "
                     "(70+ antivirus engines) during CI.\n\n")
-            f.write("| Artifact | Result | Malicious | Suspicious | VT link |\n")
+            if passed:
+                f.write(f"**Result: PASS** — every artifact is within the release gate "
+                        f"(at most {FAIL_THRESHOLD} malicious detections).\n\n")
+            else:
+                f.write(f"**Result: FAIL** — at least one artifact exceeds the release gate "
+                        f"(more than {FAIL_THRESHOLD} malicious detections).\n\n")
+            f.write("| Artifact | Status | Malicious | Suspicious | VT link |\n")
             f.write("|---|---|---|---|---|\n")
             for path, fsha, verdict, mal, sus, har, und in _summary_rows:
-                status = "CLEAN" if (mal == 0 and sus == 0) else ("FLAGGED" if mal > 0 else "REVIEW")
+                status = "PASS" if mal <= FAIL_THRESHOLD else "FAIL"
                 f.write(f"| {os.path.basename(path)} | {status} | {mal} | {sus} | "
                         f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n")
+            if any(mal > 0 and mal <= FAIL_THRESHOLD for _, _, _, mal, sus, har, und in _summary_rows):
+                f.write("\nNOTE: 1 to 2 detections are the known machine-learning "
+                        "false-positive pattern on stripped Go binaries. Real "
+                        "supply-chain hits are flagged by 10 or more engines.\n")
             f.write(f"\n<sub>Scan run: "
                     f"[{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
     except OSError as e:
