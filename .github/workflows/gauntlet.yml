@@ -18,7 +18,7 @@ permissions:
 jobs:
   gauntlet:
     runs-on: ubuntu-latest
-    timeout-minutes: 75   # hard cap: droplet cannot outlive the job
+    timeout-minutes: 150   # hard cap: droplet cannot outlive the job (2h gauntlet + margin)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,7 +132,7 @@ jobs:
           # Ship JWT + gauntlet, run under watchdog
           scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
           scp $SSHOPTS .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
-          timeout 2700 ssh $SSHOPTS root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
+          timeout 8100 ssh $SSHOPTS root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
 
           # Collect report BEFORE trap deletes
           ssh $SSHOPTS root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
