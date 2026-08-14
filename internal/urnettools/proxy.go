@@ -52,6 +52,34 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
+	// -h/--help anywhere in the proxy args shows proxy help and returns
+	// without executing (gauntlet finding BUG-2 + Sonnet review: help can
+	// appear at any position, e.g. `proxy add <file> --help` or
+	// `proxy refresh --force -h` — the latter previously reached the
+	// interactive picker and blocked on EOF).
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			fmt.Fprintf(os.Stderr, `urnet-tools proxy — manage a provider's proxies
+
+Usage: urnet-tools proxy <subcommand> [target] [flags]
+
+Subcommands:
+  add <file>             add proxies from a proxy file (host:port[:user:pass])
+  clear                  remove all proxies
+  remove                 remove proxies (--all, or target-specific)
+  refresh                re-read the proxy source (--force to force)
+  add-source <url>       add a URL proxy source (fetched + cached)
+  remove-source <url>    remove a URL proxy source
+  health                 proxy health from state files (single target)
+  traffic                proxy traffic from state files (single target)
+  remove-dead            remove dead/degraded proxies (single target)
+
+Targets and batch flags work as for other commands (--unit/--user/--network,
+--all/--include/--exclude/--select). See 'urnet-tools help' for targeting.
+`)
+			return nil
+		}
+	}
 	// LENIENT target parse for ALL subcommands: proxy defines its own
 	// batch flags (--all/--select/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
@@ -141,8 +169,35 @@ func cmdProxy(args []string, force, dryRun bool) error {
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "refresh":
 		opArgs = []string{"proxy", "refresh"}
+		// The dispatcher's parseGlobalFlags consumes -f/--force as the
+		// GLOBAL force flag before cmdProxy runs, so a `refresh --force`
+		// invocation never forwards --force to the provider binary — the
+		// provider's warmup gate then refuses (exit 52) even though the
+		// operator asked to force (gauntlet finding BUG-9). Re-add it
+		// when the global force flag was set.
+		if force {
+			opArgs = append(opArgs, "--force")
+		}
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
+	case "add-source", "remove-source":
+		// URL-source management (gauntlet finding BUG-8): the provider
+		// binary implements `provider proxy add-source <url>` /
+		// `remove-source <url>`, but the Go tool previously had no such
+		// subcommand, so URL proxies (a core fleet feature) were
+		// unmanageable through the new tool. Single-target (a URL source
+		// is per-provider), like health/traffic.
+		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
+		}
+		if len(positionals) < 1 {
+			return fmt.Errorf("proxy %s requires a URL", sub)
+		}
+		p, err := selectTarget(providers, t)
+		if err != nil {
+			return err
+		}
+		return providerSubcommand(p, append([]string{"proxy", sub}, positionals...)...)
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
@@ -167,7 +222,7 @@ func cmdProxy(args []string, force, dryRun bool) error {
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead|add-source|remove-source)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.

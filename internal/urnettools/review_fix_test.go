@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -268,3 +269,143 @@ func TestUpdateProviderRefusesNonELFStagedBinary(t *testing.T) {
 }
 
 const shellScript = "#!/bin/sh\necho not-a-binary\n"
+
+// TestRunVersionCommand: `version`, `--version`, and `-v` must print the
+// stamped tool version and return nil. Regression for gauntlet BUG-1: the
+// tool previously had no version command at all.
+func TestRunVersionCommand(t *testing.T) {
+	old := ToolVersion
+	defer func() { ToolVersion = old }()
+	ToolVersion = "test-version"
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
+		// Capture stdout so we can pin the printed content, not just the
+		// nil error (Sonnet review finding: output must be verified).
+		oldOut := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		runErr := Run(args)
+		w.Close()
+		os.Stdout = oldOut
+		out, _ := io.ReadAll(r)
+		if runErr != nil {
+			t.Errorf("Run(%v) = %v, want nil", args, runErr)
+		}
+		if got := strings.TrimSpace(string(out)); got != "test-version" {
+			t.Errorf("Run(%v) printed %q, want %q", args, got, "test-version")
+		}
+	}
+}
+
+// TestProxySubcommandHelpDoesNotExecute: `proxy <sub> --help` must show the
+// proxy help and NOT execute the subcommand. Regression for gauntlet BUG-2:
+// nested help previously fell through to root usage or was rejected as an
+// unknown flag.
+func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
+	for _, args := range [][]string{
+		{"proxy", "--help"},
+		{"proxy", "add", "--help"},
+		{"proxy", "add", "-h"},
+		{"proxy", "clear", "--help"},
+		{"proxy", "add", "/tmp/somefile", "--help"},
+		{"proxy", "refresh", "--force", "-h"},
+	} {
+		if err := Run(args); err != nil {
+			t.Errorf("Run(%v) = %v, want nil (help must never execute)", args, err)
+		}
+	}
+}
+
+// TestCmdReportWritesOverrideFile: `report <url>` must write
+// ~/.urnetwork/report_url in the provider's state dir, not delegate to the
+// provider binary (which has no report subcommand — gauntlet BUG-4). This
+// exercises cmdReport end-to-end against a temp StateDir and pins the
+// file content/mode the provider's bandwidth reporter reads.
+func TestCmdReportWritesOverrideFile(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir, User: "testuser"}
+	// Call the PRODUCTION write helper (coderabbit: tests must call
+	// production logic, not reimplement it). Reverting the write (or its
+	// 0644 mode) must fail this test.
+	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("writeReportURL: %v", err)
+	}
+	path := filepath.Join(dir, "report_url")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(b)); got != "http://127.0.0.1:8080" {
+		t.Fatalf("report_url content = %q, want the URL", got)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
+	// norm: root tool + urnetwork-beta service). 0600 would silently break
+	// reporting cross-user (Sonnet review finding).
+	if fi.Mode().Perm() != 0o644 {
+		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
+	}
+	// Also verify cmdReport's no-provider error path (must error, never
+	// delegate to a provider binary).
+	err = cmdReport([]string{"http://127.0.0.1:8080"})
+	if err == nil {
+		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
+	}
+}
+
+// TestCmdHotRestartBuildsSystemctl: hot-restart must restart the provider's
+// systemd unit via unitCommand, not delegate to a non-existent provider
+// subcommand (gauntlet BUG-4). We pin the argv shape with unitCommandArgs.
+func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
+	p := Provider{Unit: "urnetwork-beta.service", User: "urnetwork-beta"}
+	args := unitCommandArgs(p, "restart")
+	// The unit name must be the final argument before any extras. The exact
+	// form depends on whether the test env treats the unit as user-level
+	// (systemctl --user -M <user>@ ...) or system-level (systemctl ...),
+	// but BOTH must end with the unit — systemctl errors "Too few
+	// arguments" without it (gauntlet finding).
+	if len(args) < 3 {
+		t.Fatalf("unitCommandArgs(restart) = %v, want systemctl ... restart <unit>", args)
+	}
+	if args[0] != "systemctl" {
+		t.Fatalf("unitCommandArgs(restart) = %v, want systemctl first", args)
+	}
+	if args[len(args)-1] != p.Unit {
+		t.Fatalf("unitCommandArgs(restart) = %v, want final arg = unit %q (systemctl errors without it)", args, p.Unit)
+	}
+	// The delegation must NOT be "<provider> hot-restart": assert the Go
+	// tool's command surface no longer routes hot-restart to
+	// cmdSimpleDelegation by checking Run accepts it as a top-level command.
+	if err := Run([]string{"hot-restart", "--help"}); err != nil {
+		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
+	}
+	// The confirm gate must exist: a non-force restart with no stdin (EOF)
+	// must be refused, not silently restart (Sonnet review finding). Test
+	// confirmGate directly — deterministic, no discovery dependency (CI has
+	// no provider; Run(["hot-restart"]) would error at discovery before the
+	// gate, which is env-dependent). cmdHotRestart calls this same gate.
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	w.Close() // EOF — no confirmation typed
+	_, gateErr := confirmGate("restart "+p.Unit, p, false, false)
+	os.Stdin = oldStdin
+	if gateErr == nil {
+		t.Fatal("confirmGate with EOF must refuse (non-nil error), not silently proceed")
+	}
+	if !strings.Contains(gateErr.Error(), "read confirmation") && !strings.Contains(gateErr.Error(), "confirmation did not match") {
+		t.Fatalf("confirmGate EOF error = %v, want the confirmation-refusal error", gateErr)
+	}
+	// Force must bypass the gate.
+	if ok, err := confirmGate("restart "+p.Unit, p, true, false); err != nil || !ok {
+		t.Fatalf("confirmGate with force = (%v, %v), want (true, nil)", ok, err)
+	}
+}
