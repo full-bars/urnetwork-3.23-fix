@@ -114,14 +114,14 @@ func Run(args []string) error {
 		}
 		return cmdReport(rest2)
 	case "hot-restart", "hotrestart":
-		rest2, herr := parseDelegationArgs(rest)
-		if herr == errHelpShown {
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
 			return nil // help printed, never executes
 		}
-		if herr != nil {
-			return herr
+		if err != nil {
+			return err
 		}
-		return cmdHotRestart(rest2)
+		return cmdHotRestart(rest2, force, dryRun)
 	case "start":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -296,11 +296,28 @@ func cmdReport(args []string) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	path := filepath.Join(p.StateDir, "report_url")
-	if err := os.WriteFile(path, []byte(url+"\n"), 0600); err != nil {
-		return fmt.Errorf("write %s: %v", path, err)
+	if err := writeReportURL(p, url); err != nil {
+		return err
 	}
 	fmt.Printf("report URL for %s set to %q (effective on the reporter's next tick)\n", providerLabel(p), url)
+	return nil
+}
+
+// writeReportURL writes the hub-report override file for a provider.
+// Extracted from cmdReport so the write itself is directly testable with a
+// Provider struct (no live process needed). The provider's bandwidth
+// reporter re-reads this file every tick.
+func writeReportURL(p Provider, url string) error {
+	path := filepath.Join(p.StateDir, "report_url")
+	// 0o644, not 0o600: urnet-tools frequently runs as a different user than
+	// the provider (root tool + urnetwork-beta service — the fleet norm this
+	// codebase supports via -M <user>@ and HOME= overrides). A 0600 file
+	// owned by the tool's user would be unreadable by the provider process,
+	// so the change would silently never take effect (Sonnet review
+	// finding). The sibling override-writers use 0o644 for this reason.
+	if err := os.WriteFile(path, []byte(url+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write %s: %v", path, err)
+	}
 	return nil
 }
 
@@ -308,8 +325,11 @@ func cmdReport(args []string) error {
 // the provider's systemd unit. The provider binary has NO hot-restart
 // subcommand — its hot-restart behavior is a config/env toggle
 // (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
-// auth usage and did nothing (gauntlet finding BUG-4).
-func cmdHotRestart(args []string) error {
+// auth usage and did nothing (gauntlet finding BUG-4). A confirmation gate
+// mirrors cmdRestart: restarting a provider is a production action and must
+// not happen without --force or an explicit "yes" (Sonnet review finding —
+// the original fix restarted unconditionally).
+func cmdHotRestart(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
@@ -321,6 +341,13 @@ func cmdHotRestart(args []string) error {
 	}
 	if len(rest) > 0 {
 		return fmt.Errorf("hot-restart takes no arguments (got %v)", rest)
+	}
+	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run
 	}
 	return unitCommand(p, "restart")
 }

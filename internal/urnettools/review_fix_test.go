@@ -325,23 +325,14 @@ func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
 // file content/mode the provider's bandwidth reporter reads.
 func TestCmdReportWritesOverrideFile(t *testing.T) {
 	dir := t.TempDir()
-	// cmdReport resolves the target via selectTarget/Discover, which needs a
-	// discoverable provider. Directly testing the file-write core through a
-	// Provider is not possible without discovery hooks, so we pin the
-	// dispatch-level behavior instead: with NO discoverable providers the
-	// command must error cleanly (never delegate to a provider binary), and
-	// the file-write contract is covered by asserting the path+mode the
-	// provider reads. (The write itself is a one-line os.WriteFile; the
-	// provider-side read is pinned in bandwidth_reporter.go.)
-	err := cmdReport([]string{"http://127.0.0.1:8080"})
-	if err == nil {
-		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
+	p := Provider{StateDir: dir, User: "testuser"}
+	// Call the PRODUCTION write helper (coderabbit: tests must call
+	// production logic, not reimplement it). Reverting the write (or its
+	// 0644 mode) must fail this test.
+	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("writeReportURL: %v", err)
 	}
-	// Pin the contract: report_url lives at <StateDir>/report_url, mode 0600.
 	path := filepath.Join(dir, "report_url")
-	if err := os.WriteFile(path, []byte("http://127.0.0.1:8080\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +344,17 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0600 {
-		t.Fatalf("report_url mode = %v, want 0600", fi.Mode().Perm())
+	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
+	// norm: root tool + urnetwork-beta service). 0600 would silently break
+	// reporting cross-user (Sonnet review finding).
+	if fi.Mode().Perm() != 0o644 {
+		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
+	}
+	// Also verify cmdReport's no-provider error path (must error, never
+	// delegate to a provider binary).
+	err = cmdReport([]string{"http://127.0.0.1:8080"})
+	if err == nil {
+		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
 	}
 }
 
@@ -383,5 +383,25 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	// cmdSimpleDelegation by checking Run accepts it as a top-level command.
 	if err := Run([]string{"hot-restart", "--help"}); err != nil {
 		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
+	}
+	// The confirm gate must exist: a non-force hot-restart with no stdin
+	// (EOF) must be refused, not silently restart (Sonnet review finding).
+	// Assert the error is the CONFIRMATION refusal, not a no-provider error
+	// — this pins the gate specifically (mutation: removing the gate makes
+	// this fail).
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	w.Close() // EOF — no confirmation typed
+	runErr := Run([]string{"hot-restart"})
+	os.Stdin = oldStdin
+	if runErr == nil {
+		t.Fatal("hot-restart without --force and with EOF confirmation must error (refused), not silently restart")
+	}
+	if !strings.Contains(runErr.Error(), "read confirmation") && !strings.Contains(runErr.Error(), "confirmation did not match") {
+		t.Fatalf("hot-restart EOF error = %v, want the confirmation-refusal error (gate must be what refuses)", runErr)
 	}
 }
