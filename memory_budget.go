@@ -67,9 +67,10 @@ func scaledPow2WindowSize(baseByteCount, minWindowSize, maxWindowSize ByteCount)
 	if maxWindowSize < scaled {
 		scaled = maxWindowSize
 	}
-	// Round down to a power of two (clamped >= min).
+	// Round down to a power of two (clamped >= min). Guard against v*2
+	// overflow so a scaled value >= 2^31 cannot loop forever (Opus LOW-2).
 	v := uint32(1)
-	for v*2 <= uint32(scaled) {
+	for v <= uint32(maxWindowSize)/2 && v*2 <= uint32(scaled) {
 		v *= 2
 	}
 	if v < uint32(minWindowSize) {
