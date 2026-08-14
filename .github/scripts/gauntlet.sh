@@ -64,11 +64,26 @@ urnet-tools summary 2>&1 | grep -q "Source URLs:        1" && ok "source registe
 sleep 240
 CACHED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(len(d.get('cache',{})))" 2>/dev/null || echo 0)
 UP=$(urnet-tools summary 2>&1 | grep -oE "Up: +[0-9]+" | grep -oE "[0-9]+")
-[ "${CACHED:-0}" -gt 0 ] && ok "URL cache populated ($CACHED)" || bad "URL cache empty"
-[ "${UP:-0}" -gt 0 ] && ok "proxies UP ($UP)" || bad "no proxies up"
+# If auth failed earlier, the URL pipeline cannot run — report it as skipped,
+# not as a product failure (the auth check above already flagged the cause).
+if grep -q "FAIL: beta auth" "$REPORT"; then
+  echo "SKIP: URL cache (auth failed earlier — see auth check)" | tee -a "$REPORT"
+elif [ "${CACHED:-0}" -gt 0 ]; then
+  ok "URL cache populated ($CACHED)"
+else
+  bad "URL cache empty"
+fi
+if grep -q "FAIL: beta auth" "$REPORT"; then
+  echo "SKIP: proxies up (auth failed earlier)" | tee -a "$REPORT"
+elif [ "${UP:-0}" -gt 0 ]; then
+  ok "proxies UP ($UP)"
+else
+  bad "no proxies up"
+fi
 
 # ---------- F. Docker path ----------
 section "F. Docker"
+apt-get update -qq >/dev/null 2>&1   # fresh boxes need an updated index first
 apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker && ok "docker installed" || bad "docker install"
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
 sh /tmp/install-docker.sh 2>&1 | grep -q "sha256 verified" && ok "install-urnet-docker.sh verified" || bad "docker installer"
