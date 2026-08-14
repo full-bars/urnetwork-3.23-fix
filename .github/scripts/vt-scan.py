@@ -22,6 +22,7 @@ Env:
 Exit codes: 0 = pass (or review), 1 = malicious above fail threshold,
 2 = api/upload error.
 """
+
 import hashlib
 import json
 import os
@@ -88,13 +89,19 @@ def scan_file(path: str) -> int:
         with open(path, "rb") as f:
             payload = f.read()
         part = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="file"; '
-            f'filename="{os.path.basename(path)}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n"
-        ).encode() + payload + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="file"; '
+                f'filename="{os.path.basename(path)}"\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n"
+            ).encode()
+            + payload
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
         code, body = api(
-            "/files", data=part, method="POST",
+            "/files",
+            data=part,
+            method="POST",
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         if code != 200:
@@ -122,7 +129,9 @@ def scan_file(path: str) -> int:
     sus = int(stats.get("suspicious", 0))
     har = int(stats.get("harmless", 0))
     und = int(stats.get("undetected", 0))
-    print(f"  verdict: malicious={mal} suspicious={sus} harmless={har} undetected={und}", flush=True)
+    print(
+        f"  verdict: malicious={mal} suspicious={sus} harmless={har} undetected={und}", flush=True
+    )
     print(f"  https://www.virustotal.com/gui/file/{fsha}", flush=True)
     if SUMMARY_FILE:
         _summary_rows.append((path, fsha, verdict, mal, sus, har, und))
@@ -130,7 +139,10 @@ def scan_file(path: str) -> int:
         print(f"  ^ FAIL: malicious ({mal}) > fail threshold ({FAIL_THRESHOLD})", flush=True)
         return 1
     if mal > REVIEW_THRESHOLD:
-        print(f"  ^ REVIEW: malicious ({mal}) > review threshold ({REVIEW_THRESHOLD}), at/below fail threshold — ships but flagged", flush=True)
+        print(
+            f"  ^ REVIEW: malicious ({mal}) > review threshold ({REVIEW_THRESHOLD}), at/below fail threshold — ships but flagged",
+            flush=True,
+        )
     return 0
 
 
@@ -153,38 +165,49 @@ def write_summary() -> None:
         repo = os.environ.get("GITHUB_REPOSITORY", "")
         run = os.environ.get("GITHUB_RUN_ID", "")
         rows = list(_summary_rows)
-        worst = max(mal for _, _, _, mal, sus, har, und in rows)
+        worst = max(mal for _, _, _, mal, _, _, _ in rows)
         with open(SUMMARY_FILE, "a") as f:
             f.write("\n---\n\n## VirusTotal Scan\n\n")
-            f.write("The release artifacts were scanned with VirusTotal "
-                    "(70+ antivirus engines) during CI.\n\n")
+            f.write(
+                "The release artifacts were scanned with VirusTotal "
+                "(70+ antivirus engines) during CI.\n\n"
+            )
             if worst > FAIL_THRESHOLD:
-                f.write(f"**Result: FAIL** — at least one artifact exceeds "
-                        f"{FAIL_THRESHOLD} malicious detections. The release was blocked.\n\n")
+                f.write(
+                    f"**Result: FAIL** — at least one artifact exceeds "
+                    f"{FAIL_THRESHOLD} malicious detections. The release was blocked.\n\n"
+                )
             elif worst > REVIEW_THRESHOLD:
-                f.write(f"**Result: REVIEW** — an artifact has more than "
-                        f"{REVIEW_THRESHOLD} malicious detections but is at or below "
-                        f"{FAIL_THRESHOLD}. Review recommended.\n\n")
+                f.write(
+                    f"**Result: REVIEW** — an artifact has more than "
+                    f"{REVIEW_THRESHOLD} malicious detections but is at or below "
+                    f"{FAIL_THRESHOLD}. Review recommended.\n\n"
+                )
             else:
-                f.write(f"**Result: PASS** — every artifact is within "
-                        f"{REVIEW_THRESHOLD} malicious detections.\n\n")
+                f.write(
+                    f"**Result: PASS** — every artifact is within "
+                    f"{REVIEW_THRESHOLD} malicious detections.\n\n"
+                )
             f.write("| Artifact | Status | Malicious | Suspicious | VT link |\n")
             f.write("|---|---|---|---|---|\n")
-            for path, fsha, verdict, mal, sus, har, und in rows:
+            for path, fsha, _, mal, sus, _, _ in rows:
                 if mal > FAIL_THRESHOLD:
                     status = "FAIL"
                 elif mal > REVIEW_THRESHOLD:
                     status = "REVIEW"
                 else:
                     status = "PASS"
-                f.write(f"| {os.path.basename(path)} | {status} | {mal} | {sus} | "
-                        f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n")
-            f.write("\nNOTE: 1 to 2 detections are the known machine-learning "
-                    "false-positive pattern on stripped Go binaries (PASS). "
-                    "3 to 10 detections ship as REVIEW and should be checked. "
-                    "More than 10 detections blocks the release.\n")
-            f.write(f"\n<sub>Scan run: "
-                    f"[{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
+                f.write(
+                    f"| {os.path.basename(path)} | {status} | {mal} | {sus} | "
+                    f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n"
+                )
+            f.write(
+                "\nNOTE: 1 to 2 detections are the known machine-learning "
+                "false-positive pattern on stripped Go binaries (PASS). "
+                "3 to 10 detections ship as REVIEW and should be checked. "
+                "More than 10 detections blocks the release.\n"
+            )
+            f.write(f"\n<sub>Scan run: [{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
     except OSError as e:
         print(f"  (summary write failed: {e})", flush=True)
 
