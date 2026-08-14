@@ -360,8 +360,7 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 		return nil
 	}
 	if !force {
-		fmt.Printf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag)
-		line, err := stdinReader.ReadString('\n')
+		line, err := confirmStdinRead(fmt.Sprintf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag))
 		if err != nil {
 			return fmt.Errorf("read confirmation: %w", err)
 		}
@@ -417,16 +416,7 @@ func orDash(s string) string {
 // forceInteractive reports whether prompts/pickers should be enabled. With
 // -f we never prompt — scripts must be fully explicit.
 func forceInteractive(force bool) bool {
-	return !force && isTTY()
-}
-
-// isTTY reports whether stdin is a terminal (interactive session).
-func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return !force && stdinIsInteractive()
 }
 
 // splitLabels splits a comma-separated label list.
