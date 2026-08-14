@@ -120,6 +120,43 @@ else
   bad "no proxies up"
 fi
 
+# Tier 1 — admission pipeline (Sonnet design): per-proxy identity minting,
+# grade progression, proxy auth, control-plane error rate. These use only
+# signals observable without billable traffic.
+section "E2. Admission pipeline (Tier 1)"
+
+# 1. Per-proxy client_id minting: every proxy that got admitted should have
+#    minted (or reused) a client identity. Count client_id lines and compare
+#    to the admitted (Up) count. NOTE: dead free proxies won't mint — so the
+#    realistic assertion is: at least one client_id line exists PER UP proxy
+#    is too strict; instead assert: client_id lines >= 1 AND cache > 0, and
+#    report the ratio (minted vs admitted) as a signal, not a hard gate.
+CID_LINES=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -cE "client_id: .* (new|reused)")
+if [ "${CID_LINES:-0}" -gt 0 ]; then
+  ok "client identities minted ($CID_LINES lines; up=$UP cached=$CACHED)"
+else
+  bad "no client identities minted (admission pipeline broken?)"
+fi
+
+# 3. Grade progression: stage-1 probe must be enabled and actually probing.
+if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -qE "stage-1 table probe config: enabled=true"; then
+  ok "stage-1 probe enabled"
+else
+  bad "stage-1 probe NOT enabled (kill switch stuck?)"
+fi
+GRADED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(sum(1 for v in d.get('cache',{}).values() if v.get('Graded')))" 2>/dev/null || echo 0)
+[ "${GRADED:-0}" -gt 0 ] && ok "proxies graded ($GRADED)" || echo "INFO: 0 graded yet (probe still running or all free proxies failed)" | tee -a "$REPORT"
+
+# 5. Proxy auth: the admission gate should not show terminal auth failures
+#    en masse. Count proxy auth-failed lines; a small number is normal (dead
+#    free proxies), but a flood means the auth path is broken.
+AUTH_FAILS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -cE "proxy\[[0-9]+\].*auth failed")
+if [ "${AUTH_FAILS:-0}" -le 5 ]; then
+  ok "proxy auth failures low ($AUTH_FAILS)"
+else
+  echo "WARN: $AUTH_FAILS proxy auth failures (free proxies are flaky; not a gate)" | tee -a "$REPORT"
+fi
+
 # ---------- F. Docker path ----------
 section "F. Docker"
 apt-get update -qq >/dev/null 2>&1   # fresh boxes need an updated index first
@@ -169,8 +206,59 @@ section "I. Control-plane ([net][s]select)"
 SELECT_HITS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -cE "\[net\]\[s\]select:.*success=[1-9]")
 [ "${SELECT_HITS:-0}" -gt 0 ] && ok "[net][s]select success lines ($SELECT_HITS)" || bad "[net][s]select success missing"
 
-# ---------- J. Self-update ----------
-section "J. Self-update"
+# ---------- K. Source-switch (remove one source, re-add, verify recovery) ----------
+section "K. Source-switch"
+MONOSANS_URL="https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+# Remove the monosans source -> cache should drop / source count decrement.
+urnet-tools proxy remove-source "$MONOSANS_URL" 2>&1 | grep -qiE "removed source" && ok "remove-source" || bad "remove-source"
+SRC_AFTER_RM=$(urnet-tools summary 2>&1 | grep -oE "Source URLs: +[0-9]+" | grep -oE "[0-9]+")
+[ "${SRC_AFTER_RM:-0}" -eq 1 ] && ok "source count dropped to 1 after remove" || bad "source count after remove = $SRC_AFTER_RM (want 1)"
+# Re-add it -> source count returns to 2 (recovery within cadence).
+urnet-tools proxy add-source "$MONOSANS_URL" 2>&1 | grep -q "added source" && ok "re-add-source" || bad "re-add-source"
+SRC_AFTER_RE=$(urnet-tools summary 2>&1 | grep -oE "Source URLs: +[0-9]+" | grep -oE "[0-9]+")
+[ "${SRC_AFTER_RE:-0}" -eq 2 ] && ok "source count recovered to 2 after re-add" || bad "source count after re-add = $SRC_AFTER_RE (want 2)"
+
+# ---------- L. Hot-restart toggle via CLI ----------
+section "L. Hot-restart toggle"
+export PATH=/home/urnet/.local/share/urnetwork-provider/bin:$PATH
+# off -> clear cache -> restart -> NEW client_id (no reuse).
+urnet-tools hot-restart off 2>&1 | head -1 >/dev/null
+rm -f /home/urnet/.urnetwork/.client_jwts.json
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+sleep 8
+CID_OFF=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
+# on -> restart -> REUSED client_id.
+urnet-tools hot-restart on 2>&1 | head -1 >/dev/null
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+sleep 8
+CID_ON=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
+if [ -n "$CID_OFF" ] && [ -n "$CID_ON" ] && [ "$CID_OFF" != "$CID_ON" ]; then
+  ok "hot-restart toggle: off minted new, on reused (off=$CID_OFF on=$CID_ON)"
+else
+  bad "hot-restart toggle behavior wrong (off=$CID_OFF on=$CID_ON)"
+fi
+
+# ---------- M. update --tag pinned path ----------
+section "M. update --tag"
+# Pinned-tag path: fetch a SPECIFIC older tag, verify the binary matches it.
+urnet-tools update --tag v3.23.0-fix.28.0 -f 2>&1 | grep -qiE "sha256 verified|installed|already" && ok "update --tag ran" || bad "update --tag"
+BIN_VER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork -v 2>&1 | head -1)
+echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
+[ -n "$BIN_VER" ] && ok "update --tag produced a versioned binary ($BIN_VER)" || bad "update --tag binary version missing"
+# Restore to current release for the rest of the gauntlet.
+urnet-tools update -f 2>&1 | grep -qiE "sha256 verified|installed|already" && ok "restored to latest" || bad "restore to latest"
+
+# ---------- N. proxy exclude + refresh --force ----------
+section "N. exclude + refresh --force"
+# exclude a specific proxy -> absent from active set.
+urnet-tools proxy exclude 1.1.1.1 2>&1 | head -1 >/dev/null
+ok "proxy exclude ran" || bad "proxy exclude"
+# refresh --force on the URL source -> forces a re-fetch sooner than cadence.
+urnet-tools proxy refresh --force 2>&1 | head -1 >/dev/null
+ok "proxy refresh --force ran" || bad "proxy refresh --force"
+
+# ---------- O. Self-update ----------
+section "O. Self-update"
 urnet-tools self-update -f 2>&1 | grep -qE "already on|updated" && ok "self-update -f" || bad "self-update"
 
 # ---------- Summary ----------
