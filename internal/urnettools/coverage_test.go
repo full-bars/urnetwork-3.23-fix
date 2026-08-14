@@ -18,7 +18,18 @@ import (
 // `echo y | urnet-tools update --all`. We swap the package-level
 // stdinReader for the duration of the test and confirm two sequential
 // confirmGate-style reads consume successive lines, not the same one.
+
+// forceInteractiveForTest makes the confirm/picker tests run as if stdin is
+// a terminal (they feed stdin via a substituted reader, which is not a TTY).
+func forceInteractiveForTest(t *testing.T) {
+	t.Helper()
+	old := stdinIsInteractiveOverride
+	stdinIsInteractiveOverride = func() bool { return true }
+	t.Cleanup(func() { stdinIsInteractiveOverride = old })
+}
+
 func TestStdinReaderSharedAcrossPrompts(t *testing.T) {
+	forceInteractiveForTest(t)
 	orig := stdinReader
 	defer func() { stdinReader = orig }()
 

@@ -80,7 +80,7 @@ func TestSynAckChecksumCoversOptions(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck failed: %v", err)
 	}
@@ -94,8 +94,9 @@ func TestSynAckChecksumCoversOptions(t *testing.T) {
 	}
 
 	dataOffset := int(tcpBytes[12]>>4) * 4
-	if dataOffset != 24 {
-		t.Fatalf("SynAck data offset: want 24, got %d", dataOffset)
+	// MSS (4) + window scale (3) + NOP pad = 8 option bytes; header 28.
+	if dataOffset != 28 {
+		t.Fatalf("SynAck data offset: want 28 (MSS+WS options), got %d", dataOffset)
 	}
 }
 
@@ -355,100 +356,64 @@ func TestParseTcpSynWithWindowScale(t *testing.T) {
 	}
 }
 
-func TestParseTcpWindowScaleOpts_Nil(t *testing.T) {
-	found, shift := ParseTcpWindowScaleOpts(nil)
-	if found {
-		t.Fatal("expected no window scale found for nil options")
+func TestParseTcpOptionsWindowScale(t *testing.T) {
+	// Table-driven coverage of the unified option parser's window-scale
+	// extraction. parseTcpOptions replaced ParseTcpWindowScaleOpts; these
+	// cases preserve the legacy parser's behavioral coverage against the
+	// new API (nil, empty, NOPs, EOL, unknown options, cap at 14).
+	cases := []struct {
+		name string
+		opts []byte
+		want bool
+		ws   uint32
+	}{
+		{"nil", nil, false, 0},
+		{"empty", []byte{}, false, 0},
+		{"with-window-scale", []byte{3, 3, 7}, true, 7},
+		{"capped-at-14", []byte{3, 3, 20}, true, 14},
+		{"nop-before", []byte{1, 3, 3, 7}, true, 7},
+		{"eol-stops", []byte{0, 3, 3, 7}, false, 0},
+		{"eol-after", []byte{3, 3, 5, 0}, true, 5},
+		{"unknown-option", []byte{5, 3, 1, 3, 3, 7}, true, 7},
+		{"multiple-nops", []byte{1, 1, 1, 3, 3, 3}, true, 3},
 	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_Empty(t *testing.T) {
-	found, shift := ParseTcpWindowScaleOpts([]byte{})
-	if found {
-		t.Fatal("expected no window scale for empty options")
-	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_WithWindowScale(t *testing.T) {
-	opts := []byte{3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale")
-	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_WindowScaleCappedAt14(t *testing.T) {
-	opts := []byte{3, 3, 20}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale")
-	}
-	if shift != 14 {
-		t.Fatalf("window scale: want 14 (capped), got %d", shift)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tcp := &parsedTcp{options: c.opts}
+			parseTcpOptions(tcp)
+			if tcp.enableWindowScale != c.want {
+				t.Fatalf("enableWindowScale: want %v, got %v", c.want, tcp.enableWindowScale)
+			}
+			if tcp.windowScale != c.ws {
+				t.Fatalf("windowScale: want %d, got %d", c.ws, tcp.windowScale)
+			}
+		})
 	}
 }
 
-func TestParseTcpWindowScaleOpts_NopBeforeWindowScale(t *testing.T) {
-	opts := []byte{1, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after NOP")
+func TestParseTcpOptionsMssAndTimestamp(t *testing.T) {
+	// MSS (kind 2, len 4) and timestamp (kind 8, len 10) extraction.
+	tcp := &parsedTcp{options: []byte{
+		2, 4, 0x05, 0xb4, // MSS 1460
+		1,                                                     // NOP
+		8, 10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, // TSval=1 TSecr=2
+	}}
+	parseTcpOptions(tcp)
+	if !tcp.enableMss || tcp.mss != 1460 {
+		t.Fatalf("MSS: want enable=1460, got enable=%v mss=%d", tcp.enableMss, tcp.mss)
 	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_Eol(t *testing.T) {
-	opts := []byte{0, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if found {
-		t.Fatal("expected no window scale (EOL stops parsing)")
-	}
-	if shift != 0 {
-		t.Fatalf("shift: want 0, got %d", shift)
+	if !tcp.enableTimestamp || tcp.timestampValue != 1 || tcp.timestampEcho != 2 {
+		t.Fatalf("timestamp: want val=1 echo=2, got enable=%v val=%d echo=%d", tcp.enableTimestamp, tcp.timestampValue, tcp.timestampEcho)
 	}
 }
 
-func TestParseTcpWindowScaleOpts_EolAfterOptions(t *testing.T) {
-	opts := []byte{3, 3, 5, 0}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale before EOL")
-	}
-	if shift != 5 {
-		t.Fatalf("window scale: want 5, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_UnknownOption(t *testing.T) {
-	opts := []byte{5, 3, 1, 3, 3, 7}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after unknown option")
-	}
-	if shift != 7 {
-		t.Fatalf("window scale: want 7, got %d", shift)
-	}
-}
-
-func TestParseTcpWindowScaleOpts_MultipleNops(t *testing.T) {
-	opts := []byte{1, 1, 1, 3, 3, 3}
-	found, shift := ParseTcpWindowScaleOpts(opts)
-	if !found {
-		t.Fatal("expected to find window scale after multiple NOPs")
-	}
-	if shift != 3 {
-		t.Fatalf("window scale: want 3, got %d", shift)
+func TestParseTcpOptionsMalformedTail(t *testing.T) {
+	// A malformed option tail must stop parsing without corrupting the
+	// options already extracted (the parse must not panic).
+	tcp := &parsedTcp{options: []byte{2, 4, 0x05, 0xb4, 3, 4, 0x07}}
+	parseTcpOptions(tcp)
+	if !tcp.enableMss || tcp.mss != 1460 {
+		t.Fatalf("MSS before malformed tail: want 1460, got %d", tcp.mss)
 	}
 }
 
@@ -662,7 +627,7 @@ func TestSynAckDataOffsetMatchesOptions(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck failed: %v", err)
 	}
@@ -769,7 +734,7 @@ func TestSynAckIPv6(t *testing.T) {
 		windowScale:       7,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck IPv6 failed: %v", err)
 	}
@@ -958,7 +923,7 @@ func TestSynAckNoWindowScale(t *testing.T) {
 		enableWindowScale: false,
 	}
 
-	packet, err := cs.SynAck()
+	packet, err := cs.SynAck(DefaultMtu)
 	if err != nil {
 		t.Fatalf("SynAck (no WS) failed: %v", err)
 	}
@@ -976,8 +941,9 @@ func TestSynAckNoWindowScale(t *testing.T) {
 	}
 
 	dataOffset := int(tcpBytes[12]>>4) * 4
-	if dataOffset != TcpHeaderSizeWithoutExtensions {
-		t.Fatalf("SynAck (no WS) data offset: want %d, got %d", TcpHeaderSizeWithoutExtensions, dataOffset)
+	// MSS (4) always advertised; no WS, no TS -> header 24.
+	if dataOffset != TcpHeaderSizeWithoutExtensions+4 {
+		t.Fatalf("SynAck (no WS) data offset: want %d (MSS only), got %d", TcpHeaderSizeWithoutExtensions+4, dataOffset)
 	}
 }
 
@@ -1269,12 +1235,13 @@ func TestParseTcpWindowScaleCombined(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			found, shift := ParseTcpWindowScaleOpts(tc.opts)
-			if found != tc.wantFound {
-				t.Fatalf("found: want %v, got %v", tc.wantFound, found)
+			tcp := &parsedTcp{options: tc.opts}
+			parseTcpOptions(tcp)
+			if tcp.enableWindowScale != tc.wantFound {
+				t.Fatalf("found: want %v, got %v", tc.wantFound, tcp.enableWindowScale)
 			}
-			if shift != tc.wantShift {
-				t.Fatalf("shift: want %d, got %d", tc.wantShift, shift)
+			if tcp.windowScale != tc.wantShift {
+				t.Fatalf("shift: want %d, got %d", tc.wantShift, tcp.windowScale)
 			}
 		})
 	}
@@ -1346,5 +1313,223 @@ func TestSeqNumIncrementAcrossDataPackets(t *testing.T) {
 	if seq1 != expectedSeq1 {
 		t.Fatalf("seq not incremented by payload length: seq0=%d + payload=%d, got seq1=%d",
 			seq0, payloadLen0, seq1)
+	}
+}
+
+func TestSynAckWithTimestamp(t *testing.T) {
+	// Timestamp option (kind 8, len 10) layout: MSS(4) + TS(10) padded to 16
+	// option bytes -> header 36 bytes, data offset 9 words (mimo finding:
+	// no test covered enableTimestamp=true).
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               100,
+		receiveSeq:            200,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       42,
+		timestampValueForTest: func() uint32 { return 7 },
+		enableWindowScale:     false,
+	}
+
+	packet, err := cs.SynAck(DefaultMtu)
+	if err != nil {
+		t.Fatalf("SynAck (TS) failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	if dataOffset != 36 {
+		t.Fatalf("SynAck (TS) data offset: want 36 (MSS+TS), got %d", dataOffset)
+	}
+
+	// Verify the timestamp option bytes: NOP? no — TS starts at offset 4
+	// (after MSS), kind 8 len 10, TSval=7, TSecr=42.
+	opts := tcpBytes[TcpHeaderSizeWithoutExtensions:dataOffset]
+	if opts[0] != 2 || opts[1] != 4 {
+		t.Fatalf("MSS option missing: %v", opts[:4])
+	}
+	if opts[4] != 8 || opts[5] != 10 {
+		t.Fatalf("TS option header missing: %v", opts[4:6])
+	}
+	tsval := binary.BigEndian.Uint32(opts[6:10])
+	tsecr := binary.BigEndian.Uint32(opts[10:14])
+	if tsval != 7 || tsecr != 42 {
+		t.Fatalf("TS val/echo: want 7/42, got %d/%d", tsval, tsecr)
+	}
+
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("SynAck (TS) TCP checksum verification failed")
+	}
+}
+
+func TestTcpPacketWithTimestamp(t *testing.T) {
+	// tcpPacket must emit NOP-NOP-TSval-TSecr once timestamps are
+	// negotiated (RFC 7323 §3.2) — the data-path option layout
+	// (Opus MED-4 coverage gap).
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               2000,
+		receiveSeq:            1500,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       99,
+		timestampValueForTest: func() uint32 { return 11 },
+	}
+	payload := []byte("hello")
+	packet := cs.tcpPacket(payload, cs.receiveSeq)
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	// 20 header + 12 TS options = 32 bytes.
+	if dataOffset != 32 {
+		t.Fatalf("tcpPacket data offset: want 32 (TS), got %d", dataOffset)
+	}
+	opts := tcpBytes[TcpHeaderSizeWithoutExtensions:dataOffset]
+	// NOP NOP TS(8,10) TSval=11 TSecr=99
+	if opts[0] != 1 || opts[1] != 1 || opts[2] != 8 || opts[3] != 10 {
+		t.Fatalf("TS option header wrong: %v", opts[:4])
+	}
+	tsval := binary.BigEndian.Uint32(opts[4:8])
+	tsecr := binary.BigEndian.Uint32(opts[8:12])
+	if tsval != 11 || tsecr != 99 {
+		t.Fatalf("TS val/echo: want 11/99, got %d/%d", tsval, tsecr)
+	}
+	if string(packet[ipHeaderLen+dataOffset:]) != "hello" {
+		t.Fatal("payload not at expected offset")
+	}
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("tcpPacket checksum verification failed")
+	}
+}
+
+func TestPureAckWithTimestamp(t *testing.T) {
+	// PureAck must include TSopt once negotiated (Opus MED-2); without it
+	// strict stacks can discard and Linux loses RTT samples.
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               2000,
+		receiveSeq:            1500,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       5,
+		timestampValueForTest: func() uint32 { return 6 },
+	}
+	packet, err := cs.PureAck()
+	if err != nil {
+		t.Fatalf("PureAck failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	if dataOffset != 32 {
+		t.Fatalf("PureAck data offset: want 32 (TS), got %d", dataOffset)
+	}
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("PureAck checksum verification failed")
+	}
+}
+
+func TestDataPacketsTimestampSegmentation(t *testing.T) {
+	// With timestamps on an IPv6 flow, a full read (ReadBufferByteCount
+	// accounts for the TS option) must NOT split into a runt tail segment
+	// (Opus MED-1). 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		sourcePort:      40000,
+		destinationPort: 443,
+		enableTimestamp: true,
+		peerMss:         1400,
+	}
+	payload := make([]byte, 1368)
+	packets, err := cs.DataPackets(payload, len(payload), DefaultMtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	// One segment: 1368 <= min(1368, peerMss - 12 opts) = 1368.
+	if len(packets) != 1 {
+		t.Fatalf("want 1 segment (no runt), got %d", len(packets))
+	}
+}
+
+func TestDataPacketsPeerMssWireBudget(t *testing.T) {
+	// CodeRabbit finding: with timestamps on, a segment at the peer's MSS
+	// must leave room for OUR 12-byte TS option so the wire size stays
+	// within the peer's path-MTU budget (no fragmentation/drop).
+	// peerMss 1395, IPv4 (20+20 headers) + 12 TS -> data budget = min(
+	// 1440-52=1388, 1395-12=1383) = 1383 — the peer term binds, and the
+	// option-aware value (1383) differs from data-only (1395) and from
+	// unclamped (1388), so this test fails under EITHER a removed clamp or
+	// a re-revert to mimo's data-only form (Opus re-review MEDIUM: the
+	// prior 1460 case was vacuous because the MTU term dominated).
+	cs := &ConnectionState{
+		ipVersion:       4,
+		sourceIp:        net.IPv4(10, 0, 0, 1).To4(),
+		destinationIp:   net.IPv4(192, 168, 1, 1).To4(),
+		sourcePort:      40000,
+		destinationPort: 443,
+		enableTimestamp: true,
+		peerMss:         1395,
+	}
+	payload := make([]byte, 1400) // exceeds both budgets; forces splitting
+	packets, err := cs.DataPackets(payload, len(payload), DefaultMtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	// Every segment's data payload must be <= 1383 (option-aware peer budget).
+	for i, pkt := range packets {
+		ipHeaderLen := int(pkt[0]&0x0f) * 4
+		dataOffset := int(pkt[ipHeaderLen+12]>>4) * 4
+		dataLen := len(pkt) - ipHeaderLen - dataOffset
+		if dataLen > 1383 {
+			t.Fatalf("segment %d: data %d exceeds option-aware peer budget 1383 (clamp removed or reverted?)", i, dataLen)
+		}
+	}
+}
+
+func TestDataPacketsPeerMssMtuWins(t *testing.T) {
+	// Sanity companion: with peerMss 1460 the MTU-derived budget (1388)
+	// binds instead (the direction the old vacuous test intended to cover).
+	cs := &ConnectionState{
+		ipVersion:       4,
+		sourceIp:        net.IPv4(10, 0, 0, 1).To4(),
+		destinationIp:   net.IPv4(192, 168, 1, 1).To4(),
+		sourcePort:      40000,
+		destinationPort: 443,
+		enableTimestamp: true,
+		peerMss:         1460,
+	}
+	payload := make([]byte, 1460)
+	packets, err := cs.DataPackets(payload, len(payload), DefaultMtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	for i, pkt := range packets {
+		ipHeaderLen := int(pkt[0]&0x0f) * 4
+		dataOffset := int(pkt[ipHeaderLen+12]>>4) * 4
+		dataLen := len(pkt) - ipHeaderLen - dataOffset
+		if dataLen > 1388 {
+			t.Fatalf("segment %d: data %d exceeds MTU-derived budget 1388", i, dataLen)
+		}
 	}
 }
