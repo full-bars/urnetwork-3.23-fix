@@ -271,6 +271,43 @@ jobs:
           # publishes, not ship a release that breaks installers + self-update
           # (verified 2026-08-12 review).
 
+      - name: VirusTotal scan of release binaries
+        if: ${{ secrets.VIRUS_TOTAL != '' }}
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL }}
+          VT_FAIL_THRESHOLD: "2"
+          VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          VERSION=${GITHUB_REF_NAME:-latest}
+          # Scan every binary that ships in the release: provider (all 6
+          # platforms), hub (linux amd64/arm64), urnet-tools + urnet-docker
+          # (all 6 platforms).
+          python3 .github/scripts/vt-scan.py \
+            release_tmp/linux/amd64/provider \
+            release_tmp/linux/arm64/provider \
+            release_tmp/darwin/amd64/provider \
+            release_tmp/darwin/arm64/provider \
+            release_tmp/windows/amd64/provider.exe \
+            release_tmp/windows/arm64/provider.exe \
+            urnetwork-hub-${VERSION}-linux-amd64 \
+            urnetwork-hub-${VERSION}-linux-arm64 \
+            urnet-tools-linux-amd64 \
+            urnet-tools-linux-arm64 \
+            urnet-tools-darwin-amd64 \
+            urnet-tools-darwin-arm64 \
+            urnet-tools-windows-amd64 \
+            urnet-tools-windows-arm64 \
+            urnet-docker-linux-amd64 \
+            urnet-docker-linux-arm64 \
+            urnet-docker-darwin-amd64 \
+            urnet-docker-darwin-arm64 \
+            urnet-docker-windows-amd64 \
+            urnet-docker-windows-arm64
+
       - name: Create provider tarballs
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
@@ -315,9 +352,21 @@ jobs:
         id: body_src
         run: |
           CUSTOM="releases/${GITHUB_REF_NAME}.md"
+          VT_REPORT="${GITHUB_WORKSPACE}/vt-scan-report.md"
           if [ -f "$CUSTOM" ]; then
+            # Custom release notes exist: append the VT report to them.
+            if [ -f "$VT_REPORT" ]; then
+              cat "$VT_REPORT" >> "$CUSTOM"
+              echo "Appended VT report to custom release notes"
+            fi
             echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
             echo "auto=false" >> "$GITHUB_OUTPUT"
+          elif [ -f "$VT_REPORT" ]; then
+            # No custom notes: use the VT report as the body. softprops appends
+            # the auto-generated "What's Changed" notes after whatever body is
+            # provided, so the scan proof stays in the release body.
+            echo "path=${VT_REPORT}" >> "$GITHUB_OUTPUT"
+            echo "auto=true" >> "$GITHUB_OUTPUT"
           else
             echo "path=" >> "$GITHUB_OUTPUT"
             echo "auto=true" >> "$GITHUB_OUTPUT"
