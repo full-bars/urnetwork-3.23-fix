@@ -95,10 +95,12 @@ section "E. URL sources + egress"
 # cadence via the installer-supported runtime override file (re-read live).
 printf '3m\n' > /home/urnet/.urnetwork/proxy_url_refresh
 chown urnet:urnet /home/urnet/.urnetwork/proxy_url_refresh
-urnet-tools proxy add-source https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt 2>&1 | grep -q "added source" && ok "add-source" || bad "add-source"
-urnet-tools summary 2>&1 | grep -q "Source URLs:        1" && ok "source registered" || bad "source registered"
-# Give the fetch+probe time (slow on 1CPU: 4s per target)
-sleep 240
+urnet-tools proxy add-source https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt 2>&1 | grep -q "added source" && ok "add-source (monosans socks5)" || bad "add-source (monosans)"
+urnet-tools proxy add-source https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt 2>&1 | grep -q "added source" && ok "add-source (proxifly all)" || bad "add-source (proxifly)"
+urnet-tools summary 2>&1 | grep -q "Source URLs:        2" && ok "both sources registered" || bad "source registration"
+# Give the fetch+probe time (102 monosans candidates x 4s = ~7 min on 1CPU;
+# the 3m refresh cadence overlaps). 360s lets most candidates get probed.
+sleep 360
 CACHED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(len(d.get('cache',{})))" 2>/dev/null || echo 0)
 UP=$(urnet-tools summary 2>&1 | grep -oE "Up: +[0-9]+" | grep -oE "[0-9]+")
 # If auth failed earlier, the URL pipeline cannot run — report it as skipped,
