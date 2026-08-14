@@ -33,6 +33,11 @@ func RunDocker(args []string) error {
 		return nil
 	}
 	op := args[0]
+	switch op {
+	case "version", "--version", "-v":
+		fmt.Println(ToolVersion)
+		return nil
+	}
 	rest := args[1:]
 	switch op {
 	case "providers", "list", "ps":

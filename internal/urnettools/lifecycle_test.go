@@ -211,16 +211,22 @@ func TestUnitCommandArgv(t *testing.T) {
 	if !isUserUnit(userUnit) {
 		t.Skip("isUserUnit returned false for fake unit; cannot test user-level argv")
 	}
-	// User-level unit: systemctl --user -M <user>@ <action> [extra...].
+	// User-level unit: systemctl --user -M <user>@ <action> <unit> [extra...].
 	got := unitCommandArgs(Provider{Unit: userUnit, User: "testuser"}, "restart", "--no-block")
-	want := []string{"systemctl", "--user", "-M", "testuser@", "restart", "--no-block"}
+	want := []string{"systemctl", "--user", "-M", "testuser@", "restart", userUnit, "--no-block"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("user-unit argv = %v, want %v", got, want)
 	}
-	// System-level unit: systemctl <action> [extra...].
+	// System-level unit: systemctl <action> <unit>.
 	got = unitCommandArgs(Provider{Unit: "urnetwork-native.service", User: ""}, "start")
-	want = []string{"systemctl", "start"}
+	want = []string{"systemctl", "start", "urnetwork-native.service"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("system-unit argv = %v, want %v", got, want)
+	}
+	// No unit: systemctl <action> alone (caller will error on the empty unit).
+	got = unitCommandArgs(Provider{}, "restart")
+	want = []string{"systemctl", "restart"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("empty-unit argv = %v, want %v", got, want)
 	}
 }
