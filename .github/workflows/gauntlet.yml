@@ -1,0 +1,156 @@
+name: Pre-Release Gauntlet
+
+# Runs the full v29+ pre-release gauntlet on a disposable 1CPU/1GB DO droplet:
+# fresh install -> auth -> Go tool -> proxies -> URL sources -> egress -> docker.
+# The droplet is ALWAYS deleted, even on failure (trap + job timeout).
+#
+# Triggers: manual dispatch, or automatically when a v3.23.0-fix.* tag is pushed.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v3.23.0-fix.*'
+
+permissions:
+  contents: read
+
+jobs:
+  gauntlet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75   # hard cap: droplet cannot outlive the job
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Mint disposable JWT from secrets
+        id: mint
+        env:
+          GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+          GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+          DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
+        run: |
+          # Build the provider binary and mint a fresh JWT for the gauntlet
+          # account. The credentials are injected by GitHub, never written
+          # to files or echoed.
+          go build -ldflags "-X main.Version=gauntlet-mint" -o /tmp/provider ./provider/
+          mkdir -p /tmp/mint
+          HOME=/tmp/mint /tmp/provider auth \
+            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed (verification required?)"; exit 1; }
+          cp /tmp/mint/.urnetwork/jwt /tmp/gauntlet.jwt
+          # Safety: refuse if it is the production account
+          python3 - << 'PY'
+          import base64, json
+          raw = open('/tmp/gauntlet.jwt').read().strip()
+          p = raw.split('.')[1] + '=' * (-len(raw.split('.')[1]) % 4)
+          d = json.loads(base64.urlsafe_b64decode(p))
+          print("account:", d.get('network_name'))
+          if d.get('network_name') == 'mesocyclone':
+              raise SystemExit("REFUSING: minted JWT is the production account")
+          PY
+
+      - name: Install DO API helper
+        env:
+          DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
+        run: |
+          cat > /tmp/do.sh << 'SCRIPT'
+          #!/bin/bash
+          # Minimal DO helper: create 1CPU/1GB droplet, wait, run, delete.
+          # Size is HARD-PINNED; anything else aborts and deletes.
+          # SSH access uses an EPHEMERAL keypair minted in this job and
+          # provisioned via the DO API at droplet creation — no static key.
+          set -u
+          SIZE_SLUG="s-1vcpu-1gb"; EXPECTED_VCPUS=1; EXPECTED_MEMORY_MB=1024
+          REGION="${REGION:-nyc3}"
+          API="https://api.digitalocean.com/v2"
+          AUTH="Authorization: Bearer ${DO_TOKEN}"
+          DROPLET_ID=""
+          KEY_ID=""
+          cleanup() {
+            if [ -n "$DROPLET_ID" ]; then
+              echo "CLEANUP: deleting droplet $DROPLET_ID"
+              curl -s -X DELETE -H "$AUTH" "$API/droplets/$DROPLET_ID" -o /dev/null -w "delete HTTP %{http_code}\n"
+            fi
+            if [ -n "$KEY_ID" ]; then
+              echo "CLEANUP: removing ephemeral SSH key $KEY_ID"
+              curl -s -X DELETE -H "$AUTH" "$API/account/keys/$KEY_ID" -o /dev/null -w "key delete HTTP %{http_code}\n"
+            fi
+          }
+          trap cleanup EXIT
+
+          # --- Ephemeral SSH keypair for this run ---
+          mkdir -p /tmp/sshkey && ssh-keygen -t ed25519 -f /tmp/sshkey/id_gauntlet -N "" -C "gauntlet-ci" >/dev/null 2>&1
+          PUBKEY=$(cat /tmp/sshkey/id_gauntlet.pub)
+          KEYJSON=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"name\":\"gauntlet-ci-$(date +%s)\",\"public_key\":\"$PUBKEY\"}" \
+            "$API/account/keys")
+          KEY_ID=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('id',''))" 2>/dev/null)
+          FINGERPRINT=$(echo "$KEYJSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ssh_key',{}).get('fingerprint',''))" 2>/dev/null)
+          [ -n "$FINGERPRINT" ] || { echo "SSH key upload failed: $KEYJSON"; exit 1; }
+          echo "ephemeral key ready (id=$KEY_ID fp=${FINGERPRINT:0:12}...)"
+
+          echo "creating droplet (size=$SIZE_SLUG region=$REGION)"
+          CREATE=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"name\":\"gauntlet-$(date +%s)\",\"region\":\"$REGION\",\"size\":\"$SIZE_SLUG\",\"image\":\"ubuntu-24-04-x64\",\"ssh_keys\":[\"$FINGERPRINT\"],\"backups\":false,\"ipv6\":false,\"monitoring\":false}" \
+            "$API/droplets")
+          DROPLET_ID=$(echo "$CREATE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('id',''))" 2>/dev/null)
+          [ -n "$DROPLET_ID" ] || { echo "create failed: $CREATE"; exit 1; }
+
+          # Verify spec is exactly the cheap box
+          sleep 5
+          SPEC=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID")
+          VCPUS=$(echo "$SPEC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('vcpus',''))" 2>/dev/null)
+          MEM=$(echo "$SPEC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('memory',''))" 2>/dev/null)
+          SIZE=$(echo "$SPEC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('size',{}).get('slug',''))" 2>/dev/null)
+          echo "spec: vcpus=$VCPUS mem=${MEM}MB slug=$SIZE"
+          if [ "$VCPUS" != "$EXPECTED_VCPUS" ] || [ "$MEM" != "$EXPECTED_MEMORY_MB" ] || [ "$SIZE" != "$SIZE_SLUG" ]; then
+            echo "ERROR: droplet not the cheap spec — deleting and aborting"; exit 1
+          fi
+
+          SSHOPTS="-i /tmp/sshkey/id_gauntlet -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
+
+          # Wait for SSH
+          IP=""
+          for i in $(seq 1 40); do
+            IP=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID" | python3 -c "import sys,json;n=json.load(sys.stdin).get('droplet',{}).get('networks',{}).get('v4',[]);print(n[0]['ip_address'] if n else '')" 2>/dev/null)
+            if [ -n "$IP" ] && ssh $SSHOPTS root@$IP true 2>/dev/null; then
+              echo "SSH up: $IP"; break
+            fi
+            sleep 10
+          done
+          [ -n "$IP" ] || { echo "droplet never reachable"; exit 1; }
+
+          # Ship JWT + gauntlet, run under watchdog
+          scp $SSHOPTS /tmp/gauntlet.jwt root@$IP:/tmp/gauntlet.jwt
+          scp $SSHOPTS .github/scripts/gauntlet.sh root@$IP:/tmp/gauntlet.sh
+          timeout 2700 ssh $SSHOPTS root@$IP 'chmod +x /tmp/gauntlet.sh && /tmp/gauntlet.sh /tmp/gauntlet.jwt'
+
+          # Collect report BEFORE trap deletes
+          ssh $SSHOPTS root@$IP 'cat /tmp/gauntlet-report.txt' > /tmp/gauntlet-report.txt 2>/dev/null || true
+          echo "REPORT_READY"
+          SCRIPT
+          chmod +x /tmp/do.sh
+
+      - name: Run gauntlet
+        env:
+          DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
+        run: |
+          /tmp/do.sh
+          echo "::group::Gauntlet Report"
+          cat /tmp/gauntlet-report.txt 2>/dev/null || echo "(no report)"
+          echo "::endgroup::"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gauntlet-report
+          path: /tmp/gauntlet-report.txt
+          if-no-files-found: ignore
