@@ -58,6 +58,41 @@ Rules:
 - **`--help` never executes**; dry-run (`-n`) prints the plan and does nothing, including for `start`/`stop`.
 - Temp JWT scratch files are always removed.
 
+## `report` and `hot-restart` (v3.23.0-fix.29.0+)
+
+Two commands are NOT delegations to the provider binary — they are implemented
+in the Go tool itself (the provider has no `report`/`hot-restart` subcommands):
+
+- **`urnet-tools report <url> [target]`** writes `~/.urnetwork/report_url` in
+  the provider's state dir. The provider's bandwidth reporter re-reads that
+  file every tick, so the change takes effect without a restart. `report off`
+  disables reporting. The file is written 0644 so a provider running as a
+  different user than the tool (e.g. root tool + `urnetwork-beta` service)
+  can read it.
+- **`urnet-tools hot-restart [target]`** restarts the provider's systemd unit
+  behind the same typed-`yes` confirmation gate as `proxy remove`/`clear`.
+  `-f`/`--force` skips the prompt; `-n`/`--dry-run` prints the plan.
+
+## Proxy URL sources (v3.23.0-fix.29.0+)
+
+`proxy add-source <url>` and `proxy remove-source <url>` manage URL proxy
+sources (single target required — a source is per-provider). `add-source`
+fetches + probes the list immediately; `remove-source` drops the source and
+notes that previously-fetched proxies keep running until pruned by
+`remove-dead`.
+
+## `proxy refresh --force` (v3.23.0-fix.29.0+)
+
+`refresh --force` now actually forwards `--force` to the provider, bypassing
+the warmup gate (a provider needs 8-12h uptime before a plain refresh; the
+gate refused even with `--force` in earlier builds).
+
+## Version (v3.23.0-fix.29.0+)
+
+`urnet-tools version` / `--version` / `-v` print the stamped tool version
+(from the release build). Useful for confirming which release asset a box
+is running.
+
 ## Migrating scripts
 
 - All 25 legacy subcommands dispatch identically. Single-provider boxes: nothing changes.
@@ -65,26 +100,24 @@ Rules:
 
 ## `optimize` is platform-aware
 
-- **Linux**: socket buffers + FD limit, plus the ephemeral-port pool (`net.ipv4.ip_local_port_range`) and TIME_WAIT recycling (`net.ipv4.tcp_fin_timeout`) — the two knobs that matter at proxy-scale connection churn.
+- **Linux**: socket buffers + FD limit, plus the ephemeral-port pool (`net.ipv4.ip_local_port_range`) and TIME_WAIT recycling (`net.ipv4.tcp_fin_timeout`).
 - **Windows**: `netsh` dynamic port pool + `TcpTimedWaitDelay` registry equivalent.
 
 ## Getting the tool
 
-Three supported paths (v3.23.0-fix.28+ — the Go tool assets ship with every release from v3.23.0-fix.28 onward; older releases and 32-bit x86 hosts fall back to the legacy shell tool):
+Three supported paths (v3.23.0-fix.28+):
 
 | Deployment | How the tool is installed |
 |---|---|
 | systemd / native provider | `Provider_Install_Linux.sh` now installs the Go `urnet-tools` binary (sha256-verified against the release API). Fresh installs and `update` both hand off to the Go tool — the shell script is only a fallback for releases that predate the Go asset. |
-| docker-only providers | Run the standalone host-side installer: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh \| sh` — installs `urnet-docker` to `/usr/local/bin` (or `~/.local/bin`), sha256-verified. Same script can install `urnet-tools` with `sh -s -- urnet-tools`. |
+| docker-only providers | Run the standalone host-side installer: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh \| sh` — installs `urnet-docker` to `/usr/local/bin` (or `~/.local/bin` when not root), sha256-verified. Same script can install `urnet-tools` with `sh -s -- urnet-tools`. |
 | macOS | `Provider_Install_Mac.sh` installs the Go `urnet-tools-darwin-<arch>` binary (sha256-verified via `shasum`), falling back to the legacy wrapper. |
 
 The Go tool is self-updating: `urnet-tools update` refreshes providers **and** its own binary; `urnet-docker update` / `urnet-tools self-update` refresh only the tool. Release assets are named `urnet-tools-<os>-<arch>` and `urnet-docker-<os>-<arch>` (e.g. `urnet-tools-linux-amd64`), attached to every release.
 
 ## Migration status
 
-- ✅ Phase 1 (this doc): tool subcommands in Go. Installer (`Provider_Install_Linux.sh`) stays shell.
+- ✅ Phase 1: tool subcommands in Go. Installer (`Provider_Install_Linux.sh`) stays shell.
 - ✅ Tool distribution: Go binaries shipped as release assets; installers fetch them digest-verified; tool self-updates via `update`/`self-update`.
 - 🔜 Phase 2: retire `urnet-tools.ps1` and the docker shell variant.
 - 🔜 Phase 3: installer logic in Go.
-
-Design doc: `URN-TOOLS-GO-DESIGN.md` at the workspace root.
