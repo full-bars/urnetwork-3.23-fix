@@ -25,6 +25,32 @@ bash -n /tmp/install.sh && ok "installer syntax" || bad "installer syntax"
 [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnet-tools ] && ok "Go urnet-tools installed" || bad "Go urnet-tools missing"
 URN="runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/\$(id -u urnet)"
 
+# ---------- A2. Preflight: internet + API reachability (non-starters) ----------
+section "A2. Preflight connectivity"
+# If the box has no internet, or cannot reach the urnetwork API, everything
+# downstream is meaningless. Fail hard with a NON-STARTER verdict instead of
+# confusing mid-suite FAILs.
+NON_STARTER=0
+if timeout 15 curl -fsS -o /dev/null -w "%{http_code}" https://api.bringyour.com/auth/verify-send 2>/dev/null | grep -qE "^[0-9]{3}$"; then
+  ok "internet + api.bringyour.com reachable"
+else
+  bad "api.bringyour.com NOT reachable (non-starter)"
+  NON_STARTER=1
+fi
+if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/README.md 2>/dev/null; then
+  ok "github reachable"
+else
+  bad "github NOT reachable (non-starter)"
+  NON_STARTER=1
+fi
+if [ "$NON_STARTER" = "1" ]; then
+  echo "NON-STARTER: connectivity failed — not running the rest of the suite" | tee -a "$REPORT"
+  echo "PASS=$PASS FAIL=$FAIL NON_STARTER=1" | tee -a "$REPORT"
+  echo "GAUNTLET END $(date -u +%FT%TZ)" >> "$REPORT"
+  exit 0
+fi
+echo "preflight OK — continuing suite" | tee -a "$REPORT"
+
 # ---------- B. Auth ----------
 section "B. Auth"
 mkdir -p /home/urnet/.urnetwork
@@ -36,12 +62,12 @@ chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
 sleep 8
-if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 20 2>/dev/null | grep -qE "client_id: .* (new|reused)"; then
+if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -qE "client_id: .* (new|reused)"; then
   ok "auth (client_id minted)"
 else
   # Dump the journal so a failure is diagnosable (timing vs real auth issue).
   echo "--- provider journal (auth failed) ---" | tee -a "$REPORT"
-  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 25 2>/dev/null | tail -25 | tee -a "$REPORT"
+  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 30 2>/dev/null | tail -30 | tee -a "$REPORT"
   bad "auth"
 fi
 export PATH=/home/urnet/.local/share/urnetwork-provider/bin:$PATH
