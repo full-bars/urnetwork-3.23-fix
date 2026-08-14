@@ -316,9 +316,21 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq clamav
-          # Update signatures. Use a generous timeout: freshclam can be slow on
-          # first run (downloads the full CVD database).
-          sudo freshclam --quiet || true
+          # Update signatures. On GitHub-hosted runners a stale clamav-daemon
+          # or freshclam may hold the log lock ("Failed to lock the log file
+          # ... Resource temporarily unavailable") and leave /var/lib/clamav
+          # empty. Stop the daemon, clear the lock, then run freshclam with
+          # --no-daemon and FAIL if the database still does not load: the
+          # EICAR self-test needs real signatures to mean anything.
+          sudo systemctl stop clamav-daemon 2>/dev/null || true
+          sudo systemctl stop clamav-freshclam 2>/dev/null || true
+          sudo pkill -f freshclam 2>/dev/null || true
+          sudo rm -f /var/log/clamav/freshclam.log /run/clamav/freshclam.pid 2>/dev/null || true
+          sudo freshclam --no-daemon --quiet
+          if [ ! -s /var/lib/clamav/main.cvd ]; then
+            echo "ClamAV signature database is empty after freshclam"
+            exit 1
+          fi
           clamscan --version
 
       - name: ClamAV self-test (EICAR)
