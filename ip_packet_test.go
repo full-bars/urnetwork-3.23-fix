@@ -395,7 +395,7 @@ func TestParseTcpOptionsMssAndTimestamp(t *testing.T) {
 	// MSS (kind 2, len 4) and timestamp (kind 8, len 10) extraction.
 	tcp := &parsedTcp{options: []byte{
 		2, 4, 0x05, 0xb4, // MSS 1460
-		1,                // NOP
+		1,                                                     // NOP
 		8, 10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, // TSval=1 TSecr=2
 	}}
 	parseTcpOptions(tcp)
