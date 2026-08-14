@@ -1368,3 +1368,106 @@ func TestSynAckWithTimestamp(t *testing.T) {
 		t.Fatal("SynAck (TS) TCP checksum verification failed")
 	}
 }
+
+func TestTcpPacketWithTimestamp(t *testing.T) {
+	// tcpPacket must emit NOP-NOP-TSval-TSecr once timestamps are
+	// negotiated (RFC 7323 §3.2) — the data-path option layout
+	// (Opus MED-4 coverage gap).
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               2000,
+		receiveSeq:            1500,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       99,
+		timestampValueForTest: func() uint32 { return 11 },
+	}
+	payload := []byte("hello")
+	packet := cs.tcpPacket(payload, cs.receiveSeq)
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	// 20 header + 12 TS options = 32 bytes.
+	if dataOffset != 32 {
+		t.Fatalf("tcpPacket data offset: want 32 (TS), got %d", dataOffset)
+	}
+	opts := tcpBytes[TcpHeaderSizeWithoutExtensions:dataOffset]
+	// NOP NOP TS(8,10) TSval=11 TSecr=99
+	if opts[0] != 1 || opts[1] != 1 || opts[2] != 8 || opts[3] != 10 {
+		t.Fatalf("TS option header wrong: %v", opts[:4])
+	}
+	tsval := binary.BigEndian.Uint32(opts[4:8])
+	tsecr := binary.BigEndian.Uint32(opts[8:12])
+	if tsval != 11 || tsecr != 99 {
+		t.Fatalf("TS val/echo: want 11/99, got %d/%d", tsval, tsecr)
+	}
+	if string(packet[ipHeaderLen+dataOffset:]) != "hello" {
+		t.Fatal("payload not at expected offset")
+	}
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("tcpPacket checksum verification failed")
+	}
+}
+
+func TestPureAckWithTimestamp(t *testing.T) {
+	// PureAck must include TSopt once negotiated (Opus MED-2); without it
+	// strict stacks can discard and Linux loses RTT samples.
+	cs := &ConnectionState{
+		ipVersion:             4,
+		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
+		sourcePort:            40000,
+		destinationIp:         net.IPv4(192, 168, 1, 1).To4(),
+		destinationPort:       443,
+		sendSeq:               2000,
+		receiveSeq:            1500,
+		windowSize:            65535,
+		enableTimestamp:       true,
+		timestampRecent:       5,
+		timestampValueForTest: func() uint32 { return 6 },
+	}
+	packet, err := cs.PureAck()
+	if err != nil {
+		t.Fatalf("PureAck failed: %v", err)
+	}
+	defer MessagePoolReturn(packet)
+
+	ipHeaderLen := int(packet[0]&0x0f) * 4
+	tcpBytes := packet[ipHeaderLen:]
+	dataOffset := int(tcpBytes[12]>>4) * 4
+	if dataOffset != 32 {
+		t.Fatalf("PureAck data offset: want 32 (TS), got %d", dataOffset)
+	}
+	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		t.Fatal("PureAck checksum verification failed")
+	}
+}
+
+func TestDataPacketsTimestampSegmentation(t *testing.T) {
+	// With timestamps on an IPv6 flow, a full read (ReadBufferByteCount
+	// accounts for the TS option) must NOT split into a runt tail segment
+	// (Opus MED-1). 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
+	cs := &ConnectionState{
+		ipVersion:       6,
+		sourceIp:        net.ParseIP("2001:db8::1"),
+		destinationIp:   net.ParseIP("2001:db8::2"),
+		sourcePort:      40000,
+		destinationPort: 443,
+		enableTimestamp: true,
+		peerMss:         1400,
+	}
+	payload := make([]byte, 1368)
+	packets, err := cs.DataPackets(payload, len(payload), DefaultMtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	// One segment: 1368 <= min(1368, peerMss).
+	if len(packets) != 1 {
+		t.Fatalf("want 1 segment (no runt), got %d", len(packets))
+	}
+}

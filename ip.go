@@ -220,14 +220,13 @@ func parseTcpOptions(tcp *parsedTcp) {
 			case 2:
 				if optionByteCount == 4 {
 					mss := binary.BigEndian.Uint16(tcp.options[optionIndex+2 : optionIndex+4])
-					// RFC 879 fallback is 536; accept anything at or above it.
-					// A tiny peer MSS (e.g. 1) would otherwise force near-
-					// single-byte segments for the life of the connection
-					// (Sonnet review finding).
-					if mss >= 536 {
-						tcp.enableMss = true
-						tcp.mss = uint32(mss)
-					}
+					// Clamp to RFC 879's 536 fallback floor: a tiny peer MSS
+					// (e.g. 1) would otherwise force near-single-byte
+					// segments for the life of the connection. Clamping
+					// (not discarding) keeps honoring the peer's stated
+					// limit when it is merely small (Opus review MED-3).
+					tcp.enableMss = true
+					tcp.mss = uint32(max(mss, 536))
 				}
 			case 3:
 				if optionByteCount == 3 {
@@ -358,7 +357,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
 		// avoid fragmentation
-		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
+		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions) - tcpTimestampOptionByteCount,
 		MinWindowSize:       uint32(kib(4)),
 		InitialWindowSize:   scaledPow2WindowSize(mib(1), kib(4), kib(128)),
 		MaxWindowSize:       uint32(mib(4)),
@@ -2079,6 +2078,10 @@ func (self *TcpSequence) Run() {
 	}
 
 	if packetErr != nil {
+		// SynAck failed (e.g. an MTU too small for the headers). Log it —
+		// the client will retry its SYN on its own timeout, but a silent
+		// return here leaves no trace (Opus LOW-3).
+		self.log.V(1).Infof("[init]synack error = %s\n", packetErr)
 		return
 	}
 
@@ -2685,8 +2688,10 @@ const tcpTimestampOptionByteCount = 12
 
 var tcpTimestampEpoch = time.Now()
 
-// Returns a nonzero millisecond timestamp for RFC 7323 packets. TCP compares
-// these values modulo 32 bits, so process-relative monotonic time is enough.
+// Returns a millisecond timestamp for RFC 7323 packets. TCP compares these
+// values modulo 32 bits, so process-relative monotonic time is enough. The
+// value can wrap through zero after ~49 days of uptime, which is harmless —
+// the ==0 sentinel only applies to peer values (Opus NIT).
 func (self *ConnectionState) timestampValue() uint32 {
 	if self.timestampValueForTest != nil {
 		return self.timestampValueForTest()
@@ -2778,6 +2783,26 @@ func (self *ConnectionState) SynAck(mtu int) ([]byte, error) {
 
 	return packet, nil
 }
+
+// tcpOptionsBytes returns the TCP option bytes for a non-RST segment:
+// the RFC 7323 timestamp option (NOP-NOP-TSval-TSecr) when negotiated, else
+// empty. RFC 7323 §3.2 requires TSopt on EVERY non-RST segment once
+// negotiated — omitting it on pure ACKs and FIN-ACKs breaks PAWS/RTT sampling
+// and can stall connection close on strict stacks (Opus review MED-2).
+func (self *ConnectionState) tcpOptionsBytes() []byte {
+	if !self.enableTimestamp {
+		return nil
+	}
+	options := make([]byte, tcpTimestampOptionByteCount)
+	options[0] = 1
+	options[1] = 1
+	options[2] = 8
+	options[3] = 10
+	binary.BigEndian.PutUint32(options[4:8], self.timestampValue())
+	binary.BigEndian.PutUint32(options[8:12], self.timestampRecent)
+	return options
+}
+
 func (self *ConnectionState) PureAck() ([]byte, error) {
 	var ipHeaderByteCount int
 	switch self.ipVersion {
@@ -2787,7 +2812,9 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
 		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
+	options := self.tcpOptionsBytes()
+	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions + len(options)
+	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
 		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
@@ -2795,9 +2822,9 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
 		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), nil)
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), options)
 
-	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
+	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
 	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
@@ -2813,7 +2840,9 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
 		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
+	options := self.tcpOptionsBytes()
+	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions + len(options)
+	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
 		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
@@ -2822,9 +2851,9 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
 	}
 
 	flags := tcpFlagFin | tcpFlagAck
-	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), nil)
+	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), options)
 
-	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
+	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
 	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
@@ -2904,10 +2933,8 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 		ipHeaderByteCount = Ipv6HeaderSize
 	}
 
-	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions
-	if self.enableTimestamp {
-		tcpHeaderByteCount += tcpTimestampOptionByteCount
-	}
+	options := self.tcpOptionsBytes()
+	tcpHeaderByteCount := TcpHeaderSizeWithoutExtensions + len(options)
 	totalLen := ipHeaderByteCount + tcpHeaderByteCount + len(payload)
 	packet := MessagePoolGet(totalLen)
 	switch self.ipVersion {
@@ -2917,17 +2944,6 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
 	}
 
-	options := make([]byte, tcpHeaderByteCount-TcpHeaderSizeWithoutExtensions)
-	optionIndex := 0
-	if self.enableTimestamp {
-		options[optionIndex] = 1
-		options[optionIndex+1] = 1
-		options[optionIndex+2] = 8
-		options[optionIndex+3] = 10
-		binary.BigEndian.PutUint32(options[optionIndex+4:optionIndex+8], self.timestampValue())
-		binary.BigEndian.PutUint32(options[optionIndex+8:optionIndex+12], self.timestampRecent)
-		optionIndex += tcpTimestampOptionByteCount
-	}
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), options)
 	copy(packet[ipHeaderByteCount+tcpHeaderByteCount:], payload)
 
