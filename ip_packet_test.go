@@ -1466,8 +1466,40 @@ func TestDataPacketsTimestampSegmentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DataPackets failed: %v", err)
 	}
-	// One segment: 1368 <= min(1368, peerMss).
+	// One segment: 1368 <= min(1368, peerMss - 12 opts) = 1368.
 	if len(packets) != 1 {
 		t.Fatalf("want 1 segment (no runt), got %d", len(packets))
+	}
+}
+
+func TestDataPacketsPeerMssWireBudget(t *testing.T) {
+	// CodeRabbit finding: with timestamps on, a segment at the peer's MSS
+	// must leave room for OUR 12-byte TS option so the wire size stays
+	// within the peer's path-MTU budget (no fragmentation/drop).
+	// peerMss 1460, IPv4 (20+20 headers) + 12 TS -> data budget = min(
+	// 1440-52=1388, 1460-12=1448) = 1388.
+	cs := &ConnectionState{
+		ipVersion:       4,
+		sourceIp:        net.IPv4(10, 0, 0, 1).To4(),
+		destinationIp:   net.IPv4(192, 168, 1, 1).To4(),
+		sourcePort:      40000,
+		destinationPort: 443,
+		enableTimestamp: true,
+		peerMss:         1460,
+	}
+	payload := make([]byte, 1460) // full MSS-sized burst
+	packets, err := cs.DataPackets(payload, len(payload), DefaultMtu)
+	if err != nil {
+		t.Fatalf("DataPackets failed: %v", err)
+	}
+	// Every segment's data payload must be <= 1388 (our MTU-derived budget,
+	// which already includes the TS option).
+	for i, pkt := range packets {
+		ipHeaderLen := int(pkt[0]&0x0f) * 4
+		dataOffset := int(pkt[ipHeaderLen+12]>>4) * 4
+		dataLen := len(pkt) - ipHeaderLen - dataOffset
+		if dataLen > 1388 {
+			t.Fatalf("segment %d: data %d exceeds wire budget 1388 (TS option not accounted)", i, dataLen)
+		}
 	}
 }
