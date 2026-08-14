@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.28.1
+**Current Version**: v3.23.0-fix.29.0 (next release)
 
 ---
 
@@ -2545,3 +2545,102 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A — the fork's report/schema/hub are not shared with `urnetwork/connect`.
 
 **Status**: ✅ v3.23.0-fix.28.1 (PR #360). Needs a fleet deploy — provider binary + hub image both change.
+## 114. Resource-Leak Hunt — Per-Bucket Source-Count Refcount Fix (PR #367)
+
+**Purpose**: A monotonic map-growth leak in the multi-client window. `addSource` incremented `sourceCount[source]` per PACKET while the bucket path set is deduped, and eviction decremented once per (bucket, path) — so a source sending N packets in one bucket left a phantom N-1 count that never reached zero, and the (destination, source) entry was never pruned. At thousands-of-proxies scale this grew `ip4DestinationSourceCount`/`ip6DestinationSourceCount` monotonically per pair, inflating window-resize sizing and ulimit warnings.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`.
+
+**Change**: `addSource` now increments the source-count refcount only when the path is first added to the bucket — exactly matching what eviction subtracts. The count is a pure liveness refcount (readers only use `len()` of the inner maps), so no consumed value changes; pruning is restored.
+
+**Effect**: Fixed. The first finding of a full leak hunt (see #116-#120); every fix in the hunt is mutation-proven (removing the guard fails the regression test).
+
+**How to Identify in New Upstream**: The pattern is fork-native to the multi-client window; check `addSource`/`coalesceEventBuckets` for increment/decrement symmetry.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #367). Needs a fleet deploy.
+
+## 115. Resource-Leak Hunt — runHandshake Worker Freed on TlsTimeout (PR #369)
+
+**Purpose**: The handshake timeout watchdog fired `completeHandshake(timeoutErr)` at TlsTimeout but never cancelled the epoch's ctx, so `runHandshake` stayed parked in `sequenceTlsTransport.Read` (no deadline) until a rebuild or session close — a stranded goroutine per timed-out handshake against silent/departed peers.
+
+**Files Modified**: `transfer_encrypt.go`, `transfer_encrypt_restart_test.go`.
+
+**Change**: The watchdog now cancels the epoch ctx only when the timeout actually recorded a failure (`handshakeErr` set). `completeHandshake` can no-op through its done() gate if the handshake finished concurrently — the epoch is then established and its ctx must stay alive to serve the live cipher, so the cancel is gated on the recorded failure (race sibling). Complements the rebuild-cancel from #353 (covers the churn case where a new send arrives); this closes the silent-peer case.
+
+**Effect**: Fixed. Stranded worker per timed-out handshake eliminated.
+
+**How to Identify in New Upstream**: `handshakeTimeoutWatcher` in `transfer_encrypt.go` — check whether the timeout branch cancels the epoch ctx.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #369). Needs a fleet deploy.
+
+## 116. Resource-Leak Hunt — update ctx Cancelled on Client Removal (PR #370 + #373)
+
+**Purpose**: `removeClient` nulled `update.client` but never cancelled `update.ctx`, so the update's per-flow teardown goroutine stayed parked in `waitForIdleUpdate` (`time.After` up to SequenceIdleTimeout, default 120s) and could not observe the client removal until the idle timer fired. Every client removal stranded one goroutine + one timer for the full idle timeout.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`.
+
+**Change**: `removeClient` — the single choke point wired as `clientRemoveCallback` for every window — now cancels each affected update's ctx, covering all removal paths (window resize, error removal, replacedClient, shuffle, batch removeClients). `waitForIdleUpdate` returns on ctx.Done and the teardown loop's updateDone check tears the flow down cleanly; the goroutine's own `defer update.cancel()` remains idempotent-safe. Follow-up #373 added a supersede guard: the teardown closure now verifies it is still the registered update for its path before committing the delete and the affinity strip (both ip4/ip6 branches), so a successor registered at the same path after cancellation is never orphaned — otherwise packets would split across exit clients and break flows.
+
+**Effect**: Fixed. Stranded teardown goroutines/timers eliminated; successor-update clobbering (found by independent audit of #370) closed.
+
+**How to Identify in New Upstream**: `removeClient` in `ip_remote_multi_client.go` — check whether it cancels per-update ctxs and whether the teardown delete is guarded by path-map ownership.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #370, #373). Needs a fleet deploy.
+
+## 117. Resource-Leak Hunt — Zombie refs==0 Sessions under IdleTimeout==0 (PR #371)
+
+**Purpose**: The PQE/Required path replaced a nil `EncryptionSettings` with `DefaultEncryptionSettings()`, which ships `IdleTimeout == 0`. With that value, `Release()` defers deletion while a handshake is in flight (the session must stay registered so the next send reuses it), but `Run()` only arms its `CancelIfIdle` reap loop when `0 < IdleTimeout` — so once the handshake settles (success or failure), a refs==0 session stayed registered forever: a zombie that grew monotonically per departed peer.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`.
+
+**Change**: The PQE path now derives the same sequence-bounded idle horizon `DefaultClientSettings` uses (max of send/receive buffer idle timeouts) instead of adopting the 0 default, so the reap loop is armed and the session outlives the sequences that ref-hold it without leaking indefinitely. A reap-recheck-after-handshake was deliberately not chosen: it would tear down a just-established cipher and churn a fresh ClientHello on the next send, which the keep-alive comment explicitly warns against.
+
+**Effect**: Fixed. Zombie refs==0 sessions under the PQE path eliminated.
+
+**How to Identify in New Upstream**: `DefaultEncryptionSettings` in `transfer_encrypt.go` ships IdleTimeout 0; check every consumer that adopts it wholesale for an armed reap loop.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #371). Needs a fleet deploy.
+
+## 118. Resource-Leak Hunt — Pooled Buffer Returned on SendEncryptedControl Cancel (PR #372)
+
+**Purpose**: The `SendEncryptedControl` retry loop exited via ctx.Done (caller ctx or send-buffer ctx) without returning `ecBytes` — a message-pool buffer from `ProtoMarshal`. `Pack` only takes ownership of `Frame.MessageBytes` on success (the send sequence returns it after transmission); on every failed Pack the caller retains ownership, so each cancel-path exit leaked one pooled buffer per teardown race.
+
+**Files Modified**: `transfer.go`, `transfer_test.go`.
+
+**Change**: Both ctx.Done exits in the retry loop now return `ecBytes` to the pool. `MessagePoolReturn` is safe if `MarshalAppend` reallocated (cap no longer matches a pool bucket -> no-op), so the realloc corner is covered.
+
+**Effect**: Fixed. One pooled buffer per teardown race no longer leaked.
+
+**How to Identify in New Upstream**: `SendEncryptedControl` in `transfer.go` — check the retry loop's exit paths return the marshaled bytes.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #372). Needs a fleet deploy.
+
+## 119. Resource-Leak Hunt — Cancel Unsubscribes Receive Callback (PR #374)
+
+**Purpose**: `multiClientChannel.Cancel()` called `self.cancel()` and `client.Cancel()` but never `clientReceiveUnsub()`, unlike `Close()`. A Cancel-only path (client eviction, shuffle, replacedClient) left the channel's receive callback registered on the client, retaining the dead channel's callback chain until the next resize — a bounded but steady retention per cancelled client.
+
+**Files Modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_test.go`.
+
+**Change**: `Cancel()` now calls `clientReceiveUnsub()` like `Close()`. `CallbackList.Remove` is idempotent (BinarySearch miss returns silently), so a later Close unsubscribing again is a no-op.
+
+**Effect**: Fixed. Dead clients release their callback chains immediately.
+
+**How to Identify in New Upstream**: `multiClientChannel.Cancel` vs `Close` — check both unsubscribe the receive callback.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #374). Needs a fleet deploy.
+
+## 120. Resource-Leak Hunt — Flaky Test Root Causes Closed (PR #364, #368)
+
+**Purpose**: Two CI flakes traced to deterministic bugs rather than load, and fixed at the root so every future PR stops hitting them.
+
+**Files Modified**: `ip_remote_multi_client_test.go`, `provider/proxy_grade_paid_test.go`.
+
+**Change**:
+- PR #364: the window-stats `-short` timeout was a fixed 300ms that only happened to span the 3-bucket minimum; the assertion silently became a coin flip under `-race` load. The timeout is now derived from `StatsWindowBucketDuration` (4x = one spare bucket over the minimum), and deterministic regression tests (synthetic buckets, no wall-clock dependency) were folded in.
+- PR #368: `TestPaidProxyGrader_UndecidableKeepsPriorGrade` failed intermittently because the probe host table contains literal IPs (1.1.1.1/8.8.8.8/9.9.9.9) that `resolveProbeTarget` short-circuits via `net.ParseIP` BEFORE consulting the DNS-fail cache — a seeded fail can never make a literal IP unresolvable, so any pass whose sampled block includes one always dials it (~4.7% of passes). The test now pins the pass counter to a hostname-only block and seeds exactly that.
+
+**Effect**: Fixed. CI is deterministic; the flake class (timing-sensitive assertions, literal-IP fixtures) documented in the audit skill.
+
+**How to Identify in New Upstream**: Any test asserting "all sampled targets unresolvable" against a table containing literal IPs is unfixable-by-seeding; pin the pass to a hostname-only block.
+
+**Status**: ✅ v3.23.0-fix.28.1 (PR #364, #368). No fleet deploy — test-only.
