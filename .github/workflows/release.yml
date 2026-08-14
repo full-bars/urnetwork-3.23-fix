@@ -312,6 +312,73 @@ jobs:
             urnet-docker-windows-amd64 \
             urnet-docker-windows-arm64
 
+      - name: Install ClamAV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clamav
+          # Update signatures. Use a generous timeout: freshclam can be slow on
+          # first run (downloads the full CVD database).
+          sudo freshclam --quiet || true
+          clamscan --version
+
+      - name: ClamAV self-test (EICAR)
+        run: |
+          echo -n 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
+          set +e
+          clamscan --no-summary /tmp/eicar.com
+          RC=$?
+          set -e
+          if [ "$RC" -ne 1 ]; then
+            echo "EICAR self-test failed: expected exit 1 (virus found), got $RC"
+            exit 1
+          fi
+          echo "ClamAV self-test OK: EICAR detected"
+
+      - name: ClamAV scan of release binaries
+        run: |
+          VERSION=${GITHUB_REF_NAME:-latest}
+          FAILED=0
+          # Scan every binary that ships in the release, mirroring the
+          # VirusTotal scan above. ClamAV runs locally (Cisco Talos
+          # signatures) as a second, quota-free opinion.
+          for f in \
+            release_tmp/linux/amd64/provider \
+            release_tmp/linux/arm64/provider \
+            release_tmp/darwin/amd64/provider \
+            release_tmp/darwin/arm64/provider \
+            release_tmp/windows/amd64/provider.exe \
+            release_tmp/windows/arm64/provider.exe \
+            urnetwork-hub-${VERSION}-linux-amd64 \
+            urnetwork-hub-${VERSION}-linux-arm64 \
+            urnet-tools-linux-amd64 \
+            urnet-tools-linux-arm64 \
+            urnet-tools-darwin-amd64 \
+            urnet-tools-darwin-arm64 \
+            urnet-tools-windows-amd64 \
+            urnet-tools-windows-arm64 \
+            urnet-docker-linux-amd64 \
+            urnet-docker-linux-arm64 \
+            urnet-docker-darwin-amd64 \
+            urnet-docker-darwin-arm64 \
+            urnet-docker-windows-amd64 \
+            urnet-docker-windows-arm64
+          do
+            set +e
+            clamscan --infected --no-summary "$f"
+            RC=$?
+            set -e
+            if [ "$RC" -eq 1 ]; then
+              echo "INFECTED: $f"
+              FAILED=1
+            elif [ "$RC" -gt 1 ]; then
+              echo "CLAMSCAN ERROR ($RC): $f"
+              FAILED=1
+            else
+              echo "CLEAN: $f"
+            fi
+          done
+          exit "$FAILED"
+
       - name: Create provider tarballs
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
