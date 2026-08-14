@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -407,5 +408,39 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	// Force must bypass the gate.
 	if ok, err := confirmGate("restart "+p.Unit, p, true, false); err != nil || !ok {
 		t.Fatalf("confirmGate with force = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestConfirmStdinReadNonInteractiveRefuses: an open-but-silent pipe (cron,
+// CI, MCP exec) must be refused with a clear message, not block forever.
+// Regression for gauntlet BUG-14: self-update blocked on read(0) for minutes
+// because ReadString on an open pipe never sees EOF.
+func TestConfirmStdinReadNonInteractiveRefuses(t *testing.T) {
+	// Point os.Stdin at an open pipe that never delivers data: a char-device
+	// check must see it as non-interactive and refuse BEFORE reading. The
+	// read itself would otherwise block forever (BUG-14).
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace the shared reader too — it may hold a buffered fd from a
+	// previous prompt in the same test binary.
+	os.Stdin = r
+	oldReader := stdinReader
+	stdinReader = bufio.NewReader(r)
+	defer func() {
+		os.Stdin = oldStdin
+		stdinReader = oldReader
+		w.Close()
+		r.Close()
+	}()
+
+	line, err := confirmStdinRead("prompt> ")
+	if err == nil {
+		t.Fatalf("confirmStdinRead on open-pipe stdin = (%q, nil), want refusal error", line)
+	}
+	if !strings.Contains(err.Error(), "not a terminal") {
+		t.Fatalf("confirmStdinRead error = %v, want the non-interactive refusal message", err)
 	}
 }

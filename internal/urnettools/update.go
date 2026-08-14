@@ -360,8 +360,7 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 		return nil
 	}
 	if !force {
-		fmt.Printf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag)
-		line, err := stdinReader.ReadString('\n')
+		line, err := confirmStdinRead(fmt.Sprintf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag))
 		if err != nil {
 			return fmt.Errorf("read confirmation: %w", err)
 		}

@@ -138,8 +138,7 @@ func interactivePick(providers []Provider) ([]Provider, error) {
 		fmt.Printf("  [%d] %s  user=%s  net=%s  state=%s\n",
 			i+1, providerLabel(p), p.User, p.Network, p.StateDir)
 	}
-	fmt.Print("> ")
-	line, err := stdinReader.ReadString('\n')
+	line, err := confirmStdinRead("> ")
 	if err != nil {
 		return nil, fmt.Errorf("read selection: %w", err)
 	}
