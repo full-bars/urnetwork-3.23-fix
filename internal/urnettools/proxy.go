@@ -16,15 +16,28 @@ func providerSubcommand(p Provider, args ...string) error {
 	if p.Binary == "" {
 		return fmt.Errorf("provider %s has no resolvable binary path", providerLabel(p))
 	}
-	cmd := exec.Command(p.Binary, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	// Run with the provider's HOME so state lands in the right directory.
+	var cmd *exec.Cmd
+	// Run the delegated command AS the provider's user, not the caller.
+	// Setting HOME alone is insufficient: the provider binary writes state
+	// files (proxy, proxy_url, reload trigger) owned by the process user,
+	// so a root-run `urnet-tools proxy add` produced root-owned 0600 files
+	// in the provider's state dir that the provider process could not read —
+	// silently breaking the entire proxy pipeline (gauntlet BUG-15, live on
+	// a fresh droplet: "reload trigger read failed: permission denied"
+	// every 2s, URL fetch never started).
 	if p.User != "" {
 		if home := homeForUser(p.User); home != "" {
-			cmd.Env = append(os.Environ(), "HOME="+home)
+			cmd = exec.Command("runuser", "-u", p.User, "--", p.Binary)
+			cmd.Args = append(cmd.Args, args...)
+			cmd.Env = append(os.Environ(), "HOME="+home, "USER="+p.User, "LOGNAME="+p.User)
+		} else {
+			cmd = exec.Command(p.Binary, args...)
 		}
+	} else {
+		cmd = exec.Command(p.Binary, args...)
 	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("provider %s: %v", providerLabel(p), err)
 	}
