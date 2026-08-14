@@ -271,8 +271,13 @@ jobs:
               fi
             fi
             # Stream the report on every poll so droplet death never costs
-            # the whole artifact (SHOULD-FIX 10).
-            timeout 30 ssh $SSHOPTS_B root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.txt 2>/dev/null || true
+            # the whole artifact. Append to a STAGING file first: a direct
+            # truncating redirect would wipe prior polls if ssh fails here
+            # (CodeRabbit major: report redirect destroys streamed output).
+            timeout 30 ssh $SSHOPTS_B root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.poll 2>/dev/null
+            if [ -s /tmp/shakedown-report.poll ]; then
+              mv /tmp/shakedown-report.poll /tmp/shakedown-report.txt
+            fi
             sleep 60
           done
           if [ -z "$SHAKE_RC" ]; then
@@ -345,8 +350,10 @@ jobs:
           else
             DET_VERDICT="RELEASE_OK"
           fi
-          echo "AI_REVIEW_STATUS=OK" > /tmp/shakedown-ai-review.txt
-          echo "DETERMINISTIC_VERDICT=$DET_VERDICT" >> /tmp/shakedown-ai-review.txt
+          # Write the deterministic header FIRST. AI_REVIEW_STATUS is written
+          # exactly once AFTER the request resolves (CodeRabbit: duplicate
+          # OK/FAILED with conflicting values).
+          echo "DETERMINISTIC_VERDICT=$DET_VERDICT" > /tmp/shakedown-ai-review.txt
           # The forced-by note must come AFTER the > write above, or it is
           # truncated (DS R3 NICE: annotation always lost).
           if [ "$DET_VERDICT" = "RELEASE_BLOCKED" ] && [ "$SHAKE_EXIT" != "0" ] && [ "$SHAKE_EXIT" != "75" ]; then
@@ -355,6 +362,7 @@ jobs:
           echo "PASS=$(echo "$REPORT_TEXT" | grep -c '^PASS:' || true)"
           echo "FAIL=$(echo "$REPORT_TEXT" | grep -c '^FAIL:' || true)"
           if [ -z "$GEMINI_API_KEY" ]; then
+            echo "AI_REVIEW_STATUS=SKIPPED" >> /tmp/shakedown-ai-review.txt
             echo "AI review skipped (no GEMINI_API_KEY); deterministic verdict: $DET_VERDICT" >> /tmp/shakedown-ai-review.txt
             echo "::warning::Gemini unavailable; using deterministic verdict $DET_VERDICT"
             echo "::group::AI Shakedown Review"
@@ -402,7 +410,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.GAUNTLET_WEBHOOK }}
         run: |
-          VERDICT=$(grep -oE "RELEASE_(BLOCKED|OK)" /tmp/shakedown-ai-review.txt 2>/dev/null | head -1)
+          VERDICT=$(grep -oE "DETERMINISTIC_VERDICT=(RELEASE_BLOCKED|RELEASE_OK|ENV_BLOCKER)" /tmp/shakedown-ai-review.txt 2>/dev/null | head -1 | cut -d= -f2)
           VERDICT="${VERDICT:-NO_REVIEW}"
           # grep -c emits "0" AND exits 1 when there are no matches; || true.
           PASS=$(grep -c "^PASS:" /tmp/shakedown-report.txt 2>/dev/null || true)
