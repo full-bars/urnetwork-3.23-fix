@@ -4,7 +4,7 @@
 # regular-person install flow, Go tooling, proxy paths, URL sources with real
 # free proxies, egress, and docker.
 #
-# Called by do_shakedown.sh with: $1 = JWT file path (already on the box)
+# Called by the shakedown workflow with: $1 = JWT file path (already on the box)
 #
 # DESIGN (Opus review 2026-08-14 folded):
 #  - Every assertion is exit-status-first, text-second (structural fix).
@@ -190,7 +190,7 @@ fi
 # ---------- C. Go tool basics ----------
 section "C. Go tool"
 V=$(urnet-tools version 2>&1)
-echo "$V" | grep -qE "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V). Want $EXPECTED_BASE"
+echo "$V" | grep -qE "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V). Version must match $EXPECTED_BASE"
 run_check "providers discovers the account" urnet-tools providers 2>&1
 run_check "status running" urnet-tools status 2>&1
 run_check "proxy health cmd" urnet-tools proxy health 2>&1
@@ -232,7 +232,7 @@ echo "INFO: cache after first cycle: $CACHED" | tee -a "$REPORT"
 if grep -q "FAIL: auth" "$REPORT"; then
   skip "URL cache (auth failed earlier)"
 else
-  [ "${CACHED:-0}" -gt 0 ] && ok "URL cache populated ($CACHED)" || echo "INFO: cache empty yet . Phase 2 observation follows" | tee -a "$REPORT"
+  [ "${CACHED:-0}" -gt 0 ] && ok "URL cache populated ($CACHED)" || echo "INFO: cache is empty. Phase 2 observation follows" | tee -a "$REPORT"
 fi
 
 # ---------- E2. Admission pipeline (Tier 1) ----------
@@ -295,19 +295,25 @@ section "G. Hub (systemd)"
 # Verify that the provider reports into the hub.
 # The hub also ships as a docker image (ghcr.io/full-bars/urnetwork-3.23-fix-hub,
 # pushed by hub-build.yml). Section G2 tests the container path.
-run_check "hub install" urnet-tools hub install 2>&1
+# MUST-FIX: pin the hub to the release under test. Without --tag, hub install
+# resolves the latest release, which lags on tag-triggered runs.
+run_check "hub install (pinned)" urnet-tools hub install "--tag=$EXPECTED_VERSION" 2>&1
 if [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnetwork-hub ]; then
   ok "hub binary installed"
 else
   bad "hub binary missing after hub install"
 fi
-# Start the hub unit. hub install writes the unit but does not start it.
+# MUST-FIX: hub install writes the unit but does not reload systemd. The start
+# can fail on a fresh unit without daemon-reload.
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload 2>&1 && ok "hub daemon-reload" || bad "hub daemon-reload"
 HUB_START=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork-hub.service 2>&1); HUB_RC=$?
 [ "$HUB_RC" -eq 0 ] && ok "hub unit started (exit 0)" || { bad "hub unit start (exit $HUB_RC)"; echo "$HUB_START" | tail -3 | tee -a "$REPORT"; }
 sleep 5
-# The dashboard must serve on :8080. The default is plain HTTP.
-HUB_HTTP=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/ 2>/dev/null)
-[ -n "$HUB_HTTP" ] && ok "hub dashboard serves (HTTP $HUB_HTTP)" || bad "hub dashboard unreachable on :8080"
+# MUST-FIX: the dashboard check must assert a real 200. With no
+# URNETWORK_HUB_DASHBOARD_PASS the dashboard is unauthenticated. curl -f -w
+# emits 000 on transport failure, so a non-empty check can never fail.
+HUB_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/ 2>/dev/null)
+[ "$HUB_HTTP" = "200" ] && ok "hub dashboard serves (HTTP 200)" || bad "hub dashboard not 200 (HTTP ${HUB_HTTP:-none})"
 # Point the provider at the hub. report <url> writes ~/.urnetwork/report_url.
 # The reporter re-reads the file live. No provider restart happens. The
 # Phase 2 uptime clock stays untouched.
@@ -315,12 +321,19 @@ HUB_HTTP=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0
 # report_interval drops it to 10s (the minimum).
 run_check "report URL set to local hub" urnet-tools report http://127.0.0.1:8080 2>&1
 printf '10s\n' > /home/urnet/.urnetwork/report_interval && chown urnet:urnet /home/urnet/.urnetwork/report_interval
-# Wait for a report to hit the hub API. /api/nodes needs basic auth. The
-# hub journal logs received reports. Grep the hub journal for the report.
-HUB_JOURNAL="runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork-hub.service --no-pager 2>/dev/null"
+# MUST-FIX: the interval override only takes effect ON THE NEXT TICK, and the
+# ticker is at the 5m default. Restart the provider so the 10s interval
+# applies from the first tick. Phase 2 has not started yet, so this restart
+# does not disturb the remove-dead uptime clock.
+MARK=$(restart_provider)
+CID=$(wait_client_id "$MARK" 120)
+[ -n "$CID" ] && ok "provider restarted for 10s report cadence (client_id ${CID:0:12}…)" || bad "provider restart after report_interval"
+# MUST-FIX: grep the REAL receive line. The hub prints at startup
+# "WARNING URNETWORK_HUB_TOKEN not set ... /api/report ...", which matches a
+# bare report|bandwidth grep. The receive signal is "report from <node>".
 HUB_REPORT_OK=0
-for i in $(seq 1 12); do
-  if eval "$HUB_JOURNAL" | grep -qiE "report|bandwidth"; then
+for i in $(seq 1 36); do
+  if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork-hub.service --no-pager 2>/dev/null | grep -qE "^report from "; then
     HUB_REPORT_OK=1; break
   fi
   sleep 10
@@ -328,10 +341,13 @@ done
 if [ "$HUB_REPORT_OK" = "1" ]; then
   ok "hub received provider report"
 else
-  echo "WARN: no report line in hub journal within 120s (signal only)" | tee -a "$REPORT"
+  echo "WARN: no report from line in hub journal within 360s (signal only)" | tee -a "$REPORT"
 fi
 # Restore the default report interval. The rest of the run must not spam the hub.
 rm -f /home/urnet/.urnetwork/report_interval
+# MUST-FIX: clear the report URL. Otherwise the provider keeps POSTing to a
+# dead 127.0.0.1:8080 every 15s for the remaining ~100 min.
+run_check "report URL cleared" urnet-tools report off 2>&1
 # Stop the hub unit. Leave the box tidy for the provider tests.
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork-hub.service 2>&1 && ok "hub unit stopped" || bad "hub unit stop"
 
@@ -340,20 +356,32 @@ section "G2. Hub (docker)"
 # The hub docker image is ghcr.io/full-bars/urnetwork-3.23-fix-hub.
 # The entrypoint listens on :8080 and writes to /data.
 # A /data volume must persist the SQLite database.
+# The image versions independently of the provider release (hub-docker-v*
+# tags; :latest = current main). :latest is the only tag pushed today.
 HUB_IMG="ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest"
-run_check "hub image pulled" docker pull "$HUB_IMG" 2>&1
-mkdir -p /tmp/hub-data
-docker run -d --name hub-test -p 18080:8080 -v /tmp/hub-data:/data "$HUB_IMG" >/dev/null 2>&1
+# MUST-FIX: unbounded docker pull can eat the watchdog. Cap it.
+run_check "hub image pulled" timeout 300 docker pull "$HUB_IMG" 2>&1
+# Record the digest so a later FAIL is attributable to a specific image.
+HUB_DIGEST=$(docker inspect -f '{{index .RepoDigests 0}}' "$HUB_IMG" 2>/dev/null || echo "unknown")
+echo "  hub image digest: $HUB_DIGEST" | tee -a "$REPORT"
+# MUST-FIX: clear stale data from a prior run. A leftover hub.db would make
+# the volume check pass without the current container writing anything.
+rm -rf /tmp/hub-data && mkdir -p /tmp/hub-data
+# MUST-FIX: bind to loopback. The droplet is public; with no
+# URNETWORK_HUB_TOKEN / URNETWORK_HUB_DASHBOARD_PASS, /api/report accepts
+# writes from anyone on 0.0.0.0.
+docker run -d --name hub-test -p 127.0.0.1:18080:8080 -v /tmp/hub-data:/data "$HUB_IMG" >/dev/null 2>&1
 sleep 6
 docker ps --format "{{.Names}}" | grep -q hub-test && ok "hub container up" || bad "hub container"
-# The dashboard must serve on the mapped port.
-HUB2_HTTP=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18080/ 2>/dev/null)
-[ -n "$HUB2_HTTP" ] && ok "hub container dashboard serves (HTTP $HUB2_HTTP)" || bad "hub container dashboard unreachable on :18080"
-# The /data volume must receive the SQLite database.
-HUB_DB=$(docker exec hub-test sh -c "ls /data/*.db 2>/dev/null | head -1" 2>/dev/null)
-[ -n "$HUB_DB" ] && ok "hub container wrote database ($HUB_DB)" || bad "hub container no database in /data"
+# The dashboard must serve on the mapped port. Assert a real 200.
+HUB2_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18080/ 2>/dev/null)
+[ "$HUB2_HTTP" = "200" ] && ok "hub container dashboard serves (HTTP 200)" || bad "hub container dashboard not 200 (HTTP ${HUB2_HTTP:-none})"
+# MUST-FIX: the /data check must assert on the HOST side. openStore creates
+# hub.db unconditionally in-container, so docker exec ls passes even if the
+# bind mount silently failed.
+[ -f /tmp/hub-data/hub.db ] && ok "hub container wrote database (host /tmp/hub-data/hub.db)" || bad "hub container no database on host volume"
 # Remove the container. Leave the box tidy.
-docker rm -f hub-test >/dev/null 2>&1 && ok "hub container removed" || bad "hub container rm"
+timeout 30 docker rm -f hub-test >/dev/null 2>&1 && ok "hub container removed" || bad "hub container rm"
 
 # ---------- H. Hot-restart + client identity lifecycle ----------
 section "H. Hot-restart + identity"
@@ -455,7 +483,7 @@ echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
 if [ -n "$BIN_VER" ] && echo "$BIN_VER" | grep -q "$EXPECTED_BASE"; then
   ok "update --tag produced a versioned binary ($BIN_VER)"
 else
-  bad "update --tag binary version missing/unexpected ($BIN_VER). Want $EXPECTED_BASE"
+  bad "update --tag binary version missing/unexpected ($BIN_VER). Version must match $EXPECTED_BASE"
 fi
 run_check "restored to latest" urnet-tools update -f 2>&1
 
@@ -478,7 +506,7 @@ section "P. Self-update"
 run_check "self-update -f" urnet-tools self-update -f 2>&1
 
 # ============ PHASE 2: long observation (20-100m) ============
-section "PHASE 2 START . long observation window"
+section "PHASE 2 START: long observation window"
 # MUST-FIX 3/Q5: remove-dead needs >= 65m of UNINTERRUPTED uptime. The final
 # restart below resets StartedAt, and NO further restarts happen until the
 # remove-dead call at the end (~110m in). Seed the blackhole NOW so the
@@ -507,7 +535,7 @@ while [ "$(date +%s)" -lt "$P2_END" ]; do
   else
     echo "SAMPLE $SAMPLE_N: provider process NOT RUNNING (pid missing!)" | tee -a "$REPORT"
   fi
-  # MUST-FIX 11: panic/fatal/SIGSEGV grep . highest-value zero-cost check.
+  # MUST-FIX 11: panic/fatal/SIGSEGV grep. This is the highest-value zero-cost check.
   PANICS=$(j | grep -cE "panic:|fatal error:|SIGSEGV|goroutine [0-9]+ \[running\]")
   [ "${PANICS:-0}" -gt 0 ] && { t1bad "panic/fatal/SIGSEGV in journal ($PANICS hits)"; break; }
   sleep 300
