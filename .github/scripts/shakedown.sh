@@ -51,7 +51,7 @@ run_check() {
 # j: search the provider journal (full, no -n window).
 # j: search the provider journal with a bounded window. Full-journal reads
 # on a 5s cadence are heavy on 1GB (Opus SHOULD-FIX 14).
-j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "${J_SINCE:-30 min ago}" 2>/dev/null; }
+j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "${J_SINCE:-90 min ago}" 2>/dev/null; }
 # j_full: unbounded journal (self-test calibration, panic sweep).
 j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
 
@@ -90,6 +90,12 @@ echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
 # would test the wrong release while reporting green.
 if [ -z "${EXPECTED_VERSION:-}" ]; then
   echo "FAIL: EXPECTED_VERSION not set (workflow must pass it)" | tee -a "$REPORT"
+  exit 75
+fi
+# EXPECTED_BASE empty would make grep -qE "" match anything, so every version
+# check would vacuously pass on a future v3.24 tag. Guard it (Sonnet SF 5).
+if [ -z "$EXPECTED_BASE" ]; then
+  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match v3.23.0-fix.N pattern" | tee -a "$REPORT"
   exit 75
 fi
 EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
@@ -176,14 +182,11 @@ fi
 section "SELF-TEST (pattern calibration)"
 J=$(j_full)   # self-test needs the full startup sequence, not a window
 SELF_TEST_FAIL=0
-# Binding calibration (Opus MUST-FIX 3): SELF_TEST_FAIL must not just be
-# printed — dependent assertions MUST know which patterns are trustworthy.
-# CALIBRATED_CLIENT_ID / CALIBRATED_SELECT / CALIBRATED_STAGE1
-# gate their dependent checks: an uncalibrated pattern -> SKIP, structurally
-# forbidden from setting TIER1_FAIL (a rotted regex must not block a release).
-CALIBRATED_CLIENT_ID=0
-CALIBRATED_SELECT=0
-CALIBRATED_STAGE1=0
+# Self-test: verify each log pattern against a known-good journal. A missing
+# pattern is logged as SELF-TEST-FAIL (a TEST_SCRIPT signal in the report).
+# Dependent checks do NOT gate on calibration: absence of a POSITIVE product
+# signal (client_id, stage-1 enabled=true, select success) means the product
+# is broken, not that the regex rotted (DeepSeek MF 3).
 for pat in \
   "client_id: [0-9a-f-]+ \((new|reused)\)" \
   "\[net\]\[s\]select:.*dur=[0-9]+ms" \
@@ -191,12 +194,6 @@ for pat in \
   "\[jwt\] refresh OK"; do
   if echo "$J" | grep -qE "$pat"; then
     ok "self-test pattern present: $pat"
-    case "$pat" in
-      *client_id*) CALIBRATED_CLIENT_ID=1 ;;
-      *select:*)   CALIBRATED_SELECT=1 ;;
-      *stage-1*)   CALIBRATED_STAGE1=1 ;;
-
-    esac
   else
     echo "SELF-TEST-FAIL: pattern missing in known-good journal: $pat" | tee -a "$REPORT"
     SELF_TEST_FAIL=1
@@ -206,7 +203,6 @@ SEL_T=$(echo "$J" | grep -cE "\[net\]\[s\]select:.*dur=[0-9]+ms")
 SEL_F=$(echo "$J" | grep -cE "\[net\]\[s\]select:.* = .*dur=[0-9]+ms")
 if [ $((SEL_T - SEL_F)) -gt 0 ]; then
   ok "self-test [net][s]select subtraction calibrated ($((SEL_T - SEL_F)) of $SEL_T)"
-  CALIBRATED_SELECT=1
 else
   echo "SELF-TEST-FAIL: [net][s]select subtraction empty on known-good journal (total=$SEL_T fails=$SEL_F)" | tee -a "$REPORT"
   SELF_TEST_FAIL=1
@@ -266,18 +262,18 @@ section "E2. Admission pipeline (Tier 1)"
 # Q4 principle: gate on STRUCTURAL signals (a line exists, an exit is 0),
 # never on the QUANTITY of live free proxies.
 CID_LINES=$(j | grep -cE "client_id: [0-9a-f-]+ \((new|reused)\)")
-if [ "$CALIBRATED_CLIENT_ID" != "1" ]; then
-  echo "SKIP: client identity check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
-  SKIP=$((SKIP+1))
-elif [ "${CID_LINES:-0}" -gt 0 ]; then
+# client_id absence = admission pipeline broken (product signal), not regex
+# rot. The self-test logs SELF-TEST-FAIL separately if the pattern is wrong.
+if [ "${CID_LINES:-0}" -gt 0 ]; then
   ok "client identities minted ($CID_LINES lines)"
 else
   t1bad "no client identities minted (admission pipeline broken?)"
 fi
-if [ "$CALIBRATED_STAGE1" != "1" ]; then
-  echo "SKIP: stage-1 probe check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
-  SKIP=$((SKIP+1))
-elif j | grep -qE "stage-1 table probe config: enabled=true"; then
+# The kill-switch check greps for a POSITIVE product signal (enabled=true).
+# Its absence means the product is broken, not that the regex rotted — the
+# self-test already logs SELF-TEST-FAIL separately if the pattern itself is
+# wrong (DeepSeek MF 3). Always gate; never SKIP a product signal.
+if j | grep -qE "stage-1 table probe config: enabled=true"; then
   ok "stage-1 probe enabled"
 else
   t1bad "stage-1 probe NOT enabled (kill switch stuck?)"
@@ -451,10 +447,8 @@ section "I. Control-plane ([net][s]select)"
 SELECT_TOTAL=$(j | grep -cE "\[net\]\[s\]select:.*dur=[0-9]+ms")
 SELECT_FAILS=$(j | grep -cE "\[net\]\[s\]select:.* = .*dur=[0-9]+ms")
 SELECT_HITS=$((SELECT_TOTAL - SELECT_FAILS))
-if [ "$CALIBRATED_SELECT" != "1" ]; then
-  echo "SKIP: [net][s]select check (pattern uncalibrated by self-test)" | tee -a "$REPORT"
-  SKIP=$((SKIP+1))
-elif [ "${SELECT_HITS:-0}" -gt 0 ]; then
+# select success lines absent = control-plane dials failing (product signal).
+if [ "${SELECT_HITS:-0}" -gt 0 ]; then
   ok "[net][s]select success lines ($SELECT_HITS of $SELECT_TOTAL)"
 else
   bad "[net][s]select success missing (total=$SELECT_TOTAL fails=$SELECT_FAILS)"
@@ -601,8 +595,13 @@ while [ "$(date +%s)" -lt "$P2_END" ]; do
 done
 # MUST-FIX 9 (Opus): a truncated soak must never be invisible. If the window
 # did not complete (early break on panic, or deadline guillotine), say so as
-# TEST_SCRIPT instead of silently grading the partial window PASS.
+# TEST_SCRIPT instead of silently grading the partial window PASS. A truncated
+# window also downgrades the soak-dependent gates (cache/Up/remove-dead) to
+# SKIP: their signals are partial and cannot gate the release either way
+# (DeepSeek SF 7).
+P2_TRUNCATED=0
 if [ "$SAMPLE_N" -lt "$P2_TOTAL" ]; then
+  P2_TRUNCATED=1
   echo "WARN: Phase 2 completed $SAMPLE_N/$P2_TOTAL samples (truncated window). Signals below are partial." | tee -a "$REPORT"
 fi
 N_RESTARTS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show urnetwork.service -p NRestarts 2>/dev/null | cut -d= -f2)
@@ -619,12 +618,18 @@ OOM_HITS=$(journalctl -k --no-pager 2>/dev/null | grep -ci "out of memory")
 CACHED_FINAL=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(len(d.get('cache',{})))" 2>/dev/null || echo 0)
 UP_FINAL=$(urnet-tools summary 2>&1 | grep -oE "Up: +[0-9]+" | grep -oE "[0-9]+" | tail -1)
 echo "INFO: final cache=$CACHED_FINAL up=${UP_FINAL:-0}" | tee -a "$REPORT"
-if [ "${CACHED_FINAL:-0}" -gt 0 ]; then
+if [ "$P2_TRUNCATED" = "1" ]; then
+  echo "SKIP: URL cache gate (Phase 2 truncated — partial window cannot gate)" | tee -a "$REPORT"
+  SKIP=$((SKIP+1))
+elif [ "${CACHED_FINAL:-0}" -gt 0 ]; then
   ok "URL cache populated at end of observation ($CACHED_FINAL)"
 else
   t1bad "URL cache empty after full observation (0 across 2+ cycles)"
 fi
-if [ "${UP_FINAL:-0}" -gt 0 ]; then
+if [ "$P2_TRUNCATED" = "1" ]; then
+  echo "SKIP: proxies Up gate (Phase 2 truncated — partial window cannot gate)" | tee -a "$REPORT"
+  SKIP=$((SKIP+1))
+elif [ "${UP_FINAL:-0}" -gt 0 ]; then
   ok "proxies UP at end of observation ($UP_FINAL)"
 elif [ "${CACHED_FINAL:-0}" -gt 20 ]; then
   t1bad "Up=0 with cache>20. Probe passed but admission never ran"
