@@ -151,8 +151,11 @@ jobs:
               curl -s -X DELETE -H "$AUTH" "$API/account/keys/$KEY_ID" -o /dev/null -w "key delete HTTP %{http_code}\n"
             fi
           }
-          # EXIT-only misses SIGTERM/SIGINT (job timeout, cancel). Trap them all.
-          trap cleanup EXIT INT TERM HUP
+          # EXIT-only misses SIGTERM/SIGINT (job timeout, cancel). Trap them
+          # all, and EXIT on signal (a trap that runs cleanup then resumes
+          # would keep polling a deleted droplet — DeepSeek SF 6).
+          trap 'cleanup; exit 143' TERM INT HUP
+          trap cleanup EXIT
 
           # --- Ephemeral SSH keypair for this run ---
           mkdir -p /tmp/sshkey && ssh-keygen -t ed25519 -f /tmp/sshkey/id_shakedown -N "" -C "shakedown-ci" >/dev/null 2>&1
@@ -218,32 +221,38 @@ jobs:
           # cap — Opus MUST-FIX 5). The wrapper writes the script exit code to
           # the rc sentinel via atomic rename (Sonnet finding #1: single \ so
           # $? reaches the REMOTE shell, not the runner's).
-          DEADLINE_EPOCH=$(( $(date +%s) + 7500 ))
+          # 6900s (115 min) poll budget leaves margin under the 150-min job cap:
+          # up to ~18 min setup + worst-case long Phase 1 + 30s collection +
+          # AI review + artifact all fit before SIGKILL (mimo finding #4).
+          DEADLINE_EPOCH=$(( $(date +%s) + 6900 ))
           # --no-block is REQUIRED: with Type=oneshot, systemd-run waits for the
           # start job to complete (= the whole script) unless told not to, which
           # would block ssh and recreate the original held-open bug (DS R3 M2).
-          ssh $SSHOPTS root@$IP "systemd-run --no-block --unit=shakedown --property=Type=oneshot --property=RemainAfterExit=yes --setenv=EXPECTED_VERSION='${EXPECTED_VERSION}' --setenv=DEADLINE_EPOCH='${DEADLINE_EPOCH}' /bin/bash -c 'bash /tmp/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1; echo \$? > /tmp/shakedown.rc.part; mv /tmp/shakedown.rc.part /tmp/shakedown.rc'" \
-            && echo "shakedown launched via systemd-run (ssh returned immediately)" || echo "systemd-run launch failed"
+          ssh $SSHOPTS root@$IP "systemd-run --no-block --unit=shakedown --property=Type=oneshot --property=RemainAfterExit=yes --setenv=EXPECTED_VERSION='${EXPECTED_VERSION}' --setenv=DEADLINE_EPOCH='${DEADLINE_EPOCH}' /bin/bash -c 'bash /tmp/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1; sync; echo \$? > /tmp/shakedown.rc.part; mv /tmp/shakedown.rc.part /tmp/shakedown.rc'" \
+            && echo "shakedown launched via systemd-run (ssh returned immediately)" \
+            || { echo "::error::systemd-run launch failed — aborting (cleanup deletes)"; exit 1; }
           # Poll for the rc SENTINEL (atomic mv), never the report file (it
           # exists from the script's first line). Bounded ssh per poll so one
           # stuck handshake cannot stall the loop. Poll deadline computed
           # against the job cap with a teardown reserve (MUST-FIX 5).
           SSHOPTS_B="$SSHOPTS -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
-          POLL_DEADLINE=$(( $(date +%s) + 7500 ))   # 125 min < 150 min job cap
+          POLL_DEADLINE=$(( DEADLINE_EPOCH + 1200 ))   # 20 min past the script's own deadline: the Phase-2 loop's final sleep 300 can overshoot P2_END by a full sample, so the poll must outlive the script (DeepSeek SF 5)
           SHAKE_RC=""
           CONSECUTIVE_FAIL=0
           while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
-            # Emit RC_EOF ONLY when the sentinel exists — otherwise the marker
-            # makes the first poll look complete (DS R3 M1: false timeout).
-            OUT=$(timeout 30 ssh $SSHOPTS_B root@$IP "test -f /tmp/shakedown.rc && cat /tmp/shakedown.rc && echo RC_EOF" 2>/dev/null)
+            # Emit a POSITIVE signal on every successful ssh: RC_EOF when the
+            # sentinel exists, STILL_RUNNING when it does not (true for most of
+            # the run). Empty OUT therefore means ssh itself failed, which is
+            # the only thing that increments CONSECUTIVE_FAIL (Sonnet MF 2).
+            OUT=$(timeout 30 ssh $SSHOPTS_B root@$IP "if test -f /tmp/shakedown.rc; then cat /tmp/shakedown.rc; echo RC_EOF; else echo STILL_RUNNING; fi" 2>/dev/null)
             if echo "$OUT" | grep -q "RC_EOF"; then
-              SHAKE_RC=$(echo "$OUT" | grep -v RC_EOF | head -1)
+              SHAKE_RC=$(echo "$OUT" | grep -v RC_EOF | grep -v STILL_RUNNING | head -1)
               echo "shakedown sentinel rc: $SHAKE_RC"
               break
             fi
             # Distinguish transport failure from sentinel-not-yet-written: a
-            # successful ssh with no RC_EOF means the script is still running
-            # (normal, reset the counter). Empty OUT = ssh failed.
+            # successful ssh emits STILL_RUNNING (normal, reset the counter).
+            # Empty OUT = ssh failed.
             if [ -n "$OUT" ]; then
               CONSECUTIVE_FAIL=0
               # STALLED detection (DS R3 S3): the script touches the heartbeat
@@ -285,9 +294,13 @@ jobs:
             SHAKE_RC=124
           fi
           echo "shakedown exit code: $SHAKE_RC"
-          # Collect the final report BEFORE trap deletes. Read after the
-          # sentinel so a mid-write partial is never captured as final.
-          timeout 30 ssh $SSHOPTS root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.txt 2>/dev/null || true
+          # Collect the final report BEFORE trap deletes. Stage then mv so a
+          # failed ssh (droplet lost) cannot truncate the streamed report —
+          # the same bug the poll loop guards against (Sonnet MUST-FIX 1).
+          timeout 30 ssh $SSHOPTS root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.final 2>/dev/null
+          if [ -s /tmp/shakedown-report.final ]; then
+            mv /tmp/shakedown-report.final /tmp/shakedown-report.txt
+          fi
           timeout 30 ssh $SSHOPTS root@$IP 'cat /tmp/shakedown.out' >> /tmp/shakedown-report.txt 2>/dev/null || true
           echo "REPORT_READY"
           exit $SHAKE_RC
@@ -314,6 +327,14 @@ jobs:
           # RELEASE_BLOCKED even if the report has no FAIL: line yet (Sonnet
           # finding #5: crash/timeout before any bad() call = false green).
           echo "$SHAKE_EXIT" > /tmp/shakedown.exit
+          # DeepSeek MF 4: a non-Tier-1 bad() FAIL (e.g. multi-provider
+          # ambiguity, hot-restart identity) exits the SCRIPT 0 but is still a
+          # product FAIL. The job must not go green on those either.
+          REPORT_FAILS=$(grep -c "^FAIL:" /tmp/shakedown-report.txt 2>/dev/null || true)
+          if [ "$SHAKE_EXIT" = "0" ] && [ "${REPORT_FAILS:-0}" -gt 0 ]; then
+            echo "::error::shakedown reported $REPORT_FAILS FAIL(s) but exited 0 — treating as RELEASE_BLOCKED"
+            SHAKE_EXIT=1
+          fi
           # Map the exit to the verdict table (Opus MUST-FIX 8):
           # 0 = PASS, 1 = RELEASE_BLOCKED (Tier-1), 75 = ENV_BLOCKER,
           # 124 = WATCHDOG_TIMEOUT/HARNESS_CRASH (already ::error::'d in do.sh).
@@ -343,7 +364,11 @@ jobs:
           SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo 0)
           if [ "$SHAKE_EXIT" = "75" ]; then
             DET_VERDICT="ENV_BLOCKER"
-          elif echo "$REPORT_TEXT" | grep -qE "^(FAIL|SELF-TEST-FAIL):"; then
+          # Key off TIER1_FAIL and the exit code, NOT raw SELF-TEST-FAIL text:
+          # a self-test calibration miss must not force RELEASE_BLOCKED (the
+          # [jwt] pattern is permanently missing on real runs; the script's
+          # binding-calibration design forbids a rotted regex from blocking).
+          elif echo "$REPORT_TEXT" | grep -q "TIER1_FAIL=1"; then
             DET_VERDICT="RELEASE_BLOCKED"
           elif [ -n "$SHAKE_EXIT" ] && [ "$SHAKE_EXIT" != "0" ]; then
             DET_VERDICT="RELEASE_BLOCKED"
