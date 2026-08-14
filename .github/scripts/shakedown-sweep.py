@@ -85,13 +85,17 @@ def main():
 
     # --- Reap stale shakedown-ci SSH keys ---
     code, data = req("/account/keys?per_page=200", auth=auth)
-    if code == 200:
-        for k in data.get("ssh_keys", []):
-            if k.get("name", "").startswith("shakedown-ci-"):
-                created = datetime.datetime.fromisoformat(k["created_at"].replace("Z", "+00:00"))
-                if created < cutoff:
-                    code, _ = req("/account/keys/{}".format(k["id"]), method="DELETE", auth=auth)
-                    print("Sweep: remove stale key {} ({}) HTTP {}".format(k["id"], k["name"], code))
+    if code != 200:
+        # Fail loud, same as the droplet list: stale keys accumulating under
+        # a green scheduled job is a silent drift (CodeRabbit).
+        print("::error::list ssh keys failed HTTP {}".format(code))
+        return 1
+    for k in data.get("ssh_keys", []):
+        if k.get("name", "").startswith("shakedown-ci-"):
+            created = datetime.datetime.fromisoformat(k["created_at"].replace("Z", "+00:00"))
+            if created < cutoff:
+                code, _ = req("/account/keys/{}".format(k["id"]), method="DELETE", auth=auth)
+                print("Sweep: remove stale key {} ({}) HTTP {}".format(k["id"], k["name"], code))
     print("Sweep: key reap done")
     return 0
 

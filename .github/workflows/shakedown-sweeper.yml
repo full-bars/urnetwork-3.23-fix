@@ -29,6 +29,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # This job only needs the script file. Do not persist the token into
+          # .git/config and do not let later actions inherit it (CodeRabbit
+          # security: minimize blast radius around the DO token in job env).
+          persist-credentials: false
 
       - name: Destroy stale shakedown droplets + reap keys
         run: |

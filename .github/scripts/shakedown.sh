@@ -178,13 +178,12 @@ J=$(j_full)   # self-test needs the full startup sequence, not a window
 SELF_TEST_FAIL=0
 # Binding calibration (Opus MUST-FIX 3): SELF_TEST_FAIL must not just be
 # printed — dependent assertions MUST know which patterns are trustworthy.
-# CALIBRATED_CLIENT_ID / CALIBRATED_SELECT / CALIBRATED_STAGE1 / CALIBRATED_JWT
+# CALIBRATED_CLIENT_ID / CALIBRATED_SELECT / CALIBRATED_STAGE1
 # gate their dependent checks: an uncalibrated pattern -> SKIP, structurally
 # forbidden from setting TIER1_FAIL (a rotted regex must not block a release).
 CALIBRATED_CLIENT_ID=0
 CALIBRATED_SELECT=0
 CALIBRATED_STAGE1=0
-CALIBRATED_JWT=0
 for pat in \
   "client_id: [0-9a-f-]+ \((new|reused)\)" \
   "\[net\]\[s\]select:.*dur=[0-9]+ms" \
@@ -196,7 +195,7 @@ for pat in \
       *client_id*) CALIBRATED_CLIENT_ID=1 ;;
       *select:*)   CALIBRATED_SELECT=1 ;;
       *stage-1*)   CALIBRATED_STAGE1=1 ;;
-      *jwt*)       CALIBRATED_JWT=1 ;;
+
     esac
   else
     echo "SELF-TEST-FAIL: pattern missing in known-good journal: $pat" | tee -a "$REPORT"
@@ -567,6 +566,11 @@ P2_END=$((P2_START + 4200))   # 70 min observation
 if [ -n "${DEADLINE_EPOCH:-}" ]; then
   SHRUNK_END=$((DEADLINE_EPOCH - 600))   # 10 min teardown reserve
   if [ "$SHRUNK_END" -lt "$P2_END" ]; then
+    # Floor at P2_START + one sample (300s) so the window is never empty or
+    # negative, which would make the truncation check silent (CodeRabbit).
+    if [ "$SHRUNK_END" -le "$((P2_START + 300))" ]; then
+      SHRUNK_END=$((P2_START + 300))
+    fi
     P2_END=$SHRUNK_END
     echo "INFO: Phase 2 window shrunk to $(date -u -d @$P2_END +%T)Z by job deadline" | tee -a "$REPORT"
   fi
