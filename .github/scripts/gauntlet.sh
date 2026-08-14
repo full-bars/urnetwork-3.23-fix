@@ -36,8 +36,14 @@ chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
 sleep 8
-runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 20 2>/dev/null | grep -qE "client_id: .* (new|reused)" \
-  && ok "beta auth (client_id minted)" || bad "beta auth"
+if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 20 2>/dev/null | grep -qE "client_id: .* (new|reused)"; then
+  ok "auth (client_id minted)"
+else
+  # Dump the journal so a failure is diagnosable (timing vs real auth issue).
+  echo "--- provider journal (auth failed) ---" | tee -a "$REPORT"
+  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -n 25 2>/dev/null | tail -25 | tee -a "$REPORT"
+  bad "auth"
+fi
 export PATH=/home/urnet/.local/share/urnetwork-provider/bin:$PATH
 
 # ---------- C. Go tool basics ----------
@@ -66,14 +72,14 @@ CACHED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_
 UP=$(urnet-tools summary 2>&1 | grep -oE "Up: +[0-9]+" | grep -oE "[0-9]+")
 # If auth failed earlier, the URL pipeline cannot run — report it as skipped,
 # not as a product failure (the auth check above already flagged the cause).
-if grep -q "FAIL: beta auth" "$REPORT"; then
+if grep -q "FAIL: auth" "$REPORT"; then
   echo "SKIP: URL cache (auth failed earlier — see auth check)" | tee -a "$REPORT"
 elif [ "${CACHED:-0}" -gt 0 ]; then
   ok "URL cache populated ($CACHED)"
 else
   bad "URL cache empty"
 fi
-if grep -q "FAIL: beta auth" "$REPORT"; then
+if grep -q "FAIL: auth" "$REPORT"; then
   echo "SKIP: proxies up (auth failed earlier)" | tee -a "$REPORT"
 elif [ "${UP:-0}" -gt 0 ]; then
   ok "proxies UP ($UP)"
