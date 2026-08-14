@@ -326,7 +326,9 @@ jobs:
           sudo systemctl stop clamav-freshclam 2>/dev/null || true
           sudo pkill -f freshclam 2>/dev/null || true
           sudo rm -f /var/log/clamav/freshclam.log /run/clamav/freshclam.pid 2>/dev/null || true
-          sudo freshclam --no-daemon --quiet
+          # Run freshclam once (default non-daemon behavior; --no-daemon is
+          # not supported on Ubuntu 24.04's freshclam 1.5.3).
+          sudo freshclam --quiet
           if [ ! -s /var/lib/clamav/main.cvd ]; then
             echo "ClamAV signature database is empty after freshclam"
             exit 1
