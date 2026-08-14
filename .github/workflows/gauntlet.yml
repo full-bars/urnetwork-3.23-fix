@@ -159,12 +159,17 @@ jobs:
             echo "AI review skipped (no GEMINI_API_KEY)"
             exit 0
           fi
-          cat > /tmp/ai_review_payload.json << 'PAYLOAD'
-          {
-            "contents": [{
-              "parts": [{"text": "You are a release engineer triaging a pre-release gauntlet report. Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). For each, say why in one sentence. Then give a one-line verdict: RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n$(cat /tmp/gauntlet-report.txt 2>/dev/null)"}]
-            }]
-          }
+          # Read the report OUTSIDE the heredoc — a $() inside the quoted
+          # heredoc is sent literally to the API and fails (observed live).
+          REPORT_TEXT=$(cat /tmp/gauntlet-report.txt 2>/dev/null || echo "no report")
+          python3 - "$REPORT_TEXT" << 'PAYLOAD' > /tmp/ai_review_payload.json
+          import json, sys
+          text = ("You are a release engineer triaging a pre-release gauntlet report. "
+                  "Classify EVERY FAIL line as one of: PRODUCT_BUG (likely a real bug in the provider/tools), "
+                  "ENV_BLOCKER (network/account/dependency issue), or TEST_SCRIPT (bug in the gauntlet script itself). "
+                  "For each, say why in one sentence. Then give a one-line verdict: "
+                  "RELEASE_BLOCKED if any PRODUCT_BUG, else RELEASE_OK. Be terse.\n\nReport:\n" + sys.argv[1])
+          print(json.dumps({"contents": [{"parts": [{"text": text}]}]}))
           PAYLOAD
           curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
             -H "Content-Type: application/json" -d @/tmp/ai_review_payload.json \
