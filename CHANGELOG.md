@@ -22,6 +22,8 @@ All notable changes to this project are documented here.
 
 **CI flake root causes closed** (#364, #368): the window-stats `-short` timeout is now derived from the bucket duration (was a fixed 300ms coin flip under `-race` load), and the paid-grade undecidable test pins the pass counter to a hostname-only probe block (literal-IP targets in the host table bypass the DNS-fail cache by design, so ~4.7% of passes always dialed one). CI is deterministic; test-only, no fleet deploy.
 
+**Go-tool gauntlet — 8 bugs found + fixed by live field testing** (#376): the rewritten Go `urnet-tools`/`urnet-docker` was gauntlet-tested on a fresh droplet against the live beta network. Found and fixed: no version command (added `version`/`--version`/`-v`); `report`/`hot-restart` delegated to non-existent provider subcommands (now write `~/.urnetwork/report_url` / restart the unit, with a confirm gate + `--force` on hot-restart); systemctl argv omitted the unit name (start/stop/restart/hot-restart failed with "Too few arguments"); `summary` delegated to the wrong flat form (now the provider's nested `proxy summary`); `proxy add-source`/`remove-source` missing entirely (URL sources now manageable); `proxy refresh --force` didn't forward `--force` (warmup gate never bypassed); proxy `--help` at any position showed root help or hung (now proxy-specific help, never executes). The report_url override is written 0644 so a provider running as a different user can read it. Needs a fleet deploy — the tools ship as release assets with this release.
+
 ## [v3.23.0-fix.28.0] — 2026-08-12
 
 ### Added
