@@ -135,8 +135,42 @@ docker ps --format "{{.Names}}" | grep -q urnetwork-test && ok "container up" ||
 /usr/local/bin/urnet-docker providers 2>&1 | grep -q "urnetwork-test" && ok "urnet-docker providers" || bad "urnet-docker providers"
 /usr/local/bin/urnet-docker restart urnetwork-test -f >/dev/null 2>&1 && ok "urnet-docker restart -f" || bad "urnet-docker restart"
 
-# ---------- G. Self-update ----------
-section "G. Self-update"
+# ---------- H. Hot-restart + client identity lifecycle ----------
+section "H. Hot-restart + identity"
+# Capture the provider's current client_id from the journal.
+export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
+CID_BEFORE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
+[ -n "$CID_BEFORE" ] && ok "provider client_id present ($CID_BEFORE)" || bad "provider client_id missing"
+
+# 1) hot-restart must REUSE the same client_id (identity preserved).
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+sleep 8
+CID_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
+if [ -n "$CID_AFTER" ] && [ "$CID_BEFORE" = "$CID_AFTER" ]; then
+  ok "hot-restart reused client_id ($CID_AFTER)"
+else
+  bad "hot-restart did NOT reuse client_id (before=$CID_BEFORE after=$CID_AFTER)"
+fi
+
+# 2) Clear the persisted client-JWT cache, restart -> a NEW client_id mints.
+rm -f /home/urnet/.urnetwork/.client_jwts.json
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+sleep 8
+CID_FRESH=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
+if [ -n "$CID_FRESH" ] && [ "$CID_FRESH" != "$CID_AFTER" ]; then
+  ok "cleared cache minted NEW client_id ($CID_FRESH)"
+else
+  bad "cleared cache did NOT mint new client_id (after=$CID_AFTER fresh=$CID_FRESH)"
+fi
+
+# ---------- I. Control-plane connectivity evidence ----------
+section "I. Control-plane ([net][s]select)"
+# The [net][s]select lines prove the provider's control-plane dials succeed.
+SELECT_HITS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null | grep -cE "\[net\]\[s\]select:.*success=[1-9]")
+[ "${SELECT_HITS:-0}" -gt 0 ] && ok "[net][s]select success lines ($SELECT_HITS)" || bad "[net][s]select success missing"
+
+# ---------- J. Self-update ----------
+section "J. Self-update"
 urnet-tools self-update -f 2>&1 | grep -qE "already on|updated" && ok "self-update -f" || bad "self-update"
 
 # ---------- Summary ----------
