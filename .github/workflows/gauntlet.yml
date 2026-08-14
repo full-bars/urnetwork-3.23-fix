@@ -184,7 +184,7 @@ jobs:
       - name: Post gauntlet verdict to Discord
         if: always()
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.GAUNTLET_WEBHOOK }}
         run: |
           VERDICT=$(grep -oE "RELEASE_(BLOCKED|OK)" /tmp/gauntlet-ai-review.txt 2>/dev/null | head -1)
           VERDICT="${VERDICT:-NO_REVIEW}"
