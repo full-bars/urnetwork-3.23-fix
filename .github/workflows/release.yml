@@ -525,6 +525,9 @@ jobs:
           # (if: always()) to surface the verdict on the release.
 
       - name: ClamAV scan of release binaries
+        # The VirusTotal step runs set -euo pipefail; a VT FAIL (deliberately
+        # non-blocking) would skip ClamAV entirely without this.
+        if: always()
         run: |
           set -euo pipefail
           VERSION=${GITHUB_REF_NAME:-latest}
@@ -568,7 +571,10 @@ jobs:
           # Post a comment (github API has no release comments via this shape;
           # use issue-comments on the release's 'discussion' — fallback: update
           # the release body instead, preserving the original notes).
-          body_new = body
+          # Append the scan verdict to the EXISTING release body (which
+          # create-release wrote: notes + binary list). Patching body to only
+          # the verdict would destroy the release notes.
+          body_new = (rel.get("body") or "") + "\n\n" + body
           req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
           with urllib.request.urlopen(req2, timeout=30) as resp2:
               print("scan verdict appended to release body (HTTP", resp2.status, ")")

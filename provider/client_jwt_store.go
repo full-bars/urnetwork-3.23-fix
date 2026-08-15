@@ -37,15 +37,16 @@ func newClientJWTStore(path string) *clientJWTStore {
 
 // globalClientJWTStore is created lazily so init never panics on a missing
 // HOME. The release binary must work for --version/--help and one-shot
-// commands in a bare environment (root, no HOME set — reproduced: the old
-// init-time panic killed every invocation, shakedown M-section finding
-// 2026-08-15). When HOME is unavailable, the store degrades to an
-// in-memory-only store: identity reuse is lost for that process, but the
-// command still runs. Same semantics as the load-error path below.
+// commands in a bare environment (root, no HOME set). When HOME is
+// unavailable, the store degrades to an in-memory-only store: identity
+// reuse is lost for that process, but the command still runs. Same
+// semantics as the load-error path below.
+// NOTE: no tlog here — package-var init runs before output plumbing is
+// set up, so any stdout here would prepend to EVERY invocation's output
+// and break callers that parse it (e.g. '--version 2>&1 | head -1').
 var globalClientJWTStore = func() *clientJWTStore {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		tlog("[jwt-store] HOME unavailable (%v) — in-memory only, no persistence\n", err)
 		return newClientJWTStore("")
 	}
 	return newClientJWTStore(filepath.Join(home, ".urnetwork", ".client_jwts.json"))

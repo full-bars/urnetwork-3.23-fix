@@ -5088,18 +5088,23 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 	if _, err := os.Stat(urNetworkDir); os.IsNotExist(err) {
 		err = os.MkdirAll(urNetworkDir, 0700)
 		if err != nil {
-			panic(err)
+			// Same graceful handling as the HOME path above: never panic on
+			// a one-shot command.
+			tlog("[proxy] Error: could not create %s: %v\n", urNetworkDir, err)
+			return
 		}
 	}
 
 	b, err := json.Marshal(proxyConfig)
 	if err != nil {
-		panic(err)
+		tlog("[proxy] Error: could not marshal proxy config: %v\n", err)
+		return
 	}
 
 	err = atomicWriteFile(proxyPath, b, 0700)
 	if err != nil {
-		panic(err)
+		tlog("[proxy] Error: could not write proxy config at %s: %v\n", proxyPath, err)
+		return
 	}
 
 	// Automatically trigger a hot-reload so running providers pick up the changes
