@@ -3198,6 +3198,10 @@ func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
 			}
 			frame, err := ToFrame(ipPacketFromProvider, self.settings.ProtocolVersion)
 			if err != nil {
+				// Release the read-only share before panicking. The panic is
+				// recovered by deliverTcpPolicyReset's HandleError, so the
+				// provider keeps running and the refcount must balance.
+				MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
 				panic(err)
 			}
 			// The frame either adopted the read-only share (Raw) or copied the
@@ -3205,8 +3209,9 @@ func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
 			// the production Receive return path. deliverTcpPolicyReset returns
 			// the original after this callback, so the refcount balances only
 			// when the share is released on the copied path. On a ToFrame
-			// error the process panics and the share is allowed to leak,
-			// consistent with the production Receive path.
+			// error the share is released before the panic, which
+			// deliverTcpPolicyReset's HandleError recovers, so the provider
+			// keeps running with the refcount balanced.
 			if !frame.Raw {
 				defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
 			}

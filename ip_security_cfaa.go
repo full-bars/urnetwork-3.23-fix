@@ -113,7 +113,7 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 	case port == 443, port == 853, port == 465, port == 993, port == 995,
 		port == smtpStartTlsPort && protocol == IpProtocolTcp:
 		// https/quic, dns over tls, and secure email -> downstream DPI
-		// The main client egress paths invoke the SMTP guard before this policy,
+		// All egress paths invoke the SMTP guard before this policy,
 		// restricting TCP/587 plaintext negotiation and requiring STARTTLS plus
 		// a ClientHello before transaction or authentication commands.
 		return cfaaPass
