@@ -3,14 +3,11 @@ package connect
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"net"
 	"sync"
 
 	"github.com/urnetwork/connect/protocol"
 )
-
-var errSmtpEncryptionRequired = errors.New("SMTP encryption required")
 
 // SMTP routing and encryption policy is enforced before the general CFAA
 // policy. Port 25 is deliberately local-only. Port 465 must begin with a TLS
