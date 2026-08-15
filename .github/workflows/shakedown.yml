@@ -52,20 +52,21 @@ jobs:
           fi
           # Poll until the tag's assets exist: the shakedown and the release
           # build fire on the same tag push, so assets may lag by minutes.
-          # 45 x 20s = 15 min budget: release.yml runs a 6-platform matrix +
-          # VT scan (20 uploads) + ClamAV install/scan, routinely >10 min
-          # (Fable5 MF-4: 30x20s was shorter than the build and never failed
-          # loud, misattributing build lag as a product block).
+          # 40 x 45s = 30 min budget: measured real build time for this
+          # release was ~30 min (6-platform matrix + VT scan + ClamAV +
+          # Create Release). The first 15-min budget expired before the
+          # build finished, so the shakedown aborted ENV_BLOCKER on a
+          # healthy release pipeline (observed 2026-08-15, run 31860686591).
           ASSETS_OK=0
-          for i in $(seq 1 45); do
+          for i in $(seq 1 40); do
             if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
               ASSETS_OK=1
               break
             fi
-            echo "waiting for release assets of ${VER} (${i}/45)..."
-            sleep 20
+            echo "waiting for release assets of ${VER} (${i}/40)..."
+            sleep 45
           done
           if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             # On a tag run, assets never appearing means the release build
