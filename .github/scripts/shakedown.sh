@@ -6,7 +6,7 @@
 #
 # Called by the shakedown workflow with: $1 = JWT file path (already on the box)
 #
-# DESIGN (Opus review 2026-08-14 folded):
+# DESIGN notes:
 #  - Every assertion is exit-status-first, text-second (structural fix).
 #  - Self-test phase verifies each log pattern against a KNOWN-GOOD startup
 #    so the shakedown's own regexes cannot silently rot into false blocks.
@@ -50,7 +50,7 @@ run_check() {
 
 # j: search the provider journal (full, no -n window).
 # j: search the provider journal with a bounded window. Full-journal reads
-# on a 5s cadence are heavy on 1GB (Opus SHOULD-FIX 14).
+# on a 5s cadence are heavy on 1GB.
 j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "${J_SINCE:-90 min ago}" 2>/dev/null; }
 # j_full: unbounded journal (self-test calibration, panic sweep).
 j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
@@ -93,23 +93,23 @@ if [ -z "${EXPECTED_VERSION:-}" ]; then
   exit 75
 fi
 # Assign EXPECTED_BASE BEFORE the guard references it: under set -u, using an
-# unset variable aborts the run at startup (Fable5 MF-1 — this was after the
+# unset variable aborts the run at startup. This was after the
 # guard, so every run died in its first second and then graded RELEASE_OK).
 EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
 # EXPECTED_BASE empty would make grep -qE "" match anything, so every version
-# check would vacuously pass on a future v3.24 tag. Guard it (Sonnet SF 5).
+# check would vacuously pass on a future v3.24 tag. Guard it.
 if [ -z "$EXPECTED_BASE" ]; then
   echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match v3.23.0-fix.N pattern" | tee -a "$REPORT"
   exit 75
 fi
-# N-12 (Fable5): TOOL_VERSION is read AFTER the install in section A/C.
+# TOOL_VERSION is read AFTER the install in section A/C.
 # Reading it here (before install) always yields "no such file" on a fresh
 # droplet. Section C verifies the version properly.
 echo "EXPECTED_VERSION: $EXPECTED_VERSION" >> "$REPORT"
 
 # ---------- A. Fresh install (regular-person path) ----------
 section "A. Fresh install"
-# N-18 (Fable5, deliberate): the installer under test comes from
+# The installer under test comes from
 # refs/heads/main, not the tag being cut. Tag-side installer regressions are
 # invisible to the shakedown, and a main-side installer break blocks an
 # unrelated release. Accepted tradeoff: the installer is rarely tag-specific.
@@ -145,7 +145,7 @@ else
 fi
 MONOSANS_URL="https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
 PROXIFLY_URL="https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"
-# SF-8 (Fable5): the two third-party proxy lists are hard release gates
+# The two third-party proxy lists are hard release gates
 # downstream. A list 404ing or being unreachable FAILs add-source ->
 # RELEASE_BLOCKED for a good release. Preflight both here; a failure is an
 # ENV_BLOCKER (list availability), not a product verdict.
@@ -193,7 +193,7 @@ else
 fi
 
 # ---------- SELF-TEST: pattern calibration on a known-good startup ----------
-# Structural fix (Opus insight): every assertion below greps a log pattern.
+# Structural fix: every assertion below greps a log pattern.
 # If a pattern is wrong, the shakedown's failure is indistinguishable from the
 # product failing. So verify each pattern against THIS known-good journal now.
 # NOTE: [net][s]select has no single-regex form. Success = total minus fail
@@ -206,7 +206,7 @@ SELF_TEST_FAIL=0
 # pattern is logged as SELF-TEST-FAIL (a TEST_SCRIPT signal in the report).
 # Dependent checks do NOT gate on calibration: absence of a POSITIVE product
 # signal (client_id, stage-1 enabled=true, select success) means the product
-# is broken, not that the regex rotted (DeepSeek MF 3).
+# is broken, not that the regex rotted.
 # NOTE: 'stage-1 table probe config' and '[jwt] refresh OK' are emitted via
 # tlog -> STDOUT, never journald (tlog.go:17 fmt.Printf). They are validated
 # against the captured add-source output in section E2 instead of the
@@ -255,7 +255,7 @@ section "E. URL sources + egress"
 # OOM risk on 1GB. proxifly socks5-only is 148 entries, monosans 102.
 # The CLI one-shot fetch ignores proxy_url_max by design (main.go:4413),
 # so each add-source gets a 900s belt-and-braces timeout.
-# SF-8: a list failure here is an ENV_BLOCKER (third-party availability),
+# A list failure here is an ENV_BLOCKER (third-party availability),
 # not a product bug — WARN + continue; the URL-source gates will SKIP.
 # Capture the add-source OUTPUT: the stage-1 table probe config line is
 # emitted via tlog -> STDOUT, not journald (tlog.go:17 uses fmt.Printf). The
@@ -570,7 +570,7 @@ section "M. update --tag"
 # MUST-FIX 10: version comes from the workflow (GITHUB_REF_NAME for
 # tag-triggered runs), not a hardcoded string. EXPECTED_VERSION set at top.
 run_check "update --tag $EXPECTED_VERSION" urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
-# MUST-FIX 7 (DeepSeek): -v is VERBOSE, not version. Use --version.
+# -v is VERBOSE, not version. Use --version.
 # Extract the version token: an init-time stdout banner can precede it.
 BIN_VER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
@@ -580,7 +580,7 @@ else
   bad "update --tag binary version missing/unexpected ($BIN_VER). Version must match $EXPECTED_BASE"
 fi
 run_check "restored to latest" urnet-tools update -f 2>&1
-# SF-7 (Opus): `update -f` restores "latest", which for a prerelease tag
+# `update -f` restores "latest", which for a prerelease tag
 # (-rc/-alpha/-beta published as such) is the PREVIOUS release. Re-assert the
 # expected version before the 70-min soak so Phase 2 does not soak the wrong
 # binary and grade RELEASE_OK.
@@ -620,10 +620,10 @@ CID_P2=$(wait_client_id "$MARK" 120)
 [ -n "$CID_P2" ] && ok "Phase 2 final restart (client_id ${CID_P2:0:12}…, uptime clock reset)" || bad "Phase 2 restart produced no client_id"
 printf '192.0.2.1:9\n8.8.8.8:443\n' > /tmp/rd-proxies.txt
 run_check "seeded dead+good proxies for reaper" urnet-tools proxy add /tmp/rd-proxies.txt 2>&1
-# Resource sampling every 5m (SHOULD-FIX 13): RSS/fd/threads as a leak
+# Resource sampling every 5m: RSS/fd/threads as a leak
 # regression signal. Plus log-rate (14) and panic/restart sweep (11).
 P2_START=$(date +%s)
-# MUST-FIX 5 (Opus): the poll deadline from the workflow must be able to
+# The poll deadline from the workflow must be able to
 # shrink Phase 2 so the run finishes before the job cap instead of being
 # guillotined mid-remove-dead. DEADLINE_EPOCH is optional; when absent use
 # the full 70-min window.
@@ -632,7 +632,7 @@ if [ -n "${DEADLINE_EPOCH:-}" ]; then
   SHRUNK_END=$((DEADLINE_EPOCH - 600))   # 10 min teardown reserve
   if [ "$SHRUNK_END" -lt "$P2_END" ]; then
     # Floor at P2_START + one sample (300s) so the window is never empty or
-    # negative, which would make the truncation check silent (CodeRabbit).
+    # negative, which would make the truncation check silent.
     if [ "$SHRUNK_END" -le "$((P2_START + 300))" ]; then
       SHRUNK_END=$((P2_START + 300))
     fi
@@ -646,7 +646,7 @@ SAMPLE_N=0
 PROC_PID=""
 while [ "$(date +%s)" -lt "$P2_END" ]; do
   SAMPLE_N=$((SAMPLE_N+1))
-  # Heartbeat for the workflow poller (SHOULD-FIX 11): mtime > 15 min = STALLED.
+  # Heartbeat for the workflow poller: mtime > 15 min = STALLED.
   touch /tmp/shakedown.heartbeat
   PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
   if [ -n "$PROC_PID" ]; then
@@ -664,14 +664,14 @@ while [ "$(date +%s)" -lt "$P2_END" ]; do
   [ "${PANICS:-0}" -gt 0 ] && { t1bad "panic/fatal/SIGSEGV in journal ($PANICS hits)"; break; }
   sleep 300
 done
-# MUST-FIX 9 (Opus): a truncated soak must never be invisible. If the window
+# A truncated soak must never be invisible. If the window
 # did not complete (early break on panic, or deadline guillotine), say so as
 # TEST_SCRIPT instead of silently grading the partial window PASS. A truncated
 # window also downgrades the soak-dependent gates (cache/Up/remove-dead) to
 # SKIP: their signals are partial and cannot gate the release either way
-# (DeepSeek SF 7).
+#
 P2_TRUNCATED=0
-# SF-6 (Opus): truncation is judged by the CLOCK, not the sample counter.
+# Truncation is judged by the CLOCK, not the sample counter.
 # SAMPLE_N drifts (sleep 300 + per-iteration work on 1 vCPU can exceed 24s),
 # so counting samples falsely reports 13/14 on a run that actually completed
 # its window. Truncated = the loop exited before P2_END (panic break) OR the
@@ -680,7 +680,7 @@ if [ "$(date +%s)" -lt "$P2_END" ]; then
   P2_TRUNCATED=1
   echo "WARN: Phase 2 broke early (loop exited before window end). Signals below are partial." | tee -a "$REPORT"
 fi
-# Opus round-5 MF-3: a truncated soak must NOT exit 0 (that grades RELEASE_OK
+# A truncated soak must NOT exit 0 (that grades RELEASE_OK
 # for a window that never gated anything). ENV_BLOCKER = NOT TESTED.
 if [ "$P2_TRUNCATED" = "1" ]; then
   echo "FAIL: Phase 2 soak truncated — soak-dependent signals are NOT TESTED" | tee -a "$REPORT"
