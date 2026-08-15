@@ -2691,21 +2691,22 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ---
 
-## 123. Release Tooling and Pre-Release Shakedown (PR #381-390)
+## 123. Release Tooling and Pre-Release Shakedown (PR #381-391)
 
-**Purpose**: Release binaries shipped with no automated malware scanning, the DoH test suite could hang indefinitely on live server lookups, and the gauntlet workflow (the pre-release droplet test) needed further hardening before it could be trusted as a release gate.
+**Purpose**: Release binaries shipped with no automated malware scanning, the DoH test suite could hang indefinitely on live server lookups, the gauntlet workflow (the pre-release droplet test) needed further hardening before it could be trusted as a release gate, and the shakedown's runner-to-droplet lifecycle leaked ssh sessions and swallowed the exit code.
 
-**Files Modified**: CI workflow files for release scanning and the shakedown workflow (formerly gauntlet), DoH test files (hermetic httptest server replacing live server queries).
+**Files Modified**: CI workflow files for release scanning, the shakedown workflow (formerly gauntlet), a new sweeper workflow + script, DoH test files (hermetic httptest server replacing live server queries).
 
 **Change**:
-- VirusTotal scan of release binaries (#381): two-tier gate, 0-2 detections pass, 3-10 ship flagged for review, 11+ blocks the release; writes a scan report receipt with per-artifact PASS/REVIEW/FAIL table and permalinks.
+- VirusTotal scan of release binaries (#381): two-tier gate, 0-2 detections pass, 3-10 ship flagged for review, 11+ blocks the release; writes a scan report receipt with per-artifact PASS/REVIEW/FAIL table and permalinks. Fails on tag runs when the API key secret is missing.
 - DoH test fix (#382): TestDohQuery/TestDohCache now use a local httptest server serving canned Google-style JSON DoH responses instead of querying live public DoH servers for a hostname that does not resolve, so the tests fail fast instead of hanging on a retry loop.
 - ClamAV scan of release binaries (#383): EICAR self-test plus clamscan over all 20 release binaries, run after the VirusTotal scan as a quota-free second opinion.
 - Pre-release shakedown workflow build-out (#384-390): the workflow itself on a disposable 1 CPU/1 GB DigitalOcean droplet with guaranteed cleanup; apt-get update before docker install; skip URL checks when auth failed; report review step; Discord webhook verdict posting; preflight connectivity gate; public IPv4 requirement before SSH; full-journal auth-check window fix; Wacatac.C!ml false-positive annotation; exit-status-first assertions and a self-test phase; hub coverage for systemd and docker; rename from gauntlet to shakedown.
+- Shakedown lifecycle bulletproofing (#391): the test runs DETACHED via systemd-run --no-block so the ssh session returns immediately (backgrounded children previously held the pipe, the watchdog killed the session, and the exit code was swallowed showing green). The exit code survives through an rc sentinel written by atomic rename. A deterministic gate maps exit 0/1/75/124 to PASS / RELEASE_BLOCKED / ENV_BLOCKER / HARNESS_CRASH; a crash before any FAIL line cannot false-green. A new shakedown-sweeper workflow (separate file, 15-minute schedule) destroys shakedown-ci droplets older than 3 hours and reaps stale SSH keys, the backstop for runner eviction or force-kill. The droplet is tagged at create; cleanup retries delete-by-id and delete-by-tag, verifies the list is empty, and the trap covers EXIT INT TERM HUP. Polling is bounded, the report streams on every poll, a heartbeat detects a stalled script, and a concurrency group queues runs instead of cancelling. Six independent design and verification review rounds were run; every finding applied. The release pipeline also gained a syntax-check step that runs before droplet creation.
 - The shakedown covers a fresh install, auth, the Go tool, the full proxy lifecycle, URL sources against real free proxies, the admission pipeline, docker, the hub under systemd and docker, hot-restart identity, update --tag, self-update, a long observation phase with resource sampling, and clean shutdown. Tier-1 failures exit non-zero and fail the job. A full run takes about 2 hours, bounded by a watchdog and job timeout.
 
-**Effect**: Shipped. Release binaries now get two independent malware scans before publishing. The DoH test suite no longer hangs in CI. The shakedown workflow is a trustworthy pre-release gate that exercises a full fresh-install path against a live droplet before a tag ships.
+**Effect**: Shipped. Release binaries now get two independent malware scans before publishing. The DoH test suite no longer hangs in CI. The shakedown workflow is a trustworthy pre-release gate that exercises a full fresh-install path against a live droplet before a tag ships, and the runner-to-droplet lifecycle can no longer leak a droplet or false-green a broken release.
 
 **How to Identify in New Upstream**: N/A. This is fork-native release tooling with no upstream equivalent.
 
-**Status**: ✅ v3.23.0-fix.29.1 (PR #381-390). CI-only, no fleet deploy needed for the pipeline itself. Entry 122's TCP port above is the deploy item in this release.
+**Status**: ✅ v3.23.0-fix.29.1 (PR #381-391). CI-only, no fleet deploy needed for the pipeline itself. Entry 122's TCP port above is the deploy item in this release.

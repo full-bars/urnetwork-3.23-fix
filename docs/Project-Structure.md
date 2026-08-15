@@ -94,7 +94,11 @@ urnetwork-3.23-fix/
 │
 ├── .github/workflows/
 │   ├── build.yml                 # CI: parallel test-and-lint + build-and-push Docker (multi-arch)
-│   ├── release.yml               # Tags a new release and uploads provider binaries
+│   ├── dash-compat.yml           # Dash/POSIX compatibility check
+│   ├── release.yml               # Tags a new release, scans (VirusTotal + ClamAV), uploads provider binaries
+│   ├── shakedown.yml             # Pre-release shakedown: fresh-droplet install + proxy + URL + docker test on v3.23.0-fix.* tags
+│   ├── shakedown-sweeper.yml     # Every 15 min: destroy orphaned shakedown-ci droplets >3h, reap stale SSH keys
+│   ├── hub-build.yml             # Build + push the hub Docker image
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
 │   └── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
 │
