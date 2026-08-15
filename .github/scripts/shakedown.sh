@@ -207,11 +207,14 @@ SELF_TEST_FAIL=0
 # Dependent checks do NOT gate on calibration: absence of a POSITIVE product
 # signal (client_id, stage-1 enabled=true, select success) means the product
 # is broken, not that the regex rotted (DeepSeek MF 3).
+# NOTE: 'stage-1 table probe config' and '[jwt] refresh OK' are emitted via
+# tlog -> STDOUT, never journald (tlog.go:17 fmt.Printf). They are validated
+# against the captured add-source output in section E2 instead of the
+# journal here (shakedown finding 2026-08-15: journal-only calibration
+# always false-flagged them).
 for pat in \
   "client_id: [0-9a-f-]+ \((new|reused)\)" \
-  "\[net\]\[s\]select:.*dur=[0-9]+ms" \
-  "stage-1 table probe config: enabled=true" \
-  "\[jwt\] refresh OK"; do
+  "\[net\]\[s\]select:.*dur=[0-9]+ms"; do
   if echo "$J" | grep -qE "$pat"; then
     ok "self-test pattern present: $pat"
   else
@@ -254,15 +257,29 @@ section "E. URL sources + egress"
 # so each add-source gets a 900s belt-and-braces timeout.
 # SF-8: a list failure here is an ENV_BLOCKER (third-party availability),
 # not a product bug — WARN + continue; the URL-source gates will SKIP.
-if timeout 900 urnet-tools proxy add-source "$MONOSANS_URL" >/dev/null 2>&1; then
+# Capture the add-source OUTPUT: the stage-1 table probe config line is
+# emitted via tlog -> STDOUT, not journald (tlog.go:17 uses fmt.Printf). The
+# E2 admission check greps this captured output, not j(), so the line is
+# actually seen (shakedown finding 2026-08-15: the journal grep always
+# missed it because the line never reaches the journal).
+ADD_SOURCE_OUT=""
+if OUT=$(timeout 900 urnet-tools proxy add-source "$MONOSANS_URL" 2>&1); then
   ok "add-source (monosans socks5)"
+  ADD_SOURCE_OUT="$ADD_SOURCE_OUT
+$OUT"
 else
   echo "WARN: add-source (monosans) failed — proxy list unavailable (ENV_BLOCKER)" | tee -a "$REPORT"
+  ADD_SOURCE_OUT="$ADD_SOURCE_OUT
+$OUT"
 fi
-if timeout 900 urnet-tools proxy add-source "$PROXIFLY_URL" >/dev/null 2>&1; then
+if OUT=$(timeout 900 urnet-tools proxy add-source "$PROXIFLY_URL" 2>&1); then
   ok "add-source (proxifly socks5)"
+  ADD_SOURCE_OUT="$ADD_SOURCE_OUT
+$OUT"
 else
   echo "WARN: add-source (proxifly) failed — proxy list unavailable (ENV_BLOCKER)" | tee -a "$REPORT"
+  ADD_SOURCE_OUT="$ADD_SOURCE_OUT
+$OUT"
 fi
 # MUST-FIX 4: the background fetcher reads sources ONCE at process start.
 # Restart the unit so the periodic fetch->probe->grade->admit loop is alive
@@ -301,8 +318,13 @@ fi
 # Its absence means the product is broken, not that the regex rotted — the
 # self-test already logs SELF-TEST-FAIL separately if the pattern itself is
 # wrong (DeepSeek MF 3). Always gate; never SKIP a product signal.
-if j | grep -qE "stage-1 table probe config: enabled=true"; then
-  ok "stage-1 probe enabled"
+# The line is emitted via tlog -> stdout, so check the CAPTURED add-source
+# output first, then the journal as fallback (shakedown finding 2026-08-15:
+# the line never reaches journald, so a journal-only grep false-blocks).
+if echo "$ADD_SOURCE_OUT" | grep -qE "stage-1 table probe config: enabled=true"; then
+  ok "stage-1 probe enabled (from add-source output)"
+elif j | grep -qE "stage-1 table probe config: enabled=true"; then
+  ok "stage-1 probe enabled (from journal)"
 else
   t1bad "stage-1 probe NOT enabled (kill switch stuck?)"
 fi
