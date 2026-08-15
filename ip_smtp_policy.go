@@ -343,7 +343,10 @@ func (self *smtpFlowState) inspectSecureRetransmission(sequence uint32, payload 
 // tlsClientHelloStreamPrefix validates the TLS record header and handshake
 // header as bytes arrive. A complete prefix is nine bytes: TLS Handshake,
 // legacy record version, a sane non-empty record, ClientHello, and a sane
-// ClientHello body length. The ClientHello body may span TLS records.
+// ClientHello body length. The ClientHello body may span TLS records. The
+// matcher is a heuristic: it enforces TLS discipline against accidental
+// plaintext and naive misconfiguration, not against a determined client that
+// can craft a plausible 9-byte prefix followed by arbitrary bytes.
 func tlsClientHelloStreamPrefix(stream []byte) (valid bool, complete bool) {
 	if smtpTlsClientHelloPrefixBytes < len(stream) {
 		stream = stream[:smtpTlsClientHelloPrefixBytes]
@@ -589,7 +592,10 @@ func tcpRstForPolicyReject(packet []byte) []byte {
 // function and is valid only for the duration of the callback; the callback
 // must not retain it. A callback that needs the reset beyond the call (for
 // example to frame it for the tunnel) must take a read-only share, which the
-// message pool refcount protects until the frame releases it.
+// message pool refcount protects until the frame releases it. The reset bytes
+// are reverse-addressed (destination back to source) while the passed ipPath
+// is the original forward path; consumers must not key routing off the path
+// alone. This matches the existing rstFlow delivery pattern.
 func deliverTcpPolicyReset(
 	receive ReceivePacketFunction,
 	source TransferPath,
