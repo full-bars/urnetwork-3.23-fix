@@ -3407,7 +3407,11 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		panic(err)
+		// No HOME: no persisted JWT possible. Surface as a normal error, not
+		// a panic (the old panic killed --version and one-shot commands in
+		// bare environments; shakedown finding 2026-08-15).
+		returnErr = fmt.Errorf("could not determine home directory: %w", err)
+		return
 	}
 	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
 
@@ -5072,7 +5076,11 @@ func readProxyConfig() *ProxyConfig {
 func writeProxyConfig(proxyConfig *ProxyConfig) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		panic(err)
+		// No HOME: nowhere to persist the proxy config. Log and skip, matching
+		// readProxyConfig's graceful handling (the old panic killed one-shot
+		// commands in bare environments; shakedown finding 2026-08-15).
+		tlog("[proxy] Error: could not find user home directory: %v\n", err)
+		return
 	}
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	proxyPath := filepath.Join(urNetworkDir, "proxy")

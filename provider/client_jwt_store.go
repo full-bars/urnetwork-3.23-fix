@@ -35,10 +35,18 @@ func newClientJWTStore(path string) *clientJWTStore {
 	return &clientJWTStore{path: path, entries: map[string]clientJWTEntry{}}
 }
 
+// globalClientJWTStore is created lazily so init never panics on a missing
+// HOME. The release binary must work for --version/--help and one-shot
+// commands in a bare environment (root, no HOME set — reproduced: the old
+// init-time panic killed every invocation, shakedown M-section finding
+// 2026-08-15). When HOME is unavailable, the store degrades to an
+// in-memory-only store: identity reuse is lost for that process, but the
+// command still runs. Same semantics as the load-error path below.
 var globalClientJWTStore = func() *clientJWTStore {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		panic(err)
+		tlog("[jwt-store] HOME unavailable (%v) — in-memory only, no persistence\n", err)
+		return newClientJWTStore("")
 	}
 	return newClientJWTStore(filepath.Join(home, ".urnetwork", ".client_jwts.json"))
 }()
@@ -108,6 +116,10 @@ func (s *clientJWTStore) Delete(key string) error {
 }
 
 func (s *clientJWTStore) flushLocked() error {
+	// In-memory-only mode (HOME unavailable at init): nothing to persist.
+	if s.path == "" {
+		return nil
+	}
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
 		return err
