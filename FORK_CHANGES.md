@@ -2730,3 +2730,28 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A. This is fork-native robustness and release-tooling work with no upstream equivalent.
 
 **Status**: ✅ v3.23.0-fix.29.1 (post-merge direct commits, after PR #381-391). Needs a fleet deploy for the provider HOME-robustness fix; the release/shakedown workflow changes are CI-only.
+
+## 125. SMTP Policy Enforcement — Port 25 Local-Only, TLS-Required 465/587 (PR #392)
+
+**Purpose**: Port upstream's SMTP security policy layer into the fork's data plane. Plaintext SMTP and SMTP relay through the tunnel are blocked at the egress and ingress before the general CFAA policy runs. Port 25 can never reach a provider. Ports 465 and 587 require TLS, so credentials cannot cross the tunnel in the clear.
+
+**Files Modified**: `ip_smtp_policy.go` (new), `ip.go`, `ip_remote_multi_client.go`, `ip_security_cfaa.go`, plus new tests `ip_smtp_policy_test.go`, `ip_smtp_seam_test.go`, `ip_security_cfaa_smtp_test.go`, `ip_smtp_halfspace_test.go`, `ip_smtp_eviction_test.go`.
+
+**Change**:
+- Port 25 routes locally before CFAA on client egress. It can never reach a provider. The provider refuses tunneled port 25 through the general reversed policy.
+- Port 465 must begin with a TLS ClientHello. Plaintext is reset and dropped.
+- Port 587 permits only a bounded EHLO/HELO/QUIT/STARTTLS negotiation (2 KiB bound, 510-byte line limit). Transaction and authentication commands are rejected before STARTTLS. After STARTTLS a ClientHello is required.
+- The provider ingress applies the same rules, namespaced by the authenticated source id.
+- TCP/587 moves from drop to pass in CFAA. UDP/587 and port 25 stay drop. Encrypted mail submission now works through the tunnel where it was fully blocked before.
+- Per-flow state is bounded at 1024 flows. Retransmissions are validated. Gaps and stream splices fail closed. Fresh SYN replaces tuple state. RST clears it.
+- Each rejection emits an RFC 793 reset and a block counter entry.
+
+**Fork divergences from upstream (deliberate, both documented in code)**:
+- Secure-phase sequence offset uses unsigned arithmetic. Upstream's signed check falsely rejects and latches a TLS flow past 2^31 bytes of sequence space (about 2 GiB). The fork's version is pinned by `TestSmtpSecureFlowAdvancesBeyondHalfSequenceSpace`.
+- Flow-table eviction prefers rejected or still-negotiating flows. Upstream's sampled eviction can remove an established secure flow, which resets a valid session when a provider exceeds 1024 concurrent SMTP flows. The fork's version is pinned by `TestSmtpGuardEvictionSparesSecureFlows`.
+
+**Effect**: Shipped (pending PR #392 merge). Plaintext SMTP is blocked on all egress paths and at the provider ingress. Encrypted submission on 587 works for the first time. Long-lived TLS mail flows survive past 2 GiB. A busy provider no longer resets valid sessions at the 1024-flow cap.
+
+**How to Identify in New Upstream**: Upstream's SMTP policy layer is in `ip_smtp_policy.go` with the `smtpEgressGuard` type. The fork's two divergences live in `inspectSecureRetransmission` (unsigned offset) and `evictFlowWithLock` (secure-flow-sparing eviction).
+
+**Status**: ⏳ PR #392 open, needs-fleet-deploy + security labels applied. Ships in v3.23.0-fix.29.2.

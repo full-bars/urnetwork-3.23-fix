@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Security
+
+**SMTP policy enforcement** (#392): the client egress paths and the provider ingress now enforce an SMTP policy layer ahead of the general CFAA policy. Port 25 routes locally and can never reach a provider. Port 465 must begin with a TLS ClientHello. Port 587 permits only a bounded EHLO/HELO/QUIT/STARTTLS negotiation and then requires a ClientHello. Plaintext SMTP is reset and dropped. TCP/587 moves from drop to pass in CFAA, so encrypted mail submission works through the tunnel for the first time; UDP/587 and port 25 stay drop. Per-flow state is bounded at 1024 flows, retransmissions are validated, and gaps and stream splices fail closed. Two deliberate divergences from upstream are included: the secure-phase sequence offset uses unsigned arithmetic so TLS flows survive past 2 GiB, and flow-table eviction spares established secure flows so a provider at the 1024-flow cap does not reset valid sessions. Needs a fleet deploy. This is the only provider binary change in this release.
+
 ## [v3.23.0-fix.29.1] — 2026-08-14
 
 ### Added
