@@ -3203,7 +3203,9 @@ func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
 			// bytes; a copied frame must release the share here, exactly like
 			// the production Receive return path. deliverTcpPolicyReset returns
 			// the original after this callback, so the refcount balances only
-			// when the share is released on the copied path.
+			// when the share is released on the copied path. On a ToFrame
+			// error the process panics and the share is allowed to leak,
+			// consistent with the production Receive path.
 			if !frame.Raw {
 				defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
 			}
