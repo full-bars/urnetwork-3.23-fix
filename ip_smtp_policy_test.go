@@ -1,9 +1,12 @@
 package connect
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"testing"
+
+	"github.com/urnetwork/connect/protocol"
 )
 
 var smtpTestClientHello = []byte{
@@ -453,4 +456,436 @@ func TestTcpRstForSmtpPolicyReject(t *testing.T) {
 		MessagePoolReturn(secondReset)
 		t.Fatal("policy reset builder answered a reset with another reset")
 	}
+}
+
+func smtpTestTcp6PacketToPort(destinationPort int, flags byte, sequence uint32, ack uint32, payload []byte) []byte {
+	sourceIp := net.ParseIP("2001:db8::2")
+	destinationIp := net.ParseIP("2001:db8::10")
+	packet := make([]byte, Ipv6HeaderSize+TcpHeaderSizeWithoutExtensions+len(payload))
+	writeIpv6Header(packet, IP_PROTOCOL_TCP, sourceIp, destinationIp)
+	tcp := packet[Ipv6HeaderSize:]
+	binary.BigEndian.PutUint16(tcp[0:2], 47001)
+	binary.BigEndian.PutUint16(tcp[2:4], uint16(destinationPort))
+	binary.BigEndian.PutUint32(tcp[4:8], sequence)
+	binary.BigEndian.PutUint32(tcp[8:12], ack)
+	tcp[12] = byte(TcpHeaderSizeWithoutExtensions/4) << 4
+	tcp[13] = flags
+	binary.BigEndian.PutUint16(tcp[14:16], 65535)
+	copy(tcp[TcpHeaderSizeWithoutExtensions:], payload)
+	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(
+		IP_PROTOCOL_TCP,
+		sourceIp,
+		destinationIp,
+		tcp,
+	))
+	return packet
+}
+
+// The reset builder shares the LocalUserNat orphan-reset logic across IP
+// versions; pin that the IPv6 header path also reverses addresses and ports
+// correctly, since the SMTP guard applies equally to IPv6 flows.
+func TestTcpRstForSmtpPolicyRejectIpv6(t *testing.T) {
+	packet := smtpTestTcp6PacketToPort(smtpImplicitTlsPort, byte(tcpFlagAck|tcpFlagPsh), 5000, 9000, []byte("plaintext"))
+	reset := tcpRstForPolicyReject(packet)
+	if reset == nil {
+		t.Fatal("SMTP policy rejection did not build an IPv6 TCP reset")
+	}
+	defer MessagePoolReturn(reset)
+
+	ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv6(reset)
+	if !ok || ipProtocol != IP_PROTOCOL_TCP {
+		t.Fatal("SMTP policy reset is not valid IPv6/TCP")
+	}
+	var tcp parsedTcp
+	if !parseTcpPacket(sourceIp, destinationIp, transport, &tcp) {
+		t.Fatal("could not parse IPv6 SMTP policy reset")
+	}
+	if !tcp.rst || tcp.ack || tcp.seq != 9000 {
+		t.Fatalf("ipv6 reset flags/sequence = rst:%t ack:%t seq:%d", tcp.rst, tcp.ack, tcp.seq)
+	}
+	if !sourceIp.Equal(net.ParseIP("2001:db8::10")) || !destinationIp.Equal(net.ParseIP("2001:db8::2")) {
+		t.Fatalf("ipv6 reset addresses were not reversed: %s -> %s", sourceIp, destinationIp)
+	}
+	if tcp.sourcePort != smtpImplicitTlsPort || tcp.destinationPort != 47001 {
+		t.Fatalf("ipv6 reset ports = %d -> %d", tcp.sourcePort, tcp.destinationPort)
+	}
+}
+
+// deliverTcpPolicyReset must be a safe no-op when the packet cannot be
+// parsed back into a TCP segment (tcpRstForPolicyReject returns nil), and
+// must tolerate a nil receive callback (the RemoteUserNatClient contract
+// always supplies one, but the helper itself should not assume it).
+func TestDeliverTcpPolicyResetNoOpOnUnparseablePacket(t *testing.T) {
+	called := false
+	deliverTcpPolicyReset(
+		func(TransferPath, protocol.ProvideMode, *IpPath, []byte) { called = true },
+		SourceId(NewId()),
+		protocol.ProvideMode_Network,
+		nil,
+		nil,
+	)
+	if called {
+		t.Fatal("deliverTcpPolicyReset invoked receive for a nil packet")
+	}
+
+	called = false
+	deliverTcpPolicyReset(
+		func(TransferPath, protocol.ProvideMode, *IpPath, []byte) { called = true },
+		SourceId(NewId()),
+		protocol.ProvideMode_Network,
+		nil,
+		[]byte{0x00},
+	)
+	if called {
+		t.Fatal("deliverTcpPolicyReset invoked receive for a truncated, unparseable packet")
+	}
+}
+
+func TestDeliverTcpPolicyResetToleratesNilReceive(t *testing.T) {
+	packet := smtpTestTcp4Packet(byte(tcpFlagAck|tcpFlagPsh), 100, 200, []byte("data"))
+	// Must not panic when no receive callback is supplied.
+	deliverTcpPolicyReset(nil, SourceId(NewId()), protocol.ProvideMode_Network, nil, packet)
+}
+
+// smtpFlowKeyForOwnerPath is the exact-tuple key builder underlying every
+// guard decision. Pin its validation and version-namespacing directly,
+// since a bug here silently merges or drops unrelated flows.
+func TestSmtpFlowKeyForOwnerPath(t *testing.T) {
+	t.Run("nil path rejected", func(t *testing.T) {
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, nil); ok {
+			t.Fatal("nil IpPath produced a flow key")
+		}
+	})
+
+	t.Run("non-tcp protocol rejected", func(t *testing.T) {
+		path := smtpTestPath(41000, smtpImplicitTlsPort, 1)
+		path.Protocol = IpProtocolUdp
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("UDP path produced a flow key")
+		}
+	})
+
+	t.Run("out of range source port rejected", func(t *testing.T) {
+		path := smtpTestPath(-1, smtpImplicitTlsPort, 1)
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("negative source port produced a flow key")
+		}
+		path = smtpTestPath(65536, smtpImplicitTlsPort, 1)
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("out-of-range source port produced a flow key")
+		}
+	})
+
+	t.Run("out of range destination port rejected", func(t *testing.T) {
+		path := smtpTestPath(41000, -1, 1)
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("negative destination port produced a flow key")
+		}
+		path = smtpTestPath(41000, 65536, 1)
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("out-of-range destination port produced a flow key")
+		}
+	})
+
+	t.Run("unsupported ip version rejected", func(t *testing.T) {
+		path := smtpTestPath(41000, smtpImplicitTlsPort, 1)
+		path.Version = 5
+		if _, ok := smtpFlowKeyForOwnerPath(Id{}, path); ok {
+			t.Fatal("unsupported IP version produced a flow key")
+		}
+	})
+
+	t.Run("valid ipv4 path produces a key", func(t *testing.T) {
+		path := smtpTestPath(41000, smtpImplicitTlsPort, 1)
+		key, ok := smtpFlowKeyForOwnerPath(Id{}, path)
+		if !ok {
+			t.Fatal("valid IPv4 path did not produce a flow key")
+		}
+		if key.ipVersion != 4 || key.sourcePort != 41000 || key.destinationPort != smtpImplicitTlsPort {
+			t.Fatalf("unexpected IPv4 key fields: %+v", key)
+		}
+	})
+
+	t.Run("valid ipv6 path produces a key", func(t *testing.T) {
+		path := smtpTestPathIPv6(41000, smtpImplicitTlsPort, 1)
+		key, ok := smtpFlowKeyForOwnerPath(Id{}, path)
+		if !ok {
+			t.Fatal("valid IPv6 path did not produce a flow key")
+		}
+		if key.ipVersion != 6 || key.sourcePort != 41000 || key.destinationPort != smtpImplicitTlsPort {
+			t.Fatalf("unexpected IPv6 key fields: %+v", key)
+		}
+	})
+
+	t.Run("owner id namespaces the key", func(t *testing.T) {
+		path := smtpTestPath(41000, smtpImplicitTlsPort, 1)
+		firstOwner := NewId()
+		secondOwner := NewId()
+		firstKey, ok := smtpFlowKeyForOwnerPath(firstOwner, path)
+		if !ok {
+			t.Fatal("expected a flow key for the first owner")
+		}
+		secondKey, ok := smtpFlowKeyForOwnerPath(secondOwner, path)
+		if !ok {
+			t.Fatal("expected a flow key for the second owner")
+		}
+		if firstKey == secondKey {
+			t.Fatal("distinct owners produced identical flow keys")
+		}
+	})
+}
+
+func smtpTestPathIPv6(sourcePort int, destinationPort int, sequence uint32) *IpPath {
+	return &IpPath{
+		Version:         6,
+		Protocol:        IpProtocolTcp,
+		SourceIp:        net.ParseIP("2001:db8::2"),
+		SourcePort:      sourcePort,
+		DestinationIp:   net.ParseIP("2001:db8::10"),
+		DestinationPort: destinationPort,
+		SequenceNumber:  sequence,
+		Ack:             true,
+	}
+}
+
+// The guard must enforce the same encryption boundary over IPv6, and an
+// IPv6 flow must not collide with an IPv4 flow that happens to reuse the
+// same ports and sequence numbers.
+func TestSmtpGuardEnforcesEncryptionOverIpv6(t *testing.T) {
+	var guard smtpEgressGuard
+
+	requireSmtpVerdict(t, smtpEgressReject, guard.inspect(
+		smtpTestPathIPv6(41100, smtpImplicitTlsPort, 100), []byte("EHLO plaintext.example\r\n"),
+	))
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestPathIPv6(41101, smtpImplicitTlsPort, 200), smtpTestClientHello,
+	))
+
+	// An IPv4 flow with the same ports and sequence must not inherit the
+	// rejected IPv6 flow's latched state.
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestPath(41100, smtpImplicitTlsPort, 100), smtpTestClientHello,
+	))
+}
+
+// tlsClientHelloStreamPrefix is exercised indirectly through the guard
+// elsewhere; these are direct boundary checks on the record-length and
+// handshake-length fields it validates.
+func TestTlsClientHelloStreamPrefixBoundaries(t *testing.T) {
+	buildPrefix := func(versionMinor byte, recordBytes uint16, handshakeBytes uint32) []byte {
+		prefix := make([]byte, smtpTlsClientHelloPrefixBytes)
+		prefix[0] = 0x16
+		prefix[1] = 0x03
+		prefix[2] = versionMinor
+		binary.BigEndian.PutUint16(prefix[3:5], recordBytes)
+		prefix[5] = 0x01
+		prefix[6] = byte(handshakeBytes >> 16)
+		prefix[7] = byte(handshakeBytes >> 8)
+		prefix[8] = byte(handshakeBytes)
+		return prefix
+	}
+
+	t.Run("minimum handshake body length is valid", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(buildPrefix(0x01, 0x40, 41))
+		if !valid || !complete {
+			t.Fatalf("handshakeBytes=41 valid=%t complete=%t, want true/true", valid, complete)
+		}
+	})
+
+	t.Run("just below minimum handshake body length is invalid", func(t *testing.T) {
+		valid, _ := tlsClientHelloStreamPrefix(buildPrefix(0x01, 0x40, 40))
+		if valid {
+			t.Fatal("handshakeBytes=40 was accepted, want rejected")
+		}
+	})
+
+	t.Run("maximum handshake body length is valid", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(buildPrefix(0x01, 0x40, 1<<20))
+		if !valid || !complete {
+			t.Fatalf("handshakeBytes=2^20 valid=%t complete=%t, want true/true", valid, complete)
+		}
+	})
+
+	t.Run("just above maximum handshake body length is invalid", func(t *testing.T) {
+		valid, _ := tlsClientHelloStreamPrefix(buildPrefix(0x01, 0x40, (1<<20)+1))
+		if valid {
+			t.Fatal("handshakeBytes=2^20+1 was accepted, want rejected")
+		}
+	})
+
+	t.Run("minimum record length is valid while incomplete", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(buildPrefix(0x01, 4, 0)[:5])
+		if !valid || complete {
+			t.Fatalf("recordBytes=4 (5-byte prefix) valid=%t complete=%t, want true/false", valid, complete)
+		}
+	})
+
+	t.Run("just below minimum record length is invalid", func(t *testing.T) {
+		valid, _ := tlsClientHelloStreamPrefix(buildPrefix(0x01, 3, 0)[:5])
+		if valid {
+			t.Fatal("recordBytes=3 was accepted, want rejected")
+		}
+	})
+
+	t.Run("maximum record length is valid while incomplete", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(buildPrefix(0x01, 1<<14, 0)[:5])
+		if !valid || complete {
+			t.Fatalf("recordBytes=2^14 (5-byte prefix) valid=%t complete=%t, want true/false", valid, complete)
+		}
+	})
+
+	t.Run("just above maximum record length is invalid", func(t *testing.T) {
+		valid, _ := tlsClientHelloStreamPrefix(buildPrefix(0x01, (1<<14)+1, 0)[:5])
+		if valid {
+			t.Fatal("recordBytes=2^14+1 was accepted, want rejected")
+		}
+	})
+
+	t.Run("legacy record version 0x04 is valid", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(buildPrefix(0x04, 0x40, 41))
+		if !valid || !complete {
+			t.Fatalf("versionMinor=0x04 valid=%t complete=%t, want true/true", valid, complete)
+		}
+	})
+
+	t.Run("legacy record version 0x05 is invalid", func(t *testing.T) {
+		valid, _ := tlsClientHelloStreamPrefix(buildPrefix(0x05, 0x40, 41))
+		if valid {
+			t.Fatal("versionMinor=0x05 was accepted, want rejected")
+		}
+	})
+
+	t.Run("empty stream is incomplete but not rejected", func(t *testing.T) {
+		valid, complete := tlsClientHelloStreamPrefix(nil)
+		if !valid || complete {
+			t.Fatalf("empty stream valid=%t complete=%t, want true/false", valid, complete)
+		}
+	})
+}
+
+// Direct pins for the pre-TLS SMTP command vocabulary used by the 587
+// negotiation parser: which commands are permitted, argument requirements,
+// and case-insensitivity.
+func TestCompleteSmtpNegotiationCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		wantOk      bool
+		wantCommand smtpCommand
+	}{
+		{"ehlo requires argument", "EHLO", false, 0},
+		{"ehlo with argument", "EHLO client.example", true, smtpCommandEhlo},
+		{"helo with argument", "HELO client.example", true, smtpCommandHelo},
+		{"lowercase ehlo is accepted", "ehlo client.example", true, smtpCommandEhlo},
+		{"mixed case ehlo is accepted", "EhLo client.example", true, smtpCommandEhlo},
+		{"tab separates command and argument", "EHLO\tclient.example", true, smtpCommandEhlo},
+		{"quit takes no argument", "QUIT", true, smtpCommandQuit},
+		{"quit with argument is rejected", "QUIT now", false, 0},
+		{"quit with whitespace only argument is accepted", "QUIT   ", true, smtpCommandQuit},
+		{"starttls takes no argument", "STARTTLS", true, smtpCommandStartTls},
+		{"starttls with argument is rejected", "STARTTLS now", false, 0},
+		{"unknown command is rejected", "NOOP", false, 0},
+		{"empty line is rejected", "", false, 0},
+		{"control character is rejected", "EHLO client\x01example", false, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command, ok := completeSmtpNegotiationCommand([]byte(test.line))
+			if ok != test.wantOk {
+				t.Fatalf("completeSmtpNegotiationCommand(%q) ok = %t, want %t", test.line, ok, test.wantOk)
+			}
+			if ok && command != test.wantCommand {
+				t.Fatalf("completeSmtpNegotiationCommand(%q) command = %d, want %d", test.line, command, test.wantCommand)
+			}
+		})
+	}
+}
+
+// validPartialSmtpNegotiationLine governs whether an as-yet-incomplete line
+// (no CRLF observed yet) may still resolve into an allowed command; a wrong
+// answer here would let disallowed commands hide in a segment boundary or
+// reject a legitimate command that simply arrived split across packets.
+func TestValidPartialSmtpNegotiationLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"empty partial line is valid", "", true},
+		{"partial prefix of ehlo is valid", "EH", true},
+		{"partial prefix is case insensitive", "eh", true},
+		{"prefix not matching any command is invalid", "XY", false},
+		{"full ehlo without argument yet is valid", "EHLO", true},
+		{"ehlo with argument in progress is valid", "EHLO client.exam", true},
+		{"quit with no argument yet is valid", "QUIT", true},
+		{"quit followed by a non-whitespace argument is invalid", "QUIT now", false},
+		{"starttls with trailing space only is valid", "STARTTLS ", true},
+		{"starttls followed by an argument is invalid", "STARTTLS x", false},
+		{"trailing bare cr is stripped before length check", "EHLO client\r", true},
+		{"embedded cr is invalid", "EHLO cli\rent", false},
+		{"embedded lf is invalid", "EHLO cli\nent", false},
+		{"control character is invalid", "EHLO cli\x01ent", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validPartialSmtpNegotiationLine([]byte(test.line)); got != test.want {
+				t.Fatalf("validPartialSmtpNegotiationLine(%q) = %t, want %t", test.line, got, test.want)
+			}
+		})
+	}
+}
+
+// validSmtpAscii is the shared character-class guard for both the complete
+// and partial line parsers: only tab and the printable ASCII range 0x20-0x7e
+// are allowed, closing off control characters and 8-bit bytes as a smuggling
+// channel for extended protocol semantics.
+func TestValidSmtpAscii(t *testing.T) {
+	tests := []struct {
+		name  string
+		value []byte
+		want  bool
+	}{
+		{"empty is valid", nil, true},
+		{"tab is valid", []byte{'\t'}, true},
+		{"space boundary is valid", []byte{0x20}, true},
+		{"tilde boundary is valid", []byte{0x7e}, true},
+		{"just below space is invalid", []byte{0x1f}, false},
+		{"del is invalid", []byte{0x7f}, false},
+		{"high bit byte is invalid", []byte{0x80}, false},
+		{"newline is invalid", []byte{'\n'}, false},
+		{"carriage return is invalid", []byte{'\r'}, false},
+		{"printable ascii sentence is valid", []byte("EHLO client.example"), true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validSmtpAscii(test.value); got != test.want {
+				t.Fatalf("validSmtpAscii(%v) = %t, want %t", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+// The 587 line parser rejects any single negotiation line beyond RFC 5321's
+// 512-byte limit (510 bytes plus CRLF); pin the exact boundary.
+func TestSmtp587RejectsCommandLineExactlyOverLimit(t *testing.T) {
+	buildLine := func(totalLineBytes int) []byte {
+		// "EHLO " (5 bytes) + filler + CRLF.
+		filler := totalLineBytes - len("EHLO ")
+		line := append([]byte("EHLO "), bytes.Repeat([]byte("a"), filler)...)
+		return append(line, '\r', '\n')
+	}
+
+	t.Run("exactly at the limit is accepted", func(t *testing.T) {
+		var guard smtpEgressGuard
+		requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+			smtpTestPath(47001, smtpStartTlsPort, 12000), buildLine(smtpMaxCommandLineBytes),
+		))
+	})
+
+	t.Run("one byte over the limit is rejected", func(t *testing.T) {
+		var guard smtpEgressGuard
+		requireSmtpVerdict(t, smtpEgressReject, guard.inspect(
+			smtpTestPath(47002, smtpStartTlsPort, 13000), buildLine(smtpMaxCommandLineBytes+1),
+		))
+	})
 }
