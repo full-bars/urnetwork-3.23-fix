@@ -283,7 +283,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${VT_API_KEY:-}" ]; then
-            echo "VIRUS_TOTAL secret not set, skipping VirusTotal scan"
+            # SF-10 (Fable5): a rotated/deleted secret must not silently
+            # disable a security gate. Skip only on branch runs; FAIL on tag
+            # runs (a release publishing without the malware scan is unsafe).
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              echo "::error::VIRUS_TOTAL secret not set — refusing to publish an unscanned release"
+              exit 1
+            fi
+            echo "VIRUS_TOTAL secret not set on branch run, skipping VirusTotal scan"
             exit 0
           fi
           VERSION=${GITHUB_REF_NAME:-latest}
