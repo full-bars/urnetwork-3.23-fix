@@ -40,7 +40,7 @@ func requireSmtpVerdict(t *testing.T, want smtpEgressVerdict, got smtpEgressVerd
 
 func TestSmtpPortClassification(t *testing.T) {
 	path := smtpTestPath(41000, smtpLocalPort, 1)
-	if !smtpRoutesLocally(path) || !smtpNeedsOrderedSend(path) {
+	if !smtpRoutesLocally(path) {
 		t.Fatal("TCP/25 was not classified as the explicit local route")
 	}
 	if smtpNeedsEncryptionInspection(path) {
@@ -49,13 +49,13 @@ func TestSmtpPortClassification(t *testing.T) {
 
 	for _, port := range []int{smtpImplicitTlsPort, smtpStartTlsPort} {
 		path.DestinationPort = port
-		if smtpRoutesLocally(path) || !smtpNeedsEncryptionInspection(path) || !smtpNeedsOrderedSend(path) {
+		if smtpRoutesLocally(path) || !smtpNeedsEncryptionInspection(path) {
 			t.Fatalf("TCP/%d SMTP classification is wrong", port)
 		}
 	}
 
 	path.DestinationPort = 443
-	if smtpRoutesLocally(path) || smtpNeedsEncryptionInspection(path) || smtpNeedsOrderedSend(path) {
+	if smtpRoutesLocally(path) || smtpNeedsEncryptionInspection(path) {
 		t.Fatal("HTTPS was classified as SMTP")
 	}
 }

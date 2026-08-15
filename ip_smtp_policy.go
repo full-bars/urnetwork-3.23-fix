@@ -46,10 +46,6 @@ func smtpNeedsEncryptionInspection(ipPath *IpPath) bool {
 		ipPath.DestinationPort == smtpStartTlsPort
 }
 
-func smtpNeedsOrderedSend(ipPath *IpPath) bool {
-	return smtpRoutesLocally(ipPath) || smtpNeedsEncryptionInspection(ipPath)
-}
-
 // smtpFlowKey is the exact outbound tuple. The IP version is explicit so an
 // IPv4 flow cannot collide with an IPv4-mapped IPv6 flow.
 type smtpFlowKey struct {
@@ -292,20 +288,28 @@ func (self *smtpFlowState) inspectSecureRetransmission(sequence uint32, payload 
 	// The connection may legitimately advance past half of the TCP sequence
 	// space over its lifetime, so the offset is unsigned here: once the flow
 	// is secure only overlap with the retained negotiation prefix matters,
-	// and any segment outside that prefix is opaque TLS data. The signed
-	// arithmetic stays in the negotiation phase, where the bounded prefix
-	// makes gap detection fail closed. Deliberate divergence from upstream,
-	// whose signed check falsely rejects (and latches) a secure flow after
-	// 2^31 bytes of sequence space.
-	offset := int(uint32(sequence - self.baseSequence))
-	if len(self.stream) <= offset {
+	// and any segment outside that prefix is opaque TLS data. The offset
+	// stays uint32 so the comparison is correct on 32-bit platforms (a cast
+	// to int before the bound check would wrap negative past 2^31 and panic
+	// on the slice). The signed arithmetic stays in the negotiation phase,
+	// where the bounded prefix makes gap detection fail closed. Deliberate
+	// divergence from upstream, whose signed check falsely rejects (and
+	// latches) a secure flow after 2^31 bytes of sequence space. One
+	// residual edge remains: a flow that advances past a full 2^32 bytes
+	// wraps the offset back into the prefix range and is compared against
+	// the retained bytes, which can reject at exactly the wrap. That is far
+	// beyond realistic SMTP session sizes and is inherent to not tracking
+	// total progress after TLS starts.
+	offset := uint32(sequence - self.baseSequence)
+	if uint32(len(self.stream)) <= offset {
 		return true
 	}
-	overlap := len(self.stream) - offset
+	start := int(offset) // offset < len(stream) <= 2048, safe on 32-bit
+	overlap := len(self.stream) - start
 	if len(payload) < overlap {
 		overlap = len(payload)
 	}
-	return bytes.Equal(self.stream[offset:offset+overlap], payload[:overlap])
+	return bytes.Equal(self.stream[start:start+overlap], payload[:overlap])
 }
 
 // tlsClientHelloStreamPrefix validates the TLS record header and handshake
