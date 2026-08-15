@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.29.0
+**Current Version**: v3.23.0-fix.29.1 (re-cut after the pre-release shakedown blocked the first attempt on a provider startup panic)
 
 ---
 
@@ -2710,3 +2710,23 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A. This is fork-native release tooling with no upstream equivalent.
 
 **Status**: ✅ v3.23.0-fix.29.1 (PR #381-391). CI-only, no fleet deploy needed for the pipeline itself. Entry 122's TCP port above is the deploy item in this release.
+
+---
+
+## 124. Provider HOME-Robustness Fix + Release Pipeline Follow-Ups (post-merge direct commits)
+
+**Purpose**: The pre-release shakedown for v3.23.0-fix.29.1 found a provider startup panic when the HOME environment variable was unset, blocking the first release attempt. These direct commits fix that panic and also land three release-pipeline changes made after PR #381-391 merged: a scan/publish split so malware scanning never blocks publication, an adaptive shakedown wait tied to the release workflow's actual conclusion, and the v29.1 re-cut itself.
+
+**Files Modified**: Provider client-JWT store and startup path (HOME resolution), auth and proxy-config write paths, the release workflow (scan/publish split), the shakedown workflow (adaptive asset wait).
+
+**Change**:
+- Provider HOME-robustness fix: the provider panicked with "$HOME is not defined" on every invocation when HOME was unset, breaking `--version`, one-shot commands, and the `update --tag` path in bare environments (for example, a root shell with no HOME set). HOME resolution is now safe at startup. When HOME is unavailable, the client-JWT store degrades to in-memory-only mode, so identity reuse is lost for that process but the command still runs. The auth and proxy-config write paths now return errors instead of panicking.
+- Release scan/publish split: `create-release` now publishes the release immediately, without waiting on malware scans. VirusTotal and ClamAV run afterward in a separate, non-blocking scan job that appends its verdict to the release body once done. Scanning can no longer delay or gate publication.
+- Adaptive shakedown asset-wait: the shakedown workflow used to wait a fixed amount of time for release assets to appear. It now waits for the release workflow's own conclusion instead, so it does not start early against a partially-published release or sit idle after the release is already ready.
+- v3.23.0-fix.29.1 re-cut: the first release attempt was blocked by the HOME panic above. Once the fix landed, the release was re-cut under the same version number and shipped clean.
+
+**Effect**: Shipped. The provider no longer panics on missing HOME. Release publication is decoupled from scan completion time. The shakedown starts exactly when a release is ready instead of guessing with a timer.
+
+**How to Identify in New Upstream**: N/A. This is fork-native robustness and release-tooling work with no upstream equivalent.
+
+**Status**: ✅ v3.23.0-fix.29.1 (post-merge direct commits, after PR #381-391). Needs a fleet deploy for the provider HOME-robustness fix; the release/shakedown workflow changes are CI-only.

@@ -18,6 +18,8 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+**Provider panicked when HOME was unset**: the pre-release shakedown found a startup panic, "$HOME is not defined," on every invocation when the HOME environment variable was missing. This broke `--version`, one-shot commands, and the `update --tag` path in bare environments, such as a root shell with no HOME set. The client-JWT store now degrades to in-memory-only mode when HOME is unavailable; identity reuse is lost for that process, but the command still runs. The auth and proxy-config write paths now return errors instead of panicking. This fix blocked the first v3.23.0-fix.29.1 release attempt; the release was re-cut once the fix landed.
+
 **DoH tests hung on live server lookups** (#382): TestDohQuery and TestDohCache queried live public DoH servers for a hostname that does not resolve, so the retry loop hung. A local httptest server now serves canned Google-style JSON DoH responses, and the tests fail fast instead of retrying forever.
 
 ## [v3.23.0-fix.29.0] — 2026-08-14
