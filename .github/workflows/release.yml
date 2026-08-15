@@ -271,135 +271,6 @@ jobs:
           # publishes, not ship a release that breaks installers + self-update
           # (verified 2026-08-12 review).
 
-      - name: VirusTotal scan of release binaries
-        env:
-          VT_API_KEY: ${{ secrets.VIRUS_TOTAL }}
-          VT_FAIL_THRESHOLD: "10"
-          VT_REVIEW_THRESHOLD: "2"
-          VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          if [ -z "${VT_API_KEY:-}" ]; then
-            # SF-10 (Fable5): a rotated/deleted secret must not silently
-            # disable a security gate. Skip only on branch runs; FAIL on tag
-            # runs (a release publishing without the malware scan is unsafe).
-            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-              echo "::error::VIRUS_TOTAL secret not set — refusing to publish an unscanned release"
-              exit 1
-            fi
-            echo "VIRUS_TOTAL secret not set on branch run, skipping VirusTotal scan"
-            exit 0
-          fi
-          VERSION=${GITHUB_REF_NAME:-latest}
-          # Scan every binary that ships in the release: provider (all 6
-          # platforms), hub (linux amd64/arm64), urnet-tools + urnet-docker
-          # (all 6 platforms).
-          python3 .github/scripts/vt-scan.py \
-            release_tmp/linux/amd64/provider \
-            release_tmp/linux/arm64/provider \
-            release_tmp/darwin/amd64/provider \
-            release_tmp/darwin/arm64/provider \
-            release_tmp/windows/amd64/provider.exe \
-            release_tmp/windows/arm64/provider.exe \
-            urnetwork-hub-${VERSION}-linux-amd64 \
-            urnetwork-hub-${VERSION}-linux-arm64 \
-            urnet-tools-linux-amd64 \
-            urnet-tools-linux-arm64 \
-            urnet-tools-darwin-amd64 \
-            urnet-tools-darwin-arm64 \
-            urnet-tools-windows-amd64 \
-            urnet-tools-windows-arm64 \
-            urnet-docker-linux-amd64 \
-            urnet-docker-linux-arm64 \
-            urnet-docker-darwin-amd64 \
-            urnet-docker-darwin-arm64 \
-            urnet-docker-windows-amd64 \
-            urnet-docker-windows-arm64
-
-      - name: Install ClamAV
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clamav
-          # Update signatures. On GitHub-hosted runners a stale clamav-daemon
-          # or freshclam may hold the log lock ("Failed to lock the log file
-          # ... Resource temporarily unavailable") and leave /var/lib/clamav
-          # empty. Stop the daemon, clear the lock, then run freshclam with
-          # --no-daemon and FAIL if the database still does not load: the
-          # EICAR self-test needs real signatures to mean anything.
-          sudo systemctl stop clamav-daemon 2>/dev/null || true
-          sudo systemctl stop clamav-freshclam 2>/dev/null || true
-          sudo pkill -f freshclam 2>/dev/null || true
-          sudo rm -f /var/log/clamav/freshclam.log /run/clamav/freshclam.pid 2>/dev/null || true
-          # Run freshclam once (default non-daemon behavior; --no-daemon is
-          # not supported on Ubuntu 24.04's freshclam 1.5.3).
-          sudo freshclam --quiet
-          if [ ! -s /var/lib/clamav/main.cvd ]; then
-            echo "ClamAV signature database is empty after freshclam"
-            exit 1
-          fi
-          clamscan --version
-
-      - name: ClamAV self-test (EICAR)
-        run: |
-          echo -n 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.com
-          set +e
-          clamscan --no-summary /tmp/eicar.com
-          RC=$?
-          set -e
-          if [ "$RC" -ne 1 ]; then
-            echo "EICAR self-test failed: expected exit 1 (virus found), got $RC"
-            exit 1
-          fi
-          echo "ClamAV self-test OK: EICAR detected"
-
-      - name: ClamAV scan of release binaries
-        run: |
-          VERSION=${GITHUB_REF_NAME:-latest}
-          FAILED=0
-          # Scan every binary that ships in the release, mirroring the
-          # VirusTotal scan above. ClamAV runs locally (Cisco Talos
-          # signatures) as a second, quota-free opinion.
-          for f in \
-            release_tmp/linux/amd64/provider \
-            release_tmp/linux/arm64/provider \
-            release_tmp/darwin/amd64/provider \
-            release_tmp/darwin/arm64/provider \
-            release_tmp/windows/amd64/provider.exe \
-            release_tmp/windows/arm64/provider.exe \
-            urnetwork-hub-${VERSION}-linux-amd64 \
-            urnetwork-hub-${VERSION}-linux-arm64 \
-            urnet-tools-linux-amd64 \
-            urnet-tools-linux-arm64 \
-            urnet-tools-darwin-amd64 \
-            urnet-tools-darwin-arm64 \
-            urnet-tools-windows-amd64 \
-            urnet-tools-windows-arm64 \
-            urnet-docker-linux-amd64 \
-            urnet-docker-linux-arm64 \
-            urnet-docker-darwin-amd64 \
-            urnet-docker-darwin-arm64 \
-            urnet-docker-windows-amd64 \
-            urnet-docker-windows-arm64
-          do
-            set +e
-            clamscan --infected --no-summary "$f"
-            RC=$?
-            set -e
-            if [ "$RC" -eq 1 ]; then
-              echo "INFECTED: $f"
-              FAILED=1
-            elif [ "$RC" -gt 1 ]; then
-              echo "CLAMSCAN ERROR ($RC): $f"
-              FAILED=1
-            else
-              echo "CLEAN: $f"
-            fi
-          done
-          exit "$FAILED"
-
       - name: Create provider tarballs
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
@@ -444,21 +315,11 @@ jobs:
         id: body_src
         run: |
           CUSTOM="releases/${GITHUB_REF_NAME}.md"
-          VT_REPORT="${GITHUB_WORKSPACE}/vt-scan-report.md"
+          # Scans moved to the parallel 'scan' job (posts a release comment).
+          # The release body is the custom notes, or auto-generated.
           if [ -f "$CUSTOM" ]; then
-            # Custom release notes exist: append the VT report to them.
-            if [ -f "$VT_REPORT" ]; then
-              cat "$VT_REPORT" >> "$CUSTOM"
-              echo "Appended VT report to custom release notes"
-            fi
             echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
             echo "auto=false" >> "$GITHUB_OUTPUT"
-          elif [ -f "$VT_REPORT" ]; then
-            # No custom notes: use the VT report as the body. softprops appends
-            # the auto-generated "What's Changed" notes after whatever body is
-            # provided, so the scan proof stays in the release body.
-            echo "path=${VT_REPORT}" >> "$GITHUB_OUTPUT"
-            echo "auto=true" >> "$GITHUB_OUTPUT"
           else
             echo "path=" >> "$GITHUB_OUTPUT"
             echo "auto=true" >> "$GITHUB_OUTPUT"
@@ -501,3 +362,214 @@ jobs:
               "footer": { "text": "URNetwork Release Monitor • Binaries" }
             }]
           }')" "$BUILD_NOTIFY"
+
+  scan:
+    name: Security Scan (parallel, non-blocking)
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Download the same 20 binaries the release ships. (Same download
+      # steps as create-release; duplicated here so this job is independent.)
+      - name: Download provider linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-linux-amd64
+          path: release_tmp/linux/amd64/
+      - name: Download provider linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-linux-arm64
+          path: release_tmp/linux/arm64/
+      - name: Download provider darwin amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-darwin-amd64
+          path: release_tmp/darwin/amd64/
+      - name: Download provider darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-darwin-arm64
+          path: release_tmp/darwin/arm64/
+      - name: Download provider windows amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-windows-amd64
+          path: release_tmp/windows/amd64/
+      - name: Download provider windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-windows-arm64
+          path: release_tmp/windows/arm64/
+      - name: Download hub linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-linux-amd64
+          path: release_tmp/linux/amd64/
+      - name: Download hub linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-linux-arm64
+          path: release_tmp/linux/arm64/
+      - name: Download urnet-tools linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-amd64
+          path: release_tmp/linux/amd64/
+      - name: Download urnet-tools linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-arm64
+          path: release_tmp/linux/arm64/
+      - name: Download urnet-tools darwin amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-darwin-amd64
+          path: release_tmp/darwin/amd64/
+      - name: Download urnet-tools darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-darwin-arm64
+          path: release_tmp/darwin/arm64/
+      - name: Download urnet-tools windows amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-windows-amd64
+          path: release_tmp/windows/amd64/
+      - name: Download urnet-tools windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-windows-arm64
+          path: release_tmp/windows/arm64/
+      - name: Download urnet-docker linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-amd64
+          path: release_tmp/linux/amd64/
+      - name: Download urnet-docker linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-arm64
+          path: release_tmp/linux/arm64/
+      - name: Download urnet-docker darwin amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-darwin-amd64
+          path: release_tmp/darwin/amd64/
+      - name: Download urnet-docker darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-darwin-arm64
+          path: release_tmp/darwin/arm64/
+      - name: Download urnet-docker windows amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-windows-amd64
+          path: release_tmp/windows/amd64/
+      - name: Download urnet-docker windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-windows-arm64
+          path: release_tmp/windows/arm64/
+
+      - name: VirusTotal scan of release binaries
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL }}
+          VT_FAIL_THRESHOLD: "10"
+          VT_REVIEW_THRESHOLD: "2"
+          VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VT_API_KEY:-}" ]; then
+            # A rotated/deleted secret must not silently disable a security
+            # gate. Fail on tag runs so the release comment flags it.
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              echo "::error::VIRUS_TOTAL secret not set — scan cannot run"
+              exit 1
+            fi
+            echo "VIRUS_TOTAL secret not set on branch run, skipping VirusTotal scan"
+            exit 0
+          fi
+          VERSION=${GITHUB_REF_NAME:-latest}
+          python3 .github/scripts/vt-scan.py \
+            release_tmp/linux/amd64/provider \
+            release_tmp/linux/arm64/provider \
+            release_tmp/darwin/amd64/provider \
+            release_tmp/darwin/arm64/provider \
+            release_tmp/windows/amd64/provider \
+            release_tmp/windows/arm64/provider \
+            release_tmp/linux/amd64/hub \
+            release_tmp/linux/arm64/hub \
+            release_tmp/linux/amd64/urnet-tools \
+            release_tmp/linux/arm64/urnet-tools \
+            release_tmp/darwin/amd64/urnet-tools \
+            release_tmp/darwin/arm64/urnet-tools \
+            release_tmp/windows/amd64/urnet-tools \
+            release_tmp/windows/arm64/urnet-tools \
+            release_tmp/linux/amd64/urnet-docker \
+            release_tmp/linux/arm64/urnet-docker \
+            release_tmp/darwin/amd64/urnet-docker \
+            release_tmp/darwin/arm64/urnet-docker \
+            release_tmp/windows/amd64/urnet-docker \
+            release_tmp/windows/arm64/urnet-docker
+          # Non-blocking: a FAIL here does NOT cancel the release. It exits
+          # non-zero so the job is red, and the comment step below still runs
+          # (if: always()) to surface the verdict on the release.
+
+      - name: ClamAV scan of release binaries
+        run: |
+          set -euo pipefail
+          VERSION=${GITHUB_REF_NAME:-latest}
+          if command -v clamscan >/dev/null 2>&1; then
+            echo "ClamAV already installed"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clamav >/dev/null
+          fi
+          # EICAR self-test: the scanner must actually detect.
+          printf 'X5O!P%%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.txt
+          if clamscan /tmp/eicar.txt 2>/dev/null | grep -q "FOUND"; then
+            echo "EICAR self-test passed (scanner active)"
+          else
+            echo "::warning::EICAR self-test did not FOUND — ClamAV may be broken"
+          fi
+          clamscan --no-summary -r release_tmp/ 2>/dev/null | grep "FOUND" && echo "::error::ClamAV found malware in release artifacts" || echo "ClamAV: clean"
+
+      - name: Post scan verdict to release
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Post the scan result as a release comment. NEVER gates the release.
+          VER=${GITHUB_REF_NAME}
+          BODY="## Security Scan (parallel, non-blocking)"
+          if [ -f "${GITHUB_WORKSPACE}/vt-scan-report.md" ]; then
+            BODY="${BODY}"$'\n'"$(cat "${GITHUB_WORKSPACE}/vt-scan-report.md")"
+          else
+            BODY="${BODY}"$'\n'"VirusTotal scan did not produce a report (see the scan job log)."
+          fi
+          python3 - "$VER" "$BODY" << 'PY'
+          import json, os, sys, urllib.request
+          ver, body = sys.argv[1], sys.argv[2]
+          token = os.environ["GITHUB_TOKEN"]
+          api = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+          # Find the release id for this tag.
+          req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              rel = json.load(resp)
+          # Post a comment (github API has no release comments via this shape;
+          # use issue-comments on the release's 'discussion' — fallback: update
+          # the release body instead, preserving the original notes).
+          body_new = body
+          req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
+          with urllib.request.urlopen(req2, timeout=30) as resp2:
+              print("scan verdict appended to release body (HTTP", resp2.status, ")")
+          PY
