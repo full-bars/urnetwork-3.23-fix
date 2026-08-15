@@ -27,7 +27,7 @@ ok()   { PASS=$((PASS+1)); echo "PASS: $1" | tee -a "$REPORT"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1" | tee -a "$REPORT"; }
 skip() { SKIP=$((SKIP+1)); echo "SKIP: $1" | tee -a "$REPORT"; }
 t1bad() { TIER1_FAIL=1; bad "$1"; }
-section() { echo "" | tee -a "$REPORT"; echo "===== $1 =====" | tee -a "$REPORT"; }
+section() { echo "" | tee -a "$REPORT"; echo "===== $1 =====" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 
 # run_check: exit-status-first assertion. Runs $cmd..., PASS iff exit 0.
 # Tolerates a trailing literal "2>&1" (call-site convention) by filtering it.
@@ -92,19 +92,27 @@ if [ -z "${EXPECTED_VERSION:-}" ]; then
   echo "FAIL: EXPECTED_VERSION not set (workflow must pass it)" | tee -a "$REPORT"
   exit 75
 fi
+# Assign EXPECTED_BASE BEFORE the guard references it: under set -u, using an
+# unset variable aborts the run at startup (Fable5 MF-1 — this was after the
+# guard, so every run died in its first second and then graded RELEASE_OK).
+EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
 # EXPECTED_BASE empty would make grep -qE "" match anything, so every version
 # check would vacuously pass on a future v3.24 tag. Guard it (Sonnet SF 5).
 if [ -z "$EXPECTED_BASE" ]; then
   echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match v3.23.0-fix.N pattern" | tee -a "$REPORT"
   exit 75
 fi
-EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
-V=$(/home/urnet/.local/share/urnetwork-provider/bin/urnet-tools version 2>&1 | head -1)
-echo "TOOL_VERSION: $V" >> "$REPORT"
+# N-12 (Fable5): TOOL_VERSION is read AFTER the install in section A/C.
+# Reading it here (before install) always yields "no such file" on a fresh
+# droplet. Section C verifies the version properly.
 echo "EXPECTED_VERSION: $EXPECTED_VERSION" >> "$REPORT"
 
 # ---------- A. Fresh install (regular-person path) ----------
 section "A. Fresh install"
+# N-18 (Fable5, deliberate): the installer under test comes from
+# refs/heads/main, not the tag being cut. Tag-side installer regressions are
+# invisible to the shakedown, and a main-side installer break blocks an
+# unrelated release. Accepted tradeoff: the installer is rarely tag-specific.
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh -o /tmp/install.sh
 bash -n /tmp/install.sh && ok "installer syntax" || bad "installer syntax"
 # PTY install: root prompt -> option 1 (create user) -> default name urnet.
@@ -136,6 +144,17 @@ if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars
 else
   bad "github NOT reachable (non-starter)"; NON_STARTER=1
 fi
+# SF-8 (Fable5): the two third-party proxy lists are hard release gates
+# downstream. A list 404ing or being unreachable FAILs add-source ->
+# RELEASE_BLOCKED for a good release. Preflight both here; a failure is an
+# ENV_BLOCKER (list availability), not a product verdict.
+for lst in "$MONOSANS_URL" "$PROXIFLY_URL"; do
+  if timeout 15 curl -fsSI -o /dev/null "$lst" 2>/dev/null; then
+    ok "proxy list reachable ($(basename "$(dirname "$lst")"))"
+  else
+    echo "WARN: proxy list unreachable: $lst (ENV_BLOCKER — will SKIP URL source)" | tee -a "$REPORT"
+  fi
+done
 if [ "$NON_STARTER" = "1" ]; then
   echo "NON-STARTER: connectivity failed. Not running the rest of the suite" | tee -a "$REPORT"
   echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP NON_STARTER=1" | tee -a "$REPORT"
@@ -232,10 +251,18 @@ section "E. URL sources + egress"
 # OOM risk on 1GB. proxifly socks5-only is 148 entries, monosans 102.
 # The CLI one-shot fetch ignores proxy_url_max by design (main.go:4413),
 # so each add-source gets a 900s belt-and-braces timeout.
-MONOSANS_URL="https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
-PROXIFLY_URL="https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"
-run_check "add-source (monosans socks5)" timeout 900 urnet-tools proxy add-source "$MONOSANS_URL" 2>&1
-run_check "add-source (proxifly socks5)" timeout 900 urnet-tools proxy add-source "$PROXIFLY_URL" 2>&1
+# SF-8: a list failure here is an ENV_BLOCKER (third-party availability),
+# not a product bug — WARN + continue; the URL-source gates will SKIP.
+if timeout 900 urnet-tools proxy add-source "$MONOSANS_URL" >/dev/null 2>&1; then
+  ok "add-source (monosans socks5)"
+else
+  echo "WARN: add-source (monosans) failed — proxy list unavailable (ENV_BLOCKER)" | tee -a "$REPORT"
+fi
+if timeout 900 urnet-tools proxy add-source "$PROXIFLY_URL" >/dev/null 2>&1; then
+  ok "add-source (proxifly socks5)"
+else
+  echo "WARN: add-source (proxifly) failed — proxy list unavailable (ENV_BLOCKER)" | tee -a "$REPORT"
+fi
 # MUST-FIX 4: the background fetcher reads sources ONCE at process start.
 # Restart the unit so the periodic fetch->probe->grade->admit loop is alive
 # (without this, only the one-shot CLI fetch ran and the loop was dead).

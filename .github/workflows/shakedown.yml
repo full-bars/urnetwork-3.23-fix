@@ -52,15 +52,31 @@ jobs:
           fi
           # Poll until the tag's assets exist: the shakedown and the release
           # build fire on the same tag push, so assets may lag by minutes.
-          for i in $(seq 1 30); do
-            if curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+          # 45 x 20s = 15 min budget: release.yml runs a 6-platform matrix +
+          # VT scan (20 uploads) + ClamAV install/scan, routinely >10 min
+          # (Fable5 MF-4: 30x20s was shorter than the build and never failed
+          # loud, misattributing build lag as a product block).
+          ASSETS_OK=0
+          for i in $(seq 1 45); do
+            if curl -fsSL -H "Authorization: Bearer *** \
               "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
+              ASSETS_OK=1
               break
             fi
-            echo "waiting for release assets of ${VER} (${i}/30)..."
+            echo "waiting for release assets of ${VER} (${i}/45)..."
             sleep 20
           done
+          if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            # On a tag run, assets never appearing means the release build
+            # failed or is still publishing. Fail loud as ENV_BLOCKER instead
+            # of running the shakedown against a release that does not exist
+            # (Fable5 MF-4). The next attempt will re-poll.
+            echo "::error::release assets for ${VER} never appeared within 15 min — release build may have failed"
+            echo "::error::shakedown aborted as ENV_BLOCKER; the release pipeline, not the product, is suspect"
+            echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"
+            exit 75
+          fi
           echo "EXPECTED_VERSION=${VER}" >> "$GITHUB_OUTPUT"
           echo "target release: ${VER}"
 
@@ -123,6 +139,9 @@ jobs:
               sleep $((attempt * 10))
             done
             local remaining
+            # DO deletes asynchronously: verify immediately can false-error on a
+            # still-listed droplet. Sleep + recheck once (Fable5 N-17).
+            sleep 5
             remaining=$(curl -s -H "$AUTH" "$API/droplets?tag_name=$tag" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('droplets',[])))" 2>/dev/null || echo "?")
             if [ "$remaining" != "0" ]; then
               echo "::error::CLEANUP FAILED: $remaining droplet(s) still tagged $tag"
@@ -136,7 +155,9 @@ jobs:
               local code
               code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH" "$API/droplets/$id")
               echo "CLEANUP: delete droplet $id attempt $attempt HTTP $code"
-              [ "$code" = "204" ] || [ "$code" = "200" ] && break
+              # 404 = already gone (sweeper/delete-by-tag won the race) — success
+              # (Fable5 N-16: retrying 404 five times burned ~150s of trap time).
+              [ "$code" = "204" ] || [ "$code" = "200" ] || [ "$code" = "404" ] && break
               sleep $((attempt * 10))
             done
           }
@@ -221,14 +242,14 @@ jobs:
           # cap — Opus MUST-FIX 5). The wrapper writes the script exit code to
           # the rc sentinel via atomic rename (Sonnet finding #1: single \ so
           # $? reaches the REMOTE shell, not the runner's).
-          # 6900s (115 min) poll budget leaves margin under the 150-min job cap:
-          # up to ~18 min setup + worst-case long Phase 1 + 30s collection +
-          # AI review + artifact all fit before SIGKILL (mimo finding #4).
-          DEADLINE_EPOCH=$(( $(date +%s) + 6900 ))
+          # 6600s (110 min) poll budget leaves real margin under the 150-min
+          # job cap: setup can be ~17 min (10-min asset poll + mint + droplet)
+          # + 110-min poll + collection = ~130 min < 150 (Fable5 SF-7).
+          DEADLINE_EPOCH=$(( $(date +%s) + 6600 ))
           # --no-block is REQUIRED: with Type=oneshot, systemd-run waits for the
           # start job to complete (= the whole script) unless told not to, which
           # would block ssh and recreate the original held-open bug (DS R3 M2).
-          ssh $SSHOPTS root@$IP "systemd-run --no-block --unit=shakedown --property=Type=oneshot --property=RemainAfterExit=yes --setenv=EXPECTED_VERSION='${EXPECTED_VERSION}' --setenv=DEADLINE_EPOCH='${DEADLINE_EPOCH}' /bin/bash -c 'bash /tmp/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1; sync; echo \$? > /tmp/shakedown.rc.part; mv /tmp/shakedown.rc.part /tmp/shakedown.rc'" \
+          ssh $SSHOPTS root@$IP "systemd-run --no-block --unit=shakedown --property=Type=oneshot --property=RemainAfterExit=yes --setenv=EXPECTED_VERSION='${EXPECTED_VERSION}' --setenv=DEADLINE_EPOCH='${DEADLINE_EPOCH}' /bin/bash -c 'bash /tmp/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1; rc=\$?; sync; echo \$rc > /tmp/shakedown.rc.part; mv /tmp/shakedown.rc.part /tmp/shakedown.rc'" \
             && echo "shakedown launched via systemd-run (ssh returned immediately)" \
             || { echo "::error::systemd-run launch failed — aborting (cleanup deletes)"; exit 1; }
           # Poll for the rc SENTINEL (atomic mv), never the report file (it
@@ -257,26 +278,30 @@ jobs:
               CONSECUTIVE_FAIL=0
               # STALLED detection (DS R3 S3): the script touches the heartbeat
               # on every Phase-2 sample; a unit 'alive' but heartbeat >15 min
-              # old means the script is wedged (not crashed). Surface it.
-              HB_AGE=$(timeout 20 ssh $SSHOPTS_B root@$IP "stat -c %Y /tmp/shakedown.heartbeat 2>/dev/null" 2>/dev/null || echo 0)
-              if [ -n "$HB_AGE" ] && [ "$HB_AGE" -gt 0 ]; then
-                NOW=$(date +%s)
-                if [ $(( NOW - HB_AGE )) -gt 900 ]; then
-                  echo "::warning::STALLED: heartbeat $(date -u -d @$HB_AGE +%T)Z, $(date -u +%T)Z now (>15 min)"
-                fi
+              # old means the script is wedged (not crashed). Compute age
+              # DROPLET-side so runner/droplet clock skew cannot shift the
+              # threshold (Fable5 N-13).
+              HB_AGE=$(timeout 20 ssh $SSHOPTS_B root@$IP "NOW=\$(date +%s); HB=\$(stat -c %Y /tmp/shakedown.heartbeat 2>/dev/null || echo 0); [ \"\$HB\" -gt 0 ] && echo \$(( NOW - HB ))" 2>/dev/null)
+              if [ -n "$HB_AGE" ] && [ "$HB_AGE" -gt 900 ]; then
+                echo "::warning::STALLED: heartbeat $HB_AGE s old (>15 min)"
               fi
             else
               CONSECUTIVE_FAIL=$((CONSECUTIVE_FAIL + 1))
             fi
             if [ "$CONSECUTIVE_FAIL" -ge 5 ]; then
               echo "WARN: 5 consecutive ssh failures — droplet may be lost"
-              # Check the unit: for Type=oneshot 'activating' = running,
-              # 'active' = finished, failed/inactive/empty = crashed.
-              STATE=$(timeout 20 ssh $SSHOPTS_B root@$IP "systemctl is-active shakedown" 2>/dev/null)
-              if [ "$STATE" = "failed" ] || [ "$STATE" = "inactive" ] || [ -z "$STATE" ]; then
-                echo "::error::HARNESS_CRASH: systemd unit gone/failed without rc sentinel (state=$STATE)"
+              # Confirm via the DO API (reachable even when ssh is not) instead
+              # of riding the same broken transport (Fable5 SF-6): an empty
+              # systemctl response was being treated as "unit gone" when it
+              # just meant "ssh broken".
+              DO_STATE=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('status',''))" 2>/dev/null)
+              if [ "$DO_STATE" != "active" ]; then
+                echo "::error::HARNESS_CRASH: DO droplet not active ($DO_STATE) after 5 ssh failures"
                 SHAKE_RC=124
                 break
+              else
+                echo "INFO: DO droplet still active — ssh flake, not a crash; continuing"
+                CONSECUTIVE_FAIL=0
               fi
             fi
             # Stream the report on every poll so droplet death never costs
@@ -301,7 +326,11 @@ jobs:
           if [ -s /tmp/shakedown-report.final ]; then
             mv /tmp/shakedown-report.final /tmp/shakedown-report.txt
           fi
-          timeout 30 ssh $SSHOPTS root@$IP 'cat /tmp/shakedown.out' >> /tmp/shakedown-report.txt 2>/dev/null || true
+          # N-14 (Fable5): shakedown.out duplicates every tee'd line already in
+          # the report, doubling PASS/FAIL counts in Discord/summary. Append
+          # only lines NOT already present (tail of stderr diagnostics that
+          # never hit the report).
+          timeout 30 ssh $SSHOPTS root@$IP 'grep -vxFf /tmp/shakedown-report.txt /tmp/shakedown.out 2>/dev/null | tail -50' >> /tmp/shakedown-report.txt 2>/dev/null || true
           echo "REPORT_READY"
           exit $SHAKE_RC
           SCRIPT
@@ -339,8 +368,11 @@ jobs:
           # 0 = PASS, 1 = RELEASE_BLOCKED (Tier-1), 75 = ENV_BLOCKER,
           # 124 = WATCHDOG_TIMEOUT/HARNESS_CRASH (already ::error::'d in do.sh).
           if [ "$SHAKE_EXIT" -eq 75 ]; then
-            echo "::warning::ENV_BLOCKER (rc=75) — shakedown could not run, treat as neutral"
-            exit 0
+            # SF-9 (Fable5): an untested release must not show the same green
+            # check as a tested PASS. Surface it loudly as NOT TESTED.
+            echo "::error::ENV_BLOCKER (rc=75) — shakedown did NOT run the release. This is NOT a pass."
+            echo "::error::Any release gated on this job must be treated as UNTESTED until a clean run."
+            exit 75
           fi
           exit $SHAKE_EXIT
 
@@ -361,7 +393,14 @@ jobs:
           # Exit 75 (ENV_BLOCKER) short-circuits BEFORE the report grep, so a
           # NON_STARTER run (which writes bad() lines then exits 75) is never
           # graded RELEASE_BLOCKED (DS R3 S1).
-          SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo 0)
+          SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo "MISSING")
+          # MISSING means the Run step was SIGKILLed before writing the exit
+          # code (job timeout / runner death) — a partial run, not a PASS
+          # (Fable5 MF-3: defaulting to 0 gave a false RELEASE_OK).
+          if [ "$SHAKE_EXIT" = "MISSING" ] || ! [ "$SHAKE_EXIT" -eq "$SHAKE_EXIT" ] 2>/dev/null; then
+            echo "::warning::shakedown.exit missing or non-numeric ('$SHAKE_EXIT') — treating as incomplete run"
+            SHAKE_EXIT=124
+          fi
           if [ "$SHAKE_EXIT" = "75" ]; then
             DET_VERDICT="ENV_BLOCKER"
           # Key off TIER1_FAIL and the exit code, NOT raw SELF-TEST-FAIL text:

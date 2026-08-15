@@ -85,25 +85,11 @@ def main():
 
     # --- Reap stale shakedown-ci SSH keys (paginated) ---
     # DO SSH key objects expose id/fingerprint/public_key/name but NOT
-    # created_at, so age-based reaping is impossible (DeepSeek SF 10).
-    # Correct semantic: a shakedown-ci-* key is stale only when its droplet is
-    # gone. Collect the live droplets' key fingerprints, then delete only keys
-    # not attached to any live droplet. This protects in-progress runs.
-    live_fps = set()
-    lpage = 1
-    while True:
-        code, data = req("/droplets?tag_name=shakedown-ci&per_page=200&page={}".format(lpage), auth=auth)
-        if code != 200:
-            break
-        drops = data.get("droplets", [])
-        if not drops:
-            break
-        for d in drops:
-            for sk in d.get("ssh_keys", []):
-                live_fps.add(sk.get("fingerprint", ""))
-        lpage += 1
-        if lpage > 50:
-            break
+    # created_at, and droplets do NOT carry their ssh_keys back in GET
+    # responses (Fable5 SF-5 — the fingerprint-matching approach was dead
+    # code). The key NAME embeds the creation epoch (shakedown-ci-<epoch>,
+    # set at create in shakedown.yml), so parse it and reap only keys older
+    # than the cutoff. This protects in-progress runs.
     key_page = 1
     while True:
         code, data = req("/account/keys?per_page=200&page={}".format(key_page), auth=auth)
@@ -116,13 +102,22 @@ def main():
         if not keys:
             break
         for k in keys:
-            if k.get("name", "").startswith("shakedown-ci-"):
-                fp = k.get("fingerprint", "")
-                if fp and fp in live_fps:
-                    print("Sweep: keep key {} ({}) — attached to live droplet".format(k["id"], k["name"]))
-                    continue
+            name = k.get("name", "")
+            if not name.startswith("shakedown-ci-"):
+                continue
+            epoch = name[len("shakedown-ci-"):]
+            try:
+                created = datetime.datetime.fromtimestamp(int(epoch), tz=datetime.timezone.utc)
+            except (ValueError, OverflowError):
+                # Unparseable epoch: cannot prove it is old. Keep it (safer
+                # than deleting a key we cannot age).
+                print("Sweep: keep key {} ({}) — unparseable epoch".format(k["id"], name))
+                continue
+            if created < cutoff:
                 code, _ = req("/account/keys/{}".format(k["id"]), method="DELETE", auth=auth)
-                print("Sweep: remove stale key {} ({}) HTTP {}".format(k["id"], k["name"], code))
+                print("Sweep: remove stale key {} ({}, created {}) HTTP {}".format(k["id"], name, created.isoformat(), code))
+            else:
+                print("Sweep: keep key {} ({}) — age within {}h".format(k["id"], name, max_hours))
         key_page += 1
         if key_page > 50:
             break
