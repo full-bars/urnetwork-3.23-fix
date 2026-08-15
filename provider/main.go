@@ -2565,7 +2565,7 @@ func provide(opts docopt.Opts) {
 						// skips it), so a gate failure here means the proxy is DEAD —
 						// labeling it a quality rejection would suppress the give-up/
 						// eviction/backoff machinery and the address would churn on
-						// every reload forever (Opus review finding 1).
+						// every reload forever.
 						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, proxySettings.Address, score)
 					}
 					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
