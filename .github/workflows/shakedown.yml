@@ -142,7 +142,7 @@ jobs:
           PY
 
       - name: Syntax-check shakedown script
-        # Opus R5 NICE: catch a broken shakedown.sh BEFORE any droplet is
+        # Catch a broken shakedown.sh BEFORE any droplet is
         # created. The in-do.sh bash -n (line 242) runs after droplet boot;
         # this one costs nothing.
         run: |
@@ -181,7 +181,7 @@ jobs:
             done
             local remaining
             # DO deletes asynchronously: verify immediately can false-error on a
-            # still-listed droplet. Sleep + recheck once (Fable5 N-17).
+            # still-listed droplet. Sleep + recheck once.
             sleep 5
             remaining=$(curl -s -H "$AUTH" "$API/droplets?tag_name=$tag" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('droplets',[])))" 2>/dev/null || echo "?")
             if [ "$remaining" != "0" ]; then
@@ -197,7 +197,7 @@ jobs:
               code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH" "$API/droplets/$id")
               echo "CLEANUP: delete droplet $id attempt $attempt HTTP $code"
               # 404 = already gone (sweeper/delete-by-tag won the race) — success
-              # (Fable5 N-16: retrying 404 five times burned ~150s of trap time).
+              # (retrying 404 five times burned ~150s of trap time).
               [ "$code" = "204" ] || [ "$code" = "200" ] || [ "$code" = "404" ] && break
               sleep $((attempt * 10))
             done
@@ -215,7 +215,7 @@ jobs:
           }
           # EXIT-only misses SIGTERM/SIGINT (job timeout, cancel). Trap them
           # all, and EXIT on signal (a trap that runs cleanup then resumes
-          # would keep polling a deleted droplet — DeepSeek SF 6).
+          # would keep polling a deleted droplet).
           trap 'cleanup; exit 143' TERM INT HUP
           trap cleanup EXIT
 
@@ -280,13 +280,13 @@ jobs:
           bash -n .github/scripts/shakedown.sh || { echo "::error::shakedown.sh syntax error"; exit 1; }
           # Launch detached. --setenv propagates EXPECTED_VERSION (fails loud if
           # unset) and DEADLINE_EPOCH (lets Phase 2 shrink itself under the job
-          # cap — Opus MUST-FIX 5). The wrapper writes the script exit code to
-          # the rc sentinel via atomic rename (Sonnet finding #1: single \ so
+          # cap). The wrapper writes the script exit code to
+          # the rc sentinel via atomic rename (single \ so
           # $? reaches the REMOTE shell, not the runner's).
           # 5400s (90 min) poll budget + 900s poll-overrun margin. Pre-launch
           # is now ~22-27 min (checkout + Go + build + 15-min asset poll +
           # droplet/SSH wait), so 27 + 90 + 15 = ~132 min < the 150-min job
-          # cap, with real margin for collection + AI + artifact (Opus R5 MF-4).
+          # cap, with real margin for collection + AI + artifact.
           DEADLINE_EPOCH=$(( $(date +%s) + 5400 ))
           # --no-block is REQUIRED: with Type=oneshot, systemd-run waits for the
           # start job to complete (= the whole script) unless told not to, which
@@ -299,7 +299,7 @@ jobs:
           # stuck handshake cannot stall the loop. Poll deadline computed
           # against the job cap with a teardown reserve (MUST-FIX 5).
           SSHOPTS_B="$SSHOPTS -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
-          POLL_DEADLINE=$(( DEADLINE_EPOCH + 900 ))   # 15 min past the script's deadline: the Phase-2 loop's final sleep 300 can overshoot P2_END by a sample (Opus R5 MF-4)
+          POLL_DEADLINE=$(( DEADLINE_EPOCH + 900 ))   # 15 min past the script's deadline: the Phase-2 loop's final sleep 300 can overshoot P2_END by a sample
           SHAKE_RC=""
           CONSECUTIVE_FAIL=0
           STALE_HB=0
@@ -307,7 +307,7 @@ jobs:
             # Emit a POSITIVE signal on every successful ssh: RC_EOF when the
             # sentinel exists, STILL_RUNNING when it does not (true for most of
             # the run). Empty OUT therefore means ssh itself failed, which is
-            # the only thing that increments CONSECUTIVE_FAIL (Sonnet MF 2).
+            # the only thing that increments CONSECUTIVE_FAIL.
             OUT=$(timeout 30 ssh $SSHOPTS_B root@$IP "if test -f /tmp/shakedown.rc; then cat /tmp/shakedown.rc; echo RC_EOF; else echo STILL_RUNNING; fi" 2>/dev/null)
             if echo "$OUT" | grep -q "RC_EOF"; then
               SHAKE_RC=$(echo "$OUT" | grep -v RC_EOF | grep -v STILL_RUNNING | head -1)
@@ -323,9 +323,9 @@ jobs:
               # on every Phase-2 sample; a unit 'alive' but heartbeat >15 min
               # old means the script is wedged (not crashed). Compute age
               # DROPLET-side so runner/droplet clock skew cannot shift the
-              # threshold (Fable5 N-13). Escalate after 3 consecutive stale
+              # threshold. Escalate after 3 consecutive stale
               # readings (45 min wedged) — a hung script must not burn the
-              # whole poll budget (DeepSeek R5 SF-6).
+              # whole poll budget.
               HB_AGE=$(timeout 20 ssh $SSHOPTS_B root@$IP "NOW=\$(date +%s); HB=\$(stat -c %Y /tmp/shakedown.heartbeat 2>/dev/null || echo 0); [ \"\$HB\" -gt 0 ] && echo \$(( NOW - HB ))" 2>/dev/null)
               if [ -n "$HB_AGE" ] && [ "$HB_AGE" -gt 900 ]; then
                 STALE_HB=$((STALE_HB + 1))
@@ -344,7 +344,7 @@ jobs:
             if [ "$CONSECUTIVE_FAIL" -ge 5 ]; then
               echo "WARN: 5 consecutive ssh failures — droplet may be lost"
               # Confirm via the DO API (reachable even when ssh is not) instead
-              # of riding the same broken transport (Fable5 SF-6): an empty
+              # of riding the same broken transport: an empty
               # systemctl response was being treated as "unit gone" when it
               # just meant "ssh broken".
               DO_STATE=$(curl -s -H "$AUTH" "$API/droplets/$DROPLET_ID" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('droplet',{}).get('status',''))" 2>/dev/null)
@@ -360,7 +360,7 @@ jobs:
             # Stream the report on every poll so droplet death never costs
             # the whole artifact. Append to a STAGING file first: a direct
             # truncating redirect would wipe prior polls if ssh fails here
-            # (CodeRabbit major: report redirect destroys streamed output).
+            # (report redirect destroys streamed output).
             timeout 30 ssh $SSHOPTS_B root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.poll 2>/dev/null
             if [ -s /tmp/shakedown-report.poll ]; then
               mv /tmp/shakedown-report.poll /tmp/shakedown-report.txt
@@ -374,12 +374,12 @@ jobs:
           echo "shakedown exit code: $SHAKE_RC"
           # Collect the final report BEFORE trap deletes. Stage then mv so a
           # failed ssh (droplet lost) cannot truncate the streamed report —
-          # the same bug the poll loop guards against (Sonnet MUST-FIX 1).
+          # the same bug the poll loop guards against.
           timeout 30 ssh $SSHOPTS root@$IP 'cat /tmp/shakedown-report.txt' > /tmp/shakedown-report.final 2>/dev/null
           if [ -s /tmp/shakedown-report.final ]; then
             mv /tmp/shakedown-report.final /tmp/shakedown-report.txt
           fi
-          # N-14 (Fable5): shakedown.out duplicates every tee'd line already in
+          # shakedown.out duplicates every tee'd line already in
           # the report, doubling PASS/FAIL counts in Discord/summary. Append
           # only lines NOT already present (tail of stderr diagnostics that
           # never hit the report).
@@ -406,12 +406,12 @@ jobs:
           echo "do.sh exit: $SHAKE_EXIT"
           # Persist for the AI-review step: a nonzero non-75 exit means the
           # run did not complete cleanly — the deterministic verdict must be
-          # RELEASE_BLOCKED even if the report has no FAIL: line yet (Sonnet
-          # finding #5: crash/timeout before any bad() call = false green).
+          # RELEASE_BLOCKED even if the report has no FAIL: line yet
+          # (a crash/timeout before any bad() call would be a false green).
           # NOTE: written AFTER the FAIL->1 promotion below so the persisted
-          # value matches the job's actual status (DeepSeek R5 MF-3: writing
+          # value matches the job's actual status (writing
           # 0 before promotion left a false-green RELEASE_OK in the verdict).
-          # DeepSeek R5 MF-4: a non-Tier-1 bad() FAIL (e.g. multi-provider
+          # A non-Tier-1 bad() FAIL (e.g. multi-provider
           # ambiguity, hot-restart identity) exits the SCRIPT 0 but is still a
           # product FAIL. The job must not go green on those either.
           REPORT_FAILS=$(grep -c "^FAIL:" /tmp/shakedown-report.txt 2>/dev/null || true)
@@ -421,11 +421,11 @@ jobs:
           fi
           # Persist AFTER the promotion so the AI verdict agrees with the job.
           echo "$SHAKE_EXIT" > /tmp/shakedown.exit
-          # Map the exit to the verdict table (Opus MUST-FIX 8):
+          # Map the exit to the verdict table:
           # 0 = PASS, 1 = RELEASE_BLOCKED (Tier-1), 75 = ENV_BLOCKER,
           # 124 = WATCHDOG_TIMEOUT/HARNESS_CRASH (already ::error::'d in do.sh).
           if [ "$SHAKE_EXIT" -eq 75 ]; then
-            # SF-9 (Fable5): an untested release must not show the same green
+            # An untested release must not show the same green
             # check as a tested PASS. Surface it loudly as NOT TESTED.
             echo "::error::ENV_BLOCKER (rc=75) — shakedown did NOT run the release. This is NOT a pass."
             echo "::error::Any release gated on this job must be treated as UNTESTED until a clean run."
@@ -446,14 +446,14 @@ jobs:
           REPORT_TEXT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           # Deterministic classification: parse the report for the verdict.
           # A nonzero non-75 shakedown exit (crash/timeout before any FAIL:)
-          # overrides the report grep — never false-green (Sonnet #5).
+          # overrides the report grep — never false-green.
           # Exit 75 (ENV_BLOCKER) short-circuits BEFORE the report grep, so a
           # NON_STARTER run (which writes bad() lines then exits 75) is never
           # graded RELEASE_BLOCKED (DS R3 S1).
           SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo "MISSING")
           # MISSING means the Run step was SIGKILLed before writing the exit
           # code (job timeout / runner death) — a partial run, not a PASS
-          # (Fable5 MF-3: defaulting to 0 gave a false RELEASE_OK).
+          # (defaulting to 0 gave a false RELEASE_OK).
           if [ "$SHAKE_EXIT" = "MISSING" ] || ! [ "$SHAKE_EXIT" -eq "$SHAKE_EXIT" ] 2>/dev/null; then
             echo "::warning::shakedown.exit missing or non-numeric ('$SHAKE_EXIT') — treating as incomplete run"
             SHAKE_EXIT=124
@@ -472,7 +472,7 @@ jobs:
             DET_VERDICT="RELEASE_OK"
           fi
           # Write the deterministic header FIRST. AI_REVIEW_STATUS is written
-          # exactly once AFTER the request resolves (CodeRabbit: duplicate
+          # exactly once AFTER the request resolves (duplicate
           # OK/FAILED with conflicting values).
           echo "DETERMINISTIC_VERDICT=$DET_VERDICT" > /tmp/shakedown-ai-review.txt
           # The forced-by note must come AFTER the > write above, or it is
@@ -537,7 +537,7 @@ jobs:
           PASS=$(grep -c "^PASS:" /tmp/shakedown-report.txt 2>/dev/null || true)
           FAIL=$(grep -c "^FAIL:" /tmp/shakedown-report.txt 2>/dev/null || true)
           # The verdict must be visible even when Discord 403s. GITHUB_STEP_SUMMARY
-          # cannot fail the same way (Opus SHOULD-FIX 16).
+          # cannot fail the same way.
           {
             echo "## Shakedown verdict: $VERDICT"
             echo ""
