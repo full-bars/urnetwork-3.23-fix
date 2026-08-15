@@ -65,28 +65,29 @@ jobs:
           for i in $(seq 1 120); do
             # 1. Did the release workflow finish? Query runs for this SHA.
             #    (workflow_run data is in the Actions API, token-scoped.)
-            REL_CONC=$(curl -fsSL -H Authorization: Bearer ${GITHUB_TOKEN}" \\
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \\
-              2>/dev/null | python3 -c "
-            import sys, json
-            try:
-                runs = json.load(sys.stdin).get('workflow_runs', [])
-                for r in runs:
-                    if r.get('path') == '.github/workflows/release.yml':
-                        print(r.get('status','') + '/' + str(r.get('conclusion','')))
-                        break
-            except Exception:
-                pass
-            " 2>/dev/null)
-            # 2. Fail fast: release run completed with a bad conclusion.
-            if echo "$REL_CONC" | grep -qE "completed/(failure|cancelled|timed_out|action_required)"; then
-              echo "::error::release build FAILED ($REL_CONC) — shakedown aborted as ENV_BLOCKER"
-              RELEASE_FAILED=1
-              break
+            REL_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+              2>/dev/null | python3 -c "import sys,json;print(next((r.get('status','')+'/'+str(r.get('conclusion','')) for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null)
+            # 2. Fail fast: the CREATE-RELEASE job completed with a bad
+            # conclusion. Query the run's jobs: the run-level conclusion
+            # includes the scan job, which is deliberately non-blocking and
+            # can be red without affecting the release.
+            REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+              2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null)
+            if [ -n "$REL_RUN_ID" ]; then
+              REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
+                2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null)
+              if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
+                echo "::error::create-release job FAILED ($REL_JOB_CONC) — shakedown aborted as ENV_BLOCKER"
+                RELEASE_FAILED=1
+                break
+              fi
             fi
             # 3. Assets exist? The release is published; start the test.
-            if curl -fsSL -H Authorization: Bearer ${GITHUB_TOKEN}" \\
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \\
+            if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
               ASSETS_OK=1
               echo "release assets for ${VER} appeared (iteration $i)"
