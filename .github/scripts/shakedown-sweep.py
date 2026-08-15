@@ -108,7 +108,7 @@ def main():
             epoch = name[len("shakedown-ci-"):]
             try:
                 created = datetime.datetime.fromtimestamp(int(epoch), tz=datetime.timezone.utc)
-            except (ValueError, OverflowError):
+            except (ValueError, OverflowError, OSError):
                 # Unparseable epoch: cannot prove it is old. Keep it (safer
                 # than deleting a key we cannot age).
                 print("Sweep: keep key {} ({}) — unparseable epoch".format(k["id"], name))

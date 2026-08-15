@@ -23,8 +23,8 @@ REPORT="/tmp/shakedown-report.txt"
 PASS=0; FAIL=0; SKIP=0
 # Tier-1 failures are hard blocks: any panic/fatal/OOM/structural miss.
 TIER1_FAIL=0
-ok()   { PASS=$((PASS+1)); echo "PASS: $1" | tee -a "$REPORT"; }
-bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1" | tee -a "$REPORT"; }
+ok()   { PASS=$((PASS+1)); echo "PASS: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
+bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 skip() { SKIP=$((SKIP+1)); echo "SKIP: $1" | tee -a "$REPORT"; }
 t1bad() { TIER1_FAIL=1; bad "$1"; }
 section() { echo "" | tee -a "$REPORT"; echo "===== $1 =====" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
@@ -121,7 +121,6 @@ INSTALL_OUT=$( (cd /tmp && (sleep 2; echo "1"; sleep 2; echo "urnet") | script -
 echo "$INSTALL_OUT" | grep -q "Installation complete\|Done. The provider is installed" \
   && ok "fresh install complete" || bad "fresh install"
 [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnet-tools ] && ok "Go urnet-tools installed" || bad "Go urnet-tools missing"
-URN="runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet)"
 export PATH=/home/urnet/.local/share/urnetwork-provider/bin:$PATH
 # MUST-FIX 10: a tag-triggered run fires on the tag push, but the installer
 # fetches "latest" (the PREVIOUS release). Align the installed tool+provider
@@ -144,6 +143,8 @@ if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars
 else
   bad "github NOT reachable (non-starter)"; NON_STARTER=1
 fi
+MONOSANS_URL="https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+PROXIFLY_URL="https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"
 # SF-8 (Fable5): the two third-party proxy lists are hard release gates
 # downstream. A list 404ing or being unreachable FAILs add-source ->
 # RELEASE_BLOCKED for a good release. Preflight both here; a failure is an
@@ -231,7 +232,7 @@ fi
 # ---------- C. Go tool basics ----------
 section "C. Go tool"
 V=$(urnet-tools version 2>&1)
-echo "$V" | grep -qE "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V). Version must match $EXPECTED_BASE"
+echo "$V" | grep -qF "$EXPECTED_BASE" && ok "tool version $V" || bad "tool version ($V). Version must match $EXPECTED_BASE"
 run_check "providers discovers the account" urnet-tools providers 2>&1
 run_check "status running" urnet-tools status 2>&1
 run_check "proxy health cmd" urnet-tools proxy health 2>&1
@@ -540,12 +541,22 @@ run_check "update --tag $EXPECTED_VERSION" urnet-tools update --tag "$EXPECTED_V
 # MUST-FIX 7 (DeepSeek): -v is VERBOSE, not version. Use --version.
 BIN_VER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | head -1)
 echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
-if [ -n "$BIN_VER" ] && echo "$BIN_VER" | grep -q "$EXPECTED_BASE"; then
+if [ -n "$BIN_VER" ] && echo "$BIN_VER" | grep -qF "$EXPECTED_BASE"; then
   ok "update --tag produced a versioned binary ($BIN_VER)"
 else
   bad "update --tag binary version missing/unexpected ($BIN_VER). Version must match $EXPECTED_BASE"
 fi
 run_check "restored to latest" urnet-tools update -f 2>&1
+# SF-7 (Opus): `update -f` restores "latest", which for a prerelease tag
+# (-rc/-alpha/-beta published as such) is the PREVIOUS release. Re-assert the
+# expected version before the 70-min soak so Phase 2 does not soak the wrong
+# binary and grade RELEASE_OK.
+BIN_VER_AFTER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | head -1)
+if [ -n "$BIN_VER_AFTER" ] && echo "$BIN_VER_AFTER" | grep -qF "$EXPECTED_BASE"; then
+  ok "binary still matches $EXPECTED_BASE after restore ($BIN_VER_AFTER)"
+else
+  t1bad "binary after restore is $BIN_VER_AFTER, want $EXPECTED_BASE — Phase 2 would soak the wrong release"
+fi
 
 # ---------- N. exclude + refresh --force (exit-status-first) ----------
 section "N. exclude + refresh --force"
@@ -627,9 +638,20 @@ done
 # SKIP: their signals are partial and cannot gate the release either way
 # (DeepSeek SF 7).
 P2_TRUNCATED=0
-if [ "$SAMPLE_N" -lt "$P2_TOTAL" ]; then
+# SF-6 (Opus): truncation is judged by the CLOCK, not the sample counter.
+# SAMPLE_N drifts (sleep 300 + per-iteration work on 1 vCPU can exceed 24s),
+# so counting samples falsely reports 13/14 on a run that actually completed
+# its window. Truncated = the loop exited before P2_END (panic break) OR the
+# deadline shrink cut the window.
+if [ "$(date +%s)" -lt "$P2_END" ]; then
   P2_TRUNCATED=1
-  echo "WARN: Phase 2 completed $SAMPLE_N/$P2_TOTAL samples (truncated window). Signals below are partial." | tee -a "$REPORT"
+  echo "WARN: Phase 2 broke early (loop exited before window end). Signals below are partial." | tee -a "$REPORT"
+fi
+# Opus round-5 MF-3: a truncated soak must NOT exit 0 (that grades RELEASE_OK
+# for a window that never gated anything). ENV_BLOCKER = NOT TESTED.
+if [ "$P2_TRUNCATED" = "1" ]; then
+  echo "FAIL: Phase 2 soak truncated — soak-dependent signals are NOT TESTED" | tee -a "$REPORT"
+  exit 75
 fi
 N_RESTARTS=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show urnetwork.service -p NRestarts 2>/dev/null | cut -d= -f2)
 [ -n "$N_RESTARTS" ] && echo "INFO: systemd NRestarts=$N_RESTARTS (script issued ~9 restarts)" | tee -a "$REPORT"
