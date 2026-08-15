@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   shakedown:
@@ -50,35 +51,61 @@ jobs:
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
             VER="${VER:-v3.23.0-fix.29.0}"
           fi
-          # Poll until the tag's assets exist: the shakedown and the release
-          # build fire on the same tag push, so assets may lag by minutes.
-          # 40 x 45s = 30 min budget: measured real build time for this
-          # release was ~30 min (6-platform matrix + VT scan + ClamAV +
-          # Create Release). The first 15-min budget expired before the
-          # build finished, so the shakedown aborted ENV_BLOCKER on a
-          # healthy release pipeline (observed 2026-08-15, run 31860686591).
+          # Wait for the release build to COMPLETE, not a fixed timer. The
+          # shakedown and release.yml fire on the same tag push. The build
+          # itself is ~1-2 min (6-platform matrix); the VirusTotal scan is the
+          # variable cost (measured 24 min on v29.1). So: poll the release
+          # workflow run's conclusion via the Actions API. Fail FAST the
+          # moment the release run fails (no 30-min blind wait). Proceed the
+          # moment assets exist. Hard cap 60 min as a safety net only.
+          # (User directive 2026-08-15: no hardcoded timers; adapt.)
+          GITHUB_SHA_SHORT="${GITHUB_SHA}"
           ASSETS_OK=0
-          for i in $(seq 1 40); do
-            if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
-              2>/dev/null | grep -q '"browser_download_url"'; then
-              ASSETS_OK=1
+          RELEASE_FAILED=0
+          for i in $(seq 1 120); do
+            # 1. Did the release workflow finish? Query runs for this SHA.
+            #    (workflow_run data is in the Actions API, token-scoped.)
+            REL_CONC=$(curl -fsSL -H Authorization: Bearer ${GITHUB_TOKEN}" \\
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \\
+              2>/dev/null | python3 -c "
+            import sys, json
+            try:
+                runs = json.load(sys.stdin).get('workflow_runs', [])
+                for r in runs:
+                    if r.get('path') == '.github/workflows/release.yml':
+                        print(r.get('status','') + '/' + str(r.get('conclusion','')))
+                        break
+            except Exception:
+                pass
+            " 2>/dev/null)
+            # 2. Fail fast: release run completed with a bad conclusion.
+            if echo "$REL_CONC" | grep -qE "completed/(failure|cancelled|timed_out|action_required)"; then
+              echo "::error::release build FAILED ($REL_CONC) — shakedown aborted as ENV_BLOCKER"
+              RELEASE_FAILED=1
               break
             fi
-            echo "waiting for release assets of ${VER} (${i}/40)..."
-            sleep 45
+            # 3. Assets exist? The release is published; start the test.
+            if curl -fsSL -H Authorization: Bearer ${GITHUB_TOKEN}" \\
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \\
+              2>/dev/null | grep -q '"browser_download_url"'; then
+              ASSETS_OK=1
+              echo "release assets for ${VER} appeared (iteration $i)"
+              break
+            fi
+            echo "waiting for release build of ${VER} (${i}/120)..."
+            sleep 30
           done
+          if [ "$RELEASE_FAILED" = "1" ]; then
+            # The release pipeline failed, not the product. ENV_BLOCKER.
+            echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"
+            echo 75 > /tmp/shakedown.exit
+            exit 75
+          fi
           if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            # On a tag run, assets never appearing means the release build
-            # failed or is still publishing. Fail loud as ENV_BLOCKER instead
-            # of running the shakedown against a release that does not exist
-            # (Fable5 MF-4). The next attempt will re-poll.
-            echo "::error::release assets for ${VER} never appeared within 15 min — release build may have failed"
+            # Safety-net cap hit: 60 min with no assets and no failed run.
+            echo "::error::release assets for ${VER} never appeared within 60 min safety cap"
             echo "::error::shakedown aborted as ENV_BLOCKER; the release pipeline, not the product, is suspect"
             echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"
-            # Opus R5 SF-5: write the exit code BEFORE exit so the AI-review
-            # step (if: always()) sees 75 (ENV_BLOCKER) instead of coercing a
-            # missing file to 124 -> RELEASE_BLOCKED, contradicting this message.
             echo 75 > /tmp/shakedown.exit
             exit 75
           fi
