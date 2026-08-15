@@ -2983,7 +2983,8 @@ type RemoteUserNatProvider struct {
 	securityPolicy SecurityPolicy
 	// Defense in depth at the exit. Client and provider policies are
 	// intentionally independent, and multiple tunnel clients can share an IP
-	// tuple, so smtpEgressGuard namespaces its state by the authenticated source.
+	// tuple, so this ingress guard namespaces its state by the authenticated
+	// source (the smtpEgressGuard type serves both directions).
 	smtpIngressGuard  smtpEgressGuard
 	settings          *RemoteUserNatProviderSettings
 	bw                *ProxyBandwidth
