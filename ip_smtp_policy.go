@@ -289,11 +289,15 @@ func (self *smtpFlowState) inspectPayload(sequence uint32, payload []byte) bool 
 }
 
 func (self *smtpFlowState) inspectSecureRetransmission(sequence uint32, payload []byte) bool {
-	relative := int64(int32(sequence - self.baseSequence))
-	if relative < 0 {
-		return false
-	}
-	offset := int(relative)
+	// The connection may legitimately advance past half of the TCP sequence
+	// space over its lifetime, so the offset is unsigned here: once the flow
+	// is secure only overlap with the retained negotiation prefix matters,
+	// and any segment outside that prefix is opaque TLS data. The signed
+	// arithmetic stays in the negotiation phase, where the bounded prefix
+	// makes gap detection fail closed. Deliberate divergence from upstream,
+	// whose signed check falsely rejects (and latches) a secure flow after
+	// 2^31 bytes of sequence space.
+	offset := int(uint32(sequence - self.baseSequence))
 	if len(self.stream) <= offset {
 		return true
 	}
