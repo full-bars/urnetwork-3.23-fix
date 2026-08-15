@@ -201,21 +201,27 @@ func (self *smtpEgressGuard) inspectForOwner(
 
 func (self *smtpEgressGuard) newFlowWithLock(key smtpFlowKey, destinationPort int) *smtpFlowState {
 	if smtpMaxFlowCount <= len(self.flows) {
-		self.evictFlowWithLock()
+		if !self.evictFlowWithLock() {
+			// Unreachable: eviction runs only when the table is at the cap,
+			// so a candidate must exist. Guard a future call-site change that
+			// could otherwise insert a 1025th flow past the bound.
+			panic("smtp flow table eviction found no candidate")
+		}
 	}
 	flow := &smtpFlowState{destinationPort: destinationPort}
 	self.flows[key] = flow
 	return flow
 }
 
-// evictFlowWithLock removes one flow to make room for a new one. It prefers a
-// rejected or still-negotiating flow. Evicting an established secure flow
-// resets a validated TLS session: the recreated state would re-inspect opaque
-// TLS data as a fresh negotiation and reject it, so the provider would reset
-// a valid session. Rejected flows are safe to evict (a retry is re-inspected)
-// and negotiating flows re-parse their bounded prefix. The non-secure pass
-// scans the whole table so the choice is deterministic; a table made entirely
-// of secure flows falls back to the oldest sampled entry so the bound holds.
+// evictFlowWithLock removes one flow to make room for a new one. It prefers
+// any non-secure flow (rejected or still negotiating) over an established
+// secure flow. Evicting an established secure flow resets a validated TLS
+// session: the recreated state would re-inspect opaque TLS data as a fresh
+// negotiation and reject it, so the provider would reset a valid session.
+// Rejected flows are safe to evict (a retry is re-inspected) and negotiating
+// flows re-parse their bounded prefix. The non-secure pass scans the whole
+// table so the choice is deterministic; a table made entirely of secure flows
+// falls back to the oldest sampled entry so the bound holds.
 func (self *smtpEgressGuard) evictFlowWithLock() bool {
 	var oldestKey smtpFlowKey
 	var oldestUse uint64
