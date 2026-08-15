@@ -63,6 +63,14 @@ func newSmtpSeamProvider(
 	t *testing.T,
 	policy *smtpSeamPolicy,
 ) *RemoteUserNatProvider {
+	provider, _ := newSmtpSeamProviderWithClient(t, policy)
+	return provider
+}
+
+func newSmtpSeamProviderWithClient(
+	t *testing.T,
+	policy *smtpSeamPolicy,
+) (*RemoteUserNatProvider, *Client) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	clientSettings := DefaultClientSettings()
@@ -83,7 +91,7 @@ func newSmtpSeamProvider(
 		client.Cancel()
 		cancel()
 	})
-	return provider
+	return provider, client
 }
 
 func sendSmtpSeamProviderPacket(
@@ -245,6 +253,53 @@ func TestBasicClientTls465ContinuesToGeneralPolicy(t *testing.T) {
 	}
 	if resets := resetCount.Load(); resets != 0 {
 		t.Fatalf("basic client TLS TCP/465 received %d SMTP resets", resets)
+	}
+}
+
+func TestBasicClient587StartTlsNegotiationContinuesToPolicy(t *testing.T) {
+	policy := &smtpSeamPolicy{
+		stats:  DefaultSecurityPolicyStatsCollector(),
+		result: SecurityPolicyResultDrop,
+	}
+	var resetCount atomic.Int64
+	remote := newSmtpSeamBasicClient(t, policy, func(
+		_ TransferPath,
+		_ protocol.ProvideMode,
+		_ *IpPath,
+		_ []byte,
+	) {
+		resetCount.Add(1)
+	})
+
+	source := SourceId(NewId())
+	sequence := uint32(16000)
+	packets := [][]byte{
+		smtpTestTcp4PacketToPort(smtpStartTlsPort, byte(tcpFlagSyn), sequence, 0, nil),
+	}
+	sequence += 1
+	for _, payload := range [][]byte{
+		[]byte("EHLO ios.example\r\n"),
+		[]byte("STARTTLS\r\n"),
+		smtpTestClientHello,
+	} {
+		packets = append(packets, smtpTestTcp4PacketToPort(
+			smtpStartTlsPort,
+			byte(tcpFlagAck|tcpFlagPsh),
+			sequence,
+			40000,
+			payload,
+		))
+		sequence += uint32(len(payload))
+	}
+	for _, packet := range packets {
+		remote.SendPacket(source, protocol.ProvideMode_Network, packet, 0)
+		MessagePoolReturn(packet)
+	}
+	if calls := policy.calls.Load(); calls != int64(len(packets)) {
+		t.Fatalf("basic client valid TCP/587 reached policy %d times, want %d", calls, len(packets))
+	}
+	if resets := resetCount.Load(); resets != 0 {
+		t.Fatalf("basic client valid TCP/587 received %d SMTP resets", resets)
 	}
 }
 
@@ -446,3 +501,49 @@ func TestMultiClientRejectsPlaintext465BeforePolicy(t *testing.T) {
 		t.Fatalf("multi client plaintext TCP/465 resets = %d, want 1", resets)
 	}
 }
+
+func TestMultiClientRejectsAuthBeforeStartTls587(t *testing.T) {
+	policy := &smtpSeamPolicy{
+		stats:  DefaultSecurityPolicyStatsCollector(),
+		result: SecurityPolicyResultAllow,
+	}
+	var resetCount atomic.Int64
+	multi := newSmtpSeamMulti(t, policy, func(
+		_ TransferPath,
+		_ protocol.ProvideMode,
+		_ *IpPath,
+		_ []byte,
+	) {
+		resetCount.Add(1)
+	})
+	defer multi.Close()
+
+	// AUTH on a fresh flow (distinct source port) must be rejected before the
+	// general policy: transaction commands are forbidden before STARTTLS.
+	packet := smtpSeamTcp4Packet(
+		48009,
+		smtpStartTlsPort,
+		byte(tcpFlagAck|tcpFlagPsh),
+		49000,
+		40000,
+		[]byte("AUTH PLAIN secret\r\n"),
+	)
+	if multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+		t.Fatal("multi client accepted plaintext TCP/587 AUTH")
+	}
+	MessagePoolReturn(packet)
+	if calls := policy.calls.Load(); calls != 0 {
+		t.Fatalf("multi client plaintext TCP/587 reached policy %d times, want 0", calls)
+	}
+	if resets := resetCount.Load(); resets != 1 {
+		t.Fatalf("multi client plaintext TCP/587 resets = %d, want 1", resets)
+	}
+}
+
+// Provider reset delivery is deliberately NOT round-trip pinned here. The
+// reset builder is unit-tested (TestTcpRstForSmtpPolicyReject), the guard
+// rejection is pinned above, and deliverSmtpPolicyReset mirrors the
+// production Receive return path (IpPacketFromProvider + CompanionContract).
+// A full delivery assertion needs upstream's installProviderReturnTestSequence
+// fixture, which the fork lacks; the fork's bare test client has no return
+// transport for frames sent via client.SendWithTimeout.
