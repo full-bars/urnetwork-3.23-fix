@@ -548,6 +548,12 @@ func tcpRstForPolicyReject(packet []byte) []byte {
 	return tcpRstForOrphan(ipVersion, &tcp)
 }
 
+// deliverTcpPolicyReset builds an RFC 793 reset for a rejected TCP packet and
+// hands it to the receive callback. The reset buffer is owned by this
+// function and is valid only for the duration of the callback; the callback
+// must not retain it. A callback that needs the reset beyond the call (for
+// example to frame it for the tunnel) must take a read-only share, which the
+// message pool refcount protects until the frame releases it.
 func deliverTcpPolicyReset(
 	receive ReceivePacketFunction,
 	source TransferPath,
