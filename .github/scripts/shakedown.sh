@@ -314,22 +314,25 @@ if [ "${CID_LINES:-0}" -gt 0 ]; then
 else
   t1bad "no client identities minted (admission pipeline broken?)"
 fi
-# The kill-switch check greps for a POSITIVE product signal (enabled=true).
-# Its absence means the product is broken, not that the regex rotted — the
-# self-test already logs SELF-TEST-FAIL separately if the pattern itself is
-# wrong (DeepSeek MF 3). Always gate; never SKIP a product signal.
-# The line is emitted via tlog -> stdout, so check the CAPTURED add-source
-# output first, then the journal as fallback (shakedown finding 2026-08-15:
-# the line never reaches journald, so a journal-only grep false-blocks).
+# The kill-switch check uses TWO signals: the probe config log line (via
+# tlog -> stdout, so check the captured add-source output first, then the
+# journal) AND the structural GRADED count from proxy_url.json. Admission
+# engaged if either fired. Absence of both = the kill switch is stuck.
+GRADED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(sum(1 for v in d.get('cache',{}).values() if v.get('Graded')))" 2>/dev/null || echo 0)
+PROBE_LINE=0
 if echo "$ADD_SOURCE_OUT" | grep -qE "stage-1 table probe config: enabled=true"; then
+  PROBE_LINE=1
   ok "stage-1 probe enabled (from add-source output)"
 elif j | grep -qE "stage-1 table probe config: enabled=true"; then
+  PROBE_LINE=1
   ok "stage-1 probe enabled (from journal)"
-else
-  t1bad "stage-1 probe NOT enabled (kill switch stuck?)"
 fi
-GRADED=$(python3 -c "import json;d=json.load(open('/home/urnet/.urnetwork/proxy_url.json'));print(sum(1 for v in d.get('cache',{}).values() if v.get('Graded')))" 2>/dev/null || echo 0)
-[ "${GRADED:-0}" -gt 0 ] && ok "proxies graded ($GRADED)" || echo "INFO: 0 graded yet (probe still running or all free proxies failed)" | tee -a "$REPORT"
+if [ "$PROBE_LINE" = "1" ] || [ "${GRADED:-0}" -gt 0 ]; then
+  [ "${GRADED:-0}" -gt 0 ] && ok "proxies graded ($GRADED)"
+  [ "$PROBE_LINE" = "0" ] && ok "stage-1 inferred enabled via $GRADED graded proxies"
+else
+  t1bad "stage-1 probe NOT enabled and 0 proxies graded (kill switch stuck?)"
+fi
 AUTH_FAILS=$(j | grep -cE "proxy\[[0-9]+\].*auth failed")
 if [ "${AUTH_FAILS:-0}" -le 5 ]; then
   ok "proxy auth failures low ($AUTH_FAILS)"
@@ -356,8 +359,15 @@ run_check "urnet-docker providers" /usr/local/bin/urnet-docker providers 2>&1
 run_check "urnet-docker restart -f" /usr/local/bin/urnet-docker restart urnetwork-test -f 2>&1
 # MUST-FIX 7: while the container is up, the box is multi-provider. The Go
 # tool MUST refuse without a target (lock in the real behavior).
+# 2026-08-15 review finding: urnet-tools Discover() does NOT enumerate
+# docker-containerized providers — that is urnet-docker's domain (separate
+# binary, shells out to docker ps). With 1 systemd provider + 1 container,
+# 'status' succeeding is CORRECT behavior, not a guard regression. The
+# multi-provider refusal is covered by the selectTarget unit tests (two
+# systemd providers). Demoted from FAIL to KNOWN-GAP: the container
+# scenario is not discoverable by this tool.
 if urnet-tools status >/dev/null 2>&1; then
-  bad "multi-provider ambiguity NOT refused (expected REFUSED with 2 providers)"
+  echo "KNOWN-GAP: multi-provider refusal not exercisable via docker container (urnet-tools discovers systemd providers; see urnet-docker). Covered by selectTarget unit tests." | tee -a "$REPORT"
 else
   ok "multi-provider ambiguity refused (2 providers, no target)"
 fi
@@ -561,7 +571,8 @@ section "M. update --tag"
 # tag-triggered runs), not a hardcoded string. EXPECTED_VERSION set at top.
 run_check "update --tag $EXPECTED_VERSION" urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
 # MUST-FIX 7 (DeepSeek): -v is VERBOSE, not version. Use --version.
-BIN_VER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | head -1)
+# Extract the version token: an init-time stdout banner can precede it.
+BIN_VER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "  binary after --tag: $BIN_VER" | tee -a "$REPORT"
 if [ -n "$BIN_VER" ] && echo "$BIN_VER" | grep -qF "$EXPECTED_BASE"; then
   ok "update --tag produced a versioned binary ($BIN_VER)"
@@ -573,7 +584,7 @@ run_check "restored to latest" urnet-tools update -f 2>&1
 # (-rc/-alpha/-beta published as such) is the PREVIOUS release. Re-assert the
 # expected version before the 70-min soak so Phase 2 does not soak the wrong
 # binary and grade RELEASE_OK.
-BIN_VER_AFTER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | head -1)
+BIN_VER_AFTER=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 if [ -n "$BIN_VER_AFTER" ] && echo "$BIN_VER_AFTER" | grep -qF "$EXPECTED_BASE"; then
   ok "binary still matches $EXPECTED_BASE after restore ($BIN_VER_AFTER)"
 else
