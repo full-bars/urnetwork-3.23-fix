@@ -3197,7 +3197,15 @@ func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
 			}
 			frame, err := ToFrame(ipPacketFromProvider, self.settings.ProtocolVersion)
 			if err != nil {
-				return
+				panic(err)
+			}
+			// The frame either adopted the read-only share (Raw) or copied the
+			// bytes; a copied frame must release the share here, exactly like
+			// the production Receive return path. deliverTcpPolicyReset returns
+			// the original after this callback, so the refcount balances only
+			// when the share is released on the copied path.
+			if !frame.Raw {
+				defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
 			}
 			self.client.SendWithTimeout(
 				frame,
