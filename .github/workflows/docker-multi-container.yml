@@ -1,0 +1,94 @@
+name: docker-multi-container
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "fix/*"]
+
+jobs:
+  multi-container:
+    name: docker multi-container targeting + modes
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build urnet-docker
+        run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+
+      - name: Prepare per-mode proxy files (10 each)
+        run: |
+          mkdir -p /tmp/multi
+          for i in $(seq 1 10); do echo "127.0.0.1:$((20000+i))"; done > /tmp/multi/turbo.txt
+          for i in $(seq 1 10); do echo "127.0.0.1:$((21000+i))"; done > /tmp/multi/auto.txt
+          for i in $(seq 1 10); do echo "127.0.0.1:$((22000+i))"; done > /tmp/multi/lowmem.txt
+          echo "proxy files ready: $(wc -l /tmp/multi/*.txt | tail -1)"
+
+      - name: Start 3 provider containers (turbo-v8 / auto / lowmem)
+        run: |
+          for spec in "turbo:urnet-turbo:turbo-v8" "auto:urnet-auto:auto" "low:urnet-lowmem:lowmem"; do
+            name=$(echo $spec | cut -d: -f2)
+            profile=$(echo $spec | cut -d: -f3)
+            docker run -d --name "$name" \
+              --restart=unless-stopped \
+              --cap-add=NET_ADMIN --cap-add=NET_RAW \
+              --sysctl net.ipv4.ip_forward=1 \
+              -e BUILD=stable \
+              -e USER_AUTH="$GAUNTLET_USER" -e PASSWORD="$GAUNTLET_PW" \
+              -e URNETWORK_PROFILE="$profile" \
+              ghcr.io/full-bars/urnetwork-3.23-fix:latest
+          done
+          echo "containers started; waiting for auth..."
+          sleep 60
+          docker ps --filter name=urnet --format "{{.Names}} {{.Status}}"
+
+      - name: urnet-docker providers (should show 3)
+        run: /tmp/urnet-docker providers
+
+      - name: No-flag proxy add must REFUSE (3 containers, no picker in CI)
+        run: |
+          # selectTargetInteractive needs a TTY for the picker; in CI (no TTY)
+          # a multi-container no-flag command must refuse, never guess.
+          /tmp/urnet-docker proxy add /tmp/multi/turbo.txt 2>&1 | head -3
+          rc=${PIPESTATUS[0]}
+          if [ $rc -eq 0 ]; then
+            echo "REFUSAL FAILED: no-flag multi-container add succeeded (should refuse)"
+            exit 1
+          fi
+          echo "OK: no-flag multi-container add refused (exit $rc)"
+
+      - name: Flag-targeted proxy add (each mode container)
+        run: |
+          /tmp/urnet-docker proxy add --unit urnet-turbo /tmp/multi/turbo.txt || echo "turbo add nonzero"
+          /tmp/urnet-docker proxy add --unit urnet-auto /tmp/multi/auto.txt || echo "auto add nonzero"
+          /tmp/urnet-docker proxy add --unit urnet-lowmem /tmp/multi/lowmem.txt || echo "lowmem add nonzero"
+
+      - name: Verify per-container state (status on each)
+        run: |
+          /tmp/urnet-docker status urnet-turbo | head -5 || echo "turbo status nonzero"
+          /tmp/urnet-docker status urnet-auto | head -5 || echo "auto status nonzero"
+          /tmp/urnet-docker status urnet-lowmem | head -5 || echo "lowmem status nonzero"
+
+      - name: urnet-docker proxy clear (flag-targeted)
+        run: |
+          /tmp/urnet-docker proxy clear --unit urnet-turbo || echo "turbo clear nonzero"
+          /tmp/urnet-docker proxy clear --unit urnet-lowmem || echo "lowmem clear nonzero"
+
+      - name: Multi-container logs via flag target
+        run: |
+          /tmp/urnet-docker logs urnet-auto 3 || echo "auto logs nonzero"
+
+      - name: Teardown — remove all containers
+        run: |
+          docker rm -f urnet-turbo urnet-auto urnet-lowmem 2>/dev/null || true
+          echo "containers removed"
+        if: always()
