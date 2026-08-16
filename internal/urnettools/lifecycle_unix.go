@@ -93,6 +93,17 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 	return exec.Command("systemctl", "enable", "--now", timer).Run()
 }
 
-// cleanupLifecycle on Unix is a no-op: the systemd unit disable above
-// already handles lifecycle cleanup. (Windows removes scheduled tasks.)
-func cleanupLifecycle(p Provider) {}
+// cleanupLifecycle on Unix disables the auto-update timer. The unit disable
+// in cmdUninstall handles the service, but the <unit>-update.timer would
+// keep firing for a provider that is gone (heavyweight review S7).
+func cleanupLifecycle(p Provider) {
+	if p.Unit == "" {
+		return
+	}
+	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
+	if isUserUnit(timer) && p.User != "" {
+		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", timer).Run()
+		return
+	}
+	_ = exec.Command("systemctl", "disable", "--now", timer).Run()
+}

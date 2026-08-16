@@ -112,11 +112,10 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
 			}
 		}
-	} else {
-		// No systemd unit (e.g. Windows): clean up platform lifecycle
-		// artifacts (scheduled tasks) instead (DeepSeek SF6).
-		cleanupLifecycle(p)
 	}
+	// Clean up platform lifecycle artifacts: on Unix the auto-update timer,
+	// on Windows the scheduled tasks (heavyweight review S7).
+	cleanupLifecycle(p)
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path (free-review major: harden the deletion guard).
 	// Both guards clean the path so "/" and "/./" are caught identically.
