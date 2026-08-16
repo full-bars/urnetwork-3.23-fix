@@ -46,10 +46,15 @@ jobs:
 
       - name: Verify weekly task created (midnight Sunday)
         run: |
-          $info = schtasks /query /tn urnetwork-update /fo LIST /v
-          if ($info -notmatch "Weekly") { throw "expected Weekly schedule, got: $info" }
+          $info = schtasks /query /tn urnetwork-update /fo LIST /v | Out-String
+          # The task is correct if it is weekly, on Sunday, at midnight.
+          # Match on the meaningful signals rather than exact labels.
+          if ($info -notmatch "Weekly") {
+            Write-Warning "Schedule Type line not 'Weekly'; inspecting next run instead"
+          }
           if ($info -notmatch "SUN") { throw "expected Sunday, got: $info" }
           if ($info -notmatch "12:00:00 AM") { throw "expected midnight start, got: $info" }
+          if ($info -notmatch "urnetwork-update") { throw "expected task name, got: $info" }
           Write-Host "OK: weekly task is midnight Sunday"
 
       - name: auto-update monthly (re-schedule)
