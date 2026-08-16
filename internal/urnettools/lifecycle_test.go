@@ -190,9 +190,10 @@ func TestCmdUninstallPathGuards(t *testing.T) {
 	// These must PASS the guard (guard returns true). Paths are
 	// platform-appropriate. Bare "provider" is relative and correctly
 	// rejected, so it is not in this list.
-	acceptedBins := []string{"/provider"}
+	acceptedBins := []string{}
 	if runtime.GOOS != "windows" {
 		acceptedBins = append(acceptedBins,
+			"/provider",
 			"/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
 			"/usr/local/bin/provider")
 	} else {
@@ -210,9 +211,13 @@ func TestCmdUninstallPathGuards(t *testing.T) {
 	if runtime.GOOS != "windows" && safeRemoveTarget("/") {
 		t.Errorf("state dir '/' should be rejected")
 	}
-	// Valid state dir passes.
-	if !safeRemoveTarget("/home/urnet/.urnetwork") {
-		t.Errorf("state dir '/home/urnet/.urnetwork' should pass")
+	// Valid state dir passes (platform-appropriate path).
+	stateDir := "/home/urnet/.urnetwork"
+	if runtime.GOOS == "windows" {
+		stateDir = `C:\Users\urnet\.urnetwork`
+	}
+	if !safeRemoveTarget(stateDir) {
+		t.Errorf("state dir %q should pass", stateDir)
 	}
 }
 
