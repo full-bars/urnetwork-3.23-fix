@@ -87,6 +87,10 @@ jobs:
           # listed (a missing task yields an error text, not a task row).
           if ($q -match "TaskName") { throw "task still exists after off: $q" }
           Write-Host "OK: task deleted"
+          # cmd's non-zero exit (missing task) would fail the step via
+          # LASTEXITCODE; the check above is the real verdict, so reset it.
+          $LASTEXITCODE = 0
+          exit 0
 
       - name: auto-start on (onlogon task)
         run: .\urnet-tools.exe auto-start on
