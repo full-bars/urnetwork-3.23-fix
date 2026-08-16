@@ -51,7 +51,7 @@ jobs:
           fi
           echo "JWT minted OK"
 
-      - name: Set up state dir + accelerated grade config
+      - name: Set up state dir + accelerated grade config + pre-write source
         run: |
           mkdir -p "$HOME/.urnetwork"
           cp /tmp/mint/.urnetwork/jwt "$HOME/.urnetwork/jwt"
@@ -65,17 +65,27 @@ jobs:
             "stale_hot": "15m"
           }
           EOF
-          echo "state + accelerated config ready"
+          # Pre-write the URL source into the state file BEFORE the provider
+          # starts. provide() merges persisted Sources (resolveProxyURLs), so
+          # the background fetcher loads under --proxy_url_max=25 from the
+          # very first cycle — no add-source one-shot (maxTotal=0) ever runs,
+          # so the cap cannot be bypassed. This is also the real operator
+          # flow: configure the source once, provider picks it up on every
+          # restart.
+          cat > "$HOME/.urnetwork/proxy_url.json" << 'EOF'
+          {
+            "sources": ["https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"],
+            "cache": {}
+          }
+          EOF
+          echo "state + accelerated config + pre-written source ready"
 
-      - name: Start provider (real session, accelerated)
+      - name: Start provider (real session, accelerated, capped)
         run: |
-          # URL source passed at start so --proxy_url_max=25 is honored by
-          # the provider's own background fetcher from the beginning.
-          # (add-source later would bypass the cap: main.go:4417 one-shot
-          # CLI fetch passes maxTotal=0.)
-          nohup /tmp/provider provide \
-            --proxy_url="https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" \
-            --proxy_url_max=25 > /tmp/provider.log 2>&1 &
+          # No --proxy_url flag needed: the persisted source in
+          # proxy_url.json is merged by resolveProxyURLs. The cap is set via
+          # env so the running fetcher honors it from the first cycle.
+          nohup /tmp/provider provide > /tmp/provider.log 2>&1 &
           echo $! > /tmp/provider.pid
           sleep 30
           if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
