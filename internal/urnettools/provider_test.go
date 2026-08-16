@@ -131,9 +131,12 @@ func TestIsProviderArg(t *testing.T) {
 
 // TestStateDirFor verifies HOME-based state resolution (no hardcoded path).
 func TestStateDirFor(t *testing.T) {
+	// stateDirFor joins with filepath.Join, so the expected path is
+	// platform-dependent (forward slashes on Unix, backslashes on Windows).
 	env := map[string]string{"HOME": "/home/urnet", "USER": "urnet"}
-	if got := stateDirFor(env); got != "/home/urnet/.urnetwork" {
-		t.Errorf("stateDirFor = %q", got)
+	want := filepath.Join("/home/urnet", ".urnetwork")
+	if got := stateDirFor(env); got != want {
+		t.Errorf("stateDirFor = %q, want %q", got, want)
 	}
 	if got := stateDirFor(map[string]string{}); got != "" {
 		t.Errorf("expected empty state dir without HOME, got %q", got)
