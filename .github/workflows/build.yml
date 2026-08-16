@@ -193,9 +193,10 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
             ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=tag
+            # :latest is the STABLE release — only on v3.23.0-fix.* tags.
             type=match,pattern=v3\.23\.0-fix\.(.*),group=1
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') }}
+            # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
             type=sha,format=short
 
