@@ -16,16 +16,6 @@ var knownBinaries = map[string]bool{
 	"provider":      true,
 }
 
-
-
-
-
-
-
-
-
-
-
 // providerCandidateHomes returns home directories of users that show
 // evidence of a provider install: a provider-looking unit under
 // ~/.config/systemd/user or a ~/.urnetwork state dir. Best-effort.
