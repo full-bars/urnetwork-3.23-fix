@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"runtime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,7 +155,31 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 // so "/" or "/./" can never be removed (free-review major). Pure helper so
 // tests call production logic, not a copy (coderabbit major).
 func safeRemoveTarget(path string) bool {
-	return path != "" && strings.HasPrefix(path, "/") && filepath.Clean(path) != "/"
+	if path == "" {
+		return false
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == "" || cleaned == "." {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		// Windows roots are drive paths (C:\, \\server\share). Reject
+		// volume roots and UNC roots; accept any deeper absolute path.
+		vol := filepath.VolumeName(cleaned)
+		if vol != "" && len(cleaned) == len(vol)+1 { // "C:\" exactly
+			return false
+		}
+		if cleaned == `\\` || cleaned == `//` {
+			return false
+		}
+		// Reject a bare drive-relative or relative path.
+		if !filepath.IsAbs(cleaned) {
+			return false
+		}
+		return true
+	}
+	// Unix: require an absolute path that is not the root.
+	return strings.HasPrefix(path, "/") && cleaned != "/"
 }
 
 // cmdReinstall delegates to the legacy installer script for a full
