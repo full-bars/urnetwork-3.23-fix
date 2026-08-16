@@ -348,7 +348,9 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
 	// norm: root tool + urnetwork-beta service). 0600 would silently break
 	// reporting cross-user (Sonnet review finding).
-	if fi.Mode().Perm() != 0o644 {
+	// Windows has no POSIX permissions; Go reports 0666 there. Only assert
+	// the 0644 readable-by-provider-user mode on Unix.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
 	}
 	// Also verify cmdReport's no-provider error path (must error, never

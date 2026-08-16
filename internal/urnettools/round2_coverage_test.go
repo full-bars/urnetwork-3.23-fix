@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"os"
+	"runtime"
 	"path/filepath"
 	"testing"
 )
@@ -87,8 +88,8 @@ func TestInstallBinarySuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dst: %v", err)
 	}
-	if info.Mode().Perm() != 0o755 {
-		t.Errorf("dst mode = %v, want 0755", info.Mode().Perm())
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+		t.Errorf("dst mode = %v, want 0755 (Windows reports 0666; no POSIX perms)", info.Mode().Perm())
 	}
 	if _, err := os.Stat(dst + ".new"); !os.IsNotExist(err) {
 		t.Errorf("dst+.new should have been renamed away, stat err = %v", err)
