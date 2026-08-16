@@ -82,7 +82,9 @@ jobs:
 
       - name: proxy add + URL source (real proxy list)
         run: |
-          /tmp/urnet-tools proxy add-source "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/test-proxies.txt" || \
+          # Real public SOCKS5 list so the pool actually loads. (The prior
+          # URL 404'd — scripts/test-proxies.txt never existed.)
+          /tmp/urnet-tools proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
             echo "add-source returned nonzero (may not be a valid URL list); continuing"
           sleep 60
           /tmp/urnet-tools providers
