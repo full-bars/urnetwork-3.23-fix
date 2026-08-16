@@ -32,13 +32,13 @@ jobs:
 
       - name: Build provider + tool
         run: |
-          go build -o provider ./provider/
-          go build -o urnet-tools ./cmd/urnet-tools/
+          go build -o /tmp/provider /tmp/provider/
+          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
 
       - name: Mint a real JWT (gauntlet account)
         run: |
           mkdir -p /tmp/mint
-          HOME=/tmp/mint ./provider auth \
+          HOME=/tmp/mint /tmp/provider auth \
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
             --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
           test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed — see auth output above"; exit 1; }
@@ -65,7 +65,7 @@ jobs:
 
       - name: Start provider (real session, accelerated)
         run: |
-          nohup ./provider provide > /tmp/provider.log 2>&1 &
+          nohup /tmp/provider provide > /tmp/provider.log 2>&1 &
           echo $! > /tmp/provider.pid
           sleep 30
           if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
@@ -76,37 +76,37 @@ jobs:
 
       - name: Basic tool commands
         run: |
-          ./urnet-tools providers
-          ./urnet-tools status
-          ./urnet-tools version
+          /tmp/urnet-tools providers
+          /tmp/urnet-tools status
+          /tmp/urnet-tools version
 
       - name: proxy add + URL source (real proxy list)
         run: |
-          ./urnet-tools proxy add-source "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/test-proxies.txt" || \
+          /tmp/urnet-tools proxy add-source "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/test-proxies.txt" || \
             echo "add-source returned nonzero (may not be a valid URL list); continuing"
           sleep 60
-          ./urnet-tools providers
+          /tmp/urnet-tools providers
 
       - name: Proxy pool stabilization soak (4x 5-min windows)
         run: |
           for i in 1 2 3 4; do
             echo "--- soak window $i ---"
-            ./urnet-tools proxy health 2>/dev/null || true
+            /tmp/urnet-tools proxy health 2>/dev/null || true
             sleep 300
           done
 
       - name: hot-restart (client-ID reuse check)
         run: |
-          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
           sleep 30
-          ./urnet-tools providers
+          /tmp/urnet-tools providers
 
       - name: proxy clear + restart (new client ID check)
         run: |
-          ./urnet-tools proxy clear || echo "clear returned nonzero"
-          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          /tmp/urnet-tools proxy clear || echo "clear returned nonzero"
+          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
           sleep 20
-          ./urnet-tools providers
+          /tmp/urnet-tools providers
 
       - name: Teardown
         run: |
