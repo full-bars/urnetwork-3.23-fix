@@ -202,4 +202,3 @@ func discoverUserUnits(running []Provider) []Provider {
 	}
 	return out
 }
-
