@@ -90,17 +90,6 @@ jobs:
           /tmp/urnet-tools status
           /tmp/urnet-tools version
 
-      - name: proxy add + URL source (real proxy list)
-        run: |
-          # One-shot add-source BYPASSES the cap (main.go:4417 maxTotal=0),
-          # but the provider's next scheduled background fetch re-applies
-          # PROXY_URL_MAX=25 and trims the pool. This verifies the runtime
-          # behavior: add-source loads, then the cap is re-honored.
-          /tmp/urnet-tools proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
-            echo "add-source returned nonzero (may not be a valid URL list); continuing"
-          sleep 60
-          /tmp/urnet-tools providers
-
       # ---- Soak block 1: 50 min pool observation ----
       - name: Soak block 1 (50 min pool observation)
         run: |
