@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"os/exec"
 	"fmt"
 	"os"
 	"strconv"
@@ -91,6 +92,15 @@ func RunDocker(args []string) error {
 			return nil
 		}
 		return cmdDockerLogs(rest)
+	case "proxy":
+		// First-class host-side proxy management (Design 2): the exec
+		// plumbing (target resolution, file copy, in-container invocation)
+		// is hidden behind a clean subcommand surface.
+		if len(rest) == 0 || hasHelpFlag(rest) {
+			usageDocker()
+			return nil
+		}
+		return cmdDockerProxy(rest)
 	case "help", "-h", "--help":
 		usageDocker()
 		return nil
@@ -125,6 +135,13 @@ Commands:
                           urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
   exec <cmd...>           command-first form still works (target flags optional;
                           required when more than one provider container exists)
+  proxy add <file>       add proxies from a host proxy file (copied into the container)
+  proxy clear            remove all proxies
+  proxy remove [--all]   remove proxies
+  proxy add-source <url> add a URL proxy source
+  proxy remove-source <url>  remove a URL proxy source
+  proxy refresh          re-read the proxy source
+  proxy remove-dead      remove dead or degraded proxies
   restart [target]       restart the container
   update                 update this tool binary itself (containers update by image pull)
   logs [target] [N]    follow the container's logs (last N lines, default 250;
@@ -318,3 +335,84 @@ func cmdDockerLogs(args []string) error {
 	}
 	return containerLogsFollow(p.Unit, n)
 }
+
+
+// cmdDockerProxy implements host-side proxy management for containerized
+// providers (Design 2). The user runs e.g. `urnet-docker proxy add ~/p.txt`
+// and the exec plumbing is hidden: target resolution (interactive when
+// multiple containers), host-file copy into the container, and the
+// in-container urnet-tools proxy invocation.
+func cmdDockerProxy(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead")
+	}
+	sub := args[0]
+	rest := args[1:]
+
+	// Parse target flags (may appear before or after the subcommand).
+	// Use a lenient split: target flags are --unit/--user/--network/etc.
+	t, rest2, err := parseTargetFlagsLenient(rest)
+	if err != nil {
+		return err
+	}
+
+	providers := DiscoverDocker()
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	container := p.Unit // container name
+
+	switch sub {
+	case "add":
+		if len(rest2) == 0 {
+			return fmt.Errorf("proxy add requires a proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
+		}
+		hostFile := rest2[0]
+		// Copy the host file into the container at a fixed path, then add.
+		inPath := "/tmp/urnet-proxies.txt"
+		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
+			return fmt.Errorf("copy %s into container: %w", hostFile, err)
+		}
+		return containerExecByName(container, "urnet-tools", "proxy", "add", inPath)
+	case "clear":
+		return containerExecByName(container, "urnet-tools", "proxy", "clear")
+	case "remove":
+		// Forward remaining args (e.g. --all, or specific proxies).
+		inner := append([]string{"urnet-tools", "proxy", "remove"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "add-source":
+		if len(rest2) == 0 {
+			return fmt.Errorf("proxy add-source requires a URL")
+		}
+		inner := append([]string{"urnet-tools", "proxy", "add-source"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "remove-source":
+		if len(rest2) == 0 {
+			return fmt.Errorf("proxy remove-source requires a URL")
+		}
+		inner := append([]string{"urnet-tools", "proxy", "remove-source"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "refresh":
+		inner := append([]string{"urnet-tools", "proxy", "refresh"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "remove-dead":
+		inner := append([]string{"urnet-tools", "proxy", "remove-dead"}, rest2...)
+		return containerExecByName(container, inner...)
+	default:
+		return fmt.Errorf("unknown proxy subcommand %q", sub)
+	}
+}
+
+// dockerCopyInto copies a host file into the container at destPath using
+// `docker cp`. The host file is passed as the source; the container path is
+// always the fixed /tmp/urnet-proxies.txt so proxy add targets a known path.
+func dockerCopyInto(container, hostFile, destPath string) error {
+	cmd := exec.Command("docker", "cp", hostFile, container+":"+destPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker cp: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
