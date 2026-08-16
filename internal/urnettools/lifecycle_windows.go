@@ -17,16 +17,48 @@ import (
 
 // setAutoStart enables or disables login auto-start for the provider by
 // registering (or removing) a Task Scheduler task that runs on logon.
+// The legacy Startup-folder .lnk is removed in BOTH directions so an
+// upgrade never auto-starts twice and auto-start off actually stops it
+// (heavyweight review S6).
 func setAutoStart(p Provider, on bool) error {
+	taskName := autoStartTaskName(p)
 	if on {
 		if p.Binary == "" {
 			return fmt.Errorf("provider %s has no binary path", providerLabel(p))
 		}
 		// The provider starts with the "provide" subcommand.
 		tr := fmt.Sprintf(`"%s" provide`, p.Binary)
-		return runSchtasks("/create", "/f", "/tn", "urnetwork-autostart", "/tr", tr, "/sc", "onlogon")
+		if err := runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "onlogon"); err != nil {
+			return err
+		}
+		return removeLegacyStartupLnk()
 	}
-	return deleteTaskIfExists("urnetwork-autostart")
+	_ = deleteTaskIfExists(taskName)
+	return removeLegacyStartupLnk()
+}
+
+// autoStartTaskName derives a per-provider autostart task name so two
+// providers do not overwrite each other's task (heavyweight review S8).
+func autoStartTaskName(p Provider) string {
+	label := autoUpdateLabel(p)
+	if label == "" || label == "urnetwork-update" {
+		return "urnetwork-autostart"
+	}
+	return label + "-autostart"
+}
+
+// removeLegacyStartupLnk removes the pre-Go-tool Startup-folder shortcut so
+// the schtasks mechanism is the only autostart.
+func removeLegacyStartupLnk() error {
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return nil
+	}
+	lnk := filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "urnetwork.lnk")
+	if err := os.Remove(lnk); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // deleteTaskIfExists removes a scheduled task if it exists. schtasks
@@ -44,13 +76,19 @@ func deleteTaskIfExists(taskName string) error {
 // platform-neutral identifier; the concrete task name is fixed on Windows.
 // Weekly is the default posture and maps to midnight Sunday.
 func setAutoUpdateSchedule(p Provider, label, interval string) error {
-	const taskName = "urnetwork-update"
+	// Per-provider task name so two providers do not overwrite each other's
+	// update task (heavyweight review S8). label is "<unit>-update" on
+	// systemd-derived providers, else the fixed default.
+	taskName := label
+	if taskName == "" {
+		taskName = "urnetwork-update"
+	}
 	switch interval {
 	case "off":
 		return deleteTaskIfExists(taskName)
 	case "daily":
 		// -f: the task runs outside a shell with no TTY, so the update
-		// confirm prompt would fail on EOF; force skips it (DeepSeek SF5).
+		// confirm prompt would fail on EOF; force skips it.
 		tr := fmt.Sprintf(`"%s" update -f`, toolExePath())
 		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "daily", "/st", "00:00")
 	case "weekly":
@@ -58,7 +96,7 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "weekly", "/d", "SUN", "/st", "00:00")
 	case "monthly":
 		// Explicit /d 1 so "monthly" means the 1st, not schtasks' silent
-		// day-1 default (DeepSeek NICE 8).
+		// day-1 default.
 		tr := fmt.Sprintf(`"%s" update -f`, toolExePath())
 		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "monthly", "/d", "1", "/st", "00:00")
 	}

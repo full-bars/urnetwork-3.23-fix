@@ -90,11 +90,17 @@ func attachUnits(procs []Provider) {
 		}
 		s := string(cg)
 		// cgroup v2 path ends with the unit name, e.g.
-		// .../system.slice/urnetwork-native.service
+		// .../system.slice/urnetwork-native.service. Only accept names that
+		// look like a provider unit (isProviderUnit) — on a GH runner the
+		// provider inherits the runner's cgroup, and an unfiltered name would
+		// make hot-restart systemctl-restart the wrong unit (review S3).
 		if idx := strings.LastIndex(s, ".service"); idx >= 0 {
 			start := strings.LastIndex(s[:idx], "/")
 			if start >= 0 {
-				p.Unit = s[start+1 : idx+len(".service")]
+				unit := s[start+1 : idx+len(".service")]
+				if isProviderUnit(unit) {
+					p.Unit = unit
+				}
 			}
 		}
 	}
