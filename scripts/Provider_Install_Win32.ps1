@@ -234,41 +234,109 @@ Write-Host "Installing $BinaryPath => $InstalledBinaryPath"
 Move-Item -Path $BinaryPath $InstalledBinaryPath
 
 $InstalledToolsPath = Join-Path $Destination -ChildPath "urnet-tools.ps1"
+$InstalledToolsBinaryPath = Join-Path $Destination -ChildPath "urnet-tools.exe"
 
-if (Test-Path $InstalledToolsPath) {
-    Remove-Item -Path $InstalledToolsPath -Force
+# The tool is now a Go binary shipped as a standalone release asset
+# (urnet-tools-windows-<arch>, v3.23.0-fix.28+). Prefer it — digest-verified
+# against the release API — and fall back to the legacy PS1 scripts only for
+# releases that predate the Go asset. The Go tool is self-updating
+# (`urnet-tools update` refreshes its own binary), so this PS1 path is a
+# one-time handoff, mirroring Provider_Install_Linux.sh.
+# NOTE: the fork does NOT publish a separate urnetwork-updater binary;
+# auto-update is a systemd timer on Linux. On Windows, auto-update-enable is
+# a no-op/error until a Windows scheduling mechanism lands in the Go tool.
+$ToolGoInstalled = $false
+$ToolAssetName = "urnet-tools-windows-$Arch"
+$ToolAsset = $null
+$ToolDigest = ""
+if ($ReleaseInfo) {
+    $ToolAsset = $ReleaseInfo.assets | Where-Object { $_.name -eq $ToolAssetName }
+    if ($ToolAsset) {
+        $ToolDigest = $ToolAsset.digest
+    }
 }
 
-Write-Host "Installing urnet-tools => $InstalledToolsPath"
-
-if ($ToolsScriptPath) {
-    Copy-Item $ToolsScriptPath $InstalledToolsPath
+if ($ToolAsset -and $ToolDigest) {
+    # Go tool path: download, verify, swap with .old (Windows cannot delete a
+    # running mapped image, but can rename it).
+    $ToolDownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolTemp = Join-Path $env:TEMP $ToolAssetName
+    Write-Host "Installing Go urnet-tools binary ($ToolAssetName)..."
+    try {
+        Download-File -URL $ToolDownloadURL -Destination $ToolTemp
+        $ActualHash = (Get-FileHash -Path $ToolTemp -Algorithm SHA256).Hash.ToLower()
+        # The release API digest is "sha256:<hex>"; strip the prefix.
+        $ExpectedHash = $ToolDigest.ToLower()
+        if ($ExpectedHash -like "sha256:*") {
+            $ExpectedHash = $ExpectedHash.Substring(7)
+        }
+        if ($ActualHash -eq $ExpectedHash) {
+            if (Test-Path $InstalledToolsBinaryPath) {
+                Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
+            }
+            Move-Item -Path $ToolTemp -Destination $InstalledToolsBinaryPath
+            # Remove the legacy PS1 pair so the Go tool is the only manager.
+            if (Test-Path $InstalledToolsPath) {
+                Remove-Item -Path $InstalledToolsPath -Force
+            }
+            $StaleUpdaterPs1 = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
+            if (Test-Path $StaleUpdaterPs1) {
+                Remove-Item -Path $StaleUpdaterPs1 -Force
+            }
+            # Point auto-update-enable at the Go binary.
+            $InstalledToolsPath = $InstalledToolsBinaryPath
+            $ToolGoInstalled = $true
+        }
+        else {
+            Write-Warning "Go urnet-tools digest mismatch (got $ActualHash); falling back to PS1"
+            Remove-Item -Path $ToolTemp -Force -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-Warning "Failed to install Go urnet-tools; falling back to PS1: $($_.Exception.Message)"
+        Remove-Item -Path $ToolTemp -Force -ErrorAction SilentlyContinue
+    }
 }
-else {
-    Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnet-tools.ps1" -OutFile $InstalledToolsPath
-}
 
-$InstalledUpdaterPath = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
+if (-not $ToolGoInstalled) {
+    if (Test-Path $InstalledToolsPath) {
+        Remove-Item -Path $InstalledToolsPath -Force
+    }
 
-if (Test-Path $InstalledUpdaterPath) {
-    Remove-Item -Path $InstalledUpdaterPath -Force
-}
+    Write-Host "Installing urnet-tools => $InstalledToolsPath"
 
-Write-Host "Installing urnetwork-updater => $InstalledUpdaterPath"
+    if ($ToolsScriptPath) {
+        Copy-Item $ToolsScriptPath $InstalledToolsPath
+    }
+    else {
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnet-tools.ps1" -OutFile $InstalledToolsPath
+    }
 
-if ($UpdaterScriptPath) {
-    Copy-Item $UpdaterScriptPath $InstalledUpdaterPath
-}
-else {
-    Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnetwork-updater.ps1" -OutFile $InstalledUpdaterPath
+    $InstalledUpdaterPath = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
+
+    if (Test-Path $InstalledUpdaterPath) {
+        Remove-Item -Path $InstalledUpdaterPath -Force
+    }
+
+    Write-Host "Installing urnetwork-updater => $InstalledUpdaterPath"
+
+    if ($UpdaterScriptPath) {
+        Copy-Item $UpdaterScriptPath $InstalledUpdaterPath
+    }
+    else {
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnetwork-updater.ps1" -OutFile $InstalledUpdaterPath
+    }
 }
 
 Set-Content $VersionFile $ReleaseVersion
 Set-Content $InstallDateFile $ReleaseDate
 
 if ($Version -eq "latest") {
-    Write-Host "Running: urnet-tools auto-update-enable"
-    & $InstalledToolsPath auto-update-enable
+    Write-Host "Running: urnet-tools auto-update weekly"
+    & $InstalledToolsPath auto-update weekly
+    if (-not $?) {
+        Write-Warning "auto-update enable failed (exit $LASTEXITCODE); continuing install"
+    }
 }
 else {
     Write-Host "Not enabling auto update since a version other than 'latest' was installed."
@@ -358,26 +426,38 @@ if ($OS -eq "windows") {
     }
     
     if ($Answer.ToLower() -eq "y") {
-	$StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
-	$ShortcutPath = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
-
-	if (Test-Path $ShortcutPath) {
-	    Remove-Item -Path $ShortcutPath -Force
+	# Prefer the Go tool's schtasks onlogon task; fall back to the legacy
+	# Startup-folder .lnk only when the Go tool is not installed (old
+	# PS1-managed installs).
+	if ($ToolGoInstalled -and (Test-Path $InstalledToolsBinaryPath)) {
+	    Write-Host "Enabling auto-start via Task Scheduler (urnet-tools auto-start on)"
+	    & $InstalledToolsBinaryPath auto-start on
+	    if (-not $?) {
+		Write-Warning "auto-start enable failed (exit $LASTEXITCODE)"
+	    }
 	}
+	else {
+	    $StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
+	    $ShortcutPath = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
 
-	$StartCommand = "Start-Process -FilePath '$InstalledBinaryPath' -ArgumentList 'provide' -WindowStyle Hidden"
-	$Arguments = '-NoProfile -WindowStyle Hidden -Command "' + $StartCommand + '"'
+	    if (Test-Path $ShortcutPath) {
+		Remove-Item -Path $ShortcutPath -Force
+	    }
 
-	Write-Host "Startup command: powershell.exe $Arguments"
+	    $StartCommand = "Start-Process -FilePath '$InstalledBinaryPath' -ArgumentList 'provide' -WindowStyle Hidden"
+	    $Arguments = '-NoProfile -WindowStyle Hidden -Command "' + $StartCommand + '"'
 
-	$WshShell = New-Object -ComObject WScript.Shell
-	$Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-	$Shortcut.TargetPath = "powershell.exe"
-	$Shortcut.Arguments = $Arguments
-	$Shortcut.WorkingDirectory = $Destination
-	$Shortcut.WindowStyle = 7
-	$Shortcut.Save()
-	
-	Write-Host "Added URnetwork provider to startup"
+	    Write-Host "Startup command: powershell.exe $Arguments"
+
+	    $WshShell = New-Object -ComObject WScript.Shell
+	    $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+	    $Shortcut.TargetPath = "powershell.exe"
+	    $Shortcut.Arguments = $Arguments
+	    $Shortcut.WorkingDirectory = $Destination
+	    $Shortcut.WindowStyle = 7
+	    $Shortcut.Save()
+
+	    Write-Host "Added URnetwork provider to startup"
+	}
     }
 }
