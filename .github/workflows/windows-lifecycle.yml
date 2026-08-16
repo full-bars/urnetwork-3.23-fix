@@ -110,9 +110,12 @@ jobs:
 
       - name: Verify autostart task deleted
         run: |
-          $q = schtasks /query /tn urnetwork-autostart 2>&1
-          if ($LASTEXITCODE -eq 0) { throw "autostart task still exists after off" }
+          $ErrorActionPreference = "Continue"
+          $q = cmd /c "schtasks /query /tn urnetwork-autostart 2>&1"
+          if ($q -match "TaskName") { throw "autostart task still exists after off: $q" }
           Write-Host "OK: autostart task deleted"
+          $LASTEXITCODE = 0
+          exit 0
 
       - name: Verify no tasks remain (cleanup check)
         run: |
