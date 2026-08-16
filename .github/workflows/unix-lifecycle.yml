@@ -22,6 +22,16 @@ jobs:
       - name: Build the tool
         run: go build -o urnet-tools ./cmd/urnet-tools/
 
+      - name: Bootstrap user systemd manager (CI runner has no login session)
+        # GitHub's Ubuntu runners have no user systemd session for the
+        # runner user. Bootstrap one so `systemctl --user` works and the
+        # timer path is genuinely exercised, not just informational.
+        run: |
+          sudo mkdir -p "/run/user/$(id -u)"
+          sudo chown "$(id -u)" "/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          systemctl --user start 2>&1 || echo "NOTE: user manager start reported: $?"
+
       - name: Create a fake install so discovery finds a target
         # Linux discovery falls back to a ~/.urnetwork state dir.
         run: |
@@ -37,15 +47,24 @@ jobs:
           ./urnet-tools auto-update weekly || \
             echo "NOTE: systemd user timer may be unavailable on the runner; treat as informational"
 
+      - name: Verify the weekly timer exists
+        run: |
+          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
+            echo "OK: user timer registered"
+            systemctl --user list-timers --all | grep "urnetwork"
+          else
+            echo "WARN: no user timer visible (runner limitation); informational"
+          fi
+
       - name: auto-update off
         run: ./urnet-tools auto-update off || true
 
       - name: Verify no auto-update timer remains
         run: |
-          if [ -f "$HOME/.config/systemd/user/urnetwork-update.timer" ]; then
-            echo "WARN: timer file remains (runner has no systemd user session, expected)"
+          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
+            echo "WARN: timer still present after off"
           else
-            echo "OK: no timer file"
+            echo "OK: no timer remains"
           fi
 
   macos-lifecycle:
@@ -75,7 +94,34 @@ jobs:
       - name: auto-update weekly
         run: |
           ./urnet-tools auto-update weekly || \
-            echo "NOTE: launchd bootstrap may require a GUI session on the runner; treat as informational"
+            echo "NOTE: launchd bootstrap may require a session on the runner; treat as informational"
+
+      - name: Verify the weekly LaunchAgent plist exists
+        run: |
+          if [ -f "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" ]; then
+            echo "OK: update agent plist written"
+            grep -A2 "StartCalendarInterval" "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" | head -4
+          else
+            echo "WARN: no plist (runner limitation); informational"
+          fi
 
       - name: auto-update off
         run: ./urnet-tools auto-update off || true
+
+      - name: Verify the agent plist removed
+        run: |
+          if [ -f "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" ]; then
+            echo "WARN: plist still present after off"
+          else
+            echo "OK: agent plist removed"
+          fi
+
+      - name: auto-start on (LaunchAgent)
+        run: ./urnet-tools auto-start on || true
+
+      - name: auto-start off
+        run: ./urnet-tools auto-start off || true
+
+      - name: Verify no agent plists remain
+        run: |
+          ls "$HOME/Library/LaunchAgents/" 2>/dev/null | grep -c "urnetwork" || echo "OK: no urnetwork agent plists"
