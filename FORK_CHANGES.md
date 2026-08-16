@@ -2730,3 +2730,38 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: N/A. This is fork-native robustness and release-tooling work with no upstream equivalent.
 
 **Status**: ✅ v3.23.0-fix.29.1 (post-merge direct commits, after PR #381-391). Needs a fleet deploy for the provider HOME-robustness fix; the release/shakedown workflow changes are CI-only.
+
+
+## 125. Cross-Platform Lifecycle, urnet-docker Proxy Commands, Runner-Based Testing (v3.23.0-fix.30)
+
+**Purpose**: Complete the cross-platform story for the Go management tools. Auto-start and auto-update now work on Windows through Task Scheduler and on macOS through launchd. The Docker tool gains host-side proxy commands. The test droplet is replaced by runner-based functional testing.
+
+**Windows**:
+- Auto-start/auto-update use Task Scheduler (weekly = Sunday midnight default, monthly = day 1). Replaces the legacy startup-folder shortcut.
+- Uninstall removes scheduled tasks and deletes the JWT properly.
+- State directory corrected to `%USERPROFILE%\.urnetwork` (matches the provider's actual data location).
+- `safeRemoveTarget` now accepts absolute Windows paths and rejects volume roots. Previously it rejected ALL Windows paths, so uninstall could never delete anything.
+- Scheduled-task names are per-provider; two providers no longer overwrite each other's tasks.
+- The legacy startup-folder `.lnk` is removed when the schtasks path is taken.
+
+**macOS** (new):
+- Auto-start/auto-update use launchd agents (weekly = Sunday midnight default).
+- Headless fallback: `user/<uid>` domain when no GUI session exists.
+- Discovery uses pgrep because macOS has no /proc.
+
+**Linux**:
+- Auto-update timer is disabled on uninstall (was orphaned).
+- cgroup-derived unit names are filtered by `isProviderUnit`.
+
+**urnet-docker proxy commands** (host-side, Design 2):
+- `proxy add/clear/remove/add-source/remove-source/refresh/remove-dead` run from the host; exec plumbing hidden.
+- Multi-container targeting: interactive picker (TTY) or flags; untargeted multi-container refuses.
+- Wrapper now supports add-source/remove-source; clear maps to remove-all.
+
+**Testing**:
+- Runner-based functional smokes (real auth, fail loudly) replace the droplet.
+- 3-hour soaks for native + docker, 25-proxy cap, restart cycles, client-ID reuse. Both green.
+- Multi-container tests: turbo-v8/auto/lowmem modes, targeting refusal.
+- CI: setup-go native cache + retry; gofmt enforced; auth verification in tests.
+
+**Image tags**: `latest` = last tagged release; `main` = current code; CI pulls `main`.
