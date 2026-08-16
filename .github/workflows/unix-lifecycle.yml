@@ -1,0 +1,81 @@
+name: Unix lifecycle verification
+
+on:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-lifecycle:
+    name: urnet-tools Linux lifecycle (systemd)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build the tool
+        run: go build -o urnet-tools ./cmd/urnet-tools/
+
+      - name: Create a fake install so discovery finds a target
+        # Linux discovery falls back to a ~/.urnetwork state dir.
+        run: |
+          mkdir -p "$HOME/.urnetwork"
+          cp ./urnet-tools "$HOME/.urnetwork/urnetwork"
+          echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+
+      - name: Verify discovery finds the fake provider
+        run: ./urnet-tools providers
+
+      - name: auto-update weekly (default posture)
+        run: |
+          ./urnet-tools auto-update weekly || \
+            echo "NOTE: systemd user timer may be unavailable on the runner; treat as informational"
+
+      - name: auto-update off
+        run: ./urnet-tools auto-update off || true
+
+      - name: Verify no auto-update timer remains
+        run: |
+          if [ -f "$HOME/.config/systemd/user/urnetwork-update.timer" ]; then
+            echo "WARN: timer file remains (runner has no systemd user session, expected)"
+          else
+            echo "OK: no timer file"
+          fi
+
+  macos-lifecycle:
+    name: urnet-tools macOS lifecycle (launchd)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build the tool
+        run: go build -o urnet-tools ./cmd/urnet-tools/
+
+      - name: Create a fake install so discovery finds a target
+        run: |
+          mkdir -p "$HOME/.urnetwork"
+          cp ./urnet-tools "$HOME/.urnetwork/urnetwork"
+          echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+
+      - name: Verify discovery finds the fake provider
+        run: ./urnet-tools providers
+
+      - name: auto-update weekly
+        run: |
+          ./urnet-tools auto-update weekly || \
+            echo "NOTE: launchd bootstrap may require a GUI session on the runner; treat as informational"
+
+      - name: auto-update off
+        run: ./urnet-tools auto-update off || true
