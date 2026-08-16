@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30] — 2026-08-16
+### Added
+- **urnet-docker host-side proxy commands**: `proxy add`, `clear`, `remove`, `add-source`, `remove-source`, `refresh`, and `remove-dead` now run from the host. The exec plumbing is hidden. Example: `urnet-docker proxy add ~/proxies.txt`.
+- **macOS lifecycle support**: auto-start and auto-update use launchd agents. A headless fallback covers servers without a login session. Discovery uses pgrep because macOS has no /proc.
+- **Runner-based functional testing**: smoke tests run real auth and real providers on free Linux runners, replacing the test droplet for tool testing.
+- **Soak tests**: native and containerized providers each run a three-hour soak with a capped proxy pool, restart cycles, and client-ID reuse checks.
+### Fixed
+- **Windows uninstall could never delete anything**: the safety guard rejected all Windows paths. It now accepts absolute drive paths and rejects volume roots.
+- **Windows auto-start/auto-update now use Task Scheduler** instead of the legacy startup-folder shortcut. Uninstall removes the scheduled tasks.
+- **Windows state directory corrected**: now matches where the provider actually stores data.
+- **Proxy clear worked only in the shell wrapper**: the tool now maps clear to remove-all.
+- **Container wrapper supported only some proxy commands**: add-source and remove-source are now accepted.
+- **Linux uninstall orphaned the auto-update timer**: the timer is now disabled on uninstall.
+- **Build cache flake stalled image builds**: replaced with setup-go native cache and a retry.
+### Changed
+- **Docker image tag model is explicit**: `latest` means the last tagged release. `main` tracks the current code. CI tests pull `main`.
+- **CI no longer false-passes**: tests verify provider authentication and fail loudly instead of swallowing errors.
 ## [v3.23.0-fix.29.1] — 2026-08-14
 
 ### Added
