@@ -42,7 +42,7 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Run Go Unit Tests
+      - name: Run Go Unit Tests (with retry)
         run: |
           # Full suite across all packages with the race detector. The slow
           # transport/transfer integration tests self-skip under -short via
@@ -51,7 +51,24 @@ jobs:
           # drift out of coverage the way the old -run allowlist did). -race
           # gates concurrency regressions such as the message-pool reference
           # count race.
-          go test -short -race -timeout 600s ./...
+          # Retry: the Go cache restore occasionally flakes with a tar
+          # extraction error ("Cannot open: File exists"); a retry with a
+          # cold cache (no restore) clears it without a manual rerun.
+          for attempt in 1 2 3; do
+            echo "=== go test attempt $attempt/3 ==="
+            if go test -short -race -timeout 600s ./...; then
+              echo "go test passed (attempt $attempt)"
+              exit 0
+            fi
+            echo "go test failed on attempt $attempt"
+            if [ "$attempt" -lt 3 ]; then
+              echo "clearing Go build cache and retrying..."
+              go clean -cache
+              sleep 5
+            fi
+          done
+          echo "go test failed after 3 attempts"
+          exit 1
 
       - name: Run go vet
         run: |
