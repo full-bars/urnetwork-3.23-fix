@@ -7,14 +7,10 @@ on:
   pull_request:
 
 jobs:
-  functional-smoke:
-    name: functional smoke
-    runs-on: ${{ matrix.os }}
+  native-functional-smoke:
+    name: native functional smoke
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
     env:
       GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
       GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
@@ -31,7 +27,6 @@ jobs:
         run: |
           go build -o /tmp/provider ./provider/
           go build -o /tmp/urnet-tools ./cmd/urnet-tools/
-        shell: bash
 
       - name: Mint a real JWT (gauntlet account, production-account guard)
         run: |
@@ -40,8 +35,6 @@ jobs:
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
             --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
           test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed — see auth output above"; exit 1; }
-          # Safety: refuse if it is the production account (network.json
-          # carries the network_id; the gauntlet account is never production).
           if grep -qE '"(network_id|name)"\s*:\s*"(production|full-bars)"' /tmp/mint/.urnetwork/network.json 2>/dev/null; then
             echo "REFUSING: minted account looks like production"; exit 1
           fi
@@ -103,4 +96,67 @@ jobs:
           echo "--- provider log tail ---"
           tail -15 /tmp/provider.log 2>/dev/null || true
         shell: bash
+        if: always()
+
+  docker-provider-functional:
+    name: docker-provider functional smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build urnet-docker + urnet-tools
+        run: |
+          go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
+
+      - name: Prepare proxy file
+        run: |
+          mkdir -p /tmp/docker-test
+          printf '127.0.0.1:10001\n127.0.0.1:10002\n' > /tmp/docker-test/proxy.txt
+
+      - name: Start provider container (BUILD=stable, user/pass auth)
+        # The Docker provider authenticates itself with USER_AUTH/PASSWORD
+        # (start_stable.sh); the JWT persists in the config volume.
+        run: |
+          docker run -d --name urnet-test \
+            --restart=unless-stopped \
+            --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            --sysctl net.ipv4.ip_forward=1 \
+            -e BUILD=stable \
+            -e USER_AUTH="$GAUNTLET_USER" \
+            -e PASSWORD="$GAUNTLET_PW" \
+            -v /tmp/docker-test/proxy.txt:/app/proxy.txt \
+            ghcr.io/full-bars/urnetwork-3.23-fix:latest
+          echo "container started; waiting for auth..."
+          sleep 60
+          docker ps --filter name=urnet-test --format "{{.Names}} {{.Status}}"
+
+      - name: urnet-docker providers
+        run: /tmp/urnet-docker providers
+
+      - name: urnet-docker status
+        run: /tmp/urnet-docker status urnet-test || echo "status nonzero"
+
+      - name: urnet-docker exec (proxy add via the tool inside)
+        run: |
+          /tmp/urnet-docker exec urnet-test -- urnet-tools proxy add /app/proxy.txt || \
+            echo "exec proxy add returned nonzero"
+
+      - name: urnet-docker logs (tail)
+        run: /tmp/urnet-docker logs urnet-test 5 || echo "logs nonzero"
+
+      - name: Teardown — stop + remove container
+        run: |
+          docker rm -f urnet-test 2>/dev/null || true
+          echo "container removed"
         if: always()
