@@ -150,28 +150,27 @@ jobs:
       - name: urnet-docker proxy add (host-side, Design 2)
         run: |
           # Host-side: copies the host file into the container, adds via the
-          # in-container tool. No exec incantation needed.
-          /tmp/urnet-docker proxy add /tmp/docker-test/proxy.txt || \
-            echo "proxy add returned nonzero (may need provider warmup)"
+          # in-container tool. No exec incantation needed. Assert it works.
+          /tmp/urnet-docker proxy add /tmp/docker-test/proxy.txt
+          # Verify the in-container add actually registered the 2 entries.
+          docker exec urnet-test urnet-tools proxy summary 2>/dev/null | grep -c "127.0.0.1" || true
 
       - name: urnet-docker proxy refresh
-        run: /tmp/urnet-docker proxy refresh urnet-test || echo "refresh nonzero"
+        run: /tmp/urnet-docker proxy refresh urnet-test
 
       - name: urnet-docker proxy add-source (URL source)
         run: |
-          /tmp/urnet-docker proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
-            echo "add-source returned nonzero"
+          /tmp/urnet-docker proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
 
       - name: urnet-docker proxy remove-source (the URL source)
         run: |
-          /tmp/urnet-docker proxy remove-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
-            echo "remove-source returned nonzero"
+          /tmp/urnet-docker proxy remove-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
 
       - name: urnet-docker proxy clear
-        run: /tmp/urnet-docker proxy clear urnet-test || echo "clear nonzero"
+        run: /tmp/urnet-docker proxy clear --force urnet-test
 
       - name: urnet-docker proxy remove-dead
-        run: /tmp/urnet-docker proxy remove-dead urnet-test || echo "remove-dead nonzero"
+        run: /tmp/urnet-docker proxy remove-dead urnet-test
 
       - name: urnet-docker exec (still works, compatibility)
         run: |
