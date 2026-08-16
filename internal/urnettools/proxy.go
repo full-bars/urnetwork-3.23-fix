@@ -167,7 +167,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		// The provider binary has no `proxy clear` subcommand (verified):
 		// its docopt only has add/remove/remove-dead/refresh/add-source/
 		// remove-source/exclude/summary. Map to remove --all, which clears
-		// unconditionally (Opus review MF1).
+		// unconditionally (no docopt-valid force flag on this pattern).
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "remove":
 		opArgs = []string{"proxy", "remove", "--all"}
