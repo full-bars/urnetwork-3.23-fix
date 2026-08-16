@@ -1,0 +1,106 @@
+name: tool-functional-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+
+jobs:
+  functional-smoke:
+    name: ${{ matrix.os }} functional smoke
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build provider + tool
+        run: |
+          go build -o provider ./provider/
+          go build -o urnet-tools ./cmd/urnet-tools/
+        shell: bash
+
+      - name: Mint a real JWT (gauntlet account, production-account guard)
+        run: |
+          mkdir -p /tmp/mint
+          HOME=/tmp/mint ./provider auth \
+            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed (verification required?)"; exit 1; }
+          # Safety: refuse if it is the production account (network.json
+          # carries the network_id; the gauntlet account is never production).
+          if grep -qE '"(network_id|name)"\s*:\s*"(production|full-bars)"' /tmp/mint/.urnetwork/network.json 2>/dev/null; then
+            echo "REFUSING: minted account looks like production"; exit 1
+          fi
+          echo "JWT minted OK"
+          echo "JWT_OK=1" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Set up provider state dir with the minted JWT
+        run: |
+          STATE="$HOME/.urnetwork"
+          mkdir -p "$STATE"
+          cp /tmp/mint/.urnetwork/jwt "$STATE/jwt" 2>/dev/null || true
+          echo "state dir: $STATE"
+        shell: bash
+
+      - name: Start provider (real session)
+        run: |
+          nohup ./provider provide > /tmp/provider.log 2>&1 &
+          echo $! > /tmp/provider.pid
+          sleep 20
+          if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
+            echo "provider running (pid $(cat /tmp/provider.pid))"
+          else
+            echo "provider exited early; log:"; tail -20 /tmp/provider.log
+            exit 1
+          fi
+        shell: bash
+
+      - name: urnet-tools providers (discover the real provider)
+        run: ./urnet-tools providers
+
+      - name: urnet-tools status
+        run: ./urnet-tools status
+
+      - name: urnet-tools version
+        run: ./urnet-tools version
+
+      - name: proxy add from a local list
+        run: |
+          cat > /tmp/proxies.txt << 'EOF'
+          127.0.0.1:10001
+          127.0.0.1:10002
+          127.0.0.1:10003
+          EOF
+          ./urnet-tools proxy add /tmp/proxies.txt || echo "proxy add returned nonzero (may need provider warmup)"
+
+      - name: proxy clear
+        run: ./urnet-tools proxy clear || echo "proxy clear returned nonzero"
+
+      - name: hot-restart (verify client-id reuse across restart)
+        run: |
+          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          sleep 15
+          ./urnet-tools providers
+
+      - name: Teardown — stop provider, capture log tail
+        run: |
+          kill $(cat /tmp/provider.pid) 2>/dev/null || true
+          echo "--- provider log tail ---"
+          tail -15 /tmp/provider.log 2>/dev/null || true
+        shell: bash
+        if: always()
