@@ -92,7 +92,10 @@ jobs:
       - name: proxy clear (tests the wrapper fix) + refresh
         run: |
           /tmp/urnet-docker proxy clear --unit urfix-soak
-          /tmp/urnet-docker proxy refresh --unit urfix-soak
+          # --force bypasses the 8-12h warmup gate (refresh's usage has
+          # [--force]; the gate lives in proxyRefresh). Without it a fresh
+          # provider exits 52.
+          /tmp/urnet-docker proxy refresh --force --unit urfix-soak
           sleep 30
           /tmp/urnet-docker providers
 

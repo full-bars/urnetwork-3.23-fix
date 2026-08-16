@@ -330,8 +330,8 @@ case "$operation" in
             clear)
                 # The provider has no `proxy clear`; map it to remove --all
                 # (remove --all clears unconditionally, no confirmation).
-                # No --yes here: it is not in the `remove [--all]` usage
-                # pattern and docopt rejects leftover args (verified).
+                # No --yes/--force here: neither is in the `remove [--all]`
+                # usage pattern and docopt rejects leftover args (verified).
                 [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
                 exec /usr/local/bin/provider proxy remove --all
                 ;;
