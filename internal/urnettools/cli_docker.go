@@ -373,9 +373,10 @@ func cmdDockerProxy(args []string) error {
 		}
 		hostFile := rest2[0]
 		// Unique in-container path so concurrent proxy ops cannot collide
-		// (DeepSeek SF4). Cleaned up by the add itself (in-container tool
-		// reads then the path is reused; a fresh name per invocation avoids
-		// cross-op races).
+		// (DeepSeek SF4). NOTE: the in-container proxyAdd never deletes this
+		// file — plaintext proxy creds stay in the container at this path.
+		// Low severity (container-local) but a future cleanup should rm it
+		// after a successful add.
 		inPath := fmt.Sprintf("/tmp/urnet-proxies-%d.txt", os.Getpid())
 		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
 			return fmt.Errorf("copy %s into container: %w", hostFile, err)
@@ -415,7 +416,7 @@ func cmdDockerProxy(args []string) error {
 
 // dockerCopyInto copies a host file into the container at destPath using
 // `docker cp`. The host file is passed as the source; the container path is
-// always the fixed /tmp/urnet-proxies.txt so proxy add targets a known path.
+// caller-chosen (the proxy add path uses a unique per-PID name).
 func dockerCopyInto(container, hostFile, destPath string) error {
 	cmd := exec.Command("docker", "cp", hostFile, container+":"+destPath)
 	out, err := cmd.CombinedOutput()
