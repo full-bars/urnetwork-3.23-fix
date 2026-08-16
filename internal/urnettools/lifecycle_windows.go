@@ -24,7 +24,7 @@ func setAutoStart(p Provider, on bool) error {
 		}
 		// The provider starts with the "provide" subcommand.
 		tr := fmt.Sprintf(`"%s" provide`, p.Binary)
-		return runSchtasks("create", "/f", "/tn", "urnetwork-autostart", "/tr", tr, "/sc", "onlogon")
+		return runSchtasks("/create", "/f", "/tn", "urnetwork-autostart", "/tr", tr, "/sc", "onlogon")
 	}
 	return deleteTaskIfExists("urnetwork-autostart")
 }
@@ -33,11 +33,11 @@ func setAutoStart(p Provider, on bool) error {
 // /delete /f on a MISSING task errors (0x80070002), so check first; a
 // missing task is a clean no-op (DeepSeek SF4).
 func deleteTaskIfExists(taskName string) error {
-	if err := runSchtasks("query", "/tn", taskName); err != nil {
+	if err := runSchtasks("/query", "/tn", taskName); err != nil {
 		// Not found = fine (no-op).
 		return nil
 	}
-	return runSchtasks("delete", "/f", "/tn", taskName)
+	return runSchtasks("/delete", "/f", "/tn", taskName)
 }
 
 // setAutoUpdateSchedule manages the auto-update scheduled task. label is the
@@ -52,15 +52,15 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 		// -f: the task runs outside a shell with no TTY, so the update
 		// confirm prompt would fail on EOF; force skips it (DeepSeek SF5).
 		tr := fmt.Sprintf(`"%s" update -f`, toolExePath())
-		return runSchtasks("create", "/f", "/tn", taskName, "/tr", tr, "/sc", "daily", "/st", "00:00")
+		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "daily", "/st", "00:00")
 	case "weekly":
 		tr := fmt.Sprintf(`"%s" update -f`, toolExePath())
-		return runSchtasks("create", "/f", "/tn", taskName, "/tr", tr, "/sc", "weekly", "/d", "SUN", "/st", "00:00")
+		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "weekly", "/d", "SUN", "/st", "00:00")
 	case "monthly":
 		// Explicit /d 1 so "monthly" means the 1st, not schtasks' silent
 		// day-1 default (DeepSeek NICE 8).
 		tr := fmt.Sprintf(`"%s" update -f`, toolExePath())
-		return runSchtasks("create", "/f", "/tn", taskName, "/tr", tr, "/sc", "monthly", "/d", "1", "/st", "00:00")
+		return runSchtasks("/create", "/f", "/tn", taskName, "/tr", tr, "/sc", "monthly", "/d", "1", "/st", "00:00")
 	}
 	return fmt.Errorf("invalid interval %q", interval)
 }
@@ -76,7 +76,9 @@ func toolExePath() string {
 }
 
 // runSchtasks executes schtasks.exe with the given args and wraps failures
-// with the captured output.
+// with the captured output. The subcommand MUST carry the leading slash
+// (schtasks /create, /delete, /query) — `schtasks create` is invalid
+// (caught by live Windows test 2026-08-16).
 func runSchtasks(subcommand string, args ...string) error {
 	full := append([]string{subcommand}, args...)
 	out, err := exec.Command("schtasks", full...).CombinedOutput()
