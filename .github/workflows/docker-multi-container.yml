@@ -43,7 +43,7 @@ jobs:
           cat > /tmp/docker-compose.yml << 'EOF'
           services:
             urfix-turbo:
-              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
               container_name: urfix-turbo
               restart: unless-stopped
               cap_add: [NET_ADMIN, NET_RAW]
@@ -59,7 +59,7 @@ jobs:
                 - ur_config:/root/.urnetwork
                 - /tmp/multi/turbo.txt:/app/proxy.txt
             urfix-auto:
-              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
               container_name: urfix-auto
               restart: unless-stopped
               cap_add: [NET_ADMIN, NET_RAW]
@@ -75,7 +75,7 @@ jobs:
                 - ur_config:/root/.urnetwork
                 - /tmp/multi/auto.txt:/app/proxy.txt
             urfix-lowmem:
-              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
               container_name: urfix-lowmem
               restart: unless-stopped
               cap_add: [NET_ADMIN, NET_RAW]
