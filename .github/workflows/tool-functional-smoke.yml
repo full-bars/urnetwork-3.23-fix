@@ -29,7 +29,7 @@ jobs:
 
       - name: Build provider + tool
         run: |
-          go build -o /tmp/provider /tmp/provider/
+          go build -o /tmp/provider ./provider/
           go build -o /tmp/urnet-tools ./cmd/urnet-tools/
         shell: bash
 
