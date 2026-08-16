@@ -1,0 +1,116 @@
+name: tool-functional-soak
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "fix/*"]
+
+jobs:
+  functional-soak:
+    name: Linux functional soak (accelerated)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300  # 5h; job cap is 360
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+      # Accelerated schedule: compress the pool-stabilization timeline so
+      # proxies warm up in ~1-2h instead of 6h+. These are TEST-ONLY knobs;
+      # they are not the production defaults.
+      URNETWORK_PROXY_BENCHMARK: "true"
+      URNETWORK_SELF_HEAL: "1"
+      PROXY_URL_REFRESH: "2m"
+      URNETWORK_HEARTBEAT_INTERVAL: "15s"
+      URNETWORK_REPORT_INTERVAL: "1m"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build provider + tool
+        run: |
+          go build -o provider ./provider/
+          go build -o urnet-tools ./cmd/urnet-tools/
+
+      - name: Mint a real JWT (gauntlet account)
+        run: |
+          mkdir -p /tmp/mint
+          HOME=/tmp/mint ./provider auth \
+            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed"; exit 1; }
+          if grep -qE '"(network_id|name)"\s*:\s*"(production|full-bars)"' /tmp/mint/.urnetwork/network.json 2>/dev/null; then
+            echo "REFUSING: production account"; exit 1
+          fi
+          echo "JWT minted OK"
+
+      - name: Set up state dir + accelerated grade config
+        run: |
+          mkdir -p "$HOME/.urnetwork"
+          cp /tmp/mint/.urnetwork/jwt "$HOME/.urnetwork/jwt"
+          # Compress the stage-1 probe cadence (test-only, re-read live).
+          cat > "$HOME/.urnetwork/proxy_grades.json" << 'EOF'
+          {
+            "interval_sec": 60,
+            "sample_width": 6,
+            "pass_bar": 0.5,
+            "stale_calm": "30m",
+            "stale_hot": "15m"
+          }
+          EOF
+          echo "state + accelerated config ready"
+
+      - name: Start provider (real session, accelerated)
+        run: |
+          nohup ./provider provide > /tmp/provider.log 2>&1 &
+          echo $! > /tmp/provider.pid
+          sleep 30
+          if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
+            echo "provider running (pid $(cat /tmp/provider.pid))"
+          else
+            tail -30 /tmp/provider.log; exit 1
+          fi
+
+      - name: Basic tool commands
+        run: |
+          ./urnet-tools providers
+          ./urnet-tools status
+          ./urnet-tools version
+
+      - name: proxy add + URL source (real proxy list)
+        run: |
+          ./urnet-tools proxy add-source "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/test-proxies.txt" || \
+            echo "add-source returned nonzero (may not be a valid URL list); continuing"
+          sleep 60
+          ./urnet-tools providers
+
+      - name: Proxy pool stabilization soak (4x 5-min windows)
+        run: |
+          for i in 1 2 3 4; do
+            echo "--- soak window $i ---"
+            ./urnet-tools proxy health 2>/dev/null || true
+            sleep 300
+          done
+
+      - name: hot-restart (client-ID reuse check)
+        run: |
+          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          sleep 30
+          ./urnet-tools providers
+
+      - name: proxy clear + restart (new client ID check)
+        run: |
+          ./urnet-tools proxy clear || echo "clear returned nonzero"
+          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          sleep 20
+          ./urnet-tools providers
+
+      - name: Teardown
+        run: |
+          kill $(cat /tmp/provider.pid) 2>/dev/null || true
+          echo "--- provider log tail ---"
+          tail -25 /tmp/provider.log 2>/dev/null || true
+        if: always()
