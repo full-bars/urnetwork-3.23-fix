@@ -76,8 +76,12 @@ jobs:
 
               MATCHED_FILES=""
               while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
                 for pattern in "${CRITICAL_FILES[@]}"; do
-                  if echo "$filename" | grep -q -E "$pattern"; then
+                  if echo "$match_name" | grep -q -E "$pattern"; then
                     MATCHED_FILES="$MATCHED_FILES \`$filename\`"
                     break
                   fi
@@ -327,8 +331,12 @@ jobs:
 
               MATCHED_FILES=""
               while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
                 for pattern in "${CRITICAL_FILES[@]}"; do
-                  if echo "$filename" | grep -q -E "$pattern"; then
+                  if echo "$match_name" | grep -q -E "$pattern"; then
                     MATCHED_FILES="$MATCHED_FILES \`$filename\`"
                     break
                   fi
@@ -522,8 +530,12 @@ jobs:
 
               MATCHED_FILES=""
               while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
                 for pattern in "${CRITICAL_FILES[@]}"; do
-                  if echo "$filename" | grep -q -E "$pattern"; then
+                  if echo "$match_name" | grep -q -E "$pattern"; then
                     MATCHED_FILES="$MATCHED_FILES \`$filename\`"
                     break
                   fi
@@ -608,7 +620,9 @@ jobs:
             "^mobile/"
             "\.aar$"
             "\.xcframework$"
-            "^v2026/"
+            # NOTE: no "^v2026/" entry here: paths are normalized (the
+            # v2026/ prefix is stripped) before matching, so v2026/ip_security
+            # and friends classify as CRITICAL, not client-only.
             "^security/ips\.go$"
             "^security/ips\.txt$"
           )
@@ -662,11 +676,15 @@ jobs:
             MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty' 2>/dev/null || true)
             while IFS= read -r filename; do
               [ -z "$filename" ] && continue
+              # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+              # match against the root-relative name so the anchored
+              # patterns keep working; report the real upstream path.
+              match_name="${filename#v2026/}"
               ALL_FILES="$ALL_FILES \`$filename\`"
 
               IS_CRITICAL=false
               for pattern in "${CRITICAL_FILES[@]}"; do
-                if echo "$filename" | grep -q -E "$pattern"; then
+                if echo "$match_name" | grep -q -E "$pattern"; then
                   CRITICAL_MATCHES="$CRITICAL_MATCHES \`$filename\`"
                   IS_CRITICAL=true
                   break
@@ -675,7 +693,7 @@ jobs:
 
               if ! $IS_CRITICAL; then
                 for pattern in "${CLIENT_ONLY_FILES[@]}"; do
-                  if echo "$filename" | grep -q -E "$pattern"; then
+                  if echo "$match_name" | grep -q -E "$pattern"; then
                     CLIENT_ONLY_COUNT=$((CLIENT_ONLY_COUNT + 1))
                     break
                   fi
@@ -882,8 +900,12 @@ jobs:
 
               MATCHED_FILES=""
               while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
                 for pattern in "${CRITICAL_FILES[@]}"; do
-                  if echo "$filename" | grep -q -E "$pattern"; then
+                  if echo "$match_name" | grep -q -E "$pattern"; then
                     MATCHED_FILES="$MATCHED_FILES \`$filename\`"
                     break
                   fi
