@@ -107,7 +107,7 @@ jobs:
 
       - name: Container restart (client-ID reuse check)
         run: |
-          /tmp/urnet-docker restart urfix-soak
+          /tmp/urnet-docker restart --force urfix-soak
           sleep 30
           /tmp/urnet-docker providers
 
