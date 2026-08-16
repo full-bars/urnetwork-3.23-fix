@@ -93,13 +93,17 @@ func installedProviderBinary() string {
 	return ""
 }
 
-// windowsStateDir is the provider state dir on Windows.
+// windowsStateDir is the provider state dir on Windows. The provider
+// resolves state via os.UserHomeDir() -> %USERPROFILE%\.urnetwork\jwt
+// (main.go), NOT %LOCALAPPDATA%. Returning the wrong dir made status
+// report a false state dir and uninstall leave the JWT on disk
+// (heavyweight review S5).
 func windowsStateDir() string {
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData == "" {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(localAppData, "urnetwork")
+	return filepath.Join(home, ".urnetwork")
 }
 
 // currentUser returns the Windows username for Provider.User. %USERNAME%
