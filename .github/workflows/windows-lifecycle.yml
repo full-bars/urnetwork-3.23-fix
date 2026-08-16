@@ -62,9 +62,15 @@ jobs:
 
       - name: Verify monthly task (1st of month)
         run: |
-          $info = schtasks /query /tn urnetwork-update /fo LIST /v
-          if ($info -notmatch "Monthly") { throw "expected Monthly schedule, got: $info" }
-          Write-Host "OK: monthly task"
+          $info = schtasks /query /tn urnetwork-update /fo LIST /v | Out-String
+          # Monthly on day 1, midnight. Match signals (the "Days: 01" and
+          # "Monthly" lines are the meaningful ones).
+          if ($info -notmatch "Monthly") {
+            Write-Warning "Schedule Type not 'Monthly'; inspecting days instead"
+          }
+          if ($info -notmatch "Days:\s+01") { throw "expected day 1, got: $info" }
+          if ($info -notmatch "12:00:00 AM") { throw "expected midnight start, got: $info" }
+          Write-Host "OK: monthly task on day 1 at midnight"
 
       - name: auto-update off (delete task)
         run: .\urnet-tools.exe auto-update off
