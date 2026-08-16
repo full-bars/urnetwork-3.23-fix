@@ -29,14 +29,14 @@ jobs:
 
       - name: Build provider + tool
         run: |
-          go build -o provider ./provider/
-          go build -o urnet-tools ./cmd/urnet-tools/
+          go build -o /tmp/provider /tmp/provider/
+          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
         shell: bash
 
       - name: Mint a real JWT (gauntlet account, production-account guard)
         run: |
           mkdir -p /tmp/mint
-          HOME=/tmp/mint ./provider auth \
+          HOME=/tmp/mint /tmp/provider auth \
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
             --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
           test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed — see auth output above"; exit 1; }
@@ -59,7 +59,7 @@ jobs:
 
       - name: Start provider (real session)
         run: |
-          nohup ./provider provide > /tmp/provider.log 2>&1 &
+          nohup /tmp/provider provide > /tmp/provider.log 2>&1 &
           echo $! > /tmp/provider.pid
           sleep 20
           if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
@@ -71,13 +71,13 @@ jobs:
         shell: bash
 
       - name: urnet-tools providers (discover the real provider)
-        run: ./urnet-tools providers
+        run: /tmp/urnet-tools providers
 
       - name: urnet-tools status
-        run: ./urnet-tools status
+        run: /tmp/urnet-tools status
 
       - name: urnet-tools version
-        run: ./urnet-tools version
+        run: /tmp/urnet-tools version
 
       - name: proxy add from a local list
         run: |
@@ -86,16 +86,16 @@ jobs:
           127.0.0.1:10002
           127.0.0.1:10003
           EOF
-          ./urnet-tools proxy add /tmp/proxies.txt || echo "proxy add returned nonzero (may need provider warmup)"
+          /tmp/urnet-tools proxy add /tmp/proxies.txt || echo "proxy add returned nonzero (may need provider warmup)"
 
       - name: proxy clear
-        run: ./urnet-tools proxy clear || echo "proxy clear returned nonzero"
+        run: /tmp/urnet-tools proxy clear || echo "proxy clear returned nonzero"
 
       - name: hot-restart (verify client-id reuse across restart)
         run: |
-          ./urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
           sleep 15
-          ./urnet-tools providers
+          /tmp/urnet-tools providers
 
       - name: Teardown — stop provider, capture log tail
         run: |
