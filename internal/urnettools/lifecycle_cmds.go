@@ -30,31 +30,13 @@ func cmdAutoStart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if p.Unit == "" {
-		return fmt.Errorf("provider %s has no owning unit", providerLabel(p))
-	}
 
 	if dryRun {
-		fmt.Printf("[dry-run] would %s auto-start for %s (%s)\n", mode, providerLabel(p), p.Unit)
+		fmt.Printf("[dry-run] would %s auto-start for %s\n", mode, providerLabel(p))
 		return nil
 	}
 
-	if mode == "on" {
-		return unitEnable(p, true)
-	}
-	return unitEnable(p, false)
-}
-
-// unitEnable enables/disables the provider's owning unit (login autostart).
-func unitEnable(p Provider, enable bool) error {
-	action := "disable"
-	if enable {
-		action = "enable"
-	}
-	if isUserUnit(p.Unit) && p.User != "" {
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", action, p.Unit).Run()
-	}
-	return exec.Command("systemctl", action, p.Unit).Run()
+	return setAutoStart(p, mode == "on")
 }
 
 // cmdAutoUpdate manages the auto-update timer interval.
@@ -80,76 +62,25 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if p.Unit == "" {
-		return fmt.Errorf("provider %s has no owning unit", providerLabel(p))
-	}
-
-	// The update timer unit mirrors the provider unit name:
-	// urnetwork-native.service -> urnetwork-native-update.timer
-	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
+	label := autoUpdateLabel(p)
 	if dryRun {
-		fmt.Printf("[dry-run] would set auto-update %s for %s (timer %s)\n", interval, providerLabel(p), timer)
+		fmt.Printf("[dry-run] would set auto-update %s for %s (%s)\n", interval, providerLabel(p), label)
 		return nil
 	}
-
-	switch interval {
-	case "off":
-		// Disable the timer.
-		if isUserUnit(timer) && p.User != "" {
-			return exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", timer).Run()
-		}
-		return exec.Command("systemctl", "disable", "--now", timer).Run()
-	case "daily":
-		return writeTimerCalendar(timer, p, "daily")
-	case "weekly":
-		return writeTimerCalendar(timer, p, "Sun *-*-* 00:00:00 UTC")
-	case "monthly":
-		return writeTimerCalendar(timer, p, "monthly")
-	}
-	return nil
+	return setAutoUpdateSchedule(p, label, interval)
 }
 
-// writeTimerCalendar rewrites a timer unit's OnCalendar line and reloads.
-func writeTimerCalendar(timer string, p Provider, calendar string) error {
-	// Locate the timer unit file (system or user).
-	var path string
-	if isUserUnit(timer) && p.User != "" {
-		home := homeForUser(p.User)
-		if home == "" {
-			return fmt.Errorf("cannot resolve home for user %s", p.User)
-		}
-		path = filepath.Join(home, ".config/systemd/user", timer)
-	} else {
-		path = "/etc/systemd/system/" + timer
+// autoUpdateLabel returns a stable identifier for the auto-update scheduling
+// object (systemd timer on Linux, scheduled task on Windows). Platform-neutral
+// so dry-run output is uniform; the platform implementation derives its own
+// concrete name from it.
+func autoUpdateLabel(p Provider) string {
+	if p.Unit != "" {
+		return strings.TrimSuffix(p.Unit, ".service") + "-update"
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read timer %s: %w", timer, err)
-	}
-	lines := strings.Split(string(data), "\n")
-	var out []string
-	replaced := false
-	for _, line := range lines {
-		if strings.HasPrefix(line, "OnCalendar=") {
-			out = append(out, "OnCalendar="+calendar)
-			replaced = true
-		} else {
-			out = append(out, line)
-		}
-	}
-	if !replaced {
-		return fmt.Errorf("no OnCalendar line found in %s", path)
-	}
-	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); err != nil {
-		return err
-	}
-	if isUserUnit(timer) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", "enable", "--now", timer).Run()
-	}
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	return exec.Command("systemctl", "enable", "--now", timer).Run()
+	return "urnetwork-update"
 }
+
 
 // cmdUninstall removes the provider: stops/disables the unit, removes the
 // install dir and state. Destructive gate applies.
@@ -180,6 +111,10 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
 			}
 		}
+	} else {
+		// No systemd unit (e.g. Windows): clean up platform lifecycle
+		// artifacts (scheduled tasks) instead (DeepSeek SF6).
+		cleanupLifecycle(p)
 	}
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path (free-review major: harden the deletion guard).
