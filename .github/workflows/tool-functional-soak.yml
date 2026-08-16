@@ -7,9 +7,9 @@ on:
 
 jobs:
   functional-soak:
-    name: Linux functional soak (accelerated)
+    name: Linux functional soak (accelerated, ~3h)
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # 5h; job cap is 360
+    timeout-minutes: 200  # 3h20m; job cap is 360
     env:
       GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
       GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
@@ -87,24 +87,67 @@ jobs:
           sleep 60
           /tmp/urnet-tools providers
 
-      - name: Proxy pool stabilization soak (4x 5-min windows)
+      # ---- Soak block 1: 50 min pool observation ----
+      - name: Soak block 1 (50 min pool observation)
         run: |
-          for i in 1 2 3 4; do
-            echo "--- soak window $i ---"
-            /tmp/urnet-tools proxy health 2>/dev/null || true
+          for i in $(seq 1 10); do
+            echo "--- block1 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-tools proxy health 2>/dev/null | head -5 || true
+            /tmp/urnet-tools providers
             sleep 300
           done
 
-      - name: hot-restart (client-ID reuse check)
+      - name: Restart cycle 1 (client-ID reuse check)
         run: |
-          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
+          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
           sleep 30
+          echo "client_id after: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
           /tmp/urnet-tools providers
 
-      - name: proxy clear + restart (new client ID check)
+      # ---- Soak block 2: 50 min pool observation ----
+      - name: Soak block 2 (50 min pool observation)
         run: |
-          /tmp/urnet-tools proxy clear || echo "clear returned nonzero"
-          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          for i in $(seq 1 10); do
+            echo "--- block2 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-tools proxy health 2>/dev/null | head -5 || true
+            /tmp/urnet-tools providers
+            sleep 300
+          done
+
+      - name: Restart cycle 2 (client-ID reuse check)
+        run: |
+          echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
+          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
+          sleep 30
+          echo "client_id after: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
+          /tmp/urnet-tools providers
+
+      # ---- Soak block 3: 50 min pool observation ----
+      - name: Soak block 3 (50 min pool observation)
+        run: |
+          for i in $(seq 1 10); do
+            echo "--- block3 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-tools proxy health 2>/dev/null | head -5 || true
+            /tmp/urnet-tools providers
+            sleep 300
+          done
+
+      - name: Remint cycle (new client ID check)
+        run: |
+          echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
+          rm -f "$HOME/.urnetwork/jwt"
+          HOME="$HOME/.urnetwork" /tmp/provider auth \
+            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          sleep 10
+          echo "client_id after remint: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
+          /tmp/urnet-tools providers
+
+      - name: proxy clear + final restart
+        run: |
+          /tmp/urnet-tools proxy clear || echo "clear nonzero"
+          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
           sleep 20
           /tmp/urnet-tools providers
 
@@ -112,5 +155,7 @@ jobs:
         run: |
           kill $(cat /tmp/provider.pid) 2>/dev/null || true
           echo "--- provider log tail ---"
-          tail -25 /tmp/provider.log 2>/dev/null || true
+          tail -30 /tmp/provider.log 2>/dev/null || true
+          echo "--- provider log: errors during soak ---"
+          grep -iE "error|panic|fatal|oom" /tmp/provider.log 2>/dev/null | tail -10 || echo "no errors logged"
         if: always()
