@@ -147,10 +147,36 @@ jobs:
       - name: urnet-docker status
         run: /tmp/urnet-docker status urnet-test || echo "status nonzero"
 
-      - name: urnet-docker exec (proxy add via the tool inside)
+      - name: urnet-docker proxy add (host-side, Design 2)
         run: |
-          /tmp/urnet-docker exec urnet-test -- urnet-tools proxy add /app/proxy.txt || \
-            echo "exec proxy add returned nonzero"
+          # Host-side: copies the host file into the container, adds via the
+          # in-container tool. No exec incantation needed.
+          /tmp/urnet-docker proxy add /tmp/docker-test/proxy.txt || \
+            echo "proxy add returned nonzero (may need provider warmup)"
+
+      - name: urnet-docker proxy refresh
+        run: /tmp/urnet-docker proxy refresh urnet-test || echo "refresh nonzero"
+
+      - name: urnet-docker proxy add-source (URL source)
+        run: |
+          /tmp/urnet-docker proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
+            echo "add-source returned nonzero"
+
+      - name: urnet-docker proxy remove-source (the URL source)
+        run: |
+          /tmp/urnet-docker proxy remove-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt" || \
+            echo "remove-source returned nonzero"
+
+      - name: urnet-docker proxy clear
+        run: /tmp/urnet-docker proxy clear urnet-test || echo "clear nonzero"
+
+      - name: urnet-docker proxy remove-dead
+        run: /tmp/urnet-docker proxy remove-dead urnet-test || echo "remove-dead nonzero"
+
+      - name: urnet-docker exec (still works, compatibility)
+        run: |
+          /tmp/urnet-docker exec urnet-test -- urnet-tools providers || \
+            echo "exec providers returned nonzero"
 
       - name: urnet-docker logs (tail)
         run: /tmp/urnet-docker logs urnet-test 5 || echo "logs nonzero"
