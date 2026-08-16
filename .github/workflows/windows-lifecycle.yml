@@ -77,10 +77,15 @@ jobs:
 
       - name: Verify task deleted
         run: |
-          $q = schtasks /query /tn urnetwork-update 2>&1 | Out-String
+          # schtasks writes an ERROR to stderr for a missing task; pwsh turns
+          # native stderr into an error record that fails the step under the
+          # runner's error preference. Route through cmd so the exit code and
+          # output are captured without pwsh error semantics.
+          $ErrorActionPreference = "Continue"
+          $q = cmd /c "schtasks /query /tn urnetwork-update 2>&1"
           # The off command deleted it; verify by checking the task is not
-          # listed. Exit-code detection is unreliable here, so match output.
-          if ($q -match "urnetwork-update") { throw "task still exists after off: $q" }
+          # listed (a missing task yields an error text, not a task row).
+          if ($q -match "TaskName") { throw "task still exists after off: $q" }
           Write-Host "OK: task deleted"
 
       - name: auto-start on (onlogon task)
