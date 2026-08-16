@@ -98,6 +98,17 @@ jobs:
           sleep 90
           docker ps --filter name=urfix --format "{{.Names}} {{.Status}}"
 
+      - name: Verify all 3 providers authenticated (fail if not)
+        run: |
+          for c in urfix-turbo urfix-auto urfix-lowmem; do
+            if ! docker exec "$c" test -s /root/.urnetwork/jwt 2>/dev/null; then
+              echo "FAIL: $c has no JWT — provider did not authenticate"
+              docker logs "$c" 2>&1 | tail -15
+              exit 1
+            fi
+          done
+          echo "OK: all 3 providers authenticated"
+
       - name: urnet-docker providers (should show 3)
         run: /tmp/urnet-docker providers
 

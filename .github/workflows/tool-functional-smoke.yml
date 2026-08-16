@@ -141,6 +141,19 @@ jobs:
           sleep 60
           docker ps --filter name=urnet-test --format "{{.Names}} {{.Status}}"
 
+      - name: Verify provider authenticated (fail if not)
+        run: |
+          # The job must not proceed on a false green: assert the container
+          # actually authenticated. The in-container JWT must exist and
+          # urnet-docker must resolve the container with a network.
+          if ! docker exec urnet-test test -s /root/.urnetwork/jwt 2>/dev/null; then
+            echo "FAIL: no JWT in container — provider did not authenticate"
+            docker logs urnet-test 2>&1 | tail -20
+            exit 1
+          fi
+          /tmp/urnet-docker providers
+          echo "OK: provider authenticated (JWT present)"
+
       - name: urnet-docker providers
         run: /tmp/urnet-docker providers
 
