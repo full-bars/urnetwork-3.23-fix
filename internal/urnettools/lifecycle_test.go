@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,30 +172,43 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 // degenerate basenames (. or /). Calls the PRODUCTION safeRemoveTarget guard
 // (coderabbit major: reimplemented tests cannot detect regressions).
 func TestCmdUninstallPathGuards(t *testing.T) {
-	// These must be REJECTED (guard returns false).
-	rejectedBins := []string{"/", "/./", ".", "", "relative/path"}
+	// These must be REJECTED (guard returns false). "/" and "/./" are
+	// Unix-root forms; on Windows the root is a drive path, so those are
+	// not roots there and the guard legitimately treats them differently.
+	// Windows-relevant rejects: drive roots, empty, relative.
+	rejectedBins := []string{".", "", "relative/path"}
+	if runtime.GOOS != "windows" {
+		rejectedBins = append(rejectedBins, "/", "/./")
+	} else {
+		rejectedBins = append(rejectedBins, `C:\`, `\\?\C:\`)
+	}
 	for _, bin := range rejectedBins {
 		if safeRemoveTarget(bin) {
 			t.Errorf("path %q should be rejected by guards but would pass", bin)
 		}
 	}
-	// These must PASS the guard (guard returns true).
-	acceptedBins := []string{
-		"/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
-		"/usr/local/bin/provider",
-		"/provider", // basename="provider", valid
+	// These must PASS the guard (guard returns true). Paths are
+	// platform-appropriate. Bare "provider" is relative and correctly
+	// rejected, so it is not in this list.
+	acceptedBins := []string{"/provider"}
+	if runtime.GOOS != "windows" {
+		acceptedBins = append(acceptedBins,
+			"/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
+			"/usr/local/bin/provider")
+	} else {
+		acceptedBins = append(acceptedBins, `C:\Program Files\urnetwork\provider.exe`)
 	}
 	for _, bin := range acceptedBins {
 		if !safeRemoveTarget(bin) {
 			t.Errorf("binary %q should pass guards but was rejected", bin)
 		}
 	}
-	// State dir guards: "/" and empty are rejected.
-	if safeRemoveTarget("/") {
-		t.Errorf("state dir '/' should be rejected")
-	}
+	// State dir guards: empty is rejected on all platforms; "/" only on Unix.
 	if safeRemoveTarget("") {
 		t.Errorf("state dir '' should be rejected")
+	}
+	if runtime.GOOS != "windows" && safeRemoveTarget("/") {
+		t.Errorf("state dir '/' should be rejected")
 	}
 	// Valid state dir passes.
 	if !safeRemoveTarget("/home/urnet/.urnetwork") {
