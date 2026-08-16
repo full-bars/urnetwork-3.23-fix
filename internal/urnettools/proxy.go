@@ -164,7 +164,11 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		}
 		opArgs = []string{"proxy", "add", "--proxy_file=" + file, "-f"}
 	case "clear":
-		opArgs = []string{"proxy", "clear"}
+		// The provider binary has no `proxy clear` subcommand (verified):
+		// its docopt only has add/remove/remove-dead/refresh/add-source/
+		// remove-source/exclude/summary. Map to remove --all, which clears
+		// unconditionally (Opus review MF1).
+		opArgs = []string{"proxy", "remove", "--all"}
 	case "remove":
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "refresh":

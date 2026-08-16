@@ -329,10 +329,11 @@ case "$operation" in
                 ;;
             clear)
                 # The provider has no `proxy clear`; map it to remove --all
-                # (non-interactive via --yes). Caught by CI: the previous
-                # passthrough printed the provider usage and failed.
+                # (remove --all clears unconditionally, no confirmation).
+                # No --yes here: it is not in the `remove [--all]` usage
+                # pattern and docopt rejects leftover args (verified).
                 [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
-                exec /usr/local/bin/provider proxy remove --all --yes
+                exec /usr/local/bin/provider proxy remove --all
                 ;;
             *)
                 echo "Unknown proxy command: $subcmd (Try 'summary', 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', or 'exclude')"

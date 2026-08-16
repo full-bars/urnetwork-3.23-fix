@@ -418,7 +418,7 @@ func cmdDockerProxy(args []string) error {
 // `docker cp`. The host file is passed as the source; the container path is
 // caller-chosen (the proxy add path uses a unique per-PID name).
 func dockerCopyInto(container, hostFile, destPath string) error {
-	cmd := exec.Command("docker", "cp", hostFile, container+":"+destPath)
+	cmd := exec.Command(dockerCLI(), "cp", hostFile, container+":"+destPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker cp: %w (%s)", err, strings.TrimSpace(string(out)))
