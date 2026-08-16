@@ -47,13 +47,26 @@ jobs:
           ./urnet-tools auto-update weekly || \
             echo "NOTE: systemd user timer may be unavailable on the runner; treat as informational"
 
-      - name: Verify the weekly timer exists
+      - name: Verify the weekly timer unit file exists (deterministic)
         run: |
-          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
-            echo "OK: user timer registered"
-            systemctl --user list-timers --all | grep "urnetwork"
+          # The tool writes a timer unit file; its EXISTENCE is
+          # deterministic and must be asserted (the runner systemd session
+          # may be partial, but the file is written regardless).
+          if [ -f "$HOME/.config/systemd/user/urnetwork-update.timer" ] || \
+             [ -f "$HOME/.config/systemd/user/urnetwork-native-update.timer" ]; then
+            echo "OK: timer unit file present"
+            ls -la "$HOME/.config/systemd/user/" | grep timer || true
           else
-            echo "WARN: no user timer visible (runner limitation); informational"
+            echo "FAIL: no timer unit file after auto-update weekly"
+            echo "--- user systemd dir ---"
+            ls -la "$HOME/.config/systemd/user/" 2>/dev/null | head -10 || echo "(dir missing)"
+            exit 1
+          fi
+          # Environment-dependent part stays informational.
+          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
+            echo "OK: user timer registered in the manager"
+          else
+            echo "WARN: timer not visible in the user manager (runner session limitation)"
           fi
 
       - name: auto-update off
@@ -61,11 +74,13 @@ jobs:
 
       - name: Verify no auto-update timer remains
         run: |
-          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
-            echo "WARN: timer still present after off"
-          else
-            echo "OK: no timer remains"
+          # Deterministic: the timer unit file must be gone after off.
+          if ls "$HOME/.config/systemd/user/"*update.timer 2>/dev/null | grep -q .; then
+            echo "FAIL: timer unit file still present after off"
+            ls -la "$HOME/.config/systemd/user/" | grep timer || true
+            exit 1
           fi
+          echo "OK: no timer unit file remains"
 
   macos-lifecycle:
     name: urnet-tools macOS lifecycle (launchd)
