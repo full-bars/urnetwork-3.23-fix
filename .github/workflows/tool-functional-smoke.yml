@@ -82,11 +82,11 @@ jobs:
           /tmp/urnet-tools proxy add /tmp/proxies.txt || echo "proxy add returned nonzero (may need provider warmup)"
 
       - name: proxy clear
-        run: /tmp/urnet-tools proxy clear || echo "proxy clear returned nonzero"
+        run: /tmp/urnet-tools proxy clear -f || echo "proxy clear returned nonzero"
 
       - name: hot-restart (verify client-id reuse across restart)
         run: |
-          /tmp/urnet-tools hot-restart || echo "hot-restart returned nonzero"
+          /tmp/urnet-tools hot-restart -f || echo "hot-restart returned nonzero"
           sleep 15
           /tmp/urnet-tools providers
 

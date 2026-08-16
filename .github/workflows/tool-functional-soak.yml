@@ -113,7 +113,7 @@ jobs:
       - name: Restart cycle 1 (client-ID reuse check)
         run: |
           echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
-          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
+          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
           sleep 30
           echo "client_id after: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
           /tmp/urnet-tools providers
@@ -131,7 +131,7 @@ jobs:
       - name: Restart cycle 2 (client-ID reuse check)
         run: |
           echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
-          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
+          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
           sleep 30
           echo "client_id after: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
           /tmp/urnet-tools providers
@@ -159,8 +159,8 @@ jobs:
 
       - name: proxy clear + final restart
         run: |
-          /tmp/urnet-tools proxy clear || echo "clear nonzero"
-          /tmp/urnet-tools hot-restart || echo "hot-restart nonzero"
+          /tmp/urnet-tools proxy clear -f || echo "clear nonzero"
+          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
           sleep 20
           /tmp/urnet-tools providers
 
