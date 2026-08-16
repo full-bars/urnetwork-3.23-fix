@@ -33,23 +33,64 @@ jobs:
           for i in $(seq 1 10); do echo "127.0.0.1:$((22000+i))"; done > /tmp/multi/lowmem.txt
           echo "proxy files ready: $(wc -l /tmp/multi/*.txt | tail -1)"
 
-      - name: Start 3 provider containers (turbo-v8 / auto / lowmem)
+      - name: Start 3 provider containers (turbo-v8 / auto / lowmem) via compose
+        # Matches the wiki's Multi-Container-Scaling pattern: BUILD=jwt,
+        # shared ur_config volume for the JWT, URNETWORK_AUTH_CODE on node 1
+        # only, URNETWORK_NODE_NAME per node. Adds URNETWORK_PROFILE per node
+        # for the mode test.
         run: |
-          for spec in "turbo:urnet-turbo:turbo-v8" "auto:urnet-auto:auto" "low:urnet-lowmem:lowmem"; do
-            name=$(echo $spec | cut -d: -f2)
-            profile=$(echo $spec | cut -d: -f3)
-            docker run -d --name "$name" \
-              --restart=unless-stopped \
-              --cap-add=NET_ADMIN --cap-add=NET_RAW \
-              --sysctl net.ipv4.ip_forward=1 \
-              -e BUILD=stable \
-              -e USER_AUTH="$GAUNTLET_USER" -e PASSWORD="$GAUNTLET_PW" \
-              -e URNETWORK_PROFILE="$profile" \
-              ghcr.io/full-bars/urnetwork-3.23-fix:latest
-          done
+          cat > /tmp/docker-compose.yml << 'EOF'
+          services:
+            urfix-turbo:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              container_name: urfix-turbo
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=jwt
+                - URNETWORK_AUTH_CODE=${{ secrets.GAUNTLET_PW }}
+                - URNETWORK_NODE_NAME=urfix-turbo
+                - URNETWORK_PROFILE=turbo-v8
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/turbo.txt:/app/proxy.txt
+            urfix-auto:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              container_name: urfix-auto
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=jwt
+                - URNETWORK_NODE_NAME=urfix-auto
+                - URNETWORK_PROFILE=auto
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/auto.txt:/app/proxy.txt
+            urfix-lowmem:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+              container_name: urfix-lowmem
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=jwt
+                - URNETWORK_NODE_NAME=urfix-lowmem
+                - URNETWORK_PROFILE=lowmem
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/lowmem.txt:/app/proxy.txt
+          volumes:
+            ur_config:
+          EOF
+          cd /tmp && docker compose -f docker-compose.yml up -d
           echo "containers started; waiting for auth..."
-          sleep 60
-          docker ps --filter name=urnet --format "{{.Names}} {{.Status}}"
+          sleep 90
+          docker ps --filter name=urfix --format "{{.Names}} {{.Status}}"
 
       - name: urnet-docker providers (should show 3)
         run: /tmp/urnet-docker providers
@@ -68,27 +109,27 @@ jobs:
 
       - name: Flag-targeted proxy add (each mode container)
         run: |
-          /tmp/urnet-docker proxy add --unit urnet-turbo /tmp/multi/turbo.txt || echo "turbo add nonzero"
-          /tmp/urnet-docker proxy add --unit urnet-auto /tmp/multi/auto.txt || echo "auto add nonzero"
-          /tmp/urnet-docker proxy add --unit urnet-lowmem /tmp/multi/lowmem.txt || echo "lowmem add nonzero"
+          /tmp/urnet-docker proxy add --unit urfix-turbo /tmp/multi/turbo.txt || echo "turbo add nonzero"
+          /tmp/urnet-docker proxy add --unit urfix-auto /tmp/multi/auto.txt || echo "auto add nonzero"
+          /tmp/urnet-docker proxy add --unit urfix-lowmem /tmp/multi/lowmem.txt || echo "lowmem add nonzero"
 
       - name: Verify per-container state (status on each)
         run: |
-          /tmp/urnet-docker status urnet-turbo | head -5 || echo "turbo status nonzero"
-          /tmp/urnet-docker status urnet-auto | head -5 || echo "auto status nonzero"
-          /tmp/urnet-docker status urnet-lowmem | head -5 || echo "lowmem status nonzero"
+          /tmp/urnet-docker status urfix-turbo | head -5 || echo "turbo status nonzero"
+          /tmp/urnet-docker status urfix-auto | head -5 || echo "auto status nonzero"
+          /tmp/urnet-docker status urfix-lowmem | head -5 || echo "lowmem status nonzero"
 
       - name: urnet-docker proxy clear (flag-targeted)
         run: |
-          /tmp/urnet-docker proxy clear --unit urnet-turbo || echo "turbo clear nonzero"
-          /tmp/urnet-docker proxy clear --unit urnet-lowmem || echo "lowmem clear nonzero"
+          /tmp/urnet-docker proxy clear --unit urfix-turbo || echo "turbo clear nonzero"
+          /tmp/urnet-docker proxy clear --unit urfix-lowmem || echo "lowmem clear nonzero"
 
       - name: Multi-container logs via flag target
         run: |
-          /tmp/urnet-docker logs urnet-auto 3 || echo "auto logs nonzero"
+          /tmp/urnet-docker logs urfix-auto 3 || echo "auto logs nonzero"
 
       - name: Teardown — remove all containers
         run: |
-          docker rm -f urnet-turbo urnet-auto urnet-lowmem 2>/dev/null || true
+          docker rm -f urfix-turbo urfix-auto urfix-lowmem 2>/dev/null || true
           echo "containers removed"
         if: always()
