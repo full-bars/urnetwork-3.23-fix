@@ -1,9 +1,9 @@
 package urnettools
 
 import (
-	"os/exec"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -336,7 +336,6 @@ func cmdDockerLogs(args []string) error {
 	return containerLogsFollow(p.Unit, n)
 }
 
-
 // cmdDockerProxy implements host-side proxy management for containerized
 // providers (Design 2). The user runs e.g. `urnet-docker proxy add ~/p.txt`
 // and the exec plumbing is hidden: target resolution (interactive when
@@ -425,4 +424,3 @@ func dockerCopyInto(container, hostFile, destPath string) error {
 	}
 	return nil
 }
-

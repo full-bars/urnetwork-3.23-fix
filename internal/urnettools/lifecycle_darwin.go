@@ -176,4 +176,3 @@ func cleanupLifecycle(p Provider) {
 	_ = launchctlBootout(filepath.Join(dir, "com.urnetwork.provider.plist"))
 	_ = launchctlBootout(filepath.Join(dir, "com.urnetwork.update.plist"))
 }
-

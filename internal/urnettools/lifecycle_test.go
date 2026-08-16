@@ -2,8 +2,8 @@ package urnettools
 
 import (
 	"os"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )

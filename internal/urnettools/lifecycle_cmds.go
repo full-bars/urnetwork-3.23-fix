@@ -2,10 +2,10 @@ package urnettools
 
 import (
 	"fmt"
-	"runtime"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -81,7 +81,6 @@ func autoUpdateLabel(p Provider) string {
 	}
 	return "urnetwork-update"
 }
-
 
 // cmdUninstall removes the provider: stops/disables the unit, removes the
 // install dir and state. Destructive gate applies.
