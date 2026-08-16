@@ -166,7 +166,7 @@ func safeRemoveTarget(path string) bool {
 		// Windows roots are drive paths (C:\, \\server\share). Reject
 		// volume roots and UNC roots; accept any deeper absolute path.
 		vol := filepath.VolumeName(cleaned)
-		if vol != "" && len(cleaned) == len(vol)+1 { // "C:\" exactly
+		if vol != "" && (len(cleaned) == len(vol)+1 || cleaned == vol) { // "C:\" or "\\server\share"
 			return false
 		}
 		if cleaned == `\\` || cleaned == `//` {

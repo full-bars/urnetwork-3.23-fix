@@ -150,9 +150,11 @@ jobs:
         run: |
           echo "client_id before: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
           rm -f "$HOME/.urnetwork/jwt"
-          HOME="$HOME/.urnetwork" /tmp/provider auth \
+          rm -rf /tmp/remint && mkdir -p /tmp/remint
+          HOME=/tmp/remint /tmp/provider auth \
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
             --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          cp /tmp/remint/.urnetwork/jwt "$HOME/.urnetwork/jwt" 2>/dev/null || true
           sleep 10
           echo "client_id after remint: $(grep -o 'client_id[^,]*' "$HOME/.urnetwork/jwt" 2>/dev/null | head -c 40)"
           /tmp/urnet-tools providers
