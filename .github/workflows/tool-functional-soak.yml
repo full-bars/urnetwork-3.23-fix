@@ -1,9 +1,9 @@
 name: tool-functional-soak
 
 on:
+  # Manual-only: a 3h test should not auto-fire on every push (a push +
+  # manual trigger doubles it). Dispatch deliberately when a soak is wanted.
   workflow_dispatch:
-  push:
-    branches: [main, "fix/*"]
 
 jobs:
   functional-soak:
