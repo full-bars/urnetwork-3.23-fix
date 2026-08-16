@@ -21,7 +21,6 @@ const (
 	smtpMaxNegotiationBytes       = 2048
 	smtpMaxCommandLineBytes       = 510 // RFC 5321's 512 includes CRLF.
 	smtpMaxFlowCount              = 1024
-	smtpFlowEvictionSampleSize    = 32
 )
 
 type smtpEgressVerdict uint8
@@ -214,20 +213,21 @@ func (self *smtpEgressGuard) newFlowWithLock(key smtpFlowKey, destinationPort in
 }
 
 // evictFlowWithLock removes one flow to make room for a new one. It prefers
-// any non-secure flow (rejected or still negotiating) over an established
-// secure flow. Evicting an established secure flow resets a validated TLS
-// session: the recreated state would re-inspect opaque TLS data as a fresh
-// negotiation and reject it, so the provider would reset a valid session.
-// Rejected flows are safe to evict (a retry is re-inspected) and negotiating
-// flows re-parse their bounded prefix. The non-secure pass scans the whole
-// table so the choice is deterministic; a table made entirely of secure flows
-// falls back to the oldest sampled entry so the bound holds.
+// expendable entries: rejected flows (secure or not) and still-negotiating
+// flows. It preserves an established, non-rejected secure flow unless every
+// entry in the table is one; losing its marker would make the next opaque TLS
+// record look like a fresh plaintext negotiation, and the provider would
+// reset a valid session. Rejected flows are safe to evict (a retry is
+// re-inspected) and negotiating flows re-parse their bounded prefix. Both
+// passes are full scans so the choice is deterministic. Aligned with the
+// upstream fix for the same defect, with the unreachable-no-candidate guard
+// kept.
 func (self *smtpEgressGuard) evictFlowWithLock() bool {
 	var oldestKey smtpFlowKey
 	var oldestUse uint64
 	found := false
 	for candidateKey, candidate := range self.flows {
-		if candidate.secure {
+		if candidate.secure && !candidate.rejected {
 			continue
 		}
 		if !found || candidate.lastUsed < oldestUse {
@@ -236,20 +236,13 @@ func (self *smtpEgressGuard) evictFlowWithLock() bool {
 			found = true
 		}
 	}
-	if found {
-		delete(self.flows, oldestKey)
-		return true
-	}
-	sampled := 0
-	for candidateKey, candidate := range self.flows {
-		if !found || candidate.lastUsed < oldestUse {
-			oldestKey = candidateKey
-			oldestUse = candidate.lastUsed
-			found = true
-		}
-		sampled += 1
-		if smtpFlowEvictionSampleSize <= sampled {
-			break
+	if !found {
+		for candidateKey, candidate := range self.flows {
+			if !found || candidate.lastUsed < oldestUse {
+				oldestKey = candidateKey
+				oldestUse = candidate.lastUsed
+				found = true
+			}
 		}
 	}
 	if found {

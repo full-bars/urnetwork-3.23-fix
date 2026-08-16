@@ -3215,13 +3215,21 @@ func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
 			if !frame.Raw {
 				defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
 			}
-			self.client.SendWithTimeout(
+			// The send path takes ownership of the frame only on acceptance.
+			// A refused send leaves ownership with us: the frame's bytes are
+			// the read-only share on the Raw path and the marshaled copy on
+			// the non-Raw path, and both must be released here. Without this,
+			// every reset toward a departing or congested peer permanently
+			// shrinks the message pool.
+			if !self.client.SendWithTimeout(
 				frame,
 				resetSource.Reverse(),
 				func(err error) {},
 				self.settings.WriteTimeout,
 				CompanionContract(),
-			)
+			) {
+				MessagePoolReturn(frame.MessageBytes)
+			}
 		},
 		source,
 		provideMode,
