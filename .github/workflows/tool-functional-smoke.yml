@@ -136,7 +136,7 @@ jobs:
             -e USER_AUTH="$GAUNTLET_USER" \
             -e PASSWORD="$GAUNTLET_PW" \
             -v /tmp/docker-test/proxy.txt:/app/proxy.txt \
-            ghcr.io/full-bars/urnetwork-3.23-fix:latest
+            ghcr.io/full-bars/urnetwork-3.23-fix:main
           echo "container started; waiting for auth..."
           sleep 60
           docker ps --filter name=urnet-test --format "{{.Names}} {{.Status}}"
