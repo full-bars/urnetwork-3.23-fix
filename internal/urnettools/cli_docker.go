@@ -365,18 +365,27 @@ func cmdDockerProxy(args []string) error {
 
 	switch sub {
 	case "add":
-		if len(rest2) == 0 {
-			return fmt.Errorf("proxy add requires a proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
+		// Exactly one positional: the host proxy file. A leading flag (e.g.
+		// --force) would be misread as a filename, so reject anything that is
+		// not a single non-flag argument (DeepSeek MF2 + SF3).
+		if len(rest2) != 1 || strings.HasPrefix(rest2[0], "-") {
+			return fmt.Errorf("proxy add requires exactly one proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
 		}
 		hostFile := rest2[0]
-		// Copy the host file into the container at a fixed path, then add.
-		inPath := "/tmp/urnet-proxies.txt"
+		// Unique in-container path so concurrent proxy ops cannot collide
+		// (DeepSeek SF4). Cleaned up by the add itself (in-container tool
+		// reads then the path is reused; a fresh name per invocation avoids
+		// cross-op races).
+		inPath := fmt.Sprintf("/tmp/urnet-proxies-%d.txt", os.Getpid())
 		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
 			return fmt.Errorf("copy %s into container: %w", hostFile, err)
 		}
 		return containerExecByName(container, "urnet-tools", "proxy", "add", inPath)
 	case "clear":
-		return containerExecByName(container, "urnet-tools", "proxy", "clear")
+		// Forward remaining args (e.g. --force) so clear is scriptable from
+		// CI/cron on a non-TTY (DeepSeek MF1).
+		inner := append([]string{"urnet-tools", "proxy", "clear"}, rest2...)
+		return containerExecByName(container, inner...)
 	case "remove":
 		// Forward remaining args (e.g. --all, or specific proxies).
 		inner := append([]string{"urnet-tools", "proxy", "remove"}, rest2...)

@@ -51,8 +51,8 @@ jobs:
                 net.ipv4.ip_forward: 1
               environment:
                 - BUILD=stable
-                - USER_AUTH=*** secrets.GAUNTLET_USER }}
-                - PASSWORD=*** secrets.GAUNTLET_PW }}
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
                 - URNETWORK_NODE_NAME=urfix-turbo
                 - URNETWORK_PROFILE=turbo-v8
               volumes:
@@ -67,8 +67,8 @@ jobs:
                 net.ipv4.ip_forward: 1
               environment:
                 - BUILD=stable
-                - USER_AUTH=*** secrets.GAUNTLET_USER }}
-                - PASSWORD=*** secrets.GAUNTLET_PW }}
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
                 - URNETWORK_NODE_NAME=urfix-auto
                 - URNETWORK_PROFILE=auto
               volumes:
@@ -83,8 +83,8 @@ jobs:
                 net.ipv4.ip_forward: 1
               environment:
                 - BUILD=stable
-                - USER_AUTH=*** secrets.GAUNTLET_USER }}
-                - PASSWORD=*** secrets.GAUNTLET_PW }}
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
                 - URNETWORK_NODE_NAME=urfix-lowmem
                 - URNETWORK_PROFILE=lowmem
               volumes:
@@ -115,24 +115,24 @@ jobs:
 
       - name: Flag-targeted proxy add (each mode container)
         run: |
-          /tmp/urnet-docker proxy add --unit urfix-turbo /tmp/multi/turbo.txt || echo "turbo add nonzero"
-          /tmp/urnet-docker proxy add --unit urfix-auto /tmp/multi/auto.txt || echo "auto add nonzero"
-          /tmp/urnet-docker proxy add --unit urfix-lowmem /tmp/multi/lowmem.txt || echo "lowmem add nonzero"
+          /tmp/urnet-docker proxy add --unit urfix-turbo /tmp/multi/turbo.txt 
+          /tmp/urnet-docker proxy add --unit urfix-auto /tmp/multi/auto.txt 
+          /tmp/urnet-docker proxy add --unit urfix-lowmem /tmp/multi/lowmem.txt 
 
       - name: Verify per-container state (status on each)
         run: |
-          /tmp/urnet-docker status urfix-turbo | head -5 || echo "turbo status nonzero"
-          /tmp/urnet-docker status urfix-auto | head -5 || echo "auto status nonzero"
-          /tmp/urnet-docker status urfix-lowmem | head -5 || echo "lowmem status nonzero"
+          /tmp/urnet-docker status urfix-turbo | head -5 
+          /tmp/urnet-docker status urfix-auto | head -5 
+          /tmp/urnet-docker status urfix-lowmem | head -5 
 
       - name: urnet-docker proxy clear (flag-targeted)
         run: |
-          /tmp/urnet-docker proxy clear --unit urfix-turbo || echo "turbo clear nonzero"
-          /tmp/urnet-docker proxy clear --unit urfix-lowmem || echo "lowmem clear nonzero"
+          /tmp/urnet-docker proxy clear --unit urfix-turbo 
+          /tmp/urnet-docker proxy clear --unit urfix-lowmem 
 
       - name: Multi-container logs via flag target
         run: |
-          /tmp/urnet-docker logs urfix-auto 3 || echo "auto logs nonzero"
+          /tmp/urnet-docker logs urfix-auto 3 
 
       - name: Teardown — remove all containers
         run: |
