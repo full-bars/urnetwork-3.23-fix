@@ -323,9 +323,16 @@ case "$operation" in
         case "$subcmd" in
             health)  [ -x /usr/local/bin/proxy-health ] && exec /usr/local/bin/proxy-health || { echo "proxy-health not found"; exit 1; } ;;
             traffic) [ -x /usr/local/bin/proxy-traffic ] && exec /usr/local/bin/proxy-traffic || { echo "proxy-traffic not found"; exit 1; } ;;
-            add|clear|refresh|remove-dead|remove|exclude|summary)
+            add|refresh|remove-dead|remove|exclude|summary)
                 [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
                 exec /usr/local/bin/provider proxy "$subcmd" "$@"
+                ;;
+            clear)
+                # The provider has no `proxy clear`; map it to remove --all
+                # (non-interactive via --yes). Caught by CI: the previous
+                # passthrough printed the provider usage and failed.
+                [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
+                exec /usr/local/bin/provider proxy remove --all --yes
                 ;;
             *)
                 echo "Unknown proxy command: $subcmd (Try 'summary', 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', or 'exclude')"
