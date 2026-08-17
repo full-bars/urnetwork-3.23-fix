@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 // discoverProcesses scans /proc for running provider processes across ALL
@@ -47,9 +49,28 @@ func discoverProcesses() []Provider {
 		if user == "" {
 			user = env["LOGNAME"]
 		}
+		stateDir := stateDirFor(env)
+		if user == "" || stateDir == "" {
+			// environ is unreadable for another user's process (no
+			// permission without root/CAP_SYS_PTRACE) — the common case
+			// on a multi-provider box run by a non-root operator. Fall
+			// back to the /proc/<pid> directory's own ownership, which is
+			// always stat-able cross-user (how `ps`/`top` work without
+			// root), so a provider under a different account is still
+			// identified instead of showing up as an untargetable blank
+			// row (--user/--state-dir would have nothing to match).
+			if ownerUser, ownerHome := processOwner(pid); ownerUser != "" {
+				if user == "" {
+					user = ownerUser
+				}
+				if stateDir == "" && ownerHome != "" {
+					stateDir = filepath.Join(ownerHome, ".urnetwork")
+				}
+			}
+		}
 		p := Provider{
 			User:     user,
-			StateDir: stateDirFor(env),
+			StateDir: stateDir,
 			Binary:   exe,
 			PID:      pid,
 			Running:  true,
@@ -71,6 +92,45 @@ func discoverProcesses() []Provider {
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
 		p.Version = providerVersion(p.Binary)
 		out = append(out, p)
+	}
+	return out
+}
+
+// processOwner resolves the OS username and home directory that own pid via
+// the /proc/<pid> directory's file ownership, not its environ. Reading
+// another user's /proc/<pid>/environ requires root or CAP_SYS_PTRACE and
+// fails for an unprivileged caller; stat on /proc/<pid> itself has no such
+// restriction (it's how ps/top enumerate other users' processes), so this
+// still identifies the process owner when environ is unreadable.
+func processOwner(pid int) (username, home string) {
+	fi, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+	if err != nil {
+		return "", ""
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", ""
+	}
+	u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+	if err != nil {
+		return "", ""
+	}
+	return u.Username, u.HomeDir
+}
+
+// narrowToAccessible filters providers to those the current OS user can act
+// on without root: cross-user systemd/journalctl queries need root or a
+// machined session an unprivileged operator typically doesn't have. Used to
+// auto-pick the sole reachable provider for read-only commands (logs)
+// instead of refusing with "N providers found" when the other N-1 are
+// running under different accounts the caller can't select anyway.
+func narrowToAccessible(providers []Provider) []Provider {
+	current := currentUserName()
+	var out []Provider
+	for _, p := range providers {
+		if p.User == "" || p.User == current {
+			out = append(out, p)
+		}
 	}
 	return out
 }

@@ -118,3 +118,10 @@ func currentUser() string {
 func discoverStopped(running []Provider) []Provider {
 	return nil
 }
+
+// narrowToAccessible is a no-op on Windows: there's no systemd -M cross-user
+// enumeration gap the way Linux has (see discover_unix.go), so the ghost-
+// provider permission case doesn't apply here.
+func narrowToAccessible(providers []Provider) []Provider {
+	return providers
+}

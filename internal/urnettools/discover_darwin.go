@@ -101,3 +101,10 @@ func macStateDir() string {
 func discoverStopped(running []Provider) []Provider {
 	return nil
 }
+
+// narrowToAccessible is a no-op on macOS: launchd has no cross-user
+// enumeration gap the way systemd's -M does, so the Linux ghost-provider
+// permission case (see discover_unix.go) doesn't apply here.
+func narrowToAccessible(providers []Provider) []Provider {
+	return providers
+}
