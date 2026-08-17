@@ -178,13 +178,27 @@ func TestBasicClientPort25RoutesLocallyBeforePolicy(t *testing.T) {
 	) {
 	})
 
+	// With bypass OFF (the default), port-25 outbound is DROPPED so a
+	// tunneled user is never sending mail from their unprotected IP.
 	packet := smtpTestTcp4PacketToPort(smtpLocalPort, byte(tcpFlagSyn), 48006, 0, nil)
-	if !remote.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
-		t.Fatal("basic client did not accept TCP/25 on the explicit local route")
+	if remote.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+		t.Fatal("basic client routed TCP/25 locally without LocalSecurityBypass")
 	}
 	MessagePoolReturn(packet)
 	if calls := policy.calls.Load(); calls != 0 {
 		t.Fatalf("basic client TCP/25 reached policy %d times, want 0", calls)
+	}
+
+	// With bypass ON, port-25 routes locally (real NIC) and never reaches
+	// the general policy.
+	remote.SetLocalSecurityBypass(true)
+	packet2 := smtpTestTcp4PacketToPort(smtpLocalPort, byte(tcpFlagSyn), 48007, 0, nil)
+	if !remote.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet2, 0) {
+		t.Fatal("basic client did not accept TCP/25 on the explicit local route with bypass")
+	}
+	MessagePoolReturn(packet2)
+	if calls := policy.calls.Load(); calls != 0 {
+		t.Fatalf("basic client TCP/25 with bypass reached policy %d times, want 0", calls)
 	}
 }
 
@@ -458,13 +472,25 @@ func TestMultiClientPort25RoutesLocallyBeforePolicy(t *testing.T) {
 	})
 	defer multi.Close()
 
+	// With bypass OFF, port-25 outbound is DROPPED (privacy-safe).
 	packet := smtpTestTcp4PacketToPort(smtpLocalPort, byte(tcpFlagSyn), 48003, 0, nil)
-	if !multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
-		t.Fatal("multi client did not accept TCP/25 on the explicit local route")
+	if multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+		t.Fatal("multi client routed TCP/25 locally without LocalSecurityBypass")
 	}
 	MessagePoolReturn(packet)
 	if calls := policy.calls.Load(); calls != 0 {
 		t.Fatalf("multi client TCP/25 reached policy %d times, want 0", calls)
+	}
+
+	// With bypass ON, port-25 routes locally and never reaches the policy.
+	multi.SetLocalSecurityBypass(true)
+	packet2 := smtpTestTcp4PacketToPort(smtpLocalPort, byte(tcpFlagSyn), 48004, 0, nil)
+	if !multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet2, 0) {
+		t.Fatal("multi client did not accept TCP/25 with bypass")
+	}
+	MessagePoolReturn(packet2)
+	if calls := policy.calls.Load(); calls != 0 {
+		t.Fatalf("multi client TCP/25 with bypass reached policy %d times, want 0", calls)
 	}
 }
 
