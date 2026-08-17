@@ -157,9 +157,12 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return errWithDockerHint(err, len(providers))
+	}
+	if narrowed {
+		printNarrowedNote(len(providers), p, "logs")
 	}
 	if providerUsesRamlogs(p) {
 		// Stream from the RAM buffer on the box.

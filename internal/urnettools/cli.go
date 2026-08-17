@@ -264,9 +264,12 @@ func cmdSimpleDelegation(sub string, args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
+	}
+	if narrowed {
+		printNarrowedNote(len(providers), p, sub)
 	}
 	// The provider nests summary under the proxy branch: `provider proxy
 	// summary`, not `provider summary` (gauntlet finding BUG-5). Build the
@@ -568,9 +571,12 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
+	}
+	if narrowed {
+		printNarrowedNote(len(providers), p, "status")
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "user:\t%s\n", p.User)

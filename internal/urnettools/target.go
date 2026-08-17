@@ -92,6 +92,9 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		for _, p := range providers {
 			fmt.Fprintf(&b, "  %s  user=%s net=%s state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
 		}
+		if hint := rootHint(); hint != "" {
+			fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
+		}
 		return Provider{}, fmt.Errorf("%s", b.String())
 	}
 }

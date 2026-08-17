@@ -1,6 +1,11 @@
 package urnettools
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // threeProviders is the canonical multi-provider fixture: taco's native,
 // our beta, and our alpha — the exact shape of a busy taco box.
@@ -187,6 +192,28 @@ func TestSelectTargetsIncludeSameNetworkKeepsBoth(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("want both providers, got %d (dedup bug if 1)", len(got))
+	}
+}
+
+// TestRootHintUsesResolvedExecutablePath: the hint must be an actually
+// runnable command, not the bare "urnet-tools" name — plain `sudo
+// urnet-tools` fails for operators because the binary installs to a
+// per-user path that's never on root's $PATH (the exact complaint this
+// hint exists to answer).
+func TestRootHintUsesResolvedExecutablePath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("hint is empty for root — nothing to check")
+	}
+	hint := rootHint()
+	if hint == "" {
+		t.Fatal("expected a non-empty root hint when unprivileged")
+	}
+	if !strings.HasPrefix(hint, "sudo ") {
+		t.Fatalf("hint = %q, want a \"sudo \" prefix", hint)
+	}
+	path := strings.TrimPrefix(hint, "sudo ")
+	if !filepath.IsAbs(path) {
+		t.Errorf("hint path %q is not absolute — bare command name would fail under sudo same as it did for the user", path)
 	}
 }
 
