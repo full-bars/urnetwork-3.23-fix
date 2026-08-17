@@ -1193,10 +1193,15 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		self.log.Infof("[multi]send bad packet = %s\n", err)
 		return false
 	}
-	// Port 25 is a deliberate local-only route and must be selected before
-	// CFAA inspection (which classifies privileged SMTP as a drop). Ports
-	// 465/587 remain provider-routed only while their SMTP/TLS stream validates.
+	// Port 25 is a deliberate local-only route selected before CFAA inspection
+	// (which classifies privileged SMTP as a drop). Gated on LocalSecurityBypass:
+	// with bypass off, port-25 outbound is dropped so a tunneled user is never
+	// sending mail from their unprotected IP. Ports 465/587 remain provider-
+	// routed only while their SMTP/TLS stream validates.
 	if smtpRoutesLocally(ipPath) {
+		if !self.LocalSecurityBypass() {
+			return false
+		}
 		if self.localUserNat == nil {
 			return false
 		}
