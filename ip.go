@@ -2978,9 +2978,14 @@ type RemoteUserNatProviderSettings struct {
 }
 
 type RemoteUserNatProvider struct {
-	client            *Client
-	localUserNat      *LocalUserNat
-	securityPolicy    SecurityPolicy
+	client         *Client
+	localUserNat   *LocalUserNat
+	securityPolicy SecurityPolicy
+	// Defense in depth at the exit. Client and provider policies are
+	// intentionally independent, and multiple tunnel clients can share an IP
+	// tuple, so this ingress guard namespaces its state by the authenticated
+	// source (the smtpEgressGuard type serves both directions).
+	smtpIngressGuard  smtpEgressGuard
 	settings          *RemoteUserNatProviderSettings
 	bw                *ProxyBandwidth
 	localUserNatUnsub func()
@@ -3110,6 +3115,25 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 
 			ipPath, payload, err := ParseIpPathWithPayload(ipPacketToProvider.IpPacket.PacketBytes)
 			if err == nil {
+				// The provider independently enforces the same SMTP encryption
+				// boundary as the client. This must precede the reversed general
+				// policy: TCP/587 legitimately starts with a small plaintext
+				// EHLO/STARTTLS exchange, while transaction/authentication
+				// commands are forbidden until a TLS ClientHello has been observed.
+				smtpVerdict := self.smtpIngressGuard.inspectForOwner(
+					source.SourceId,
+					ipPath,
+					payload,
+				)
+				if smtpVerdict == smtpEgressReject {
+					// First reject: send the reset once.
+					self.deliverSmtpPolicyReset(source, peer.ProvideMode, ipPath, ipPacketToProvider.IpPacket.PacketBytes)
+					continue
+				}
+				if smtpVerdict == smtpEgressRejectLatched {
+					// Already rejected and reset: drop silently (no amplification).
+					continue
+				}
 				r, err := self.securityPolicy.Inspect(peer.ProvideMode, ipPath, payload)
 				if err == nil {
 					switch r {
@@ -3157,11 +3181,75 @@ func (self *RemoteUserNatProvider) Close() {
 	self.localUserNatUnsub()
 }
 
+// deliverSmtpPolicyReset sends the synthesized reset for a rejected SMTP
+// segment back to the tunnel client over the provider's ordinary return
+// path, mirroring the Receive wiring (companion contract, write timeout).
+func (self *RemoteUserNatProvider) deliverSmtpPolicyReset(
+	source TransferPath,
+	provideMode protocol.ProvideMode,
+	ipPath *IpPath,
+	packet []byte,
+) {
+	deliverTcpPolicyReset(
+		func(
+			resetSource TransferPath,
+			resetProvideMode protocol.ProvideMode,
+			resetPath *IpPath,
+			reset []byte,
+		) {
+			ipPacketFromProvider := &protocol.IpPacketFromProvider{
+				IpPacket: &protocol.IpPacket{
+					PacketBytes: MessagePoolShareReadOnly(reset),
+				},
+			}
+			frame, err := ToFrame(ipPacketFromProvider, self.settings.ProtocolVersion)
+			if err != nil {
+				// Release the read-only share before panicking. The panic is
+				// recovered by deliverTcpPolicyReset's HandleError, so the
+				// provider keeps running and the refcount must balance.
+				MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
+				panic(err)
+			}
+			// The frame either adopted the read-only share (Raw) or copied the
+			// bytes; a copied frame must release the share here, exactly like
+			// the production Receive return path. deliverTcpPolicyReset returns
+			// the original after this callback, so the refcount balances only
+			// when the share is released on the copied path. On a ToFrame
+			// error the share is released before the panic, which
+			// deliverTcpPolicyReset's HandleError recovers, so the provider
+			// keeps running with the refcount balanced.
+			if !frame.Raw {
+				defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
+			}
+			// The send path takes ownership of the frame only on acceptance.
+			// A refused send leaves ownership with us: the frame's bytes are
+			// the read-only share on the Raw path and the marshaled copy on
+			// the non-Raw path, and both must be released here. Without this,
+			// every reset toward a departing or congested peer permanently
+			// shrinks the message pool.
+			if !self.client.SendWithTimeout(
+				frame,
+				resetSource.Reverse(),
+				func(err error) {},
+				self.settings.WriteTimeout,
+				CompanionContract(),
+			) {
+				MessagePoolReturn(frame.MessageBytes)
+			}
+		},
+		source,
+		provideMode,
+		ipPath,
+		packet,
+	)
+}
+
 // this is a basic implementation. See `RemoteUserNatWindowedClient` for a more robust implementation
 type RemoteUserNatClient struct {
 	client                *Client
 	receivePacketCallback ReceivePacketFunction
 	securityPolicy        SecurityPolicy
+	smtpEgressGuard       smtpEgressGuard
 	pathTable             *pathTable
 	// the provide mode of the source packets
 	// for locally generated packets this is `ProvideMode_Network`
@@ -3236,6 +3324,28 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 
 	ipPath, payload, err := ParseIpPathWithPayload(packet)
 	if err != nil {
+		return false
+	}
+	// TCP/25 is a deliberate kill-switch exception: it is routed directly
+	// before CFAA inspection so an SMTP relay attempt can never reach a
+	// provider. Ports 465/587 stay remote, but only after their per-flow SMTP
+	// state has accepted this segment.
+	if smtpRoutesLocally(ipPath) {
+		// Mirror the ip_remote_multi_client.go guard: a nil localUserNat
+		// (minimal relay / headless config, direct RemoteUserNatClient
+		// construction) must drop the packet, not panic (gemini 3.7).
+		if self.localUserNat == nil {
+			return false
+		}
+		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
+	}
+	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
+		// smtpEgressReject: send the reset once. smtpEgressRejectLatched:
+		// already reset, drop silently (no amplification for a client that
+		// ignores the RST and keeps transmitting).
+		if smtpVerdict == smtpEgressReject {
+			deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
+		}
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath, payload)
