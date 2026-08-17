@@ -3326,16 +3326,11 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 	if err != nil {
 		return false
 	}
-	// TCP/25 is a deliberate local-only route selected before CFAA inspection,
-	// so an SMTP relay attempt can never reach a provider. It is gated on
-	// LocalSecurityBypass: with bypass off (the default) port-25 outbound is
-	// dropped rather than exiting on the real NIC, so a user connected to the
-	// tunnel is never silently sending mail from their unprotected IP. Ports
-	// 465/587 stay remote, but only after their per-flow SMTP state accepts.
+	// TCP/25 is a deliberate kill-switch exception: it is routed directly
+	// before CFAA inspection so an SMTP relay attempt can never reach a
+	// provider. Ports 465/587 stay remote, but only after their per-flow SMTP
+	// state has accepted this segment.
 	if smtpRoutesLocally(ipPath) {
-		if !self.LocalSecurityBypass() {
-			return false
-		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
 	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
