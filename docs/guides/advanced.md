@@ -286,6 +286,7 @@ ssh user@<node-ip> "urnet-tools proxy summary"
 |---------|--------|
 | 30.0 | Cross-platform parity (Windows schtasks, macOS launchd), urnet-docker Design 2 host-side proxy ops. |
 | 29.0 | Go urnet-tools provider discovery, report URL runtime config, hot-restart subcommands. |
+| 28.0 | Standalone `urnet-docker` CLI for host-side Docker container discovery and delegation. |
 | 27.0 | Initial Go rewrite of urnet-tools suite with targeting refusal safety model. |
 | 26.4 | GOMEMLIMIT added for turbo profiles. Degraded-proxy reaper runs automatically. No config change needed. |
 | 26.3 | `URNETWORK_SKIP_AUDIT` env var to skip startup system audit. Hub PAKE auth, choose_network, auto Tier 4 for 8 GiB+ RAM. |
