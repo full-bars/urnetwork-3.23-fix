@@ -647,9 +647,19 @@ jobs:
 
           if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$LATEST_SHA" ]; then
             COMPARE=$(gh api repos/$UPSTREAM_REPO/compare/$PREV_TAG...$LATEST_TAG 2>/dev/null || echo "")
-            COMMIT_COUNT=$(echo "$COMPARE" | jq -r '.total_commits // "?"')
+            # Guard the jq calls: if the compare returned nothing (the tags
+            # can be out of order across repos, or the range is empty), the
+            # monitor must log and degrade gracefully, NOT crash the job
+            # (observed: jq "Cannot iterate over null" killed the workflow
+            # when previous-tag > latest-tag). This is an informational
+            # monitor; a failed compare is a skip, not a failure.
+            if ! echo "$COMPARE" | jq -e '.files' >/dev/null 2>&1; then
+              echo "compare $PREV_TAG...$LATEST_TAG returned no file list (tags out of order or empty range); skipping diff details"
+              COMPARE=""
+            fi
+            COMMIT_COUNT=$(echo "$COMPARE" | jq -r '.total_commits // "?"' 2>/dev/null || echo "?")
 
-            MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty')
+            MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty' 2>/dev/null || true)
             while IFS= read -r filename; do
               [ -z "$filename" ] && continue
               ALL_FILES="$ALL_FILES \`$filename\`"

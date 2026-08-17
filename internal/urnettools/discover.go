@@ -16,27 +16,30 @@ var knownBinaries = map[string]bool{
 	"provider":      true,
 }
 
-// providerCandidateHomes returns home directories of users that show
+// providerCandidateUsers returns the usernames of users that show
 // evidence of a provider install: a provider-looking unit under
 // ~/.config/systemd/user or a ~/.urnetwork state dir. Best-effort.
-func providerCandidateHomes() ([]string, error) {
+// Usernames are returned (not home paths) because discoverUserUnits uses
+// them as `systemctl --user -M <user>@` selectors.
+func providerCandidateUsers() ([]string, error) {
 	b, err := exec.Command("getent", "passwd").Output()
 	if err != nil {
 		return nil, err
 	}
-	var homes []string
+	var users []string
 	for _, line := range strings.Split(string(b), "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) < 6 || fields[5] == "" {
 			continue
 		}
+		user := fields[0]
 		home := fields[5]
 		// User-level unit dir with a provider unit, or a state dir.
 		found := false
 		for known := range knownBinaries {
 			unitGlob := filepath.Join(home, ".config/systemd/user", known+"*.service")
 			if matches, _ := filepath.Glob(unitGlob); len(matches) > 0 {
-				homes = append(homes, home)
+				users = append(users, user)
 				found = true
 				break
 			}
@@ -45,10 +48,10 @@ func providerCandidateHomes() ([]string, error) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(home, ".urnetwork")); err == nil {
-			homes = append(homes, home)
+			users = append(users, user)
 		}
 	}
-	return homes, nil
+	return users, nil
 }
 
 // isProviderUnit reports whether a systemd unit name looks like a provider
@@ -91,6 +94,11 @@ func providerFromUnit(unit, user string) Provider {
 // output.
 func Discover() []Provider {
 	all := discoverProcesses()
+	// Platform hook for stopped-unit / lifecycle-based discovery. On Linux
+	// this attaches systemd unit names to running providers and adds
+	// stopped provider units; on macOS/Windows it is a no-op (those
+	// platforms have no systemd units to enumerate).
+	all = append(all, discoverStopped(all)...)
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].User != all[j].User {
 			return all[i].User < all[j].User

@@ -10,6 +10,18 @@ import (
 	"strings"
 )
 
+// systemctlUserArgs returns the systemctl argv prefix for a user-level unit,
+// using the local session bus when the target user IS the current user and
+// -M <user>@ (machined) otherwise. Mirrors discoverUserUnits: the -M form
+// can fail on CI runners (no cross-user session bus) even when the local
+// user manager works, so same-user invocations must not go through machined.
+func systemctlUserArgs(user string) []string {
+	if user == currentUserName() {
+		return []string{"--user"}
+	}
+	return []string{"--user", "-M", user + "@"}
+}
+
 // setAutoStart enables or disables login auto-start for the provider's
 // owning systemd unit. On Linux/macOS the provider runs as a systemd (or
 // launchd) unit, so this is the systemctl enable/disable path.
@@ -22,7 +34,8 @@ func setAutoStart(p Provider, on bool) error {
 		action = "enable"
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", action, p.Unit).Run()
+		args := append(systemctlUserArgs(p.User), action, p.Unit)
+		return exec.Command("systemctl", args...).Run()
 	}
 	return exec.Command("systemctl", action, p.Unit).Run()
 }
@@ -37,10 +50,20 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
 	switch interval {
 	case "off":
+		// The deterministic part is the FILE removal — a disabled-but-present
+		// timer file would keep firing. A failed disable (e.g. no session bus
+		// on a CI runner) is logged, not propagated: the caller cares that the
+		// timer is gone, and it is. The systemd manager state resolves on the
+		// next daemon-reload even when disable could not reach it now.
 		if isUserUnit(timer) && p.User != "" {
-			return exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", timer).Run()
+			args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
+			if err := exec.Command("systemctl", args...).Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
+			}
+		} else if err := exec.Command("systemctl", "disable", "--now", timer).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
 		}
-		return exec.Command("systemctl", "disable", "--now", timer).Run()
+		return removeTimerFile(p, timer)
 	case "daily":
 		return writeTimerCalendar(timer, p, "daily")
 	case "weekly":
@@ -51,7 +74,31 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 	return fmt.Errorf("invalid interval %q", interval)
 }
 
-// writeTimerCalendar rewrites a timer unit's OnCalendar line and reloads.
+// removeTimerFile deletes the timer unit file for a provider, mirroring the
+// shell wrapper's `rm -f` on auto-update off (Provider_Install_Linux.sh).
+// A missing file is not an error.
+func removeTimerFile(p Provider, timer string) error {
+	var path string
+	if isUserUnit(timer) && p.User != "" {
+		home := homeForUser(p.User)
+		if home == "" {
+			return fmt.Errorf("cannot resolve home for user %s", p.User)
+		}
+		path = filepath.Join(home, ".config/systemd/user", timer)
+	} else {
+		path = "/etc/systemd/system/" + timer
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// writeTimerCalendar rewrites a timer unit's OnCalendar line and reloads. If
+// the timer file does not exist yet (fresh install — the Go tool, unlike the
+// shell installer, may be the first thing to set auto-update), it is CREATED
+// with the same [Unit]/[Timer]/[Install] shape the shell wrapper writes at
+// install time (Provider_Install_Linux.sh:685).
 func writeTimerCalendar(timer string, p Provider, calendar string) error {
 	// Locate the timer unit file (system or user).
 	var path string
@@ -65,7 +112,17 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 		path = "/etc/systemd/system/" + timer
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if os.IsNotExist(err) {
+		// Create the timer from scratch, mirroring the installer's
+		// template. Write to a temp file and rename so a crash mid-write
+		// never leaves a half-written unit (the shared progress.md
+		// atomicity rule applied to unit files too).
+		tmpl := fmt.Sprintf("[Unit]\nDescription=Run URnetwork Update\n\n[Timer]\nOnCalendar=%s\nPersistent=true\n\n[Install]\nWantedBy=default.target\n", calendar)
+		if err := writeTimerUnitAtomic(path, tmpl); err != nil {
+			return fmt.Errorf("create timer %s: %w", timer, err)
+		}
+		return enableTimer(p, timer)
+	} else if err != nil {
 		return fmt.Errorf("read timer %s: %w", timer, err)
 	}
 	lines := strings.Split(string(data), "\n")
@@ -82,12 +139,20 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 	if !replaced {
 		return fmt.Errorf("no OnCalendar line found in %s", path)
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+	if err := writeTimerUnitAtomic(path, strings.Join(out, "\n")); err != nil {
 		return err
 	}
+	return enableTimer(p, timer)
+}
+
+// enableTimer runs daemon-reload + enable --now for a timer unit, choosing
+// the user or system manager from the provider's unit placement.
+func enableTimer(p Provider, timer string) error {
 	if isUserUnit(timer) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", "enable", "--now", timer).Run()
+		args := append(systemctlUserArgs(p.User), "daemon-reload")
+		_ = exec.Command("systemctl", args...).Run()
+		args = append(systemctlUserArgs(p.User), "enable", "--now", timer)
+		return exec.Command("systemctl", args...).Run()
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	return exec.Command("systemctl", "enable", "--now", timer).Run()

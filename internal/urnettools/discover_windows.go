@@ -111,3 +111,10 @@ func windowsStateDir() string {
 func currentUser() string {
 	return os.Getenv("USERNAME")
 }
+
+// discoverStopped on Windows is a no-op: there are no systemd units; the
+// provider runs as a user-level process and the process scan is the only
+// discovery source.
+func discoverStopped(running []Provider) []Provider {
+	return nil
+}

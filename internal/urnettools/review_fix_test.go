@@ -354,7 +354,13 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
 	}
 	// Also verify cmdReport's no-provider error path (must error, never
-	// delegate to a provider binary).
+	// delegate to a provider binary). Skip on a box that HAS a discoverable
+	// provider (e.g. this dev box's leftover sentinel unit) — the no-provider
+	// branch is only reachable on a clean box, same as the other no-provider
+	// tests.
+	if len(Discover()) != 0 {
+		t.Skip("requires a box with zero discoverable providers")
+	}
 	err = cmdReport([]string{"http://127.0.0.1:8080"})
 	if err == nil {
 		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
