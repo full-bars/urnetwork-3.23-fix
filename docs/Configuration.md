@@ -47,7 +47,7 @@ Quick jump:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default: with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on\|off\|status` (no restart required; the monitor starts sensing within ~30s). |
+| `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default: with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on`, `urnet-tools self-heal off`, or `urnet-tools self-heal status` (no restart required; the monitor starts sensing within ~30s). |
 
 ### 📊 Monitoring & Telemetry
 

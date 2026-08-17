@@ -2,10 +2,13 @@
 
 ## 🚨 Incident Quick Diagnosis Matrix
 
+> [!NOTE]
+> On Docker deployments, run these commands inside the container via `docker exec -it <container> urnet-tools <command>` or directly from the host using `urnet-docker <command> --unit <name>`.
+
 | Symptom / Error | Probable Cause | Action |
 | :--- | :--- | :--- |
 | `[t]auth error` / `[contract]oob err (N suppressed)` | Backend outage or signaling failure | Run `urnet-tools status`; monitor self-healing status with `urnet-tools self-heal status`. |
-| Container exits with code `78` | JWT expired or invalidated | Verify `USER_AUTH`/`PASSWORD` in env or re-authenticate via `urnetwork auth`. |
+| Container exits with code `78` | JWT expired, invalid, or unpersisted | Ensure `/root/.urnetwork` volume is mounted; check `USER_AUTH`/`PASSWORD` in env or re-authenticate via `urnetwork auth` (auth codes are single-use). |
 | Memory ballooning / OOM kills | High proxy count without memory profile | Set `URNETWORK_PROFILE=auto` or `eco`; enable `URNETWORK_SELF_HEAL=1`. |
 | Exit code `52` on `proxy refresh` | 8-hour warmup threshold not met | Run `urnet-tools proxy refresh --force` to bypass warmup gate. |
 | Disk space exhaustion | Unrotated logs filling `/var/log` or root | Enable `URNETWORK_RAMLOGS=1` or set `--log-opt max-size=10m --log-opt max-file=3`. |
