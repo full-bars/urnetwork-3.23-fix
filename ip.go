@@ -3331,6 +3331,12 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 	// provider. Ports 465/587 stay remote, but only after their per-flow SMTP
 	// state has accepted this segment.
 	if smtpRoutesLocally(ipPath) {
+		// Mirror the ip_remote_multi_client.go guard: a nil localUserNat
+		// (minimal relay / headless config, direct RemoteUserNatClient
+		// construction) must drop the packet, not panic (gemini 3.7).
+		if self.localUserNat == nil {
+			return false
+		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
 	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
