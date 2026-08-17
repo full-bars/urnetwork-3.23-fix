@@ -29,6 +29,11 @@ const (
 	smtpEgressNotApplicable smtpEgressVerdict = iota
 	smtpEgressAllow
 	smtpEgressReject
+	// smtpEgressRejectLatched means the flow was already rejected and the
+	// reset was already sent. Callers must drop silently, not re-send a
+	// reset (avoids provider egress amplification for a client that ignores
+	// the RST and keeps transmitting).
+	smtpEgressRejectLatched
 )
 
 func smtpRoutesLocally(ipPath *IpPath) bool {
@@ -182,7 +187,7 @@ func (self *smtpEgressGuard) inspectForOwner(
 	self.clock += 1
 	flow.lastUsed = self.clock
 	if flow.rejected {
-		return smtpEgressReject
+		return smtpEgressRejectLatched
 	}
 	if len(payload) == 0 {
 		return smtpEgressAllow
@@ -506,7 +511,11 @@ func completeSmtpNegotiationCommand(line []byte) (smtpCommand, bool) {
 	}
 	switch command {
 	case smtpCommandEhlo, smtpCommandHelo:
-		if len(bytes.Trim(argument, " \t")) == 0 {
+		// Constrain the argument to a real EHLO/HELO shape: a domain or an
+		// [addr-literal], e.g. "mail.example.com" or "[1.2.3.4]". Unbounded
+		// arbitrary printable text (up to 510 bytes) would make 587 a
+		// newly-reachable arbitrary-ASCII relay channel (review finding).
+		if !validSmtpHeloArgument(argument) {
 			return 0, false
 		}
 	case smtpCommandQuit, smtpCommandStartTls:
@@ -515,6 +524,40 @@ func completeSmtpNegotiationCommand(line []byte) (smtpCommand, bool) {
 		}
 	}
 	return command, true
+}
+
+// validSmtpHeloArgument accepts a domain (letters, digits, dots, hyphens) or
+// an [addr-literal] (IPv4 / bracketed IPv6). Rejects spaces, control
+// characters, and anything that is not a plausible hostname.
+func validSmtpHeloArgument(argument []byte) bool {
+	argument = bytes.Trim(argument, " \t")
+	if len(argument) == 0 {
+		return false
+	}
+	if argument[0] == '[' {
+		// [addr-literal]: non-empty, no spaces, ends with ].
+		if len(argument) < 3 || argument[len(argument)-1] != ']' {
+			return false
+		}
+		inner := argument[1 : len(argument)-1]
+		return len(inner) > 0 && validSmtpHostname(inner, true)
+	}
+	return validSmtpHostname(argument, false)
+}
+
+// validSmtpHostname checks hostname chars: alnum, dot, hyphen (and colon for
+// IPv6 literals). No spaces or control bytes.
+func validSmtpHostname(s []byte, allowColon bool) bool {
+	for _, b := range s {
+		if 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9' || b == '.' || b == '-' {
+			continue
+		}
+		if allowColon && b == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func splitSmtpCommand(line []byte) (token []byte, argument []byte, separated bool) {

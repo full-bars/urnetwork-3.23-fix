@@ -3120,12 +3120,18 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 				// policy: TCP/587 legitimately starts with a small plaintext
 				// EHLO/STARTTLS exchange, while transaction/authentication
 				// commands are forbidden until a TLS ClientHello has been observed.
-				if self.smtpIngressGuard.inspectForOwner(
+				smtpVerdict := self.smtpIngressGuard.inspectForOwner(
 					source.SourceId,
 					ipPath,
 					payload,
-				) == smtpEgressReject {
+				)
+				if smtpVerdict == smtpEgressReject {
+					// First reject: send the reset once.
 					self.deliverSmtpPolicyReset(source, peer.ProvideMode, ipPath, ipPacketToProvider.IpPacket.PacketBytes)
+					continue
+				}
+				if smtpVerdict == smtpEgressRejectLatched {
+					// Already rejected and reset: drop silently (no amplification).
 					continue
 				}
 				r, err := self.securityPolicy.Inspect(peer.ProvideMode, ipPath, payload)
@@ -3327,8 +3333,13 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 	if smtpRoutesLocally(ipPath) {
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
-	if self.smtpEgressGuard.inspect(ipPath, payload) == smtpEgressReject {
-		deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
+	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
+		// smtpEgressReject: send the reset once. smtpEgressRejectLatched:
+		// already reset, drop silently (no amplification for a client that
+		// ignores the RST and keeps transmitting).
+		if smtpVerdict == smtpEgressReject {
+			deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
+		}
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath, payload)

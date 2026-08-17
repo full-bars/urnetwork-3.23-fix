@@ -101,7 +101,10 @@ func TestSmtp465RejectsPlaintextAndLatchesFlow(t *testing.T) {
 		smtpTestPath(sourcePort, smtpImplicitTlsPort, synSequence+1), []byte("EHLO plaintext.example\r\n"),
 	))
 	// A rejected connection cannot disguise a later segment as a new stream.
-	requireSmtpVerdict(t, smtpEgressReject, guard.inspect(
+	// The second rejection is LATECHED: the reset was already sent on the
+	// first reject, so later segments must be dropped silently (no reset
+	// amplification for a client that ignores the RST and keeps sending).
+	requireSmtpVerdict(t, smtpEgressRejectLatched, guard.inspect(
 		smtpTestPath(sourcePort, smtpImplicitTlsPort, synSequence+1), smtpTestClientHello,
 	))
 }
@@ -888,4 +891,35 @@ func TestSmtp587RejectsCommandLineExactlyOverLimit(t *testing.T) {
 			smtpTestPath(47002, smtpStartTlsPort, 13000), buildLine(smtpMaxCommandLineBytes+1),
 		))
 	})
+}
+
+// The EHLO/HELO argument is constrained to a domain or [addr-literal]
+// shape. Arbitrary printable text (up to the negotiation cap) would make
+// 587 a newly-reachable arbitrary-ASCII relay channel.
+func TestSmtpHeloArgumentConstraint(t *testing.T) {
+	// The parser passes the command line WITHOUT the trailing CRLF
+	// (parseSmtpNegotiation excludes line endings at the caller).
+	valid := [][]byte{
+		[]byte("EHLO mail.example.com"),
+		[]byte("EHLO localhost"),
+		[]byte("HELO [192.0.2.1]"),
+		[]byte("EHLO [2001:db8::1]"),
+	}
+	invalid := [][]byte{
+		[]byte("EHLO"),                           // no argument
+		[]byte("EHLO spaces in name"),            // spaces
+		[]byte("EHLO <script>alert(1)</script>"), // arbitrary text
+		[]byte("EHLO \x01\x02"),                  // control bytes
+		[]byte("EHLO [unclosed"),                 // malformed addr-literal
+	}
+	for _, line := range valid {
+		if _, ok := completeSmtpNegotiationCommand(line); !ok {
+			t.Errorf("valid EHLO rejected: %q", line)
+		}
+	}
+	for _, line := range invalid {
+		if _, ok := completeSmtpNegotiationCommand(line); ok {
+			t.Errorf("invalid EHLO accepted: %q", line)
+		}
+	}
 }
