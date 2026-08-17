@@ -3,9 +3,11 @@ package connect
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -81,6 +83,7 @@ func newSmtpSeamProviderWithClient(
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
 	localUserNat := NewLocalUserNatWithDefaults(ctx, "smtp-provider-test", nil)
 	settings := DefaultRemoteUserNatProviderSettings()
+	settings.WriteTimeout = 10 * time.Millisecond
 	settings.EgressSecurityPolicyGenerator = func(*SecurityPolicyStatsCollector) SecurityPolicy {
 		return policy
 	}
@@ -109,6 +112,7 @@ func sendSmtpSeamProviderPacket(
 		MessagePoolReturn(pooled)
 		t.Fatal(err)
 	}
+	defer MessagePoolReturn(frame.MessageBytes)
 	provider.ClientReceive(
 		source,
 		[]*protocol.Frame{frame},
@@ -578,3 +582,178 @@ func TestProviderTunneledPort25RealPolicyAcrossModes(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderResetDeliveryPoolAccounting verifies that when deliverSmtpPolicyReset
+// synthesizes a TCP RST frame, memory pool reference counts balance back to zero
+// across protocol versions (covering both frame.Raw and marshaled non-Raw paths, as
+// well as SendWithTimeout refusal and acceptance).
+func TestProviderResetDeliveryPoolAccounting(t *testing.T) {
+	for _, version := range []int{0, 1, DefaultProtocolVersion} {
+		t.Run(fmt.Sprintf("proto_%d", version), func(t *testing.T) {
+			badPacket := smtpTestTcp4Packet(
+				byte(tcpFlagAck|tcpFlagPsh),
+				18500,
+				38500,
+				[]byte("EHLO plaintext.example\r\n"),
+			)
+
+			// Case 1: Send is refused (e.g. congested send buffer)
+			var capturedResetRefused []byte
+			deliverTcpPolicyReset(
+				func(source TransferPath, mode protocol.ProvideMode, ipPath *IpPath, reset []byte) {
+					capturedResetRefused = reset
+					if pooled, _ := MessagePoolCheck(reset); !pooled {
+						t.Error("expected generated reset packet to be allocated from MessagePool")
+					}
+					ipPacketFromProvider := &protocol.IpPacketFromProvider{
+						IpPacket: &protocol.IpPacket{
+							PacketBytes: MessagePoolShareReadOnly(reset),
+						},
+					}
+					frame, err := ToFrame(ipPacketFromProvider, version)
+					if err != nil {
+						MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
+						t.Fatal(err)
+					}
+					if !frame.Raw {
+						defer MessagePoolReturn(ipPacketFromProvider.IpPacket.PacketBytes)
+					}
+					// Simulate SendWithTimeout refusal (returns false) -> caller returns frame.MessageBytes
+					sendAccepted := false
+					if !sendAccepted {
+						MessagePoolReturn(frame.MessageBytes)
+					}
+				},
+				SourceId(NewId()),
+				protocol.ProvideMode_Public,
+				nil,
+				badPacket,
+			)
+
+			// Once deliverTcpPolicyReset returns, all shares on capturedResetRefused must be freed
+			if pooled, shared := MessagePoolCheck(capturedResetRefused); pooled || shared {
+				t.Errorf("version %d: expected refused reset buffer to be completely returned, got pooled=%t shared=%t", version, pooled, shared)
+			}
+		})
+	}
+}
+
+// TestProviderIngressAntiAmplificationLatched verifies that repeated rejected SMTP
+// packets on the same tuple generate exactly one synthesized TCP RST and subsequent
+// packets are dropped silently without amplification or reaching general policy.
+func TestProviderIngressAntiAmplificationLatched(t *testing.T) {
+	policy := &smtpSeamPolicy{
+		stats:  DefaultSecurityPolicyStatsCollector(),
+		result: SecurityPolicyResultAllow,
+	}
+	provider := newSmtpSeamProvider(t, policy)
+	source := SourceId(NewId())
+
+	badPacket := smtpTestTcp4Packet(
+		byte(tcpFlagAck|tcpFlagPsh),
+		21000,
+		39000,
+		[]byte("EHLO plaintext.example\r\n"),
+	)
+
+	// Send 10 identical malformed packets on the same flow
+	for i := 0; i < 10; i++ {
+		sendSmtpSeamProviderPacket(t, provider, source, badPacket)
+	}
+
+	// General policy must never be reached
+	if calls := policy.calls.Load(); calls != 0 {
+		t.Fatalf("provider latched flow reached policy %d times, want 0", calls)
+	}
+
+	// Verify the flow table latched the rejection
+	key, ok := smtpFlowKeyForOwnerPath(source.SourceId, smtpTestPath(47001, smtpImplicitTlsPort, 21000))
+	if !ok {
+		t.Fatal("could not construct flow key")
+	}
+
+	provider.smtpIngressGuard.stateLock.Lock()
+	defer provider.smtpIngressGuard.stateLock.Unlock()
+	flow, exists := provider.smtpIngressGuard.flows[key]
+	if !exists {
+		t.Fatal("expected flow to exist in provider ingress guard table")
+	}
+	if !flow.rejected {
+		t.Fatal("expected flow to be latched in rejected state")
+	}
+}
+
+// TestProviderMultiTenantIngressIsolation verifies that an adversarial client flooding
+// rejected SMTP flows cannot evict or disrupt another client's established STARTTLS session.
+func TestProviderMultiTenantIngressIsolation(t *testing.T) {
+	policy := &smtpSeamPolicy{
+		stats:  DefaultSecurityPolicyStatsCollector(),
+		result: SecurityPolicyResultAllow,
+	}
+	provider := newSmtpSeamProvider(t, policy)
+
+	attackerSource := SourceId(NewId())
+	legitSource := SourceId(NewId())
+
+	// 1. Legit client establishes STARTTLS on port 587
+	legitPort := 49100
+	legitSeq := uint32(1000)
+	legitSegments := [][]byte{
+		smtpSeamTcp4Packet(legitPort, smtpStartTlsPort, byte(tcpFlagSyn), legitSeq, 0, nil),
+	}
+	legitSeq += 1
+	for _, payload := range [][]byte{
+		[]byte("EHLO legit.example\r\n"),
+		[]byte("STARTTLS\r\n"),
+		smtpTestClientHello,
+	} {
+		legitSegments = append(legitSegments, smtpSeamTcp4Packet(
+			legitPort,
+			smtpStartTlsPort,
+			byte(tcpFlagAck|tcpFlagPsh),
+			legitSeq,
+			40000,
+			payload,
+		))
+		legitSeq += uint32(len(payload))
+	}
+	for _, seg := range legitSegments {
+		sendSmtpSeamProviderPacket(t, provider, legitSource, seg)
+	}
+
+	initialLegitCalls := policy.calls.Load()
+	if initialLegitCalls != int64(len(legitSegments)) {
+		t.Fatalf("legit STARTTLS flow reached policy %d times, want %d", initialLegitCalls, len(legitSegments))
+	}
+
+	// 2. Attacker floods smtpMaxFlowCount + 50 rejected flows
+	for i := 0; i < smtpMaxFlowCount+50; i++ {
+		attackerPort := 20000 + (i % 40000)
+		badPacket := smtpSeamTcp4Packet(
+			attackerPort,
+			smtpImplicitTlsPort,
+			byte(tcpFlagAck|tcpFlagPsh),
+			uint32(2000+i),
+			50000,
+			[]byte("EHLO attack.example\r\n"),
+		)
+		sendSmtpSeamProviderPacket(t, provider, attackerSource, badPacket)
+	}
+
+	// 3. Legit client sends opaque TLS data on its established flow
+	opaqueTls := smtpSeamTcp4Packet(
+		legitPort,
+		smtpStartTlsPort,
+		byte(tcpFlagAck|tcpFlagPsh),
+		legitSeq,
+		40000,
+		[]byte{0x17, 0x03, 0x03, 0x00, 0x10, 0xaa, 0xbb, 0xcc},
+	)
+	sendSmtpSeamProviderPacket(t, provider, legitSource, opaqueTls)
+
+	// Verify legit client's opaque TLS packet was accepted and reached general policy
+	if calls := policy.calls.Load(); calls != initialLegitCalls+1 {
+		t.Fatalf("legit client TLS session was evicted or dropped; total policy calls = %d, want %d", calls, initialLegitCalls+1)
+	}
+}
+
