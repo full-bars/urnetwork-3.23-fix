@@ -923,3 +923,44 @@ func TestSmtpHeloArgumentConstraint(t *testing.T) {
 		}
 	}
 }
+
+// Once a flow is secure, TCP sequence space may advance past 2^31 bytes
+// (half of the sequence space). Upstream's signed arithmetic treats that as a
+// negative offset and rejects the flow. Our uint32 offset treats any sequence
+// past the retained prefix as opaque TLS data while preserving prefix tamper checks.
+func TestSmtpSecureFlowAllowsSequenceWrapPastHalfSpace(t *testing.T) {
+	guard := &smtpEgressGuard{}
+	const startSeq = uint32(1000)
+	const port = smtpImplicitTlsPort
+
+	// 1. Establish TLS session with ClientHello prefix.
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestSyn(48001, port, startSeq),
+		nil,
+	))
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestPath(48001, port, startSeq+1),
+		smtpTestClientHello,
+	))
+
+	// 2. Advance sequence past 2^31 bytes (0x80000000).
+	wrapSeq := startSeq + 1 + 0x80000000
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestPath(48001, port, wrapSeq),
+		[]byte("opaque TLS record payload following half-space wrap"),
+	))
+
+	// 3. Exact retransmission within verified prefix remains allowed.
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspect(
+		smtpTestPath(48001, port, startSeq+1),
+		smtpTestClientHello[:4],
+	))
+
+	// 4. Conflicting retransmission of prefix is rejected.
+	conflicting := append([]byte(nil), smtpTestClientHello...)
+	conflicting[0] = 0x17
+	requireSmtpVerdict(t, smtpEgressReject, guard.inspect(
+		smtpTestPath(48001, port, startSeq+1),
+		conflicting,
+	))
+}
