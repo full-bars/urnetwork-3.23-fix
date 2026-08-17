@@ -101,3 +101,66 @@ func TestSmtpGuardEvictionPrefersRejectedSecureFlow(t *testing.T) {
 		t.Fatal("eviction removed a valid secure flow")
 	}
 }
+
+// The eviction fix scopes candidates to the INSERTING owner. A client that
+// fills the shared table with secure flows must not cause another client's
+// established secure flow to be evicted (which would reset a live TLS
+// session). Owner B's new flow, with no expendable flow of its own, must not
+// be stored (the table stays at the cap) and must not evict owner A's flows.
+func TestSmtpGuardEvictionScopedToOwner(t *testing.T) {
+	var guard smtpEgressGuard
+	ownerA := Id{1}
+	ownerB := Id{2}
+
+	// Owner A fills the table to the cap with established secure flows.
+	for index := 0; index < smtpMaxFlowCount-1; index++ {
+		requireSmtpVerdict(t, smtpEgressAllow, guard.inspectForOwner(
+			ownerA,
+			smtpTestPath(20000+index, smtpImplicitTlsPort, uint32(index+1)),
+			smtpTestClientHello,
+		))
+	}
+	// Owner A also holds one still-negotiating flow (SYN only).
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspectForOwner(
+		ownerA,
+		smtpTestSyn(30000, smtpImplicitTlsPort, 1), nil,
+	))
+
+	// Owner B inserts a new flow at the cap. With owner-scoped eviction,
+	// B has no expendable flow of its own, so B's flow is NOT stored and
+	// owner A's flows (secure AND negotiating) are all preserved.
+	requireSmtpVerdict(t, smtpEgressAllow, guard.inspectForOwner(
+		ownerB,
+		smtpTestSyn(31000, smtpImplicitTlsPort, 1), nil,
+	))
+
+	guard.stateLock.Lock()
+	defer guard.stateLock.Unlock()
+	if len(guard.flows) != smtpMaxFlowCount {
+		t.Fatalf("flow table size = %d, want %d (cap must stay bounded)", len(guard.flows), smtpMaxFlowCount)
+	}
+	// Owner A's first secure flow must still be present.
+	firstSecureKey, ok := smtpFlowKeyForOwnerPath(ownerA, smtpTestPath(20000, smtpImplicitTlsPort, 1))
+	if !ok {
+		t.Fatal("could not build owner A secure flow key")
+	}
+	if _, exists := guard.flows[firstSecureKey]; !exists {
+		t.Fatal("owner A's secure flow was evicted by owner B's insert")
+	}
+	// Owner A's negotiating flow must still be present too.
+	negotiatingKey, ok := smtpFlowKeyForOwnerPath(ownerA, smtpTestSyn(30000, smtpImplicitTlsPort, 1))
+	if !ok {
+		t.Fatal("could not build owner A negotiating flow key")
+	}
+	if _, exists := guard.flows[negotiatingKey]; !exists {
+		t.Fatal("owner A's negotiating flow was evicted by owner B's insert")
+	}
+	// Owner B's flow must NOT be stored (transient; table stayed at cap).
+	ownerBKey, ok := smtpFlowKeyForOwnerPath(ownerB, smtpTestSyn(31000, smtpImplicitTlsPort, 1))
+	if !ok {
+		t.Fatal("could not build owner B flow key")
+	}
+	if _, exists := guard.flows[ownerBKey]; exists {
+		t.Fatal("owner B's flow was stored past the cap (eviction should not evict another owner to make room)")
+	}
+}
