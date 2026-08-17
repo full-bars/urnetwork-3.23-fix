@@ -125,7 +125,11 @@ jobs:
 
       - name: Teardown
         run: |
-          cd /tmp && docker compose -f docker-compose.yml down -v 2>/dev/null || true
+          # Full teardown: SIGTERM (compose stop) lets the in-container
+          # provider deregister, then -v removes the config volume so the
+          # client JWT cannot persist. Runs even when the job fails.
+          cd /tmp && docker compose -f docker-compose.yml stop 2>/dev/null || true
+          docker compose -f docker-compose.yml down -v 2>/dev/null || true
           echo "--- container logs (errors) ---"
           docker logs urfix-soak 2>&1 | grep -iE "error|panic|fatal" | tail -10 || echo "no errors"
         if: always()

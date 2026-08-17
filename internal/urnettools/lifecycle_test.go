@@ -249,3 +249,92 @@ func TestUnitCommandArgv(t *testing.T) {
 		t.Errorf("empty-unit argv = %v, want %v", got, want)
 	}
 }
+
+// TestWriteTimerCalendarCreatesMissingFile: auto-update on a fresh install
+// (no pre-existing timer file) must CREATE the unit file, not error with
+// "read timer ...: no such file". Mirrors the shell wrapper's install-time
+// creation. Regression for the strict unix-lifecycle CI assert.
+func TestWriteTimerCalendarCreatesMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork-update.timer")
+	content := "[Unit]\nDescription=Run URnetwork Update\n\n[Timer]\nOnCalendar=Sun *-*-* 00:00:00 UTC\nPersistent=true\n\n[Install]\nWantedBy=default.target\n"
+	if err := writeTimerUnitAtomic(path, content); err != nil {
+		t.Fatalf("writeTimerUnitAtomic: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "OnCalendar=Sun *-*-* 00:00:00 UTC") {
+		t.Fatalf("created timer missing OnCalendar: %s", b)
+	}
+	if !strings.Contains(string(b), "WantedBy=default.target") {
+		t.Fatalf("created timer missing [Install] section: %s", b)
+	}
+}
+
+// TestWriteTimerUnitAtomicNoPartialOnCrash: writeTimerUnitAtomic must not
+// leave a half-written unit at the target path — the temp file is renamed,
+// so a crash mid-write leaves the OLD file intact (or nothing), never a
+// truncated unit.
+func TestWriteTimerUnitAtomicNoPartialOnCrash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork-update.timer")
+	if err := writeTimerUnitAtomic(path, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTimerUnitAtomic(path, "second"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != "second" {
+		t.Fatalf("after rename, content = %q, want %q", b, "second")
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left behind after rename: %v", err)
+	}
+}
+
+// TestConsumeDockerBareTarget: a leading bare positional that matches a
+// discovered container becomes the target (usage text documents `[target]`),
+// while a proxy file path or URL is left untouched. Flags before the name
+// (e.g. --force) are skipped.
+func TestConsumeDockerBareTarget(t *testing.T) {
+	providers := []Provider{
+		{Unit: "urnet-test"},
+		{Unit: "urfix-auto"},
+	}
+	cases := []struct {
+		name     string
+		rest     []string
+		wantUnit string
+		wantRest []string
+	}{
+		{"bare name consumed", []string{"urnet-test", "5"}, "urnet-test", []string{"5"}},
+		{"flag skipped then name consumed", []string{"--force", "urnet-test"}, "urnet-test", []string{"--force"}},
+		{"file path untouched", []string{"/tmp/proxies.txt"}, "", []string{"/tmp/proxies.txt"}},
+		{"url untouched", []string{"https://example.com/list.txt"}, "", []string{"https://example.com/list.txt"}},
+		{"no match untouched", []string{"5"}, "", []string{"5"}},
+		{"already targeted untouched", []string{"--unit", "urfix-auto", "3"}, "urfix-auto", []string{"--unit", "urfix-auto", "3"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var tgt Target
+			if c.name == "already targeted untouched" {
+				tgt.Unit = "urfix-auto"
+			}
+			gotT, gotRest := consumeDockerBareTarget(providers, tgt, c.rest)
+			if gotT.Unit != c.wantUnit {
+				t.Fatalf("Unit = %q, want %q (rest %v)", gotT.Unit, c.wantUnit, c.rest)
+			}
+			if len(gotRest) != len(c.wantRest) {
+				t.Fatalf("rest = %v, want %v", gotRest, c.wantRest)
+			}
+			for i := range gotRest {
+				if gotRest[i] != c.wantRest[i] {
+					t.Fatalf("rest = %v, want %v", gotRest, c.wantRest)
+				}
+			}
+		})
+	}
+}
