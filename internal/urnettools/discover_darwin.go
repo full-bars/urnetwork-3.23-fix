@@ -94,3 +94,10 @@ func macStateDir() string {
 	}
 	return filepath.Join(home, ".urnetwork")
 }
+
+// discoverStopped on macOS is a no-op: launchd has no unit enumeration here
+// (the process scan already falls back to the standard install location for
+// stopped installs), so there are no additional providers to add.
+func discoverStopped(running []Provider) []Provider {
+	return nil
+}

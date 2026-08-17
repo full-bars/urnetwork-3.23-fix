@@ -30,14 +30,37 @@ jobs:
           sudo mkdir -p "/run/user/$(id -u)"
           sudo chown "$(id -u)" "/run/user/$(id -u)"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
-          systemctl --user start 2>&1 || echo "NOTE: user manager start reported: $?"
+          # Enable lingering so the user manager runs without a login
+          # session, then make sure it is up. `systemctl --user start`
+          # with no unit is invalid ("Too few arguments.") — the manager
+          # is started by linger, not by `start`.
+          sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
+          systemctl --user daemon-reexec 2>&1 || true
+          systemctl --user daemon-reload 2>&1 || echo "NOTE: user manager reload reported: $?"
 
       - name: Create a fake install so discovery finds a target
-        # Linux discovery falls back to a ~/.urnetwork state dir.
+        # Linux discovery scans running processes AND stopped systemd
+        # units. The fake install is a user unit (urnetwork.service) whose
+        # ExecStart points at the copied tool binary, plus a ~/.urnetwork
+        # state dir with a jwt — the same shape a real stopped provider
+        # has. The unit file is what makes the provider discoverable.
         run: |
-          mkdir -p "$HOME/.urnetwork"
+          mkdir -p "$HOME/.urnetwork" "$HOME/.config/systemd/user"
           cp ./urnet-tools "$HOME/.urnetwork/urnetwork"
           echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+          cat > "$HOME/.config/systemd/user/urnetwork.service" <<EOF
+          [Unit]
+          Description=Fake URNetwork provider (CI)
+
+          [Service]
+          ExecStart=$HOME/.urnetwork/urnetwork --version
+          Restart=no
+
+          [Install]
+          WantedBy=default.target
+          EOF
+          systemctl --user daemon-reload
+          echo "fake unit installed"
 
       - name: Verify discovery finds the fake provider
         run: ./urnet-tools providers
@@ -81,6 +104,21 @@ jobs:
             exit 1
           fi
           echo "OK: no timer unit file remains"
+
+      - name: Teardown — remove fake systemd provider + state
+        # The test installs a fake urnetwork.service user unit and a
+        # ~/.urnetwork state dir so discovery has a target. A cancelled or
+        # failed run must not leave a provider-looking unit behind (the
+        # testing account / next run could otherwise see a phantom
+        # provider). Runs even when the job fails (if: always()).
+        if: always()
+        run: |
+          systemctl --user disable --now urnetwork.service 2>/dev/null || true
+          rm -f "$HOME/.config/systemd/user/urnetwork.service" \
+                "$HOME/.config/systemd/user/urnetwork-update.timer" 2>/dev/null || true
+          rm -rf "$HOME/.urnetwork" 2>/dev/null || true
+          systemctl --user daemon-reload 2>/dev/null || true
+          echo "fake systemd provider removed, state wiped"
 
   macos-lifecycle:
     name: urnet-tools macOS lifecycle (launchd)
