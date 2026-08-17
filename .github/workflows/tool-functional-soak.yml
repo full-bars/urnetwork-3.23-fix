@@ -189,7 +189,12 @@ jobs:
 
       - name: Teardown
         run: |
-          kill $(cat /tmp/provider.pid) 2>/dev/null || true
+          # Full teardown: SIGTERM lets the provider deregister, then the
+          # state dir is wiped so the client JWT cannot resurrect the same
+          # client_id on a later run. Runs even when the job fails.
+          kill -TERM $(cat /tmp/provider.pid) 2>/dev/null || true
+          sleep 3
+          rm -rf "$HOME/.urnetwork" /tmp/mint 2>/dev/null || true
           echo "--- provider log tail ---"
           tail -30 /tmp/provider.log 2>/dev/null || true
           echo "--- provider log: errors during soak ---"

@@ -216,3 +216,17 @@ func cmdReinstall(args []string, force, dryRun bool) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
+
+// writeTimerUnitAtomic writes a timer unit file via temp+rename so a crash
+// never leaves a half-written unit. Platform-neutral (pure file I/O), shared
+// by the platform lifecycle implementations and the cross-platform tests.
+func writeTimerUnitAtomic(path string, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
