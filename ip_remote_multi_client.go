@@ -1202,8 +1202,10 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
-	if self.smtpEgressGuard.inspect(ipPath, payload) == smtpEgressReject {
-		deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
+	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
+		if smtpVerdict == smtpEgressReject {
+			deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
+		}
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath, payload)
