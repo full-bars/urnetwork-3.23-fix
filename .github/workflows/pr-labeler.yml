@@ -57,6 +57,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # GitHub's API returns transient 5xx (503 in particular) often enough
+          # that a bare `gh` call here fails the whole job on a blip unrelated
+          # to this PR. Retry with backoff before giving up for real.
+          with_retry() {
+            local attempt=1 max=5 delay=3
+            until "$@"; do
+              if [ "$attempt" -ge "$max" ]; then
+                echo "::error::'$*' failed after $max attempts" >&2
+                return 1
+              fi
+              echo "attempt $attempt/$max failed for '$*'; retrying in ${delay}s" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # Labels this job owns. Anything outside this set is never touched:
           # area:* is owned by the `area` job, and security/needs-fleet-deploy
           # are applied by hand and must survive a re-run.
@@ -90,7 +107,7 @@ jobs:
           # This job also runs on `edited`, so a retitled PR must lose the label
           # it no longer earns. Without this, "fix: x" retitled to "feat: x"
           # keeps `fix` and gains `feat`. Only managed labels are ever removed.
-          current="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name')"
+          current="$(with_retry gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name')"
 
           add=""
           for l in $want; do
@@ -110,6 +127,6 @@ jobs:
           fi
 
           echo "add=[${add:-none}] remove=[${remove:-none}]"
-          gh pr edit "$PR_NUM" --repo "$REPO" \
+          with_retry gh pr edit "$PR_NUM" --repo "$REPO" \
             ${add:+--add-label "$add"} \
             ${remove:+--remove-label "$remove"}
