@@ -199,34 +199,45 @@ func (self *smtpEgressGuard) inspectForOwner(
 }
 
 func (self *smtpEgressGuard) newFlowWithLock(key smtpFlowKey, destinationPort int) *smtpFlowState {
+	flow := &smtpFlowState{destinationPort: destinationPort}
 	if smtpMaxFlowCount <= len(self.flows) {
-		if !self.evictFlowWithLock() {
-			// Unreachable: eviction runs only when the table is at the cap,
-			// so a candidate must exist. Guard a future call-site change that
-			// could otherwise insert a 1025th flow past the bound.
-			panic("smtp flow table eviction found no candidate")
+		if !self.evictFlowWithLock(key.ownerId) {
+			// No expendable flow belonging to THIS owner. Do not evict another
+			// owner's flow (that would kill another client's live session).
+			// The flow is NOT inserted into the table: it guards only the
+			// current packet, and the next packet re-creates it. The global
+			// 1024 cap stays intact (memory bounded) and the callers keep a
+			// non-nil flow (no nil-deref).
+			return flow
 		}
 	}
-	flow := &smtpFlowState{destinationPort: destinationPort}
 	self.flows[key] = flow
 	return flow
 }
 
 // evictFlowWithLock removes one flow to make room for a new one. It prefers
-// expendable entries: rejected flows (secure or not) and still-negotiating
-// flows. It preserves an established, non-rejected secure flow unless every
-// entry in the table is one; losing its marker would make the next opaque TLS
-// record look like a fresh plaintext negotiation, and the provider would
-// reset a valid session. Rejected flows are safe to evict (a retry is
-// re-inspected) and negotiating flows re-parse their bounded prefix. Both
-// passes are full scans so the choice is deterministic. Aligned with the
-// upstream fix for the same defect, with the unreachable-no-candidate guard
-// kept.
-func (self *smtpEgressGuard) evictFlowWithLock() bool {
+// expendable entries belonging to the INSERTING OWNER: rejected flows
+// (secure or not) and still-negotiating flows. It preserves an established,
+// non-rejected secure flow unless every entry in the table is one; losing its
+// marker would make the next opaque TLS record look like a fresh plaintext
+// negotiation, and the provider would reset a valid session. Rejected flows
+// are safe to evict (a retry is re-inspected) and negotiating flows re-parse
+// their bounded prefix. Both passes are full scans so the choice is
+// deterministic.
+//
+// Scoping the scan to the inserting owner's flows means one client can never
+// evict another client's flow. A client that fills its own share and has no
+// expendable flow simply cannot add more until one of its own flows becomes
+// expendable (or the owner's insertion returns nil and the flow is unguarded).
+// The global 1024-flow cap is unchanged, so total memory stays bounded.
+func (self *smtpEgressGuard) evictFlowWithLock(ownerId Id) bool {
 	var oldestKey smtpFlowKey
 	var oldestUse uint64
 	found := false
 	for candidateKey, candidate := range self.flows {
+		if candidateKey.ownerId != ownerId {
+			continue
+		}
 		if candidate.secure && !candidate.rejected {
 			continue
 		}
@@ -238,6 +249,9 @@ func (self *smtpEgressGuard) evictFlowWithLock() bool {
 	}
 	if !found {
 		for candidateKey, candidate := range self.flows {
+			if candidateKey.ownerId != ownerId {
+				continue
+			}
 			if !found || candidate.lastUsed < oldestUse {
 				oldestKey = candidateKey
 				oldestUse = candidate.lastUsed
