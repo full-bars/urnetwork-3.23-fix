@@ -2,9 +2,46 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
+
+// rootHint returns a copy-pasteable "see every provider" suggestion, or ""
+// when it doesn't apply (already root, or a platform without sudo). Plain
+// `sudo urnet-tools` doesn't work: the binary installs to a per-user path
+// (~/.local/share/urnetwork-provider/bin), never onto root's $PATH, so root
+// has no "urnet-tools" to find. os.Executable() resolves the actual path
+// this process is running from so the hint is directly runnable.
+func rootHint() string {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return ""
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	return "sudo " + exe
+}
+
+// printNarrowedNote reports that selectTargetOrSoleAccessible auto-picked
+// the sole provider reachable without root, so the operator knows other
+// providers exist on the box but were skipped rather than acted on — same
+// wording across every read-only command that uses the narrowing (logs,
+// status, summary), so the behavior reads as one consistent tool feature
+// rather than a per-command surprise.
+func printNarrowedNote(totalFound int, p Provider, what string) {
+	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — showing its %s.", totalFound, p.User, what)
+	if hint := rootHint(); hint != "" {
+		note += fmt.Sprintf(" To see/target the others: %s %s", hint, what)
+	}
+	fmt.Println(note)
+}
 
 // selectTargets resolves a provider list against targeting criteria and
 // returns the chosen set (one or more providers). It is the batch analogue
@@ -68,6 +105,28 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		return nil, fmt.Errorf("selection is empty after applying criteria")
 	}
 	return chosen, nil
+}
+
+// selectTargetOrSoleAccessible behaves like selectTarget for a read-only
+// command (logs), except: with no explicit target, multiple providers
+// discovered, and the caller unprivileged (not root, who can reach all of
+// them), it narrows to the providers actually reachable without root
+// (narrowToAccessible) and auto-picks the result if exactly one remains,
+// rather than refusing with the "N providers found" ambiguity guard — the
+// other N-1 are running under accounts the caller has no way to select
+// correctly anyway (see discover_unix.go ghost-provider fix). The guard
+// still applies whenever more than one provider is actually reachable, or
+// when root is asking (who CAN reach all of them and should get the normal
+// refusal + inventory).
+func selectTargetOrSoleAccessible(providers []Provider, t Target) (p Provider, narrowed bool, err error) {
+	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
+	if noTarget && len(providers) > 1 && os.Geteuid() != 0 {
+		if accessible := narrowToAccessible(providers); len(accessible) == 1 {
+			return accessible[0], true, nil
+		}
+	}
+	p, err = selectTarget(providers, t)
+	return p, false, err
 }
 
 // selectByLabels matches providers by unit name, user, or network name —
@@ -205,6 +264,9 @@ func ambiguousError(providers []Provider) error {
 	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
 	for _, p := range providers {
 		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
+	}
+	if hint := rootHint(); hint != "" {
+		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
 	}
 	return fmt.Errorf("%s", b.String())
 }
