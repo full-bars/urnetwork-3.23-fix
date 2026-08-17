@@ -108,24 +108,41 @@ func Discover() []Provider {
 	return all
 }
 
+// nonProviderSiblingSuffixes are "-<suffix>" segments that follow a known
+// provider binary name in a unit/exe name but denote a DIFFERENT, non-
+// provider service that happens to share the prefix — never a provider
+// itself, so isProviderArg must exclude it rather than match it. Checked as
+// a suffix (-hub, -update) or as the segment immediately after the "-"
+// (-dashboard, -dashboard-py, -dashboard-rs, ...) since dashboard apps get
+// their own per-language unit names.
+//
+// dashboard: live fleet false-positive (2026-08-17) — a box running
+// provider-dashboard{,-py,-rs}.service (unrelated monitoring services, not
+// providers) had them swept into discovery, flooding the same-user
+// candidate list and permanently blocking narrowToAccessible's auto-pick.
+var nonProviderSiblingSuffixes = []string{"hub", "update", "dashboard"}
+
 // isProviderArg reports whether an executable path/name is a known provider
 // binary. Matches on basename to be resilient to custom install paths, and
 // by PREFIX so suffixed unit names (urnetwork-native.service,
-// provider_beta-custom) are recognized too (opus5 F2). Excludes the
-// well-known non-provider suffixes (-hub, -update) so their units are not
-// mistaken for providers.
+// provider_beta-custom) are recognized too (opus5 F2). Excludes known
+// non-provider siblings (see nonProviderSiblingSuffixes) so their units are
+// not mistaken for providers.
 func isProviderArg(arg string) bool {
 	base := filepath.Base(arg)
 	// Strip a trailing .exe (Windows) defensively.
 	base = strings.TrimSuffix(base, ".exe")
 	for known := range knownBinaries {
-		if base == known || strings.HasPrefix(base, known+"-") {
-			// provider-hub / provider-update are NOT providers.
-			if strings.HasSuffix(base, "-hub") || strings.HasSuffix(base, "-update") {
+		if base != known && !strings.HasPrefix(base, known+"-") {
+			continue
+		}
+		rest := strings.TrimPrefix(base, known)
+		for _, sibling := range nonProviderSiblingSuffixes {
+			if rest == "-"+sibling || strings.HasPrefix(rest, "-"+sibling+"-") {
 				return false
 			}
-			return true
 		}
+		return true
 	}
 	return false
 }
