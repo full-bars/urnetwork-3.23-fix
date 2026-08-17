@@ -548,7 +548,6 @@ func TestMultiClientRejectsAuthBeforeStartTls587(t *testing.T) {
 // fixture, which the fork lacks; the fork's bare test client has no return
 // transport for frames sent via client.SendWithTimeout.
 
-
 // The stub-based port-25 test hardwires the policy to Drop, so it cannot
 // see the REAL provide-mode behavior. This test pins what the real policy
 // does for tunneled port 25 across provide modes: Network mode allows it
