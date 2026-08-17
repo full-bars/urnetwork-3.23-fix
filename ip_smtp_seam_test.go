@@ -547,3 +547,35 @@ func TestMultiClientRejectsAuthBeforeStartTls587(t *testing.T) {
 // A full delivery assertion needs upstream's installProviderReturnTestSequence
 // fixture, which the fork lacks; the fork's bare test client has no return
 // transport for frames sent via client.SendWithTimeout.
+
+
+// The stub-based port-25 test hardwires the policy to Drop, so it cannot
+// see the REAL provide-mode behavior. This test pins what the real policy
+// does for tunneled port 25 across provide modes: Network mode allows it
+// (pre-existing, deliberate: Network peers run their own infrastructure and
+// may relay SMTP to their own mail servers), while Public and Stream modes
+// refuse it via the reversed CFAA privileged-port rule.
+func TestProviderTunneledPort25RealPolicyAcrossModes(t *testing.T) {
+	// Build the real reversed policy (the provider's general policy for
+	// tunneled traffic). ProvideMode_Network must Allow; Public and Stream
+	// must Drop the privileged port 25.
+	real := DefaultEgressSecurityPolicy()
+
+	tests := []struct {
+		mode    protocol.ProvideMode
+		verdict SecurityPolicyResult
+	}{
+		{protocol.ProvideMode_Network, SecurityPolicyResultAllow},
+		{protocol.ProvideMode_Public, SecurityPolicyResultDrop},
+		{protocol.ProvideMode_Stream, SecurityPolicyResultDrop},
+	}
+	for _, tc := range tests {
+		result, err := real.Inspect(tc.mode, smtpTestPath(48010, smtpLocalPort, 1), nil)
+		if err != nil {
+			t.Fatalf("mode %v: inspect error: %v", tc.mode, err)
+		}
+		if result != tc.verdict {
+			t.Errorf("mode %v: verdict = %v, want %v (Network is intentionally unfiltered; Public/Stream refuse privileged port 25)", tc.mode, result, tc.verdict)
+		}
+	}
+}
