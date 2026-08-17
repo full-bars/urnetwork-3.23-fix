@@ -756,4 +756,3 @@ func TestProviderMultiTenantIngressIsolation(t *testing.T) {
 		t.Fatalf("legit client TLS session was evicted or dropped; total policy calls = %d, want %d", calls, initialLegitCalls+1)
 	}
 }
-
