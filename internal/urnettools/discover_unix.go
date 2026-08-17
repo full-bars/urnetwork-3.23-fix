@@ -124,11 +124,16 @@ func processOwner(pid int) (username, home string) {
 // auto-pick the sole reachable provider for read-only commands (logs)
 // instead of refusing with "N providers found" when the other N-1 are
 // running under different accounts the caller can't select anyway.
+//
+// A blank p.User means processOwner's owner lookup itself failed (e.g. a
+// numeric UID with no matching passwd entry) — the owner is unknown, not
+// unrestricted — so blank rows are excluded rather than treated as
+// belonging to the current user.
 func narrowToAccessible(providers []Provider) []Provider {
 	current := currentUserName()
 	var out []Provider
 	for _, p := range providers {
-		if p.User == "" || p.User == current {
+		if p.User != "" && p.User == current {
 			out = append(out, p)
 		}
 	}

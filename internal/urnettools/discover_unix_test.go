@@ -62,6 +62,28 @@ func TestSelectTargetOrSoleAccessibleStillRefusesWhenAmbiguous(t *testing.T) {
 	}
 }
 
+// TestSelectTargetOrSoleAccessibleTreatsBlankUserAsUnresolved: a blank
+// p.User means processOwner's own owner lookup failed (e.g. a numeric UID
+// with no matching passwd entry) — the owner is unknown, not unrestricted.
+// It must not be auto-selected as if it belonged to the caller.
+func TestSelectTargetOrSoleAccessibleTreatsBlankUserAsUnresolved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can reach every provider; narrowing only applies unprivileged")
+	}
+	providers := []Provider{
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service"},
+		{User: "", Unit: "urnetwork-ghost.service"},
+	}
+
+	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal when the only candidate has an unresolved owner")
+	}
+	if narrowed {
+		t.Error("narrowed should be false; a blank-User row must not be auto-selected")
+	}
+}
+
 // TestSelectTargetOrSoleAccessibleExplicitTargetBypassesNarrowing: an
 // explicit --unit/--user always resolves strictly via selectTarget; the
 // narrowing shortcut only kicks in for the no-target case.
