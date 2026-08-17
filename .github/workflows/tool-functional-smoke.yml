@@ -165,6 +165,32 @@ jobs:
           /tmp/urnet-docker providers
           echo "OK: provider authenticated (JWT present)"
 
+      - name: Wait for provider to record startup in proxy.state
+        # JWT presence (previous step) only proves the `auth` phase of the
+        # container's startup script finished — it says nothing about
+        # whether the `provider provide` process has gotten far enough to
+        # write proxy.state's started_at (provider/main.go's proxy-source
+        # resolution runs first). `proxy refresh` below reads started_at and
+        # exit-51s if it's still the Go zero value ("0001-01-01T..."), so
+        # poll for an actual year prefix rather than assuming the JWT wait
+        # was enough (a bare [0-9] check would false-positive on the "0" in
+        # the zero value itself).
+        run: |
+          for i in $(seq 1 30); do
+            state=$(docker exec urnet-test cat /root/.urnetwork/proxy.state 2>/dev/null || true)
+            if printf '%s' "$state" | grep -qE '"started_at":"(19|20)[0-9]{2}-'; then
+              echo "OK: proxy.state recorded started_at after ~$((i * 10))s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "FAIL: proxy.state never recorded a non-zero started_at after 300s"
+              echo "--- proxy.state ---"; printf '%s\n' "$state"
+              docker logs urnet-test 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 10
+          done
+
       - name: urnet-docker providers
         run: /tmp/urnet-docker providers
 
