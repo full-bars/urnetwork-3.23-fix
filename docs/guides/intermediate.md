@@ -78,7 +78,7 @@ urnet-tools start
 urnet-tools proxy summary
 ```
 
-The summary shows proxy health, clients, and earnings.
+The summary displays proxy source breakdown (file/URL/internal), health state counts (Up/Connecting/Degraded/Dead), and URL feed cache status.
 
 ---
 
@@ -249,12 +249,12 @@ From inside the container, `urnet-tools` is on `PATH` (symlinked to `/usr/local/
 
 ## 📊 Daily commands
 
-These work on all platforms. On Docker, prefix with `docker exec urnetwork`. On macOS, `proxy summary` and `status` work the same way, but `proxy traffic` and `proxy health` aren't implemented in the wrapper — call the provider binary's `proxy summary` for the closest equivalent, or see the note in step 3 above for calling the binary directly.
+These work across all platforms via the Go `urnet-tools` binary (or on Docker via `urnet-docker` or `docker exec <container> urnet-tools`).
 
 | Command | What it does |
 |---------|-------------|
-| `urnet-tools proxy summary` | Health overview — proxy counts, traffic, earnings |
-| `urnet-tools proxy traffic` | Live proxy traffic snapshot |
+| `urnet-tools proxy summary` | Fleet summary: source breakdown (file/URL/internal), health state, URL feed cache |
+| `urnet-tools proxy traffic` | Live proxy traffic snapshot and max age |
 | `urnet-tools status` | Provider process status and uptime |
 | `urnet-tools proxy health` | Per-proxy up/degraded/dead status |
 
