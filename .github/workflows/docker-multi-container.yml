@@ -131,10 +131,12 @@ jobs:
           /tmp/urnet-docker proxy add --unit urfix-lowmem /tmp/multi/lowmem.txt 
 
       - name: Verify per-container state (status on each)
+        # Bare container names resolve as targets now (status [target]);
+        # no head pipe — the pipeline would mask the exit code.
         run: |
-          /tmp/urnet-docker status urfix-turbo | head -5 
-          /tmp/urnet-docker status urfix-auto | head -5 
-          /tmp/urnet-docker status urfix-lowmem | head -5 
+          /tmp/urnet-docker status urfix-turbo
+          /tmp/urnet-docker status urfix-auto
+          /tmp/urnet-docker status urfix-lowmem
 
       - name: urnet-docker proxy clear (flag-targeted)
         run: |
@@ -142,11 +144,19 @@ jobs:
           /tmp/urnet-docker proxy clear --unit urfix-lowmem 
 
       - name: Multi-container logs via flag target
+        # logs follows by design; bound it with timeout in CI (exit 124
+        # while streaming = success).
         run: |
-          /tmp/urnet-docker logs urfix-auto 3 
+          timeout 10 /tmp/urnet-docker logs urfix-auto 3 || test $? -eq 124
 
-      - name: Teardown — remove all containers
+      - name: Teardown — full teardown of containers + shared config volume
         run: |
+          # Full teardown: stop (SIGTERM -> provider deregisters), remove
+          # containers, and drop the shared ur_config volume so the client
+          # JWT/state cannot persist across runs. Runs even when the job
+          # fails (if: always()).
+          cd /tmp && docker compose -f docker-compose.yml stop 2>/dev/null || true
           docker rm -f urfix-turbo urfix-auto urfix-lowmem 2>/dev/null || true
-          echo "containers removed"
+          docker volume rm ur_config 2>/dev/null || true
+          echo "containers stopped, shared volume wiped"
         if: always()

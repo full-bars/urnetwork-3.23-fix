@@ -161,9 +161,45 @@ Global flags:
 }
 
 // dockerTargetFromArgs reuses parseTargetFlags; container targets map the
-// --unit flag to the container name.
-func dockerTargetFromArgs(args []string) (Target, []string, error) {
-	return parseTargetFlags(args)
+// --unit flag to the container name. A leading bare positional that matches
+// a discovered container is ALSO accepted as the target (the usage text
+// documents `status [target]`, `logs [target] [N]`), so single-target
+// commands work without repeating --unit. The providers list is required to
+// validate the bare name.
+func dockerTargetFromArgs(args []string, providers []Provider) (Target, []string, error) {
+	t, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return t, rest, err
+	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
+	return t, rest, nil
+}
+
+// consumeDockerBareTarget promotes a bare positional that matches a
+// discovered container name to the target when no explicit target flag was
+// given. Flags are skipped, so `proxy clear --force urnet-test` still
+// resolves the container. The first non-flag positional that does NOT match
+// any container is left untouched (it is a command argument, e.g. a proxy
+// file path).
+func consumeDockerBareTarget(providers []Provider, t Target, rest []string) (Target, []string) {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+		return t, rest
+	}
+	for i, a := range rest {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		for _, p := range providers {
+			if p.Unit == a {
+				t.Unit = a
+				out := append([]string{}, rest[:i]...)
+				out = append(out, rest[i+1:]...)
+				return t, out
+			}
+		}
+		return t, rest // first non-flag positional doesn't match a container
+	}
+	return t, rest
 }
 
 // cmdDockerProviders lists every provider container on the box.
@@ -184,11 +220,11 @@ func cmdDockerProviders(args []string) error {
 
 // cmdDockerStatus shows details for one container.
 func cmdDockerStatus(args []string) error {
-	t, _, err := dockerTargetFromArgs(args)
+	providers := DiscoverDocker()
+	t, _, err := dockerTargetFromArgs(args, providers)
 	if err != nil {
 		return err
 	}
-	providers := DiscoverDocker()
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -291,11 +327,11 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 
 // cmdDockerRestart restarts a container (destructive gate applies).
 func cmdDockerRestart(args []string, force, dryRun bool) error {
-	t, _, err := dockerTargetFromArgs(args)
+	providers := DiscoverDocker()
+	t, _, err := dockerTargetFromArgs(args, providers)
 	if err != nil {
 		return err
 	}
-	providers := DiscoverDocker()
 	p, err := selectTarget(providers, t)
 	if err != nil {
 		return err
@@ -316,7 +352,8 @@ func cmdDockerRestart(args []string, force, dryRun bool) error {
 // otherwise it falls back to `docker logs --tail N -f`. Multiple provider
 // containers with no target pop the interactive picker.
 func cmdDockerLogs(args []string) error {
-	t, rest, err := dockerTargetFromArgs(args)
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
 	if err != nil {
 		return err
 	}
@@ -324,7 +361,6 @@ func cmdDockerLogs(args []string) error {
 	if err != nil {
 		return err
 	}
-	providers := DiscoverDocker()
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -356,6 +392,13 @@ func cmdDockerProxy(args []string) error {
 	}
 
 	providers := DiscoverDocker()
+	// Accept a bare container name as the target (e.g.
+	// `urnet-docker proxy refresh urnet-test`) — the usage text documents
+	// `[target]` for the single-target commands, and the workflows call
+	// proxy subcommands with the container name as a positional. The bare
+	// name must match a discovered container; a proxy file path or URL is
+	// left untouched.
+	t, rest2 = consumeDockerBareTarget(providers, t, rest2)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -380,7 +423,12 @@ func cmdDockerProxy(args []string) error {
 		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
 			return fmt.Errorf("copy %s into container: %w", hostFile, err)
 		}
-		return containerExecByName(container, "urnet-tools", "proxy", "add", inPath)
+		// --proxy_file= is REQUIRED: the in-container urnet-tools is the
+		// shell wrapper (urnet-tools.sh), which forwards a bare path as a
+		// key_address — the path string would be registered as a proxy
+		// address instead of the file contents. --proxy_file= flows through
+		// the wrapper to `provider proxy add` which reads the file.
+		return containerExecByName(container, "urnet-tools", "proxy", "add", "--proxy_file="+inPath)
 	case "clear":
 		// Forward remaining args (e.g. --force) so clear is scriptable from
 		// CI/cron on a non-TTY (DeepSeek MF1).
