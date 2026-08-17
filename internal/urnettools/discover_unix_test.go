@@ -4,9 +4,63 @@ package urnettools
 
 import (
 	"os"
+	"os/exec"
 	"os/user"
 	"testing"
 )
+
+// TestDiscoverProcessesFallsBackToProcessOwnerWhenEnvironUnreadable
+// exercises the real cross-user fallback in discoverProcesses(): when
+// readEnviron fails (simulated — reading another user's
+// /proc/<pid>/environ requires root/CAP_SYS_PTRACE and cannot be provoked
+// for real in a single-user test sandbox), the scan must still identify the
+// process owner via processOwner()'s /proc stat fallback instead of
+// leaving User/StateDir blank — the exact ghost-row bug this fix closes.
+// Prior tests only exercised the synthetic-list narrowing logic
+// (narrowToAccessible on hand-built Provider slices), never the real
+// discovery path that produces those rows.
+func TestDiscoverProcessesFallsBackToProcessOwnerWhenEnvironUnreadable(t *testing.T) {
+	me := currentUserName()
+	if me == "" {
+		t.Skip("could not resolve current username")
+	}
+
+	// A real child process so /proc/<pid> is a genuine, stat-able entry.
+	// argv[0] is overridden to "provider" so isProviderArg matches it; the
+	// actual binary run is still /bin/sleep.
+	cmd := exec.Command("sleep", "30")
+	cmd.Args = []string{"provider", "30"}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test child process: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	origReadEnviron := readEnviron
+	readEnviron = func(pid int) map[string]string { return nil }
+	defer func() { readEnviron = origReadEnviron }()
+
+	providers := discoverProcesses()
+
+	var found *Provider
+	for i := range providers {
+		if providers[i].PID == cmd.Process.Pid {
+			found = &providers[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("discoverProcesses did not find the test child (pid %d) among %d providers", cmd.Process.Pid, len(providers))
+	}
+	if found.User != me {
+		t.Errorf("User = %q, want %q — processOwner fallback should have resolved it via /proc stat", found.User, me)
+	}
+	if found.StateDir == "" {
+		t.Error("StateDir is empty — processOwner fallback should have derived it from the resolved home directory")
+	}
+}
 
 // TestSelectTargetOrSoleAccessibleNarrowsToOwnUser: unprivileged caller,
 // multiple providers discovered, only one under the caller's own account —
