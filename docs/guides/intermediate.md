@@ -283,18 +283,17 @@ Set these before starting the provider — `export VAR=value` on Linux/macOS, `$
 | `URNETWORK_HOT_RESTART` | JWT reuse on restart | `1` (default), `0` to disable |
 | `PROXY_URL` | Auto-fetch proxies from a URL | `https://example.com/proxies.txt` |
 | `URNETWORK_SELF_HEAL` | Enable pressure-based pool management | `1` to enable (default off) |
-| `URNETWORK_SKIP_AUDIT` | Skip startup system audit (disk speed, ulimit, conntrack) — useful in Docker | `1` to skip (default off) |
+| `URNETWORK_SKIP_AUDIT` | Skip startup system audit (disk speed, ulimit, conntrack): useful in Docker | `1` to skip (default off) |
 
 ---
 
 ## 🔍 Checking proxy health
 
 ```sh
-urnet-tools proxy health         # Linux/Docker
-urnet-tools proxy health     # all platforms
+urnet-tools proxy health
 ```
 
-Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts. Not available through the macOS wrapper — see the note in step 3 of Option B.
+Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts.
 
 ---
 
