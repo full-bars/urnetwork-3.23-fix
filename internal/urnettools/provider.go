@@ -94,7 +94,12 @@ func decodeJWT(path string) (netName, netID string, exp time.Time, err error) {
 
 // readEnviron parses a /proc/<pid>/environ blob (NUL-separated KEY=VALUE)
 // into a map. Returns nil on any read error.
-func readEnviron(pid int) map[string]string {
+//
+// A package-level var (not func) so tests can override it to simulate the
+// cross-user case — reading another user's environ fails under an
+// unprivileged caller and there is no way to provoke that for real in a
+// single-user test sandbox.
+var readEnviron = func(pid int) map[string]string {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	if err != nil {
 		return nil
