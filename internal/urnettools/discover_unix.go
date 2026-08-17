@@ -225,8 +225,25 @@ func discoverSystemUnits(running []Provider) []Provider {
 		}
 		return strings.TrimSpace(string(b))
 	}
-	var out2 []Provider
-	for _, line := range strings.Split(string(out), "\n") {
+	return parseUnitLines(string(out), running, unitUser)
+}
+
+// parseUnitLines parses `systemctl list-units`/`list-unit-files` output
+// (one unit per line, unit name in the first field) into deduplicated
+// Provider entries, skipping non-provider units and units already backed by
+// a running process. userFor resolves the User= value for a given unit name.
+//
+// Both discoverSystemUnits and discoverUserUnits merge list-units with
+// list-unit-files by concatenating the two outputs (list-units --all misses
+// never-started units that list-unit-files sees) — so any unit that is both
+// loaded AND has a file on disk appears in both listings and would yield two
+// identical Provider rows without the dedup here (observed live on a fleet
+// box: every enabled-but-inactive unit doubled in `urnet-tools logs`'s
+// ambiguity list).
+func parseUnitLines(text string, running []Provider, userFor func(unit string) string) []Provider {
+	var out []Provider
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -240,10 +257,13 @@ func discoverSystemUnits(running []Provider) []Provider {
 		if unitIn(running, unit) {
 			continue
 		}
-		u := unitUser(unit)
-		out2 = append(out2, providerFromUnit(unit, u))
+		if seen[unit] {
+			continue
+		}
+		seen[unit] = true
+		out = append(out, providerFromUnit(unit, userFor(unit)))
 	}
-	return out2
+	return out
 }
 
 // discoverUserUnits enumerates user-manager units for users that plausibly
@@ -301,20 +321,7 @@ func discoverUserUnits(running []Provider) []Provider {
 		if err != nil {
 			continue // no session bus / user manager for this user
 		}
-		for _, line := range strings.Split(string(b), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 0 {
-				continue
-			}
-			unit := fields[0]
-			if !isProviderUnit(unit) {
-				continue
-			}
-			if unitIn(running, unit) {
-				continue
-			}
-			out = append(out, providerFromUnit(unit, user))
-		}
+		out = append(out, parseUnitLines(string(b), running, func(string) string { return user })...)
 	}
 	return out
 }

@@ -138,6 +138,44 @@ func TestSelectTargetOrSoleAccessibleTreatsBlankUserAsUnresolved(t *testing.T) {
 	}
 }
 
+// TestParseUnitLinesDedupesUnitPresentInBothListings: discoverSystemUnits
+// and discoverUserUnits both merge `systemctl list-units --all` output with
+// `systemctl list-unit-files` output (list-units misses never-started
+// units that list-unit-files sees), by simple concatenation. Any unit that
+// is loaded AND has a unit file on disk — the common case for an
+// enabled-but-currently-stopped unit — appears in both listings and must be
+// deduped by parseUnitLines, or it yields two identical Provider rows. Live
+// fleet symptom (2026-08-17): every stopped unit doubled in `urnet-tools
+// logs`'s ambiguity list.
+func TestParseUnitLinesDedupesUnitPresentInBothListings(t *testing.T) {
+	// list-units --all line, then a list-unit-files line for the SAME unit,
+	// concatenated the way discoverSystemUnits builds `out`.
+	text := "urnetwork-native.service loaded inactive dead urnetwork-native.service\n" +
+		"urnetwork-native.service enabled\n"
+	got := parseUnitLines(text, nil, func(string) string { return "urnet" })
+	if len(got) != 1 {
+		t.Fatalf("parseUnitLines returned %d providers, want 1 (unit appears in both listings): %+v", len(got), got)
+	}
+	if got[0].Unit != "urnetwork-native.service" {
+		t.Errorf("Unit = %q, want %q", got[0].Unit, "urnetwork-native.service")
+	}
+}
+
+// TestParseUnitLinesSkipsRunningAndNonProviderUnits verifies the two other
+// filters parseUnitLines applies: a unit already backed by a running
+// process is skipped (it's represented by that Provider already), and a
+// non-provider unit name is skipped outright.
+func TestParseUnitLinesSkipsRunningAndNonProviderUnits(t *testing.T) {
+	running := []Provider{{Unit: "urnetwork-native.service", Running: true}}
+	text := "urnetwork-native.service loaded active running\n" +
+		"nginx.service loaded active running\n" +
+		"provider-dashboard.service loaded active running\n"
+	got := parseUnitLines(text, running, func(string) string { return "urnet" })
+	if len(got) != 0 {
+		t.Errorf("parseUnitLines returned %d providers, want 0 (running unit + non-provider units should all be excluded): %+v", len(got), got)
+	}
+}
+
 // TestSelectTargetOrSoleAccessibleExplicitTargetBypassesNarrowing: an
 // explicit --unit/--user always resolves strictly via selectTarget; the
 // narrowing shortcut only kicks in for the no-target case.
