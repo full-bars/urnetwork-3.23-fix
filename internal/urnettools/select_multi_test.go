@@ -3,6 +3,7 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,9 @@ func TestSelectTargetsIncludeSameNetworkKeepsBoth(t *testing.T) {
 func TestRootHintUsesResolvedExecutablePath(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("hint is empty for root — nothing to check")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("hint is always empty on Windows — no sudo to hint at")
 	}
 	hint := rootHint()
 	if hint == "" {
