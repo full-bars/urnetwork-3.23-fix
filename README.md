@@ -36,7 +36,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Run multiple containers on one host | [Multi-Container Scaling](docs/Multi-Container-Scaling.md) |
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
-| Interpret provider logs | [Log Message Reference](../../wiki/Log-Message-Reference) |
+| Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
 | Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 
@@ -181,14 +181,15 @@ See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
 - [Hub Setup](docs/Hub-Setup.md)
 - [Hub Dashboard](docs/Hub-Dashboard.md)
+- [Project Structure](docs/Project-Structure.md)
+- [Log Message Reference](LOG_REFERENCE.md)
+- [Go urnet-tools Reference](docs/urnet-tools-go.md)
 - [Changelog](CHANGELOG.md)
 
 **Wiki:**
 
-- [Log Message Reference](../../wiki/Log-Message-Reference)
-- [Proxy Hot-Reload internals](../../wiki/Proxy-Hot-Reload)
-- [CI and Release Process](../../wiki/CI-and-Release-Process)
-- [Project Structure](../../wiki/Project-Structure)
+- [Online GitHub Wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki)
+- [CI and Release Process](https://github.com/full-bars/urnetwork-3.23-fix/wiki/CI-and-Release-Process)
 
 ---
 

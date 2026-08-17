@@ -1,6 +1,8 @@
-# 🧭 Intermediate — Custom Setup
+# 🧭 Intermediate: Custom Setup & Proxy Management
 
-This guide walks you through a complete provider setup with explanations at each step. You'll choose an install method for your OS — systemd (Linux), launchd (macOS), a native Windows service, or Docker — configure your own proxy lists, and learn the daily commands to monitor your node.
+> **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · **🧭 Intermediate** · [🚀 Advanced](advanced.md)
+
+This guide walks you through a complete provider setup with explanations at each step. You will choose an install method for your OS (systemd on Linux, launchd on macOS, a native Windows service, or Docker), configure your own proxy lists, and learn the daily commands to monitor your node.
 
 ---
 
@@ -313,5 +315,9 @@ urnet-tools stop
 - launchd (macOS): `~/Library/Logs/com.urnetwork.provider/stdout.log` + `stderr.log`
 - Windows: `urnet-tools logs`
 - Docker: `docker logs -f urnetwork`
-- RAM logs, Linux/Docker only (survive process restarts, not host reboots — `/dev/shm` is tmpfs): `/dev/shm/urnetwork.log`
+- RAM logs, Linux/Docker only (survive process restarts, not host reboots: `/dev/shm` is tmpfs): `/dev/shm/urnetwork.log`
 - Events (persist across restarts): `~/.urnetwork/events.log`
+
+---
+
+> Navigation: [← 🐣 Beginner](beginner.md) | [🚀 Advanced Guide: Fleet & Performance →](advanced.md)
