@@ -1,14 +1,16 @@
-# 🚀 Advanced — Production Fleet
+# 🚀 Advanced: Production Fleet & Optimization
+
+> **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · [🧭 Intermediate](intermediate.md) · **🚀 Advanced**
 
 This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
 > [!NOTE]
-> This guide is Linux/Docker-focused because most of its tuning commands aren't implemented on macOS or Windows — but not all for the same reason:
-> - **`optimize`** is genuinely Linux-kernel-specific (sysctl tuning, conntrack kernel module, ZRAM, distro package installs) and has no realistic macOS/Windows equivalent.
-> - **`ramlogs`** depends on `/dev/shm` (Linux's tmpfs convention). Not a kernel limitation exactly, but there's no built-in equivalent on macOS or Windows today.
-> - **`turbo`/`eco`** are *not* kernel-dependent at all — they just persist `URNETWORK_PROFILE`/`GOMEMLIMIT`/`GOGC` env vars via a systemd override and restart. The provider binary reads those same env vars identically on every OS; the wrapper scripts on macOS and Windows simply haven't been extended with the convenience toggle yet. You can get the identical effect today by setting the env var directly (see [intermediate.md](intermediate.md)) before starting the provider.
+> This guide is Linux/Docker-focused because some commands are Linux-specific for hardware reasons:
+> - **`optimize`** is Linux-kernel-specific (sysctl tuning, conntrack kernel module, ZRAM, distro package installs) and has no realistic macOS/Windows equivalent.
+> - **`ramlogs`** depends on `/dev/shm` (Linux's tmpfs convention). No built-in equivalent on macOS or Windows today.
+> - **`turbo`/`eco`** are *not* kernel-dependent. The Go `urnet-tools` binary supports `turbo` and `eco` on all three platforms as of v3.23.0-fix.27.0. On Linux/macOS they write a persistent environment override; on Windows they set the equivalent registry/env value. You can also set `URNETWORK_PROFILE` directly in any environment.
 >
-> `self-heal` already exists as a real command on all three platforms.
+> `self-heal`, `proxy *`, `status`, `logs`, `summary`, and `report` work identically on all three platforms.
 
 ---
 
@@ -282,7 +284,15 @@ ssh user@<node-ip> "urnet-tools proxy summary"
 
 | Version | Impact |
 |---------|--------|
+| 30.0 | Cross-platform parity (Windows schtasks, macOS launchd), urnet-docker Design 2 host-side proxy ops. |
+| 29.0 | Go urnet-tools provider discovery, report URL runtime config, hot-restart subcommands. |
+| 28.0 | Standalone `urnet-docker` CLI for host-side Docker container discovery and delegation. |
+| 27.0 | Initial Go rewrite of urnet-tools suite with targeting refusal safety model. |
 | 26.4 | GOMEMLIMIT added for turbo profiles. Degraded-proxy reaper runs automatically. No config change needed. |
 | 26.3 | `URNETWORK_SKIP_AUDIT` env var to skip startup system audit. Hub PAKE auth, choose_network, auto Tier 4 for 8 GiB+ RAM. |
 | 26.2 | Hot-reload for hub commands, self-heal pool management (opt-in). |
 | 26.1 | Docker in-place updates, Go 1.26 toolchain, dl.fullbars.xyz URLs. |
+
+---
+
+> Navigation: [← 🐣 Beginner](beginner.md) | [← 🧭 Intermediate](intermediate.md) | [📚 Configuration Reference](../Configuration.md)
