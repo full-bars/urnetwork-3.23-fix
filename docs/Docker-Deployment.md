@@ -2,11 +2,14 @@
 
 This page keeps the copy-paste Docker examples from the README in one place. Use either `docker run` or Docker Compose, depending on how you prefer to manage containers.
 
-## 🛠️ Managing containers with urnet-docker
+## 🛠️ Managing Containers with `urnet-docker`
 
-`urnet-docker` is the host-side CLI for docker-deployed providers (v3.23.0-fix.28+). It runs **on the docker host, outside the containers** — it discovers provider containers, identifies each by its in-container JWT, and delegates commands into them via `docker exec`. It is not baked into the image.
+> [!IMPORTANT]
+> **Host-Side vs. In-Container Tooling:**
+> - **`urnet-docker`** runs **on the Docker host** (outside the containers). It discovers provider containers, reads their in-container JWTs, and dispatches management tasks directly.
+> - **`urnet-tools`** runs **inside the container** (accessible via `docker exec -it <container> urnet-tools <command>`).
 
-Install it once on the host (sha256-verified against the release API):
+Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
 ```sh
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
@@ -20,17 +23,18 @@ urnet-docker update          # update the tool binary itself (containers update 
 urnet-tools self-update      # same, for the process/systemd tool
 ```
 
-Usage:
+Common host-side commands:
 
 ```sh
 urnet-docker providers                          # list provider containers
 urnet-docker status --unit urfix                # status of one container
-urnet-docker exec --unit urfix -- urnet-tools proxy add --proxy_file=/tmp/p.txt
+urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host
 urnet-docker restart --unit urfix               # restart a container
-urnet-docker logs --unit urfix 100              # follow logs (RAMLOGS-aware)
+urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 ```
 
-> Containers themselves update by pulling new images and recreating the container — that is outside this tool's scope.
+> [!NOTE]
+> Containers themselves update by pulling new images and recreating the container (e.g. via Docker Compose or Watchtower).
 
 ## 🗄️ Image Registries
 
