@@ -74,19 +74,19 @@ If the install script didn't start the provider automatically:
 urnet-tools start
 ```
 
-Your provider is now running and earning.
+Your provider is now running and starting authentication.
 
 ---
 
 ## 5️⃣ Check that it's working
 
-Watch the logs for a client ID to appear — one per proxy deployed (at minimum the VPS IP itself gets one):
+Watch the logs for a client ID to appear (one per authenticated proxy endpoint, plus the host IP itself):
 
 ```sh
 urnet-tools logs
 ```
 
-When you see a client ID logged, the provider is connected and earning.
+When you see a client ID logged, the provider has successfully authenticated with the backend signaling network and is ready to route traffic.
 
 ---
 
