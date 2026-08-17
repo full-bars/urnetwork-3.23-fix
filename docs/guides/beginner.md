@@ -1,6 +1,8 @@
-# 🐣 Beginner — 5-Minute Quick Start
+# 🐣 Beginner: 5-Minute Quick Start
 
-This guide gets you from zero to a running provider in about five minutes. No jargon, no decisions — just copy, paste, go.
+> **Navigation:** [Guides Index](README.md) · **🐣 Beginner** · [🧭 Intermediate](intermediate.md) · [🚀 Advanced](advanced.md)
+
+This guide gets you from zero to a running provider in about five minutes. No jargon, no decisions: just copy, paste, go.
 
 ---
 
@@ -72,19 +74,19 @@ If the install script didn't start the provider automatically:
 urnet-tools start
 ```
 
-Your provider is now running and earning.
+Your provider is now running and starting authentication.
 
 ---
 
 ## 5️⃣ Check that it's working
 
-Watch the logs for a client ID to appear — one per proxy deployed (at minimum the VPS IP itself gets one):
+Watch the logs for a client ID to appear (one per authenticated proxy endpoint, plus the host IP itself):
 
 ```sh
 urnet-tools logs
 ```
 
-When you see a client ID logged, the provider is connected and earning.
+When you see a client ID logged, the provider has successfully authenticated with the backend signaling network and is ready to route traffic.
 
 ---
 
@@ -101,5 +103,9 @@ When you see a client ID logged, the provider is connected and earning.
 | Problem | Solution |
 |---------|----------|
 | `curl: command not found` | Install curl (`apt install curl` on Debian/Ubuntu; macOS ships curl by default) |
-| Auth code fails | The code may have expired — most auth codes default to 5-minute expiration. Generate a new one from [app.ur.network](https://app.ur.network), [ur.io](https://ur.io/), or the mobile app |
+| Auth code fails | The code may have expired (most auth codes default to 5-minute expiration). Generate a new one from [app.ur.network](https://app.ur.network), [ur.io](https://ur.io/), or the mobile app |
 | Provider won't start | Run `urnet-tools status` to see any error messages |
+
+---
+
+> Next step: [🧭 Intermediate Guide: Custom Setup & Proxies →](intermediate.md)

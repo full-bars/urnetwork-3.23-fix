@@ -9,7 +9,7 @@ This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` f
 | Profile | `URNETWORK_PROFILE` | RAM | Throughput | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **Auto** | `auto` | Any | Optimized | **Recommended.** Dynamically selects Tier based on RAM (Low, Balanced, Perf, or Extreme). |
-| **Turbo V8** | `turbo-v8` | 16 GiB+ | Maximum | Dedicated servers, max earnings |
+| **Turbo V8** | `turbo-v8` | 16 GiB+ | Maximum | Dedicated servers, maximum throughput and concurrency |
 | **Turbo V4** | `turbo-v4` | 4–16 GiB | High | Well-provisioned VPS |
 | *(default)* | *(unset)* | 2–4 GiB | Standard | General use |
 | **Eco** | `eco` | 1–2 GiB | Standard | Full throughput, GC-tuned for RAM constraints |
@@ -149,7 +149,7 @@ urnet-tools turbo         # show current state
 
 ### 🍃 Eco Mode
 
-Eco mode is for providers on RAM-constrained systems who still want full throughput and earnings. It leaves all buffer and contract sizes untouched and only tunes the GC.
+Eco mode is for providers on RAM-constrained systems who still want full throughput and standard buffer allocations. It leaves all buffer and contract sizes untouched and only tunes the GC.
 
 **What eco changes:**
 - GOGC: 100 → 50 (GC runs twice as often, keeping heap smaller at the cost of slightly more CPU)

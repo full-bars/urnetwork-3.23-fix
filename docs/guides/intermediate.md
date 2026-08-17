@@ -1,6 +1,8 @@
-# 🧭 Intermediate — Custom Setup
+# 🧭 Intermediate: Custom Setup & Proxy Management
 
-This guide walks you through a complete provider setup with explanations at each step. You'll choose an install method for your OS — systemd (Linux), launchd (macOS), a native Windows service, or Docker — configure your own proxy lists, and learn the daily commands to monitor your node.
+> **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · **🧭 Intermediate** · [🚀 Advanced](advanced.md)
+
+This guide walks you through a complete provider setup with explanations at each step. You will choose an install method for your OS (systemd on Linux, launchd on macOS, a native Windows service, or Docker), configure your own proxy lists, and learn the daily commands to monitor your node.
 
 ---
 
@@ -76,7 +78,7 @@ urnet-tools start
 urnet-tools proxy summary
 ```
 
-The summary shows proxy health, clients, and earnings.
+The summary displays proxy source breakdown (file/URL/internal), health state counts (Up/Connecting/Degraded/Dead), and URL feed cache status.
 
 ---
 
@@ -247,12 +249,12 @@ From inside the container, `urnet-tools` is on `PATH` (symlinked to `/usr/local/
 
 ## 📊 Daily commands
 
-These work on all platforms. On Docker, prefix with `docker exec urnetwork`. On macOS, `proxy summary` and `status` work the same way, but `proxy traffic` and `proxy health` aren't implemented in the wrapper — call the provider binary's `proxy summary` for the closest equivalent, or see the note in step 3 above for calling the binary directly.
+These work across all platforms via the Go `urnet-tools` binary (or on Docker via `urnet-docker` or `docker exec <container> urnet-tools`).
 
 | Command | What it does |
 |---------|-------------|
-| `urnet-tools proxy summary` | Health overview — proxy counts, traffic, earnings |
-| `urnet-tools proxy traffic` | Live proxy traffic snapshot |
+| `urnet-tools proxy summary` | Fleet summary: source breakdown (file/URL/internal), health state, URL feed cache |
+| `urnet-tools proxy traffic` | Live proxy traffic snapshot and max age |
 | `urnet-tools status` | Provider process status and uptime |
 | `urnet-tools proxy health` | Per-proxy up/degraded/dead status |
 
@@ -281,18 +283,17 @@ Set these before starting the provider — `export VAR=value` on Linux/macOS, `$
 | `URNETWORK_HOT_RESTART` | JWT reuse on restart | `1` (default), `0` to disable |
 | `PROXY_URL` | Auto-fetch proxies from a URL | `https://example.com/proxies.txt` |
 | `URNETWORK_SELF_HEAL` | Enable pressure-based pool management | `1` to enable (default off) |
-| `URNETWORK_SKIP_AUDIT` | Skip startup system audit (disk speed, ulimit, conntrack) — useful in Docker | `1` to skip (default off) |
+| `URNETWORK_SKIP_AUDIT` | Skip startup system audit (disk speed, ulimit, conntrack): useful in Docker | `1` to skip (default off) |
 
 ---
 
 ## 🔍 Checking proxy health
 
 ```sh
-urnet-tools proxy health         # Linux/Docker
-urnet-tools proxy health     # all platforms
+urnet-tools proxy health
 ```
 
-Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts. Not available through the macOS wrapper — see the note in step 3 of Option B.
+Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts.
 
 ---
 
@@ -313,5 +314,9 @@ urnet-tools stop
 - launchd (macOS): `~/Library/Logs/com.urnetwork.provider/stdout.log` + `stderr.log`
 - Windows: `urnet-tools logs`
 - Docker: `docker logs -f urnetwork`
-- RAM logs, Linux/Docker only (survive process restarts, not host reboots — `/dev/shm` is tmpfs): `/dev/shm/urnetwork.log`
+- RAM logs, Linux/Docker only (survive process restarts, not host reboots: `/dev/shm` is tmpfs): `/dev/shm/urnetwork.log`
 - Events (persist across restarts): `~/.urnetwork/events.log`
+
+---
+
+> Navigation: [← 🐣 Beginner](beginner.md) | [🚀 Advanced Guide: Fleet & Performance →](advanced.md)

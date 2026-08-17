@@ -1,5 +1,21 @@
 # Troubleshooting Guide
 
+## 🚨 Incident Quick Diagnosis Matrix
+
+> [!NOTE]
+> On Docker deployments, run these commands inside the container via `docker exec -it <container> urnet-tools <command>` or directly from the host using `urnet-docker <command> --unit <name>`.
+
+| Symptom / Error | Probable Cause | Action |
+| :--- | :--- | :--- |
+| `[t]auth error` / `[contract]oob err (N suppressed)` | Backend outage or signaling failure | Run `urnet-tools status`; monitor self-healing status with `urnet-tools self-heal status`. |
+| Container exits with code `78` | JWT expired, invalid, or unpersisted | Ensure `/root/.urnetwork` volume is mounted; check `USER_AUTH`/`PASSWORD` in env or re-authenticate via `urnetwork auth` (auth codes are single-use). |
+| Memory ballooning / OOM kills | High proxy count without memory profile | Set `URNETWORK_PROFILE=auto` or `eco`; enable `URNETWORK_SELF_HEAL=1`. |
+| Exit code `52` on `proxy refresh` | 8-hour warmup threshold not met | Run `urnet-tools proxy refresh --force` to bypass warmup gate. |
+| Disk space exhaustion | Unrotated logs filling `/var/log` or root | Enable `URNETWORK_RAMLOGS=1` or set `--log-opt max-size=10m --log-opt max-file=3`. |
+| Proxies marked `DEAD` or `DEGRADED` | Target proxy failure or connection drop | Run `urnet-tools proxy health` and prune with `urnet-tools proxy remove-dead`. |
+
+---
+
 ## 1. Exit Codes
 
 Every time the provider binary exits with a non-zero code, it prints a `FATAL [exit <code>]: ...` line to both stderr (visible in `docker logs`) and the ramlog file (`/dev/shm/urnetwork.log`, visible via `logs`). The message describes the failure and explains what happened.
@@ -8,12 +24,12 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 
 | Code | Meaning |
 |------|---------|
-| 10 | Home directory not found — the binary cannot determine where to store the JWT. |
-| 11 | Login request failed — a network error prevented reaching the API. |
-| 12 | API rejected the credentials — the username/password combination is wrong. |
-| 13 | Verification required — the account has not completed setup via the app or web. |
-| 14 | Auth code request failed — a network error prevented reaching the API. |
-| 15 | Auth code rejected — the code is expired, already used, or invalid. Auth codes are single-use; mount `/root/.urnetwork` as a persistent volume if restarting. |
+| 10 | Home directory not found: the binary cannot determine where to store the JWT. |
+| 11 | Login request failed: a network error prevented reaching the API. |
+| 12 | API rejected the credentials: the username/password combination is wrong. |
+| 13 | Verification required: the account has not completed setup via the app or web. |
+| 14 | Auth code request failed: a network error prevented reaching the API. |
+| 15 | Auth code rejected: the code is expired, already used, or invalid. Auth codes are single-use; mount `/root/.urnetwork` as a persistent volume if restarting. |
 | 16 | Could not create `~/.urnetwork` directory for JWT storage. |
 
 ### provide (provider runtime)
@@ -34,10 +50,10 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 
 | Code | Meaning |
 |------|---------|
-| 50 | Could not read `proxy.state` — the provider may not have started yet. |
+| 50 | Could not read `proxy.state`: the provider may not have started yet. |
 | 51 | Provider is not currently running. |
 | 52 | Provider has not reached the 8-hour warmup threshold. Use `--force` to override. |
-| 53 | Could not acquire the proxy lock — another operation is in progress. |
+| 53 | Could not acquire the proxy lock: another operation is in progress. |
 | 54 | Could not read the proxy source file. |
 | 55 | Could not determine the reload trigger path. |
 | 56 | Could not write the reload trigger. |
@@ -62,7 +78,7 @@ If your container exits unexpectedly:
 2. **Look up the code** in the tables above for the likely cause.
 3. **Read the ramlogs**: `docker exec <name> logs`
 4. **Exit 0** means a clean shutdown (SIGTERM or manual stop).
-5. **Exit 78** means the JWT expired — the script tried to re-authenticate. Verify `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` are set correctly.
+5. **Exit 78** means the JWT expired (the script attempted automatic re-authentication). Verify `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` are set correctly.
 6. **All other non-zero codes** indicate a configuration or environment problem. The fatal message describes the specific issue.
 
 ### Fatal messages always write to both logs and stderr
