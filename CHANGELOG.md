@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.2] — 2026-08-18
+### Added
+- **Post-quantum encryption now works end to end**: the provider enables its encrypted session layer on the serving client (PR #400), and the control channel routes encrypted handshakes by generation id (PR #401). An app with post-quantum encryption turned on completes the handshake instead of stalling at the 60 second timeout. The provider stays Opportunistic, so plaintext apps are unaffected.
+## [v3.23.0-fix.30.1] — 2026-08-17
+### Added
+- **SMTP policy layer**: port 25 stays local-only; ports 465 and 587 require TLS. Owner-scoped eviction, one RST per rejected flow, and hostname-shaped EHLO/HELO arguments (PR #392).
+- **CFAA IP blocklist sync**: tables updated from upstream's feed sources (PR #395).
+- **Go tools fixes**: stopped-provider discovery restored, auto-update timers create/remove correctly, bare container-name targets accepted, cross-user provider discovery, and false-positive dashboard units excluded (PRs #393, #396, #399).
+### Fixed
+- **Smoke-test harness**: proxy refresh waits for started_at; gh API 5xx retries in the labeler (PRs #397, #398).
+### Changed
+- **Documentation restructure**: configuration tables, guide navigation, troubleshooting matrix (PR #394).
+
 ## [v3.23.0-fix.30] — 2026-08-16
 ### Added
 - **urnet-docker host-side proxy commands**: `proxy add`, `clear`, `remove`, `add-source`, `remove-source`, `refresh`, and `remove-dead` now run from the host. The exec plumbing is hidden. Example: `urnet-docker proxy add ~/proxies.txt`.
