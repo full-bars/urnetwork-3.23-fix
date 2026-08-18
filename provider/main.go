@@ -3156,11 +3156,11 @@ func writeProviderClientKeySeed(seed []byte) error {
 
 // enableProviderEncryption turns on the per-peer e2e encryption sessions
 // (post-quantum key exchange) on a provider's serving client. The provider
-// serves plaintext and e2e peers seamlessly: a session only forms when an
-// initiator starts the handshake, and every enabled provider grows the
-// e2e-capable pool for post-quantum initiators. Opportunistic (not Required)
-// so older consumers that cannot establish a session are still served.
-// Mirrors the SDK provide path (sdk/device_local_provider.go).
+// serves plaintext and encrypted peers seamlessly: a session only forms when
+// an initiator starts the handshake, and every enabled provider increases
+// the set of peers that post-quantum initiators can reach. Opportunistic
+// (not Required) so older consumers that cannot establish a session are
+// still served.
 func enableProviderEncryption(clientSettings *connect.ClientSettings) {
 	if clientSettings.EncryptionSettings == nil {
 		clientSettings.EncryptionSettings = connect.DefaultEncryptionSettings()
