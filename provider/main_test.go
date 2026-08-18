@@ -647,3 +647,159 @@ func TestIsLongRunningSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// enableProviderEncryption must turn the provider's serving client into
+// EncryptionModeOpportunistic so it responds to post-quantum (Required)
+// consumers' handshakes while still serving plaintext consumers. It must
+// work whether or not EncryptionSettings was already populated (the provider
+// loads cert/key PEMs into it earlier in provideWithProxy), and it must never
+// pick Required (which would drop every non-PQE consumer).
+func TestEnableProviderEncryption(t *testing.T) {
+	t.Run("populates nil EncryptionSettings", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		settings.EncryptionSettings = nil
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings == nil {
+			t.Fatal("expected EncryptionSettings to be populated")
+		}
+		if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+			t.Fatalf("expected Mode=EncryptionModeOpportunistic, got %v", settings.EncryptionSettings.Mode)
+		}
+	})
+
+	t.Run("overrides existing Off mode to Opportunistic", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		// DefaultClientSettings ships EncryptionModeOff; simulate the provider
+		// having loaded cert material into it (as provideWithProxy does).
+		settings.EncryptionSettings.ProvideTlsCertificatePem = []byte("cert")
+		settings.EncryptionSettings.ProvideTlsPrivateKeyPem = []byte("key")
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+			t.Fatalf("expected Mode=EncryptionModeOpportunistic, got %v", settings.EncryptionSettings.Mode)
+		}
+	})
+
+	t.Run("preserves cert/key material", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		settings.EncryptionSettings.ProvideTlsCertificatePem = []byte("cert-pem")
+		settings.EncryptionSettings.ProvideTlsPrivateKeyPem = []byte("key-pem")
+		enableProviderEncryption(settings)
+		if string(settings.EncryptionSettings.ProvideTlsCertificatePem) != "cert-pem" {
+			t.Fatalf("cert pem clobbered: %q", settings.EncryptionSettings.ProvideTlsCertificatePem)
+		}
+		if string(settings.EncryptionSettings.ProvideTlsPrivateKeyPem) != "key-pem" {
+			t.Fatalf("key pem clobbered: %q", settings.EncryptionSettings.ProvideTlsPrivateKeyPem)
+		}
+	})
+
+	t.Run("never picks Required", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings.Mode == connect.EncryptionModeRequired {
+			t.Fatal("provider must not run Required (would drop plaintext consumers)")
+		}
+	})
+}
+
+// TestEnableProviderEncryptionSessionManager proves the provider's serving
+// settings (after enableProviderEncryption) produce a session manager that
+// actually builds a server TLS config and runs in Opportunistic mode, so it
+// can answer a post-quantum consumer's handshake. This protects the call site
+// in provideWithProxy as well as the helper: if the enable call were dropped,
+// ServerTlsConfig() would be nil again.
+func TestEnableProviderEncryptionSessionManager(t *testing.T) {
+	settings := connect.DefaultClientSettings()
+	settings.EncryptionSettings.Mode = connect.EncryptionModeOff
+	enableProviderEncryption(settings)
+
+	client := connect.NewClient(
+		context.Background(),
+		connect.NewId(),
+		connect.NewNoContractClientOob(),
+		settings,
+	)
+	defer client.Close()
+
+	mgr := client.EncryptionSessionManager()
+	if mgr == nil {
+		t.Fatal("expected an EncryptionSessionManager")
+	}
+	if mgr.Settings() == nil || mgr.Settings().Mode != connect.EncryptionModeOpportunistic {
+		t.Fatalf("expected Mode=Opportunistic on manager settings, got %v", mgr.Settings())
+	}
+	if mgr.ServerTlsConfig() == nil {
+		t.Fatal("expected ServerTlsConfig to be built (Mode != Off); provider cannot answer PQ handshakes without it")
+	}
+	if mgr.RequireEncryption() {
+		t.Fatal("provider must not run in Required mode (would drop plaintext consumers)")
+	}
+}
+
+// enableProviderEncryption must be a hard override to Opportunistic, not a
+// conditional upgrade. If some earlier code path (or a future change to
+// provideWithProxy) ever set Mode=Required before this call, the provider
+// would refuse every consumer that cannot complete a PQE handshake. This
+// guards against that regression by starting from Required and asserting the
+// call still forces Opportunistic.
+func TestEnableProviderEncryptionDowngradesRequiredMode(t *testing.T) {
+	settings := connect.DefaultClientSettings()
+	settings.EncryptionSettings.Mode = connect.EncryptionModeRequired
+
+	enableProviderEncryption(settings)
+
+	if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+		t.Fatalf("expected enableProviderEncryption to downgrade Required to Opportunistic, got %v", settings.EncryptionSettings.Mode)
+	}
+}
+
+// enableProviderEncryption is called once per proxy/provide loop iteration
+// in provideWithProxy, and could in principle run more than once against the
+// same *ClientSettings if that loop is ever restructured. Calling it
+// repeatedly must be idempotent: Mode stays Opportunistic and previously
+// loaded cert/key material is never clobbered.
+func TestEnableProviderEncryptionIdempotent(t *testing.T) {
+	settings := connect.DefaultClientSettings()
+	settings.EncryptionSettings.ProvideTlsCertificatePem = []byte("cert-pem")
+	settings.EncryptionSettings.ProvideTlsPrivateKeyPem = []byte("key-pem")
+
+	for i := 0; i < 3; i++ {
+		enableProviderEncryption(settings)
+	}
+
+	if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+		t.Fatalf("expected Mode=EncryptionModeOpportunistic after repeated calls, got %v", settings.EncryptionSettings.Mode)
+	}
+	if string(settings.EncryptionSettings.ProvideTlsCertificatePem) != "cert-pem" {
+		t.Fatalf("cert pem clobbered after repeated calls: %q", settings.EncryptionSettings.ProvideTlsCertificatePem)
+	}
+	if string(settings.EncryptionSettings.ProvideTlsPrivateKeyPem) != "key-pem" {
+		t.Fatalf("key pem clobbered after repeated calls: %q", settings.EncryptionSettings.ProvideTlsPrivateKeyPem)
+	}
+}
+
+// enableProviderEncryption must only touch Mode. It should not reset unrelated
+// EncryptionSettings fields (e.g. timeouts, companion control flag) back to
+// zero values or otherwise disturb them, since those are configured
+// independently of the encryption mode toggle.
+func TestEnableProviderEncryptionPreservesUnrelatedFields(t *testing.T) {
+	settings := connect.DefaultClientSettings()
+	wantTlsTimeout := settings.EncryptionSettings.TlsTimeout
+	wantPollInterval := settings.EncryptionSettings.RequiredCipherPollInterval
+	wantUseCompanion := settings.EncryptionSettings.EncryptionControlUseCompanion
+	wantIdleTimeout := settings.EncryptionSettings.IdleTimeout
+
+	enableProviderEncryption(settings)
+
+	if settings.EncryptionSettings.TlsTimeout != wantTlsTimeout {
+		t.Fatalf("TlsTimeout changed: got %v, want %v", settings.EncryptionSettings.TlsTimeout, wantTlsTimeout)
+	}
+	if settings.EncryptionSettings.RequiredCipherPollInterval != wantPollInterval {
+		t.Fatalf("RequiredCipherPollInterval changed: got %v, want %v", settings.EncryptionSettings.RequiredCipherPollInterval, wantPollInterval)
+	}
+	if settings.EncryptionSettings.EncryptionControlUseCompanion != wantUseCompanion {
+		t.Fatalf("EncryptionControlUseCompanion changed: got %v, want %v", settings.EncryptionSettings.EncryptionControlUseCompanion, wantUseCompanion)
+	}
+	if settings.EncryptionSettings.IdleTimeout != wantIdleTimeout {
+		t.Fatalf("IdleTimeout changed: got %v, want %v", settings.EncryptionSettings.IdleTimeout, wantIdleTimeout)
+	}
+}
