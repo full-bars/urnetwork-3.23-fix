@@ -2766,7 +2766,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Image tags**: `latest` = last tagged release; `main` = current code; CI pulls `main`.
 
-## 126. Post-Quantum Encryption Interop (v3.23.0-fix.30.2, PR #400 + #401)
+## 126. Post-Quantum Encryption Interop + urnet-tools Usage Text (v3.23.0-fix.30.2, PR #400 + #401 + #402)
 
 **Purpose**: Make post-quantum encryption work end to end between an app and a provider. This closes a gap where an app with post-quantum encryption turned on could never complete a handshake to a fork provider and stalled at the 60-second timeout.
 
@@ -2784,6 +2784,8 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - This ports the epoch-generation mechanism upstream `urnetwork/connect` already has (`epochId`, `adoptEpochId`, `epochIdOf`, `deliverHandshake(payload, epochId)`, `receivePeerIdentityProofForEpoch`). The fork previously had none of these.
 - Scope: the port carries the epoch identity and inbound routing. It intentionally does not port upstream's `identityFailedTerminal` safeguard or the `UnknownWrapNack` subsystem, which live in a different layer. Peer controllers using the stock app SDK are wire-compatible.
 - Tests: ~28 epoch/identity tests (adopt, stale/newer routing, legacy skip, malformed rejection, proto round-trips).
+
+**Also in this release** (PR #402): `urnet-tools usage()` now lists the full command surface, grouped into core, performance, proxy, hub, and maintenance sections. Before, it showed only a few core commands.
 
 **Verified live**: an app with post-quantum encryption turned on connected to a fork provider running both fixes. The handshake completed in milliseconds. Traffic flowed and became billable. No 60-second timeout.
 
