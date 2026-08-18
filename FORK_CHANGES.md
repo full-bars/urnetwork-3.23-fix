@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.29.1 (re-cut after the pre-release shakedown blocked the first attempt on a provider startup panic)
+**Current Version**: v3.23.0-fix.30.2
 
 ---
 
@@ -2765,3 +2765,28 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - CI: setup-go native cache + retry; gofmt enforced; auth verification in tests.
 
 **Image tags**: `latest` = last tagged release; `main` = current code; CI pulls `main`.
+
+## 126. Post-Quantum Encryption Interop (v3.23.0-fix.30.2, PR #400 + #401)
+
+**Purpose**: Make post-quantum encryption work end to end between an app and a provider. This closes a gap where an app with post-quantum encryption turned on could never complete a handshake to a fork provider and stalled at the 60-second timeout.
+
+**PR #400 — provider enables encrypted sessions** (`provider/main.go`):
+- The serving client now sets `EncryptionModeOpportunistic` instead of leaving the mode unset (`EncryptionModeOff`).
+- Before, the session layer never started because the mode was off. A TLS ClientHello from an encrypted app connection was never answered.
+- The mode is Opportunistic, not Required, so plaintext consumers are still served. This mirrors the stock provider build (`sdk/device_local_provider.go`).
+- Helper `enableProviderEncryption` nil-checks and creates the settings, preserves cert/key fields, and never sets Required. Tests cover the mode switch, a live session layer (`TestEnableProviderEncryptionSessionManager`, mutation-verified), idempotency, and field preservation.
+
+**PR #401 — control channel routes by handshake generation** (`transfer_encrypt.go`, `protocol/transfer.proto`):
+- Added `optional bytes epoch_id = 5` to `EncryptedControl` (regenerated `transfer.pb.go`). Unset keeps legacy behavior.
+- `tlsHandshakeEpoch` gains an `epochId` (a ULID minted by the TLS-client role). `epochIdOf`/`adoptEpochId` bind the responder to the initiator's generation.
+- Outbound handshake and identity-proof controls are stamped with the epoch id.
+- Inbound routing: `deliverHandshake(payload, epochId)` and `receivePeerIdentityProofForEpoch(payload, epochId)`. Older generations are ignored. A newer generation resets the handshake onto the newer one. A malformed nonempty epoch id is rejected outright (never downgraded to legacy).
+- This ports the epoch-generation mechanism upstream `urnetwork/connect` already has (`epochId`, `adoptEpochId`, `epochIdOf`, `deliverHandshake(payload, epochId)`, `receivePeerIdentityProofForEpoch`). The fork previously had none of these.
+- Scope: the port carries the epoch identity and inbound routing. It intentionally does not port upstream's `identityFailedTerminal` safeguard or the `UnknownWrapNack` subsystem, which live in a different layer. Peer controllers using the stock app SDK are wire-compatible.
+- Tests: ~28 epoch/identity tests (adopt, stale/newer routing, legacy skip, malformed rejection, proto round-trips).
+
+**Verified live**: an app with post-quantum encryption turned on connected to a fork provider running both fixes. The handshake completed in milliseconds. Traffic flowed and became billable. No 60-second timeout.
+
+**How to Identify in New Upstream**:
+- Search for `epochId` in `transfer_encrypt.go` (upstream has them; the fork did not before this work).
+- The provider's serving client sets `EncryptionModeOpportunistic`.
