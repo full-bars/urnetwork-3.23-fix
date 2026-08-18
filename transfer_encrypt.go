@@ -1541,9 +1541,22 @@ func (self *peerEncryptionSession) DeliverEncryptedControl(ec *protocol.Encrypte
 	// pre-epoch peer, which keeps the legacy behavior for that control.
 	var epochId Id
 	if raw := ec.GetEpochId(); 0 < len(raw) {
-		if parsed, err := IdFromBytes(raw); err == nil {
-			epochId = parsed
+		parsed, err := IdFromBytes(raw)
+		// A nonempty epoch_id that does not decode to a nonzero Id is
+		// malformed. Treating it as legacy (empty) would let a foreign
+		// handshake or identity proof enter the current TLS state: a foreign
+		// proof would fail against our exporter and could tombstone the
+		// session. Reject the whole control instead.
+		if err != nil || parsed == (Id{}) {
+			if self.client.log.V(1).Enabled() {
+				self.client.log.Infof(
+					"[tls]%s DeliverEncryptedControl: invalid epoch_id (%d bytes)\n",
+					self.logTag, len(raw),
+				)
+			}
+			return
 		}
+		epochId = parsed
 	}
 	switch ec.ControlType {
 	case protocol.EncryptedControlType_EncryptedControlHandshake:
