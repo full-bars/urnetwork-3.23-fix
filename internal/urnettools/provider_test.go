@@ -66,16 +66,33 @@ func TestSelectTargetSingleProvider(t *testing.T) {
 	}
 }
 
-// TestSelectTargetAmbiguousRefuses: multiple providers and no target MUST
-// refuse — this is the incident-class guard.
-func TestSelectTargetAmbiguousRefuses(t *testing.T) {
+// TestSelectTargetDefaultsToCurrentUserProvider: multiple providers across
+// different users, with exactly one running provider for the CURRENT user,
+// resolve to that provider (the pre-multi-provider default restored).
+func TestSelectTargetDefaultsToCurrentUserProvider(t *testing.T) {
 	providers := []Provider{
-		{User: "urnet", Unit: "urnetwork-native.service", Network: "tacogonzalez3000"},
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test"},
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	p, err := selectTarget(providers, Target{})
+	if err != nil {
+		t.Fatalf("expected default to current-user provider, got error: %v", err)
+	}
+	if p.Network != "mesocyclone" {
+		t.Errorf("selected %s, want mesocyclone (current user's provider)", p.Network)
+	}
+}
+
+// TestSelectTargetSameUserAmbiguousRefuses: two RUNNING providers for the
+// CURRENT user and no target MUST refuse — this is the genuine ambiguity guard.
+func TestSelectTargetSameUserAmbiguousRefuses(t *testing.T) {
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: currentUserName(), Unit: "urnetwork-test.service", Network: "othernet", Running: true},
 	}
 	_, err := selectTarget(providers, Target{})
 	if err == nil {
-		t.Fatal("expected refusal with multiple providers and no target")
+		t.Fatal("expected refusal with two running providers for the current user")
 	}
 	if got := err.Error(); !contains(got, "specify a target") {
 		t.Errorf("error should ask for a target, got: %s", got)
