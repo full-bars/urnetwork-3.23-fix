@@ -2453,6 +2453,7 @@ func provide(opts docopt.Opts) {
 			clientSettings.EncryptionSettings.ProvideTlsCertificatePem = certPem
 			clientSettings.EncryptionSettings.ProvideTlsPrivateKeyPem = keyPem
 		}
+		enableProviderEncryption(clientSettings)
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
 
 		autoEco := connect.ApplyAutoTuning(clientSettings, localUserNatSettings)
@@ -3151,6 +3152,20 @@ func writeProviderClientKeySeed(seed []byte) error {
 		return err
 	}
 	return atomicWriteFile(p, seed, 0600)
+}
+
+// enableProviderEncryption turns on the per-peer e2e encryption sessions
+// (post-quantum key exchange) on a provider's serving client. The provider
+// serves plaintext and e2e peers seamlessly: a session only forms when an
+// initiator starts the handshake, and every enabled provider grows the
+// e2e-capable pool for post-quantum initiators. Opportunistic (not Required)
+// so older consumers that cannot establish a session are still served.
+// Mirrors the SDK provide path (sdk/device_local_provider.go).
+func enableProviderEncryption(clientSettings *connect.ClientSettings) {
+	if clientSettings.EncryptionSettings == nil {
+		clientSettings.EncryptionSettings = connect.DefaultEncryptionSettings()
+	}
+	clientSettings.EncryptionSettings.Mode = connect.EncryptionModeOpportunistic
 }
 
 // readProviderTlsCertAndKey loads the sequence-level TLS server cert
