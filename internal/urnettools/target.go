@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -123,19 +124,21 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 	case 1:
 		return providers[0], nil
 	default:
-		// Restore the pre-multi-provider default: act on the single running
-		// provider for the current user. Only when two or more running
-		// providers belong to the current user do we refuse (that is the
-		// genuine ambiguity the operator must resolve by naming one).
-		// Note: this assumes an unprivileged operator, who could not act on
-		// another user's provider anyway. Root callers with no provider of
-		// their own fall through to the inventory below.
-		if p, err := defaultProvider(providers); err == nil {
-			return p, nil
-		} else {
-			// Keep the reason the default failed visible in the inventory
-			// refusal so the operator understands why targeting is needed.
-			defaultReason = err.Error()
+		// Restore the pre-multi-provider default for UNPRIVILEGED callers:
+		// act on the single running provider for the current user. Root can
+		// act on every provider on the box, so root always falls through to
+		// the full inventory refusal instead of silently auto-picking (same
+		// contract as selectTargetOrSoleAccessible). Only when two or more
+		// running providers belong to the current user does an unprivileged
+		// caller get refused (that is the genuine ambiguity to resolve).
+		if os.Geteuid() != 0 {
+			if p, err := defaultProvider(providers); err == nil {
+				return p, nil
+			} else {
+				// Keep the reason the default failed visible in the
+				// inventory refusal below.
+				defaultReason = err.Error()
+			}
 		}
 		// No unambiguous current-user provider. Fall back to the inventory
 		// refusal so the operator can see everything on the box.
