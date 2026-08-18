@@ -645,6 +645,14 @@ type tlsHandshakeEpoch struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// epochId is this handshake generation's wire identity (see
+	// EncryptedControl.epoch_id). The TLS-client role mints it at epoch
+	// construction; the TLS-server role leaves it zero until it adopts the
+	// initiator's id from the first handshake control. Every control this
+	// epoch emits carries it, so the peer can tell a control for THIS
+	// generation from one for a superseded (or newer) generation.
+	epochId Id
+
 	transport     *sequenceTlsTransport
 	tlsConn       *tls.Conn
 	handshakeDone chan struct{}
@@ -905,6 +913,33 @@ func (self *peerEncryptionSession) isCurrentEpoch(e *tlsHandshakeEpoch) bool {
 	return self.epoch == e
 }
 
+// epochIdOf reads an epoch's wire identity under the state lock.
+func (self *peerEncryptionSession) epochIdOf(e *tlsHandshakeEpoch) Id {
+	if e == nil {
+		return Id{}
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return e.epochId
+}
+
+// adoptEpochId binds the responder's current epoch to the initiator's
+// generation name. Returns false when the epoch already carries a DIFFERENT
+// id, which means this control belongs to another generation and the caller
+// must reset onto it rather than feeding it to the wrong TLS state.
+func (self *peerEncryptionSession) adoptEpochId(e *tlsHandshakeEpoch, epochId Id) bool {
+	if e == nil || epochId == (Id{}) {
+		return true
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if e.epochId == (Id{}) {
+		e.epochId = epochId
+		return true
+	}
+	return e.epochId == epochId
+}
+
 // startEpoch ensures a handshake epoch exists, creating the first one if
 // none has been started. Idempotent: a no-op when an epoch is already
 // present. Called from the inbound-delivery paths, which reuse rather than
@@ -992,6 +1027,9 @@ func (self *peerEncryptionSession) buildAndStartEpochWithLock() {
 			tlsCfg = resolveSendTlsConfig(self.settings.ClientTlsConfig)
 		}
 		e.tlsConn = tls.Client(e.transport, tlsCfg)
+		// The TLS-client role mints the handshake generation's wire
+		// identity; the server adopts it from the first inbound control.
+		e.epochId = NewId()
 	case sequenceTlsRoleServer:
 		tlsCfg = cloneTlsConfig(self.serverTlsConfig)
 		if tlsCfg == nil {
@@ -1089,12 +1127,19 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 		if self.role == sequenceTlsRoleServer {
 			self.markServerFlightSent(e)
 		}
-		self.sendEncryptedControl(&protocol.EncryptedControl{
+		ec := &protocol.EncryptedControl{
 			ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
 			Payload:     b,
 			SessionRole: self.role.toProtobuf(),
 			Companion:   self.companion,
-		})
+		}
+		// carry this handshake generation's wire identity so the peer can
+		// route the control to the matching generation (unset for a
+		// responder that has not yet adopted an id keeps legacy behavior)
+		if epochId := self.epochIdOf(e); epochId != (Id{}) {
+			ec.EpochId = epochId.Bytes()
+		}
+		self.sendEncryptedControl(ec)
 	}
 }
 
@@ -1271,12 +1316,16 @@ func (self *peerEncryptionSession) sendIdentityProofOnce(e *tlsHandshakeEpoch) {
 		"[tls]%s sendIdentityProofOnce: signing %d-byte exporter, sending %d-byte proof\n",
 		self.logTag, len(exporter), len(payload),
 	)
-	self.sendEncryptedControl(&protocol.EncryptedControl{
+	ec := &protocol.EncryptedControl{
 		ControlType: protocol.EncryptedControlType_EncryptedControlIdentityProof,
 		Payload:     payload,
 		SessionRole: self.role.toProtobuf(),
 		Companion:   self.companion,
-	})
+	}
+	if epochId := self.epochIdOf(e); epochId != (Id{}) {
+		ec.EpochId = epochId.Bytes()
+	}
+	self.sendEncryptedControl(ec)
 }
 
 // maybeVerifyPendingPeerIdentityProof tries to verify a buffered peer
