@@ -123,19 +123,22 @@ func stateDirFor(env map[string]string) string {
 	return ""
 }
 
-// providerVersion returns the version string from a provider binary by
-// running "<binary> --version" with a short timeout. Errors yield "".
+// providerVersion returns the version string from a running provider process
+// by executing "/proc/<pid>/exe --version" with a short timeout. This works
+// even when the on-disk binary has been renamed to .old or deleted, because
+// the kernel's /proc/<pid>/exe symlink points to the live inode.
 //
 // The timeout is essential: Discover() calls this for every matched process
 // synchronously, so a single hung provider binary would otherwise wedge
 // every command including read-only `providers` (review finding H1).
-func providerVersion(binary string) string {
-	if binary == "" {
+func providerVersion(pid int) string {
+	if pid <= 0 {
 		return ""
 	}
+	exePath := fmt.Sprintf("/proc/%d/exe", pid)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd := exec.CommandContext(ctx, exePath, "--version")
 	cmd.Env = append(os.Environ(), "URNETWORK_NO_DOWNLOAD_TARBALL=1")
 	out, err := cmd.Output()
 	if err != nil {

@@ -90,7 +90,7 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		p.Version = providerVersion(p.Binary)
+		p.Version = providerVersion(p.PID)
 		out = append(out, p)
 	}
 	return out
