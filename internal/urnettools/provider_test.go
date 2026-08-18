@@ -71,6 +71,9 @@ func TestSelectTargetSingleProvider(t *testing.T) {
 // different users, with exactly one running provider for the CURRENT user,
 // resolve to that provider (the pre-multi-provider default restored).
 func TestSelectTargetDefaultsToCurrentUserProvider(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller (auto-default applies)
+	defer func() { isPrivileged = orig }()
 	providers := []Provider{
 		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
 		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
