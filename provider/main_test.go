@@ -647,3 +647,56 @@ func TestIsLongRunningSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// enableProviderEncryption must turn the provider's serving client into
+// EncryptionModeOpportunistic so it responds to post-quantum (Required)
+// consumers' handshakes while still serving plaintext consumers. It must
+// work whether or not EncryptionSettings was already populated (the provider
+// loads cert/key PEMs into it earlier in provideWithProxy), and it must never
+// pick Required (which would drop every non-PQE consumer).
+func TestEnableProviderEncryption(t *testing.T) {
+	t.Run("populates nil EncryptionSettings", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		settings.EncryptionSettings = nil
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings == nil {
+			t.Fatal("expected EncryptionSettings to be populated")
+		}
+		if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+			t.Fatalf("expected Mode=EncryptionModeOpportunistic, got %v", settings.EncryptionSettings.Mode)
+		}
+	})
+
+	t.Run("overrides existing Off mode to Opportunistic", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		// DefaultClientSettings ships EncryptionModeOff; simulate the provider
+		// having loaded cert material into it (as provideWithProxy does).
+		settings.EncryptionSettings.ProvideTlsCertificatePem = []byte("cert")
+		settings.EncryptionSettings.ProvideTlsPrivateKeyPem = []byte("key")
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings.Mode != connect.EncryptionModeOpportunistic {
+			t.Fatalf("expected Mode=EncryptionModeOpportunistic, got %v", settings.EncryptionSettings.Mode)
+		}
+	})
+
+	t.Run("preserves cert/key material", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		settings.EncryptionSettings.ProvideTlsCertificatePem = []byte("cert-pem")
+		settings.EncryptionSettings.ProvideTlsPrivateKeyPem = []byte("key-pem")
+		enableProviderEncryption(settings)
+		if string(settings.EncryptionSettings.ProvideTlsCertificatePem) != "cert-pem" {
+			t.Fatalf("cert pem clobbered: %q", settings.EncryptionSettings.ProvideTlsCertificatePem)
+		}
+		if string(settings.EncryptionSettings.ProvideTlsPrivateKeyPem) != "key-pem" {
+			t.Fatalf("key pem clobbered: %q", settings.EncryptionSettings.ProvideTlsPrivateKeyPem)
+		}
+	})
+
+	t.Run("never picks Required", func(t *testing.T) {
+		settings := connect.DefaultClientSettings()
+		enableProviderEncryption(settings)
+		if settings.EncryptionSettings.Mode == connect.EncryptionModeRequired {
+			t.Fatal("provider must not run Required (would drop plaintext consumers)")
+		}
+	})
+}
