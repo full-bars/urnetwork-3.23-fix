@@ -122,6 +122,26 @@ func TestSelectTargetNoMatch(t *testing.T) {
 	}
 }
 
+// TestSelectTargetRootAlwaysRefuses: root can act on every provider, so the
+// auto-default must never apply for root — even a single root-owned running
+// provider must not be silently picked. Root always gets the inventory
+// refusal (same contract as selectTargetOrSoleAccessible).
+func TestSelectTargetRootAlwaysRefuses(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root behavior only testable as root")
+	}
+	providers := []Provider{
+		{User: "root", Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+	}
+	_, err := selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal for root even with a single root-owned provider")
+	}
+	if got := err.Error(); !contains(got, "specify a target") {
+		t.Errorf("error should ask for a target, got: %s", got)
+	}
+}
+
 // TestSelectTargetZeroProviders: nothing on the box is an error, not a
 // silent no-op.
 func TestSelectTargetZeroProviders(t *testing.T) {

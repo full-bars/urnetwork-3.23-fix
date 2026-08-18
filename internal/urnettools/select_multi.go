@@ -84,12 +84,16 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 	case len(providers) == 0:
 		return nil, fmt.Errorf("no providers found on this box")
 	default:
-		// Restore the pre-multi-provider default: act on the single running
-		// provider for the current user. Refuse only when that is genuinely
-		// ambiguous (two or more running providers for the current user).
-		if p, err := defaultProvider(providers); err == nil {
-			chosen = []Provider{p}
-			break
+		// Restore the pre-multi-provider default for unprivileged callers:
+		// act on the single running provider for the current user. Root
+		// falls through to the inventory refusal (root can act on all
+		// providers). Refuse when the default is genuinely ambiguous (two
+		// or more running providers for the current user).
+		if os.Geteuid() != 0 {
+			if p, err := defaultProvider(providers); err == nil {
+				chosen = []Provider{p}
+				break
+			}
 		}
 		return nil, ambiguousError(providers)
 	}
