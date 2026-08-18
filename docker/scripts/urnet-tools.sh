@@ -246,51 +246,58 @@ do_update() {
     fi
 
     echo "Downloading $version..."
-    tarball="$(mktemp /tmp/urnetwork-update-XXXXXX.tar.gz)"
+    # busybox mktemp requires XXXXXX as the LAST characters of the template;
+    # a suffix (e.g. .tar.gz) fails with "Invalid argument". Create ONE temp
+    # DIR (mktemp -d, XXXXXX at the end, busybox-safe) and put the tarball
+    # inside it. One cleanup path (rm -rf "$tmpdir") removes everything.
+    tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)" || {
+        echo "ERROR: could not create temp dir."
+        exit 1
+    }
+    tarball="$tmpdir/update.tar.gz"
     if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
         echo "Primary download failed, trying GitHub mirror..."
         curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
             echo "ERROR: download failed."
-            rm -f "$tarball"
+            rm -rf "$tmpdir"
             exit 1
         }
     fi
 
-    tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"
     tar -xzf "$tarball" -C "$tmpdir" || {
         echo "ERROR: failed to extract tarball."
-        rm -rf "$tmpdir" "$tarball"
+        rm -rf "$tmpdir"
         exit 1
     }
 
     if [ ! -f "$tmpdir/provider" ]; then
         echo "ERROR: provider binary not found in tarball."
         ls -la "$tmpdir/" 2>/dev/null || true
-        rm -rf "$tmpdir" "$tarball"
+        rm -rf "$tmpdir"
         exit 1
     fi
 
     staged_provider="$(mktemp "${provider_bin}.XXXXXX")" || {
-        rm -rf "$tmpdir" "$tarball"
+        rm -rf "$tmpdir"
         exit 1
     }
     if ! cp "$tmpdir/provider" "$staged_provider" || ! chmod +x "$staged_provider"; then
-        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        rm -rf "$tmpdir" "$staged_provider"
         exit 1
     fi
 
     marker_dir="$HOME/.urnetwork"
-    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
-    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; rm -rf "$tmpdir" "$tarball" "$staged_provider"; exit 1; }
+    mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; rm -rf "$tmpdir" "$staged_provider"; exit 1; }
+    touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; rm -rf "$tmpdir" "$staged_provider"; exit 1; }
 
     if ! mv -f "$staged_provider" "$provider_bin"; then
         rm -f "$marker_dir/update-pending"
-        rm -rf "$tmpdir" "$tarball" "$staged_provider"
+        rm -rf "$tmpdir" "$staged_provider"
         exit 1
     fi
 
-    rm -rf "$tmpdir" "$tarball"
     echo "Provider binary updated to $version."
+    rm -rf "$tmpdir"
 
     rc=0
     pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
