@@ -54,12 +54,73 @@ func TestSelectTargetsExcludeSubtracts(t *testing.T) {
 	}
 }
 
-// TestSelectTargetsAmbiguousRefuses: multiple providers, no criteria, not
-// interactive -> refuse with inventory (same guard as selectTarget).
+// TestSelectTargetsAmbiguousRefuses: multiple providers (none running for the
+// current user), no criteria, not interactive -> refuse with inventory.
 func TestSelectTargetsAmbiguousRefuses(t *testing.T) {
+	// threeProviders() are all OTHER users and none Running, so there is no
+	// current-user default to pick -> the inventory refusal still applies.
 	_, err := selectTargets(threeProviders(), Target{}, nil, nil, false)
 	if err == nil {
-		t.Fatal("expected refusal with multiple providers and no criteria")
+		t.Fatal("expected refusal with multiple non-current-user providers")
+	}
+	if !contains(err.Error(), "specify a target") {
+		t.Errorf("refusal should mention targeting, got: %s", err)
+	}
+}
+
+// TestSelectTargetsNoCurrentUserProviderFallsBackToInventory: providers exist
+// but none run for the current user -> the default path finds nothing and the
+// inventory refusal is shown with the reason attached.
+func TestSelectTargetsNoCurrentUserProviderFallsBackToInventory(t *testing.T) {
+	if isPrivileged() {
+		t.Skip("default-provider fallback only applies to unprivileged callers")
+	}
+	ps := []Provider{
+		{User: "other-user", Unit: "a.service", Network: "a", Running: true},
+		{User: "another-user", Unit: "b.service", Network: "b", Running: true},
+	}
+	_, err := selectTargets(ps, Target{}, nil, nil, false)
+	if err == nil {
+		t.Fatal("expected refusal when no current-user provider exists")
+	}
+	if !contains(err.Error(), "specify a target") {
+		t.Errorf("refusal should mention targeting, got: %s", err)
+	}
+	// The reason the default failed must be visible (not silently discarded).
+	if !contains(err.Error(), "no running provider") {
+		t.Errorf("refusal should carry the default failure reason, got: %s", err)
+	}
+}
+
+// TestSelectTargetsDefaultsToCurrentUserProvider: the current user owns one
+// running provider among several -> default picks it (old-tool behavior).
+func TestSelectTargetsDefaultsToCurrentUserProvider(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller
+	defer func() { isPrivileged = orig }()
+	ps := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	got, err := selectTargets(ps, Target{}, nil, nil, false)
+	if err != nil {
+		t.Fatalf("expected default to current-user provider, got: %v", err)
+	}
+	if len(got) != 1 || got[0].Network != "mesocyclone" {
+		t.Errorf("want current user's provider, got %+v", got)
+	}
+}
+
+// TestSelectTargetsSameUserAmbiguousRefuses: two running providers for the
+// current user and no criteria -> refuse (genuine ambiguity).
+func TestSelectTargetsSameUserAmbiguousRefuses(t *testing.T) {
+	ps := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: currentUserName(), Unit: "urnetwork-test.service", Network: "othernet", Running: true},
+	}
+	_, err := selectTargets(ps, Target{}, nil, nil, false)
+	if err == nil {
+		t.Fatal("expected refusal with two running current-user providers")
 	}
 	if !contains(err.Error(), "specify a target") {
 		t.Errorf("refusal should mention targeting, got: %s", err)
