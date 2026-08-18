@@ -2,11 +2,12 @@
 # Tests for the docker/scripts/urnet-tools.sh "update" operation's tarball
 # handling.
 #
-# Regression coverage for the fix that replaced the fixed, predictable
-# /tmp/urnetwork-update.tar.gz path with a unique file created via
-# `mktemp /tmp/urnetwork-update-XXXXXX.tar.gz`, and made sure every cleanup
-# path (`rm -f`/`rm -rf`) that used to reference the hardcoded name now
-# references that unique $tarball variable instead.
+# Regression coverage for the update tarball handling. It replaced the fixed,
+# predictable /tmp/urnetwork-update.tar.gz path with a random temp DIR created
+# via `mktemp -d /tmp/urnetwork-update-XXXXXX` (the XXXXXX suffix is required:
+# busybox mktemp rejects templates that end in anything else, e.g. a .tar.gz
+# suffix). The tarball lives inside that dir as update.tar.gz, and every
+# cleanup path removes the dir with rm -rf.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -79,8 +80,17 @@ SCRIPT_COPY="$TEMP_DIR/urnet-tools.sh"
 sed "s#/app/urnetwork_#${APP_DIR}/urnetwork_#" "$ORIG_SCRIPT" > "$SCRIPT_COPY"
 chmod +x "$SCRIPT_COPY"
 
-if ! grep -q "mktemp /tmp/urnetwork-update-XXXXXX.tar.gz" "$SCRIPT_COPY"; then
-    echo "❌ FATAL: expected mktemp tarball line not found in script copy (script may have changed)"
+# busybox mktemp requires XXXXXX to be the LAST characters of the template; a
+# suffix (like the old ".tar.gz") makes it fail with "Invalid argument". The
+# script must create ONE temp DIR (mktemp -d, XXXXXX at the end) and place the
+# tarball inside it. Assert the broken .tar.gz-suffixed template is GONE and
+# the busybox-safe mktemp -d form is present.
+if grep -q 'mktemp /tmp/urnetwork-update-XXXXXX.tar.gz' "$SCRIPT_COPY"; then
+    echo "❌ FATAL: busybox-incompatible .tar.gz-suffixed mktemp template still present in script copy"
+    exit 1
+fi
+if ! grep -q 'mktemp -d /tmp/urnetwork-update-XXXXXX' "$SCRIPT_COPY"; then
+    echo "❌ FATAL: expected busybox-safe mktemp -d temp dir not found in script copy (script may have changed)"
     exit 1
 fi
 
@@ -243,7 +253,7 @@ run_update() {
     ec="${ec:-0}"
 }
 
-TARBALL_PATTERN='^/tmp/urnetwork-update-[A-Za-z0-9]{6}\.tar\.gz$'
+TARBALL_PATTERN='^/tmp/urnetwork-update-[A-Za-z0-9]{6}/update\.tar\.gz$'
 
 # ============================================================================
 # SECTION 1: Successful download on the first (primary) attempt
