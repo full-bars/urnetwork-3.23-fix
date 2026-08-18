@@ -95,6 +95,9 @@ func TestSelectTargetsNoCurrentUserProviderFallsBackToInventory(t *testing.T) {
 // TestSelectTargetsDefaultsToCurrentUserProvider: the current user owns one
 // running provider among several -> default picks it (old-tool behavior).
 func TestSelectTargetsDefaultsToCurrentUserProvider(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller
+	defer func() { isPrivileged = orig }()
 	ps := []Provider{
 		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
 		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
