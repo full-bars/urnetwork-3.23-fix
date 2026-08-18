@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"crypto/ed25519"
 	"testing"
 	"time"
@@ -15,7 +16,8 @@ func epochRoutingSession(t *testing.T, role sequenceTlsRole, epochId Id) (*peerE
 	t.Helper()
 	// Reuse the real session constructor so self.client / self.client.log are
 	// non-nil, but never start the epoch machinery (no background pumps).
-	sess, _ := newTestEncryptionSession(t, role)
+	sess, cleanup := newTestEncryptionSession(t, role)
+	t.Cleanup(cleanup)
 	sess.stateLock.Lock()
 	if sess.epoch != nil && sess.epoch.cancel != nil {
 		sess.epoch.cancel()
@@ -73,12 +75,15 @@ func TestEpochRoutingDropsStaleGeneration(t *testing.T) {
 // TestStaleIdentityProofDoesNotTombstone verifies a foreign-epoch identity
 // proof is ignored (converged or dropped), never marking the live epoch failed.
 func TestStaleIdentityProofDoesNotTombstone(t *testing.T) {
+	// Mint the foreign id FIRST so it is genuinely OLDER than the live
+	// epoch's id (ULIDs are time-ordered). The stale-proof routing branch
+	// must ignore it outright (never evaluate, never fail).
+	older := NewId()
 	gen := NewId()
 	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, gen)
-	// A proof for the SAME generation is accepted for buffering/verify.
-	sess.receivePeerIdentityProofForEpoch(make([]byte, ed25519.SignatureSize), gen)
+	sess.receivePeerIdentityProofForEpoch(make([]byte, ed25519.SignatureSize), older)
 	if e.identityFailed {
-		t.Fatal("same-generation proof must not mark the epoch failed")
+		t.Fatal("a foreign-generation proof must not mark the epoch failed")
 	}
 }
 
@@ -309,5 +314,36 @@ func TestDeliverEncryptedControlResetsOntoNewerGeneration(t *testing.T) {
 	}
 	if got := sess.epochIdOf(e2); got != newer {
 		t.Fatalf("expected the fresh epoch to adopt the newer generation: got %s want %s", got, newer)
+	}
+}
+
+// TestDeliverEncryptedControlMalformedEpochIdRejected verifies a control with
+// a nonempty epoch_id that fails to decode (or decodes to zero) is rejected
+// outright, never downgraded to the legacy path where it could feed foreign
+// bytes into the live TLS state.
+func TestDeliverEncryptedControlMalformedEpochIdRejected(t *testing.T) {
+	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, NewId())
+	// Give the session a real epoch with a transport so we can observe whether
+	// the payload is delivered. DeliverEncryptedControl with a nonempty
+	// undecodable epoch_id must drop the WHOLE control: the payload must
+	// never reach the transport inbox.
+	transport := newSequenceTlsTransport(context.Background())
+	e.transport = transport
+	sess.epoch = e
+
+	sess.DeliverEncryptedControl(&protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
+		Payload:     []byte("foreign bytes"),
+		EpochId:     []byte{0xff, 0xfe}, // not a valid ulid
+	})
+
+	transport.inboxLock.Lock()
+	inboxLen := len(transport.inboxBuf)
+	transport.inboxLock.Unlock()
+	if inboxLen != 0 {
+		t.Fatalf("malformed epoch_id control's payload reached the transport (inbox %d bytes); must be dropped", inboxLen)
+	}
+	if sess.currentEpoch() != e {
+		t.Fatal("malformed epoch_id control must not reset the epoch")
 	}
 }
