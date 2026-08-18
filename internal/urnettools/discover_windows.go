@@ -119,6 +119,13 @@ func discoverStopped(running []Provider) []Provider {
 	return nil
 }
 
+// currentUserName is the shared selection-code entry point on Windows. It
+// delegates to currentUser (%USERNAME%) so defaultProvider behaves the same
+// way on every platform.
+func currentUserName() string {
+	return currentUser()
+}
+
 // narrowToAccessible is a no-op on Windows: there's no systemd -M cross-user
 // enumeration gap the way Linux has (see discover_unix.go), so the ghost-
 // provider permission case doesn't apply here.

@@ -5,6 +5,7 @@ package urnettools
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -100,6 +101,19 @@ func macStateDir() string {
 // stopped installs), so there are no additional providers to add.
 func discoverStopped(running []Provider) []Provider {
 	return nil
+}
+
+// currentUserName returns the invoking user's login name. Mirrors the unix
+// implementation so shared selection code (defaultProvider) compiles and
+// behaves correctly on macOS.
+func currentUserName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return os.Getenv("LOGNAME")
 }
 
 // narrowToAccessible is a no-op on macOS: launchd has no cross-user
