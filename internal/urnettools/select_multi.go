@@ -278,7 +278,7 @@ func matchKey(p Provider) string {
 func ambiguousErrorWithReason(providers []Provider, reason string) error {
 	err := ambiguousError(providers)
 	if reason != "" {
-		return fmt.Errorf("%s(%s)\n", err.Error(), reason)
+		return fmt.Errorf("%s(%s)", strings.TrimRight(err.Error(), "\n"), reason)
 	}
 	return err
 }
