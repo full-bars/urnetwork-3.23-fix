@@ -122,3 +122,9 @@ func currentUserName() string {
 func narrowToAccessible(providers []Provider) []Provider {
 	return providers
 }
+
+// platformIsPrivileged on darwin: euid==0 (root). Non-root users are
+// unprivileged and get the auto-default.
+func platformIsPrivileged() bool {
+	return os.Geteuid() == 0
+}
