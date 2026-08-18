@@ -5,6 +5,7 @@ package urnettools
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -102,9 +103,28 @@ func discoverStopped(running []Provider) []Provider {
 	return nil
 }
 
+// currentUserName returns the invoking user's login name. Mirrors the unix
+// implementation so shared selection code (defaultProvider) compiles and
+// behaves correctly on macOS.
+func currentUserName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return os.Getenv("LOGNAME")
+}
+
 // narrowToAccessible is a no-op on macOS: launchd has no cross-user
 // enumeration gap the way systemd's -M does, so the Linux ghost-provider
 // permission case (see discover_unix.go) doesn't apply here.
 func narrowToAccessible(providers []Provider) []Provider {
 	return providers
+}
+
+// platformIsPrivileged on darwin: euid==0 (root). Non-root users are
+// unprivileged and get the auto-default.
+func platformIsPrivileged() bool {
+	return os.Geteuid() == 0
 }

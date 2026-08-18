@@ -84,7 +84,21 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 	case len(providers) == 0:
 		return nil, fmt.Errorf("no providers found on this box")
 	default:
-		return nil, ambiguousError(providers)
+		// Restore the pre-multi-provider default for unprivileged callers:
+		// act on the single running provider for the current user. Root
+		// falls through to the inventory refusal (root can act on all
+		// providers). Refuse when the default is genuinely ambiguous (two
+		// or more running providers for the current user).
+		var defaultReason string
+		if !isPrivileged() {
+			if p, err := defaultProvider(providers); err == nil {
+				chosen = []Provider{p}
+				break
+			} else {
+				defaultReason = err.Error()
+			}
+		}
+		return nil, ambiguousErrorWithReason(providers, defaultReason)
 	}
 
 	if len(exclude) > 0 {
@@ -256,6 +270,17 @@ func matchKey(p Provider) string {
 		return p.StateDir
 	}
 	return p.User + "@" + p.Network
+}
+
+// ambiguousErrorWithReason is ambiguousError plus the reason the default
+// selection could not apply, when one exists. Keeps the batch paths (which
+// route through selectTargets) as informative as the single-target path.
+func ambiguousErrorWithReason(providers []Provider, reason string) error {
+	err := ambiguousError(providers)
+	if reason != "" {
+		return fmt.Errorf("%s(%s)", strings.TrimRight(err.Error(), "\n"), reason)
+	}
+	return err
 }
 
 // ambiguousError renders the refusal message with the inventory.

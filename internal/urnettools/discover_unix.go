@@ -339,3 +339,9 @@ func currentUserName() string {
 	}
 	return os.Getenv("LOGNAME")
 }
+
+// platformIsPrivileged on linux: euid==0 (root). Non-root users are
+// unprivileged and get the auto-default.
+func platformIsPrivileged() bool {
+	return os.Geteuid() == 0
+}

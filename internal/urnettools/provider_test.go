@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -66,16 +67,36 @@ func TestSelectTargetSingleProvider(t *testing.T) {
 	}
 }
 
-// TestSelectTargetAmbiguousRefuses: multiple providers and no target MUST
-// refuse — this is the incident-class guard.
-func TestSelectTargetAmbiguousRefuses(t *testing.T) {
+// TestSelectTargetDefaultsToCurrentUserProvider: multiple providers across
+// different users, with exactly one running provider for the CURRENT user,
+// resolve to that provider (the pre-multi-provider default restored).
+func TestSelectTargetDefaultsToCurrentUserProvider(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller (auto-default applies)
+	defer func() { isPrivileged = orig }()
 	providers := []Provider{
-		{User: "urnet", Unit: "urnetwork-native.service", Network: "tacogonzalez3000"},
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test"},
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	p, err := selectTarget(providers, Target{})
+	if err != nil {
+		t.Fatalf("expected default to current-user provider, got error: %v", err)
+	}
+	if p.Network != "mesocyclone" {
+		t.Errorf("selected %s, want mesocyclone (current user's provider)", p.Network)
+	}
+}
+
+// TestSelectTargetSameUserAmbiguousRefuses: two RUNNING providers for the
+// CURRENT user and no target MUST refuse — this is the genuine ambiguity guard.
+func TestSelectTargetSameUserAmbiguousRefuses(t *testing.T) {
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: currentUserName(), Unit: "urnetwork-test.service", Network: "othernet", Running: true},
 	}
 	_, err := selectTarget(providers, Target{})
 	if err == nil {
-		t.Fatal("expected refusal with multiple providers and no target")
+		t.Fatal("expected refusal with two running providers for the current user")
 	}
 	if got := err.Error(); !contains(got, "specify a target") {
 		t.Errorf("error should ask for a target, got: %s", got)
@@ -102,6 +123,101 @@ func TestSelectTargetNoMatch(t *testing.T) {
 	providers := []Provider{{User: "urnet", Network: "tacogonzalez3000"}}
 	if _, err := selectTarget(providers, Target{Network: "nope"}); err == nil {
 		t.Fatal("expected error for non-matching target")
+	}
+}
+
+// TestIsPrivilegedSanity: on Windows the gate must treat the caller as
+// privileged (os.Geteuid returns -1, which must not auto-default an
+// administrator). On unix, non-root callers are unprivileged.
+// TestSelectTargetRootAlwaysRefusesRootBehavior: the auto-default must NEVER
+// apply for a privileged caller (root / Windows admin), even with a single
+// running provider. Uses the isPrivileged seam so this runs in CI regardless
+// of the actual euid (the readEnviron seam pattern).
+func TestSelectTargetRootAlwaysRefusesRootBehavior(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return true } // simulate root
+	defer func() { isPrivileged = orig }()
+	if currentUserName() == "" {
+		t.Skip("no current user name to form the fixture")
+	}
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// Privileged caller with the current user's own running provider present:
+	// must still refuse (privileged callers never auto-default).
+	_, err := selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal for privileged caller with multiple providers")
+	}
+	if got := err.Error(); !contains(got, "specify a target") {
+		t.Errorf("error should ask for a target, got: %s", got)
+	}
+}
+
+// TestSelectTargetStoppedCurrentUserProviderExcluded: a current-user provider
+// that is NOT running must not be auto-selected. The default only applies to
+// RUNNING providers, so a stopped one falls through to the inventory.
+func TestSelectTargetStoppedCurrentUserProviderExcluded(t *testing.T) {
+	if currentUserName() == "" {
+		t.Skip("no current user name to form the fixture")
+	}
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged
+	defer func() { isPrivileged = orig }()
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: false},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// The current-user provider is STOPPED, so defaultProvider finds no running
+	// current-user provider and must refuse (fall through to inventory), not
+	// pick the stopped one.
+	_, err := selectTarget(providers, Target{})
+	_ = err
+	_, err = selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal when the current-user provider is stopped")
+	}
+	if got := err.Error(); !contains(got, "specify a target") {
+		t.Errorf("error should ask for a target, got: %s", got)
+	}
+}
+
+// TestSelectTargetBlankUserExcluded: a provider with a blank User (owner
+// unknown) must never be auto-selected as if it belonged to the caller.
+func TestSelectTargetBlankUserExcluded(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false }
+	defer func() { isPrivileged = orig }()
+	providers := []Provider{
+		{User: "", Unit: "urnetwork-ghost.service", Network: "ghostnet", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// Blank User is skipped by defaultProvider (owner unknown); with no
+	// current-user running provider the result is a refusal, never a pick.
+	_, err := selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal for a blank-User provider (owner unknown)")
+	}
+}
+
+// TestIsPrivilegedSanity: on Windows the seam must treat the caller as
+// privileged (os.Geteuid returns -1); on unix it reflects the euid.
+func TestIsPrivilegedSanity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		if !isPrivileged() {
+			t.Error("isPrivileged must be true on Windows (administrator auto-default guard)")
+		}
+		return
+	}
+	if os.Geteuid() == 0 {
+		if !isPrivileged() {
+			t.Error("isPrivileged must be true for root")
+		}
+	} else {
+		if isPrivileged() {
+			t.Error("isPrivileged must be false for non-root unix caller")
+		}
 	}
 }
 

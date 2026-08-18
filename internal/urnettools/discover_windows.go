@@ -119,9 +119,35 @@ func discoverStopped(running []Provider) []Provider {
 	return nil
 }
 
+// currentUserName is the shared selection-code entry point on Windows. It
+// delegates to currentUser (%USERNAME%) so defaultProvider behaves the same
+// way on every platform.
+func currentUserName() string {
+	return currentUser()
+}
+
 // narrowToAccessible is a no-op on Windows: there's no systemd -M cross-user
 // enumeration gap the way Linux has (see discover_unix.go), so the ghost-
 // provider permission case doesn't apply here.
 func narrowToAccessible(providers []Provider) []Provider {
 	return providers
+}
+
+// platformIsPrivileged on Windows does a real elevation check: whether the
+// current process token is elevated (Windows Administrator). Ordinary
+// non-elevated Windows users are unprivileged and get the auto-default, just
+// like non-root unix users. os.Geteuid is unusable on Windows (returns -1),
+// so we inspect the token elevation directly.
+func platformIsPrivileged() bool {
+	tok, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return false // cannot determine elevation; assume unprivileged
+	}
+	defer tok.Close()
+	var elevated uint32
+	sz := uint32(unsafe.Sizeof(elevated))
+	// TokenElevation expects a *byte buffer; the elevated DWORD is written there.
+	err = windows.GetTokenInformation(tok, windows.TokenElevation,
+		(*byte)(unsafe.Pointer(&elevated)), sz, &sz)
+	return err == nil && elevated != 0
 }
