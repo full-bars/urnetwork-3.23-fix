@@ -575,8 +575,32 @@ func shortID(id string) string {
 // `status all` lists every provider on the box across all users (the
 // discovery inventory).
 func cmdStatus(args []string) error {
+	// `status all` prompts the operator to pick one provider (numbers, or a
+	// target), then shows that provider's systemd status. On non-interactive
+	// stdin (CI, pipes) it falls back to listing the full inventory table —
+	// the picker would otherwise hang on a silent pipe.
 	if len(args) == 1 && args[0] == "all" {
-		return cmdProviders(nil)
+		providers := Discover()
+		if len(providers) == 0 {
+			return fmt.Errorf("no providers found on this box")
+		}
+		// A lone provider (common fleet box) auto-selects without prompting.
+		if len(providers) == 1 {
+			return statusFor(providers[0])
+		}
+		// Non-interactive stdin (CI, pipes) must not hang on the picker; fall
+		// back to the full inventory table.
+		if !stdinIsInteractive() {
+			return cmdProviders(nil)
+		}
+		choice, err := interactivePick(providers)
+		if err != nil {
+			return err
+		}
+		if len(choice) != 1 {
+			return fmt.Errorf("status requires exactly one provider, got %d", len(choice))
+		}
+		return statusFor(choice[0])
 	}
 	t, _, err := parseTargetFlags(args)
 	if err != nil {
@@ -590,6 +614,16 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
+	return statusFor(p)
+}
+
+// statusFor shows the systemd status for a provider: the legacy shell
+// `urnet-tools status` ran `systemctl --user status urnetwork.service`, so a
+// unit-backed provider runs `systemctl status` (user scope via -M <user>@ for
+// user units, system scope otherwise) and passes the output through
+// unchanged. Providers without a unit (docker, raw processes) fall back to
+// the summary table.
+func statusFor(p Provider) error {
 	if p.Unit != "" {
 		return unitCommand(p, "status")
 	}
