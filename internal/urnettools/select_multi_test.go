@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -232,5 +233,56 @@ func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
 			t.Fatalf("matchKey collision: %q", k)
 		}
 		seen[k] = true
+	}
+}
+
+// TestCmdStatusAllInteractivePick: `status all` uses interactivePick to let
+// the operator choose ONE provider by number, then statusFor shows that
+// provider's status. This tests the resolution half (box-independent): a
+// simulated user choosing entry 2 must resolve to urnetwork-beta.service,
+// and choosing two entries yields both (cmdStatus's exactly-one guard then
+// rejects).
+func TestCmdStatusAllInteractivePick(t *testing.T) {
+	forceInteractiveForTest(t)
+	orig := stdinReader
+	defer func() { stdinReader = orig }()
+
+	ps := threeProviders()
+
+	// Entry 2 = urnetwork-beta.service.
+	stdinReader = bufio.NewReader(strings.NewReader("2\n"))
+	chosen, err := interactivePick(ps)
+	if err != nil {
+		t.Fatalf("interactivePick(2): %v", err)
+	}
+	if len(chosen) != 1 || chosen[0].Unit != "urnetwork-beta.service" {
+		t.Errorf("interactivePick(2) = %+v, want [urnetwork-beta.service]", chosen)
+	}
+
+	// Choosing two entries is rejected by cmdStatus's exactly-one guard.
+	stdinReader = bufio.NewReader(strings.NewReader("1,2\n"))
+	multi, err := interactivePick(ps)
+	if err != nil || len(multi) != 2 {
+		t.Fatalf("interactivePick(1,2) = %+v, %v; want 2 choices", multi, err)
+	}
+}
+
+// TestCmdStatusAllMultipleChoiceRejectedByGuard: interactivePick allows
+// multi-select, but cmdStatus requires exactly one provider. Verify the
+// multi-choice set is what statusFor's caller sees (cmdStatus's exactly-one
+// guard then rejects) — box-independent resolution half.
+func TestCmdStatusAllMultipleChoiceRejectedByGuard(t *testing.T) {
+	forceInteractiveForTest(t)
+	orig := stdinReader
+	defer func() { stdinReader = orig }()
+
+	ps := threeProviders()
+	stdinReader = bufio.NewReader(strings.NewReader("all\n"))
+	chosen, err := interactivePick(ps)
+	if err != nil {
+		t.Fatalf("interactivePick(all): %v", err)
+	}
+	if len(chosen) != 3 {
+		t.Errorf("interactivePick(all) = %d providers, want 3", len(chosen))
 	}
 }
