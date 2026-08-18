@@ -2,8 +2,6 @@ package urnettools
 
 import (
 	"fmt"
-	"os"
-	"runtime"
 	"strings"
 )
 
@@ -56,18 +54,12 @@ func (t Target) matchProvider(p Provider) bool {
 }
 
 // isPrivileged reports whether the caller can act on another user's provider.
-// On unix this is euid==0 (root). On Windows os.Geteuid is unavailable and
-// returns -1, which must NOT be treated as unprivileged in a way that
-// auto-defaults a Windows Administrator — so Windows is always treated as
-// privileged for the auto-default guard (rootHint uses the same rule).
-// It is a package var so tests can exercise both sides without actually
-// running as root (the readEnviron seam pattern).
-var isPrivileged = func() bool {
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return os.Geteuid() == 0
-}
+// On unix this is euid==0 (root). On Windows it is a real elevation check
+// (administrator token), NOT "always true": ordinary Windows users must get
+// the auto-default just like unprivileged unix users. It is a package var
+// seam so tests can exercise both sides without the real privilege state
+// (the readEnviron seam pattern).
+var isPrivileged = platformIsPrivileged
 
 // defaultProvider resolves the "old tool" default for the no-target case:
 // the single RUNNING provider for the CURRENT OS user. This restores the
