@@ -194,7 +194,11 @@ jobs:
             ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
             # :latest is the STABLE release — only on v3.23.0-fix.* tags.
-            type=match,pattern=v3\.23\.0-fix\.(.*),group=1
+            # group=0 keeps the FULL semver tag (v3.23.0-fix.30.2) so
+            # docker pull with the exact release tag works (matches
+            # release notes, the shakedown, and docker.go). group=1
+            # stripped the v3.23.0-fix. prefix and broke those pulls.
+            type=match,pattern=v3\.23\.0-fix\..*,group=0
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') }}
             # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
