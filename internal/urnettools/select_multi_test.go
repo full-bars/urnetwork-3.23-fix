@@ -68,6 +68,23 @@ func TestSelectTargetsAmbiguousRefuses(t *testing.T) {
 	}
 }
 
+// TestSelectTargetsNoCurrentUserProviderFallsBackToInventory: providers exist
+// but none run for the current user -> the default path finds nothing and the
+// inventory refusal is shown with the reason attached.
+func TestSelectTargetsNoCurrentUserProviderFallsBackToInventory(t *testing.T) {
+	ps := []Provider{
+		{User: "other-user", Unit: "a.service", Network: "a", Running: true},
+		{User: "another-user", Unit: "b.service", Network: "b", Running: true},
+	}
+	_, err := selectTargets(ps, Target{}, nil, nil, false)
+	if err == nil {
+		t.Fatal("expected refusal when no current-user provider exists")
+	}
+	if !contains(err.Error(), "specify a target") {
+		t.Errorf("refusal should mention targeting, got: %s", err)
+	}
+}
+
 // TestSelectTargetsDefaultsToCurrentUserProvider: the current user owns one
 // running provider among several -> default picks it (old-tool behavior).
 func TestSelectTargetsDefaultsToCurrentUserProvider(t *testing.T) {
