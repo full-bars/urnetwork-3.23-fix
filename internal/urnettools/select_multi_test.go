@@ -72,6 +72,9 @@ func TestSelectTargetsAmbiguousRefuses(t *testing.T) {
 // but none run for the current user -> the default path finds nothing and the
 // inventory refusal is shown with the reason attached.
 func TestSelectTargetsNoCurrentUserProviderFallsBackToInventory(t *testing.T) {
+	if isPrivileged() {
+		t.Skip("default-provider fallback only applies to unprivileged callers")
+	}
 	ps := []Provider{
 		{User: "other-user", Unit: "a.service", Network: "a", Running: true},
 		{User: "another-user", Unit: "b.service", Network: "b", Running: true},
@@ -82,6 +85,10 @@ func TestSelectTargetsNoCurrentUserProviderFallsBackToInventory(t *testing.T) {
 	}
 	if !contains(err.Error(), "specify a target") {
 		t.Errorf("refusal should mention targeting, got: %s", err)
+	}
+	// The reason the default failed must be visible (not silently discarded).
+	if !contains(err.Error(), "no running provider") {
+		t.Errorf("refusal should carry the default failure reason, got: %s", err)
 	}
 }
 

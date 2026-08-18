@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -52,6 +53,18 @@ func (t Target) matchProvider(p Provider) bool {
 		return p.StateDir == t.StateDir
 	}
 	return false
+}
+
+// isPrivileged reports whether the caller can act on another user's provider.
+// On unix this is euid==0 (root). On Windows os.Geteuid is unavailable and
+// returns -1, which must NOT be treated as unprivileged in a way that
+// auto-defaults a Windows Administrator — so Windows is always treated as
+// privileged for the auto-default guard (rootHint uses the same rule).
+func isPrivileged() bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return os.Geteuid() == 0
 }
 
 // defaultProvider resolves the "old tool" default for the no-target case:
@@ -131,7 +144,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		// contract as selectTargetOrSoleAccessible). Only when two or more
 		// running providers belong to the current user does an unprivileged
 		// caller get refused (that is the genuine ambiguity to resolve).
-		if os.Geteuid() != 0 {
+		if !isPrivileged() {
 			if p, err := defaultProvider(providers); err == nil {
 				return p, nil
 			} else {
