@@ -7,6 +7,7 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.30.2] — 2026-08-18
 ### Added
 - **Post-quantum encryption now works end to end**: the provider enables its encrypted session layer on the serving client (PR #400), and the control channel routes encrypted handshakes by generation id (PR #401). An app with post-quantum encryption turned on completes the handshake instead of stalling at the 60-second timeout. The provider stays Opportunistic, so plaintext apps are unaffected.
+
 ## [v3.23.0-fix.30.1] — 2026-08-17
 ### Added
 - **SMTP policy layer**: port 25 stays local-only; ports 465 and 587 require TLS. Owner-scoped eviction, one RST per rejected flow, and hostname-shaped EHLO/HELO arguments (PR #392).
