@@ -518,5 +518,19 @@ message EncryptedControl {
     // responder replies under `EncryptionControlUseCompanion`, independent of
     // this bit).
     bool companion = 4;
+    // Epoch (handshake generation) this control belongs to, as a ulid
+    // (changes 2026-08). The TLS-client role mints it per epoch; the
+    // TLS-server role adopts it from the inbound handshake and echoes it.
+    //
+    // Without it, epochs have no wire identity: under churn one side
+    // re-handshakes (new epoch, new TLS exporter) while the other holds the
+    // old one, and the late identity proof — bound to the NEW exporter —
+    // fails signature verification against the OLD, which is indistinguishable
+    // from manipulation and terminally tombstones the session while the
+    // established peer keeps encrypting into it (a full data stall).
+    // Carrying the epoch lets the receiver route a control to the right
+    // generation, and reset toward a newer one, instead of misjudging it.
+    // Unset (legacy peers) keeps the pre-epoch behavior for that control.
+    optional bytes epoch_id = 5;
 }
 
