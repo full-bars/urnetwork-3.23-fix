@@ -700,3 +700,37 @@ func TestEnableProviderEncryption(t *testing.T) {
 		}
 	})
 }
+
+// TestEnableProviderEncryptionSessionManager proves the provider's serving
+// settings (after enableProviderEncryption) produce a session manager that
+// actually builds a server TLS config and runs in Opportunistic mode, so it
+// can answer a post-quantum consumer's handshake. This protects the call site
+// in provideWithProxy as well as the helper: if the enable call were dropped,
+// ServerTlsConfig() would be nil again.
+func TestEnableProviderEncryptionSessionManager(t *testing.T) {
+	settings := connect.DefaultClientSettings()
+	settings.EncryptionSettings.Mode = connect.EncryptionModeOff
+	enableProviderEncryption(settings)
+
+	client := connect.NewClient(
+		context.Background(),
+		connect.NewId(),
+		connect.NewNoContractClientOob(),
+		settings,
+	)
+	defer client.Close()
+
+	mgr := client.EncryptionSessionManager()
+	if mgr == nil {
+		t.Fatal("expected an EncryptionSessionManager")
+	}
+	if mgr.Settings() == nil || mgr.Settings().Mode != connect.EncryptionModeOpportunistic {
+		t.Fatalf("expected Mode=Opportunistic on manager settings, got %v", mgr.Settings())
+	}
+	if mgr.ServerTlsConfig() == nil {
+		t.Fatal("expected ServerTlsConfig to be built (Mode != Off); provider cannot answer PQ handshakes without it")
+	}
+	if mgr.RequireEncryption() {
+		t.Fatal("provider must not run in Required mode (would drop plaintext consumers)")
+	}
+}
