@@ -53,6 +53,42 @@ func (t Target) matchProvider(p Provider) bool {
 	return false
 }
 
+// defaultProvider resolves the "old tool" default for the no-target case:
+// the single RUNNING provider for the CURRENT OS user. This restores the
+// pre-multi-provider behavior where status/logs/update/etc. just acted on
+// "the" provider on the box. It refrains (returns an error) only when:
+//   - zero running providers belong to the current user (fall back handled
+//     by the caller), OR
+//   - two or more running providers belong to the current user (the
+//     genuine ambiguity guard — same-user providers are indistinguishable
+//     by OS account, so the operator must name one).
+//
+// Providers owned by OTHER users are ignored: the caller (an unprivileged
+// operator) could not act on them anyway without root, and the old tool
+// never saw them.
+func defaultProvider(providers []Provider) (Provider, error) {
+	current := currentUserName()
+	var mine []Provider
+	for _, p := range providers {
+		if p.User != "" && p.User == current && p.Running {
+			mine = append(mine, p)
+		}
+	}
+	switch len(mine) {
+	case 0:
+		return Provider{}, fmt.Errorf("no running provider for user %q on this box; specify a target (--unit / --user / --network / --network-id / --state-dir)", current)
+	case 1:
+		return mine[0], nil
+	default:
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d providers found for user %q — specify a target to disambiguate (--unit / --network / --network-id):\n", len(mine), current)
+		for _, p := range mine {
+			fmt.Fprintf(&b, "  %s  net=%s state=%s\n", providerLabel(p), p.Network, p.StateDir)
+		}
+		return Provider{}, fmt.Errorf("%s", b.String())
+	}
+}
+
 // selectTarget resolves the providers list against a target (or no target).
 //
 // Rules:
@@ -86,7 +122,15 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 	case 1:
 		return providers[0], nil
 	default:
-		// The guard: multiple providers and no target = refuse.
+		// Restore the pre-multi-provider default: act on the single running
+		// provider for the current user. Only when two or more running
+		// providers belong to the current user do we refuse (that is the
+		// genuine ambiguity the operator must resolve by naming one).
+		if p, err := defaultProvider(providers); err == nil {
+			return p, nil
+		}
+		// No unambiguous current-user provider. Fall back to the inventory
+		// refusal so the operator can see everything on the box.
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --network-id / --state-dir):\n", len(providers))
 		for _, p := range providers {
