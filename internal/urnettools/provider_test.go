@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -119,6 +120,27 @@ func TestSelectTargetNoMatch(t *testing.T) {
 	providers := []Provider{{User: "urnet", Network: "tacogonzalez3000"}}
 	if _, err := selectTarget(providers, Target{Network: "nope"}); err == nil {
 		t.Fatal("expected error for non-matching target")
+	}
+}
+
+// TestIsPrivilegedSanity: on Windows the gate must treat the caller as
+// privileged (os.Geteuid returns -1, which must not auto-default an
+// administrator). On unix, non-root callers are unprivileged.
+func TestIsPrivilegedSanity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		if !isPrivileged() {
+			t.Error("isPrivileged must be true on Windows (administrator auto-default guard)")
+		}
+		return
+	}
+	if os.Geteuid() == 0 {
+		if !isPrivileged() {
+			t.Error("isPrivileged must be true for root")
+		}
+	} else {
+		if isPrivileged() {
+			t.Error("isPrivileged must be false for non-root unix caller")
+		}
 	}
 }
 
