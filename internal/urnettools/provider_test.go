@@ -126,6 +126,80 @@ func TestSelectTargetNoMatch(t *testing.T) {
 // TestIsPrivilegedSanity: on Windows the gate must treat the caller as
 // privileged (os.Geteuid returns -1, which must not auto-default an
 // administrator). On unix, non-root callers are unprivileged.
+// TestSelectTargetRootAlwaysRefusesRootBehavior: the auto-default must NEVER
+// apply for a privileged caller (root / Windows admin), even with a single
+// running provider. Uses the isPrivileged seam so this runs in CI regardless
+// of the actual euid (the readEnviron seam pattern).
+func TestSelectTargetRootAlwaysRefusesRootBehavior(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return true } // simulate root
+	defer func() { isPrivileged = orig }()
+	if currentUserName() == "" {
+		t.Skip("no current user name to form the fixture")
+	}
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// Privileged caller with the current user's own running provider present:
+	// must still refuse (privileged callers never auto-default).
+	_, err := selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal for privileged caller with multiple providers")
+	}
+	if got := err.Error(); !contains(got, "specify a target") {
+		t.Errorf("error should ask for a target, got: %s", got)
+	}
+}
+
+// TestSelectTargetStoppedCurrentUserProviderExcluded: a current-user provider
+// that is NOT running must not be auto-selected. The default only applies to
+// RUNNING providers, so a stopped one falls through to the inventory.
+func TestSelectTargetStoppedCurrentUserProviderExcluded(t *testing.T) {
+	if currentUserName() == "" {
+		t.Skip("no current user name to form the fixture")
+	}
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged
+	defer func() { isPrivileged = orig }()
+	providers := []Provider{
+		{User: currentUserName(), Unit: "urnetwork.service", Network: "mesocyclone", Running: false},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// The current-user provider is STOPPED, so defaultProvider finds no running
+	// current-user provider and must refuse (fall through to inventory), not
+	// pick the stopped one.
+	_, err := selectTarget(providers, Target{})
+	_ = err
+	_, err = selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal when the current-user provider is stopped")
+	}
+	if got := err.Error(); !contains(got, "specify a target") {
+		t.Errorf("error should ask for a target, got: %s", got)
+	}
+}
+
+// TestSelectTargetBlankUserExcluded: a provider with a blank User (owner
+// unknown) must never be auto-selected as if it belonged to the caller.
+func TestSelectTargetBlankUserExcluded(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false }
+	defer func() { isPrivileged = orig }()
+	providers := []Provider{
+		{User: "", Unit: "urnetwork-ghost.service", Network: "ghostnet", Running: true},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Network: "beta-test", Running: true},
+	}
+	// Blank User is skipped by defaultProvider (owner unknown); with no
+	// current-user running provider the result is a refusal, never a pick.
+	_, err := selectTarget(providers, Target{})
+	if err == nil {
+		t.Fatal("expected refusal for a blank-User provider (owner unknown)")
+	}
+}
+
+// TestIsPrivilegedSanity: on Windows the seam must treat the caller as
+// privileged (os.Geteuid returns -1); on unix it reflects the euid.
 func TestIsPrivilegedSanity(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		if !isPrivileged() {
@@ -141,26 +215,6 @@ func TestIsPrivilegedSanity(t *testing.T) {
 		if isPrivileged() {
 			t.Error("isPrivileged must be false for non-root unix caller")
 		}
-	}
-}
-
-// TestSelectTargetRootAlwaysRefuses: root can act on every provider, so the
-// auto-default must never apply for root — even a single root-owned running
-// provider must not be silently picked. Root always gets the inventory
-// refusal (same contract as selectTargetOrSoleAccessible).
-func TestSelectTargetRootAlwaysRefuses(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("root behavior only testable as root")
-	}
-	providers := []Provider{
-		{User: "root", Unit: "urnetwork.service", Network: "mesocyclone", Running: true},
-	}
-	_, err := selectTarget(providers, Target{})
-	if err == nil {
-		t.Fatal("expected refusal for root even with a single root-owned provider")
-	}
-	if got := err.Error(); !contains(got, "specify a target") {
-		t.Errorf("error should ask for a target, got: %s", got)
 	}
 }
 
