@@ -384,17 +384,46 @@ func usage() {
 
 Usage: urnet-tools <command> [flags]
 
-Commands:
-  providers              list all providers on this box (all users, JWT identity)
-  status [target]        detailed status of one provider
-  update [target]        update provider(s) to latest (interactive; --tag to pin)
-  self-update            update this tool binary itself (no providers touched)
-  proxy add|clear|remove|refresh|add-source|remove-source [target]   manage proxies
-  summary [target]       fleet-style summary for one provider
-  report <url> [target]  set hub URL at runtime
-  hot-restart [target]   restart one provider's unit
-  logs [target] [N]      show recent provider logs (N lines, default 250)
-  version                print this tool's version
+Core Commands:
+  providers               list all providers on this box (all users, JWT identity)
+  status [target]         detailed status of one provider
+  start|stop|restart [target]   control the provider's systemd unit
+  update [target]         update provider(s) to latest (interactive; --tag to pin)
+  self-update             update this tool binary itself (no providers touched)
+  logs [target] [N]       show recent provider logs (N lines, default 250)
+  summary [target]        fleet-style summary for one provider
+  version                 print this tool's version
+
+Performance & Tuning (single target; on|off unless noted):
+  turbo <v4|v8|off> [target]   raise throughput limits for RAM-rich boxes
+  eco <on|off> [target]        GC-tuned profile for low-RAM systems
+  lowmode <on|off> [target]    reduced buffers for max RAM savings
+  auto <on|off> [target]       auto-detect hardware and pick best profile
+  ramlogs <on|off> [target]    zero disk I/O logging
+  optimize [target]            apply golden-fleet OS/kernel limits
+  hot-restart [target]         restart one provider's unit, reusing client_ids
+
+Proxy Management [target]:
+  proxy add <file>          bulk add proxies from a text file
+  proxy clear|remove        remove all configured proxies
+  proxy refresh             re-read configs and hot-reload proxies
+  proxy add-source <url>    add a URL proxy source
+  proxy remove-source <url> remove a URL proxy source
+  proxy health              show dead/degraded proxies + live event log
+  proxy traffic             real-time bandwidth & client session load
+  proxy remove-dead         interactively prune dead/degraded/failing
+  report <url> [target]     set hub report URL at runtime (no restart)
+
+Hub Management [target]:
+  hub set <host:port>       configure hub report URL
+  hub off                   stop reporting to hub (no restart)
+  hub install [--tag=TAG]   install hub as a systemd service
+
+Maintenance [target]:
+  reinstall                reinstall provider
+  uninstall                uninstall provider
+  auto-update <on|off>     manage auto-update schedule
+  auto-start <on|off>      toggle auto-start on login
 
 Providers are identified three ways (use any):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
