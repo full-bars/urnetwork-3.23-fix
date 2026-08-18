@@ -80,6 +80,20 @@ SCRIPT_COPY="$TEMP_DIR/urnet-tools.sh"
 sed "s#/app/urnetwork_#${APP_DIR}/urnetwork_#" "$ORIG_SCRIPT" > "$SCRIPT_COPY"
 chmod +x "$SCRIPT_COPY"
 
+# A deliberately-regressed sibling copy: the staged_provider mktemp template
+# gets a ".new" suffix appended after XXXXXX, mirroring the exact class of
+# bug this PR fixed for the tarball mktemp call, but on the OTHER mktemp
+# call in do_update. Used to prove the MOCKBIN/mktemp busybox stub actually
+# enforces the "XXXXXX must be last" rule everywhere it's invoked, not just
+# for the tarball path.
+REGRESSED_STAGED_SCRIPT="$TEMP_DIR/urnet-tools-regressed-staged.sh"
+sed 's#mktemp "${provider_bin}.XXXXXX"#mktemp "${provider_bin}.XXXXXX.new"#' "$SCRIPT_COPY" > "$REGRESSED_STAGED_SCRIPT"
+chmod +x "$REGRESSED_STAGED_SCRIPT"
+if ! grep -q 'mktemp "${provider_bin}.XXXXXX.new"' "$REGRESSED_STAGED_SCRIPT"; then
+    echo "❌ FATAL: failed to construct regressed staged_provider script copy (script may have changed)"
+    exit 1
+fi
+
 # busybox mktemp requires XXXXXX to be the LAST characters of the template; a
 # suffix (like the old ".tar.gz") makes it fail with "Invalid argument". The
 # script must create ONE temp DIR (mktemp -d, XXXXXX at the end) and place the
@@ -146,7 +160,16 @@ fi
 
 case "$url" in
     *dl.fullbars.xyz*)
-        [ "${MOCK_PRIMARY_FAIL:-0}" = "1" ] && exit 22
+        if [ "${MOCK_PRIMARY_FAIL:-0}" = "1" ]; then
+            # Simulate a partial/truncated download: real curl can write
+            # bytes to -o before the transfer dies and it exits non-zero.
+            # This lets tests assert the mirror retry overwrites (not
+            # appends to) whatever primary already wrote to the same path.
+            if [ -n "${MOCK_PRIMARY_PARTIAL_CONTENT:-}" ]; then
+                printf '%s' "$MOCK_PRIMARY_PARTIAL_CONTENT" > "$outfile"
+            fi
+            exit 22
+        fi
         printf '%s' "${MOCK_TARBALL_CONTENT:-dummy-tarball-bytes}" > "$outfile"
         exit 0
         ;;
@@ -252,11 +275,24 @@ reset_fixture() {
     MOCK_TAR_FAIL=0
     MOCK_TAR_NO_PROVIDER=0
     MOCK_ARCH=x86_64
+    MOCK_TARBALL_CONTENT=""
+    MOCK_PRIMARY_PARTIAL_CONTENT=""
+    # do_update writes its update-pending marker under "$HOME/.urnetwork".
+    # Point HOME at a disposable per-fixture dir so tests never touch the
+    # real invoking user's home directory, and so each test starts with a
+    # clean marker_dir.
+    MOCK_HOME="$TEMP_DIR/home"
+    rm -rf "$MOCK_HOME"
+    mkdir -p "$MOCK_HOME"
 }
 
 run_update() {
     # Runs `urnet-tools update` against the patched script copy with the
     # mock toolchain in front of PATH. Sets $out and $ec as side effects.
+    # HOME is pinned to MOCK_HOME (see reset_fixture) so the update-pending
+    # marker never lands in the real invoking user's home directory, and an
+    # optional SCRIPT override lets tests run a deliberately-mutated copy
+    # (e.g. the staged_provider mktemp regression check).
     out="$(
         MOCK_VERSION="${MOCK_VERSION:-}" \
         MOCK_DOWNLOAD_URL="${MOCK_DOWNLOAD_URL:-}" \
@@ -265,9 +301,11 @@ run_update() {
         MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
         MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
+        MOCK_PRIMARY_PARTIAL_CONTENT="${MOCK_PRIMARY_PARTIAL_CONTENT:-}" \
         CURL_LOG="$CURL_LOG" \
+        HOME="${MOCK_HOME:-$TEMP_DIR/home}" \
         PATH="$MOCKBIN:$PATH" \
-        bash "$SCRIPT_COPY" update 2>&1
+        bash "${RUN_SCRIPT:-$SCRIPT_COPY}" update 2>&1
     )" || ec=$?
     ec="${ec:-0}"
 }
@@ -495,6 +533,7 @@ run_idle_update() {
         MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
         CURL_LOG="$CURL_LOG" \
+        HOME="${MOCK_HOME:-$TEMP_DIR/home}" \
         PATH="$MOCKBIN:$PATH" \
         bash "$SCRIPT_COPY" idle-update --window 0 2>&1
     )" || ec=$?
@@ -551,6 +590,7 @@ test_idle_update_custom_threshold() {
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
         CURL_LOG="$CURL_LOG" \
         URNETWORK_PROXY_HEALTH_DIR="$HEALTH_DIR" \
+        HOME="${MOCK_HOME:-$TEMP_DIR/home}" \
         PATH="$MOCKBIN:$PATH" \
         bash "$SCRIPT_COPY" idle-update --threshold 100 --window 0 2>&1
     )" || ec=$?
@@ -563,6 +603,274 @@ test_idle_update_custom_threshold() {
     rm -rf "$HEALTH_DIR"
 }
 test_idle_update_custom_threshold
+
+# ============================================================================
+# SECTION 9: Zero-byte / truncated tarball download
+# ============================================================================
+echo ""
+echo "=== SECTION 9: Zero-byte tarball fails extraction cleanly ==="
+
+test_zero_byte_tarball_fails_cleanly() {
+    reset_fixture
+    before="$(snapshot_tmp_artifacts)"
+
+    MOCK_VERSION="v9.9.9-mock-9"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    MOCK_TARBALL_CONTENT=""
+    # A 0-byte/truncated archive is exactly what a real tar would reject;
+    # the mock tar mirrors that outcome via MOCK_TAR_FAIL.
+    MOCK_TAR_FAIL=1
+    unset ec
+    run_update
+
+    assert_exit_code "1" "$ec" "Zero-byte tarball: update exits 1"
+    assert_matches "$out" "failed to extract tarball" "Zero-byte tarball: reports extraction failure"
+
+    tarball_path="$(extract_tarball_paths "$CURL_LOG" | sort -u | head -n1)"
+    assert_file_absent "$tarball_path" "Zero-byte tarball: tarball dir removed on failure"
+
+    provider_bin="$APP_DIR/urnetwork_amd64_stable"
+    assert_file_absent "$provider_bin" "Zero-byte tarball: provider binary was never installed"
+
+    after="$(snapshot_tmp_artifacts)"
+    assert_eq "$before" "$after" "Zero-byte tarball: no leaked artifacts under /tmp"
+}
+test_zero_byte_tarball_fails_cleanly
+
+echo ""
+echo "=== SECTION 9b: Partial primary download is overwritten by mirror ==="
+
+test_partial_primary_overwritten_by_mirror() {
+    reset_fixture
+    before="$(snapshot_tmp_artifacts)"
+
+    MOCK_VERSION="v9.9.9-mock-9b"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9b/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=1
+    MOCK_MIRROR_FAIL=0
+    # Primary writes a short garbage prefix to the shared tarball path
+    # before it fails; the mirror attempt must overwrite (not append to)
+    # that same path and still produce a valid update.
+    MOCK_PRIMARY_PARTIAL_CONTENT="garbage-partial-bytes-from-a-dropped-connection"
+    unset ec
+    run_update
+
+    assert_exit_code "0" "$ec" "Partial primary: update still succeeds via mirror overwrite"
+    assert_matches "$out" "Primary download failed, trying GitHub mirror" "Partial primary: mirror fallback message shown"
+
+    n_o_calls="$(grep -c -- ' -o ' "$CURL_LOG")"
+    assert_eq "2" "$n_o_calls" "Partial primary: both primary and mirror attempted"
+
+    tarball_paths_unique="$(extract_tarball_paths "$CURL_LOG" | sort -u)"
+    assert_eq "1" "$(printf '%s\n' "$tarball_paths_unique" | wc -l | tr -d ' ')" \
+        "Partial primary: mirror reused the same tarball path primary partially wrote"
+
+    provider_bin="$APP_DIR/urnetwork_amd64_stable"
+    if [ -x "$provider_bin" ]; then
+        echo "  ✅ PASS: Partial primary: provider binary installed from mirror content"
+    else
+        echo "  ❌ FAIL: Partial primary: provider binary missing at $provider_bin"
+        FAILS=$((FAILS + 1))
+    fi
+
+    after="$(snapshot_tmp_artifacts)"
+    assert_eq "$before" "$after" "Partial primary: no leaked artifacts under /tmp"
+}
+test_partial_primary_overwritten_by_mirror
+
+# ============================================================================
+# SECTION 10: update-pending marker lifecycle
+# ============================================================================
+echo ""
+echo "=== SECTION 10: update-pending marker is created on success ==="
+
+test_marker_created_on_success() {
+    reset_fixture
+
+    MOCK_VERSION="v9.9.9-mock-10"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    run_update
+
+    assert_exit_code "0" "$ec" "Marker on success: update exits 0"
+
+    marker="$MOCK_HOME/.urnetwork/update-pending"
+    if [ -f "$marker" ]; then
+        echo "  ✅ PASS: Marker on success: update-pending marker present after successful update"
+    else
+        echo "  ❌ FAIL: Marker on success: update-pending marker missing at $marker"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_marker_created_on_success
+
+echo ""
+echo "=== SECTION 10b: update-pending marker is removed when the final mv fails ==="
+
+test_marker_removed_on_mv_failure() {
+    reset_fixture
+    before="$(snapshot_tmp_artifacts)"
+
+    MOCK_VERSION="v9.9.9-mock-10b"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10b/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+
+    # Force `mv -f "$staged_provider" "$provider_bin"` to fail by removing
+    # write permission on the destination directory (non-root, so this is a
+    # real permission denial, not a mocked one).
+    chmod 555 "$APP_DIR"
+    unset ec
+    run_update
+    chmod 755 "$APP_DIR"
+
+    assert_exit_code "1" "$ec" "Marker on mv failure: update exits 1"
+
+    marker="$MOCK_HOME/.urnetwork/update-pending"
+    assert_file_absent "$marker" "Marker on mv failure: update-pending marker removed after failed install"
+
+    provider_bin="$APP_DIR/urnetwork_amd64_stable"
+    assert_file_absent "$provider_bin" "Marker on mv failure: provider binary was never installed"
+
+    after="$(snapshot_tmp_artifacts)"
+    assert_eq "$before" "$after" "Marker on mv failure: staged tmpdir/staged_provider fully cleaned up, no /tmp leak"
+}
+test_marker_removed_on_mv_failure
+
+echo ""
+echo "=== SECTION 10c: update-pending marker respects a custom HOME ==="
+
+test_marker_dir_respects_custom_home() {
+    reset_fixture
+    CUSTOM_HOME="$TEMP_DIR/custom-home-$$"
+    rm -rf "$CUSTOM_HOME"
+    mkdir -p "$CUSTOM_HOME"
+    MOCK_HOME="$CUSTOM_HOME"
+
+    MOCK_VERSION="v9.9.9-mock-10c"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10c/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    run_update
+
+    assert_exit_code "0" "$ec" "Custom HOME: update exits 0"
+
+    marker="$CUSTOM_HOME/.urnetwork/update-pending"
+    if [ -f "$marker" ]; then
+        echo "  ✅ PASS: Custom HOME: marker written under the custom HOME's .urnetwork dir"
+    else
+        echo "  ❌ FAIL: Custom HOME: marker missing at $marker"
+        FAILS=$((FAILS + 1))
+    fi
+
+    default_marker="$TEMP_DIR/home/.urnetwork/update-pending"
+    assert_file_absent "$default_marker" "Custom HOME: default MOCK_HOME marker_dir left untouched"
+
+    rm -rf "$CUSTOM_HOME"
+}
+test_marker_dir_respects_custom_home
+
+# ============================================================================
+# SECTION 11: Architecture mapping
+# ============================================================================
+echo ""
+echo "=== SECTION 11: uname -m architecture mapping ==="
+
+test_arch_x86_64_maps_to_amd64() {
+    reset_fixture
+    MOCK_ARCH=x86_64
+    MOCK_VERSION="v9.9.9-mock-11a"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11a/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    run_update
+
+    assert_exit_code "0" "$ec" "Arch x86_64: update exits 0"
+    if [ -x "$APP_DIR/urnetwork_amd64_stable" ]; then
+        echo "  ✅ PASS: Arch x86_64: mapped to amd64 provider_bin path"
+    else
+        echo "  ❌ FAIL: Arch x86_64: expected $APP_DIR/urnetwork_amd64_stable to exist"
+        FAILS=$((FAILS + 1))
+    fi
+    assert_file_absent "$APP_DIR/urnetwork_arm64_stable" "Arch x86_64: arm64 provider_bin path NOT used"
+}
+test_arch_x86_64_maps_to_amd64
+
+test_arch_aarch64_maps_to_arm64() {
+    reset_fixture
+    MOCK_ARCH=aarch64
+    MOCK_VERSION="v9.9.9-mock-11b"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11b/urnetwork-linux-arm64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    run_update
+
+    assert_exit_code "0" "$ec" "Arch aarch64: update exits 0"
+    if [ -x "$APP_DIR/urnetwork_arm64_stable" ]; then
+        echo "  ✅ PASS: Arch aarch64: mapped to arm64 provider_bin path"
+    else
+        echo "  ❌ FAIL: Arch aarch64: expected $APP_DIR/urnetwork_arm64_stable to exist"
+        FAILS=$((FAILS + 1))
+    fi
+    assert_file_absent "$APP_DIR/urnetwork_amd64_stable" "Arch aarch64: amd64 provider_bin path NOT used"
+}
+test_arch_aarch64_maps_to_arm64
+
+echo ""
+echo "=== SECTION 11b: Unsupported architecture exits before any side effects ==="
+
+test_arch_unsupported_exits_before_side_effects() {
+    reset_fixture
+    before="$(snapshot_tmp_artifacts)"
+    MOCK_ARCH="riscv64"
+    MOCK_VERSION="v9.9.9-mock-11c"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11c/urnetwork-linux-riscv64.tar.gz"
+    unset ec
+    run_update
+
+    assert_exit_code "1" "$ec" "Unsupported arch: update exits 1"
+    assert_matches "$out" "unsupported architecture riscv64" "Unsupported arch: reports the offending arch"
+
+    n_o_calls="$(grep -c -- ' -o ' "$CURL_LOG" || true)"
+    assert_eq "0" "$n_o_calls" "Unsupported arch: no download attempted"
+    assert_eq "0" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "Unsupported arch: curl never invoked at all (fails before release check)"
+
+    marker="$MOCK_HOME/.urnetwork/update-pending"
+    assert_file_absent "$marker" "Unsupported arch: no update-pending marker written"
+
+    after="$(snapshot_tmp_artifacts)"
+    assert_eq "$before" "$after" "Unsupported arch: no /tmp artifacts created"
+}
+test_arch_unsupported_exits_before_side_effects
+
+# ============================================================================
+# SECTION 12: mktemp stub enforces busybox rules on the staged_provider path too
+# ============================================================================
+echo ""
+echo "=== SECTION 12: busybox mktemp stub catches a staged_provider template regression ==="
+
+test_mktemp_stub_catches_staged_provider_regression() {
+    reset_fixture
+    before="$(snapshot_tmp_artifacts)"
+
+    MOCK_VERSION="v9.9.9-mock-12"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-12/urnetwork-linux-amd64.tar.gz"
+    MOCK_PRIMARY_FAIL=0
+    unset ec
+    RUN_SCRIPT="$REGRESSED_STAGED_SCRIPT" run_update
+    unset RUN_SCRIPT
+
+    assert_exit_code "1" "$ec" "Regressed staged_provider template: update exits 1"
+    assert_matches "$out" "Invalid argument" "Regressed staged_provider template: mktemp stub rejects the .XXXXXX.new suffix"
+
+    provider_bin="$APP_DIR/urnetwork_amd64_stable"
+    assert_file_absent "$provider_bin" "Regressed staged_provider template: provider binary was never installed"
+
+    after="$(snapshot_tmp_artifacts)"
+    assert_eq "$before" "$after" "Regressed staged_provider template: tarball tmpdir still cleaned up despite the later failure"
+}
+test_mktemp_stub_catches_staged_provider_regression
 
 # ============================================================================
 echo ""
