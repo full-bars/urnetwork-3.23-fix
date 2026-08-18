@@ -1,9 +1,11 @@
 package connect
 
 import (
-	"context"
 	"crypto/ed25519"
 	"testing"
+	"time"
+
+	"github.com/urnetwork/connect/protocol"
 )
 
 // epochRoutingSession builds a session whose current epoch is a hand-built
@@ -18,10 +20,7 @@ func epochRoutingSession(t *testing.T, role sequenceTlsRole, epochId Id) (*peerE
 	if sess.epoch != nil && sess.epoch.cancel != nil {
 		sess.epoch.cancel()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	e := &tlsHandshakeEpoch{
-		ctx:           ctx,
-		cancel:        cancel,
 		handshakeDone: make(chan struct{}),
 		epochId:       epochId,
 	}
@@ -83,50 +82,232 @@ func TestStaleIdentityProofDoesNotTombstone(t *testing.T) {
 	}
 }
 
-// TestDeliverHandshakeResetsOnNewerGeneration verifies the branch that
-// actually fixes the bug: a handshake control naming a NEWER generation than
-// the epoch we hold reset onto it (the peer restarted its handshake), rather
-// than dropping the bytes.
-func TestDeliverHandshakeResetsOnNewerGeneration(t *testing.T) {
-	older := NewId()
-	sess, _ := epochRoutingSession(t, sequenceTlsRoleServer, older)
+// epochRoutingLiveSession is like epochRoutingSession, but the injected epoch
+// carries a real ctx/cancel (via injectTestEpoch) so it is safe to exercise
+// code paths that rebuild the epoch (`reset`/`convergeToPeerEpoch`, via
+// `buildAndStartEpochWithLock`), which cancel the outgoing epoch's ctx.
+// epochRoutingSession's bare epoch has a nil cancel and would panic there.
+func epochRoutingLiveSession(t *testing.T, role sequenceTlsRole, epochId Id) (*peerEncryptionSession, *tlsHandshakeEpoch, func()) {
+	t.Helper()
+	sess, cleanup := newTestEncryptionSession(t, role)
+	e := injectTestEpoch(sess, false, nil)
+	sess.stateLock.Lock()
+	e.epochId = epochId
+	sess.stateLock.Unlock()
+	return sess, e, cleanup
+}
 
-	// Use a non-empty payload and the CURRENT session role. deliverHandshake
-	// with an epochId newer than the session's current epoch must reset the
-	// epoch (install a fresh one with a new id), not keep the old one.
+// TestEpochRoutingResetsOntoNewerGeneration verifies the mirror image of
+// TestEpochRoutingDropsStaleGeneration: a handshake control naming a NEWER
+// generation than the one currently held resets onto a fresh epoch (rather
+// than being dropped or fed to the stale TLS state), and the fresh epoch
+// adopts the newer generation's id.
+func TestEpochRoutingResetsOntoNewerGeneration(t *testing.T) {
+	older := NewId()
 	newer := NewId()
-	before := sess.currentEpoch()
-	sess.deliverHandshake([]byte{0x16, 0x03, 0x01, 0x00}, newer)
-	after := sess.currentEpoch()
-	if after == before {
-		t.Fatal("expected a NEWER-generation control to reset onto a fresh epoch")
+
+	sess, e1, cleanup := epochRoutingLiveSession(t, sequenceTlsRoleServer, older)
+	defer cleanup()
+
+	sess.deliverHandshake([]byte("fresh handshake bytes"), newer)
+
+	e2 := sess.currentEpoch()
+	if e2 == e1 {
+		t.Fatal("expected a newer generation to reset onto a fresh epoch")
 	}
-	if got := sess.epochIdOf(after); got != newer {
-		// reset builds a new epoch; the client role mints a NEW id, but a
-		// server-reset epoch's id is adopted from the next inbound control.
-		// At minimum the epoch must have been replaced.
-		t.Logf("epoch replaced (new id %s, supplied newer %s)", got, newer)
+	select {
+	case <-e1.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("expected the superseded epoch's ctx to be cancelled after reset")
+	}
+	if got := sess.epochIdOf(e2); got != newer {
+		t.Fatalf("expected the fresh epoch to adopt the newer generation: got %s want %s", got, newer)
 	}
 }
 
-// TestReceivePeerIdentityProofConvergesOnNewerGeneration verifies the other
-// bug-fixing branch: a peer identity proof for a NEWER generation makes the
-// responder converge onto the peer's epoch (restart the handshake), instead
-// of tombstoning itself or ignoring a live peer.
-func TestReceivePeerIdentityProofConvergesOnNewerGeneration(t *testing.T) {
-	older := NewId()
-	sess, _ := epochRoutingSession(t, sequenceTlsRoleServer, older)
+// TestEpochRoutingLegacyControlSkipsRouting verifies a control with no
+// epoch id at all (a pre-epoch/legacy peer) never engages the routing logic,
+// even when the session already has a bound generation — preserving the
+// pre-epoch behavior for that control, as documented on the proto field.
+func TestEpochRoutingLegacyControlSkipsRouting(t *testing.T) {
+	gen := NewId()
+	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, gen)
 
-	newer := NewId()
-	before := sess.currentEpoch()
-	// A proof (valid signature length) naming a newer generation converges.
-	sess.receivePeerIdentityProofForEpoch(make([]byte, ed25519.SignatureSize), newer)
-	after := sess.currentEpoch()
-	if after == before {
-		t.Fatal("expected a NEWER-generation proof to converge onto a fresh epoch")
+	sess.deliverHandshake([]byte("legacy control bytes"), Id{})
+
+	if sess.currentEpoch() != e {
+		t.Fatal("a legacy (epoch-id-less) control must not reset the current epoch")
 	}
-	// The converged epoch must NOT be marked identity-failed (no tombstone).
-	if after.identityFailed {
-		t.Fatal("converged epoch must not be tombstoned")
+}
+
+// TestConvergeToPeerEpochOnNewerIdentityProof verifies an identity proof
+// naming a NEWER generation than the one currently held converges the
+// session onto a fresh epoch (via convergeToPeerEpoch) rather than being fed
+// to — or failing verification against — the superseded epoch's exporter.
+func TestConvergeToPeerEpochOnNewerIdentityProof(t *testing.T) {
+	older := NewId()
+	newer := NewId()
+
+	sess, e1, cleanup := epochRoutingLiveSession(t, sequenceTlsRoleServer, older)
+	defer cleanup()
+
+	// The payload's shape is irrelevant here: a generation mismatch is
+	// diagnosed, and resolved, before the payload is ever inspected.
+	sess.receivePeerIdentityProofForEpoch([]byte("irrelevant"), newer)
+
+	e2 := sess.currentEpoch()
+	if e2 == e1 {
+		t.Fatal("expected a newer-generation identity proof to converge onto a fresh epoch")
+	}
+	if e1.identityFailed {
+		t.Fatal("the superseded epoch must not be marked failed by a foreign-generation proof")
+	}
+}
+
+// TestIdentityProofOlderGenerationIgnored verifies an identity proof naming
+// an OLDER (superseded) generation than the one currently held is ignored
+// outright: no rebuild, and — critically — the payload is never evaluated,
+// so even a malformed one cannot tombstone the live epoch.
+func TestIdentityProofOlderGenerationIgnored(t *testing.T) {
+	older := NewId()
+	newer := NewId()
+
+	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, newer)
+	before := sess.currentEpoch()
+
+	// A malformed-length payload would normally be recorded as a failure;
+	// a stale generation must never reach that check.
+	sess.receivePeerIdentityProofForEpoch([]byte("short"), older)
+
+	if sess.currentEpoch() != before {
+		t.Fatal("an older generation's proof must not trigger a rebuild")
+	}
+	if e.identityFailed {
+		t.Fatal("an older generation's proof must never be evaluated")
+	}
+}
+
+// TestAdoptEpochIdNoopCases covers adoptEpochId's two trivial-success paths:
+// a nil epoch (nothing to bind) and a zero epoch id (a legacy control),
+// neither of which should touch an existing binding.
+func TestAdoptEpochIdNoopCases(t *testing.T) {
+	gen := NewId()
+	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, gen)
+
+	if !sess.adoptEpochId(nil, NewId()) {
+		t.Fatal("expected adoptEpochId(nil, ...) to be a trivial success")
+	}
+	if !sess.adoptEpochId(e, Id{}) {
+		t.Fatal("expected a zero epoch id to be accepted as a no-op")
+	}
+	if e.epochId != gen {
+		t.Fatalf("adoptEpochId with a zero id must not change the existing binding: got %s want %s", e.epochId, gen)
+	}
+}
+
+// TestEpochIdOfNilEpoch verifies epochIdOf's nil-epoch guard.
+func TestEpochIdOfNilEpoch(t *testing.T) {
+	sess, cleanup := newTestEncryptionSession(t, sequenceTlsRoleServer)
+	defer cleanup()
+	if got := sess.epochIdOf(nil); got != (Id{}) {
+		t.Fatalf("expected epochIdOf(nil) to return the zero id, got %s", got)
+	}
+}
+
+// TestBuildAndStartEpochMintsIdForClientRoleOnly verifies
+// buildAndStartEpochWithLock's role split: the TLS-client role mints a
+// non-zero wire identity for the generation at construction, while the
+// TLS-server role leaves it zero until it adopts one from the peer.
+func TestBuildAndStartEpochMintsIdForClientRoleOnly(t *testing.T) {
+	clientSess, clientCleanup := newTestEncryptionSession(t, sequenceTlsRoleClient)
+	defer clientCleanup()
+	clientSess.startEpoch()
+	ce := clientSess.currentEpoch()
+	if ce == nil {
+		t.Fatal("expected startEpoch to build a client-role epoch")
+	}
+	if clientSess.epochIdOf(ce) == (Id{}) {
+		t.Fatal("expected the TLS-client role to mint a non-zero epoch id at construction")
+	}
+
+	serverSess, serverCleanup := newTestEncryptionSession(t, sequenceTlsRoleServer)
+	defer serverCleanup()
+	serverSess.startEpoch()
+	se := serverSess.currentEpoch()
+	if se == nil {
+		t.Fatal("expected startEpoch to build a server-role epoch")
+	}
+	if serverSess.epochIdOf(se) != (Id{}) {
+		t.Fatal("expected the TLS-server role to leave the epoch id unset until it adopts one")
+	}
+}
+
+// TestDeliverEncryptedControlParsesEpochId exercises DeliverEncryptedControl's
+// new epoch_id parsing directly (rather than calling
+// receivePeerIdentityProofForEpoch/deliverHandshake with an already-parsed
+// Id), confirming a same-generation proof delivered over the wire behaves
+// like the direct-call case.
+func TestDeliverEncryptedControlParsesEpochId(t *testing.T) {
+	gen := NewId()
+	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, gen)
+
+	ec := &protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlIdentityProof,
+		Payload:     make([]byte, ed25519.SignatureSize),
+		EpochId:     gen.Bytes(),
+	}
+	sess.DeliverEncryptedControl(ec)
+
+	if e.identityFailed {
+		t.Fatal("a same-generation proof delivered via DeliverEncryptedControl must not fail the epoch")
+	}
+}
+
+// TestDeliverEncryptedControlMalformedEpochIdFallsBackToLegacy verifies an
+// epoch_id that fails to parse (wrong length) is treated as unset — the
+// legacy, pre-epoch behavior — rather than propagating a parse error or
+// panicking.
+func TestDeliverEncryptedControlMalformedEpochIdFallsBackToLegacy(t *testing.T) {
+	gen := NewId()
+	sess, _ := epochRoutingSession(t, sequenceTlsRoleServer, gen)
+	before := sess.currentEpoch()
+
+	ec := &protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
+		Payload:     []byte("not a client hello"),
+		EpochId:     []byte{1, 2, 3}, // wrong length: IdFromBytes fails, treated as unset
+	}
+	sess.DeliverEncryptedControl(ec)
+
+	if sess.currentEpoch() != before {
+		t.Fatal("a malformed epoch id must fall back to legacy (no-routing) behavior, not reset")
+	}
+}
+
+// TestDeliverEncryptedControlResetsOntoNewerGeneration is the end-to-end,
+// wire-format counterpart of TestEpochRoutingResetsOntoNewerGeneration: a
+// handshake control arriving through the public DeliverEncryptedControl
+// entry point, naming a newer generation, resets onto a fresh epoch that
+// adopts it.
+func TestDeliverEncryptedControlResetsOntoNewerGeneration(t *testing.T) {
+	older := NewId()
+	newer := NewId()
+
+	sess, e1, cleanup := epochRoutingLiveSession(t, sequenceTlsRoleServer, older)
+	defer cleanup()
+
+	ec := &protocol.EncryptedControl{
+		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
+		Payload:     []byte("fresh handshake bytes"),
+		EpochId:     newer.Bytes(),
+	}
+	sess.DeliverEncryptedControl(ec)
+
+	e2 := sess.currentEpoch()
+	if e2 == e1 {
+		t.Fatal("expected a newer generation delivered over the wire to reset onto a fresh epoch")
+	}
+	if got := sess.epochIdOf(e2); got != newer {
+		t.Fatalf("expected the fresh epoch to adopt the newer generation: got %s want %s", got, newer)
 	}
 }
