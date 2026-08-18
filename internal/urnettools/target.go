@@ -60,7 +60,9 @@ func (t Target) matchProvider(p Provider) bool {
 // returns -1, which must NOT be treated as unprivileged in a way that
 // auto-defaults a Windows Administrator — so Windows is always treated as
 // privileged for the auto-default guard (rootHint uses the same rule).
-func isPrivileged() bool {
+// It is a package var so tests can exercise both sides without actually
+// running as root (the readEnviron seam pattern).
+var isPrivileged = func() bool {
 	if runtime.GOOS == "windows" {
 		return true
 	}
