@@ -84,6 +84,13 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 	case len(providers) == 0:
 		return nil, fmt.Errorf("no providers found on this box")
 	default:
+		// Restore the pre-multi-provider default: act on the single running
+		// provider for the current user. Refuse only when that is genuinely
+		// ambiguous (two or more running providers for the current user).
+		if p, err := defaultProvider(providers); err == nil {
+			chosen = []Provider{p}
+			break
+		}
 		return nil, ambiguousError(providers)
 	}
 
