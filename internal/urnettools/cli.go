@@ -564,8 +564,20 @@ func shortID(id string) string {
 	return id[:8] + "…"
 }
 
-// cmdStatus shows detailed info for one provider (targeted).
+// cmdStatus shows the systemd status for one provider (targeted). This
+// restores the pre-Go-rewrite behavior: the legacy shell `urnet-tools status`
+// was literally `systemctl --user status urnetwork.service`. When the
+// resolved provider is backed by a systemd unit, run `systemctl status` for
+// that unit (user scope via -M <user>@ for user units, system scope
+// otherwise) and pass the output through unchanged. Providers without a unit
+// (docker, raw processes) fall back to the summary table.
+//
+// `status all` lists every provider on the box across all users (the
+// discovery inventory).
 func cmdStatus(args []string) error {
+	if len(args) == 1 && args[0] == "all" {
+		return cmdProviders(nil)
+	}
 	t, _, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -577,6 +589,9 @@ func cmdStatus(args []string) error {
 	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
+	}
+	if p.Unit != "" {
+		return unitCommand(p, "status")
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "user:\t%s\n", p.User)
