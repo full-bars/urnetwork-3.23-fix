@@ -89,13 +89,32 @@ if grep -q 'mktemp /tmp/urnetwork-update-XXXXXX.tar.gz' "$SCRIPT_COPY"; then
     echo "❌ FATAL: busybox-incompatible .tar.gz-suffixed mktemp template still present in script copy"
     exit 1
 fi
-if ! grep -q 'mktemp -d /tmp/urnetwork-update-XXXXXX' "$SCRIPT_COPY"; then
-    echo "❌ FATAL: expected busybox-safe mktemp -d temp dir not found in script copy (script may have changed)"
+# Anchor the positive check to the ACTUAL executable assignment, not a bare
+# string match that a comment or doc line could also satisfy (coderabbit).
+if ! grep -q 'tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"' "$SCRIPT_COPY"; then
+    echo "❌ FATAL: expected busybox-safe tmpdir mktemp -d assignment not found in script copy (script may have changed)"
     exit 1
 fi
 
 MOCKBIN="$TEMP_DIR/mockbin"
 mkdir -p "$MOCKBIN"
+
+# Opus hardening: a busybox-enforcing mktemp stub. busybox mktemp requires the
+# template to END in XXXXXX; any suffix (e.g. ".tar.gz" or ".new") fails with
+# "Invalid argument". GNU coreutils (the host) accepts both, so without this
+# stub a regressed template in a non-tarball mktemp call (e.g. staged_provider)
+# would silently pass the harness. Delegating to the real mktemp still creates
+# the temp file/dir, so all functional assertions stay meaningful.
+cat > "$MOCKBIN/mktemp" <<'EOF'
+#!/bin/bash
+template="${!#}"
+case "$template" in
+    *XXXXXX) ;;
+    *) echo "mktemp: : Invalid argument" >&2; exit 1 ;;
+esac
+exec "/usr/sbin/mktemp" "$@"
+EOF
+chmod +x "$MOCKBIN/mktemp"
 
 cat > "$MOCKBIN/curl" <<'EOF'
 #!/bin/bash
@@ -275,7 +294,7 @@ test_primary_success() {
 
     tarball_path="$(extract_tarball_paths "$CURL_LOG" | sort -u)"
     assert_eq "1" "$(printf '%s\n' "$tarball_path" | wc -l | tr -d ' ')" "Primary success: exactly one unique tarball path used"
-    assert_matches "$tarball_path" "$TARBALL_PATTERN" "Primary success: tarball path matches mktemp XXXXXX.tar.gz pattern"
+    assert_matches "$tarball_path" "$TARBALL_PATTERN" "Primary success: tarball path matches busybox-safe dir/update.tar.gz pattern"
     assert_file_absent "$tarball_path" "Primary success: tarball removed after successful update"
 
     n_o_calls="$(grep -c -- ' -o ' "$CURL_LOG")"
@@ -359,7 +378,7 @@ test_both_downloads_fail() {
 
     tarball_path="$(extract_tarball_paths "$CURL_LOG" | sort -u | head -n1)"
     assert_matches "$tarball_path" "$TARBALL_PATTERN" "Both downloads fail: tarball path recorded matches mktemp pattern"
-    assert_file_absent "$tarball_path" "Both downloads fail: tarball removed via 'rm -f' cleanup on total failure"
+    assert_file_absent "$tarball_path" "Both downloads fail: tarball dir removed via 'rm -rf' cleanup on total failure"
 
     after="$(snapshot_tmp_artifacts)"
     assert_eq "$before" "$after" "Both downloads fail: no leaked urnetwork-update-* artifacts under /tmp"
