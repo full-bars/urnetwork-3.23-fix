@@ -2314,7 +2314,21 @@ type EncryptedControl struct {
 	// session. Distinct from which contract the carrier itself rides (a
 	// responder replies under `EncryptionControlUseCompanion`, independent of
 	// this bit).
-	Companion     bool `protobuf:"varint,4,opt,name=companion,proto3" json:"companion,omitempty"`
+	Companion bool `protobuf:"varint,4,opt,name=companion,proto3" json:"companion,omitempty"`
+	// Epoch (handshake generation) this control belongs to, as a ulid
+	// (changes 2026-08). The TLS-client role mints it per epoch; the
+	// TLS-server role adopts it from the inbound handshake and echoes it.
+	//
+	// Without it, epochs have no wire identity: under churn one side
+	// re-handshakes (new epoch, new TLS exporter) while the other holds the
+	// old one, and the late identity proof — bound to the NEW exporter —
+	// fails signature verification against the OLD, which is indistinguishable
+	// from manipulation and terminally tombstones the session while the
+	// established peer keeps encrypting into it (a full data stall).
+	// Carrying the epoch lets the receiver route a control to the right
+	// generation, and reset toward a newer one, instead of misjudging it.
+	// Unset (legacy peers) keeps the pre-epoch behavior for that control.
+	EpochId       []byte `protobuf:"bytes,5,opt,name=epoch_id,json=epochId,proto3,oneof" json:"epoch_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2375,6 +2389,13 @@ func (x *EncryptedControl) GetCompanion() bool {
 		return x.Companion
 	}
 	return false
+}
+
+func (x *EncryptedControl) GetEpochId() []byte {
+	if x != nil {
+		return x.EpochId
+	}
+	return nil
 }
 
 var File_transfer_proto protoreflect.FileDescriptor
@@ -2561,12 +2582,14 @@ const file_transfer_proto_rawDesc = "" +
 	"!client_key_signed_tls_certificate\x18\x02 \x01(\fR\x1dclientKeySignedTlsCertificate\"*\n" +
 	"\tClientKey\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x01 \x01(\fR\tpublicKey\"\xca\x01\n" +
+	"public_key\x18\x01 \x01(\fR\tpublicKey\"\xf7\x01\n" +
 	"\x10EncryptedControl\x12B\n" +
 	"\fcontrol_type\x18\x01 \x01(\x0e2\x1f.bringyour.EncryptedControlTypeR\vcontrolType\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12:\n" +
 	"\fsession_role\x18\x03 \x01(\x0e2\x17.bringyour.SequenceRoleR\vsessionRole\x12\x1c\n" +
-	"\tcompanion\x18\x04 \x01(\bR\tcompanion*W\n" +
+	"\tcompanion\x18\x04 \x01(\bR\tcompanion\x12\x1e\n" +
+	"\bepoch_id\x18\x05 \x01(\fH\x00R\aepochId\x88\x01\x01B\v\n" +
+	"\t_epoch_id*W\n" +
 	"\fSequenceRole\x12\x17\n" +
 	"\x13SequenceRoleUnknown\x10\x00\x12\x16\n" +
 	"\x12SequenceRoleClient\x10\x01\x12\x16\n" +
@@ -2700,6 +2723,7 @@ func file_transfer_proto_init() {
 	file_transfer_proto_msgTypes[18].OneofWrappers = []any{}
 	file_transfer_proto_msgTypes[19].OneofWrappers = []any{}
 	file_transfer_proto_msgTypes[21].OneofWrappers = []any{}
+	file_transfer_proto_msgTypes[28].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
