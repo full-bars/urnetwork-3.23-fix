@@ -116,6 +116,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		}
 	}
 
+	var defaultReason string
 	switch len(providers) {
 	case 0:
 		return Provider{}, fmt.Errorf("no providers found on this box")
@@ -126,13 +127,23 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		// provider for the current user. Only when two or more running
 		// providers belong to the current user do we refuse (that is the
 		// genuine ambiguity the operator must resolve by naming one).
+		// Note: this assumes an unprivileged operator, who could not act on
+		// another user's provider anyway. Root callers with no provider of
+		// their own fall through to the inventory below.
 		if p, err := defaultProvider(providers); err == nil {
 			return p, nil
+		} else {
+			// Keep the reason the default failed visible in the inventory
+			// refusal so the operator understands why targeting is needed.
+			defaultReason = err.Error()
 		}
 		// No unambiguous current-user provider. Fall back to the inventory
 		// refusal so the operator can see everything on the box.
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --network-id / --state-dir):\n", len(providers))
+		if defaultReason != "" {
+			fmt.Fprintf(&b, "(%s)\n", defaultReason)
+		}
 		for _, p := range providers {
 			fmt.Fprintf(&b, "  %s  user=%s net=%s state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
 		}
