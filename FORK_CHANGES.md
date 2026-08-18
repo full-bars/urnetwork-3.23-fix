@@ -1060,7 +1060,7 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 
 ## 50. Per-Minute Earning Windows (Independent Goroutine)
 
-**Purpose**: Give operators real-time earning visibility without waiting for the ~5-minute health heartbeat. A separate goroutine polls `ProxyHealthSnapshot()` for cumulative billable across all proxies every 60 seconds and emits rolling windows.
+**Purpose**: Give operators real-time earning visibility without waiting for the ~5-minute health heartbeat. A separate goroutine polls `ProxyHealthSnapshot()` for cumulative billable across all proxies every 60-seconds and emits rolling windows.
 
 **Files Modified**: `provider/main.go`
 
@@ -2768,7 +2768,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ## 126. Post-Quantum Encryption Interop (v3.23.0-fix.30.2, PR #400 + #401)
 
-**Purpose**: Make post-quantum encryption work end to end between an app and a provider. This closes a gap where an app with post-quantum encryption turned on could never complete a handshake to a fork provider and stalled at the 60 second timeout.
+**Purpose**: Make post-quantum encryption work end to end between an app and a provider. This closes a gap where an app with post-quantum encryption turned on could never complete a handshake to a fork provider and stalled at the 60-second timeout.
 
 **PR #400 — provider enables encrypted sessions** (`provider/main.go`):
 - The serving client now sets `EncryptionModeOpportunistic` instead of leaving the mode unset (`EncryptionModeOff`).
@@ -2784,7 +2784,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - This ports the epoch-generation mechanism upstream `urnetwork/connect` already has (14 refs: `epochId`, `adoptEpochId`, `epochIdOf`, `deliverHandshake(payload, epochId)`, `receivePeerIdentityProofForEpoch`). The fork previously had zero.
 - Tests: ~28 epoch/identity tests (adopt, stale/newer routing, legacy skip, malformed rejection, proto round-trips). Opus 5 reviewed the port and confirmed it is byte-for-byte identical to upstream and wire-compatible with the app's SDK.
 
-**Verified live**: an app with post-quantum encryption turned on connected to a fork provider running both fixes. The handshake completed in milliseconds. Traffic flowed and became billable. No 60 second timeout.
+**Verified live**: an app with post-quantum encryption turned on connected to a fork provider running both fixes. The handshake completed in milliseconds. Traffic flowed and became billable. No 60-second timeout.
 
 **How to Identify in New Upstream**:
 - Search for `epochId` in `transfer_encrypt.go` (upstream has them; the fork did not before this work).
