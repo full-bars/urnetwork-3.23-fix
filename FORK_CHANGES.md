@@ -2781,8 +2781,9 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - `tlsHandshakeEpoch` gains an `epochId` (a ULID minted by the TLS-client role). `epochIdOf`/`adoptEpochId` bind the responder to the initiator's generation.
 - Outbound handshake and identity-proof controls are stamped with the epoch id.
 - Inbound routing: `deliverHandshake(payload, epochId)` and `receivePeerIdentityProofForEpoch(payload, epochId)`. Older generations are ignored. A newer generation resets the handshake onto the newer one. A malformed nonempty epoch id is rejected outright (never downgraded to legacy).
-- This ports the epoch-generation mechanism upstream `urnetwork/connect` already has (14 refs: `epochId`, `adoptEpochId`, `epochIdOf`, `deliverHandshake(payload, epochId)`, `receivePeerIdentityProofForEpoch`). The fork previously had zero.
-- Tests: ~28 epoch/identity tests (adopt, stale/newer routing, legacy skip, malformed rejection, proto round-trips). Opus 5 reviewed the port and confirmed it is byte-for-byte identical to upstream and wire-compatible with the app's SDK.
+- This ports the epoch-generation mechanism upstream `urnetwork/connect` already has (`epochId`, `adoptEpochId`, `epochIdOf`, `deliverHandshake(payload, epochId)`, `receivePeerIdentityProofForEpoch`). The fork previously had none of these.
+- Scope: the port carries the epoch identity and inbound routing. It intentionally does not port upstream's `identityFailedTerminal` safeguard or the `UnknownWrapNack` subsystem, which live in a different layer. Peer controllers using the stock app SDK are wire-compatible.
+- Tests: ~28 epoch/identity tests (adopt, stale/newer routing, legacy skip, malformed rejection, proto round-trips).
 
 **Verified live**: an app with post-quantum encryption turned on connected to a fork provider running both fixes. The handshake completed in milliseconds. Traffic flowed and became billable. No 60-second timeout.
 
