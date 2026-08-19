@@ -25,7 +25,6 @@ ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
 API_URL="https://api.github.com/repos/urnetwork/build/releases/latest"
 VERSION_FILE="$APP_DIR/version.txt"
-TMP_DIR="/tmp/urn_update"
 UPDATE_TIME="12:00"
 
 # === Logging Helper ===
@@ -163,49 +162,105 @@ func_check_update() {
         CURRENT_VERSION=""
     fi
     log "[INFO] Current provider version: ${CURRENT_VERSION:-none}"
-    mkdir -p "$TMP_DIR"
-    RESP_FILE="$TMP_DIR/release.json"
-    HTTP_CODE="$(curl -sL -w '%{http_code}' -o "$RESP_FILE" "$API_URL")"
-    RELEASE_JSON="$(cat "$RESP_FILE")"
+
+    # busybox mktemp (the only mktemp in alpine) requires XXXXXX as the last
+    # characters of the template; a suffix fails with Invalid argument. Stage
+    # the whole update inside one busybox-safe temp dir so a single rm -rf
+    # cleans up every path, success or failure.
+    UPDATE_TMP="$(mktemp -d /tmp/urnetwork-update-XXXXXX)" || {
+        log "[ERROR] Could not create update staging dir." >&2
+        return 0
+    }
+    RESP_FILE="$UPDATE_TMP/release.json"
+
+    HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
+    RELEASE_JSON="$(cat "$RESP_FILE" 2>/dev/null)" || RELEASE_JSON=""
     DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
       | grep '"browser_download_url"' \
       | grep 'urnetwork-provider-.*\.tar\.gz' \
       | sed -E 's/.*"([^"]+)".*/\1/' \
       | head -n1)"
-      log "$DOWNLOAD_URL"
     [ -n "$DOWNLOAD_URL" ] || {
         log "[ERROR] No .tar.gz URL in GitHub response." >&2
         log "[ERROR] HTTP status: $HTTP_CODE" >&2
         log "[ERROR] Raw response:" >&2
         log "$RELEASE_JSON" | jq . >&2
+        rm -rf "$UPDATE_TMP"
         return 0
     }
+    log "$DOWNLOAD_URL"
 
     LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
       | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
     log "[INFO] Latest provider version: $LATEST_VERSION"
     if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
         log "[INFO] Already at latest provider version; skipping."
+        rm -rf "$UPDATE_TMP"
         return 0
+    fi
+
+    log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
+
+    ARCHIVE="$UPDATE_TMP/urnetwork-provider.tar.gz"
+    # -f makes curl fail on any HTTP error, so a bad response cannot be
+    # mistaken for a successful download.
+    curl -sfL "$DOWNLOAD_URL" -o "$ARCHIVE" || {
+        log "[ERROR] Download failed for $DOWNLOAD_URL" >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    }
+    tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "linux/${A_SYS_ARCH}/provider" || {
+        log "[ERROR] Failed to extract provider from tarball." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    }
+    [ -f "$UPDATE_TMP/linux/${A_SYS_ARCH}/provider" ] || {
+        log "[ERROR] Provider binary not found in tarball." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    }
+
+    # Only now do the destructive steps. Stage the new binary on the target
+    # filesystem, then atomically rename it into place: if /app is a separate
+    # mount from /tmp, staging here keeps the swap a rename, so a failed copy
+    # cannot truncate the running provider. Every state write is checked so a
+    # partial failure cannot orphan a half-installed provider.
+    STAGED="$APP_DIR/.urnetwork_${A_SYS_ARCH}_nightly.new"
+    if ! cp -f "$UPDATE_TMP/linux/${A_SYS_ARCH}/provider" "$STAGED"; then
+        log "[ERROR] Failed to stage new provider binary." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP" "$STAGED"
+        return 0
+    fi
+    if ! mv -f "$STAGED" "$APP_DIR/urnetwork_${A_SYS_ARCH}_nightly"; then
+        log "[ERROR] Failed to install new provider binary." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP" "$STAGED"
+        return 0
+    fi
+    if ! echo "$LATEST_VERSION" > "$VERSION_FILE"; then
+        log "[ERROR] Failed to record provider version." >&2
+        log "[INFO] Update aborted; the previous provider binary is still installed."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    fi
+    mkdir -p "$HOME/.urnetwork"
+    if ! touch "$HOME/.urnetwork/update-pending"; then
+        log "[ERROR] Failed to set restart marker." >&2
+        log "[INFO] Update installed; restart marker not set, so the provider was not restarted."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    fi
+    rm -rf "$UPDATE_TMP"
+    log "[INFO] Update provider complete"
+
+    if pkill -f "^/app/urnetwork_${A_SYS_ARCH}_nightly provide" 2>/dev/null; then
+        log "[INFO] Provider process terminated for restart."
     else
-        log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
-
-        mkdir -p "$HOME/.urnetwork"
-        touch "$HOME/.urnetwork/update-pending"
-
-        if pkill -f "^/app/urnetwork_${A_SYS_ARCH}_nightly provide" 2>/dev/null; then
-            log "[INFO] Provider process terminated."
-        else
-            log "[INFO] No running provider process found."
-        fi
-        mkdir -p "$TMP_DIR"
-        ARCHIVE="$TMP_DIR/urnetwork-provider_${LATEST_VERSION}.tar.gz"
-        curl -sL "$DOWNLOAD_URL" -o "$ARCHIVE"
-        tar -xzf "$ARCHIVE" -C "$TMP_DIR" "linux/${A_SYS_ARCH}/provider" > /dev/null 2>&1
-        mv "$TMP_DIR/linux/${A_SYS_ARCH}/provider" "$APP_DIR/urnetwork_${A_SYS_ARCH}_nightly"
-        echo "$LATEST_VERSION" > "$VERSION_FILE"
-        rm -f "$ARCHIVE"
-        log "[INFO] Update provider complete"
+        log "[INFO] No running provider process found."
     fi
 }
 
