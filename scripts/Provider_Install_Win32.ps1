@@ -148,7 +148,14 @@ $FileName = $null
 if ($ReleaseInfo) {
     $ReleaseVersion = $ReleaseInfo.tag_name
     $ReleaseDate = $ReleaseInfo.published_at
-    $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -cmatch "^urnetwork-provider-" }
+    $OSArchAssetName = "urnetwork-provider-$ReleaseVersion-$OS-$Arch.tar.gz"
+    $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -eq $OSArchAssetName }
+    if (-not $ReleaseAsset) {
+        $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -eq "urnetwork-provider-$ReleaseVersion.tar.gz" }
+    }
+    if (-not $ReleaseAsset) {
+        $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "^urnetwork-provider-.*\.tar\.gz$" } | Select-Object -First 1
+    }
     if ($ReleaseAsset) {
         $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
@@ -183,7 +190,7 @@ if (-not $DownloadURL) {
     $MirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
 }
 
-$FilePath = Join-Path -Path $env:TEMP -ChildPath $FileName
+$FilePath = Join-Path -Path $env:TEMP -ChildPath ([string]$FileName)
 
 if (-not $NoRestartDownload -or -not (Test-Path $FilePath)) {
     try {
@@ -225,8 +232,12 @@ if (-not (Test-Path $BinaryPath)) {
     exit 1
 }
 
-$InstalledBinaryLeaf = Split-Path -Leaf $BinaryPath
-$InstalledBinaryPath = Join-Path $Destination -ChildPath $InstalledBinaryLeaf
+# The release tarballs name the binary provider<.exe> (both the flat per-arch
+# tarball and the nested universal one), but the fork installs it under the
+# stable documented name urnetwork<.exe> -- every consumer (the install
+# quickstart, urnet-tools process discovery, the uninstaller, docs/README)
+# assumes that name. Rename on install so the on-disk contract never changes.
+$InstalledBinaryPath = Join-Path $Destination -ChildPath "urnetwork$BinarySuffix"
 $VersionFile = Join-Path $Destination -ChildPath "version"
 $InstallDateFile = Join-Path $Destination -ChildPath "date"
 
