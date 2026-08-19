@@ -211,14 +211,22 @@ $BinarySuffix = switch ($OS) {
     "windows" { ".exe" }
 }
 
-$BinaryPath = Join-Path $ExtractPath -ChildPath "$OS/$Arch/provider$BinarySuffix"
+$BinaryPath = Join-Path $ExtractPath -ChildPath "provider$BinarySuffix"
+if (-not (Test-Path $BinaryPath)) {
+    # Some release tarballs nest the binary under <os>/<arch>/.
+    $NestedBinaryPath = Join-Path $ExtractPath -ChildPath "$OS/$Arch/provider$BinarySuffix"
+    if (Test-Path $NestedBinaryPath) {
+        $BinaryPath = $NestedBinaryPath
+    }
+}
 
 if (-not (Test-Path $BinaryPath)) {
     Write-Error "File $BinaryPath not found: The downloaded archive file is most likely corrupt"
     exit 1
 }
 
-$InstalledBinaryPath = Join-Path $Destination -ChildPath "urnetwork$BinarySuffix"
+$InstalledBinaryLeaf = Split-Path -Leaf $BinaryPath
+$InstalledBinaryPath = Join-Path $Destination -ChildPath $InstalledBinaryLeaf
 $VersionFile = Join-Path $Destination -ChildPath "version"
 $InstallDateFile = Join-Path $Destination -ChildPath "date"
 
