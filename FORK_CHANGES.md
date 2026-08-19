@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.2
+**Current Version**: v3.23.0-fix.30.3
 
 ---
 
@@ -2792,3 +2792,28 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**:
 - Search for `epochId` in `transfer_encrypt.go` (upstream has them; the fork did not before this work).
 - The provider's serving client sets `EncryptionModeOpportunistic`.
+
+---
+
+## 127. Busybox-Safe In-Container Updates + Nightly Self-Update Hardening (v3.23.0-fix.30.3, PR #406 + follow-up)
+
+**Purpose**: The provider container is Alpine-based, so `mktemp` is busybox `mktemp`, which requires `XXXXXX` to be the LAST characters of the template. The in-container `urnet-tools update` used `mktemp /tmp/urnetwork-update-XXXXXX.tar.gz` — the `.tar.gz` suffix after the `X`s made busybox fail with `Invalid argument`, so every in-container update aborted before downloading. The same failure class existed in the nightly startup script's self-update path.
+
+**PR #406 — busybox-safe staging in `urnet-tools update`** (`docker/scripts/urnet-tools.sh`):
+- Replaced the broken `mktemp /tmp/urnetwork-update-XXXXXX.tar.gz` file template with one busybox-safe temp DIR: `mktemp -d /tmp/urnetwork-update-XXXXXX`, tarball placed inside as `update.tar.gz`.
+- One cleanup path (`rm -rf "$tmpdir"`) removes everything on success or failure. Previously `rm -f "$tarball"` on download failure left the dir; now every path cleans up.
+- `update` and `idle-update` both route through `do_update`, so both commands are covered.
+- Test harness (`scripts/test_docker_update_tarball.sh`) hardened with a busybox-enforcing `mktemp` stub that rejects any template not ending in `XXXXXX` (GNU host mktemp accepts a suffix, so a regressed non-tarball template previously passed silently). New coverage: zero-byte tarballs, partial downloads overwritten by mirror, `update-pending` marker lifecycle (created on success, removed when the final `mv` fails, respects custom HOME), architecture mapping, busybox stub regression guard.
+
+**Nightly self-update path hardening** (`docker/scripts/start_nightly.sh` `func_check_update`):
+- The nightly path had the same update-failure class: reused a shared `/tmp/urn_update` dir (no per-attempt isolation), downloaded with `curl -sL` (no `-f`, so a bad HTTP response was written as an archive and mistaken for success), had no cleanup trap, and touched `update-pending` BEFORE the download/extraction succeeded — a failed update left the restart loop believing a new binary was installed.
+- Now stages the whole update inside one busybox-safe `mktemp -d /tmp/urnetwork-update-XXXXXX` dir; `curl -sfL` fails on any HTTP error; every failure path (download, extract, missing binary, install) cleans the temp dir, logs `Update aborted; existing provider left untouched`, and returns without touching `update-pending`.
+- The marker is written only after the binary swap and version write succeed. The `pkill` that restarts the provider runs only after the new binary is in place (previously it killed the provider before the download even started).
+- Dead `TMP_DIR="/tmp/urn_update"` variable removed.
+
+**Verified**: end-to-end in a real Alpine container. The broken template reproduces `mktemp: : Invalid argument`; the fixed `urnet-tools update` downloads the real release, swaps the provider binary, sets the marker, and reports the new version. The nightly function was exercised with a mock curl/tar across four cases (success, download fail, extract fail, metadata fail): success swaps binary + sets marker with zero temp-dir leftovers; every failure leaves the old binary and no marker, with no leaked temp dir.
+
+**How to Identify in New Upstream**:
+- Search for `mktemp /tmp/urnetwork-update` in `docker/scripts/urnet-tools.sh` and `start_nightly.sh`. The busybox-safe form is `mktemp -d /tmp/urnetwork-update-XXXXXX`.
+- The nightly `func_check_update` should touch `update-pending` only after `mv` of the new binary succeeds.
+
