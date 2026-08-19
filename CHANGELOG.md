@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.3] — 2026-08-19
+### Added
+- **Busybox-safe mktemp for in-container updates**: `urnet-tools update` now uses `mktemp -d /tmp/urnetwork-update-XXXXXX` (directory template, busybox-compatible) instead of the broken `.tar.gz` suffix template that failed with `Invalid argument` on Alpine images. One `rm -rf` cleans up. Test harness hardened with a busybox-enforcing `mktemp` stub that rejects any template not ending in `XXXXXX`. New coverage: zero-byte tarballs, partial downloads overwritten by mirror, update-pending marker lifecycle, architecture mapping, busybox stub regression guard. (PR #406)
+- **Nightly self-update path hardened**: `start_nightly.sh` `func_check_update` stages the update in a busybox-safe temp dir, uses `curl -sfL` (fails on HTTP errors), cleans up on every failure path, and writes `update-pending` only after the binary swap + version write succeed. Previously it reused a shared `/tmp/urn_update`, downloaded with `curl -sL`, and set the marker before download/extraction completed; a failed update left the restart loop believing a new binary was installed. The metadata fetch is also guarded so a transient API or network failure cannot trip the script's `set -e` and kill the provider supervision loop; the check skips that attempt. The new binary is staged on the target filesystem and atomically renamed into place, and the version-file and restart-marker writes are checked so a partial install cannot falsely signal a restart.
+- **Full semver docker tag on release pushes**: CI workflow preserves the full semver tag (e.g., `v3.23.0-fix.30.3`) instead of truncating to the minor segment. Operators can pull the exact release they deployed. (PR #405)
+
+### Changed
+- **Default-provider selection completed**: `urnet-tools` now detects the current OS user on Linux, Darwin, and Windows (`currentUserName` cross-platform), discovers the provider running under that user, and auto-selects it for read-only commands (`logs`, `status`, `summary`). Gated by a real privilege check: root callers never auto-default; unprivileged callers only auto-default when exactly one reachable provider belongs to them. Surfaces selection reason (e.g., `auto-selected: sole provider for user alice (pid 1234)`). Falls back to explicit `sudo <binary>` hint when an unprivileged user has `sudo` available but the target provider is owned by another account. Test seams cover privilege guard, fallback message, and cross-platform username resolution. (PR #404)
+
 ## [v3.23.0-fix.30.2] — 2026-08-18
 ### Added
 - **Post-quantum encryption now works end to end**: the provider enables its encrypted session layer on the serving client (PR #400), and the control channel routes encrypted handshakes by generation id (PR #401). An app with post-quantum encryption turned on completes the handshake instead of stalling at the 60-second timeout. The provider stays Opportunistic, so plaintext apps are unaffected.
