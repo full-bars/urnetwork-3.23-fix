@@ -6,7 +6,13 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Loopback-only diagnostics**: the provider can now serve Go pprof profiles and process metrics on a loopback-only listener, off by default. Set `URNETWORK_PPROF` to a `host:port` (loopback IP only) to enable `/debug/pprof/*`, `/metrics/pool`, and `/metrics/errors`. Pull profiles over an SSH tunnel, e.g. `ssh -L 6060:127.0.0.1:6060 host` then `go tool pprof http://127.0.0.1:6060/debug/pprof/profile`. These endpoints are never exposed on the public status port. (PR #423)
+- **Message pool metrics**: the connect message pool now tracks hit/miss/return counts, active buffers, live pooled capacity, GC cycles, and a per-size distribution. Exposed as JSON via the loopback-only `/metrics/pool` endpoint (`EnhancedMetrics()`). Pool sizes not in the fixed set are handled safely on first use. (PR #425)
+- **Categorized error tracking**: a rate-limited, categorized recent-error buffer with truncated stack capture (transport/ip/proxy/webrtc). Rate limiting reuses the fork's existing `logThrottle` primitive. Exposed via the loopback-only `/metrics/errors` endpoint. (PR #425)
+
 ### Changed
+- **Docker build layer caching**: the builder stage now copies `go.mod`/`go.sum` and runs `go mod download` first as a separate cacheable layer, so dependency downloads are only invalidated when the module manifests change rather than on every source edit. The Docker build context is also slimmer (docs, res, and scratch files excluded). (PR #424)
 - **CFAA IP blocklist sync**: table refreshed to the latest upstream feed (upstream commit 6813e788). IPv4 prefixes 43299 → 44225, IPv6 prefixes 431 → 513. The CFAA table is live in the provider relay path, so this changes what the provider blocks at egress. Pure data change, no control flow or protocol impact. Integrity verified (counts match records, ranges sorted/non-overlapping) and CI green. (PR #412)
 
 ### Fixed
