@@ -88,14 +88,12 @@ func TestStatusLineUp(t *testing.T) {
 	}
 }
 
-// TestStatusLineUpSubstringQuirk documents current behavior: the "ok" token
-// is matched as a bare substring, not on a word boundary, so words that
-// merely contain "ok" (e.g. "broken") are misclassified as up. This is a
-// regression/characterization test capturing the function's actual
-// behavior, not an endorsement of it.
+// TestStatusLineUpSubstringQuirk documents the fixed behavior: status tokens
+// ("ok"/"up"/"healthy") are matched on word boundaries only, so words that
+// merely contain "ok" (e.g. "broken") are NOT misclassified as up.
 func TestStatusLineUpSubstringQuirk(t *testing.T) {
-	if !statusLineUp("proxy1 broken") {
-		t.Errorf(`statusLineUp("proxy1 broken") = false; expected true because "ok" is matched as a bare substring of "broken"`)
+	if statusLineUp("proxy1 broken") {
+		t.Errorf("statusLineUp(\"proxy1 broken\") = true, want false")
 	}
 }
 

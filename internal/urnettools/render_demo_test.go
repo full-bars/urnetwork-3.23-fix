@@ -23,13 +23,13 @@ func TestStatusPanelRenders(t *testing.T) {
 		StateDir:   tmp,
 		PID:        4212,
 		Running:    true,
-		Network:    "mesocyclone",
+		Network:    "example-net",
 		NetworkID:  "abcd-1234",
 		JWTExpires: time.Now().Add(24 * time.Hour),
 	}
 	out := capturePanel(t, p)
 	for _, want := range []string{
-		"PROVIDER STATUS", "mesocyclone", "RUNNING",
+		"PROVIDER STATUS", "example-net", "RUNNING",
 		"user:", "binary:", "state dir:", "urnetwork",
 		"PROXIES:", "URL sources:", "file sources:", "proxies.txt",
 	} {
