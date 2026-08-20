@@ -92,8 +92,7 @@ jobs:
                 echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
 
                 AI_SUMMARY=""
-                PR_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/pull/${PR_NUMBER}.diff")
-                TRUNCATED_DIFF="${PR_DIFF:0:60000}"
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" --pr "$PR_NUMBER" 2>/dev/null || echo "could not build compact diff")
                 PROMPT="You are an expert Go developer. Analyze this pull request diff and produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
                 
                 **Architectural Changes** - what changed structurally and why
@@ -107,7 +106,7 @@ jobs:
                 with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
-                                ${TRUNCATED_DIFF}"
+                                ${COMPACT_DIFF}"
 
                 # Tier 1: opencode-go gateway (via opencode CLI)
                 if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
@@ -348,8 +347,10 @@ jobs:
 
                 AI_SUMMARY=""
                 COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
-                RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA_FULL}.diff" 2>/dev/null || echo "")
-                TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+                # Compact, faithful change representation: real code patches in
+                # full; generated data-table files as meaningful const deltas
+                # (the packed blobs are opaque; the API elides them anyway).
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" "$COMMIT_SHA_FULL" 2>/dev/null || echo "could not build compact diff")
                 PROMPT="You are an expert Go developer. Analyze this commit diff and produce a structured summary of approximately 150-250 words with exactly these three bolded sections:
                 
                 **Architectural Changes** - what changed structurally and why
@@ -363,9 +364,9 @@ jobs:
                 with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
-                                ${TRUNCATED_DIFF}"
+                                ${COMPACT_DIFF}"
 
-                if [ -n "$TRUNCATED_DIFF" ]; then
+                if [ -n "$COMPACT_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                     OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
@@ -704,8 +705,7 @@ jobs:
             SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
 
             AI_SUMMARY=""
-            RAW_DIFF=$(curl -sL "https://github.com/${UPSTREAM_REPO}/compare/${PREV_TAG}...${LATEST_TAG}.diff" 2>/dev/null || echo "")
-            TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+            COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" "${PREV_SHA}...${LATEST_SHA}" 2>/dev/null || echo "could not build compact diff")
             PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
             
             **Architectural Changes** - what changed structurally and why
@@ -719,9 +719,9 @@ jobs:
             with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
             
             Diff:
-                        ${TRUNCATED_DIFF}"
+                        ${COMPACT_DIFF}"
 
-            if [ -n "$TRUNCATED_DIFF" ]; then
+            if [ -n "$COMPACT_DIFF" ]; then
               # Tier 1: opencode-go gateway (via opencode CLI)
               if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                 OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
@@ -916,8 +916,7 @@ jobs:
                 echo "🛰️ SN REPO: Commit $COMMIT_SHA touches:$MATCHED_FILES"
 
                 AI_SUMMARY=""
-                RAW_DIFF=$(curl -sL "https://github.com/${SN_REPO}/commit/${COMMIT_SHA}.diff" 2>/dev/null || echo "")
-                TRUNCATED_DIFF="${RAW_DIFF:0:60000}"
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$SN_REPO" "$COMMIT_SHA" 2>/dev/null || echo "could not build compact diff")
                 PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Produce a structured summary of approximately 200-300 words with exactly these three bolded sections:
                 
                 **Architectural Changes** - what changed structurally and why
@@ -931,9 +930,9 @@ jobs:
                 with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT].
                 
                 Diff:
-                                ${TRUNCATED_DIFF}"
+                                ${COMPACT_DIFF}"
 
-                if [ -n "$TRUNCATED_DIFF" ]; then
+                if [ -n "$COMPACT_DIFF" ]; then
                   # Tier 1: opencode-go gateway (via opencode CLI)
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
                     OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
