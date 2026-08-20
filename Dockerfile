@@ -8,7 +8,14 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev
 
-# Copy source
+# Copy module manifests first so dependency download is a separate
+# cacheable layer (only invalidated when go.mod/go.sum change)
+COPY go.mod go.sum.* ./
+
+# Download modules once (cached across builds unless manifests change)
+RUN go mod download
+
+# Copy the rest of the source
 COPY . .
 
 # Build for the target architecture with version injection
