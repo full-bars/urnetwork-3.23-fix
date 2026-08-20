@@ -3635,6 +3635,18 @@ func (self *Status) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Host          string `json:"host"`
 	}
 
+	if r.URL.Path == "/metrics/pool" {
+		result := connect.EnhancedMetrics()
+		responseJson, err := json.Marshal(result)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(responseJson)
+		return
+	}
+
 	result := &WarpStatusResult{
 		Version: RequireVersion(),
 		// ConfigVersion: RequireConfigVersion(),

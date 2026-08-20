@@ -31,6 +31,31 @@ var DefaultMessagePoolShardCount = func() int {
 	return 16
 }()
 
+// Enhanced metrics for message pool performance tracking
+type PoolMetrics struct {
+	Hits             atomic.Uint64
+	Misses           atomic.Uint64
+	Returns          atomic.Uint64
+	ActiveBuffers    atomic.Uint64
+	TotalCapacity    atomic.Uint64
+	ReturnLatency    atomic.Uint64 // nanoseconds
+	ReturnCount      atomic.Uint64
+	GCPauses         atomic.Uint64
+	SizeDistribution map[int]*atomic.Uint64
+	LastResetTime    time.Time
+}
+
+var globalPoolMetrics = &PoolMetrics{
+	SizeDistribution: map[int]*atomic.Uint64{
+		2048:  &atomic.Uint64{},
+		4096:  &atomic.Uint64{},
+		16384: &atomic.Uint64{},
+		32768: &atomic.Uint64{},
+		65536: &atomic.Uint64{},
+	},
+	LastResetTime: time.Now(),
+}
+
 // new byte allocations in the connect package use pooled message buffers,
 // either via `MessagePoolCopy` or `MessagePoolGet`.
 // There are three rules for pooled messages:
@@ -171,6 +196,9 @@ func (self *messagePool) Get() []byte {
 		shard.pool[shard.count-1] = nil
 		shard.count -= 1
 		poolMessage[self.size+12] = uint8(shardIndex)
+		globalPoolMetrics.Hits.Add(1)
+		globalPoolMetrics.ActiveBuffers.Add(1)
+		globalPoolMetrics.SizeDistribution[self.size].Add(1)
 		return poolMessage
 	}
 
@@ -180,6 +208,9 @@ func (self *messagePool) Get() []byte {
 	binary.BigEndian.PutUint64(poolMessage[self.size:], shard.nextId)
 	poolMessage[self.size+8] = 255
 	poolMessage[self.size+12] = uint8(shardIndex)
+	globalPoolMetrics.Misses.Add(1)
+	globalPoolMetrics.ActiveBuffers.Add(1)
+	globalPoolMetrics.SizeDistribution[self.size].Add(1)
 	return poolMessage
 }
 
@@ -206,6 +237,8 @@ func (self *messagePool) Put(poolMessage []byte) {
 		// note we do not need to zero out the message
 		shard.pool[shard.count] = poolMessage
 		shard.count += 1
+		globalPoolMetrics.Returns.Add(1)
+		globalPoolMetrics.ActiveBuffers.Add(^uint64(0))
 	}
 	// else no capacity, discard the message
 }
@@ -661,4 +694,56 @@ func DecodeBase64(enc *base64.Encoding, s string) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+// EnhancedMetrics returns a JSON-friendly snapshot of the message pool
+// performance counters (hits, misses, returns, active buffers, size
+// distribution, GC pressure). It is exposed by the provider at
+// /metrics/pool.
+func EnhancedMetrics() map[string]any {
+	totalPooled := uint64(0)
+	for _, pool := range orderedMessagePools() {
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				totalPooled += uint64(shard.count)
+			}()
+		}
+	}
+
+	sizeDistribution := map[string]uint64{}
+	for size, count := range globalPoolMetrics.SizeDistribution {
+		sizeDistribution[fmt.Sprintf("%d", size)] = count.Load()
+	}
+
+	return map[string]any{
+		"hits":              globalPoolMetrics.Hits.Load(),
+		"misses":            globalPoolMetrics.Misses.Load(),
+		"returns":           globalPoolMetrics.Returns.Load(),
+		"active_buffers":    globalPoolMetrics.ActiveBuffers.Load(),
+		"total_capacity":    globalPoolMetrics.TotalCapacity.Load(),
+		"return_latency":    globalPoolMetrics.ReturnLatency.Load(),
+		"return_count":      globalPoolMetrics.ReturnCount.Load(),
+		"gc_pauses":         globalPoolMetrics.GCPauses.Load(),
+		"pooled_buffers":    totalPooled,
+		"size_distribution": sizeDistribution,
+		"last_reset_time":   globalPoolMetrics.LastResetTime.Format(time.RFC3339),
+	}
+}
+
+// sampleGCPauses is a lightweight sampler that tracks GC pause count for
+// pool pressure reporting. It runs only while the process is alive.
+func sampleGCPauses() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		globalPoolMetrics.GCPauses.Store(uint64(ms.NumGC))
+	}
+}
+
+func init() {
+	go sampleGCPauses()
 }
