@@ -10,7 +10,7 @@ RUN apk add --no-cache git gcc musl-dev
 
 # Copy module manifests first so dependency download is a separate
 # cacheable layer (only invalidated when go.mod/go.sum change)
-COPY go.mod go.sum.* ./
+COPY go.mod go.sum ./
 
 # Download modules once (cached across builds unless manifests change)
 RUN go mod download
