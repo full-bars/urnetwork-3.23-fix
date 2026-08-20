@@ -20,12 +20,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Resolve PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+# nothing personal
+          # On issue_comment events github.event.pull_request is null, so
+          # resolve the PR head SHA via the API using the PR number from the
+          # comment's issue context.
+          PR_NUM="${{ github.event.issue.number || github.event.pull_request.number }}"
+          echo "pr_number=$PR_NUM"
+          SHA=$(gh api repos/${{ github.repository }}/pulls/$PR_NUM --jq .head.sha)
+          echo "head_sha=$SHA"
+          echo "head_sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # On issue_comment events, use the PR head commit SHA (unambiguous).
-          # head.ref can resolve to the wrong branch on comment-triggered runs.
-          ref: ${{ github.event.pull_request.head.sha || github.event.pull_request.head.ref }}
+          ref: ${{ steps.pr.outputs.head_sha }}
       - name: Run review agent on mention
         uses: anthropics/claude-code-action@v1
         with:
