@@ -42,8 +42,11 @@ if (-not (Test-Path $InstallDir)) {
     exit 1
 }
 
-$ProviderExe = Join-Path -Path $InstallDir -ChildPath "windows\$Arch\urnetwork.exe"
-Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
+$ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
+# Terminate the running provider. Match by the flat install path primarily;
+# also catch urnetwork.exe started from the install dir (the installer always
+# places it flat since the release tarball is flat).
+Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe -or ($_.Name -eq "urnetwork.exe" -and $_.ExecutablePath -like "$InstallDir*") } | ForEach-Object { $_.Terminate() }
 
 Write-Host "Removing installation directory: $InstallDir"
 Remove-Item -Path $InstallDir -Recurse -Force
