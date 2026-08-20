@@ -3062,9 +3062,9 @@ func provide(opts docopt.Opts) {
 	go runReloadReconciler(ctx)
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
-		tlog("[profile] enabling pprof on %s (loopback only)\n", profileAddr)
+		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors\n", profileAddr)
 		if err := connect.EnableProfiling(profileAddr); err != nil {
-			tlog("[profile] failed to enable pprof: %v\n", err)
+			tlog("[profile] failed to enable diagnostics: %v\n", err)
 		}
 	}
 	if 0 < port {
