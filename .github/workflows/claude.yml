@@ -25,7 +25,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-# nothing personal
           # On issue_comment events github.event.pull_request is null, so
           # resolve the PR head SHA via the API using the PR number from the
           # comment's issue context.
