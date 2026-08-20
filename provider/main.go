@@ -3627,6 +3627,16 @@ type Status struct {
 }
 
 func (self *Status) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/metrics/errors" {
+		responseJson, err := json.Marshal(connect.ErrorMetrics())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(responseJson)
+		return
+	}
 	type WarpStatusResult struct {
 		Version       string `json:"version,omitempty"`
 		ConfigVersion string `json:"config_version,omitempty"`
