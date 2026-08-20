@@ -2817,3 +2817,26 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Search for `mktemp /tmp/urnetwork-update` in `docker/scripts/urnet-tools.sh` and `start_nightly.sh`. The busybox-safe form is `mktemp -d /tmp/urnetwork-update-XXXXXX`.
 - The nightly `func_check_update` should touch `update-pending` only after `mv` of the new binary succeeds.
 
+## 128. Loopback-Only Diagnostics + Observability Metrics (PR #423, #424, #425)
+
+**Purpose**: Give operators a single loopback-only place to inspect a running provider -- Go pprof CPU/heap profiles and process metrics -- without exposing anything on the public status port. Two earlier PRs (pool metrics, error tracking) were reviewed as a batch and consolidated into one PR (#425) after a big-picture review found their first form put internal metrics on the unauthenticated public status server.
+
+**PR #423 -- loopback-only diagnostics server** (`profiling.go`, `provider/main.go`):
+- `connect.EnableProfiling(addr)` starts an HTTP server that refuses any non-loopback bind (validates the host is a literal loopback IP via `net.ParseIP(...).IsLoopback()`).
+- Serves `/debug/pprof/*` (index, cmdline, profile, symbol, trace).
+- Opt-in, off by default: enabled only when the `URNETWORK_PPROF` env var is set to a `host:port`. Documented in `docs/Configuration.md` under Monitoring & Telemetry.
+
+**PR #425 -- consolidated pool metrics + error tracking** (`message_pool.go`, `error_tracking.go`, `profiling.go`, `provider/main.go`):
+- Message pool metrics: `PoolMetrics` atomics for hits/misses/returns/active buffers and a per-size distribution. The size-distribution map is created lazily so an unknown pool size cannot nil-deref on first use. `ActiveBuffers` is decremented on every `Put` (pooled or discarded) so the gauge does not drift upward.
+- GC pauses are read via `runtime/metrics` (`/gc/cycles/total`), not `runtime.ReadMemStats`, matching the fork's existing lock-free, no-stop-the-world metric style, and read synchronously on pull so no background goroutine runs for binaries that never query metrics.
+- `EnhancedMetrics()` returns a JSON snapshot: hits, misses, returns, active buffers, live pooled capacity, GC cycles, size distribution, last reset time.
+- Error tracking: `RecordError(category, msg)` records a rate-limited, categorized recent-error buffer (transport/ip/proxy/webrtc) with a truncated stack capture. Rate limiting reuses the fork's existing `logThrottle` (lock-free, O(1)) rather than a bespoke limiter. The trim path is bounded by length (`len()`), fixing a cap()/len() panic the original implementation had. `ErrorMetrics()` returns copies of the buffer, so concurrent records cannot race with serialization.
+- Both `/metrics/pool` and `/metrics/errors` are served on the loopback-only diagnostics listener from PR #423, alongside `/debug/pprof/*`. They are NOT on the public status server.
+
+**PR #424 -- Docker build layer caching** (`Dockerfile`, `.dockerignore`):
+- Builder stage copies `go.mod`/`go.sum` and runs `go mod download` first as a separate cacheable layer, so dependency downloads are only invalidated when the module manifests change, not on every source edit.
+- Expanded `.dockerignore` to keep docs, res, and scratch files out of the build context.
+
+**Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, CodeRabbit) green.
+
+**How to Identify in New Upstream**: `profiling.go` (loopback diagnostics) does not exist upstream. `message_pool.go`'s `EnhancedMetrics`/`globalPoolMetrics` and `error_tracking.go` are fork-only. The `URNETWORK_PPROF` env var and the `/metrics/pool` + `/metrics/errors` routes on the loopback listener are fork additions.
