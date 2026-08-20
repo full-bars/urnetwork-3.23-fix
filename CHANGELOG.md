@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **CFAA IP blocklist sync**: table refreshed to the latest upstream feed (upstream commit 6813e788). IPv4 prefixes 43299 → 44225, IPv6 prefixes 431 → 513. The CFAA table is live in the provider relay path, so this changes what the provider blocks at egress. Pure data change, no control flow or protocol impact. Integrity verified (counts match records, ranges sorted/non-overlapping) and CI green. (PR #412)
+
+### Fixed
+- **Upstream monitor fed the analyzer a truncated diff**: the monitor curled the raw upstream diff and sliced it to 60000 chars. Large generated files are multi-megabyte, so the model saw a fraction of the change and could hallucinate portability verdicts. The monitor now builds a compact change representation from the GitHub API: real code patches in full, generated data-table files as their meaningful const deltas. Applies to all four monitor jobs (PRs, commits to main, build releases, sn). (PR #410)
+
 ## [v3.23.0-fix.30.3] — 2026-08-19
 ### Added
 - **Busybox-safe mktemp for in-container updates**: `urnet-tools update` now uses `mktemp -d /tmp/urnetwork-update-XXXXXX` (directory template, busybox-compatible) instead of the broken `.tar.gz` suffix template that failed with `Invalid argument` on Alpine images. One `rm -rf` cleans up. Test harness hardened with a busybox-enforcing `mktemp` stub that rejects any template not ending in `XXXXXX`. New coverage: zero-byte tarballs, partial downloads overwritten by mirror, update-pending marker lifecycle, architecture mapping, busybox stub regression guard. (PR #406)
