@@ -11,8 +11,14 @@ func TestEnhancedMetricsShape(t *testing.T) {
 			t.Fatalf("EnhancedMetrics missing key %q", key)
 		}
 	}
-	// A Get/Put round-trip must move the active count back to zero and
-	// increment hits/misses/returns without panicking on any pool size.
+	// ActiveBuffers is a process-global gauge shared with other tests that
+	// called Get() without Put(), so it is NOT expected to be 0 here. We
+	// assert on the DELTA my round-trip produces instead.
+	before := m["active_buffers"].(uint64)
+	beforeReturns := m["returns"].(uint64)
+
+	// A Get/Put round-trip must net out the active count and increment returns,
+	// without panicking on any pool size.
 	sizes := []int{2048, 4096, 16384, 32768, 65536, 12345} // 12345 is NOT in the fixed set -> exercises lazy size-distribution
 	for _, size := range sizes {
 		pool := newMessagePool(size, 4)
@@ -20,10 +26,16 @@ func TestEnhancedMetricsShape(t *testing.T) {
 		pool.Put(b)
 	}
 	m2 := EnhancedMetrics()
-	if m2["active_buffers"].(uint64) != 0 {
-		t.Fatalf("expected active_buffers to return to 0 after round-trip, got %v", m2["active_buffers"])
+	after := m2["active_buffers"].(uint64)
+	if after != before {
+		t.Fatalf("expected active_buffers to net back to %d after round-trip, got %d", before, after)
 	}
-	if m2["returns"].(uint64) == 0 {
-		t.Fatalf("expected returns > 0 after round-trip")
+	if m2["returns"].(uint64)-beforeReturns != uint64(len(sizes)) {
+		t.Fatalf("expected %d returns after round-trip, got %d", len(sizes), m2["returns"].(uint64)-beforeReturns)
+	}
+	// Each new pool size must appear in the distribution (incl. 12345).
+	sd := m2["size_distribution"].(map[string]uint64)
+	if _, ok := sd["12345"]; !ok || sd["12345"] == 0 {
+		t.Fatalf("expected size 12345 in size_distribution, got %v", sd)
 	}
 }
