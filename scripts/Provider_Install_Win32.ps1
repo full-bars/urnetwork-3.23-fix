@@ -154,7 +154,7 @@ if ($ReleaseInfo) {
         $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -eq "urnetwork-provider-$ReleaseVersion.tar.gz" }
     }
     if (-not $ReleaseAsset) {
-        $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "^urnetwork-provider-.*\.tar\.gz$" } | Select-Object -First 1
+        $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "^urnetwork-provider-.*\-${OS}-${Arch}\.tar\.gz$" } | Select-Object -First 1
     }
     if ($ReleaseAsset) {
         $MirrorURL = $ReleaseAsset.browser_download_url
