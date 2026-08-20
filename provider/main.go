@@ -3061,6 +3061,12 @@ func provide(opts docopt.Opts) {
 	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
 	go runReloadReconciler(ctx)
 
+	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
+		tlog("[profile] enabling pprof on %s (loopback only)\n", profileAddr)
+		if err := connect.EnableProfiling(profileAddr); err != nil {
+			tlog("[profile] failed to enable pprof: %v\n", err)
+		}
+	}
 	if 0 < port {
 		fmt.Printf(
 			"Provider %s started. Status on *:%d\n",
