@@ -25,13 +25,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # On issue_comment events github.event.pull_request is null, so
-          # resolve the PR head SHA via the API using the PR number from the
-          # comment's issue context.
           PR_NUM="${{ github.event.issue.number || github.event.pull_request.number }}"
-          echo "pr_number=$PR_NUM"
           SHA=$(gh api repos/${{ github.repository }}/pulls/$PR_NUM --jq .head.sha)
-          echo "head_sha=$SHA"
           echo "head_sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
@@ -40,6 +35,8 @@ jobs:
       - name: Run review agent on mention
         uses: grll/claude-code-action@beta
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --model sonnet
-          show_full_output: true
+          use_oauth: 'true'
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_refresh_token: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+          claude_expires_at: ${{ secrets.CLAUDE_EXPIRES_AT }}
+          model: sonnet
