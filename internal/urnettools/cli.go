@@ -2,9 +2,13 @@ package urnettools
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -607,6 +611,12 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
+	// Windows and macOS get the styled status panel; Linux keeps its
+	// systemd-oriented table untouched.
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		renderStatusPanel(p)
+		return nil
+	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "user:\t%s\n", p.User)
 	fmt.Fprintf(w, "unit:\t%s\n", p.Unit)
@@ -623,6 +633,206 @@ func cmdStatus(args []string) error {
 	}
 	fmt.Fprintf(w, "jwt-expires:\t%s\n", exp)
 	return w.Flush()
+}
+
+// renderStatusPanel prints a compact status summary with a header bar,
+// a divider, and an optional proxies section. Used on Windows and macOS;
+// Linux keeps its original table output.
+func renderStatusPanel(p Provider) {
+	state, badge := "STOPPED", "O"
+	color := ""
+	if p.Running {
+		state, badge = "RUNNING", "@"
+		color = "\x1b[32m"
+	}
+
+	exp := "n/a"
+	if !p.JWTExpires.IsZero() {
+		exp = p.JWTExpires.Format(time.RFC3339)
+	}
+	pidTxt := "-"
+	if p.PID != 0 {
+		pidTxt = strconv.Itoa(p.PID)
+	}
+	type row struct{ k, v string }
+	rows := []row{
+		{"user", orDash(p.User)},
+		{"unit", orDash(p.Unit)},
+		{"binary", orDash(p.Binary)},
+		{"version", orDash(p.Version)},
+		{"state dir", orDash(p.StateDir)},
+		{"pid", pidTxt},
+		{"network", orDash(p.Network)},
+		{"network id", orDash(p.NetworkID)},
+		{"jwt expires", exp},
+	}
+
+	keyW := 0
+	for _, r := range rows {
+		if len(r.k) > keyW {
+			keyW = len(r.k)
+		}
+	}
+	const maxValW = 60
+	valW := 0
+	for _, r := range rows {
+		w := len(r.v)
+		if w > maxValW {
+			w = maxValW
+		}
+		if w > valW {
+			valW = w
+		}
+	}
+	if valW < 12 {
+		valW = 12
+	}
+
+	// Header bar: title + status on the right.
+	title := orDash(p.Network)
+	if title == "-" {
+		title = orDash(p.User)
+	}
+	if color != "" {
+		state = color + state + "\x1b[0m"
+	}
+	fmt.Printf("PROVIDER STATUS   %s", title)
+	fmt.Printf(" %s %s\n", badge, state)
+	divW := keyW + 2 + valW
+	if divW < 70 {
+		divW = 70
+	}
+	fmt.Printf("  %s\n", strings.Repeat("-", divW))
+
+	// Rows.
+	for _, r := range rows {
+		fmt.Printf("  %-*s %s\n", keyW+1, r.k+":", clamp(r.v, maxValW))
+	}
+
+	// Proxies section.
+	printProxyStatus(p)
+}
+
+// printProxyStatus prints the provider's proxy summary: total/up from the
+// proxy_health.state snapshot, and configured URL/file sources. It degrades
+// to "n/a"/"none" if no proxy state or sources exist.
+func printProxyStatus(p Provider) {
+	fmt.Printf("  %s\n", strings.Repeat("-", 70))
+
+	keyW := len("file sources:")
+	// Proxy health state: proxy_health.state in the state dir.
+	up, total, haveHealth := readProxyHealth(p.StateDir)
+	if haveHealth {
+		b := "DOWN"
+		if up > 0 {
+			b = "UP"
+		}
+		fmt.Printf("  %-*s %d up / %d total   [%s]\n", keyW+1, "PROXIES:", up, total, b)
+	} else {
+		fmt.Printf("  %-*s n/a  (no proxy health state)\n", keyW+1, "PROXIES:")
+	}
+
+	// URL sources from proxy_url.json (sources list).
+	urlSrc := readProxyURLSources(p.StateDir)
+	if len(urlSrc) > 0 {
+		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(urlSrc, ", "))
+	} else {
+		fmt.Printf("  %-*s none\n", keyW+1, "URL sources:")
+	}
+
+	// File source: the --proxy_file path from proxy.state / the provider's
+	// config, if discoverable.
+	fileSrc := readProxyFileSource(p)
+	if fileSrc != "" {
+		fmt.Printf("  %-*s %s\n", keyW+1, "file sources:", fileSrc)
+	} else {
+		fmt.Printf("  %-*s none\n", keyW+1, "file sources:")
+	}
+}
+
+// clamp truncates s to at most max runes, appending "..." if truncated.
+func clamp(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+// readProxyHealth reads the proxy_health.state snapshot and returns
+// (up, total, ok). A missing/unparseable file yields ok=false.
+func readProxyHealth(stateDir string) (up, total int, ok bool) {
+	b, err := os.ReadFile(filepath.Join(stateDir, "proxy_health.state"))
+	if err != nil {
+		return 0, 0, false
+	}
+	// Best-effort parse: count lines that indicate a healthy vs total proxy.
+	// The exact shape is provider-binary controlled; degrade gracefully.
+	lines := strings.Split(string(b), "\n")
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue // skip trailing/blank lines so total is not inflated
+		}
+		total++
+		low := strings.ToLower(ln)
+		// A line counts as up if it contains a status token (up/ok/healthy)
+		// on a word boundary, to avoid "upstream"/"oklahoma" false positives.
+		if statusLineUp(low) {
+			up++
+		}
+	}
+	if total == 0 {
+		return 0, 0, false
+	}
+	return up, total, true
+}
+
+// readProxyURLSources returns the configured URL proxy sources from
+// proxy_url.json (the "sources" field).
+// statusLineUp reports whether a lowercased proxy-health line indicates a
+// live proxy, matching status tokens on word boundaries only.
+var statusUpRe = regexp.MustCompile(`\b(?:up|ok|healthy)\b`)
+
+// statusLineUp reports whether a lowercased proxy-health line indicates a
+// live proxy, matching status tokens on whole-word boundaries only (so
+// "upstream" or "oklahoma" are not treated as up/ok).
+func statusLineUp(low string) bool {
+	return statusUpRe.MatchString(low)
+}
+
+func readProxyURLSources(stateDir string) []string {
+	b, err := os.ReadFile(filepath.Join(stateDir, "proxy_url.json"))
+	if err != nil {
+		return nil
+	}
+	var st struct {
+		Sources []string `json:"sources"`
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil
+	}
+	if len(st.Sources) == 0 {
+		return nil
+	}
+	return st.Sources
+}
+
+// readProxyFileSource returns the proxy file path if the provider uses one
+// (from proxy.state "source"), else "".
+func readProxyFileSource(p Provider) string {
+	b, err := os.ReadFile(filepath.Join(p.StateDir, "proxy.state"))
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return ""
+	}
+	if st.Source == "" {
+		return ""
+	}
+	return st.Source
 }
 
 // stdinReader is the ONE buffered reader over stdin, shared by every
