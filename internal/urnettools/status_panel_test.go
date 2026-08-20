@@ -337,7 +337,7 @@ func TestRenderStatusPanelTitleFallsBackToUser(t *testing.T) {
 	}
 	out := capturePanel(t, p)
 	if !strings.Contains(out, "PROVIDER STATUS   user") {
-		t.Errorf("expected title to fall back to user 'user':\n%s", out)
+		t.Errorf("expected title to fall back to the configured user:\n%s", out)
 	}
 }
 
