@@ -23,7 +23,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref }}
+          # On issue_comment events, use the PR head commit SHA (unambiguous).
+          # head.ref can resolve to the wrong branch on comment-triggered runs.
+          ref: ${{ github.event.pull_request.head.sha || github.event.pull_request.head.ref }}
       - name: Run review agent on mention
         uses: anthropics/claude-code-action@v1
         with:
