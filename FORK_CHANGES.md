@@ -1285,7 +1285,7 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 
 **Files Added**:
 - `ip_security_cfaa.go` — Static endpoint-reputation detector (blocked IP ranges + port/protocol policy). Three-way verdict: drop/allow/pass-to-DPI.
-- `ip_security_cfaa_block.go` — Packed binary-search IP blocklist (64131 IPv4 ranges + 214 IPv6 ranges). Replaces 66K-line `map[[4]byte]bool`.
+- `ip_security_cfaa_block.go` — Packed binary-search IP blocklist (44225 IPv4 ranges + 513 IPv6 ranges as of 2026-08-19 sync). Replaces 66K-line `map[[4]byte]bool`.
 - `ip_security_dmca.go` — Stateful deep-packet inspection: BitTorrent signature detection (BEP 3/5/15/29), entropy-based encrypted-flow heuristic, 16-shard LRU flow table.
 - `ip_security_webstandard.go` — Stateless TLS/DTLS/QUIC/STUN byte-signature matcher. Exempts legitimate encrypted flows from the DMCA entropy heuristic.
 
