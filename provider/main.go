@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -361,6 +362,46 @@ func applyEcoSettings(maxMemory connect.ByteCount) {
 		ecoLimit := ramBytes * 75 / 100
 		debug.SetMemoryLimit(ecoLimit)
 	}
+}
+
+// ensureMemoryLimit guarantees every provider code path runs under a finite
+// GOMEMLIMIT so heap growth is always bounded by the runtime (the ATL2
+// outage class: turbo/Tier3/Tier4 and bare `provide` left the process with
+// no limit, so nothing pushed back and the kernel chose swap). Call it once
+// AFTER all profile/tier eco/turbo application so turbo and eco limits are
+// already in place and win. Operator overrides always win.
+//
+// Order of precedence (first match wins):
+//  1. GOMEMLIMIT set in the environment (operator explicit)
+//  2. --max-memory flag (maxMemory > 0, applied earlier)
+//  3. a finite limit already set by any tier/profile (eco, turbo)
+//  4. this function's default: 80% of effective RAM, absolute headroom
+//     capped at 1 GiB so a RAM-rich box does not claim RAM other tenants need.
+func ensureMemoryLimit(maxMemory connect.ByteCount) {
+	if os.Getenv("GOMEMLIMIT") != "" || maxMemory > 0 {
+		return // operator precedence, already applied
+	}
+	// A finite limit from a tier/profile means the box is already protected.
+	if cur := debug.SetMemoryLimit(-1); cur > 0 && cur < math.MaxInt64 {
+		return
+	}
+	ram := detectEffectiveRAMLimitBytes()
+	if ram <= 0 {
+		tlog("[mem] memory limit: cannot detect effective RAM; leaving unset\n")
+		return
+	}
+	// tighter of 80% and (ram - 1 GiB) reserves headroom for other tenants on
+	// large boxes while still bounding runaway growth.
+	const gib = int64(1) << 30
+	const mib = int64(1) << 20
+	limit := min(ram*80/100, ram-gib)
+	if limit < 256*mib {
+		// tiny-box guard: a sub-256MiB default would choke a small host.
+		limit = ram * 80 / 100
+	}
+	debug.SetMemoryLimit(limit)
+	tlog("[mem] memory limit: %.0fMiB (RAM=%.0fMiB, no explicit GOMEMLIMIT/--max-memory)\n",
+		float64(limit)/float64(mib), float64(ram)/float64(mib))
 }
 
 func readMemAvailableMiB() int64 {
@@ -2472,6 +2513,7 @@ func provide(opts docopt.Opts) {
 		}
 
 		applyEcoSettings(maxMemory)
+		ensureMemoryLimit(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
