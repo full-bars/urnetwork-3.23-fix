@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -789,13 +790,13 @@ func readProxyHealth(stateDir string) (up, total int, ok bool) {
 // proxy_url.json (the "sources" field).
 // statusLineUp reports whether a lowercased proxy-health line indicates a
 // live proxy, matching status tokens on word boundaries only.
+var statusUpRe = regexp.MustCompile(`\b(?:up|ok|healthy)\b`)
+
+// statusLineUp reports whether a lowercased proxy-health line indicates a
+// live proxy, matching status tokens on whole-word boundaries only (so
+// "upstream" or "oklahoma" are not treated as up/ok).
 func statusLineUp(low string) bool {
-	for _, tok := range []string{" up", ":up", " up:", "up ", "ok", "healthy"} {
-		if strings.Contains(low, tok) {
-			return true
-		}
-	}
-	return false
+	return statusUpRe.MatchString(low)
 }
 
 func readProxyURLSources(stateDir string) []string {

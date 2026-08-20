@@ -16,20 +16,20 @@ func TestStatusPanelRenders(t *testing.T) {
 	writeTestProxyState(t, tmp)
 
 	p := Provider{
-		User:       "full-bars",
+		User:       "user",
 		Unit:       "urnetwork.service",
-		Binary:     `C:\Users\full-bars\AppData\Local\urnetwork\provider\urnetwork.exe`,
+		Binary:     `C:\Users\user\AppData\Local\urnetwork\provider\urnetwork.exe`,
 		Version:    "v3.23.0-fix.30.3",
 		StateDir:   tmp,
 		PID:        4212,
 		Running:    true,
-		Network:    "mesocyclone",
+		Network:    "example-net",
 		NetworkID:  "abcd-1234",
 		JWTExpires: time.Now().Add(24 * time.Hour),
 	}
 	out := capturePanel(t, p)
 	for _, want := range []string{
-		"PROVIDER STATUS", "mesocyclone", "RUNNING",
+		"PROVIDER STATUS", "example-net", "RUNNING",
 		"user:", "binary:", "state dir:", "urnetwork",
 		"PROXIES:", "URL sources:", "file sources:", "proxies.txt",
 	} {
@@ -47,7 +47,7 @@ func TestStatusPanelRenders(t *testing.T) {
 func TestStatusPanelStopped(t *testing.T) {
 	tmp := t.TempDir()
 	p := Provider{
-		User:     "full-bars",
+		User:     "user",
 		StateDir: tmp,
 		PID:      0,
 	}
@@ -93,6 +93,6 @@ func writeTestProxyState(t *testing.T, dir string) {
 	os.WriteFile(filepath.Join(dir, "proxy_health.state"), []byte(health), 0o644)
 	urls := `{"sources":["https://dl.fullbars.xyz/proxies.txt"]}`
 	os.WriteFile(filepath.Join(dir, "proxy_url.json"), []byte(urls), 0o644)
-	ps := `{"source":"C:\\Users\\full-bars\\proxies.txt"}`
+	ps := `{"source":"C:\\Users\\user\\proxies.txt"}`
 	os.WriteFile(filepath.Join(dir, "proxy.state"), []byte(ps), 0o644)
 }
