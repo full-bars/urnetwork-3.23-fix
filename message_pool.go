@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,41 @@ var DefaultMessagePoolShardCount = func() int {
 	}
 	return 16
 }()
+
+// PoolMetrics tracks performance counters for the message relay pool.
+// Counters use atomics so Get/Put on the hot path do not contend.
+// SizeDistribution is created lazily so an unknown pool size cannot
+// nil-dereference on first use.
+type PoolMetrics struct {
+	Hits             atomic.Uint64
+	Misses           atomic.Uint64
+	Returns          atomic.Uint64
+	ActiveBuffers    atomic.Uint64
+	GCPauses         atomic.Uint64
+	SizeDistribution map[int]*atomic.Uint64
+	LastResetTime    time.Time
+}
+
+var globalPoolMetrics = &PoolMetrics{
+	SizeDistribution: map[int]*atomic.Uint64{},
+	LastResetTime:    time.Now(),
+}
+
+var sizeDistMu sync.Mutex
+
+// addSizeDistribution increments the per-size buffer counter for size,
+// creating the entry on first use. The map is guarded so concurrent first-use
+// from different goroutines cannot race.
+func addSizeDistribution(size int) {
+	sizeDistMu.Lock()
+	counter, ok := globalPoolMetrics.SizeDistribution[size]
+	if !ok {
+		counter = &atomic.Uint64{}
+		globalPoolMetrics.SizeDistribution[size] = counter
+	}
+	sizeDistMu.Unlock()
+	counter.Add(1)
+}
 
 // new byte allocations in the connect package use pooled message buffers,
 // either via `MessagePoolCopy` or `MessagePoolGet`.
@@ -171,6 +207,9 @@ func (self *messagePool) Get() []byte {
 		shard.pool[shard.count-1] = nil
 		shard.count -= 1
 		poolMessage[self.size+12] = uint8(shardIndex)
+		globalPoolMetrics.Hits.Add(1)
+		globalPoolMetrics.ActiveBuffers.Add(1)
+		addSizeDistribution(self.size)
 		return poolMessage
 	}
 
@@ -180,6 +219,9 @@ func (self *messagePool) Get() []byte {
 	binary.BigEndian.PutUint64(poolMessage[self.size:], shard.nextId)
 	poolMessage[self.size+8] = 255
 	poolMessage[self.size+12] = uint8(shardIndex)
+	globalPoolMetrics.Misses.Add(1)
+	globalPoolMetrics.ActiveBuffers.Add(1)
+	addSizeDistribution(self.size)
 	return poolMessage
 }
 
@@ -202,10 +244,14 @@ func (self *messagePool) Put(poolMessage []byte) {
 	shard.mutex.Lock()
 	defer shard.mutex.Unlock()
 
+	// The buffer is no longer active whether it is pooled or discarded, so
+	// decrement regardless of the capacity branch (avoids monotonic drift).
+	globalPoolMetrics.ActiveBuffers.Add(^uint64(0))
 	if shard.count < len(shard.pool) {
 		// note we do not need to zero out the message
 		shard.pool[shard.count] = poolMessage
 		shard.count += 1
+		globalPoolMetrics.Returns.Add(1)
 	}
 	// else no capacity, discard the message
 }
@@ -661,4 +707,59 @@ func DecodeBase64(enc *base64.Encoding, s string) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+// EnhancedMetrics returns a JSON-friendly snapshot of the message pool
+// performance counters: hit/miss/return counts, active buffers, live pooled
+// capacity, GC pauses, and the per-size distribution. Exposed by the
+// provider at /metrics/pool (loopback-only). It locks each shard briefly to
+// sum live capacity, so it is intended for occasional operator pulls, not
+// tight polling.
+func EnhancedMetrics() map[string]any {
+	totalPooled := uint64(0)
+	for _, pool := range orderedMessagePools() {
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				totalPooled += uint64(shard.count)
+			}()
+		}
+	}
+
+	gcPauses := sampleGCPauses()
+
+	sizeDistribution := map[string]uint64{}
+	sizeDistMu.Lock()
+	for size, count := range globalPoolMetrics.SizeDistribution {
+		sizeDistribution[fmt.Sprintf("%d", size)] = count.Load()
+	}
+	sizeDistMu.Unlock()
+
+	return map[string]any{
+		"hits":              globalPoolMetrics.Hits.Load(),
+		"misses":            globalPoolMetrics.Misses.Load(),
+		"returns":           globalPoolMetrics.Returns.Load(),
+		"active_buffers":    globalPoolMetrics.ActiveBuffers.Load(),
+		"pooled_buffers":    totalPooled,
+		"gc_pauses":         gcPauses,
+		"size_distribution": sizeDistribution,
+		"last_reset_time":   globalPoolMetrics.LastResetTime.Format(time.RFC3339),
+	}
+}
+
+// sampleGCPauses returns the current number of completed GC cycles via
+// runtime/metrics (lock-free, no stop-the-world, unlike runtime.ReadMemStats,
+// which the fork deliberately avoids). It reads synchronously on each pull,
+// so binaries that never query /metrics/pool start no background goroutine.
+func sampleGCPauses() uint64 {
+	samples := []metrics.Sample{{Name: "/gc/cycles/total"}}
+	metrics.Read(samples)
+	switch samples[0].Value.Kind() {
+	case metrics.KindUint64:
+		return samples[0].Value.Uint64()
+	case metrics.KindFloat64:
+		return uint64(samples[0].Value.Float64())
+	}
+	return 0
 }
