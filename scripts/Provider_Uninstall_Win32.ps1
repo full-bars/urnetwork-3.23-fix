@@ -42,7 +42,10 @@ if (-not (Test-Path $InstallDir)) {
     exit 1
 }
 
-$ProviderExe = Join-Path -Path $InstallDir -ChildPath "windows\$Arch\urnetwork.exe"
+$ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
+# Terminate the running provider. The installer always places urnetwork.exe
+# flat in the install dir (the release tarball is flat), so match the exact
+# installed path only.
 Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
 
 Write-Host "Removing installation directory: $InstallDir"
