@@ -369,14 +369,27 @@ func liveHeapFrac() float64 {
 // hostAvailMiB returns the tighter of host and cgroup available memory, or -1
 // if unavailable (the consolidated controller treats -1 as "no host signal").
 func hostAvailMiB() int64 {
+	// Prefer host availability, but never blank the signal when only a cgroup
+	// headroom is available (e.g. a container that cannot read /proc/meminfo).
 	h := readMemAvailableMiB()
-	if h < 0 {
+	c := readCgroupAvailableMiB()
+	switch {
+	case h >= 0 && c >= 0:
+		if c < h {
+			return c
+		}
+		return h
+	case h >= 0:
+		// Host memory is readable but no cgroup headroom exists (bare metal,
+		// a VM, or a cgroup whose accounting we cannot read). Fall through to
+		// the host signal rather than blanking it -- this returned h before
+		// the switch refactor.
+		return h
+	case c >= 0:
+		return c
+	default:
 		return -1
 	}
-	if c := readCgroupAvailableMiB(); c >= 0 && c < h {
-		return c
-	}
-	return h
 }
 
 // applyGCLevel writes the GOGC for the current level (min with baseline so we
@@ -410,6 +423,12 @@ func applyGCLevel(state *gcGovernorState) {
 // heapFrac is raw; hostAvail is available MiB (-1 = no host signal / subtick);
 // psiCPU is the normalized CPU PSI for the veto.
 func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bool, state *gcGovernorState) {
+	// Record the sampled heap + host state up front so writePressureStatus keeps
+	// reporting the true pressure sample even when adaptive GC is disabled (the
+	// early return below must not blank heap_frac/host in the status file).
+	state.lastHeapFrac = heapFrac
+	state.lastHostAvailMiB = hostAvail
+
 	if !gcAdaptiveEnabled() {
 		return
 	}
@@ -441,9 +460,6 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 			hostLevel = 2
 		}
 	}
-
-	state.lastHeapFrac = heapFrac
-	state.lastHostAvailMiB = hostAvail
 
 	// Tighter of the two wins.
 	target := heapLevel

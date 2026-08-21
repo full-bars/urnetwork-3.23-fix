@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"testing"
 	"time"
@@ -361,6 +362,19 @@ func TestReadGOGCPercent_DoesNotDisableGC(t *testing.T) {
 // host-driven tighten. If the subtick clobbered it, release would be
 // unreachable (the fix this pins).
 func TestGCGovernor_SubtickDoesNotClobberReleaseStreak(t *testing.T) {
+	// This test drives the governor which writes process-global GOGC and
+	// gcTightening. Capture both and restore them no matter how the test ends,
+	// so a failing/panic run cannot poison later tests in the same package.
+	origGoGC := 100
+	if goc, ok := readGOGCPercent(); ok {
+		origGoGC = goc
+	}
+	origTightening := gcTightening.Load()
+	t.Cleanup(func() {
+		debug.SetGCPercent(origGoGC)
+		gcTightening.Store(origTightening)
+	})
+
 	var st gcGovernorState
 	st.baselineGOGC = 100
 	st.currentGOGC = 100
