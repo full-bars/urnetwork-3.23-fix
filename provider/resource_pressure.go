@@ -171,29 +171,36 @@ func readPSI(resource string) (avg60 float64, err error) {
 	return avg60, err
 }
 
-// readMemAvailFrac returns MemAvailable/MemTotal from /proc/meminfo.
+// readMemAvailFrac returns the available memory fraction the provider can see,
+// taking the tighter of host MemAvailable and cgroup headroom against the
+// effective RAM. Host-only MemAvailable misleads inside Docker, where
+// /proc/meminfo reflects host RAM rather than the container limit.
 func readMemAvailFrac() (float64, error) {
-	b, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, err
+	ram := detectEffectiveRAMLimitBytes()
+	host := readMemAvailableMiB()
+	if host < 0 && ram <= 0 {
+		return 0, fmt.Errorf("cannot read host memory")
 	}
-	var total, avail float64
-	for _, line := range strings.Split(string(b), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 {
-			continue
-		}
-		switch f[0] {
-		case "MemTotal:":
-			total, _ = strconv.ParseFloat(f[1], 64)
-		case "MemAvailable:":
-			avail, _ = strconv.ParseFloat(f[1], 64)
-		}
+	var availMiB float64
+	cgroup := readCgroupAvailableMiB()
+	// Use >= for host so a legitimately read MemAvailable==0 (memory fully
+	// exhausted, right before OOM) still counts as max pressure rather than
+	// indistinguishable-from-no-data. readMemAvailableMiB returns -1 on error,
+	// so 0 is real data.
+	switch {
+	case host >= 0 && cgroup >= 0:
+		availMiB = min(float64(host), float64(cgroup))
+	case host >= 0:
+		availMiB = float64(host)
+	case cgroup >= 0:
+		availMiB = float64(cgroup)
+	default:
+		return 0, fmt.Errorf("cannot read host or cgroup memory availability")
 	}
-	if total <= 0 || avail <= 0 {
-		return 0, fmt.Errorf("meminfo missing MemTotal/MemAvailable")
+	if ram <= 0 {
+		return 0, fmt.Errorf("no RAM baseline for fraction")
 	}
-	return avail / total, nil
+	return max(0, availMiB) * 1024 * 1024 / float64(ram), nil
 }
 
 // collectPressureSample reads every sensor, recording errors per-sensor so
@@ -222,11 +229,23 @@ func collectPressureSample() pressureSample {
 	} else if err != nil {
 		s.SensorErrs["load"] = err
 	}
-	// Heap fraction of the max-memory soft limit, when one is configured.
-	if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
-		var ms runtime.MemStats
-		runtime.ReadMemStats(&ms)
-		s.HeapFrac = float64(ms.HeapInuse) / float64(limit)
+	// Heap fraction of the memory budget. The numerator is the amount of
+	// runtime-managed memory the limit actually counts (Sys minus released),
+	// which includes goroutine stacks and runtime overhead, not just live
+	// heap. The denominator is the current GOMEMLIMIT soft limit if one is set;
+	// otherwise it falls back to the effective RAM so the heap sensor and the
+	// emergency pin still work even in a process with no finite limit.
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	used := float64(ms.Sys - ms.HeapReleased)
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit >= math.MaxInt64 {
+		if ram := detectEffectiveRAMLimitBytes(); ram > 0 {
+			limit = ram
+		}
+	}
+	if limit > 0 {
+		s.HeapFrac = used / float64(limit)
 	}
 	return s
 }
