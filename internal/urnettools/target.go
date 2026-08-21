@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -134,6 +135,10 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		// An explicitly persisted default provider (default set) resolves the
 		// no-target case with multiple providers, before the ambiguity refusal.
 		if p, ok := resolveDefaultProvider(providers); ok {
+			// Make it visible that a PERSISTED default (not an explicit flag)
+			// drove the selection — under root/automation this must not read as
+			// a plain single-provider auto-select (audit review finding).
+			fmt.Fprintf(os.Stderr, "using persisted default provider: %s\n", providerLabel(p))
 			return p, nil
 		}
 		// Restore the pre-multi-provider default for UNPRIVILEGED callers:
