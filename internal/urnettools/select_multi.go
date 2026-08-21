@@ -89,6 +89,9 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		// It only fills the "no target at all" gap: explicit --all/--include/
 		// and target flags were already handled above, so they always win.
 		if p, ok := resolveDefaultProvider(providers); ok {
+			// Visible trace that a stored default decided this (not an explicit
+			// flag) — same reason as selectTarget.
+			fmt.Fprintf(os.Stderr, "using persisted default provider: %s\n", providerLabel(p))
 			chosen = []Provider{p}
 			break
 		}
