@@ -6,6 +6,7 @@
     { "pattern": "dl.fullbars.xyz/install.sh", "zone_name": "fullbars.xyz" },
     { "pattern": "dl.fullbars.xyz/install-mac.sh", "zone_name": "fullbars.xyz" },
     { "pattern": "dl.fullbars.xyz/install-win.ps1", "zone_name": "fullbars.xyz" },
+    { "pattern": "dl.fullbars.xyz/urnet-docker.sh", "zone_name": "fullbars.xyz" },
     { "pattern": "dl.fullbars.xyz/uninstall.sh", "zone_name": "fullbars.xyz" },
     { "pattern": "dl.fullbars.xyz/uninstall-win.ps1", "zone_name": "fullbars.xyz" },
     { "pattern": "install.fullbars.xyz/*", "zone_name": "fullbars.xyz" }
