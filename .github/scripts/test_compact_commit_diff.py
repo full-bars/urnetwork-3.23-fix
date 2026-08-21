@@ -25,6 +25,14 @@ class ForkAwareManifestTest(unittest.TestCase):
         self.assertIn("ip_blocker_block.go", note)
         self.assertIn("NO ACTION", note)
 
+    def test_mux_consumer_file_is_marked(self):
+        # CodeRabbit: the consumer must have its own manifest entry so an
+        # upstream change to ip_mux_upgrade.go cannot regain [MUST PORT].
+        note = ccd.fork_aware_note("ip_mux_upgrade.go")
+        self.assertIn("FORK LACKS", note)
+        self.assertIn("ip_mux_upgrade.go", note)
+        self.assertIn("NO ACTION", note)
+
     def test_diverged_table_carries_fork_counts_and_per_constant_guidance(self):
         note = ccd.fork_aware_note("ip_security_cfaa_block.go")
         self.assertIn("FORK DIVERGED", note)
@@ -47,6 +55,14 @@ class ForkAwareManifestTest(unittest.TestCase):
             m.assert_not_called()  # fork-LACKS table never needs the fetch
         self.assertIn("FORK LACKS", out)
         self.assertIn("ip_blocker_block.go", out)
+
+    def test_no_patch_annotated_file_keeps_note(self):
+        # CodeRabbit: when the API gives no patch for an annotated file, the
+        # annotation must survive the <no patch in API> branch.
+        files = [_file("ip_mux_upgrade.go", additions=0, deletions=0, patch=None)]
+        out = ccd._shape("urnetwork/connect", files, "aaaa", "bbbb")
+        self.assertIn("<no patch in API for ip_mux_upgrade.go", out)
+        self.assertIn("FORK LACKS", out)
 
     def test_diverged_cfaa_commit_mode_emits_note_and_const_delta(self):
         files = [_file("ip_security_cfaa_block.go", additions=10235, deletions=10199)]
