@@ -47,14 +47,17 @@ FORK_AWARE = {
     "ip_blocker_block.go": "FORK LACKS: ip_blocker_block.go (and its consumer "
                            "ip_mux_upgrade.go) are absent from the 3.23-fix "
                            "fork. Do not mark [MUST PORT] for this file. "
-                           "Classify as [NO ACTION] unless the change is a "
-                           "code-path fix that also touches a shared file.",
+                           "Classify changes to this file as [NO ACTION]; a "
+                           "code-path fix here cannot apply to a fork that "
+                           "does not carry the file. Judge any other file "
+                           "changed by the same upstream commit on its own "
+                           "merits.",
     "ip_mux_upgrade.go": "FORK LACKS: ip_mux_upgrade.go is absent from the "
                          "3.23-fix fork (it consumes ip_blocker_block.go, "
                          "which the fork also does not carry). Do not mark "
-                         "[MUST PORT] for this file. Classify as [NO ACTION] "
-                         "unless the change is a code-path fix that also "
-                         "touches a shared file.",
+                         "[MUST PORT] for this file. Classify changes to this "
+                         "file as [NO ACTION]; a code-path fix here cannot "
+                         "apply to a fork that does not carry it.",
     # fork HAS the file but its generated CFAA table is a fork snapshot
     "ip_security_cfaa_block.go": "FORK DIVERGED: the 3.23-fix fork carries its "
                                   "own CFAA table, a dated snapshot that drifts "
@@ -120,7 +123,7 @@ def _shape(repo, files, sha_a, sha_b):
             if sha_a and sha_b and not skip_fetch:
                 delta = _const_delta_str(repo, sha_a, sha_b, fname)
             else:
-                delta = "<const diff unavailable (fork-LACKS or missing revisions)>"
+                delta = "<const diff unavailable (no const delta in this mode)>"
             note_suffix = ("\n" + note) if note else ""
             parts.append(f"<data-table {fname}: +{f['additions']} -{f['deletions']}>"
                          f"\n{delta}{note_suffix}")
