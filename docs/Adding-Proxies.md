@@ -33,6 +33,34 @@ refuse to load (a warmup lockout). Add `--force` to bypass it:
 urnet-tools proxy refresh --force
 ```
 
+## Installing the tools
+
+The `urnet-tools` CLI runs on the same machine as the provider process. The
+`urnet-docker` CLI runs on the Docker host, outside the containers.
+
+Pick one installer for the tool you need:
+
+```bash
+# urnet-tools: manages a provider installed as a process (systemd / launchd / service)
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
+
+# urnet-docker: manages provider containers from the Docker host
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+```
+
+Both use the same script. The script resolves the latest release, downloads the
+binary for your OS and architecture (amd64 / arm64), verifies its SHA-256
+against the release API, and installs it to `/usr/local/bin` (or
+`~/.local/bin` when not run as root). Both tools self-update afterwards with
+`urnet-tools update` or `urnet-docker update`.
+
+The installer supports Linux and macOS hosts. On a **Windows** Docker host,
+download the matching release asset directly instead:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
+```
+
 ## Per-OS details
 
 The command is the same everywhere, but the file path and syntax are not.
@@ -84,6 +112,55 @@ Two Windows-only pitfalls:
 
 - **Backslash paths and spaces.** The path must be quoted if it contains spaces.
   `"$env:USERPROFILE\Downloads\proxies.txt"` handles both cases.
+
+### Docker
+
+The provider runs *inside* a container. The container cannot see files on the
+Docker host, so the plain `urnet-tools proxy add /host/path/list.txt` command
+does not work by itself. You have two options.
+
+#### Option A: `urnet-docker` (recommended)
+
+`urnet-docker` runs on the Docker host and handles the copy for you. It copies
+your host file into the container and runs the add there. Point it at your
+host-side file directly:
+
+```bash
+urnet-docker proxy add --unit urfix ~/proxies.txt
+urnet-docker proxy refresh --unit urfix
+```
+
+`--unit urfix` selects the container by name. If you have one container, the
+name is optional; if you have several, pass the one you want.
+
+#### Option B: manual `docker cp` + `docker exec`
+
+Copy the file into the container, then run the add inside it. Two steps:
+
+```bash
+# 1. copy your host file into the container
+docker cp ~/proxies.txt urfix:/tmp/proxies.txt
+
+# 2. add it from inside the container
+docker exec -it urfix urnet-tools proxy add --proxy_file=/tmp/proxies.txt
+docker exec -it urfix urnet-tools proxy refresh
+```
+
+The `--proxy_file=` flag is **required** here. A bare path, like
+`urnet-tools proxy add /tmp/proxies.txt`, makes the in-container wrapper
+register the literal string `/tmp/proxies.txt` as a proxy address instead of
+reading the file. This is the trap that catches most first-time Docker users.
+
+Both options need a `refresh` after the add (use `--force` if the warmup
+lockout applies). Verify with `urnet-docker proxy traffic --unit urfix` or
+`docker exec -it urfix urnet-tools proxy traffic`.
+
+> [!NOTE]
+> You can also mount your proxy file straight into the container at creation
+> time with a bind mount, for example `-v /path/to/proxy.txt:/app/proxy.txt`.
+> That is useful when the list already exists before you start the container.
+> For a running container, whether its list is mounted or not, `urnet-docker
+> proxy add` (Option A) is the simplest way to add or replace proxies.
 
 ## Tidying up
 
