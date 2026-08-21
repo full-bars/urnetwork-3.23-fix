@@ -66,6 +66,10 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdUpdate(rest2, force, dryRun)
+	case "default":
+		// Manage the persisted default provider target (set/show/clear). No
+		// provider discovery, no targeting — pure config.
+		return cmdDefault(rest)
 	case "self-update", "selfupdate":
 		// Tool-only update: refresh the urnet-tools binary itself without
 		// touching any provider. Uses the same release resolution + digest
