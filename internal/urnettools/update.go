@@ -130,7 +130,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			} else if strings.HasPrefix(rest[i], "-") {
 				// Unknown --flag (typo like --netwrok): reject AFTER the
 				// command's own flags were consumed (review finding L2).
-				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select)", rest[i])
+				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
 			}
@@ -500,20 +500,31 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Backup current binary with a nanosecond-timestamped name so repeated
 	// updates never collide (review finding M2; coderabbit minor: second
 	// precision let two updates in one second reuse the older backup).
-	backup := backupName(p.Binary, time.Now())
-	if _, err := os.Stat(backup); err == nil {
-		// Same-instant collision: fail loudly rather than silently reusing
-		// the older backup and losing the immediate previous binary.
-		return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
-	} else if !os.IsNotExist(err) {
-		// Non-NotExist error (permissions, etc.) — treat as a real
-		// failure, not "already backed up" (free-review minor).
-		return fmt.Errorf("backup stat: %w", err)
+	//
+	// The running provider binary may have been deleted on disk already by a
+	// prior interrupted/partial update. Discover() reads /proc/<pid>/exe which,
+	// for a deleted running binary, resolves to a "<path> (deleted)" symlink
+	// target whose on-disk file does not exist. There is then nothing to back
+	// up — skip it (warn) and install the fresh binary rather than failing the
+	// whole update on a phantom backup path.
+	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
+		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
+	} else {
+		backup := backupName(p.Binary, time.Now())
+		if _, err := os.Stat(backup); err == nil {
+			// Same-instant collision: fail loudly rather than silently reusing
+			// the older backup and losing the immediate previous binary.
+			return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
+		} else if !os.IsNotExist(err) {
+			// Non-NotExist error (permissions, etc.) — treat as a real
+			// failure, not "already backed up" (free-review minor).
+			return fmt.Errorf("backup stat: %w", err)
+		}
+		if err := copyFile(p.Binary, backup); err != nil {
+			return fmt.Errorf("backup: %w", err)
+		}
+		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 	}
-	if err := copyFile(p.Binary, backup); err != nil {
-		return fmt.Errorf("backup: %w", err)
-	}
-	fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 
 	// Swap with ownership preserved for the provider user.
 	if err := installBinary(staged, p.Binary, p.User); err != nil {
