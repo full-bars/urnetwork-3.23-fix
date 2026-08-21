@@ -82,7 +82,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | `InitialMessagePoolByteCount` | 1 MiB | auto (RAM/32) | auto | auto | auto | auto | auto |
 | Message pool floor | — | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB | 8 MiB |
 | Message pool cap | — | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB | 256 MiB |
-| GOGC | 100 | 100 | 100 | 50 (dynamic) | 200 | 200 | 200 |
+| GOGC | 100 | 100 | 100 | 50 (static baseline) | 200 | 200 | 200 |
 | GOMEMLIMIT | unset | unset | 85% RAM | 75% RAM | unset | 80% RAM | 80% RAM |
 | RAM logging | off | off | on | off | off | off | off |
 
@@ -92,14 +92,14 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 ### 🤖 Auto Profile (`auto`)
 
-The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. For RAM-constrained systems (Low and Balanced tiers), it **automatically enables the dynamic Eco Memory Monitor** to prevent OOMs. On machines with **8 GiB+ RAM**, auto selects the **Extreme** tier, which applies the same turbo-v8 settings (8 MiB windows, 16 MiB queues, seq buf 512, GOGC 200) with a contract ramp scale of 3.
+The `auto` profile is the recommended setting for most users. It detects available system RAM at startup and selects the best internal balance of contract sizes and buffer depths. All tiers are covered by the consolidated adaptive GC governor in the pressure monitor, which tightens GOGC under memory pressure to prevent OOMs. On machines with **8 GiB+ RAM**, auto selects the **Extreme** tier, which applies the same turbo-v8 settings (8 MiB windows, 16 MiB queues, seq buf 512, GOGC 200) with a contract ramp scale of 3.
 
-| Tier | RAM Range | Contract Floor | IP Buffer | TCP Window | WebRTC Recv | Eco Monitor |
+| Tier | RAM Range | Contract Floor | IP Buffer | TCP Window | WebRTC Recv | Adaptive GC |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Low** | < 1.2 GiB | 128 KiB | 32 | 128 KiB | 512 KiB | **Enabled** |
-| **Balanced**| 1.2 - 3 GiB | 256 KiB | 128 | 512 KiB | 1 MiB | **Enabled** |
-| **Perf** | 3 - 8 GiB | 2 MiB | 256 | 4 MiB | 4 MiB | Disabled |
-| **Extreme** | >= 8 GiB | 2 MiB | 512 | 8 MiB | 16 MiB | Disabled |
+| **Low** | < 1.2 GiB | 128 KiB | 32 | 128 KiB | 512 KiB | Enabled |
+| **Balanced**| 1.2 - 3 GiB | 256 KiB | 128 | 512 KiB | 1 MiB | Enabled |
+| **Perf** | 3 - 8 GiB | 2 MiB | 256 | 4 MiB | 4 MiB | Enabled |
+| **Extreme** | >= 8 GiB | 2 MiB | 512 | 8 MiB | 16 MiB | Enabled |
 
 **Enabling:**
 ```bash
@@ -154,7 +154,7 @@ Eco mode is for providers on RAM-constrained systems who still want full through
 **What eco changes:**
 - GOGC: 100 → 50 (GC runs twice as often, keeping heap smaller at the cost of slightly more CPU)
 - GOMEMLIMIT: unset → 75% of detected RAM (cgroup-aware; Docker `--memory` containers get the correct ceiling)
-- Dynamic GC pressure monitor: if available memory drops below 300 MiB, GOGC drops to 25; below 150 MiB, drops to 10; recovers with hysteresis when pressure clears
+- Consolidated adaptive GC governor (part of the pressure monitor): on by default for every profile. It tightens GOGC below the eco baseline under memory pressure, to `min(baseline, 50)` at heap >= 0.70 or host RAM <= 300 MiB, `min(baseline, 25)` at heap >= 0.80 or host RAM <= 150 MiB, and `min(baseline, 10)` plus `FreeOSMemory` at critical. The static 50 below is only the startup baseline; the governor only ever tightens further, never raises it. Disable with `URNETWORK_ADAPTIVE_GC=0`.
 - All buffer and contract settings unchanged — throughput is unaffected
 
 **Enabling:**
@@ -351,7 +351,6 @@ During backend outages, certain log lines would historically fire thousands of t
 | `[t]auth error` | 1 per minute rate limit | Suppressed count appended when outage clears |
 | `[contract]oob err` | 1 per minute rate limit | Suppressed count appended when outage clears |
 | `[tune] auto-profile` | Once per process | Was once per proxy on startup; fixed in fix.15 |
-| `[eco] memory pressure/critical/eased` | Once per process monitor | Was one monitor goroutine per proxy; fixed in fix.15 |
 
 **Example (outage rate-limiting):**
 ```
@@ -360,7 +359,7 @@ During backend outages, certain log lines would historically fire thousands of t
 
 The `(N suppressed)` suffix ensures no errors are silently dropped — you see the count even if the individual lines were suppressed.
 
-**Startup spam (large proxy lists):** With `URNETWORK_PROFILE=auto` and a large proxy list (e.g. 3,000 proxies), the `[tune] auto-profile` line and eco memory monitor were previously started once per proxy rather than once per process. Both are now guarded by atomic once-flags so they fire exactly once regardless of proxy count.
+**Startup spam (large proxy lists):** With `URNETWORK_PROFILE=auto` and a large proxy list (e.g. 3,000 proxies), the `[tune] auto-profile` line was previously emitted once per proxy rather than once per process. It is now guarded by an atomic once-flag so it fires exactly once regardless of proxy count. (The older eco memory monitor duplication is moot: that runtime loop has been retired and folded into the unified adaptive GC governor.)
 
 ---
 
