@@ -195,7 +195,7 @@ environment:
 
 ### Adaptive GC governor
 
-Memory pressure is handled by a single consolidated adaptive GC governor in the pressure monitor. It replaces the separate eco memory monitor runtime loop. The former host available RAM signal is folded into this one controller, along with the process heap signal, and the tighter of the two wins.
+Memory pressure is handled by a single consolidated adaptive GC governor in the pressure monitor. It replaces the separate eco-memory-monitor runtime loop. The former host available RAM signal is folded into this one controller, along with the process heap signal, and the tighter of the two wins.
 
 The governor applies to all profiles (baseline no-profile, auto Tier 1-4, turbo, and eco). There is exactly one writer to the Go GC percentage knob, which removes the old two-writers hazard. It only ever lowers GOGC below the profile baseline; it never raises it.
 
