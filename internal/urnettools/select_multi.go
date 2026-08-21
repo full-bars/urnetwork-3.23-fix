@@ -134,7 +134,11 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 // refusal + inventory).
 func selectTargetOrSoleAccessible(providers []Provider, t Target) (p Provider, narrowed bool, err error) {
 	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
-	if noTarget && len(providers) > 1 && os.Geteuid() != 0 {
+	// Use the platform privilege seam (isPrivileged), not os.Geteuid() direct:
+	// Geteuid is meaningless on Windows (returns -1) where an elevated Admin
+	// should still get the normal refusal + inventory, not the unprivileged
+	// auto-narrow treatment. Matches target.go and select_multi.go:93.
+	if noTarget && len(providers) > 1 && !isPrivileged() {
 		if accessible := narrowToAccessible(providers); len(accessible) == 1 {
 			return accessible[0], true, nil
 		}
