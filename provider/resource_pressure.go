@@ -264,26 +264,23 @@ func pressureRegime(score float64) int {
 // ---------------------------------------------------------------------------
 // Adaptive GC governor (consolidated single writer)
 // ---------------------------------------------------------------------------
-// One controller owns debug.SetGCPercent for the whole process (the "one
-// owner" rule from the Opus design review). It is fed by BOTH memory signals
-// and tightens to the tighter of the two:
+// One controller owns debug.SetGCPercent for the whole process (the "one owner"
+// rule from the design review). It is fed by both memory signals and tightens to
+// the tighter of the two: the process heap fraction (this process vs its own
+// limit) and host available RAM in MiB (the former eco monitor's signal, kept in
+// absolute MiB so small memory-fragile boxes keep the exact protection the eco
+// monitor gave them).
 //
-//   - process heap fraction (this process vs its own limit)
-//   - host available RAM in MiB (the former eco monitor's signal, kept in
-//     absolute MiB so small memory-fragile boxes keep exact protection)
+// The separate runEcoMemoryMonitor loop is retired; its host-RAM safety is folded
+// in here. Because this is the only writer, every mode is eligible to run it
+// (baseline no profile, auto Tier 1-4, turbo, eco), and the "two writers per box"
+// constraint that forced the old mode split disappears.
 //
-// The separate runEcoMemoryMonitor loop is retired; its host-RAM safety is
-// folded in here. Since this is the only writer, every mode is eligible to
-// run it (baseline no-profile, auto T1-4, turbo, eco), and the
-// "two writers per box" constraint that forced the old mode-split disappears.
-//
-// Off-switches (rollback):
-//   - operator GOGC env set        -> we never touch the knob
-//   - URNETWORK_ADAPTIVE_GC in {0,false,off,no} -> kill switch
-//
-// It only ever tightens (lowers GOGC); it never raises GOGC above baseline.
-// Release happens only after four consecutive calm samples, one level at a
-// time.
+// Off switches (rollback): an operator-set GOGC env means we never touch the
+// knob; the URNETWORK_ADAPTIVE_GC kill switch (0/false/off/no) disables the
+// whole governor. It is on by default. The governor only ever tightens (lowers
+// GOGC); it never raises GOGC above baseline, and release happens only after
+// four consecutive calm samples, one level at a time.
 const (
 	adaptiveGCDisableEnv = "URNETWORK_ADAPTIVE_GC"
 	gcSubtickInterval    = 10 * time.Second
@@ -412,14 +409,14 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, state *gcGove
 	case heapFrac >= 0.70:
 		heapLevel = 1
 	}
-	// CPU veto: a CPU-bound episode must not drive heap tightening. Memory
-	// wins priority only above 0.85.
+	// CPU veto: a CPU-bound episode must not drive heap tightening; memory wins
+	// priority only above 0.85.
 	if psiCPU > 0.8 && heapFrac < 0.85 {
 		heapLevel = 0
 	}
 
-	// Host-RAM level (former eco signal). No CPU veto: low host RAM is real
-	// regardless of CPU load.
+	// Host-RAM level (former eco signal). No CPU veto here: low host RAM is real
+	// regardless of CPU load and must still tighten.
 	hostLevel := 0
 	if hostAvail >= 0 {
 		switch {
