@@ -35,30 +35,49 @@ urnet-tools proxy refresh --force
 
 ## Installing the tools
 
-The `urnet-tools` CLI runs on the same machine as the provider process. The
-`urnet-docker` CLI runs on the Docker host, outside the containers.
+Two CLIs exist. `urnet-tools` runs alongside a provider installed as a process
+(systemd / launchd / a Windows service). `urnet-docker` runs on the Docker host,
+outside the containers, and delegates into them via `docker exec`.
 
-Pick one installer for the tool you need:
+#### Install `urnet-docker` (Docker users)
+
+The clean one-liner, served from the download domain:
 
 ```bash
-# urnet-tools: manages a provider installed as a process (systemd / launchd / service)
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+```
 
-# urnet-docker: manages provider containers from the Docker host
+If that host is unreachable, use the GitHub source as a fallback:
+
+```bash
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
-Both use the same script. The script resolves the latest release, downloads the
-binary for your OS and architecture (amd64 / arm64), verifies its SHA-256
-against the release API, and installs it to `/usr/local/bin` (or
-`~/.local/bin` when not run as root). Both tools self-update afterwards with
-`urnet-tools update` or `urnet-docker update`.
+Both install only the `urnet-docker` CLI on the Docker host. They resolve the
+latest release, download the binary for your OS and architecture (amd64 / arm64),
+verify its SHA-256 against the release API, and install it to `/usr/local/bin`
+(or `~/.local/bin` when not run as root). The tool self-updates afterwards with
+`urnet-docker update`. Neither fetches the provider nor a systemd unit.
 
 The installer supports Linux and macOS hosts. On a **Windows** Docker host,
 download the matching release asset directly instead:
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
+```
+
+#### Install `urnet-tools` (process/systemd users)
+
+Same installer, passing the tool name:
+
+```bash
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools
+```
+
+GitHub fallback:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
 ```
 
 ## Per-OS details
