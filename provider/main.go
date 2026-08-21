@@ -466,33 +466,8 @@ func readCgroupAvailableMiB() int64 {
 	return -1
 }
 
-type ecoState int
-
-const (
-	ecoStateNormal ecoState = iota
-	ecoStatePressure
-	ecoStateCritical
-)
-
-// runEcoMemoryMonitor watches system memory availability and dynamically tightens
-// GC pressure when RAM is low. This complements the static GOMEMLIMIT ceiling set
-// at startup by responding to actual OS memory conditions at runtime.
-// The eco memory monitor is a single global watcher. It can be requested from
-// multiple places (the top-level eco profile check and the per-proxy provide
-// loop), so startEcoMonitorOnce guards it to a single instance per process.
-// startEcoMonitor is a test seam.
-var (
-	ecoMonitorStarted atomic.Bool
-	startEcoMonitor   = func(ctx context.Context) { go runEcoMemoryMonitor(ctx) }
-
-	ErrTokenInvalid = errors.New("auth: token is invalid or expired")
-)
-
-func startEcoMonitorOnce(ctx context.Context) {
-	if ecoMonitorStarted.CompareAndSwap(false, true) {
-		startEcoMonitor(ctx)
-	}
-}
+// ErrTokenInvalid is returned when a token is invalid or expired.
+var ErrTokenInvalid = errors.New("auth: token is invalid or expired")
 
 // validateJWTExpiry parses the JWT locally to check the 'exp' claim.
 // It returns ErrTokenInvalid if the token is definitely expired (with 30s leeway).
@@ -673,77 +648,6 @@ func applyStagedSession() {
 	os.RemoveAll(stagingDir)
 	os.Remove(pending)
 	tlog("[session] staged session applied\n")
-}
-
-func runEcoMemoryMonitor(ctx context.Context) {
-	const (
-		criticalMiB int64 = 150
-		pressureMiB int64 = 300
-		recoveryMiB int64 = 450
-
-		gcNormal   = 50
-		gcPressure = 25
-		gcCritical = 10
-	)
-
-	state := ecoStateNormal
-
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			avail := readMemAvailableMiB()
-			if avail < 0 {
-				continue
-			}
-			// Inside a Docker container, /proc/meminfo reflects host RAM.
-			// Take the tighter of host available and cgroup headroom.
-			if cgroupAvail := readCgroupAvailableMiB(); cgroupAvail >= 0 && cgroupAvail < avail {
-				avail = cgroupAvail
-			}
-
-			var next ecoState
-			switch {
-			case avail <= criticalMiB:
-				next = ecoStateCritical
-			case avail <= pressureMiB:
-				next = ecoStatePressure
-			case avail >= recoveryMiB:
-				next = ecoStateNormal
-			default:
-				// hysteresis zone (300-450 MiB): hold current state
-				if state == ecoStateCritical {
-					runtime.GC()
-				}
-				continue
-			}
-
-			if next == state {
-				if state == ecoStateCritical {
-					runtime.GC()
-				}
-				continue
-			}
-
-			state = next
-			switch state {
-			case ecoStateNormal:
-				debug.SetGCPercent(gcNormal)
-				tlog("🌿🟢 [eco] memory pressure eased (available=%dMiB), GOGC=%d\n", avail, gcNormal)
-			case ecoStatePressure:
-				debug.SetGCPercent(gcPressure)
-				tlog("🌿🟡 [eco] memory pressure detected (available=%dMiB), GOGC=%d\n", avail, gcPressure)
-			case ecoStateCritical:
-				debug.SetGCPercent(gcCritical)
-				runtime.GC()
-				tlog("🌿🔴 [eco] memory critical (available=%dMiB), GOGC=%d\n", avail, gcCritical)
-			}
-		}
-	}
 }
 
 func main() {
@@ -2413,10 +2317,6 @@ func provide(opts docopt.Opts) {
 		}
 	}()
 
-	if os.Getenv("URNETWORK_PROFILE") == "eco" {
-		startEcoMonitorOnce(ctx)
-	}
-
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
 
 	// Determine a temporary display name for the outage watcher/heartbeat
@@ -2497,7 +2397,7 @@ func provide(opts docopt.Opts) {
 		enableProviderEncryption(clientSettings)
 		localUserNatSettings := connect.DefaultLocalUserNatSettings()
 
-		autoEco := connect.ApplyAutoTuning(clientSettings, localUserNatSettings)
+		connect.ApplyAutoTuning(clientSettings, localUserNatSettings)
 		applyLowmodeSettings(clientSettings, localUserNatSettings)
 		applyTurboSettings(clientSettings, localUserNatSettings)
 
@@ -2508,10 +2408,6 @@ func provide(opts docopt.Opts) {
 			ramBytes := detectEffectiveRAMLimitBytes()
 			debug.SetMemoryLimit(ramBytes * 80 / 100)
 		}
-		if profile == "eco" || autoEco {
-			startEcoMonitorOnce(ctx)
-		}
-
 		applyEcoSettings(maxMemory)
 		ensureMemoryLimit(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
