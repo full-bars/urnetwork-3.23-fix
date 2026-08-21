@@ -429,7 +429,8 @@ Maintenance [target]:
   auto-update <on|off>     manage auto-update schedule
   auto-start <on|off>      toggle auto-start on login
 
-Providers are identified three ways (use any):
+Providers are identified three ways (use any; the = form works too,
+e.g. --user=urnet is the same as --user urnet):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
   --user <user>          OS user, e.g. urnet
   --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
@@ -497,6 +498,31 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 		*field = value
 		return nil
 	}
+	// Pre-pass: accept both "--user value" and "--user=value". The equals
+	// form is standard Unix convention and was historically rejected here,
+	// which made the target flags unusable on multi-provider boxes for
+	// subcommands that rejected unknown --flags (e.g. update builds its own
+	// flag loop on the leftover args). Expand "=" into the space form so the
+	// switch below handles both identically. Done in a dedicated expansion
+	// pass over a copy to avoid mutating the slice while iterating it.
+	expanded := make([]string, 0, len(args))
+	for _, a := range args {
+		matched := false
+		for _, f := range []string{"--unit", "--user", "--network", "--network-id", "--state-dir"} {
+			if v, ok := strings.CutPrefix(a, f+"="); ok {
+				if v == "" {
+					return t, nil, fmt.Errorf("%s requires a value", f)
+				}
+				expanded = append(expanded, f, v)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			expanded = append(expanded, a)
+		}
+	}
+	args = expanded
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--unit":
