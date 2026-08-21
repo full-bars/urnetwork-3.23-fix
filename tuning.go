@@ -6,6 +6,14 @@ import (
 	"sync/atomic"
 )
 
+// finiteLimitSet reports whether a finite GOMEMLIMIT is already in place.
+// debug.SetMemoryLimit(-1) returns the current limit, or math.MaxInt64 when
+// unset. Used to make auto-tier tuning defer to an operator --max-memory flag.
+func finiteLimitSet() bool {
+	cur := debug.SetMemoryLimit(-1)
+	return cur > 0 && cur < int64(^uint64(0)>>1)
+}
+
 // ApplyAutoTuning runs once per proxy server, but the auto-profile summary is a
 // global, identical line. autoTuneLogged gates it to one emission per process so
 // a large proxy list does not spam the log on startup. autoTuneLogf is a test seam.
@@ -86,11 +94,16 @@ func applyTier1(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 	cs.SendBufferSettings.ResendQueueMaxByteCount = kib(512)
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = kib(512)
 
-	// GOGC: 50
-	debug.SetGCPercent(50)
+	// GOGC: 50 (skip if operator set GOGC explicitly)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
 
-	// GOMEMLIMIT: 85%
-	debug.SetMemoryLimit(int64(float64(ramLimit) * 0.85))
+	// GOMEMLIMIT: 85% (skip if operator set GOMEMLIMIT or --max-memory - the
+	// latter already applied a finite limit, and an operator flag always wins).
+	if os.Getenv("GOMEMLIMIT") == "" && !finiteLimitSet() {
+		debug.SetMemoryLimit(int64(float64(ramLimit) * 0.85))
+	}
 }
 
 func applyTier2(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
@@ -112,11 +125,15 @@ func applyTier2(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(1)
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(1)
 
-	// GOGC: 75
-	debug.SetGCPercent(75)
+	// GOGC: 75 (skip if operator set GOGC explicitly)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(75)
+	}
 
-	// GOMEMLIMIT: 90%
-	debug.SetMemoryLimit(int64(float64(ramLimit) * 0.90))
+	// GOMEMLIMIT: 90% (skip if operator set GOMEMLIMIT or --max-memory).
+	if os.Getenv("GOMEMLIMIT") == "" && !finiteLimitSet() {
+		debug.SetMemoryLimit(int64(float64(ramLimit) * 0.90))
+	}
 }
 
 func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
@@ -133,8 +150,10 @@ func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
 	cs.SendBufferSettings.ResendQueueMaxByteCount = mib(4)
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(4)
 
-	// GOGC: 100 (Go default, made explicit for consistency across tiers)
-	debug.SetGCPercent(100)
+	// GOGC: 100 (Go default, made explicit for consistency; skip if set)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(100)
+	}
 }
 
 func applyTier4(cs *ClientSettings, ns *LocalUserNatSettings) {
