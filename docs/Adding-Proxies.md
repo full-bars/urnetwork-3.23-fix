@@ -63,7 +63,9 @@ urnet-tools proxy refresh
 The command is the same, but you must use the correct Windows path and watch out
 for two traps.
 
-Do not hardcode your username. Let PowerShell expand it:
+Use `$env:USERPROFILE` so the command works for whoever runs it, without
+needing to know your own username. If you prefer, you can type your real path
+instead, for example `C:\Users\yourname\Downloads\proxies.txt`.
 
 ```powershell
 urnet-tools proxy add "$env:USERPROFILE\Downloads\proxies.txt"
