@@ -431,81 +431,82 @@ func usage() {
 Usage: urnet-tools <command> [flags]
 
 Core Commands:
-  providers               list all providers on this box (all users, JWT identity)
-  status [target]         detailed status of one provider
-  start|stop|restart [target]   control the provider's systemd unit
-  update [target]         update provider(s) to latest (interactive; --tag to pin)
-  self-update             update this tool binary itself (no providers touched)
-  logs [target] [N]       show recent provider logs (N lines, default 250)
-  summary [target]        fleet-style summary for one provider
-  auth [<code>] [target]  authenticate a provider
-  choose-network <api_url> <connect_url> [target]  set API/connect endpoints (--reset reverts)
-  version                 print this tool's version
+  providers                       🌐  list all providers on this box (all users, JWT identity)
+  status [target]                 📊  detailed status of one provider
+  start/stop/restart [target]     ▶   control the provider's systemd unit
+  update [target]                 ⬆   update provider(s) to latest (--tag to pin)
+  self-update                     ⬆   update this tool binary itself
+  logs [target] [N]               📜  show recent provider logs (N lines, default 250)
+  summary [target]                📃  fleet-style summary for one provider
+  version                         ℹ️   print this tool's version
 
-Performance & Tuning (single target; on|off unless noted):
-  turbo <v4|v8|off> [target]   raise throughput limits for RAM-rich boxes
-  eco <on|off> [target]        GC-tuned profile for low-RAM systems
-  lowmode <on|off> [target]    reduced buffers for max RAM savings
-  auto <on|off> [target]       auto-detect hardware and pick best profile
-  ramlogs <on|off> [target]    zero disk I/O logging
-  optimize [target]            apply golden-fleet OS/kernel limits
-  hot-restart [target]         restart one provider's unit, reusing client_ids
-  fast-auth <on|off|status> [target]  manage the auth rate limiter (marker file; status is read-only)
-  set <key> [<value>|off] [target]  runtime tuning override, read live (no restart)
+Session & defaults:
+  default set|show|clear          🎯  persist a default provider target for this box
+  session save <file>             💾  export identity + proxy state (encrypted)
+  session load <file>             📥  import identity + proxy state, then restart
+
+Performance & Tuning (single target):
+  turbo <v4|v8|off> [target]      🚀  RAISE throughput limits for RAM-rich boxes
+  auto <on|off> [target]          🧠  AUTO-TUNE detect hardware and pick best profile
+  eco <on|off> [target]           🌿  ECO MODE GC-tuned for low-RAM systems
+  lowmode <on|off> [target]       🧊  LOW-MEMORY reduced buffers for max RAM savings
+  ramlogs <on|off> [target]       📝  RAM LOGS zero disk I/O logging
+  optimize [target]               ⚡   apply golden-fleet OS/kernel limits
+  hot-restart [target]            ♻   reuse client_ids across restarts
+  fast-auth <on|off|status>       ⚡   manage the auth rate limiter (marker file)
+  set <key> [<value>|off]         🔧  runtime tuning override, read live (no restart)
 
 Proxy Management [target]:
-  proxy add <file>          bulk add proxies from a text file
-  proxy clear|remove        remove all configured proxies
-  proxy refresh             re-read configs and hot-reload proxies
-  proxy add-source <url>    add a URL proxy source
-  proxy remove-source <url> remove a URL proxy source
-  proxy health              show dead/degraded proxies + live event log
-  proxy traffic             real-time bandwidth & client session load
-  proxy remove-dead         interactively prune dead/degraded/failing
-  proxy trim <N>            hold running proxies at N, shed the A-F-worst
-  report <url> [target]     set hub report URL at runtime (no restart)
+  auth [<code>]                   🔑  authenticate (omit for interactive paste)
+  choose-network <api> <connect>  🌐  set API/connect endpoints (--reset reverts)
+  proxy add <file>                🌐  bulk add proxies from a text file
+  proxy clear|remove              🗑   remove all configured proxies
+  proxy refresh                   🔄  re-read configs and hot-reload proxies
+  proxy add-source <url>          ➕   add a URL proxy source
+  proxy remove-source <url>       ➖   remove a URL proxy source
+  proxy health                    ❤   show dead/degraded proxies + live event log
+  proxy traffic                   📈  real-time bandwidth + client session load
+  proxy remove-dead               💀  interactively prune dead/degraded/failing
+  proxy trim <N>                  ✂   hold running proxies at N, shed A-F worst
+  report [<url>|off]              📡  set hub report URL at runtime (no restart)
 
 Hub Management [target]:
-  hub set <host:port>       configure hub report URL
-  hub off                   stop reporting to hub (no restart)
-  hub install [--tag=TAG]   install hub as a systemd service
-  hub init [--password-stdin|--password PW]  provision the hub (TLS :8443 + CA cert)
-  hub link <url> [--token]  fetch hub CA + enable TLS trust, set report URL
-  hub unlink                remove hub trust + stop reporting
-  hub test <url>            verify TLS to the hub against the saved pin
-  hub onboard-cmd           mint a fleet onboard-token one-liner
-  hub show-password         print the hub CA password
-  hub update [--tag=TAG]    update the hub binary
-  hub open-port <port>      open a TCP port in the firewall (Linux)
+  hub set <host:port>             📡  configure hub report URL
+  hub off                         📴  stop reporting to hub (no restart)
+  hub install [--tag=TAG]         📦  install hub as a systemd service
+  hub init [--password PW]        🔐  provision the hub (TLS :8443 + CA cert)
+  hub link <url> [--token]        🔗  fetch hub CA + enable TLS trust
+  hub unlink                      🔓  remove hub trust + stop reporting
+  hub test <url>                  🔍  verify TLS to the hub against saved pin
+  hub onboard-cmd                 📋  mint a fleet onboard-token one-liner
+  hub show-password               👁   print the hub CA password
+  hub update [--tag=TAG]          ⬆   update the hub binary
+  hub open-port <port>            🚪  open a TCP port in firewall (Linux)
 
 Maintenance [target]:
-  reinstall                reinstall provider
-  session save <file> | load <file> [-f] [target]   export/import encrypted identity+proxy state
-  uninstall                uninstall provider
-  auto-update <on|off>     manage auto-update schedule
-  auto-start <on|off>      toggle auto-start on login
+  reinstall                       🔧  reinstall provider
+  uninstall                       🗑   uninstall provider
+  auto-update <on|off>            ⏰  manage auto-update schedule
+  auto-start <on|off>             ▶   toggle auto-start on login
 
 Providers are identified three ways (use any; the = form works too,
 e.g. --user=urnet is the same as --user urnet):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
   --user <user>          OS user, e.g. urnet
   --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
-  --network-id <id>      JWT network id — TRUE unique identity; use when two
-                         providers share the same network name (e.g. mainnet
-                         + beta copies of one account)
+  --network-id <id>      JWT network id - TRUE unique identity; use when two providers
+                         share the same network name (e.g. mainnet + beta copies)
 
 Targeting rules:
   - one provider on box: no flag needed, it is used automatically
   - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
   - same network name on two providers: add --network-id or --unit to break the tie
-  - batch: --include a,b (exactly these) / --exclude a,b (subtract) / --all (everything)
-  - --select             interactive picker (choose A B C, skip D)
+  - batch: --include a,b / --exclude a,b / --all (everything)
+  - --select  interactive picker (choose A B C, skip D)
   - see 'providers' first to learn each provider's unit/user/network
 
 Force (machines/scripts):
-  -f, --force            skip confirm prompts ONLY — never picks providers.
-                         Multi-provider box + -f alone = REFUSED (no target).
-                         Use -f --all (everything) or -f --include a,b.
+  -f, --force            skip confirm prompts ONLY - never picks providers
   -n, --dry-run          print the plan, change nothing (safe anywhere)
   -h, --help             show help (never executes anything)
 `)
