@@ -192,7 +192,8 @@ func TestAimdStep(t *testing.T) {
 
 func TestWritePressureStatus(t *testing.T) {
 	home := withTempHome(t)
-	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42})
+	gc := &gcGovernorState{level: 2, lastHeapFrac: 0.85, gcStateName: "hard"}
+	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42}, gc)
 	b, err := os.ReadFile(filepath.Join(home, ".urnetwork", "pressure_status"))
 	if err != nil {
 		t.Fatal(err)
@@ -200,12 +201,17 @@ func TestWritePressureStatus(t *testing.T) {
 	var got struct {
 		Score      float64            `json:"score"`
 		Components map[string]float64 `json:"components"`
+		GCState    string             `json:"gc_state"`
+		HeapFrac   float64            `json:"heap_frac"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
 	if !almostEq(got.Score, 0.42) || !almostEq(got.Components["psi_mem"], 0.42) {
 		t.Fatalf("got %+v", got)
+	}
+	if got.GCState != "hard" || !almostEq(got.HeapFrac, 0.85) {
+		t.Fatalf("expected gc_state=hard heap_frac=0.85, got gc_state=%q heap_frac=%v", got.GCState, got.HeapFrac)
 	}
 }
 
@@ -326,5 +332,59 @@ func TestFormatComponents(t *testing.T) {
 	// empty map → empty string
 	if s := formatComponents(map[string]float64{}); s != "" {
 		t.Fatalf("empty: got %q", s)
+	}
+}
+
+// readGOGCPercent must read the effective GOGC without disabling the GC. The
+// old SetGCPercent(-1) idiom sets GOGC to -1 (GC disabled) as a side effect;
+// this pins that the read returns a sane positive baseline and does not leave
+// GOGC set to -1 (disabled).
+func TestReadGOGCPercent_DoesNotDisableGC(t *testing.T) {
+	gogc, ok := readGOGCPercent()
+	if !ok {
+		t.Fatal("expected GOGC percent to be readable")
+	}
+	if gogc <= 0 {
+		t.Fatalf("expected a positive GOGC baseline, got %d (a value <= 0 would mean GC disabled)", gogc)
+	}
+	// Verify a follow-up read is stable: if the read mutated GOGC to -1, the
+	// next read would report something inconsistent. A stable positive read
+	// confirms no disable side effect.
+	gogc2, _ := readGOGCPercent()
+	if gogc2 != gogc {
+		t.Fatalf("GOGC read not stable (got %d then %d); a read with a disable side-effect would not be", gogc, gogc2)
+	}
+}
+
+// The 10s subtick (canRelease=false) observed calm must NOT reset an in-flight
+// release streak that the full sweep (canRelease=true) is accumulating for a
+// host-driven tighten. If the subtick clobbered it, release would be
+// unreachable (the fix this pins).
+func TestGCGovernor_SubtickDoesNotClobberReleaseStreak(t *testing.T) {
+	var st gcGovernorState
+	st.baselineGOGC = 100
+	st.currentGOGC = 100
+
+	// Full sweep raises to level 2 (hard) via the host signal (hostAvail=200MiB),
+	// heap calm (0.5). This is a host-driven tighten.
+	gcGovernor(0.50, 200, 0.1, true, &st) // full sweep: host 200 -> level 2
+	if st.level != 2 {
+		t.Fatalf("expected host-driven tighten to level 2, got %d", st.level)
+	}
+
+	// Between full sweeps there are subticks. The subtick is host-blind (-1) with
+	// calm heap; it must not reset the streak (must not reach the else that zeroes
+	// consecutiveCalmCount).
+	before := st.consecutiveCalmCount
+	gcGovernor(0.50, -1, 0, false, &st) // subtick: calm heap, no host signal, canRelease=false
+	if st.consecutiveCalmCount < before {
+		t.Fatalf("subtick clobbered calm streak (%d -> %d); release would be unreachable", before, st.consecutiveCalmCount)
+	}
+
+	// Now the full sweep sees the SAME calm (host recovered to 200 still? no -
+	// host now calm: hostAvail=600, heap calm) => target drops -> streak increments.
+	gcGovernor(0.50, 600, 0.1, true, &st) // full sweep: host 600 -> hostLevel 0, target 0 < level 2
+	if st.consecutiveCalmCount <= before {
+		t.Fatalf("expected full sweep to accumulate calm after host recovered, count=%d", st.consecutiveCalmCount)
 	}
 }
