@@ -36,6 +36,8 @@ urnet-tools proxy refresh
 > **Path Formatting**
 > You can use either `~/proxies.txt` or `/home/user/proxies.txt` — both syntaxes work.
 
+> Full proxy-loading walkthrough (including Windows): [Adding Proxies](Adding-Proxies.md).
+
 ## 🍎 macOS Installation
 
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
@@ -156,9 +158,11 @@ urnetwork provide
 urnet-tools start
 
 # Manage proxies
-urnet-tools proxy add C:\Users\You\proxies.txt
+urnet-tools proxy add "$env:USERPROFILE\Downloads\proxies.txt"
 urnet-tools proxy refresh
 urnet-tools proxy summary
+
+> See [Adding Proxies](Adding-Proxies.md) for per-OS proxy-loading instructions and the Windows `.txt.txt` extension trap.
 
 # View logs
 urnet-tools logs

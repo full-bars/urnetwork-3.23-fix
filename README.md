@@ -38,6 +38,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
 | Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
+| Load a proxy file into the provider (per-OS) | [Adding Proxies](docs/Adding-Proxies.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 
 ---
@@ -57,12 +58,15 @@ Choose your platform:
 After installation, authenticate and start providing:
 
 ```bash
-# Linux / macOS / Windows (PowerShell) — one Go binary on every platform
+# Linux / macOS — one Go binary on every platform
 urnetwork auth
 urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh
 urnet-tools auto on
 ```
+On Windows, run the same commands in PowerShell but use a Windows path, e.g.
+`urnet-tools proxy add "$env:USERPROFILE\Downloads\proxies.txt"`. Full per-OS
+walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Adding-Proxies.md).
 
 > [!NOTE]
 > Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
