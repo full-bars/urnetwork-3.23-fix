@@ -192,7 +192,8 @@ func TestAimdStep(t *testing.T) {
 
 func TestWritePressureStatus(t *testing.T) {
 	home := withTempHome(t)
-	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42})
+	gc := &gcGovernorState{level: 2, lastHeapFrac: 0.85, gcStateName: "hard"}
+	writePressureStatus(0.42, map[string]float64{"psi_mem": 0.42}, gc)
 	b, err := os.ReadFile(filepath.Join(home, ".urnetwork", "pressure_status"))
 	if err != nil {
 		t.Fatal(err)
@@ -200,12 +201,17 @@ func TestWritePressureStatus(t *testing.T) {
 	var got struct {
 		Score      float64            `json:"score"`
 		Components map[string]float64 `json:"components"`
+		GCState    string             `json:"gc_state"`
+		HeapFrac   float64            `json:"heap_frac"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
 	if !almostEq(got.Score, 0.42) || !almostEq(got.Components["psi_mem"], 0.42) {
 		t.Fatalf("got %+v", got)
+	}
+	if got.GCState != "hard" || !almostEq(got.HeapFrac, 0.85) {
+		t.Fatalf("expected gc_state=hard heap_frac=0.85, got gc_state=%q heap_frac=%v", got.GCState, got.HeapFrac)
 	}
 }
 

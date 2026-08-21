@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strconv"
 	"strings"
@@ -260,10 +261,211 @@ func pressureRegime(score float64) int {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Adaptive GC governor (consolidated single writer)
+// ---------------------------------------------------------------------------
+// One controller owns debug.SetGCPercent for the whole process (the "one
+// owner" rule from the Opus design review). It is fed by BOTH memory signals
+// and tightens to the tighter of the two:
+//
+//   - process heap fraction (this process vs its own limit)
+//   - host available RAM in MiB (the former eco monitor's signal, kept in
+//     absolute MiB so small memory-fragile boxes keep exact protection)
+//
+// The separate runEcoMemoryMonitor loop is retired; its host-RAM safety is
+// folded in here. Since this is the only writer, every mode is eligible to
+// run it (baseline no-profile, auto T1-4, turbo, eco), and the
+// "two writers per box" constraint that forced the old mode-split disappears.
+//
+// Off-switches (rollback):
+//   - operator GOGC env set        -> we never touch the knob
+//   - URNETWORK_ADAPTIVE_GC in {0,false,off,no} -> kill switch
+//
+// It only ever tightens (lowers GOGC); it never raises GOGC above baseline.
+// Release happens only after four consecutive calm samples, one level at a
+// time.
+const (
+	adaptiveGCDisableEnv = "URNETWORK_ADAPTIVE_GC"
+	gcSubtickInterval    = 10 * time.Second
+
+	// Host available-MiB thresholds kept from the retired eco monitor so
+	// small boxes lose nothing (absolute MiB, not a fraction).
+	ecoCriticalMiB int64 = 150
+	ecoPressureMiB int64 = 300
+)
+
+// gcTightening is true while the governor is actively tightening (level>0).
+// Pool GROWTH is frozen while true; shrinking is still allowed.
+var gcTightening atomic.Bool
+
+// gcGovernorState tracks the single GC writer's hysteresis.
+type gcGovernorState struct {
+	baselineGOGC         int
+	currentGOGC          int
+	level                int // 0 normal,1 tighten,2 hard,3 critical
+	consecutiveCalmCount int
+	lastTightenAction    string
+	gcStateName          string
+	lastHeapFrac         float64
+	lastHostAvailMiB     int64
+}
+
+// gcAdaptiveEnabled reports whether the governor may act at all this run:
+// default ON (memory-safety actuator), unless the operator set GOGC (never
+// touch their knob) or flipped the explicit kill switch.
+func gcAdaptiveEnabled() bool {
+	if os.Getenv("GOGC") != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(adaptiveGCDisableEnv))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
+// readLiveHeapBytes returns the runtime's live-heap estimate (non-STW) via
+// /gc/heap/live:bytes. Returns 0 if unavailable.
+func readLiveHeapBytes() uint64 {
+	samples := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() == metrics.KindUint64 {
+		return samples[0].Value.Uint64()
+	}
+	return 0
+}
+
+// liveHeapFrac is the raw live-heap fraction of the memory budget, for the
+// fast 10s subtick. Same numerator/denominator convention as the sensor.
+func liveHeapFrac() float64 {
+	live := readLiveHeapBytes()
+	if live == 0 {
+		return 0
+	}
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit >= math.MaxInt64 {
+		if ram := detectEffectiveRAMLimitBytes(); ram > 0 {
+			limit = ram
+		}
+	}
+	if limit <= 0 {
+		return 0
+	}
+	return float64(live) / float64(limit)
+}
+
+// hostAvailMiB returns the tighter of host and cgroup available memory, or -1
+// if unavailable (the consolidated controller treats -1 as "no host signal").
+func hostAvailMiB() int64 {
+	h := readMemAvailableMiB()
+	if h < 0 {
+		return -1
+	}
+	if c := readCgroupAvailableMiB(); c >= 0 && c < h {
+		return c
+	}
+	return h
+}
+
+// applyGCLevel writes the GOGC for the current level (min with baseline so we
+// never raise GOGC above the operator baseline), logs, and updates gcTightening.
+func applyGCLevel(state *gcGovernorState) {
+	gogc := state.baselineGOGC
+	name := "normal"
+	switch state.level {
+	case 1:
+		gogc = min(state.baselineGOGC, 50)
+		name = "tighten"
+	case 2:
+		gogc = min(state.baselineGOGC, 25)
+		name = "hard"
+	case 3:
+		gogc = min(state.baselineGOGC, 10)
+		name = "critical"
+		// Return memory to the OS at the critical state.
+		debug.FreeOSMemory()
+	}
+	state.gcStateName = name
+	if gogc != state.currentGOGC {
+		state.lastTightenAction = fmt.Sprintf("%s_gogc%d_heap%.2f", name, gogc, state.lastHeapFrac)
+		state.currentGOGC = gogc
+		debug.SetGCPercent(gogc)
+	}
+	gcTightening.Store(state.level > 0)
+}
+
+// gcGovernor runs the consolidated single-writer hysteresis on one sample.
+// heapFrac is raw; hostAvail is available MiB (-1 = no host signal / subtick);
+// psiCPU is the normalized CPU PSI for the veto.
+func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, state *gcGovernorState) {
+	if !gcAdaptiveEnabled() {
+		return
+	}
+
+	// Heap level from the raw fraction.
+	heapLevel := 0
+	switch {
+	case heapFrac >= 0.92:
+		heapLevel = 3
+	case heapFrac >= 0.80:
+		heapLevel = 2
+	case heapFrac >= 0.70:
+		heapLevel = 1
+	}
+	// CPU veto: a CPU-bound episode must not drive heap tightening. Memory
+	// wins priority only above 0.85.
+	if psiCPU > 0.8 && heapFrac < 0.85 {
+		heapLevel = 0
+	}
+
+	// Host-RAM level (former eco signal). No CPU veto: low host RAM is real
+	// regardless of CPU load.
+	hostLevel := 0
+	if hostAvail >= 0 {
+		switch {
+		case hostAvail <= ecoCriticalMiB:
+			hostLevel = 3
+		case hostAvail <= ecoPressureMiB:
+			hostLevel = 2
+		}
+	}
+
+	state.lastHeapFrac = heapFrac
+	state.lastHostAvailMiB = hostAvail
+
+	// Tighter of the two wins.
+	target := heapLevel
+	if hostLevel > target {
+		target = hostLevel
+	}
+
+	if target > state.level {
+		// Tighten immediately on the raw reading.
+		state.level = target
+		state.consecutiveCalmCount = 0
+		applyGCLevel(state)
+	} else if target < state.level {
+		// Release only after four calm samples, one level at a time.
+		state.consecutiveCalmCount++
+		if state.consecutiveCalmCount >= 4 {
+			state.level--
+			state.consecutiveCalmCount = 0
+			applyGCLevel(state)
+		}
+	} else {
+		state.consecutiveCalmCount = 0
+	}
+}
+
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
 // the score, publishes it, and logs on regime changes. When self-heal is
 // off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
 // on at runtime starts sensing within one interval.
+//
+// It also owns the single GC writer (consolidated adaptive GC): a 10s heap
+// subtick reacts to heap spikes faster than the 30s sweep, and the full
+// sweep merges both heap + host-RAM signals. Both tickers run in this one
+// goroutine so the shared gcGovernorState has no concurrent access.
 func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// Log the active sensor set once at startup.
 	first := collectPressureSample()
@@ -276,16 +478,44 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	tlog("[proxy][pressure] monitor started, sensors: %s (self-heal %v)\n",
 		strings.Join(active, ","), resolveSelfHealEnabled(selfHealEnabled))
 
+	// Initialize the GC governor state: capture baseline once after all
+	// static tuning, honoring operator GOGC/URNETWORK_BASELINE_GOGC.
+	var gcState gcGovernorState
+	gcState.baselineGOGC = 100 // Go's default
+	if cur := debug.SetGCPercent(-1); cur >= 0 {
+		gcState.baselineGOGC = cur
+	}
+	if v := os.Getenv("URNETWORK_BASELINE_GOGC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			gcState.baselineGOGC = n
+			debug.SetGCPercent(n)
+		}
+	}
+	gcState.currentGOGC = gcState.baselineGOGC
+	if gcAdaptiveEnabled() {
+		tlog("[proxy][pressure] gcGovernor armed (baseline GOGC=%d)\n", gcState.baselineGOGC)
+	}
+
 	var smoothed float64
 	lastRegime := 0
-	ticker := time.NewTicker(pressureSampleInterval)
-	defer ticker.Stop()
+	fullTicker := time.NewTicker(pressureSampleInterval)
+	defer fullTicker.Stop()
+	subTicker := time.NewTicker(gcSubtickInterval)
+	defer subTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-subTicker.C:
+			// Fast heap-only path: tighten on a raw live-heap spike without
+			// waiting for the 30s sweep. No host signal here.
+			if gcAdaptiveEnabled() {
+				gcGovernor(liveHeapFrac(), -1, 0, &gcState)
+			}
+			continue
+		case <-fullTicker.C:
 		}
+
 		if !resolveSelfHealEnabled(selfHealEnabled) {
 			smoothed = 0
 			setPressure(0)
@@ -299,7 +529,16 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			smoothed = ewmaUpdate(smoothed, raw)
 		}
 		setPressure(smoothed)
-		writePressureStatus(smoothed, comps)
+
+		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
+		prevGOGC := gcState.currentGOGC
+		gcGovernor(sample.HeapFrac, hostAvailMiB(), comps["psi_cpu"], &gcState)
+		if gcState.currentGOGC != prevGOGC {
+			tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
+				gcState.lastTightenAction, gcState.lastHeapFrac, gcState.currentGOGC)
+		}
+
+		writePressureStatus(smoothed, comps, &gcState)
 		if r := pressureRegime(smoothed); r != lastRegime {
 			tlog("[proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
 			lastRegime = r
@@ -318,9 +557,9 @@ func formatComponents(comps map[string]float64) string {
 }
 
 // writePressureStatus persists the current score for `urnet-tools self-heal
-// status` and debugging. Best-effort; failures are silent (status is
-// advisory, the atomic is the source of truth).
-func writePressureStatus(score float64, comps map[string]float64) {
+// status` and debugging, plus the adaptive-GC governor state. Best-effort;
+// failures are silent (status is advisory, the atomic is the source of truth).
+func writePressureStatus(score float64, comps map[string]float64, gcState *gcGovernorState) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -337,6 +576,8 @@ func writePressureStatus(score float64, comps map[string]float64) {
 		"score":       score,
 		"components":  comps,
 		"target_pool": target,
+		"gc_state":    gcStateNameOf(gcState),
+		"heap_frac":   gcState.lastHeapFrac,
 		"updated":     time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -345,6 +586,15 @@ func writePressureStatus(score float64, comps map[string]float64) {
 	path := filepath.Join(home, ".urnetwork", "pressure_status")
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
 	_ = os.WriteFile(path, payload, 0600)
+}
+
+// gcStateNameOf returns the governor's human-readable state, defaulting to
+// "normal" before any tightening (zero-value level).
+func gcStateNameOf(state *gcGovernorState) string {
+	if state == nil || state.gcStateName == "" {
+		return "normal"
+	}
+	return state.gcStateName
 }
 
 // fetchStretchMax is the ceiling on how far pressure can stretch the URL
@@ -569,6 +819,15 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 			continue
 		}
 		pressure := currentPressure()
+		// While the GC governor is tightening, freeze pool GROWTH only: if the
+		// current pressure would trigger a grow (low pressure), hold the target
+		// flat by suppressing the grow branch. Shrinking is still allowed so the
+		// pool can keep shedding load under pressure. This prevents the pool
+		// growing into a memory squeeze the governor is deliberately backing
+		// away from (the observer-effect the spec warned about).
+		if gcTightening.Load() && pressure < aimdGrowBelow {
+			pressure = aimdGrowBelow
+		}
 		if pressure > aimdShrinkAbove {
 			highSamples++
 		} else {
