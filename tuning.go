@@ -6,6 +6,14 @@ import (
 	"sync/atomic"
 )
 
+// finiteLimitSet reports whether a finite GOMEMLIMIT is already in place.
+// debug.SetMemoryLimit(-1) returns the current limit, or math.MaxInt64 when
+// unset. Used to make auto-tier tuning defer to an operator --max-memory flag.
+func finiteLimitSet() bool {
+	cur := debug.SetMemoryLimit(-1)
+	return cur > 0 && cur < int64(^uint64(0)>>1)
+}
+
 // ApplyAutoTuning runs once per proxy server, but the auto-profile summary is a
 // global, identical line. autoTuneLogged gates it to one emission per process so
 // a large proxy list does not spam the log on startup. autoTuneLogf is a test seam.
@@ -91,8 +99,9 @@ func applyTier1(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 		debug.SetGCPercent(50)
 	}
 
-	// GOMEMLIMIT: 85% (skip if operator set explicitly)
-	if os.Getenv("GOMEMLIMIT") == "" {
+	// GOMEMLIMIT: 85% (skip if operator set GOMEMLIMIT or --max-memory - the
+	// latter already applied a finite limit, and an operator flag always wins).
+	if os.Getenv("GOMEMLIMIT") == "" && !finiteLimitSet() {
 		debug.SetMemoryLimit(int64(float64(ramLimit) * 0.85))
 	}
 }
@@ -121,8 +130,8 @@ func applyTier2(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 		debug.SetGCPercent(75)
 	}
 
-	// GOMEMLIMIT: 90% (skip if operator set explicitly)
-	if os.Getenv("GOMEMLIMIT") == "" {
+	// GOMEMLIMIT: 90% (skip if operator set GOMEMLIMIT or --max-memory).
+	if os.Getenv("GOMEMLIMIT") == "" && !finiteLimitSet() {
 		debug.SetMemoryLimit(int64(float64(ramLimit) * 0.90))
 	}
 }

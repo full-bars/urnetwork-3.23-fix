@@ -183,10 +183,14 @@ func readMemAvailFrac() (float64, error) {
 	}
 	var availMiB float64
 	cgroup := readCgroupAvailableMiB()
+	// Use >= for host so a legitimately read MemAvailable==0 (memory fully
+	// exhausted, right before OOM) still counts as max pressure rather than
+	// indistinguishable-from-no-data. readMemAvailableMiB returns -1 on error,
+	// so 0 is real data.
 	switch {
-	case host > 0 && cgroup >= 0:
+	case host >= 0 && cgroup >= 0:
 		availMiB = min(float64(host), float64(cgroup))
-	case host > 0:
+	case host >= 0:
 		availMiB = float64(host)
 	case cgroup >= 0:
 		availMiB = float64(cgroup)
