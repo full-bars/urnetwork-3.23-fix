@@ -394,7 +394,9 @@ func ensureMemoryLimit(maxMemory connect.ByteCount) {
 	// large boxes while still bounding runaway growth.
 	const gib = int64(1) << 30
 	const mib = int64(1) << 20
-	limit := min(ram*80/100, ram-gib)
+	// ram-gib is negative below 1 GiB; clamp so min() can never pick a negative
+	// limit (the tiny-box guard below would correct it, but not by design).
+	limit := min(ram*80/100, max(ram-gib, 0))
 	if limit < 256*mib {
 		// tiny-box guard: a sub-256MiB default would choke a small host.
 		limit = ram * 80 / 100
