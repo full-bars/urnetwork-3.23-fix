@@ -22,20 +22,35 @@
 # `urnet-docker update`).
 set -e
 
-TOOL="${1:-urnet-docker}"
 API_BASE="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 REPO="full-bars/urnetwork-3.23-fix"
 
 no_modify_bashrc=0
+TOOL=""
 
 pr_err() { printf "install-urnet-docker: %s\n" "$*" >&2; }
 
-# --- flag parsing (before positional tool name so `sh -s -- -B urnet-docker` works) ---
+# --- flag parsing ---
+# -B/--no-modify-bashrc may appear before or after the tool name, e.g.
+# `sh -s -- -B urnet-tools`. TOOL is derived from the FIRST NON-FLAG arg so
+# a leading flag cannot be misread as the tool name (review finding).
 for arg in "$@"; do
     case "$arg" in
-        -B|--no-modify-bashrc) no_modify_bashrc=1 ;;
+        -B|--no-modify-bashrc)
+            no_modify_bashrc=1
+            ;;
+        -*)
+            # unknown flag: ignore (kept for forward compat) but never
+            # treat it as the tool name
+            ;;
+        *)
+            if [ -z "$TOOL" ]; then
+                TOOL="$arg"
+            fi
+            ;;
     esac
 done
+TOOL="${TOOL:-urnet-docker}"
 
 # --- arch detection (Go names) ---
 # The release matrix builds tool assets for amd64 and arm64 only; a 32-bit
