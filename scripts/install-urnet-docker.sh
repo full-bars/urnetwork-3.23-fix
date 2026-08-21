@@ -15,15 +15,45 @@
 #
 # Behavior: resolves the latest release, downloads the tool binary asset for
 # this platform, verifies its sha256 against the release API digest, and
-# installs to /usr/local/bin (or ~/.local/bin when not root). The Go tool is
-# self-updating afterwards (`urnet-tools update` / `urnet-docker update`).
+# installs to /usr/local/bin (or ~/.local/bin when not root). When the
+# install dir is ~/.local/bin (non-root), the export is added to ~/.bashrc so
+# the tool is on PATH immediately; pass -B/--no-modify-bashrc to skip that.
+# The Go tool is self-updating afterwards (`urnet-tools update` /
+# `urnet-docker update`).
 set -e
 
-TOOL="${1:-urnet-docker}"
 API_BASE="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 REPO="full-bars/urnetwork-3.23-fix"
 
+no_modify_bashrc=0
+TOOL=""
+
 pr_err() { printf "install-urnet-docker: %s\n" "$*" >&2; }
+
+# --- flag parsing ---
+# -B/--no-modify-bashrc may appear before or after the tool name, e.g.
+# `sh -s -- -B urnet-tools`. TOOL is derived from the FIRST NON-FLAG arg so
+# a leading flag cannot be misread as the tool name (review finding).
+for arg in "$@"; do
+    case "$arg" in
+        -B|--no-modify-bashrc)
+            no_modify_bashrc=1
+            ;;
+        -*)
+            # unknown flag: warn (a mistyped opt-out must not silently
+            # no-op) but never treat it as the tool name
+            pr_err "unknown flag: $arg"
+            ;;
+        *)
+            if [ -z "$TOOL" ]; then
+                TOOL="$arg"
+            else
+                pr_err "ignoring extra argument: $arg"
+            fi
+            ;;
+    esac
+done
+TOOL="${TOOL:-urnet-docker}"
 
 # --- arch detection (Go names) ---
 # The release matrix builds tool assets for amd64 and arm64 only; a 32-bit
@@ -130,13 +160,31 @@ chmod 755 "$TMPBIN"
 mv -f "$TMPBIN" "$INSTALL_DIR/$TOOL"
 echo "Installed $INSTALL_DIR/$TOOL ($TAG)"
 
-# Only add to PATH if the install dir is not already on it.
+# --- put the install dir on PATH ---
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        echo
-        echo "NOTE: $INSTALL_DIR is not on your PATH. Add it:"
-        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        # Non-root installs land in ~/.local/bin, which is NOT on the default
+        # PATH on most distros. Mirror the provider installer: append the
+        # export to ~/.bashrc so the tool works immediately, with an opt-out.
+        if [ "$no_modify_bashrc" -eq 0 ] && [ "$(id -u)" != "0" ] && [ -n "$HOME" ] && [ -f "$HOME/.bashrc" ]; then
+            if awk '/^[[:space:]]*# == urnetwork-tools start[[:space:]]*$/ { code=1; } END { exit code; }' "$HOME/.bashrc"; then
+                echo "Adding '$INSTALL_DIR' to ~/.bashrc"
+                cat >> "$HOME/.bashrc" <<EOF
+
+# == urnetwork-tools start
+export PATH="\$PATH:$INSTALL_DIR"
+# == urnetwork-tools end
+EOF
+                echo "Reload shell:        source ~/.bashrc   (or restart your terminal)"
+            else
+                echo "~/.bashrc is up-to-date"
+            fi
+        else
+            echo
+            echo "NOTE: $INSTALL_DIR is not on your PATH. Add it:"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        fi
         ;;
 esac
 
