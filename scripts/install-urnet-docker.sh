@@ -40,12 +40,15 @@ for arg in "$@"; do
             no_modify_bashrc=1
             ;;
         -*)
-            # unknown flag: ignore (kept for forward compat) but never
-            # treat it as the tool name
+            # unknown flag: warn (a mistyped opt-out must not silently
+            # no-op) but never treat it as the tool name
+            pr_err "unknown flag: $arg"
             ;;
         *)
             if [ -z "$TOOL" ]; then
                 TOOL="$arg"
+            else
+                pr_err "ignoring extra argument: $arg"
             fi
             ;;
     esac
