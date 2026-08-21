@@ -332,6 +332,17 @@ func readLiveHeapBytes() uint64 {
 	return 0
 }
 
+// readGOGCPercent returns the current GOGC percentage via the non-mutating
+// /gc/gogc:percent runtime/metrics sample, and ok=false if unavailable.
+func readGOGCPercent() (int, bool) {
+	samples := []metrics.Sample{{Name: "/gc/gogc:percent"}}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() == metrics.KindUint64 {
+		return int(samples[0].Value.Uint64()), true
+	}
+	return 0, false
+}
+
 // liveHeapFrac is the raw live-heap fraction of the memory budget, for the
 // fast 10s subtick. Same numerator/denominator convention as the sensor.
 func liveHeapFrac() float64 {
@@ -441,17 +452,21 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 		state.level = target
 		state.consecutiveCalmCount = 0
 		applyGCLevel(state)
-	} else if state.level > 0 && target < state.level && canRelease {
-		// Release only after four calm samples, one level at a time. Release
-		// authority belongs to the full 30s sweep which sees BOTH the heap and
-		// host-RAM signals with the same numerator; the subtick (canRelease==false)
-		// can only tighten so it never releases a host-driven tighten on stale or
-		// absent host data.
-		state.consecutiveCalmCount++
-		if state.consecutiveCalmCount >= 4 {
-			state.level--
-			state.consecutiveCalmCount = 0
-			applyGCLevel(state)
+	} else if state.level > 0 && target < state.level {
+		// Calmer than the current level: progress toward release. Only the full
+		// 30s sweep (canRelease) may count calm samples and actually release;
+		// the subtick is host-blind and must NOT reset an in-progress release
+		// streak just because it happens to observe a calm heap on its own
+		// (live-heap) numerator, nor may it increment it (it lacks the host
+		// signal that justified the tighten). So when canRelease is false we
+		// leave the streak untouched entirely.
+		if canRelease {
+			state.consecutiveCalmCount++
+			if state.consecutiveCalmCount >= 4 {
+				state.level--
+				state.consecutiveCalmCount = 0
+				applyGCLevel(state)
+			}
 		}
 	} else {
 		state.consecutiveCalmCount = 0
@@ -485,9 +500,12 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// flipped the kill switch, we never write the GC knob (the "operator GOGC /
 	// kill switch always wins" invariant).
 	var gcState gcGovernorState
+	// Read the effective GOGC baseline WITHOUT the SetGCPercent(-1) "query"
+	// idiom: that call actually sets GOGC to -1 and disables the garbage
+	// collector as a side effect. /gc/gogc:percent is a pure, non-mutating read.
 	gcState.baselineGOGC = 100 // Go's default
-	if cur := debug.SetGCPercent(-1); cur >= 0 {
-		gcState.baselineGOGC = cur
+	if gogc, ok := readGOGCPercent(); ok {
+		gcState.baselineGOGC = gogc
 	}
 	if gcAdaptiveEnabled() {
 		if v := os.Getenv("URNETWORK_BASELINE_GOGC"); v != "" {
