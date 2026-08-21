@@ -66,6 +66,19 @@ class ForkAwareManifestTest(unittest.TestCase):
         finally:
             ccd.FORK_AWARE = orig
 
+    def test_annotated_file_with_huge_patch_still_trims(self):
+        orig = ccd.FORK_AWARE
+        try:
+            ccd.FORK_AWARE = {**orig, "ip_mux_upgrade.go": "FORK LACKS placeholder"}
+            big = "diff --git a/ip_mux_upgrade.go b/ip_mux_upgrade.go\n@@ -1 +1 @@\n-//a\n" + ("+//b\n" * (ccd.PATCH_BUDGET * 2))
+            files = [_file("ip_mux_upgrade.go", additions=1000, deletions=1, patch=big)]
+            out = ccd._shape("urnetwork/connect", files, "aaaa", "bbbb")
+            self.assertIn("FORK LACKS placeholder", out)
+            self.assertIn("trimmed to 30KB", out)
+            self.assertNotIn(big, out)  # full untrimmed patch must not appear
+        finally:
+            ccd.FORK_AWARE = orig
+
     def test_diverged_cfaa_commit_mode_emits_note_and_const_delta(self):
         files = [_file("ip_security_cfaa_block.go", additions=10235, deletions=10199)]
         with mock.patch.object(ccd, "fetch_file",
