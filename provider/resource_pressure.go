@@ -394,7 +394,7 @@ func applyGCLevel(state *gcGovernorState) {
 // gcGovernor runs the consolidated single-writer hysteresis on one sample.
 // heapFrac is raw; hostAvail is available MiB (-1 = no host signal / subtick);
 // psiCPU is the normalized CPU PSI for the veto.
-func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, state *gcGovernorState) {
+func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bool, state *gcGovernorState) {
 	if !gcAdaptiveEnabled() {
 		return
 	}
@@ -441,8 +441,12 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, state *gcGove
 		state.level = target
 		state.consecutiveCalmCount = 0
 		applyGCLevel(state)
-	} else if target < state.level {
-		// Release only after four calm samples, one level at a time.
+	} else if state.level > 0 && target < state.level && canRelease {
+		// Release only after four calm samples, one level at a time. Release
+		// authority belongs to the full 30s sweep which sees BOTH the heap and
+		// host-RAM signals with the same numerator; the subtick (canRelease==false)
+		// can only tighten so it never releases a host-driven tighten on stale or
+		// absent host data.
 		state.consecutiveCalmCount++
 		if state.consecutiveCalmCount >= 4 {
 			state.level--
@@ -476,22 +480,27 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		strings.Join(active, ","), resolveSelfHealEnabled(selfHealEnabled))
 
 	// Initialize the GC governor state: capture baseline once after all
-	// static tuning, honoring operator GOGC/URNETWORK_BASELINE_GOGC.
+	// static tuning. Only apply the URNETWORK_BASELINE_GOGC override when the
+	// governor is actually enabled for this run; when the operator set GOGC or
+	// flipped the kill switch, we never write the GC knob (the "operator GOGC /
+	// kill switch always wins" invariant).
 	var gcState gcGovernorState
 	gcState.baselineGOGC = 100 // Go's default
 	if cur := debug.SetGCPercent(-1); cur >= 0 {
 		gcState.baselineGOGC = cur
 	}
-	if v := os.Getenv("URNETWORK_BASELINE_GOGC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			gcState.baselineGOGC = n
-			debug.SetGCPercent(n)
-		}
-	}
-	gcState.currentGOGC = gcState.baselineGOGC
 	if gcAdaptiveEnabled() {
+		if v := os.Getenv("URNETWORK_BASELINE_GOGC"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				gcState.baselineGOGC = n
+				debug.SetGCPercent(n)
+			} else {
+				tlog("[proxy][pressure] warn: ignoring invalid URNETWORK_BASELINE_GOGC=%q\n", v)
+			}
+		}
 		tlog("[proxy][pressure] gcGovernor armed (baseline GOGC=%d)\n", gcState.baselineGOGC)
 	}
+	gcState.currentGOGC = gcState.baselineGOGC
 
 	var smoothed float64
 	lastRegime := 0
@@ -505,9 +514,14 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			return
 		case <-subTicker.C:
 			// Fast heap-only path: tighten on a raw live-heap spike without
-			// waiting for the 30s sweep. No host signal here.
+			// waiting for the 30s sweep. This subtick is intentionally heap-only
+			// and host-blind, so it can only tighten — it never participates in
+			// release (that needs the full sweep's host+heap view), and the CPU
+			// veto (also host-sweep-derived) does not apply here. Passing -1 for
+			// hostAvail makes the host layer inert, and canRelease=false keeps it
+			// from touching the calm counter.
 			if gcAdaptiveEnabled() {
-				gcGovernor(liveHeapFrac(), -1, 0, &gcState)
+				gcGovernor(liveHeapFrac(), -1, 0, false, &gcState)
 			}
 			continue
 		case <-fullTicker.C:
@@ -529,7 +543,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 
 		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
 		prevGOGC := gcState.currentGOGC
-		gcGovernor(sample.HeapFrac, hostAvailMiB(), comps["psi_cpu"], &gcState)
+		gcGovernor(sample.HeapFrac, hostAvailMiB(), comps["psi_cpu"], true, &gcState)
 		if gcState.currentGOGC != prevGOGC {
 			tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
 				gcState.lastTightenAction, gcState.lastHeapFrac, gcState.currentGOGC)
