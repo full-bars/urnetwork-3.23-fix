@@ -379,6 +379,12 @@ func hostAvailMiB() int64 {
 			return c
 		}
 		return h
+	case h >= 0:
+		// Host memory is readable but no cgroup headroom exists (bare metal,
+		// a VM, or a cgroup whose accounting we cannot read). Fall through to
+		// the host signal rather than blanking it -- this returned h before
+		// the switch refactor.
+		return h
 	case c >= 0:
 		return c
 	default:
