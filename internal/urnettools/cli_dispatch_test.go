@@ -336,7 +336,6 @@ func TestRunDockerSelfUpdateUnknownFlagPropagates(t *testing.T) {
 	}
 }
 
-
 func TestParseTargetFlagsEqualsForm(t *testing.T) {
 	// The = form (--user=value) must be accepted identically to the space
 	// form (--user value). Before this fix, parseTargetFlagsInner only matched
@@ -385,5 +384,15 @@ func TestParseTargetFlagsEqualsForm(t *testing.T) {
 func TestParseTargetFlagsEqualsFormEmptyValue(t *testing.T) {
 	if _, _, err := parseTargetFlags([]string{"--user="}); err == nil {
 		t.Fatal("expected error for empty = value, got nil")
+	}
+}
+
+// The space form must reject an empty value too (--user ""). Before setField
+// rejected empty values, the parser returned a zero-value Target that on a
+// single-provider host silently targeted the default provider instead of
+// refusing the invalid selector.
+func TestParseTargetFlagsSpaceFormEmptyValue(t *testing.T) {
+	if _, _, err := parseTargetFlags([]string{"--user", ""}); err == nil {
+		t.Fatal("expected error for empty space-separated value, got nil")
 	}
 }
