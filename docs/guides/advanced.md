@@ -37,7 +37,7 @@ Set via `URNETWORK_PROFILE` or `urnet-tools turbo <v4|v8|off>`.
 | auto | Any | varies (50-200) | varies (tiered) | Recommended default, adapts to RAM |
 | turbo-v8 | 16 GiB+ | 200 | 80% RAM | Dedicated servers, maximum throughput |
 | turbo-v4 | 4-16 GiB | 200 | 80% RAM | Well-provisioned VPS |
-| eco | 1-2 GiB | 50 (dynamic) | 75% RAM | RAM-constrained boxes |
+| eco | 1-2 GiB | 50 (static) | 75% RAM | RAM-constrained boxes |
 | lowmem | < 1 GiB | 50 | 85% RAM | Minimum footprint, RAM logs on |
 
 ### Turbo mode details
@@ -193,18 +193,25 @@ environment:
   - GOMEMLIMIT=2GiB
 ```
 
-### Eco memory monitor
+### Adaptive GC governor
 
-When `URNETWORK_PROFILE=eco` is set, the provider runs a dynamic GC pressure monitor that adjusts GOGC based on available memory:
+Memory pressure is handled by a single consolidated adaptive GC governor in the pressure monitor. It replaces the separate eco memory monitor runtime loop. The former host available RAM signal is folded into this one controller, along with the process heap signal, and the tighter of the two wins.
 
-| Available RAM | GOGC | State |
-|---------------|------|-------|
-| >= 450 MiB | 50 | Normal |
-| 301-449 MiB | *holds previous* | Hysteresis (no transition) |
-| 151-300 MiB | 25 | Pressure |
-| <= 150 MiB | 10 | Critical (+ forced GC per tick) |
+The governor applies to all profiles (baseline no-profile, auto Tier 1-4, turbo, and eco). There is exactly one writer to the Go GC percentage knob, which removes the old two-writers hazard. It only ever lowers GOGC below the profile baseline; it never raises it.
 
-The hysteresis zone prevents oscillation — the state doesn't flip on every fluctuation. When pressure clears past 450 MiB, Normal resumes.
+The governor acts on the process live heap fraction (with a fast 10s subtick via the `/gc/heap/live:bytes` metric) and on host available RAM (merged on the 30s sweep):
+
+| Signal | Level | Effect |
+|--------|-------|--------|
+| Heap >= 0.70 | Tighten | GOGC to `min(baseline, 50)` |
+| Heap >= 0.80 | Hard | GOGC to `min(baseline, 25)` |
+| Heap >= 0.92 | Critical | GOGC to `min(baseline, 10)` plus `FreeOSMemory` |
+| Host RAM <= 300 MiB | Pressure | Tightens GOGC |
+| Host RAM <= 150 MiB | Critical | Hard-tightens GOGC and frees memory |
+
+The 10s heap subtick reacts to heap spikes faster than the 30s sweep. Release back toward baseline happens one level at a time after several consecutive calm samples, so the governor does not oscillate.
+
+The governor is on by default. Operators can disable it with `URNETWORK_ADAPTIVE_GC=0`. If the operator sets `GOGC` directly, the governor backs off entirely and never touches the knob.
 
 ### Message pool sizing
 

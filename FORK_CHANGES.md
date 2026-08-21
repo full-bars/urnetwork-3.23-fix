@@ -2840,3 +2840,24 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, CodeRabbit) green.
 
 **How to Identify in New Upstream**: `profiling.go` (loopback diagnostics) does not exist upstream. `message_pool.go`'s `EnhancedMetrics`/`globalPoolMetrics` and `error_tracking.go` are fork-only. The `URNETWORK_PPROF` env var and the `/metrics/pool` + `/metrics/errors` routes on the loopback listener are fork additions.
+
+
+## 129. Adaptive GC Consolidation (PR #428)
+
+**Purpose**: Remove the separate runtime eco memory monitor and fold its host available RAM signal into one consolidated adaptive GC governor that lives in the pressure monitor. This makes the Go GC percentage knob single-writer for the whole process.
+
+**Files Modified**: `provider/resource_pressure.go`, `provider/main.go`
+
+**Change**:
+- `runEcoMemoryMonitor` was deleted from `provider/main.go`. Its host available RAM signal now feeds the consolidated `gcGovernor` inside `runPressureMonitor` in `provider/resource_pressure.go`.
+- The governor is the only writer to `debug.SetGCPercent` for the process. The old two-writers hazard (eco monitor plus static profile tuning) is gone, and the mode-split that restricted the eco monitor to small/eco boxes is removed. The governor applies to all profiles (baseline no-profile, auto Tier 1-4, turbo, eco).
+- It merges process heap fraction and host available RAM and takes the tighter of the two. It only ever lowers GOGC below the captured baseline; it never raises it. Levels: `min(baseline, 50)` at heap >= 0.70, `min(baseline, 25)` at >= 0.80, and `min(baseline, 10)` plus `FreeOSMemory` at >= 0.92. Host available RAM: pressure <= 300 MiB, critical <= 150 MiB.
+- A 10s heap subtick (`/gc/heap/live:bytes`) reacts to heap spikes faster than the 30s sweep, which merges the heap and host-RAM signals.
+- Kill switch: `URNETWORK_ADAPTIVE_GC` set to `0`, `false`, `off`, or `no` disables the governor. It is on by default. If the operator sets `GOGC`, the governor backs off entirely and never touches the knob.
+- The `~/.urnetwork/pressure_status` file now also reports `gc_state` and `heap_frac`.
+- The `eco` profile still exists and still applies its static startup tuning (`applyEcoSettings` sets baseline GOGC 50 and 75% RAM GOMEMLIMIT). Only the separate runtime eco-monitor loop is retired. The consolidated governor may tighten the eco baseline further at runtime.
+- Retired log lines: the `[eco] memory pressure` lines are gone, replaced by `[proxy][pressure] gcGovernor ...` lines.
+
+**How to Identify in New Upstream**: `runEcoMemoryMonitor` no longer exists in `provider/main.go`. The adaptive GC logic lives in `provider/resource_pressure.go` as `gcGovernor`, `gcGovernorState`, and `runPressureMonitor`. The `URNETWORK_ADAPTIVE_GC` env var and the `gc_state`/`heap_frac` fields in the pressure status file are fork additions.
+
+**Status**: Part of PR #428 on the `feat/adaptive-gc-consolidation` branch. Not yet shipped to a release. Tests cover the single-writer governor and the kill switch.
