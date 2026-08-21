@@ -137,14 +137,16 @@ def _shape(repo, files, sha_a, sha_b):
             parts.append(f"<no patch in API for {fname}: +{f['additions']} "
                          f"-{f['deletions']}>{note_suffix}")
             continue
-        if note:
-            parts.append(f"# {fname}\n{note}\n{patch}")
-            continue
+        # For patched files, prepend the annotation (if any) but STILL apply
+        # the PATCH_BUDGET trim: a fork-aware file with a huge patch must not
+        # bypass the size guard that every other patched file obeys.
+        note_prefix = (f"# {fname}\n{note}\n" if note else "")
         if len(patch) > PATCH_BUDGET:
-            parts.append(f"<patch for {fname} trimmed to 30KB (was {len(patch)}B)>:\n"
+            parts.append(note_prefix + f"<patch for {fname} trimmed to 30KB "
+                         f"(was {len(patch)}B)>:\n"
                          + patch[:15000] + "\n...[trimmed]...\n" + patch[-15000:])
         else:
-            parts.append(f"# {fname}\n{patch}")
+            parts.append(note_prefix + patch)
     return "\n\n".join(parts)
 
 
