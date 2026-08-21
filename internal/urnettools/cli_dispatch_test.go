@@ -335,3 +335,64 @@ func TestRunDockerSelfUpdateUnknownFlagPropagates(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTargetFlagsEqualsForm(t *testing.T) {
+	// The = form (--user=value) must be accepted identically to the space
+	// form (--user value). Before this fix, parseTargetFlagsInner only matched
+	// the space form, so "=" args survived into subcommand flag loops which
+	// rejected them as "unknown flag" (e.g. update, whose own flag loop builds
+	// on the leftover args). Regression test for the multi-provider targeting
+	// failure on fleet boxes.
+	cases := []struct {
+		name  string
+		args  []string
+		wantU string
+		wantN string
+	}{
+		{"space form", []string{"--user", "bob"}, "bob", ""},
+		{"equals form", []string{"--user=bob"}, "bob", ""},
+		{"network equals", []string{"--network=mesocyclone"}, "", "mesocyclone"},
+		{"mixed", []string{"--user=alice", "extra"}, "alice", ""},
+		{"state-dir equals", []string{"--state-dir=/srv/urnet"}, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t2, rest, err := parseTargetFlags(c.args)
+			if err != nil {
+				t.Fatalf("parseTargetFlags(%v): %v", c.args, err)
+			}
+			if t2.User != c.wantU {
+				t.Fatalf("User = %q, want %q", t2.User, c.wantU)
+			}
+			if t2.Network != c.wantN {
+				t.Fatalf("Network = %q, want %q", t2.Network, c.wantN)
+			}
+			if c.name == "state-dir equals" {
+				if t2.StateDir != "/srv/urnet" {
+					t.Fatalf("StateDir = %q, want /srv/urnet", t2.StateDir)
+				}
+			}
+			if c.name == "mixed" {
+				if len(rest) != 1 || rest[0] != "extra" {
+					t.Fatalf("rest = %v, want [extra]", rest)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTargetFlagsEqualsFormEmptyValue(t *testing.T) {
+	if _, _, err := parseTargetFlags([]string{"--user="}); err == nil {
+		t.Fatal("expected error for empty = value, got nil")
+	}
+}
+
+// The space form must reject an empty value too (--user ""). Before setField
+// rejected empty values, the parser returned a zero-value Target that on a
+// single-provider host silently targeted the default provider instead of
+// refusing the invalid selector.
+func TestParseTargetFlagsSpaceFormEmptyValue(t *testing.T) {
+	if _, _, err := parseTargetFlags([]string{"--user", ""}); err == nil {
+		t.Fatal("expected error for empty space-separated value, got nil")
+	}
+}
