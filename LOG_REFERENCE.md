@@ -45,25 +45,25 @@ The existing `client_id` and `instance_id` lines are printed separately, once pe
 
 ---
 
-## 🍃 Eco Memory Monitor
+## 🧠 Adaptive GC Governor (pressure monitor)
 
 ```
-[eco] memory pressure detected (available=287MiB), GOGC=25
-[eco] memory critical (available=134MiB), GOGC=10
-[eco] memory pressure eased (available=462MiB), GOGC=50
+[proxy][pressure] gcGovernor armed (baseline GOGC=100)
+[proxy][pressure] gcGovernor tighten_gogc50_heap0.72 (heap=0.72 go=50)
+[proxy][pressure] gcGovernor hard_gogc25_heap0.82 (heap=0.82 go=25)
+[proxy][pressure] gcGovernor critical_gogc10_heap0.94 (heap=0.94 go=10)
 ```
 
-Fires on state transitions when `URNETWORK_PROFILE=eco` or the `auto` profile selects a tier that enables eco mode (Low or Balanced tiers). The monitor checks available memory every 30 seconds and adjusts GOGC dynamically.
-
-Exactly **one monitor runs per process** regardless of proxy count. (Prior to fix.15, one monitor goroutine was started per proxy server, meaning all copies would log the same line and call `runtime.GC()` simultaneously under pressure.)
+The consolidated adaptive GC governor lives in the pressure monitor and is the single writer to the Go GC percentage knob for the whole process. It is fed by both the process heap fraction and host available RAM, and it takes the tighter of the two. It applies to every profile and is on by default. Operators can disable it with `URNETWORK_ADAPTIVE_GC=0`.
 
 | Message | Meaning |
 |---|---|
-| `memory pressure detected` | Available RAM dropped below 300 MiB; GOGC lowered to 25 to collect more aggressively. |
-| `memory critical` | Available RAM below 150 MiB; GOGC at minimum (10). A forced GC cycle runs each tick. |
-| `memory pressure eased` | Available RAM recovered above 450 MiB; GOGC restored to normal (50). |
+| `gcGovernor armed` | Startup message that shows the captured baseline GOGC. |
+| `gcGovernor tighten` | Governor lowered GOGC to `min(baseline, 50)` (heap >= 0.70 or host RAM <= 300 MiB). |
+| `gcGovernor hard` | Governor lowered GOGC to `min(baseline, 25)` (heap >= 0.80 or host RAM <= 150 MiB). |
+| `gcGovernor critical` | Governor lowered GOGC to `min(baseline, 10)` and called `FreeOSMemory` (heap >= 0.92 or host RAM <= 150 MiB). |
 
-These only appear when memory actually changes tier — a stable system shows none of them.
+The former `[eco]` memory monitor lines are retired. Their host available RAM signal now flows through this governor, so small memory-fragile boxes keep the same protection.
 
 ---
 
