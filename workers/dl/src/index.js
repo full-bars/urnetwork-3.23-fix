@@ -9,6 +9,7 @@ const ROUTES = {
   '/install.sh': '/Provider_Install_Linux.sh',
   '/install-mac.sh': '/Provider_Install_Mac.sh',
   '/install-win.ps1': '/Provider_Install_Win32.ps1',
+  '/urnet-docker.sh': '/install-urnet-docker.sh',
   '/uninstall.sh': '/Provider_Uninstall_Linux.sh',
   '/uninstall-win.ps1': '/Provider_Uninstall_Win32.ps1',
 };
@@ -89,7 +90,8 @@ const LANDING_PAGE = `<!doctype html>
     <div class="note" style="margin-top:20px">
       Direct script links: <a href="https://dl.fullbars.xyz/install.sh">install.sh</a> ·
       <a href="https://dl.fullbars.xyz/install-mac.sh">install-mac.sh</a> ·
-      <a href="https://dl.fullbars.xyz/install-win.ps1">install-win.ps1</a>
+      <a href="https://dl.fullbars.xyz/install-win.ps1">install-win.ps1</a> ·
+      <a href="https://dl.fullbars.xyz/urnet-docker.sh">urnet-docker.sh</a>
     </div>
   </div>
 </body>
