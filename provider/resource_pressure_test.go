@@ -365,7 +365,10 @@ func TestGCGovernor_SubtickDoesNotClobberReleaseStreak(t *testing.T) {
 	// This test drives the governor which writes process-global GOGC and
 	// gcTightening. Capture both and restore them no matter how the test ends,
 	// so a failing/panic run cannot poison later tests in the same package.
-	origGoGC, _ := readGOGCPercent()
+	origGoGC := 100
+	if goc, ok := readGOGCPercent(); ok {
+		origGoGC = goc
+	}
 	origTightening := gcTightening.Load()
 	t.Cleanup(func() {
 		debug.SetGCPercent(origGoGC)
