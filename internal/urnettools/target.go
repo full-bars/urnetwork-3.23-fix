@@ -131,6 +131,11 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 	case 1:
 		return providers[0], nil
 	default:
+		// An explicitly persisted default provider (default set) resolves the
+		// no-target case with multiple providers, before the ambiguity refusal.
+		if p, ok := resolveDefaultProvider(providers); ok {
+			return p, nil
+		}
 		// Restore the pre-multi-provider default for UNPRIVILEGED callers:
 		// act on the single running provider for the current user. Root can
 		// act on every provider on the box, so root always falls through to
