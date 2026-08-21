@@ -49,6 +49,12 @@ FORK_AWARE = {
                            "fork. Do not mark [MUST PORT] for this file. "
                            "Classify as [NO ACTION] unless the change is a "
                            "code-path fix that also touches a shared file.",
+    "ip_mux_upgrade.go": "FORK LACKS: ip_mux_upgrade.go is absent from the "
+                         "3.23-fix fork (it consumes ip_blocker_block.go, "
+                         "which the fork also does not carry). Do not mark "
+                         "[MUST PORT] for this file. Classify as [NO ACTION] "
+                         "unless the change is a code-path fix that also "
+                         "touches a shared file.",
     # fork HAS the file but its generated CFAA table is a fork snapshot
     "ip_security_cfaa_block.go": "FORK DIVERGED: the 3.23-fix fork carries its "
                                   "own CFAA table, a dated snapshot that drifts "
@@ -121,7 +127,12 @@ def _shape(repo, files, sha_a, sha_b):
             continue
         patch = f.get("patch")
         if not patch:
-            parts.append(f"<no patch in API for {fname}: +{f['additions']} -{f['deletions']}>")
+            # No patch from the API for this file. If it is a fork-aware file,
+            # the annotation must survive so the model still gets the verdict
+            # guidance (it is authoritative even without patch content).
+            note_suffix = ("\n" + note) if note else ""
+            parts.append(f"<no patch in API for {fname}: +{f['additions']} "
+                         f"-{f['deletions']}>{note_suffix}")
             continue
         if note:
             parts.append(f"# {fname}\n{note}\n{patch}")
