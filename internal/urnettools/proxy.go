@@ -65,8 +65,9 @@ Usage: urnet-tools proxy <subcommand> [target] [flags]
 
 Subcommands:
   add <file>             add proxies from a proxy file (host:port[:user:pass])
-  clear                  remove all proxies
-  remove                 remove proxies (--all, or target-specific)
+  clear                  remove ALL proxies (unconditional)
+  remove                 remove proxies: addresses or --match= given -> those
+                         only; nothing given -> ALL proxies on the target
   refresh                re-read the proxy source (--force to force)
   add-source <url>       add a URL proxy source (fetched + cached)
   remove-source <url>    remove a URL proxy source
@@ -125,7 +126,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			// (provider-binary flags like --force); reject elsewhere so a
 			// typo like --netwrok cannot be silently absorbed on a
 			// destructive op (review finding L2; opus5 F1).
-			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" {
+			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" {
 				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
 			}
 			positionals = append(positionals, a)
@@ -170,7 +171,18 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		// unconditionally (no docopt-valid force flag on this pattern).
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "remove":
-		opArgs = []string{"proxy", "remove", "--all"}
+		// The provider binary supports per-address and per-pattern removal:
+		//   provider proxy remove [<key_address>...] [--all]
+		//   provider proxy remove --match=<pattern> [--yes] [--preview]
+		// Pass through any addresses / --match given; ONLY when nothing is
+		// specified do we default to --all. This fixes the old behavior
+		// that unconditionally sent --all (silently wiping every proxy
+		// regardless of what the user named).
+		if len(positionals) > 0 {
+			opArgs = append([]string{"proxy", "remove"}, positionals...)
+		} else {
+			opArgs = []string{"proxy", "remove", "--all"}
+		}
 	case "refresh":
 		opArgs = []string{"proxy", "refresh"}
 		// The dispatcher's parseGlobalFlags consumes -f/--force as the
@@ -201,6 +213,13 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		if err != nil {
 			return err
 		}
+		if dryRun {
+			// remove-source is destructive; honor --dry-run here (it returns
+			// before the shared gate below). add-source is additive but print
+			// the plan uniformly.
+			fmt.Printf("[dry-run] would %s %s on %s\n", sub, positionals[0], providerLabel(p))
+			return nil
+		}
 		return providerSubcommand(p, append([]string{"proxy", sub}, positionals...)...)
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
@@ -223,6 +242,10 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		case "traffic":
 			return cmdProxyTrafficTarget(p)
 		default: // remove-dead
+			if dryRun {
+				fmt.Printf("[dry-run] would remove dead/degraded proxies on %s\n", providerLabel(p))
+				return nil
+			}
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:

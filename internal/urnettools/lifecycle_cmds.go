@@ -199,22 +199,26 @@ func cmdReinstall(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil
 	}
-	// The installer is the canonical reinstall path. Run it as the
-	// provider's user with the right HOME so it targets the same install.
-	// Resolve home via getent — never hardcode /home/<user> (breaks
-	// root-run providers; review finding M3).
-	home := homeForUser(p.User)
-	if home == "" {
-		return fmt.Errorf("cannot resolve home for user %s", p.User)
+	// Reinstall to the current release by reusing the already-hardened
+	// download + verify + atomic-install + restart path (updateProvider).
+	// This replaces the old behavior that recursively exec'd
+	// "urnet-tools reinstall" (the tool exec'ing itself), which never
+	// actually reinstalled anything and failed with a misleading stdin
+	// error in non-interactive mode. A current-Go-tool "reinstall" is
+	// exactly "re-fetch the provider binary at its canonical path, ensure
+	// the unit, restart" — the same verified flow `update` already uses.
+	// If dryRun, resolve the release (read-only) and report the plan.
+	release, err := latestRelease()
+	if err != nil {
+		return err
 	}
-	installer := filepath.Join(home, ".local/share/urnetwork-provider/bin/urnet-tools")
-	cmd := exec.Command(installer, "reinstall")
-	if p.User != "" {
-		cmd.Env = append(os.Environ(), "HOME="+home)
+	cfg := updateConfig{Tag: release.Tag, Digest: release.ProviderDigest, AssetURL: release.URL}
+	if dryRun {
+		fmt.Printf("[dry-run] would reinstall %s from %s (digest %s)\n",
+			providerLabel(p), cfg.Tag, cfg.Digest)
+		return nil
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return updateProvider(p, cfg)
 }
 
 // writeTimerUnitAtomic writes a timer unit file via temp+rename so a crash
