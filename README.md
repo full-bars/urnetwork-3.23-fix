@@ -58,7 +58,7 @@ Choose your platform:
 After installation, authenticate and start providing:
 
 ```bash
-# Linux / macOS — one Go binary on every platform
+# Linux / macOS: one Go binary on every platform
 urnetwork auth
 urnet-tools proxy add ~/proxies.txt
 urnet-tools proxy refresh

@@ -19,10 +19,11 @@ urnet-tools proxy refresh
 `proxy add` merges the file contents (it never replaces what is already there).
 `proxy refresh` reloads the file into the running provider.
 
-Verify a moment later with:
+Verify a moment later with one of:
 
 ```text
 urnet-tools proxy traffic
+urnet-tools proxy health
 ```
 
 If it has been under 8-12 hours since a provider restart, `proxy refresh` may
@@ -50,7 +51,7 @@ Both `~/proxies.txt` and `/home/you/proxies.txt` work.
 ### macOS
 
 Identical to Linux. `urnet-tools` and the proxy commands behave exactly the same
-as on Linux; only the startup mechanism differs (launchd instead of systemd).
+as on Linux. Only the startup mechanism differs: launchd instead of systemd.
 
 ```bash
 urnet-tools proxy add ~/proxies.txt
@@ -84,7 +85,8 @@ Two Windows-only pitfalls:
 
 ## Tidying up
 
-- To see live traffic and per-proxy health: `urnet-tools proxy traffic`.
+- To see live traffic: `urnet-tools proxy traffic`.
+- To see proxy health: `urnet-tools proxy health`.
 - To remove a proxy or clear the list: see the `proxy` subcommand help with
   `urnet-tools proxy --help`.
 - `urnet-tools proxy clear` removes all proxies AND any URL proxy sources you have
