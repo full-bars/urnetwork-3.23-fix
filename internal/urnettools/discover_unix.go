@@ -44,6 +44,13 @@ func discoverProcesses() []Provider {
 		if err != nil {
 			exe = args[0] // fall back to argv[0]
 		}
+		// A running binary whose on-disk file was deleted (e.g. a prior
+		// interrupted update) resolves to a "<path> (deleted)" target. Strip
+		// the kernel's " (deleted)" marker so Provider.Binary stays the
+		// canonical executable path; otherwise installBinary/backup later
+		// write to a literal "... (deleted)" path and the service's real
+		// binary stays missing (CodeRabbit Major).
+		exe = strings.TrimSuffix(exe, " (deleted)")
 		env := readEnviron(pid)
 		user := env["USER"]
 		if user == "" {

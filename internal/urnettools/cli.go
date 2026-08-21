@@ -487,6 +487,9 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	// major). Only one selector may be set; a same-field repeat just
 	// overwrites.
 	setField := func(flag, value string, field *string) error {
+		if value == "" {
+			return fmt.Errorf("%s requires a value", flag)
+		}
 		if *field != "" {
 			// Same field, different value — last one wins (harmless).
 			*field = value
