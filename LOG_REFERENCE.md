@@ -47,7 +47,7 @@ The existing `client_id` and `instance_id` lines are printed separately, once pe
 
 ## 🧠 Adaptive GC Governor (pressure monitor)
 
-```
+```text
 [proxy][pressure] gcGovernor armed (baseline GOGC=100)
 [proxy][pressure] gcGovernor tighten_gogc50_heap0.72 (heap=0.72 go=50)
 [proxy][pressure] gcGovernor hard_gogc25_heap0.82 (heap=0.82 go=25)
@@ -59,8 +59,8 @@ The consolidated adaptive GC governor lives in the pressure monitor and is the s
 | Message | Meaning |
 |---|---|
 | `gcGovernor armed` | Startup message that shows the captured baseline GOGC. |
-| `gcGovernor tighten` | Governor lowered GOGC to `min(baseline, 50)` (heap >= 0.70 or host RAM <= 300 MiB). |
-| `gcGovernor hard` | Governor lowered GOGC to `min(baseline, 25)` (heap >= 0.80 or host RAM <= 150 MiB). |
+| `gcGovernor tighten` | Governor lowered GOGC to `min(baseline, 50)` (heap >= 0.70). |
+| `gcGovernor hard` | Governor lowered GOGC to `min(baseline, 25)` (heap >= 0.80 or host RAM <= 300 MiB). |
 | `gcGovernor critical` | Governor lowered GOGC to `min(baseline, 10)` and called `FreeOSMemory` (heap >= 0.92 or host RAM <= 150 MiB). |
 
 The former `[eco]` memory monitor lines are retired. Their host available RAM signal now flows through this governor, so small memory-fragile boxes keep the same protection.

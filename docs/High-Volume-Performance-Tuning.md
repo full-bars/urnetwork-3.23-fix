@@ -154,7 +154,7 @@ Eco mode is for providers on RAM-constrained systems who still want full through
 **What eco changes:**
 - GOGC: 100 → 50 (GC runs twice as often, keeping heap smaller at the cost of slightly more CPU)
 - GOMEMLIMIT: unset → 75% of detected RAM (cgroup-aware; Docker `--memory` containers get the correct ceiling)
-- Consolidated adaptive GC governor (part of the pressure monitor): on by default for every profile. It tightens GOGC below the eco baseline under memory pressure, to `min(baseline, 50)` at heap >= 0.70 or host RAM <= 300 MiB, `min(baseline, 25)` at heap >= 0.80 or host RAM <= 150 MiB, and `min(baseline, 10)` plus `FreeOSMemory` at critical. The static 50 below is only the startup baseline; the governor only ever tightens further, never raises it. Disable with `URNETWORK_ADAPTIVE_GC=0`.
+- Consolidated adaptive GC governor (part of the pressure monitor): on by default for every profile. It tightens GOGC below the eco baseline under memory pressure, to `min(baseline, 50)` at heap >= 0.70, `min(baseline, 25)` at heap >= 0.80 or host RAM <= 300 MiB, and `min(baseline, 10)` plus `FreeOSMemory` at heap >= 0.92 or host RAM <= 150 MiB. The static 50 below is only the startup baseline; the governor only ever tightens further, never raises it. Disable with `URNETWORK_ADAPTIVE_GC=0`.
 - All buffer and contract settings unchanged — throughput is unaffected
 
 **Enabling:**
