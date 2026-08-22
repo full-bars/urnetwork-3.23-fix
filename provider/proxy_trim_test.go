@@ -51,6 +51,7 @@ func TestSelectWorstTrafficTiebreak(t *testing.T) {
 func TestReadWriteTrimTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	path := filepath.Join(home, ".urnetwork", "proxy_trim")
 
 	if n, err := readTrimTarget(); err != nil || n != 0 {

@@ -96,27 +96,17 @@ type trimRank struct {
 	traffic uint64
 }
 
-// buildTrimGradeResolver returns a per-address A-F grade resolver honoring the
-// same desired-set ownership rule the grade summary uses (paid/file wins over a
-// URL provenance tag when the address is in the desired set; otherwise the URL
-// cache grade applies). This keeps the shed ranking on the real grade for both
-// file and URL-sourced proxies (review finding CRITICAL).
-func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState, desiredSet map[string]*connect.ProxySettings) func(addr string) (float64, bool) {
-	if urlState == nil {
-		urlState = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
-	}
+// buildTrimGradeResolver returns a per-address A-F grade resolver backed by the
+// existing proxyGradeFor unifier, which reads the grade from the correct store
+// for each proxy (paid/file ProxyEntry wins, else the URL cache ProxyURLEntry)
+// (review findings). nil urlState degrades to the paid store only.
+func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState) func(addr string) (float64, bool) {
 	return func(addr string) (float64, bool) {
-		if desiredSet != nil {
-			if _, ok := desiredSet[addr]; ok {
-				e := state.Proxies[addr]
-				return e.Score, e.Graded
-			}
+		g, ok := proxyGradeFor(addr, state, urlState)
+		if !ok {
+			return 0, false
 		}
-		if ue, ok := urlState.Cache[addr]; ok {
-			return ue.Score, ue.Graded
-		}
-		e := state.Proxies[addr]
-		return e.Score, e.Graded
+		return g.Score, true
 	}
 }
 
@@ -180,9 +170,36 @@ func runningProxyTraffic() map[string]uint64 {
 		if bw == nil {
 			continue
 		}
-		traffic[key] = bw.TotalRx.Load() + bw.TotalTx.Load()
+		// Bandwidth is keyed by the display string "proxy[<n>] (<addr>)"; the
+		// tiebreak must key by the address so it matches ProxyEntry keys.
+		_, hp := parseProxyString(key)
+		traffic[hp] += bw.TotalRx.Load() + bw.TotalTx.Load()
 	}
 	return traffic
+}
+
+// runningProxyAddresses returns the currently RUNNING addresses from the health
+// surface (bandwidth + connecting), so --preview reports the running pool rather
+// than the larger desired set in proxy.state (review finding MEDIUM).
+func runningProxyAddresses() []string {
+	_, _, _, bandwidth, connecting := connect.ProxyHealthSnapshot()
+	seen := map[string]bool{}
+	var out []string
+	add := func(a string) {
+		if a == "" || seen[a] {
+			return
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	for key := range bandwidth {
+		_, hp := parseProxyString(key)
+		add(hp)
+	}
+	for _, c := range connecting {
+		add(c)
+	}
+	return out
 }
 
 // triggerProxyReload pokes the running provider's reload watcher so it applies
@@ -201,8 +218,8 @@ func triggerProxyReload() {
 // be shed without writing anything.
 func proxyTrim(opts docopt.Opts) {
 	state, err := readProxyState()
-	if err != nil || state.StartedAt.IsZero() {
-		shmLogFatal(60, "provider does not appear to be running")
+	if err != nil {
+		shmLogFatal(70, "could not read provider state: %v", err)
 	}
 
 	count := 0
@@ -225,24 +242,29 @@ func proxyTrim(opts docopt.Opts) {
 			fmt.Println("preview: would clear the proxy trim cap")
 			return
 		}
+		// Clearing works even while the provider is stopped (a bad cap must be
+		// removable), so the running check must NOT gate this path (review LOW).
 		if err := writeTrimTarget(0); err != nil {
-			shmLogFatal(62, "could not clear proxy trim cap: %v", err)
+			shmLogFatal(71, "could not clear proxy trim cap: %v", err)
 		}
 		fmt.Println("proxy trim: cap cleared")
-		triggerProxyReload()
+		if state != nil && !state.StartedAt.IsZero() {
+			triggerProxyReload()
+		}
 		return
 	}
 
-	running := make([]string, 0, len(state.Proxies))
-	for addr := range state.Proxies {
-		running = append(running, addr)
+	if state.StartedAt.IsZero() {
+		shmLogFatal(70, "provider does not appear to be running")
 	}
+
+	running := runningProxyAddresses()
 	traffic := runningProxyTraffic()
+	urlState, _ := readProxyURLState()
+	gradeFor := buildTrimGradeResolver(state, urlState)
 
 	if preview {
 		if len(running) > count {
-			urlState, _ := readProxyURLState()
-			gradeFor := buildTrimGradeResolver(state, urlState, nil)
 			shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
 			fmt.Printf("preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
 			for _, addr := range shed {
@@ -255,7 +277,7 @@ func proxyTrim(opts docopt.Opts) {
 	}
 
 	if err := writeTrimTarget(count); err != nil {
-		shmLogFatal(63, "could not write proxy trim cap: %v", err)
+		shmLogFatal(72, "could not write proxy trim cap: %v", err)
 	}
 	fmt.Printf("proxy trim: cap set to %d running proxies; reloading to shed the worst-graded above it\n", count)
 	triggerProxyReload()
