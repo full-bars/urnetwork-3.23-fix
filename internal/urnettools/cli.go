@@ -114,6 +114,8 @@ func Run(args []string) error {
 			return herr
 		}
 		return cmdSimpleDelegation("summary", rest2)
+	case "self-heal", "selfheal":
+		return cmdSelfHeal(rest)
 	case "report":
 		rest2, herr := parseDelegationArgs(rest)
 		if herr == errHelpShown {
@@ -696,11 +698,19 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
-	// Windows and macOS get the styled status panel; Linux keeps its
-	// systemd-oriented table untouched.
+	// Windows and macOS get the styled panel. Linux restores the OLD
+	// systemd status view: `systemctl status <unit>` (the pre-rewrite tool's
+	// show_status was literally `systemctl --user status urnetwork.service`).
+	// Falls back to the table when a unit can't be resolved (bare process).
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		renderStatusPanel(p)
 		return nil
+	}
+	if err := renderSystemctlStatus(p); err == nil {
+		return nil
+	} else if p.Unit != "" {
+		// Weird: unit set but systemctl failed; surface it.
+		fmt.Fprintf(os.Stderr, "warning: systemctl status failed, falling back: %v\n", err)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "user:\t%s\n", p.User)
@@ -1021,4 +1031,11 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 		return false, fmt.Errorf("aborted (confirmation did not match)")
 	}
 	return true, nil
+}
+
+// renderSystemctlStatus is overridden on Linux to reproduce the old
+// `systemctl status <unit>` view. On non-Linux (where systemctl does not
+// apply) it returns an error so cmdStatus falls through to the table/panel.
+var renderSystemctlStatus = func(p Provider) error {
+	return fmt.Errorf("systemctl status not available on %s", runtime.GOOS)
 }
