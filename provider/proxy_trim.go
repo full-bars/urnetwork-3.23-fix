@@ -110,12 +110,31 @@ func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState) func(add
 	}
 }
 
+// effectiveTrimScore maps the probe grade score to an effective reputation for
+// trim eviction. Confirmed F-tier proxies (score < 0.6) are proven broken/failing
+// and shed before unverified/probationary (ungraded) proxies. Ungraded proxies
+// are assigned an effective score of 0.595 (sitting between F < 0.6 and D >= 0.6),
+// so proven failures shed first, while proven healthy D/C/B/A are retained.
+func effectiveTrimScore(grade float64) float64 {
+	if grade < 0 {
+		return 0.595 // ungraded / probationary
+	}
+	return grade
+}
+
 // selectWorstRunningProxies ranks the given running addresses worst-first using
-// the A-F website-reachability grade (ProxyEntry.Score / Graded), health, and
-// per-address traffic, and returns the worst `n` to shed. Ungraded proxies shed
-// before any graded one (they have never proven reachability); among graded,
-// lower reachability score (worse grade) sheds first; traffic is the tiebreak so
-// an earning proxy is shed last.
+// health, active billable traffic protection, and reachability grade score, and
+// returns the worst `n` to shed.
+//
+// Eviction Hierarchy:
+// 1. Unhealthy/Dead First: Dead, inactive, and offline proxies always shed first.
+// 2. Earning Protection: Proxies with active billable traffic (traffic > 0) are
+//    protected against idle proxies (traffic == 0). An active earner is never
+//    shed while idle proxies remain.
+// 3. Idle Proxies (traffic == 0): F-tier (proven failing, score < 0.6) sheds first
+//    -> Ungraded / Probationary (0.595) -> D-tier (0.6) -> C -> B -> A.
+// 4. Active Earners (traffic > 0): Smaller traffic earners shed before larger
+//    earners (preserving high revenue streams), with grade as secondary tiebreak.
 func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr string) (float64, bool), traffic map[string]uint64, running []string, n int) []string {
 	var cands []trimRank
 	for _, addr := range running {
@@ -134,20 +153,37 @@ func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr s
 		if a.health != b.health {
 			return a.health - b.health
 		}
-		// grade: -1 (ungraded) sheds before any graded score.
-		ag, bg := a.grade, b.grade
-		if ag != bg {
-			if ag < bg {
+
+		hasTrafficA := a.traffic > 0
+		hasTrafficB := b.traffic > 0
+		if hasTrafficA != hasTrafficB {
+			if !hasTrafficA {
+				return -1 // A is idle, B is earning -> shed A first
+			}
+			return 1 // A is earning, B is idle -> shed B first
+		}
+
+		if hasTrafficA && hasTrafficB {
+			// Both are active earners: preserve larger traffic streams.
+			if a.traffic != b.traffic {
+				if a.traffic < b.traffic {
+					return -1
+				}
+				return 1
+			}
+		}
+
+		// Among same traffic level (e.g. both idle, or equal traffic):
+		// Higher reputation score wins (F < Ungraded < D < C < B < A).
+		effA := effectiveTrimScore(a.grade)
+		effB := effectiveTrimScore(b.grade)
+		if effA != effB {
+			if effA < effB {
 				return -1
 			}
 			return 1
 		}
-		if a.traffic != b.traffic {
-			if a.traffic < b.traffic {
-				return -1
-			}
-			return 1
-		}
+
 		return strings.Compare(a.addr, b.addr)
 	})
 	if n > len(cands) {
