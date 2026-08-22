@@ -127,14 +127,14 @@ func effectiveTrimScore(grade float64) float64 {
 // returns the worst `n` to shed.
 //
 // Eviction Hierarchy:
-// 1. Unhealthy/Dead First: Dead, inactive, and offline proxies always shed first.
-// 2. Earning Protection: Proxies with active billable traffic (traffic > 0) are
-//    protected against idle proxies (traffic == 0). An active earner is never
-//    shed while idle proxies remain.
-// 3. Idle Proxies (traffic == 0): F-tier (proven failing, score < 0.6) sheds first
-//    -> Ungraded / Probationary (0.595) -> D-tier (0.6) -> C -> B -> A.
-// 4. Active Earners (traffic > 0): Smaller traffic earners shed before larger
-//    earners (preserving high revenue streams), with grade as secondary tiebreak.
+//  1. Unhealthy/Dead First: Dead, inactive, and offline proxies always shed first.
+//  2. Earning Protection: Proxies with active billable traffic (traffic > 0) are
+//     protected against idle proxies (traffic == 0). An active earner is never
+//     shed while idle proxies remain.
+//  3. Idle Proxies (traffic == 0): F-tier (proven failing, score < 0.6) sheds first
+//     -> Ungraded / Probationary (0.595) -> D-tier (0.6) -> C -> B -> A.
+//  4. Active Earners (traffic > 0): Smaller traffic earners shed before larger
+//     earners (preserving high revenue streams), with grade as secondary tiebreak.
 func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr string) (float64, bool), traffic map[string]uint64, running []string, n int) []string {
 	var cands []trimRank
 	for _, addr := range running {
