@@ -232,6 +232,39 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdReinstall(rest2, force, dryRun)
+	case "auth":
+		// auth and choose-network must NOT run parseGlobalFlags: the
+		// provider binary's own -f (force-overwrite JWT) has to reach the
+		// provider, and parseGlobalFlags would swallow it silently.
+		return cmdAuth(rest)
+	case "choose-network", "choose_network":
+		return cmdChooseNetwork(rest)
+	case "fast-auth", "fastauth":
+		if hasHelpFlag(rest) {
+			fmt.Fprint(os.Stderr, "urnet-tools fast-auth - manage the auth rate limiter bypass\n\nUsage: urnet-tools fast-auth <on|off|status> [target]\n\n  on     bypass the auth rate limiter (writes the marker)\n  off    re-enable the rate limiter\n  status show the current state (read-only)\n")
+			return nil
+		}
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdFastAuth(rest2, force, dryRun)
+	case "set":
+		if hasHelpFlag(rest) {
+			printSetHelp()
+			return nil
+		}
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdSet(rest2, force, dryRun)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -400,6 +433,8 @@ Core Commands:
   self-update             update this tool binary itself (no providers touched)
   logs [target] [N]       show recent provider logs (N lines, default 250)
   summary [target]        fleet-style summary for one provider
+  auth [<code>] [target]  authenticate a provider
+  choose-network <api_url> <connect_url> [target]  set API/connect endpoints (--reset reverts)
   version                 print this tool's version
 
 Performance & Tuning (single target; on|off unless noted):
@@ -410,6 +445,8 @@ Performance & Tuning (single target; on|off unless noted):
   ramlogs <on|off> [target]    zero disk I/O logging
   optimize [target]            apply golden-fleet OS/kernel limits
   hot-restart [target]         restart one provider's unit, reusing client_ids
+  fast-auth <on|off|status> [target]  manage the auth rate limiter (marker file; status is read-only)
+  set <key> [<value>|off] [target]  runtime tuning override, read live (no restart)
 
 Proxy Management [target]:
   proxy add <file>          bulk add proxies from a text file
