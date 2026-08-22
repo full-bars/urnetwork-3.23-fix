@@ -3,7 +3,7 @@
 ```
 urnetwork-3.23-fix/
 ├── *.go                          # Core network stack (root package)
-├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.26)
+├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.27)
 ├── Dockerfile                    # Alpine multi-arch provider image
 ├── CHANGELOG.md                  # Version history with per-release notes
 ├── FORK_CHANGES.md               # Delta summary vs upstream urnetwork/connect

@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.3
+**Current Version**: v3.23.0-fix.30.4
 
 ---
 
@@ -2861,3 +2861,16 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: `runEcoMemoryMonitor` no longer exists in `provider/main.go`. The adaptive GC logic lives in `provider/resource_pressure.go` as `gcGovernor`, `gcGovernorState`, and `runPressureMonitor`. The `URNETWORK_ADAPTIVE_GC` env var and the `gc_state`/`heap_frac` fields in the pressure status file are fork additions.
 
 **Status**: Part of PR #428 on the `feat/adaptive-gc-consolidation` branch. Not yet shipped to a release. Tests cover the single-writer governor and the kill switch.
+
+## 130. Go 1.27 Toolchain Bump
+
+**Purpose**: Move the compiler from Go 1.26.4 to 1.27.0.
+
+**Files Modified**: `go.mod`, all `.github/workflows/*.yml` (`go-version` pins), `Dockerfile`, `hub/Dockerfile` (builder bases), `README.md`, `docs/Project-Structure.md`.
+
+**Change**:
+- `go.mod` `go` directive changed from `1.26.4` to `1.27.0`.
+- CI `go-version` pins floated from `1.26` to `1.27` across all workflows.
+- Docker builder base `golang:1.26-alpine` updated to `golang:1.27-alpine`.
+
+**Status**: PR #449. Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.

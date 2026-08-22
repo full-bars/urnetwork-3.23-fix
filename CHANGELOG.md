@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased] — Go 1.27 Toolchain
+
+### Changed
+- **Go 1.27.0 toolchain bump (PR #449)**: Compiler bumped from Go 1.26.4 to 1.27.0. Updates the `go` directive in `go.mod` to `1.27.0`, floats the CI `go-version` pins to 1.27 across all workflows, and moves the Docker builder base to `golang:1.27-alpine`. Validated under 1.27.0 with a clean `go build`, `go vet`, the full `-short -race` test suite, the complete cross-compile matrix (including 386 and mips/mipsle/mips64/mips64le), and a functional smoke. `go mod tidy` required no dependency changes.
+
+---
+
 ## [v3.23.0-fix.30.4] — 2026-08-22
 
 ### Added
