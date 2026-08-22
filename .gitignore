@@ -20,3 +20,8 @@ hub/hub
 hub/hub_bin
 hub.db
 prs.json
+# Go build artifacts
+/urnet-docker
+/urnet-docker.exe
+/urnet-tools
+/urnet-tools.exe

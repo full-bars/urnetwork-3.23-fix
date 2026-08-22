@@ -93,43 +93,43 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 }
 
 func newProvidersCmd() *cobra.Command {
-	return newCobraCmd("providers", "list all providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("providers", "list all providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	})
+	}), "List every provider on this box with its unit, network, state dir and version.", "  urnet-tools providers")
 }
 
 func newStatusCmd() *cobra.Command {
-	return newCobraCmd("status [target]", "detailed status of one provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("status [target]", "detailed status of one provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	})
+	}), "Show detailed status of one provider: running state, version, connectivity, and resource usage.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000")
 }
 
 func newStartCmd() *cobra.Command {
-	return newCobraCmd("start [target]", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("start [target]", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStart(rest, force, dryRun)
 		})
-	})
+	}), "Start the provider's systemd unit.", "  urnet-tools start --unit urnetwork-native.service")
 }
 
 func newStopCmd() *cobra.Command {
-	return newCobraCmd("stop [target]", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("stop [target]", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStop(rest, force, dryRun)
 		})
-	})
+	}), "Stop the provider's systemd unit.", "  urnet-tools stop --unit urnetwork-native.service")
 }
 
 func newRestartCmd() *cobra.Command {
-	return newCobraCmd("restart [target]", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("restart [target]", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	})
+	}), "Restart the provider's systemd unit.", "  urnet-tools restart --unit urnetwork-native.service")
 }
 
 func newUpdateCmd() *cobra.Command {
@@ -149,11 +149,11 @@ func newSelfUpdateCmd() *cobra.Command {
 }
 
 func newLogsCmd() *cobra.Command {
-	return newCobraCmd("logs [target] [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("logs [target] [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdLogs(rest)
 		})
-	})
+	}), "Show recent provider logs (optionally a line count).", "  urnet-tools logs\n  urnet-tools logs --unit urnetwork-native.service 200")
 }
 
 func newSummaryCmd() *cobra.Command {
