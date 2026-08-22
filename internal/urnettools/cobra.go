@@ -10,10 +10,10 @@ import (
 // buildRootCmd creates the root Cobra command for urnet-tools.
 func buildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "urnet-tools",
-		Short: "provider-aware URnetwork manager",
-		Long:  "urnet-tools — provider-aware URnetwork manager",
-		SilenceUsage: true,
+		Use:           "urnet-tools",
+		Short:         "provider-aware URnetwork manager",
+		Long:          "urnet-tools — provider-aware URnetwork manager",
+		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	rootCmd.SetOut(os.Stderr)
