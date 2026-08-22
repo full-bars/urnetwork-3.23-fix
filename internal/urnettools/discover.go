@@ -132,6 +132,12 @@ func isProviderArg(arg string) bool {
 	base := filepath.Base(arg)
 	// Strip a trailing .exe (Windows) defensively.
 	base = strings.TrimSuffix(base, ".exe")
+	// Match case-insensitively. Windows process names (toolhelp) report the
+	// on-disk exe name, which is case-insensitive on NTFS — a binary installed
+	// or renamed as "Urnetwork.exe" / "URNETWORK.EXE" must still match.
+	// Lowercasing the input is safe on all platforms: the knownBinaries keys
+	// are themselves lowercase, and Linux names we care about are lowercase.
+	base = strings.ToLower(base)
 	for known := range knownBinaries {
 		if base != known && !strings.HasPrefix(base, known+"-") {
 			continue

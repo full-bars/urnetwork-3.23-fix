@@ -18,8 +18,11 @@ import (
 func discoverProcesses() []Provider {
 	var out []Provider
 	// pgrep -x matches the exact process name. Exit 1 (no match) is an
-	// empty result, not an error.
-	for _, name := range []string{"urnetwork", "urnetwork.exe"} {
+	// empty result, not an error. Probe every known provider binary
+	// (urnetwork, provider_beta, provider) so beta builds are discovered on
+	// macOS just like on Linux (was invisible before). isProviderArg matches
+	// basename+prefix and strips .exe.
+	for _, name := range []string{"provider_beta", "urnetwork", "provider"} {
 		cmd := exec.Command("pgrep", "-x", name)
 		raw, err := cmd.Output()
 		if err != nil {

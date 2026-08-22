@@ -66,6 +66,10 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdUpdate(rest2, force, dryRun)
+	case "default":
+		// Manage the persisted default provider target (set/show/clear). No
+		// provider discovery, no targeting — pure config.
+		return cmdDefault(rest)
 	case "self-update", "selfupdate":
 		// Tool-only update: refresh the urnet-tools binary itself without
 		// touching any provider. Uses the same release resolution + digest
@@ -233,6 +237,39 @@ func Run(args []string) error {
 		// help itself) because it needs the raw arg list to tell the file
 		// positional from an -f flag; it has no -n/--dry-run semantics.
 		return cmdSession(rest)
+	case "auth":
+		// auth and choose-network must NOT run parseGlobalFlags: the
+		// provider binary's own -f (force-overwrite JWT) has to reach the
+		// provider, and parseGlobalFlags would swallow it silently.
+		return cmdAuth(rest)
+	case "choose-network", "choose_network":
+		return cmdChooseNetwork(rest)
+	case "fast-auth", "fastauth":
+		if hasHelpFlag(rest) {
+			fmt.Fprint(os.Stderr, "urnet-tools fast-auth - manage the auth rate limiter bypass\n\nUsage: urnet-tools fast-auth <on|off|status> [target]\n\n  on     bypass the auth rate limiter (writes the marker)\n  off    re-enable the rate limiter\n  status show the current state (read-only)\n")
+			return nil
+		}
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdFastAuth(rest2, force, dryRun)
+	case "set":
+		if hasHelpFlag(rest) {
+			printSetHelp()
+			return nil
+		}
+		force, dryRun, rest2, err := parseGlobalFlags(rest)
+		if err == errHelpShown {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return cmdSet(rest2, force, dryRun)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -401,6 +438,8 @@ Core Commands:
   self-update             update this tool binary itself (no providers touched)
   logs [target] [N]       show recent provider logs (N lines, default 250)
   summary [target]        fleet-style summary for one provider
+  auth [<code>] [target]  authenticate a provider
+  choose-network <api_url> <connect_url> [target]  set API/connect endpoints (--reset reverts)
   version                 print this tool's version
 
 Performance & Tuning (single target; on|off unless noted):
@@ -411,6 +450,8 @@ Performance & Tuning (single target; on|off unless noted):
   ramlogs <on|off> [target]    zero disk I/O logging
   optimize [target]            apply golden-fleet OS/kernel limits
   hot-restart [target]         restart one provider's unit, reusing client_ids
+  fast-auth <on|off|status> [target]  manage the auth rate limiter (marker file; status is read-only)
+  set <key> [<value>|off] [target]  runtime tuning override, read live (no restart)
 
 Proxy Management [target]:
   proxy add <file>          bulk add proxies from a text file
@@ -421,12 +462,21 @@ Proxy Management [target]:
   proxy health              show dead/degraded proxies + live event log
   proxy traffic             real-time bandwidth & client session load
   proxy remove-dead         interactively prune dead/degraded/failing
+  proxy trim <N>            hold running proxies at N, shed the A-F-worst
   report <url> [target]     set hub report URL at runtime (no restart)
 
 Hub Management [target]:
   hub set <host:port>       configure hub report URL
   hub off                   stop reporting to hub (no restart)
   hub install [--tag=TAG]   install hub as a systemd service
+  hub init [--password-stdin|--password PW]  provision the hub (TLS :8443 + CA cert)
+  hub link <url> [--token]  fetch hub CA + enable TLS trust, set report URL
+  hub unlink                remove hub trust + stop reporting
+  hub test <url>            verify TLS to the hub against the saved pin
+  hub onboard-cmd           mint a fleet onboard-token one-liner
+  hub show-password         print the hub CA password
+  hub update [--tag=TAG]    update the hub binary
+  hub open-port <port>      open a TCP port in the firewall (Linux)
 
 Maintenance [target]:
   reinstall                reinstall provider

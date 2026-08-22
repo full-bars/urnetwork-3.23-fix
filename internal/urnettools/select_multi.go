@@ -84,6 +84,17 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 	case len(providers) == 0:
 		return nil, fmt.Errorf("no providers found on this box")
 	default:
+		// An explicitly persisted default provider (default set) resolves the
+		// no-target case with multiple providers, before any other heuristic.
+		// It only fills the "no target at all" gap: explicit --all/--include/
+		// and target flags were already handled above, so they always win.
+		if p, ok := resolveDefaultProvider(providers); ok {
+			// Visible trace that a stored default decided this (not an explicit
+			// flag) — same reason as selectTarget.
+			fmt.Fprintf(os.Stderr, "using persisted default provider: %s\n", providerLabel(p))
+			chosen = []Provider{p}
+			break
+		}
 		// Restore the pre-multi-provider default for unprivileged callers:
 		// act on the single running provider for the current user. Root
 		// falls through to the inventory refusal (root can act on all
@@ -134,7 +145,11 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 // refusal + inventory).
 func selectTargetOrSoleAccessible(providers []Provider, t Target) (p Provider, narrowed bool, err error) {
 	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
-	if noTarget && len(providers) > 1 && os.Geteuid() != 0 {
+	// Use the platform privilege seam (isPrivileged), not os.Geteuid() direct:
+	// Geteuid is meaningless on Windows (returns -1) where an elevated Admin
+	// should still get the normal refusal + inventory, not the unprivileged
+	// auto-narrow treatment. Matches target.go and select_multi.go:93.
+	if noTarget && len(providers) > 1 && !isPrivileged() {
 		if accessible := narrowToAccessible(providers); len(accessible) == 1 {
 			return accessible[0], true, nil
 		}
