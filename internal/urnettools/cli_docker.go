@@ -26,7 +26,9 @@ func parseLogLineCount(rest []string) (int, error) {
 }
 
 func RunDocker(args []string) error {
-	if len(args) == 1 {
+	// Match on args[0] regardless of trailing args, as the old dispatcher did:
+	// `-v junk` still prints the version (Sonnet/Muse review).
+	if len(args) >= 1 {
 		switch args[0] {
 		case "version", "--version", "-v":
 			fmt.Println(ToolVersion)
