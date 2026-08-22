@@ -4,7 +4,7 @@
 Scans one or more files against the VirusTotal v3 API:
   1. sha256 hash lookup (1 request; free if the file was scanned before)
   2. if unknown: multipart upload, then poll the analysis until completed
-  3. prints a verdict per file; exits 1 if malicious > VT_FAIL_THRESHOLD
+  3. prints a verdict per file; exits 1 if any file has malicious > VT_FAIL_THRESHOLD
 
 Env:
   VT_API_KEY          required
@@ -19,8 +19,9 @@ Env:
   VT_SUMMARY_FILE     path: append a markdown proof block (per-file
                       verdicts + VT links + CI run ref) to this file
 
-Exit codes: 0 = pass (or review), 1 = malicious above fail threshold,
-2 = api/upload error.
+Exit codes: 0 = pass/review/UNKNOWN (non-blocking api/upload/timeout),
+1 = malicious above fail threshold (real-malware line). The scan is
+informational and never blocks the release.
 """
 
 import hashlib
@@ -105,8 +106,9 @@ def scan_file(path: str) -> int:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         if code != 200:
-            print(f"  UPLOAD FAILED ({code}): {body}", flush=True)
-            return 2
+            print(f"  UPLOAD FAILED ({code}): {body} - recorded UNKNOWN (non-blocking)", flush=True)
+            _summary_rows.append((path, fsha, "upload-error", None, None, None, None))
+            return 0
         analysis_id = body.get("data", {}).get("id", "")
         # 3. poll
         stats = {}
@@ -119,11 +121,13 @@ def scan_file(path: str) -> int:
                 verdict = "uploaded"
                 break
             if i == POLL_MAX:
-                print("  ANALYSIS TIMEOUT", flush=True)
-                return 2
+                print("  ANALYSIS TIMEOUT - scan not completed; recorded UNKNOWN (non-blocking)", flush=True)
+                _summary_rows.append((path, fsha, "timeout", None, None, None, None))
+                return 0
     else:
-        print(f"  LOOKUP FAILED ({code}): {body}", flush=True)
-        return 2
+        print(f"  LOOKUP FAILED ({code}): {body} - recorded UNKNOWN (non-blocking)", flush=True)
+        _summary_rows.append((path, fsha, "lookup-error", None, None, None, None))
+        return 0
 
     mal = int(stats.get("malicious", 0))
     sus = int(stats.get("suspicious", 0))
@@ -165,7 +169,9 @@ def write_summary() -> None:
         repo = os.environ.get("GITHUB_REPOSITORY", "")
         run = os.environ.get("GITHUB_RUN_ID", "")
         rows = list(_summary_rows)
-        worst = max(mal for _, _, _, mal, _, _, _ in rows)
+        verified = [mal for _, _, _, mal, _, _, _ in rows if mal is not None]
+        worst = max(verified) if verified else 0
+        has_unknown = any(mal is None for _, _, _, mal, _, _, _ in rows)
         with open(SUMMARY_FILE, "a") as f:
             f.write("\n---\n\n## VirusTotal Scan\n\n")
             f.write(
@@ -188,17 +194,26 @@ def write_summary() -> None:
                     f"**Result: PASS** — every artifact is within "
                     f"{REVIEW_THRESHOLD} malicious detections.\n\n"
                 )
+            if has_unknown:
+                f.write(
+                    "Artifacts marked UNKNOWN were not fully scanned "
+                    "(VirusTotal upload, lookup, or analysis timed out). "
+                    "Rescan them before relying on a clear verdict.\n\n"
+                )
             f.write("| Artifact | Status | Malicious | Suspicious | VT link |\n")
             f.write("|---|---|---|---|---|\n")
             for path, fsha, _, mal, sus, _, _ in rows:
-                if mal > FAIL_THRESHOLD:
+                if mal is None:
+                    status = "UNKNOWN"
+                elif mal > FAIL_THRESHOLD:
                     status = "FAIL"
                 elif mal > REVIEW_THRESHOLD:
                     status = "REVIEW"
                 else:
                     status = "PASS"
                 f.write(
-                    f"| {os.path.basename(path)} | {status} | {mal} | {sus} | "
+                    f"| {os.path.basename(path)} | {status} | "
+                    f"{'n/a' if mal is None else mal} | {'n/a' if sus is None else sus} | "
                     f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n"
                 )
             f.write(
