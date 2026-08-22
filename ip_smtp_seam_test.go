@@ -118,7 +118,12 @@ func sendSmtpSeamProviderPacket(
 		[]*protocol.Frame{frame},
 		Peer{ProvideMode: protocol.ProvideMode_Public},
 	)
-	MessagePoolReturn(pooled)
+	// Do NOT MessagePoolReturn(pooled) here. ClientReceive hands the packet to
+	// the NAT send shard / SMTP guard for asynchronous processing, so returning
+	// the buffer to the message pool now would race with runShard still parsing
+	// it (and let the pool hand the same buffer to a concurrent writer) - the
+	// -race data race in TestProviderMultiTenantIngressIsolation. The provider
+	// owns and releases the buffer once that async processing completes.
 }
 
 func newSmtpSeamMulti(
