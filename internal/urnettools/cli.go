@@ -229,8 +229,9 @@ func Run(args []string) error {
 		}
 		return cmdReinstall(rest2, force, dryRun)
 	case "session":
-		// session (save/load) does NOT run parseGlobalFlags: the provider
-		// -f/--force on load must reach cmdSession (same pattern as auth).
+		// session parses its own flags (cmdSession handles -f/--force and
+		// help itself) because it needs the raw arg list to tell the file
+		// positional from an -f flag; it has no -n/--dry-run semantics.
 		return cmdSession(rest)
 	case "help", "-h", "--help":
 		usage()
