@@ -228,6 +228,10 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdReinstall(rest2, force, dryRun)
+	case "session":
+		// session (save/load) does NOT run parseGlobalFlags: the provider
+		// -f/--force on load must reach cmdSession (same pattern as auth).
+		return cmdSession(rest)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -425,6 +429,7 @@ Hub Management [target]:
 
 Maintenance [target]:
   reinstall                reinstall provider
+  session save|load <file> [target]   export/import encrypted identity+proxy state
   uninstall                uninstall provider
   auto-update <on|off>     manage auto-update schedule
   auto-start <on|off>      toggle auto-start on login
