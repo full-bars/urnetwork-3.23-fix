@@ -172,3 +172,30 @@ func cleanupLifecycle(p Provider) {
 	}
 	_ = exec.Command("systemctl", "disable", "--now", timer).Run()
 }
+
+// renderSystemctlStatus reproduces the pre-rewrite Linux `status` behavior:
+// runs `systemctl status <unit>` (user or system scope) exactly as the old
+// tool did (`systemctl --user status urnetwork.service`), giving the full
+// systemd view (load, ActiveState, uptime, memory, tasks, unit path).
+func init() {
+	renderSystemctlStatus = renderSystemctlStatusLinux
+}
+
+func renderSystemctlStatusLinux(p Provider) error {
+	if p.Unit == "" {
+		return fmt.Errorf("provider %s has no owning unit (bare process)", providerLabel(p))
+	}
+	var args []string
+	if p.User != "" {
+		args = append(systemctlUserArgs(p.User), "status", p.Unit)
+	} else {
+		args = []string{"status", p.Unit}
+	}
+	cmd := exec.Command("systemctl", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	return nil
+}
