@@ -106,8 +106,13 @@ func TestRestoredHelpRouting(t *testing.T) {
 		{"choose-network", "--help"},
 		{"fast-auth", "--help"},
 	} {
-		if err := Run(args); err != nil {
-			t.Errorf("Run(%v) = %v, want nil (help)", args, err)
+		out := captureStderr(t, func() {
+			if err := Run(args); err != nil {
+				t.Errorf("Run(%v) = %v, want nil (help)", args, err)
+			}
+		})
+		if args[0] == "set" && !strings.Contains(out, "Available keys") {
+			t.Errorf("Run(%v) printed root usage, not set help: %q", args, out)
 		}
 	}
 }
@@ -165,5 +170,35 @@ func TestFastAuthInvalidRejected(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "fast_auth")); !os.IsNotExist(err) {
 		t.Fatal("invalid fast-auth value must not create the bypass marker")
+	}
+}
+
+// TestValidateSetValue pins the set-value validation: values the provider would
+// silently discard must be rejected before the write (review MEDIUM).
+func TestValidateSetValue(t *testing.T) {
+	good := [][2]string{
+		{"report-interval", "30s"},
+		{"proxy-url-max", "500"},
+		{"cleanup-scope", "url"},
+		{"cleanup-interval", "1h"},
+		{"node-name", "edge01"},
+	}
+	for _, kv := range good {
+		if err := validateSetValue(kv[0], kv[1]); err != nil {
+			t.Errorf("validateSetValue(%s, %q) should pass, got %v", kv[0], kv[1], err)
+		}
+	}
+	bad := [][2]string{
+		{"report-interval", "5s"},   // below 10s minimum
+		{"report-interval", "abc"},  // not a duration
+		{"proxy-url-max", "-1"},     // negative
+		{"proxy-url-max", "xyz"},    // not an int
+		{"cleanup-scope", "bogus"},  // not in enum
+		{"cleanup-interval", "30s"}, // below 1m minimum
+	}
+	for _, kv := range bad {
+		if err := validateSetValue(kv[0], kv[1]); err == nil {
+			t.Errorf("validateSetValue(%s, %q) should be rejected", kv[0], kv[1])
+		}
 	}
 }
