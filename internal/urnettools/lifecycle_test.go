@@ -36,6 +36,24 @@ func TestOptimizeLinuxRootCheck(t *testing.T) {
 	}
 }
 
+// TestCmdOptimizeNoProviderRequired: optimize is host-wide sysctl/registry
+// tuning and MUST succeed without requiring any discovered provider units
+// or running processes on the box (regression test for "no providers found").
+func TestCmdOptimizeNoProviderRequired(t *testing.T) {
+	// Full CLI Run dispatch with dry-run flag.
+	if err := Run([]string{"optimize", "-n"}); err != nil {
+		t.Errorf("Run([optimize -n]) failed: %v", err)
+	}
+	// Direct cmdOptimize with dryRun=true and target flags ignored.
+	if err := cmdOptimize([]string{"--unit", "foo"}, false, true); err != nil {
+		t.Errorf("cmdOptimize(--unit foo, dryRun=true) failed: %v", err)
+	}
+	// Unexpected positional args must error.
+	if err := cmdOptimize([]string{"invalid-extra-arg"}, true, false); err == nil {
+		t.Error("cmdOptimize with unexpected positional arg should error")
+	}
+}
+
 // TestWriteDropinEnvRoundTrip: writing a hub.conf drop-in then removing it
 // leaves no file behind.
 func TestWriteDropinEnvRoundTrip(t *testing.T) {
