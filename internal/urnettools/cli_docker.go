@@ -318,11 +318,18 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	return containerExecByName(p.Unit, "urnet-tools", "update")
 }
 
-// hasAnyTargetFlag reports whether args contain an explicit targeting flag.
+// hasAnyTargetFlag reports whether args contain an explicit targeting flag, in
+// either the bare (`--unit x`) or the `--flag=value` form. Without this, the
+// `--flag=value` form would miss the in-container gate and fall through to the
+// host self-update (Sonnet HIGH on #453).
 func hasAnyTargetFlag(args []string) bool {
 	for _, a := range args {
-		switch a {
-		case "--unit", "--user", "--network", "--network-id", "--state-dir":
+		if a == "--unit" || a == "--user" || a == "--network" || a == "--network-id" || a == "--state-dir" {
+			return true
+		}
+		if strings.HasPrefix(a, "--unit=") || strings.HasPrefix(a, "--user=") ||
+			strings.HasPrefix(a, "--network=") || strings.HasPrefix(a, "--network-id=") ||
+			strings.HasPrefix(a, "--state-dir=") {
 			return true
 		}
 	}

@@ -131,11 +131,11 @@ func newDockerReportCmd() *cobra.Command {
 }
 
 func newDockerUpdateCmd() *cobra.Command {
-	return newCobraCmd("update [target]", "update the host urnet-docker binary, or update a provider container in place (no recreate) with a target", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("update [target]", "update the host urnet-docker binary, or update a provider container in place (no recreate) with a target", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdDockerUpdate(rest, force, dryRun)
 		})
-	})
+	}), "Update the host urnet-docker binary, or with a target flag update a provider container in place (no recreate).", "  urnet-docker update\n  urnet-docker update --unit urnet-test\n  urnet-docker update --unit=urnet-test")
 }
 
 func newDockerVersionCmd() *cobra.Command {
