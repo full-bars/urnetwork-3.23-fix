@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -185,6 +186,9 @@ func fetchHubCA(baseURL, token string) (caPEM, fingerprint string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("could not reach hub at %s: %v", baseURL, err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("hub responded %s at %s", resp.Status, baseURL)
+	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
@@ -270,60 +274,93 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 	caFile := filepath.Join(hubDir, "hub_ca.pem")
 	pinFile := filepath.Join(hubDir, "hub.pin")
 
-	caPEM, fp, err := fetchHubCA(url, token)
+	caPEM, reportedFp, err := fetchHubCA(url, token)
 	if err != nil {
 		return err
 	}
 
-	if fp == "" {
-		// Compute the pinned fingerprint from the fetched CA PEM via TLS.
+	fp := reportedFp
+	if caPEM != "" {
+		// The fingerprint that identifies the material must be derived from the
+		// CA certificate itself, and the cert must parse as a real CA before it
+		// is trusted (review MEDIUM: a PRIVATE KEY or a leaf must not pass).
+		if _, ferr := parseCA(caPEM); ferr != nil {
+			return ferr
+		}
+		computed, _ := pemFingerprint(caPEM)
+		if fp == "" {
+			fp = computed
+		} else if computed != "" && fp != computed {
+			return fmt.Errorf("hub reported CA fingerprint %s does not match the served CA certificate", fp)
+		}
+	} else if fp == "" {
+		// Legacy pin-only hub: fingerprint from the TLS leaf cert.
 		host, port, _ := splitHostPortURL(url)
-		if f, err := tlsFingerprint(host, port); err == nil {
-			fp = f
-		} else {
+		f, err := tlsFingerprint(host, port)
+		if err != nil {
 			return fmt.Errorf("could not verify hub certificate: %v", err)
 		}
+		fp = f
 	}
+
+	// TOFU must shout on identity CHANGE, not just on first trust: if a
+	// different hub/CA is already trusted, require an explicit typed yes even
+	// under --force (review MEDIUM).
+	if existing, err := os.ReadFile(caFile); err == nil {
+		if oldFp, ferr := pemFingerprint(string(existing)); ferr == nil && oldFp != "" && oldFp != fp {
+			fmt.Fprintf(os.Stderr, "WARNING: hub identity changed (was %s, now %s)\n", oldFp, fp)
+			if !explicitYes("type 'yes' to replace the changed hub trust: ") {
+				return fmt.Errorf("aborted; hub identity changed")
+			}
+		}
+	}
+
 	fmt.Printf("Hub fingerprint: %s\n", fp)
 
 	if caPEM == "" {
-		// Legacy hub: pin the fingerprint.
-		if fp == "" {
-			return fmt.Errorf("hub provided neither a CA certificate nor a fingerprint")
-		}
-		if !force {
-			if !confirmFingerprint(fp) {
-				return fmt.Errorf("fingerprint not accepted")
-			}
+		// Legacy fingerprint-pin path.
+		if !force && !confirmFingerprint(fp) {
+			return fmt.Errorf("fingerprint not accepted")
 		}
 		if err := os.MkdirAll(hubDir, 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(pinFile, []byte(fp), 0o600); err != nil {
+		// 0644 + chown: the CA/pin is public material and must be readable by
+		// the provider when the tool ran as root (review HIGH).
+		if err := os.WriteFile(pinFile, []byte(fp), 0o644); err != nil {
 			return err
 		}
+		if err := chownLikeStateOwner(hubDir, pinFile); err != nil {
+			return err
+		}
+		_ = os.Remove(caFile)
 		fmt.Printf("Pinned hub fingerprint to %s\n", pinFile)
 	} else {
-		fmt.Printf("Hub CA fingerprint: %s\n", fp)
 		if !force && !acceptFingerprintPrompt() {
 			return fmt.Errorf("aborted by user")
 		}
 		if err := os.MkdirAll(hubDir, 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(caFile, []byte(caPEM), 0o600); err != nil {
+		if err := os.WriteFile(caFile, []byte(caPEM), 0o644); err != nil {
 			return err
 		}
-		_ = os.Remove(pinFile) // CA trust supersedes pin
+		if err := chownLikeStateOwner(hubDir, caFile); err != nil {
+			return err
+		}
+		_ = os.Remove(pinFile)
 		fmt.Printf("CA certificate saved to %s\n", caFile)
 	}
 
-	// Record the report URL so the provider reports to the linked hub.
 	return writeReportURL(p, url)
 }
 
 // hubYesNo prompts for an explicit y/N on stderr and returns true only on yes.
 func hubYesNo(prompt string) bool {
+	if !stdinIsInteractive() {
+		fmt.Fprintln(os.Stderr, "stdin is not a terminal; re-run with --force or --preview")
+		return false
+	}
 	fmt.Fprintf(os.Stderr, "%s ", prompt)
 	b := make([]byte, 1)
 	n, _ := os.Stdin.Read(b)
@@ -435,6 +472,38 @@ func certPEMBlock(pemBlob string) (*pem.Block, error) {
 	return block, nil
 }
 
+// parseCA validates that a PEM blob is a certificate that is a CA and returns
+// it. Rejects a private key, a plain leaf cert, or unparseable data (review
+// MEDIUM: a non-CA or a private-key PEM must not be trusted as hub_ca.pem).
+func parseCA(pemBlob string) (*x509.Certificate, error) {
+	block, err := certPEMBlock(pemBlob)
+	if err != nil {
+		return nil, err
+	}
+	if block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("expected a CERTIFICATE block, got %q", block.Type)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid certificate: %v", err)
+	}
+	if !cert.BasicConstraintsValid || !cert.IsCA {
+		return nil, fmt.Errorf("certificate is not a CA (IsCA=false)")
+	}
+	return cert, nil
+}
+
+// explicitYes requires the literal word 'yes' (explicit and typed). Used for the
+// hub-identity-change TOFU case where a single y/EOF must not be accepted
+// (review MEDIUM).
+func explicitYes(prompt string) bool {
+	line, err := confirmStdinRead(prompt)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(strings.ToLower(line)) == "yes"
+}
+
 // pemFingerprint returns the SHA256 fingerprint of the first X.509 cert in a
 // PEM blob, in the "SHA256:<lowercase-hex no colons>" form.
 func pemFingerprint(pemBlob string) (string, error) {
@@ -498,12 +567,35 @@ func cmdHubInit(p Provider, password string) error {
 		return nil
 	}
 
-	// Write the password (the hub derives its CA from it).
+	// Write the password (the hub derives its CA from it) and a fresh salt.
 	if password != "" {
-		if err := os.WriteFile(filepath.Join(dir, "hub.password"), []byte(password), 0o600); err != nil {
+		if len(password) < 8 {
+			return fmt.Errorf("hub password must be at least 8 characters (got %d)", len(password))
+		}
+		passPath := filepath.Join(dir, "hub.password")
+		if err := os.WriteFile(passPath, []byte(password), 0o600); err != nil {
 			return err
 		}
-		fmt.Println("Password written to hub data directory.")
+		if err := chownLikeStateOwner(dir, passPath); err != nil {
+			return err
+		}
+		// The hub derives its CA from password + salt; a missing/stale salt
+		// makes the password unusable (review HIGH). Write it atomically.
+		salt := make([]byte, 32)
+		if _, err := rand.Read(salt); err != nil {
+			return err
+		}
+		tmp := filepath.Join(dir, "hub.salt.tmp")
+		if err := os.WriteFile(tmp, []byte(hex.EncodeToString(salt)), 0o600); err != nil {
+			return err
+		}
+		if err := chownLikeStateOwner(dir, tmp); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, filepath.Join(dir, "hub.salt")); err != nil {
+			return err
+		}
+		fmt.Println("Password + salt written to hub data directory.")
 	} else {
 		fmt.Println("No password provided — the hub will auto-generate one; run 'hub show-password' after init.")
 	}
@@ -522,9 +614,13 @@ func cmdHubInit(p Provider, password string) error {
 	}
 	fmt.Printf("Wrote %s\n", tlsConf)
 
-	_ = hubUnitCommand(p, "daemon-reload")
+	if err := hubUnitCommand(p, "daemon-reload"); err != nil {
+		return fmt.Errorf("hub daemon-reload failed: %v", err)
+	}
 	if activeErr := hubUnitCommand(p, "is-active", "--quiet", "urnetwork-hub.service"); activeErr == nil {
-		_ = hubUnitCommand(p, "restart", "urnetwork-hub.service")
+		if err := hubUnitCommand(p, "restart", "urnetwork-hub.service"); err != nil {
+			return fmt.Errorf("failed to restart urnetwork-hub.service: %v", err)
+		}
 	} else {
 		// Not running: enable (surfaces a masked unit) then start, and surface
 		// a start failure rather than swallowing it into a generic timeout.
@@ -592,8 +688,8 @@ func cmdHubOpenPort(port string) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("hub open-port is Linux-only (firewall); open port %s manually on this OS", port)
 	}
-	if _, err := strconv.Atoi(port); err != nil {
-		return fmt.Errorf("port must be numeric (got %q)", port)
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n < 1 {
+		return fmt.Errorf("port must be a valid TCP port 1-65535 (got %q)", port)
 	}
 	if _, err := exec.LookPath("ufw"); err == nil {
 		cmd := exec.Command("ufw", "allow", port+"/tcp")
