@@ -3,8 +3,10 @@ module github.com/urnetwork/connect
 go 1.26.4
 
 require (
+	github.com/bytemare/ecc v0.9.0
 	github.com/bytemare/opaque v0.18.0
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
+	github.com/ethereum/go-ethereum v1.17.4
 	github.com/go-playground/assert/v2 v2.2.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/gopacket v1.1.19
@@ -14,6 +16,7 @@ require (
 	github.com/pion/transport/v4 v4.0.2
 	github.com/pion/webrtc/v4 v4.2.15
 	github.com/quic-go/quic-go v0.60.0
+	github.com/spf13/cobra v1.10.2
 	github.com/urfoundation/sn v0.0.0-20260706061858-0d02cc78d823
 	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd
 	github.com/wlynxg/anet v0.0.5
@@ -35,7 +38,6 @@ require (
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
-	github.com/bytemare/ecc v0.9.0 // indirect
 	github.com/bytemare/hash v0.6.2 // indirect
 	github.com/bytemare/hash2curve v0.5.4 // indirect
 	github.com/bytemare/ksf v0.5.0 // indirect
@@ -47,7 +49,6 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
-	github.com/ethereum/go-ethereum v1.17.4 // indirect
 	github.com/fjl/jsonw v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -56,6 +57,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gtank/ristretto255 v0.2.0 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
@@ -72,6 +74,7 @@ require (
 	github.com/pion/turn/v5 v5.0.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
