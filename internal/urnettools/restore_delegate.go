@@ -90,15 +90,19 @@ network. Delegates to the provider binary and streams its output.
 // provider treats any presence of the file as unlocked), matching the legacy
 // shell do_fast_auth. Honours --dry-run.
 func cmdFastAuth(args []string, dryRun bool) error {
-	sub := ""
-	tail := args
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		sub = args[0]
-		tail = args[1:]
-	}
-	t, rest, err := parseTargetFlags(tail)
+	// Parse the full arg list for target flags FIRST, then take the action
+	// token from what remains. This matches cmdSet and means a target flag
+	// placed before the action (e.g. `fast-auth --unit myunit on`) is handled
+	// instead of the action silently dropping and the command erroring
+	// misleadingly (review finding).
+	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
+	}
+	sub := ""
+	if len(rest) > 0 {
+		sub = rest[0]
+		rest = rest[1:]
 	}
 	if len(rest) > 0 {
 		return fmt.Errorf("fast-auth takes on|off|status only (got %v)", rest)
