@@ -1,0 +1,457 @@
+package urnettools
+
+import (
+	"archive/tar"
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/pbkdf2"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"golang.org/x/term"
+)
+
+// This file restores `urnet-tools session save|load`, which the Go rewrite
+// dropped. The legacy shell tool (Provider_Install_Linux.sh do_session)
+// exported and imported the provider's identity + proxy state as an encrypted
+// bundle. This port is pure Go (stdlib crypto) so it works on Windows, macOS,
+// and Linux without an external openssl binary.
+//
+// The bundle format is openssl-compatible AES-256-CBC: a gzip tar of the
+// identity files, encrypted with a key+iv derived by PBKDF2-HMAC-SHA256
+// (10000 iterations) from a user passphrase, prefixed with the 8-byte
+// "Salted__" marker and an 8-byte random salt — the same on-disk layout as
+// `openssl enc -aes-256-cbc -pbkdf2 -salt`.
+
+// sessionFiles are the state-dir files that make up an identity session
+// bundle. Mirror of the legacy do_session collection list.
+var sessionFiles = []string{
+	".client_jwts.json",
+	"jwt",
+	"jwt_last_refresh",
+	".provider.key",
+	".provider.cert",
+	"proxy",
+	"proxy_url.json",
+	"proxy.state",
+}
+
+// sessionRandSalt is a package var so round-trip tests can pin the salt and
+// the derived ciphertext is deterministic (still verifies format + keying).
+var sessionRandSalt = func() ([]byte, error) {
+	s := make([]byte, 8)
+	if _, err := rand.Read(s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// tarAndEncrypt builds the session bundle from an ordered name->bytes map. It
+// gzips a tar of the entries, then AES-256-CBC encrypts it with a key+iv from
+// the passphrase and a fresh salt, returning the openssl-format blob
+// ("Salted__" + salt + ciphertext).
+func tarAndEncrypt(files map[string][]byte, pass string) ([]byte, error) {
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	for _, name := range sessionFiles {
+		data, ok := files[name]
+		if !ok {
+			continue
+		}
+		hdr := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Unix(0, 0)}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+		if _, err := tw.Write(data); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+
+	salt, err := sessionRandSalt()
+	if err != nil {
+		return nil, err
+	}
+	key, err := deriveKeyIV(pass, salt)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key[:32])
+	if err != nil {
+		return nil, err
+	}
+	// PKCS#7 pad to a full block.
+	pt := raw.Bytes()
+	pad := aes.BlockSize - (len(pt) % aes.BlockSize)
+	pt = append(pt, bytes.Repeat([]byte{byte(pad)}, pad)...)
+
+	out := make([]byte, 0, 16+len(pt))
+	out = append(out, []byte("Salted__")...)
+	out = append(out, salt...)
+	ct := make([]byte, len(pt))
+	cipher.NewCBCEncrypter(block, key[32:48]).CryptBlocks(ct, pt)
+	out = append(out, ct...)
+	return out, nil
+}
+
+// deriveKeyIV derives the 48-byte AES-256-CBC key+iv from the passphrase and
+// salt via PBKDF2-HMAC-SHA256 with 10000 iterations, matching an openssl
+// -pbkdf2 run. Returns key[0:32] + iv[0:16] as a 48-byte slice.
+func deriveKeyIV(pass string, salt []byte) ([]byte, error) {
+	return pbkdf2.Key(sha256.New, pass, salt, 10000, 48)
+}
+
+// decryptUntar reverses tarAndEncrypt: it verifies the openssl header, derives
+// the key+iv from the passphrase and the embedded salt, AES-256-CBC decrypts,
+// removes PKCS#7 padding, and expands the gzip tar into a name->bytes map.
+// Returns an error on a wrong passphrase or corrupt bundle (bogus ciphertext
+// fails padding/header, not silently).
+func decryptUntar(bundle, pass string) (map[string][]byte, error) {
+	raw := []byte(bundle)
+	if len(raw) < 16 || string(raw[:8]) != "Salted__" {
+		return nil, errors.New("not an openssl 'Salted__' session bundle")
+	}
+	salt := raw[8:16]
+	ct := raw[16:]
+	if len(ct) == 0 || len(ct)%aes.BlockSize != 0 {
+		return nil, errors.New("corrupt bundle: bad ciphertext length")
+	}
+	key, err := deriveKeyIV(pass, salt)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key[:32])
+	if err != nil {
+		return nil, err
+	}
+	pt := make([]byte, len(ct))
+	cipher.NewCBCDecrypter(block, key[32:48]).CryptBlocks(pt, ct)
+	// Remove PKCS#7 padding (validate the pad byte).
+	if len(pt) == 0 {
+		return nil, errors.New("corrupt bundle: empty plaintext")
+	}
+	pad := int(pt[len(pt)-1])
+	if pad == 0 || pad > aes.BlockSize || pad > len(pt) {
+		return nil, errors.New("invalid passphrase or corrupt bundle (bad padding)")
+	}
+	for _, b := range pt[len(pt)-pad:] {
+		if int(b) != pad {
+			return nil, errors.New("invalid passphrase or corrupt bundle (bad padding)")
+		}
+	}
+	pt = pt[:len(pt)-pad]
+
+	gz, err := gzip.NewReader(bytes.NewReader(pt))
+	if err != nil {
+		return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	files := map[string][]byte{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		files[hdr.Name] = data
+	}
+	return files, nil
+}
+
+// collectSessionFiles reads the identity files that exist under a state dir
+// into a name->bytes map (only present files are included, matching legacy).
+func collectSessionFiles(stateDir string) map[string][]byte {
+	out := map[string][]byte{}
+	for _, name := range sessionFiles {
+		b, err := os.ReadFile(filepath.Join(stateDir, name))
+		if err != nil {
+			continue
+		}
+		out[name] = b
+	}
+	return out
+}
+
+// sessionHasJWT reports whether a decrypted bundle carries a jwt, the
+// identity that load requires before it will stage anything.
+func sessionHasJWT(files map[string][]byte) bool {
+	_, ok := files["jwt"]
+	return ok
+}
+
+// sessionNetworkID extracts the network_id from a bundled jwt ("" if absent
+// or invalid). Used to enforce the same-account rule on load.
+func sessionNetworkID(files map[string][]byte) string {
+	raw, ok := files["jwt"]
+	if !ok {
+		return ""
+	}
+	_, netID, _, err := decodeJWTFromBytes(raw)
+	if err != nil {
+		return ""
+	}
+	return netID
+}
+
+// decodeJWTFromBytes decodes a JWT from a byte slice. Files land as bytes
+// after an untar, whereas the codebase's decodeJWT takes a path; this is the
+// in-memory variant used to read a staged jwt before any file is written.
+// It reuses the same jwtPayload claim struct the codebase already defines.
+func decodeJWTFromBytes(raw []byte) (netName, netID string, exp time.Time, err error) {
+	parts := strings.Split(strings.TrimSpace(string(raw)), ".")
+	if len(parts) != 3 {
+		return "", "", time.Time{}, fmt.Errorf("not a JWT (%d segments)", len(parts))
+	}
+	payload := parts[1]
+	if m := len(payload) % 4; m != 0 {
+		payload += strings.Repeat("=", 4-m)
+	}
+	dec, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("payload decode: %w", err)
+	}
+	var p jwtPayload
+	if err := json.Unmarshal(dec, &p); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("payload json: %w", err)
+	}
+	if p.Exp > 0 {
+		exp = time.Unix(p.Exp, 0)
+	}
+	return p.NetworkName, p.NetworkID, exp, nil
+}
+
+// readPassphrase prints prompt and reads a line from stdin with echo off
+// (x/term), so the passphrase is never echoed. Falls back to a plain line
+// read when the terminal is not usable (e.g. piped stdin).
+func readPassphrase(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	r := bufio.NewReader(os.Stdin)
+	line, err := r.ReadString('\n')
+	return strings.TrimRight(line, "\r\n"), err
+}
+
+// readYesNo prompts for a y/N answer and returns true only on an explicit yes.
+func readYesNo(prompt string) bool {
+	fmt.Fprintf(os.Stderr, "%s ", prompt)
+	r := bufio.NewReader(os.Stdin)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// cmdSession dispatches `urnet-tools session save|load <file> [target]`.
+// It is wired WITHOUT parseGlobalFlags (like auth) so a provider --force/-f on
+// load reaches this command instead of being swallowed by the tool's global
+// parser.
+func cmdSession(args []string) error {
+	if hasHelpFlag(args) {
+		fmt.Fprint(os.Stderr, `urnet-tools session — export/import provider identity + proxy state
+
+Usage: urnet-tools session save <file> [target]
+       urnet-tools session load <file> [target] [-f]
+
+save bundles the provider's identity and proxy state into an encrypted file.
+load restores a bundle, backing up the current state first. The loaded session
+must match the same URnetwork account unless -f is given. A restart is prompted
+after load to apply the session.
+`)
+		return nil
+	}
+	if len(args) == 0 {
+		return errors.New("session requires an action: save <file> | load <file>")
+	}
+	action := args[0]
+	force := false
+	var rest []string
+	for _, a := range args[1:] {
+		if a == "-f" || a == "--force" {
+			force = true
+			continue
+		}
+
+		rest = append(rest, a)
+	}
+	if len(rest) < 1 {
+		return fmt.Errorf("session %s requires a file path", action)
+	}
+	file := rest[0]
+	t, targetRest, err := parseTargetFlags(rest[1:])
+	if err != nil {
+		return err
+	}
+	if len(targetRest) > 0 {
+		return fmt.Errorf("session takes no extra arguments (got %v)", targetRest)
+	}
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	switch action {
+	case "save":
+		return cmdSessionSave(p, file)
+	case "load":
+		return cmdSessionLoad(p, file, force)
+	default:
+		return fmt.Errorf("session action must be 'save' or 'load' (got %q)", action)
+	}
+}
+
+// cmdSessionSave encrypts the provider's identity files into outFile.
+func cmdSessionSave(p Provider, outFile string) error {
+	fmt.Fprintln(os.Stderr, "WARNING: this bundle contains full identity and reputation credentials for this provider. Treat it like a password.")
+	pass, err := readPassphrase("Enter encryption passphrase (will not echo): ")
+	if err != nil {
+		return err
+	}
+	confirm, err := readPassphrase("Confirm passphrase: ")
+	if err != nil {
+		return err
+	}
+	if pass != confirm {
+		return errors.New("passphrases do not match")
+	}
+	if strings.TrimSpace(pass) == "" {
+		return errors.New("passphrase cannot be empty")
+	}
+	files := collectSessionFiles(p.StateDir)
+	if len(files) == 0 {
+		return fmt.Errorf("no session files found under %s", p.StateDir)
+	}
+	bundle, err := tarAndEncrypt(files, pass)
+	if err != nil {
+		return fmt.Errorf("failed to create session bundle: %v", err)
+	}
+	if err := os.WriteFile(outFile, bundle, 0o600); err != nil {
+		return fmt.Errorf("write %s: %v", outFile, err)
+	}
+	fmt.Printf("Session saved to %s (encrypted)\n", outFile)
+	return nil
+}
+
+// cmdSessionLoad decrypts a session bundle and stages it into the provider's
+// state dir. It enforces the same-account rule (network_id match) unless force
+// is set, backs up the current state, stages the new files, and prompts to
+// restart so the provider picks the session up at its staged-session apply on
+// startup.
+func cmdSessionLoad(p Provider, inFile string, force bool) error {
+	bundle, err := os.ReadFile(inFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("session file %q not found", inFile)
+		}
+		return err
+	}
+	pass, err := readPassphrase("Enter passphrase: ")
+	if err != nil {
+		return err
+	}
+	files, err := decryptUntar(string(bundle), pass)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt session bundle (wrong passphrase or corrupt file): %v", err)
+	}
+	if !sessionHasJWT(files) {
+		return errors.New("session bundle is missing 'jwt', not a valid session bundle")
+	}
+	newID := sessionNetworkID(files)
+	if newID == "" {
+		return errors.New("could not extract network_id from the session bundle's JWT; bundle may be corrupt")
+	}
+
+	currentID := ""
+	if b, err := os.ReadFile(filepath.Join(p.StateDir, "jwt")); err == nil {
+		_, cur, _, _ := decodeJWTFromBytes(b)
+		currentID = cur
+	}
+	if currentID != "" && newID != currentID && !force {
+		return fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (add -f to force)", currentID, newID)
+	}
+
+	// Back up the live state before touching anything (legacy behavior).
+	backupDir := filepath.Join(p.StateDir, ".session-backup-"+time.Now().Format("20060102-150405"))
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range sessionFiles {
+		if b, err := os.ReadFile(filepath.Join(p.StateDir, name)); err == nil {
+			_ = os.WriteFile(filepath.Join(backupDir, name), b, 0o600)
+		}
+	}
+	fmt.Printf("Backed up current session to %s\n", backupDir)
+
+	// Stage the new files; the provider applies .session-staging on its next
+	// start and is told a load is pending via .session-pending.
+	stagingDir := filepath.Join(p.StateDir, ".session-staging")
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range sessionFiles {
+		if data, ok := files[name]; ok {
+			if err := os.WriteFile(filepath.Join(stagingDir, name), data, 0o600); err != nil {
+				return err
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(p.StateDir, ".session-pending"), []byte{}, 0o600); err != nil {
+		return err
+	}
+	fmt.Println("Session staged.")
+
+	if !readYesNo("Restart provider now to apply the loaded session? (Y/n):") {
+		fmt.Println("Session staged. Run 'urnet-tools restart' when ready.")
+		return nil
+	}
+	if p.Unit == "" {
+		fmt.Println("Provider has no owning systemd unit; restart it manually.")
+		return nil
+	}
+	if err := unitCommand(p, "restart"); err != nil {
+		return fmt.Errorf("failed to restart %s: %v (session is staged; run 'urnet-tools restart')", providerLabel(p), err)
+	}
+	fmt.Printf("Restarted %s with the loaded session.\n", providerLabel(p))
+	return nil
+}
