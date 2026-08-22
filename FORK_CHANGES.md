@@ -2873,4 +2873,4 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - CI `go-version` pins floated from `1.26` to `1.27` across all workflows.
 - Docker builder base `golang:1.26-alpine` updated to `golang:1.27-alpine`.
 
-**Status**: Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.
+**Status**: PR #449. Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.
