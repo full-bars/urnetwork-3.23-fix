@@ -453,16 +453,6 @@ func cmdHubUnlink(p Provider, force bool) error {
 	return writeReportURL(p, "off")
 }
 
-// hubHost extracts the lowercase host (no port) from an http(s) URL.
-func hubHost(u string) string {
-	u = strings.TrimPrefix(u, "https://")
-	u = strings.TrimPrefix(u, "http://")
-	if i := strings.IndexByte(u, ':'); i >= 0 {
-		u = u[:i]
-	}
-	return strings.ToLower(u)
-}
-
 // certPEMBlock decodes the first PEM block from a blob (nil if none).
 func certPEMBlock(pemBlob string) (*pem.Block, error) {
 	block, _ := pem.Decode([]byte(pemBlob))

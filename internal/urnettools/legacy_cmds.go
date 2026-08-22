@@ -274,6 +274,14 @@ func cmdHub(args []string, force, dryRun bool) error {
 				} else {
 					return fmt.Errorf("--password requires a value")
 				}
+			} else if rest[i] == "--password-stdin" {
+				// Read the CA password from stdin so it never appears in argv
+				// (visible to every local user via ps) (review LOW).
+				b, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("read --password-stdin: %v", err)
+				}
+				password = strings.TrimRight(string(b), "\r\n")
 			} else {
 				return fmt.Errorf("unknown hub init argument %q", rest[i])
 			}
