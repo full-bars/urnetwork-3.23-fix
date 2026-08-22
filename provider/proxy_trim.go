@@ -96,18 +96,46 @@ type trimRank struct {
 	traffic uint64
 }
 
+// buildTrimGradeResolver returns a per-address A-F grade resolver honoring the
+// same desired-set ownership rule the grade summary uses (paid/file wins over a
+// URL provenance tag when the address is in the desired set; otherwise the URL
+// cache grade applies). This keeps the shed ranking on the real grade for both
+// file and URL-sourced proxies (review finding CRITICAL).
+func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState, desiredSet map[string]*connect.ProxySettings) func(addr string) (float64, bool) {
+	if urlState == nil {
+		urlState = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
+	}
+	return func(addr string) (float64, bool) {
+		if desiredSet != nil {
+			if _, ok := desiredSet[addr]; ok {
+				e := state.Proxies[addr]
+				return e.Score, e.Graded
+			}
+		}
+		if ue, ok := urlState.Cache[addr]; ok {
+			return ue.Score, ue.Graded
+		}
+		e := state.Proxies[addr]
+		return e.Score, e.Graded
+	}
+}
+
 // selectWorstRunningProxies ranks the given running addresses worst-first using
 // the A-F website-reachability grade (ProxyEntry.Score / Graded), health, and
 // per-address traffic, and returns the worst `n` to shed. Ungraded proxies shed
 // before any graded one (they have never proven reachability); among graded,
 // lower reachability score (worse grade) sheds first; traffic is the tiebreak so
 // an earning proxy is shed last.
-func selectWorstRunningProxies(state map[string]ProxyEntry, traffic map[string]uint64, running []string, n int) []string {
+func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr string) (float64, bool), traffic map[string]uint64, running []string, n int) []string {
 	var cands []trimRank
 	for _, addr := range running {
 		e := state[addr]
 		rank := trimRank{addr: addr, health: healthRank(e.Health), grade: -1, traffic: traffic[addr]}
-		if e.Graded {
+		if gradeFor != nil {
+			if score, graded := gradeFor(addr); graded {
+				rank.grade = score
+			}
+		} else if e.Graded {
 			rank.grade = e.Score
 		}
 		cands = append(cands, rank)
@@ -213,7 +241,9 @@ func proxyTrim(opts docopt.Opts) {
 
 	if preview {
 		if len(running) > count {
-			shed := selectWorstRunningProxies(state.Proxies, traffic, running, len(running)-count)
+			urlState, _ := readProxyURLState()
+			gradeFor := buildTrimGradeResolver(state, urlState, nil)
+			shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
 			fmt.Printf("preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
 			for _, addr := range shed {
 				fmt.Printf("  %s\n", addr)
