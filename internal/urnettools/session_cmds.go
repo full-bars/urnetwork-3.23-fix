@@ -370,11 +370,63 @@ func cmdSessionSave(p Provider, outFile string) error {
 	return nil
 }
 
+// stageSessionFiles validates the same-account rule, backs up the live state,
+// stages the new files, and marks the load pending. Extracted from
+// cmdSessionLoad so the load safety logic is directly unit-testable with a
+// temp state dir and in-memory files (no live provider, no interactive prompt).
+func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string, error) {
+	newID := sessionNetworkID(files)
+	if newID == "" {
+		return "", errors.New("could not extract network_id from the session bundle's JWT; bundle may be corrupt")
+	}
+	currentID := ""
+	if b, err := os.ReadFile(filepath.Join(p.StateDir, "jwt")); err == nil {
+		_, cur, _, _ := decodeJWTFromBytes(b)
+		currentID = cur
+	}
+	if currentID != "" && newID != currentID && !force {
+		return "", fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (add -f to force)", currentID, newID)
+	}
+
+	// Back up the live state before touching anything. Nanosecond suffix avoids
+	// two rapid loads colliding over one backup dir (review finding).
+	backupDir := filepath.Join(p.StateDir, ".session-backup-"+time.Now().Format("20060102-150405.000000000"))
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", err
+	}
+	for _, name := range sessionFiles {
+		if b, err := os.ReadFile(filepath.Join(p.StateDir, name)); err == nil {
+			if err := os.WriteFile(filepath.Join(backupDir, name), b, 0o600); err != nil {
+				return "", fmt.Errorf("backup %s: %v", name, err)
+			}
+		}
+	}
+
+	// Stage the new files; the provider applies .session-staging on its next
+	// start and is told a load is pending via .session-pending.
+	stagingDir := filepath.Join(p.StateDir, ".session-staging")
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return "", err
+	}
+	for _, name := range sessionFiles {
+		if data, ok := files[name]; ok {
+			if err := os.WriteFile(filepath.Join(stagingDir, name), data, 0o600); err != nil {
+				return "", err
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(p.StateDir, ".session-pending"), []byte{}, 0o600); err != nil {
+		return "", err
+	}
+	return backupDir, nil
+}
+
 // cmdSessionLoad decrypts a session bundle and stages it into the provider's
-// state dir. It enforces the same-account rule (network_id match) unless force
-// is set, backs up the current state, stages the new files, and prompts to
-// restart so the provider picks the session up at its staged-session apply on
-// startup.
+// state dir via stageSessionFiles, then prompts to restart so the provider
+// picks the session up at its staged-session apply on startup.
 func cmdSessionLoad(p Provider, inFile string, force bool) error {
 	bundle, err := os.ReadFile(inFile)
 	if err != nil {
@@ -394,51 +446,11 @@ func cmdSessionLoad(p Provider, inFile string, force bool) error {
 	if !sessionHasJWT(files) {
 		return errors.New("session bundle is missing 'jwt', not a valid session bundle")
 	}
-	newID := sessionNetworkID(files)
-	if newID == "" {
-		return errors.New("could not extract network_id from the session bundle's JWT; bundle may be corrupt")
-	}
-
-	currentID := ""
-	if b, err := os.ReadFile(filepath.Join(p.StateDir, "jwt")); err == nil {
-		_, cur, _, _ := decodeJWTFromBytes(b)
-		currentID = cur
-	}
-	if currentID != "" && newID != currentID && !force {
-		return fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (add -f to force)", currentID, newID)
-	}
-
-	// Back up the live state before touching anything (legacy behavior).
-	backupDir := filepath.Join(p.StateDir, ".session-backup-"+time.Now().Format("20060102-150405"))
-	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+	backupDir, err := stageSessionFiles(p, files, force)
+	if err != nil {
 		return err
-	}
-	for _, name := range sessionFiles {
-		if b, err := os.ReadFile(filepath.Join(p.StateDir, name)); err == nil {
-			_ = os.WriteFile(filepath.Join(backupDir, name), b, 0o600)
-		}
 	}
 	fmt.Printf("Backed up current session to %s\n", backupDir)
-
-	// Stage the new files; the provider applies .session-staging on its next
-	// start and is told a load is pending via .session-pending.
-	stagingDir := filepath.Join(p.StateDir, ".session-staging")
-	if err := os.RemoveAll(stagingDir); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
-		return err
-	}
-	for _, name := range sessionFiles {
-		if data, ok := files[name]; ok {
-			if err := os.WriteFile(filepath.Join(stagingDir, name), data, 0o600); err != nil {
-				return err
-			}
-		}
-	}
-	if err := os.WriteFile(filepath.Join(p.StateDir, ".session-pending"), []byte{}, 0o600); err != nil {
-		return err
-	}
 	fmt.Println("Session staged.")
 
 	if !readYesNo("Restart provider now to apply the loaded session? (Y/n):") {
