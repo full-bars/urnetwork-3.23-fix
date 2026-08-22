@@ -69,7 +69,7 @@ Core Commands:
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
   report <url> [target]   set hub report URL inside container (no restart)
-  update                  update urnet-docker binary on host
+  update [--unit <name>]    update host binary, or a container's provider in place (no recreate)
   version                 print tool version
 
 Proxy Management [target]:
@@ -279,6 +279,63 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 	return args[:split], args[split:], nil
 }
 
+// cmdDockerUpdate updates the urnet-docker binary on the host (no target) or
+// the provider inside a running container in place (with a target), without
+// recreating the container. The in-container path runs the container's own
+// urnet-tools self-update via docker exec.
+func cmdDockerUpdate(args []string, force, dryRun bool) error {
+	// In-container update requires an explicit target flag (--unit/--user/
+	// --network/--network-id/--state-dir). Without one, `update`/`-f`/a bare
+	// positional/unknown flag all fall through to the host self-update so its
+	// own help and unknown-flag errors surface unchanged. Gating on a target
+	// flag avoids treating a self-update argument as a container target.
+	if !hasAnyTargetFlag(args) {
+		return cmdSelfUpdate(args, force, dryRun)
+	}
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("unexpected argument(s) after update target: %v", rest)
+	}
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if !p.Running {
+		return fmt.Errorf("container %s is not running; start it before updating in place", p.Unit)
+	}
+	ok, err := confirmGate("update provider inside container "+p.Unit+" in place (no recreate)", p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run or declined
+	}
+	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
+	return containerExecByName(p.Unit, "urnet-tools", "update")
+}
+
+// hasAnyTargetFlag reports whether args contain an explicit targeting flag, in
+// either the bare (`--unit x`) or the `--flag=value` form. Without this, the
+// `--flag=value` form would miss the in-container gate and fall through to the
+// host self-update (Sonnet HIGH on #453).
+func hasAnyTargetFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--unit" || a == "--user" || a == "--network" || a == "--network-id" || a == "--state-dir" {
+			return true
+		}
+		if strings.HasPrefix(a, "--unit=") || strings.HasPrefix(a, "--user=") ||
+			strings.HasPrefix(a, "--network=") || strings.HasPrefix(a, "--network-id=") ||
+			strings.HasPrefix(a, "--state-dir=") {
+			return true
+		}
+	}
+	return false
+}
+
 // cmdDockerStart starts a stopped container (confirm gate applies).
 func cmdDockerStart(args []string, force, dryRun bool) error {
 	providers := DiscoverDocker()
@@ -394,10 +451,13 @@ func cmdDockerAuth(args []string) error {
 // cmdDockerChooseNetwork delegates choose_network into the container.
 func cmdDockerChooseNetwork(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags (e.g. --reset) survive and are
+	// forwarded to the container command (regression fix).
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
