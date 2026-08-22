@@ -118,7 +118,7 @@ func TestRestoredHelpRouting(t *testing.T) {
 func TestCmdFastAuthTargetFlagBeforeAction(t *testing.T) {
 	// No such unit exists, so selectTarget must fail — but NOT with the
 	// "takes on|off|status only" ordering error.
-	err := cmdFastAuth([]string{"--unit", "definitely-no-such-unit", "off"}, false)
+	err := cmdFastAuth([]string{"--unit", "definitely-no-such-unit", "off"}, false, false)
 	if err == nil {
 		t.Fatal("expected an error (unit does not exist)")
 	}

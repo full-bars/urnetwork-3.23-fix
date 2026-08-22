@@ -243,8 +243,7 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
-		_ = force
-		return cmdFastAuth(rest2, dryRun)
+		return cmdFastAuth(rest2, force, dryRun)
 	case "set":
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
@@ -253,8 +252,7 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
-		_ = force
-		return cmdSet(rest2, dryRun)
+		return cmdSet(rest2, force, dryRun)
 	case "help", "-h", "--help":
 		usage()
 		return nil
