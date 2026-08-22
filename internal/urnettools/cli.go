@@ -232,6 +232,11 @@ func Run(args []string) error {
 			return err
 		}
 		return cmdReinstall(rest2, force, dryRun)
+	case "session":
+		// session parses its own flags (cmdSession handles -f/--force and
+		// help itself) because it needs the raw arg list to tell the file
+		// positional from an -f flag; it has no -n/--dry-run semantics.
+		return cmdSession(rest)
 	case "auth":
 		// auth and choose-network must NOT run parseGlobalFlags: the
 		// provider binary's own -f (force-overwrite JWT) has to reach the
@@ -475,6 +480,7 @@ Hub Management [target]:
 
 Maintenance [target]:
   reinstall                reinstall provider
+  session save <file> | load <file> [-f] [target]   export/import encrypted identity+proxy state
   uninstall                uninstall provider
   auto-update <on|off>     manage auto-update schedule
   auto-start <on|off>      toggle auto-start on login
