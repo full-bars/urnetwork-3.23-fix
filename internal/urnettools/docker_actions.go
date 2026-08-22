@@ -5,12 +5,46 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // containerExecByName runs a command inside a container by name/id.
 func containerExecByName(name string, args ...string) error {
 	full := append([]string{"exec", name}, args...)
 	cmd := exec.Command(dockerCLI(), full...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// containerInteractiveExecByName runs an interactive command inside a container
+// with stdin attached (e.g. for auth paste or session passphrase prompt).
+func containerInteractiveExecByName(name string, args ...string) error {
+	flags := []string{"exec", "-i"}
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		flags = []string{"exec", "-it"}
+	}
+	full := append(flags, name)
+	full = append(full, args...)
+	cmd := exec.Command(dockerCLI(), full...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// containerStartByName starts a container by name/id.
+func containerStartByName(name string) error {
+	cmd := exec.Command(dockerCLI(), "start", name)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// containerStopByName stops a container by name/id.
+func containerStopByName(name string) error {
+	cmd := exec.Command(dockerCLI(), "stop", name)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

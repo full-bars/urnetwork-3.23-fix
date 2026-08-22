@@ -330,7 +330,7 @@ case "$operation" in
         case "$subcmd" in
             health)  [ -x /usr/local/bin/proxy-health ] && exec /usr/local/bin/proxy-health || { echo "proxy-health not found"; exit 1; } ;;
             traffic) [ -x /usr/local/bin/proxy-traffic ] && exec /usr/local/bin/proxy-traffic || { echo "proxy-traffic not found"; exit 1; } ;;
-            add|refresh|remove-dead|remove|exclude|summary|add-source|remove-source)
+            add|refresh|remove-dead|remove|exclude|summary|add-source|remove-source|trim)
                 [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
                 exec /usr/local/bin/provider proxy "$subcmd" "$@"
                 ;;
@@ -343,12 +343,16 @@ case "$operation" in
                 exec /usr/local/bin/provider proxy remove --all
                 ;;
             *)
-                echo "Unknown proxy command: $subcmd (Try 'summary', 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'remove --match=<pat>', 'add-source', 'remove-source', or 'exclude')"
+                echo "Unknown proxy command: $subcmd (Try 'summary', 'health', 'traffic', 'add', 'clear', 'refresh', 'remove-dead', 'trim', 'remove --match=<pat>', 'add-source', 'remove-source', or 'exclude')"
                 exit 1
                 ;;
         esac
         ;;
-    choose_network)
+    auth)
+        [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
+        exec /usr/local/bin/provider auth "$@"
+        ;;
+    choose_network|choose-network)
         [ -x /usr/local/bin/provider ] || { echo "provider binary not found"; exit 1; }
         exec /usr/local/bin/provider choose_network "$@"
         ;;
@@ -384,6 +388,55 @@ case "$operation" in
                 ;;
             *) echo "Usage: urnet-tools self-heal [on|off|status]"; exit 1 ;;
         esac
+        ;;
+    fast-auth|fastauth)
+        file="$HOME/.urnetwork/fast_auth"
+        case "${1:-}" in
+            on) mkdir -p "$HOME/.urnetwork"; printf '%s\n' "on" > "$file"; echo "Fast-auth bypass enabled" ;;
+            off) rm -f "$file"; echo "Fast-auth bypass disabled" ;;
+            status|"")
+                if [ -f "$file" ]; then
+                    echo "fast-auth: on (rate limiter bypassed)"
+                else
+                    echo "fast-auth: off"
+                fi
+                ;;
+            *) echo "Usage: urnet-tools fast-auth <on|off|status>"; exit 1 ;;
+        esac
+        ;;
+    set)
+        key="${1:-}"
+        val="${2:-}"
+        state_dir="$HOME/.urnetwork"
+        case "$key" in
+            ""|help|-h|--help)
+                echo "Usage: urnet-tools set <key> [<value>|off]"
+                echo "Keys: node-name, report-interval, proxy-url-max, proxy-url-refresh, cleanup-scope, cleanup-interval, fast-auth"
+                ;;
+            *)
+                if [ -z "$val" ]; then
+                    f="$state_dir/$key"
+                    [ -f "$f" ] && echo "$key: $(cat "$f")" || echo "$key: (unset)"
+                elif [ "$val" = "off" ]; then
+                    rm -f "$state_dir/$key"
+                    echo "Cleared override for $key"
+                else
+                    mkdir -p "$state_dir"
+                    printf '%s\n' "$val" > "$state_dir/$key"
+                    echo "Set $key = $val"
+                fi
+                ;;
+        esac
+        ;;
+    report)
+        url="${1:-}"
+        if [ -z "$url" ]; then
+            echo "Usage: urnet-tools report <url>"
+            exit 1
+        fi
+        mkdir -p "$HOME/.urnetwork"
+        printf '%s\n' "$url" > "$HOME/.urnetwork/report_url"
+        echo "Report URL set to $url"
         ;;
     -v|version)
         [ -x /usr/local/bin/provider ] && exec /usr/local/bin/provider -v || { echo "provider binary not found"; exit 1; }
