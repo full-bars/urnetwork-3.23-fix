@@ -1,6 +1,6 @@
 # urnet-tools (Go) — Provider-Aware Fleet Ops
 
-> Applies to v3.23.0-fix.27.0+. The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are unchanged; what changed is **how the tool decides which provider it operates on**.
+> Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.30.4). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
 
 ## Why this exists
 
@@ -15,109 +15,210 @@ The legacy `urnet-tools` resolved its target from a hardcoded path (`$HOME/.loca
 
 Both are cross-compiled from one Go source — the shell↔PowerShell drift is gone.
 
-## Provider discovery — not path guessing
+---
 
-`urnet-tools providers` inventories every provider on the box:
+## 📋 Complete Command Reference
 
-```
-UNIT                       USER   NETWORK           STATE-DIR
-urnetwork-native.service   urnet  tacogonzalez3000  /home/urnet/.urnetwork
-urnetwork-beta.service     urnetwork-beta beta-test /home/urnetwork-beta/.urnetwork
-```
+### Core & Lifecycle Commands
 
-- Discovery = process scan (`/proc`) + systemd unit enumeration. No hardcoded paths.
-- **Identity is JWT-derived**: `network_name` / `network_id` come from decoding each provider's JWT. Paths are only used to locate state, never to decide "which provider."
-
-## Targeting
-
-| Flag | Selects by |
+| Command | What it does |
 |---|---|
-| `--unit <name>` | systemd unit name (system or user) |
-| `--user <user>` | the OS user running the provider |
-| `--network <name>` | JWT network name (the account) |
-| `--network-id <id>` | JWT network ID — for duplicate network names |
-| `--state-dir <path>` | explicit state directory |
+| `providers` (`list`, `ps`) | List all providers on the box with JWT identities, systemd units, and state directories. |
+| `status [target]` | Show detailed status. On Linux, displays live `systemctl status` view; on Windows/macOS, renders styled panel. |
+| `start [target]` | Start provider service/process. |
+| `stop [target]` | Stop provider service/process. |
+| `restart [target]` | Restart provider service/process. |
+| `hot-restart [target]` | Restart provider unit behind confirm gate (`-f` skips prompt). |
+| `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
+| `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
+| `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
+| `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
+| `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. |
+| `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
-Rules:
-- **Multi-provider box + no target = REFUSAL.** The command errors and prints the inventory. It never picks for you.
-- **Single provider + no target = proceed** (after echoing the target).
-- **Conflicting selectors** (`--unit x --network y`) = error.
-- **`-f` / `--force` only skips the confirm prompt. It never picks a provider.** `-f` alone on a multi-provider box is still refused; `-f --all` or `-f --include a,b` is the explicit everything-bypass.
-- `--help` always prints help and never executes anything (the legacy `--help`-executes-clear bug class is gone).
+### Restored Provider & Session Commands (v3.23.0-fix.30.4+)
 
-## Destructive ops
-
-`proxy clear`, `proxy remove --all`, `uninstall` print the target + effect, then require a typed `yes` confirmation. `-f`/`--yes` bypasses the prompt for scripts/cron — but the audit trail (the target listing) is always printed to stderr, even under `-f`.
-
-## Safety properties
-
-- **Mandatory digest verification** on `update`: the release tarball is SHA-256 verified against the release API's published digest. A missing digest refuses the update. `--tag` resolves the digest automatically.
-- **Private per-update staging dir** (0700 `MkdirTemp`): a local user can't pre-create the stage path and swap the tarball between verify and extract.
-- **Atomic binary swap**: `dst.new` + rename — never O_TRUNC on a running executable.
-- **Hub install sanity check** reads ELF magic bytes — it never executes the freshly downloaded binary.
-- **`--help` never executes**; dry-run (`-n`) prints the plan and does nothing, including for `start`/`stop`.
-- Temp JWT scratch files are always removed.
-
-## `report` and `hot-restart` (v3.23.0-fix.29.0+)
-
-Two commands are NOT delegations to the provider binary — they are implemented
-in the Go tool itself (the provider has no `report`/`hot-restart` subcommands):
-
-- **`urnet-tools report <url> [target]`** writes `~/.urnetwork/report_url` in
-  the provider's state dir. The provider's bandwidth reporter re-reads that
-  file every tick, so the change takes effect without a restart. `report off`
-  disables reporting. The file is written 0644 so a provider running as a
-  different user than the tool (e.g. root tool + `urnetwork-beta` service)
-  can read it.
-- **`urnet-tools hot-restart [target]`** restarts the provider's systemd unit
-  behind the same typed-`yes` confirmation gate as `proxy remove`/`clear`.
-  `-f`/`--force` skips the prompt; `-n`/`--dry-run` prints the plan.
-
-## Proxy URL sources (v3.23.0-fix.29.0+)
-
-`proxy add-source <url>` and `proxy remove-source <url>` manage URL proxy
-sources (single target required — a source is per-provider). `add-source`
-fetches + probes the list immediately; `remove-source` drops the source and
-notes that previously-fetched proxies keep running until pruned by
-`remove-dead`.
-
-## `proxy refresh --force` (v3.23.0-fix.29.0+)
-
-`refresh --force` now actually forwards `--force` to the provider, bypassing
-the warmup gate (a provider needs 8-12h uptime before a plain refresh; the
-gate refused even with `--force` in earlier builds).
-
-## Version (v3.23.0-fix.29.0+)
-
-`urnet-tools version` / `--version` / `-v` print the stamped tool version
-(from the release build). Useful for confirming which release asset a box
-is running.
-
-## Migrating scripts
-
-- All 25 legacy subcommands dispatch identically. Single-provider boxes: nothing changes.
-- Multi-provider boxes: scripts that previously relied on the tool silently targeting "whatever the calling user owns" must now pass a target. The tool will tell you — it refuses and prints the inventory.
-
-## `optimize` is platform-aware
-
-- **Linux**: socket buffers + FD limit, plus the ephemeral-port pool (`net.ipv4.ip_local_port_range`) and TIME_WAIT recycling (`net.ipv4.tcp_fin_timeout`).
-- **Windows**: `netsh` dynamic port pool + `TcpTimedWaitDelay` registry equivalent.
-
-## Getting the tool
-
-Three supported paths (v3.23.0-fix.28+):
-
-| Deployment | How the tool is installed |
+| Command | What it does |
 |---|---|
-| systemd / native provider | `Provider_Install_Linux.sh` now installs the Go `urnet-tools` binary (sha256-verified against the release API). Fresh installs and `update` both hand off to the Go tool — the shell script is only a fallback for releases that predate the Go asset. |
-| docker-only providers | Run the standalone host-side installer: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh \| sh` — installs `urnet-docker` to `/usr/local/bin` (or `~/.local/bin` when not root), sha256-verified. Same script can install `urnet-tools` with `sh -s -- urnet-tools`. |
-| macOS | `Provider_Install_Mac.sh` installs the Go `urnet-tools-darwin-<arch>` binary (sha256-verified via `shasum`), falling back to the legacy wrapper. |
+| `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
+| `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
+| `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
+| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`). Confirm-gated. |
+| `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
+| `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
+| `self-heal [on\|off\|status] [target]` | Toggle or query resource-pressure self-healing monitor (`~/.urnetwork/proxy_self_heal`). |
+| `default [set <target> \| show \| clear]` | Persist, inspect, or clear default provider target for current user in `os.UserConfigDir()/urnet-tools/default`. |
 
-The Go tool is self-updating: `urnet-tools update` refreshes providers **and** its own binary; `urnet-docker update` / `urnet-tools self-update` refresh only the tool. Release assets are named `urnet-tools-<os>-<arch>` and `urnet-docker-<os>-<arch>` (e.g. `urnet-tools-linux-amd64`), attached to every release.
+### Proxy Management Commands
 
-## Migration status
+| Command | What it does |
+|---|---|
+| `proxy add <file> [target]` | Merge proxies from text file (`host:port[:user:pass]`). |
+| `proxy clear [target]` | Remove all proxies and URL sources. Confirm-gated (`-f` bypasses prompt). |
+| `proxy remove [addresses...] [target]` | Remove specific proxies or patterns. Use `--match=<pattern>` for host substring matches, or `--all` for complete wipe. |
+| `proxy trim <N> [target] [--preview]` | **(New in 30.4)** Set persistent hard cap of `<N>` running proxies. Sheds worst A-F reachability graded proxies first. `proxy trim off` clears the cap. |
+| `proxy refresh [target] [--force]` | Reload proxy list into running provider without restarting. `--force` bypasses warmup lockout. |
+| `proxy add-source <url> [target]` | Add live URL proxy source. Fetched and probed immediately. |
+| `proxy remove-source <url> [target]` | Remove URL proxy source. |
+| `proxy exclude [pattern] [--remove] [target]` | Manage persistent proxy exclusion list. |
+| `proxy health [target]` | Display live health state (Up, Down, Dead, Degraded). |
+| `proxy traffic [target]` | Display bandwidth, billable traffic, and active NAT sessions per proxy. |
+| `proxy remove-dead [target]` | Interactively prune dead and degraded proxies. Honors `--dry-run`. |
+| `proxy summary [target]` | Fleet-style summary of proxy counts by source (url, file, internal). |
 
-- ✅ Phase 1: tool subcommands in Go. Installer (`Provider_Install_Linux.sh`) stays shell.
-- ✅ Tool distribution: Go binaries shipped as release assets; installers fetch them digest-verified; tool self-updates via `update`/`self-update`.
-- 🔜 Phase 2: retire `urnet-tools.ps1` and the docker shell variant.
-- 🔜 Phase 3: installer logic in Go.
+### Hub Command Family (v3.23.0-fix.30.4+)
+
+| Command | What it does |
+|---|---|
+| `hub init` | Initialize and configure the bandwidth hub service on this machine. Prompts for password (min 8 chars) or reads from stdin. |
+| `hub link <url>` | Pair provider with a remote bandwidth hub. Verifies TLS CA or SHA-256 certificate fingerprint (TOFU security). Confirm-gated on identity change. |
+| `hub unlink` | Unlink provider from bandwidth hub. |
+| `hub test` | Test reachability and TLS certificate chain validation to the configured hub. |
+| `hub onboard-cmd` | Generate one-line onboarding command with URL-escaped tokens for remote providers. |
+| `hub show-password` | Display current hub admin access password. |
+| `hub open-port` | Configure firewall rules (ufw/iptables/firewalld) to open hub listener port. Confirm-gated. |
+| `hub update` | Update bandwidth hub binary to latest release. |
+| `hub set <url>` | Set raw reporting endpoint URL in `~/.urnetwork/report_url`. |
+| `hub off` | Disable hub reporting by clearing `report_url`. |
+| `hub install` | Install bandwidth hub binary and systemd service. |
+
+### System & Performance Tuning
+
+| Command | What it does |
+|---|---|
+| `auto [on\|off]` | Enable or disable Smart Auto hardware profile. |
+| `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. |
+| `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
+| `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
+| `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
+| `report <url>` | Set live bandwidth hub reporting URL (`report off` disables). |
+
+---
+
+## 🎯 Targeting & Selectors
+
+The tool accepts selectors in both space-separated and equals-separated format (`--flag value` or `--flag=value`):
+
+| Flag | Selects by | Example |
+|---|---|---|
+| `--unit <name>` or `--unit=<name>` | systemd unit name (system or user) | `--unit=urnetwork-native.service` |
+| `--user <user>` or `--user=<user>` | OS user running the provider | `--user=urnet` |
+| `--network <name>` or `--network=<name>` | JWT network name (account) | `--network=alpha-fleet` |
+| `--network-id <id>` or `--network-id=<id>` | JWT network ID (for identical network names) | `--network-id=net_94f8a...` |
+| `--state-dir <path>` or `--state-dir=<path>` | Explicit state directory | `--state-dir=/home/urnet/.urnetwork` |
+
+### Targeting Rules
+1. **Multi-provider box + no target = REFUSAL.** The tool errors and displays an inventory table of available providers. It never guesses.
+2. **Single provider + no target = AUTO-SELECT.** Proceeds after echoing the selected target.
+3. **Persisted Default Provider:** If configured via `urnet-tools default set <target>`, the tool uses this target when no flag is passed, printing a visible notice to stderr.
+4. **Explicit flags and `--all` override default:** `--unit`, `--user`, `--network`, etc., take precedence over persisted defaults.
+5. **Conflicting selectors** (e.g. `--unit foo --network bar` pointing to different instances) = ERROR.
+6. **`-f` / `--force` only skips confirmation prompts:** It **never** selects a provider. To target all providers with force, use `-f --all`.
+7. **`--help` always prints help** and never executes actions.
+
+---
+
+## 🔧 Deep-Dive: Key Restored & New Features
+
+### 1. Persistent Proxy Trim (`proxy trim <N>`)
+
+`urnet-tools proxy trim <count>` sets a persistent hard cap on the number of running proxies:
+
+```bash
+# Preview what proxies would be shed without making changes
+urnet-tools proxy trim 500 --preview
+
+# Set running proxy cap to 500
+urnet-tools proxy trim 500
+
+# Remove the cap
+urnet-tools proxy trim off
+```
+
+- **A-F Grade Ranking:** Sheds worst-graded proxies first using the provider's website-reachability probe scores (`dead` → `never-graded` → `F` → `D` → `C` → `B` → `A`).
+- **Traffic Tiebreaker:** Proxies with active billable bandwidth are shed last within their grade tier, preserving active earning connections.
+- **Persistence:** Stored at `~/.urnetwork/proxy_trim`, surviving provider restarts and reloads.
+- **AIMD Integration:** Clamps the AIMD pool controller `TargetPoolSize` so automated pressure management works within the hard cap.
+
+### 2. Session Save and Load
+
+Securely backup, migrate, or clone provider identities:
+
+```bash
+# Save encrypted identity bundle (AES-256-CBC, prompts for password)
+urnet-tools session save /path/to/backup.urnsession
+
+# Load identity bundle (automatically backs up existing state directory first)
+urnet-tools session load /path/to/backup.urnsession
+
+# Load onto a host with a different account identifier
+urnet-tools session load /path/to/backup.urnsession --allow-different-account
+```
+
+- **Pre-Load Safety Backup:** Automatically creates a timestamped copy of `~/.urnetwork/` (e.g. `~/.urnetwork.bak.1724288000`) before modifying live files.
+- **Permission Hardening:** Unpacks files with `0700` directory permissions and `0600` file permissions, automatically chowning them to the unit owner when run with elevated privileges.
+
+### 3. Hub Setup and Verification
+
+Full lifecycle management for centralized bandwidth reporting:
+
+```bash
+# Initialize hub service on the server
+urnet-tools hub init
+
+# Link a provider to the hub with TOFU TLS verification
+urnet-tools hub link https://hub.example.com:8080
+
+# Verify certificate chain and reachability
+urnet-tools hub test
+
+# Open firewall ports for hub traffic
+urnet-tools hub open-port
+```
+
+- **TLS Pinning:** Verifies TLS against `hub_ca.pem` or pinned SHA-256 public key fingerprints.
+- **Identity Safety:** Prompts with typed confirmation if linking would overwrite existing provider hub registration.
+
+### 4. Persisted Default Provider
+
+Avoid passing `--unit` or `--network` on every invocation:
+
+```bash
+# Set default provider by unit name
+urnet-tools default set --unit urnetwork.service
+
+# View current default
+urnet-tools default show
+
+# Clear default
+urnet-tools default clear
+```
+
+---
+
+## 🔒 Safety & Security Guarantees
+
+- **Mandatory Digest Verification:** `update` verifies downloads against release API SHA-256 checksums.
+- **Isolated Staging:** Temporary files created in private `0700` directories.
+- **Atomic Binary Replacement:** New executables staged as temporary files and renamed into place, preventing truncation of running binaries.
+- **Privilege Separation:** Delegated commands automatically drop root privileges to the provider's UID/GID.
+
+---
+
+## 📦 Getting the Tool
+
+Install via the download domain:
+
+```bash
+# Docker host tool (urnet-docker)
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+
+# Process/systemd tool (urnet-tools)
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools
+```
+
+Fallback to GitHub raw sources if the download domain is unavailable:
+
+```bash
+curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+```
