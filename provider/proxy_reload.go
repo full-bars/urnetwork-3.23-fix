@@ -387,6 +387,76 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 
+	// Operator trim cap (provider proxy trim <N>): hold the running pool at N.
+	// Shed the A-F-worst running proxies above N (folded into removed so they are
+	// cancelled), and drop the worst-graded not-yet-running additions above the
+	// budget so the pool cannot regrow above the cap until it is raised.
+	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 {
+		traffic := runningProxyTraffic()
+		// Read the URL cache here: the urlState read earlier is scoped to its own
+		// if/else and is not visible in this hook.
+		trimURLState, _ := readProxyURLState()
+		gradeFor := buildTrimGradeResolver(r.state, trimURLState)
+		// Union count of everything about to be cancelled, so the addition
+		// budget is not under-sized by double-counting (review MEDIUM).
+		removedSet := make(map[string]bool, len(removed))
+		for _, a := range removed {
+			removedSet[a] = true
+		}
+		shedCount := 0
+		if len(running) > trimCap {
+			rlist := make([]string, 0, len(running))
+			for a := range running {
+				if !removedSet[a] {
+					rlist = append(rlist, a)
+				}
+			}
+			for _, addr := range selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, rlist, len(running)-trimCap) {
+				if _, ok := running[addr]; ok && !removedSet[addr] {
+					removed = append(removed, addr)
+					removedSet[addr] = true
+					shedCount++
+					// Do NOT delete from desiredSet: pruning against a trim-mutated
+					// set erases grade/health history (review HIGH). Mark a short
+					// give-up backoff instead so the launch gate keeps it down and
+					// it does not relaunch next cycle.
+					globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(shedBackoff))
+				}
+			}
+		}
+		budget := trimCap - (len(running) - len(removedSet))
+		if budget < 0 {
+			budget = 0
+		}
+		dropped := 0
+		if len(added) > budget {
+			alist := make([]string, 0, len(added))
+			for _, s := range added {
+				alist = append(alist, s.Address)
+			}
+			drop := selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, alist, len(added)-budget)
+			dropSet := make(map[string]bool, len(drop))
+			for _, a := range drop {
+				dropSet[a] = true
+			}
+			kept := added[:0]
+			for _, s := range added {
+				if dropSet[s.Address] {
+					// Deferred, not undesired: leave it in desiredSet so the
+					// prune pass keeps this proxy's grade/health history.
+					// It re-enters the budget next cycle.
+					dropped++
+					continue
+				}
+				kept = append(kept, s)
+			}
+			added = kept
+		}
+		if shedCount > 0 || dropped > 0 {
+			tlog("[proxy][trim] cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\\n", trimCap, shedCount, dropped, len(running)-shedCount)
+		}
+	}
+
 	// Remove proxies: cancel immediately if idle, or drain gracefully if active.
 	for _, addr := range removed {
 		if r.isDraining(addr) {
