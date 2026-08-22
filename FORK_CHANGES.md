@@ -2866,7 +2866,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Purpose**: Move the compiler from Go 1.26.4 to 1.27.0.
 
-**Files Modified**: `go.mod`, all `.github/workflows/*.yml` (`go-version` pins), `Dockerfile` (builder base), `README.md`, `docs/Project-Structure.md`.
+**Files Modified**: `go.mod`, all `.github/workflows/*.yml` (`go-version` pins), `Dockerfile`, `hub/Dockerfile` (builder bases), `README.md`, `docs/Project-Structure.md`.
 
 **Change**:
 - `go.mod` `go` directive changed from `1.26.4` to `1.27.0`.
