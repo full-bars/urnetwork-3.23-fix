@@ -60,8 +60,9 @@ func TestRunDockerProxyBareExitsZero(t *testing.T) {
 			t.Fatalf("RunDocker([proxy]) = %v, want nil (exit 0)", err)
 		}
 	})
-	if !strings.Contains(out, "proxy requires a subcommand") {
-		t.Errorf("RunDocker([proxy]) stderr = %q, want subcommand list", out)
+	// Bare `proxy` prints the full docker usage (pre-cobra behavior) and exits 0.
+	if !strings.Contains(out, "urnet-docker") || !strings.Contains(strings.ToLower(out), "proxy") {
+		t.Errorf("RunDocker([proxy]) stderr = %q, want docker usage", out)
 	}
 }
 
@@ -71,6 +72,22 @@ func TestCobraUnknownCommandErrors(t *testing.T) {
 	for _, args := range [][]string{{"nonesuch"}, {"definitly-not-a-cmd"}} {
 		if err := Run(args); err == nil {
 			t.Errorf("Run(%v) = nil, want unknown-command error", args)
+		}
+	}
+}
+
+// TestRunVersionWithTrailingArg: `-v`/`--version`/`version` with trailing args
+// still print the version, matching the pre-cobra dispatcher (which matched on
+// args[0] only) - Sonnet/Muse review finding.
+func TestRunVersionWithTrailingArg(t *testing.T) {
+	for _, arg := range []string{"-v", "--version", "version"} {
+		out := captureStdout(t, func() {
+			if err := Run([]string{arg, "junk"}); err != nil {
+				t.Errorf("Run([%s junk]) = %v, want nil", arg, err)
+			}
+		})
+		if strings.TrimSpace(out) != ToolVersion {
+			t.Errorf("Run([%s junk]) = %q, want %q", arg, strings.TrimSpace(out), ToolVersion)
 		}
 	}
 }
