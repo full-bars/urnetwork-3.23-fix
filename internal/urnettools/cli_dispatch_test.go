@@ -346,10 +346,26 @@ func TestRunDockerUpdateHelp(t *testing.T) {
 					t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "update urnet-docker binary on host") {
+			if !strings.Contains(out, "urnet-docker binary") && !strings.Contains(out, "host binary") {
 				t.Errorf("RunDocker([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
+	}
+}
+
+// TestRunDockerUpdateTargetRoutesToContainer: `update --unit <name>` must take
+// the in-container branch (resolve the container, then exec its urnet-tools
+// update), NOT the host self-update. On a box with no matching container it
+// fails with a target/container error, not a host self-update error.
+func TestRunDockerUpdateTargetRoutesToContainer(t *testing.T) {
+	err := RunDocker([]string{"update", "--unit", "nonexistent-update-test-container"})
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent target container")
+	}
+	// A host self-update error would mention self-update/urnet-docker; the
+	// target path fails with a container/provider resolution error instead.
+	if strings.Contains(err.Error(), "self-update") || strings.Contains(err.Error(), "urnet-docker binary") {
+		t.Fatalf("update --unit routed to host self-update instead of in-container target: %v", err)
 	}
 }
 
