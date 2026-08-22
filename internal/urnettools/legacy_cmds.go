@@ -756,21 +756,35 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
 // network stack equivalents matter for proxy-scale connection churn).
+//
+// NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
+// on the host kernel, not on a specific provider process. Requiring a
+// discovered provider caused `sudo urnet-tools optimize` to fail with "no
+// providers found" because Discover() runs as root and cannot see user-session
+// units owned by the ubuntu user.
 func cmdOptimize(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	// Ignore provider target flags — optimize is host-wide. If unknown flags
+	// are present parseTargetFlags will still error on malformed input.
+	_, remaining, err := parseTargetFlags(args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
-	if err != nil {
-		return err
+	if len(remaining) > 0 {
+		return fmt.Errorf("optimize: unexpected arguments: %v", remaining)
 	}
-	ok, err := confirmGate("apply golden-fleet OS/kernel limits to "+providerLabel(p), p, force, dryRun)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	if dryRun {
+		fmt.Fprintln(os.Stderr, "[dry-run] would apply golden-fleet OS/kernel limits — no changes made")
 		return nil
+	}
+	if !force {
+		fmt.Fprintln(os.Stderr, "[urnet-tools] apply golden-fleet OS/kernel limits to this host")
+		line, err := confirmStdinRead("Type 'yes' to continue: ")
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		if strings.TrimSpace(line) != "yes" {
+			return fmt.Errorf("aborted (confirmation did not match)")
+		}
 	}
 	fmt.Println("optimize: applying golden-fleet network limits")
 	return optimizeFor(runtime.GOOS)()
