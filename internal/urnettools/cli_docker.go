@@ -25,154 +25,22 @@ func parseLogLineCount(rest []string) (int, error) {
 	return n, nil
 }
 
-// RunDocker is the CLI entry point for the urnet-docker binary. It mirrors
-// urnet-tools' targeting/confirm-gate philosophy but discovers docker
-// RunDocker is the CLI entry point for the urnet-docker binary. It mirrors
-// urnet-tools' targeting/confirm-gate philosophy but discovers docker
-// containers and delegates provider internals via docker exec.
 func RunDocker(args []string) error {
-	if len(args) == 0 {
-		usageDocker()
-		return nil
+	// Match on args[0] regardless of trailing args, as the old dispatcher did:
+	// `-v junk` still prints the version (Sonnet/Muse review).
+	if len(args) >= 1 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Println(ToolVersion)
+			return nil
+		}
 	}
-	op := args[0]
-	switch op {
-	case "version", "--version", "-v":
-		fmt.Println(ToolVersion)
-		return nil
+	rootCmd := buildDockerRootCmd()
+	if args == nil {
+		args = []string{}
 	}
-	rest := args[1:]
-	switch op {
-	case "providers", "list", "ps":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerProviders(rest)
-	case "status":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerStatus(rest)
-	case "start":
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdDockerStart(rest2, force, dryRun)
-	case "stop":
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdDockerStop(rest2, force, dryRun)
-	case "restart":
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdDockerRestart(rest2, force, dryRun)
-	case "logs":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerLogs(rest)
-	case "auth":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerAuth(rest)
-	case "choose-network", "choose_network":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerChooseNetwork(rest)
-	case "summary":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerSummary(rest)
-	case "report":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerReport(rest)
-	case "self-heal", "selfheal":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerSelfHeal(rest)
-	case "set":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerSet(rest)
-	case "fast-auth", "fastauth":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerFastAuth(rest)
-	case "hub":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerHub(rest)
-	case "session":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerSession(rest)
-	case "proxy":
-		// Let `proxy -h/--help` and `proxy <sub> ... -h/--help` reach
-		// proxy help instead of root usage.
-		if len(rest) == 0 || hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerProxy(rest)
-	case "exec":
-		// NOTE: no broad hasHelpFlag here — an inner `--help` after the `--`
-		// separator belongs to the container command, not urnet-docker.
-		return cmdDockerExec(rest)
-	case "update", "self-update", "selfupdate":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdSelfUpdate(rest2, force, dryRun)
-	case "help", "-h", "--help":
-		usageDocker()
-		return nil
-	default:
-		return fmt.Errorf("unknown command %q (see 'urnet-docker help')", op)
-	}
+	rootCmd.SetArgs(args)
+	return rootCmd.Execute()
 }
 
 // hasHelpFlag reports whether args contains -h/--help (used by the
