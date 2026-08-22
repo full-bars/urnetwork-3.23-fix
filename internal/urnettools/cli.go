@@ -433,7 +433,7 @@ Performance & Tuning (single target; on|off unless noted):
   ramlogs <on|off> [target]    zero disk I/O logging
   optimize [target]            apply golden-fleet OS/kernel limits
   hot-restart [target]         restart one provider's unit, reusing client_ids
-  fast-auth <on|off> [target]     bypass the auth rate limiter (marker file)
+  fast-auth <on|off|status> [target]  manage the auth rate limiter (marker file; status is read-only)
   set <key> [<value>|off] [target]  runtime tuning override, read live (no restart)
 
 Proxy Management [target]:
