@@ -187,7 +187,12 @@ func TestRunForceAndDryRunParsed(t *testing.T) {
 // TestRunDockerHelpEveryCommand mirrors TestRunHelpEveryCommand for the
 // urnet-docker entry point (RunDocker), which had 0% coverage.
 func TestRunDockerHelpEveryCommand(t *testing.T) {
-	for _, cmd := range []string{"providers", "list", "ps", "status", "exec", "restart", "logs"} {
+	for _, cmd := range []string{
+		"providers", "list", "ps", "status", "start", "stop", "restart", "logs",
+		"auth", "choose-network", "choose_network", "summary", "report",
+		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "hub", "session",
+		"proxy",
+	} {
 		for _, flag := range []string{"-h", "--help"} {
 			if err := RunDocker([]string{cmd, flag}); err != nil {
 				t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
@@ -220,8 +225,18 @@ func TestRunDockerNoContainers(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"status"},
+		{"start"},
+		{"stop"},
 		{"restart"},
 		{"logs"},
+		{"auth"},
+		{"choose-network", "a", "b"},
+		{"summary"},
+		{"self-heal"},
+		{"set"},
+		{"fast-auth"},
+		{"hub"},
+		{"session"},
 	} {
 		err := RunDocker(args)
 		if err == nil || !strings.Contains(err.Error(), "no providers found") {
