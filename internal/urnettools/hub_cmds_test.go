@@ -90,10 +90,14 @@ func TestExtractField(t *testing.T) {
 func TestFetchHubCA(t *testing.T) {
 	pemStr := testPEMCert(t)
 	escaped := strings.ReplaceAll(pemStr, "\n", `\n`)
+	wantFp, err := pemFingerprint(pemStr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/cert":
-			w.Write([]byte(`{"ca_pem":"` + escaped + `","ca_fingerprint":"SHA256:AAA"}`))
+			w.Write([]byte(`{"ca_pem":"` + escaped + `","ca_fingerprint":"` + wantFp + `"}`))
 		case "/api/ca-cert":
 			w.Write([]byte(`{"fingerprint":"SHA256:BBB"}`))
 		default:
@@ -109,8 +113,8 @@ func TestFetchHubCA(t *testing.T) {
 	if ca != pemStr {
 		t.Fatal("ca_pem was not unescaped to real newlines")
 	}
-	if fp != "SHA256:AAA" {
-		t.Fatalf("fingerprint = %q", fp)
+	if fp != wantFp {
+		t.Fatalf("fingerprint = %q, want %q", fp, wantFp)
 	}
 
 	// /api/ca-cert path with a token returns only the legacy fingerprint.

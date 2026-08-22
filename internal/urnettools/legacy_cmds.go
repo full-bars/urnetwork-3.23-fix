@@ -338,6 +338,13 @@ func cmdHub(args []string, force, dryRun bool) error {
 		if len(rest) < 1 {
 			return fmt.Errorf("hub open-port requires a port, e.g. hub open-port 8443")
 		}
+		ok, err := confirmGate("open port "+rest[0]+"/tcp on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
 		return cmdHubOpenPort(rest[0])
 	default:
 		return fmt.Errorf("unknown hub subcommand %q (set|off|install|init|link|unlink|test|onboard-cmd|show-password|open-port|update)", sub)
