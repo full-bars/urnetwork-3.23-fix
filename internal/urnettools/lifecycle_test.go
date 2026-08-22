@@ -21,18 +21,36 @@ func TestIsUserUnit(t *testing.T) {
 }
 
 // TestOptimizeLinuxRootCheck: optimizeLinux must refuse non-root with an
-// actionable error before touching sysctl. (The sysctl loop itself needs
-// root, so this test pins the guard, not the mutation.)
+// actionable error when sudo is unavailable before touching sysctl.
 func TestOptimizeLinuxRootCheck(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; the non-root guard cannot be exercised")
 	}
+	t.Setenv("PATH", "")
 	err := optimizeLinux()
 	if err == nil {
-		t.Fatal("optimizeLinux on non-root must return an error")
+		t.Fatal("optimizeLinux on non-root without sudo must return an error")
 	}
 	if !strings.Contains(err.Error(), "requires root") {
 		t.Fatalf("error must say root is required, got: %v", err)
+	}
+}
+
+// TestCmdOptimizeNoProviderRequired: optimize is host-wide sysctl/registry
+// tuning and MUST succeed without requiring any discovered provider units
+// or running processes on the box (regression test for "no providers found").
+func TestCmdOptimizeNoProviderRequired(t *testing.T) {
+	// Full CLI Run dispatch with dry-run flag.
+	if err := Run([]string{"optimize", "-n"}); err != nil {
+		t.Errorf("Run([optimize -n]) failed: %v", err)
+	}
+	// Direct cmdOptimize with dryRun=true and target flags ignored.
+	if err := cmdOptimize([]string{"--unit", "foo"}, false, true); err != nil {
+		t.Errorf("cmdOptimize(--unit foo, dryRun=true) failed: %v", err)
+	}
+	// Unexpected positional args must error.
+	if err := cmdOptimize([]string{"invalid-extra-arg"}, true, false); err == nil {
+		t.Error("cmdOptimize with unexpected positional arg should error")
 	}
 }
 
@@ -230,11 +248,17 @@ func TestUnitCommandArgv(t *testing.T) {
 	if !isUserUnit(userUnit) {
 		t.Skip("isUserUnit returned false for fake unit; cannot test user-level argv")
 	}
-	// User-level unit: systemctl --user -M <user>@ <action> <unit> [extra...].
-	got := unitCommandArgs(Provider{Unit: userUnit, User: "testuser"}, "restart", "--no-block")
-	want := []string{"systemctl", "--user", "-M", "testuser@", "restart", userUnit, "--no-block"}
+	// Same-user unit: systemctl --user <action> <unit> [extra...].
+	got := unitCommandArgs(Provider{Unit: userUnit, User: currentUserName()}, "restart", "--no-block")
+	want := []string{"systemctl", "--user", "restart", userUnit, "--no-block"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("user-unit argv = %v, want %v", got, want)
+		t.Errorf("same-user argv = %v, want %v", got, want)
+	}
+	// Cross-user unit: systemctl --user -M <user>@ <action> <unit> [extra...].
+	got = unitCommandArgs(Provider{Unit: userUnit, User: "other-user-9f3a"}, "restart", "--no-block")
+	want = []string{"systemctl", "--user", "-M", "other-user-9f3a@", "restart", userUnit, "--no-block"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("cross-user argv = %v, want %v", got, want)
 	}
 	// System-level unit: systemctl <action> <unit>.
 	got = unitCommandArgs(Provider{Unit: "urnetwork-native.service", User: ""}, "start")
