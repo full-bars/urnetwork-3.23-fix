@@ -353,6 +353,19 @@ func TestRunDockerUpdateHelp(t *testing.T) {
 	}
 }
 
+// TestRunDockerUpdateFlagValueTarget: update with the --flag=value target form
+// (e.g. --unit=NAME) must take the in-container branch, not fall through to the
+// host self-update (Sonnet HIGH on #453 - hasAnyTargetFlag must match both forms).
+func TestRunDockerUpdateFlagValueTarget(t *testing.T) {
+	err := RunDocker([]string{"update", "--unit=nonexistent-update-test-xyz"})
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent target container")
+	}
+	if strings.Contains(err.Error(), "self-update") || strings.Contains(err.Error(), "urnet-docker binary") {
+		t.Fatalf("update --unit=X routed to host self-update instead of in-container target: %v", err)
+	}
+}
+
 // TestRunDockerUpdateTargetRoutesToContainer: `update --unit <name>` must take
 // the in-container branch (resolve the container, then exec its urnet-tools
 // update), NOT the host self-update. On a box with no matching container it
