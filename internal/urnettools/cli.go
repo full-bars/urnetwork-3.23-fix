@@ -429,7 +429,7 @@ Hub Management [target]:
 
 Maintenance [target]:
   reinstall                reinstall provider
-  session save|load <file> [target]   export/import encrypted identity+proxy state
+  session save <file> | load <file> [-f] [target]   export/import encrypted identity+proxy state
   uninstall                uninstall provider
   auto-update <on|off>     manage auto-update schedule
   auto-start <on|off>      toggle auto-start on login
