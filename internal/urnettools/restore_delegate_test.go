@@ -3,6 +3,7 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,5 +109,44 @@ func TestRestoredHelpRouting(t *testing.T) {
 		if err := Run(args); err != nil {
 			t.Errorf("Run(%v) = %v, want nil (help)", args, err)
 		}
+	}
+}
+
+// TestCmdFastAuthTargetFlagBeforeAction guards the review finding that
+// `fast-auth --unit X on|off` must recognize the action even when a target
+// flag precedes it, instead of erroring misleadingly.
+func TestCmdFastAuthTargetFlagBeforeAction(t *testing.T) {
+	// No such unit exists, so selectTarget must fail — but NOT with the
+	// "takes on|off|status only" ordering error.
+	err := cmdFastAuth([]string{"--unit", "definitely-no-such-unit", "off"}, false)
+	if err == nil {
+		t.Fatal("expected an error (unit does not exist)")
+	}
+	if strings.Contains(err.Error(), "takes on|off|status only") {
+		t.Fatalf("misleading ordering error for fast-auth: %v", err)
+	}
+}
+
+// TestSetDryRunNoWrite verifies --dry-run performs no writes for a plain set
+// key (write and clear branches are both no-ops).
+func TestSetDryRunNoWrite(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir}
+
+	if err := applySetOverride(p, "node-name", "edge01", true); err != nil {
+		t.Fatalf("dry-run set: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_name")); !os.IsNotExist(err) {
+		t.Fatal("dry-run set must not create node_name")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "node_name"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySetOverride(p, "node-name", "off", true); err != nil {
+		t.Fatalf("dry-run clear: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_name")); err != nil {
+		t.Fatalf("dry-run clear must not remove node_name: %v", err)
 	}
 }
