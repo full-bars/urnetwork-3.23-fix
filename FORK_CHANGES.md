@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.4
+**Current Version**: v3.23.0-fix.30.5
 
 ---
 
@@ -2874,3 +2874,32 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Docker builder base `golang:1.26-alpine` updated to `golang:1.27-alpine`.
 
 **Status**: PR #449. Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.
+
+## 131. Cobra CLI Migration + Real Per-Command Help (PR #448, #453)
+
+**Purpose**: Route both `urnet-tools` and `urnet-docker` command dispatch through the Cobra CLI framework. This gives every command real, discoverable help instead of a hand-written dispatch table.
+
+**Files Modified**: `internal/urnettools/cobra.go`, `internal/urnettools/cobra_docker.go` (new), `internal/urnettools/cli.go`, `internal/urnettools/cli_docker.go`, `go.mod`
+
+**Change**:
+- PR #448 migrates the hand-written dispatch in `cli.go` and `cli_docker.go` to Cobra command trees in `cobra.go` and `cobra_docker.go`.
+- Every command now answers `-h` or `--help` with a real help page. Each page has a usage line, a short description, and copy-paste examples (Cobra `Short`, `Long`, and `Example`).
+- `urnet-docker proxy` is a Cobra parent command. It hides the exec plumbing and lists 12 subcommand help pages: `add`, `clear`, `remove`, `add-source`, `remove-source`, `refresh`, `remove-dead`, `health`, `traffic`, `summary`, `trim`, and `exclude`. Bare `proxy` prints that subcommand list.
+- `urnet-docker exec -h` renders the target in-container command's own help.
+- `--help` never executes an action.
+
+**PR #453 adds in-place container update**: `urnet-docker update <target>` updates a running provider container in place. A target flag (`--unit`, `--user`, `--network`, or `--state-dir`) selects the container, then runs the in-container `urnet-tools update` self-update without recreating the container, behind the confirm gate. Plain `urnet-docker update` (no target) self-updates the host binary as before. The `self-update` and `selfupdate` aliases are always host-only. Verified live: an old container updated in place to the current release with the container ID unchanged.
+
+**How to Identify in New Upstream**: `internal/urnettools/cobra.go` and `internal/urnettools/cobra_docker.go` do not exist upstream. Upstream still uses the hand-written dispatch found in the original `cli.go`.
+
+## 132. CI Docs-Only PR Skip + Non-Blocking VirusTotal Scan (PR #452)
+
+**Purpose**: Keep the heavy CI matrix green for documentation-only pull requests, and stop a transient VirusTotal failure from turning the scan job red.
+
+**Files Modified**: `.github/workflows/build.yml`, `dash-compat.yml`, `tool-functional-smoke.yml`, `unix-lifecycle.yml`, `windows-lifecycle.yml`, `.github/scripts/vt-scan.py`
+
+**Change**:
+- The five heavy workflows add a `pull_request` `paths-ignore` for `**/*.md`, `docs/**`, and `releases/**`. A docs-only PR skips the heavy jobs. The labeler still always runs.
+- `vt-scan.py` treats a VirusTotal upload, lookup, or analysis timeout as non-fatal. A timed-out artifact is recorded UNKNOWN in the summary report. The scan job stays green. Only a genuine malicious hit above the fail threshold fails the job. This stops a transient VirusTotal analysis timeout from turning the otherwise non-blocking scan job red.
+
+**How to Identify in New Upstream**: the `paths-ignore` blocks on the five workflows and the UNKNOWN non-fatal branches in `vt-scan.py` are fork additions.

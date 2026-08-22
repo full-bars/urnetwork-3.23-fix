@@ -4,10 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased] — Go 1.27 Toolchain
+## [Unreleased]
+
+### Added
+- **Real per-command help (PR #448, #453)**: `urnet-tools` and `urnet-docker` now route through the Cobra CLI framework. Every command prints real per-command help with `-h` or `--help`. Each help page has a usage line, a short description, and copy-paste examples. The `urnet-docker proxy` command is a parent with 12 subcommand help pages. `urnet-docker exec -h` renders the in-container command's own help. `--help` never executes an action.
+- **In-place container update (PR #453)**: `urnet-docker update <target>` updates a running provider container in place. A target flag (`--unit`, `--user`, `--network`, or `--state-dir`) runs the in-container `urnet-tools update` self-update without recreating the container, behind the confirm gate. Plain `urnet-docker update` still self-updates the host binary only. The `self-update` and `selfupdate` aliases always update the host binary only.
 
 ### Changed
 - **Go 1.27.0 toolchain bump (PR #449)**: Compiler bumped from Go 1.26.4 to 1.27.0. Updates the `go` directive in `go.mod` to `1.27.0`, floats the CI `go-version` pins to 1.27 across all workflows, and moves the Docker builder base to `golang:1.27-alpine`. Validated under 1.27.0 with a clean `go build`, `go vet`, the full `-short -race` test suite, the complete cross-compile matrix (including 386 and mips/mipsle/mips64/mips64le), and a functional smoke. `go mod tidy` required no dependency changes.
+- **CI skips heavy jobs on docs-only PRs (PR #452)**: the build, dash-compat, tool-functional-smoke, unix-lifecycle, and windows-lifecycle workflows skip their heavy jobs on pull requests that touch only `**/*.md`, `docs/**`, or `releases/**`. The labeler always runs. VirusTotal upload, lookup, and analysis timeouts are now non-fatal. A timed-out artifact records UNKNOWN in the summary instead of failing the scan job. Only a genuine malicious hit over the threshold fails the job.
 
 ---
 
