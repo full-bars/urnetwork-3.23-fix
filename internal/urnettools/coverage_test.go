@@ -326,3 +326,26 @@ func TestCleanupLifecycleNoUnit(t *testing.T) {
 	p := Provider{User: "testuser", Unit: ""}
 	cleanupLifecycle(p) // must not panic
 }
+
+// TestJournalctlArgsSameUser: same-user journalctlArgs must NOT include -M.
+// The -M form routes via machined (requires root); same-user log tailing must
+// use "--user-unit <unit> -f" without a -M prefix.
+// Regression guard for commit 64455c84 (fix/journalctl-same-user-privilege).
+func TestJournalctlArgsSameUser(t *testing.T) {
+	cur := currentUserName()
+	if cur == "" {
+		t.Skip("cannot determine current user name on this runner")
+	}
+	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service", User: cur}
+	got := journalctlArgs(p)
+	// Should be ["--user-unit", unit, "-f"] with no -M.
+	for _, arg := range got {
+		if arg == "-M" {
+			t.Errorf("journalctlArgs(same user) = %v, must not contain -M\n"+
+				"REGRESSION: same-user log tailing must not use machined (requires root)", got)
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] != "-f" {
+		t.Errorf("journalctlArgs(same user) = %v, expected -f as last arg", got)
+	}
+}
