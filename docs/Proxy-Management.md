@@ -112,6 +112,53 @@ urnet-tools proxy exclude bad-isp.example --remove   # delete a pattern
 
 Active patterns also appear in `urnet-tools proxy summary` under **URL Sources**.
 
+## ✂️ Persistent Proxy Trim (Hard Cap & A-F Worst-First Shedding)
+
+Since `v3.23.0-fix.30.4`, operators can enforce a hard ceiling on running proxies without restarting the provider or wiping configuration files:
+
+```sh
+# Preview which proxies would be shed without making changes
+urnet-tools proxy trim 500 --preview
+
+# Set the running proxy hard cap to 500
+urnet-tools proxy trim 500
+
+# Remove the trim cap
+urnet-tools proxy trim off
+```
+
+### 🐳 Docker (Host-Side)
+```sh
+urnet-docker proxy trim --unit urfix 500 --preview
+urnet-docker proxy trim --unit urfix 500
+```
+
+> [!IMPORTANT]
+> **How Trim Ranking Works:**
+> 1. **A-F Reachability Grade:** The provider evaluates website-reachability probe scores across all sources (both paid/file and URL cache). Proxies are prioritized for shedding in worst-first order:
+>    `Dead` → `Never Graded` → `Grade F` → `Grade D` → `Grade C` → `Grade B` → `Grade A`
+> 2. **Billable Bandwidth Tiebreaker:** Within the same grade tier, proxies with higher cumulative billable traffic are preserved. Earning proxies are shed only as a last resort.
+> 3. **Persistent Cap:** The target count is persisted to `~/.urnetwork/proxy_trim`. It stays in effect across restarts and reloads until explicitly raised or cleared with `proxy trim off`.
+> 4. **Prevents Over-Budget Re-Spawning:** During background URL fetch cycles and configuration reloads, new proxy additions are capped to prevent exceeding the trim target while retaining candidate history.
+> 5. **Controller Coordination:** The AIMD resource pressure controller's `TargetPoolSize` is automatically clamped to this cap so automatic and manual controls never conflict.
+
+---
+
+## 🩹 Pressure-Based Self-Healing
+
+`URNETWORK_SELF_HEAL=1` (or `urnet-tools self-heal on` at runtime) activates an adaptive resource-pressure controller that protects running nodes from memory exhaustion and high load:
+
+```sh
+urnet-tools self-heal on       # Enable pressure monitoring
+urnet-tools self-heal status   # Inspect live score, components, and target pool size
+urnet-tools self-heal off      # Disable pressure monitoring
+```
+
+- **Proportional URL Pacing:** Dynamically stretches URL fetch intervals (1× to 8×) under load rather than hard-dropping passes.
+- **Probe Concurrency Scaling:** Reduces concurrent stage-1 dial workers down to a single worker under high load.
+- **Load-Adaptive Pruning:** Accelerates dead-proxy cleanup and stale-entry re-probing during high pressure to shed unneeded memory.
+- **AIMD Pool Sizing:** Adjusts `TargetPoolSize` dynamically (+25 when calm, ×0.7 under pressure), evicting dead and lowest-grade proxies.
+
 ---
 
 ## 📊 Monitoring Proxy Health and Traffic
@@ -147,3 +194,4 @@ View a sorted report of cumulative bandwidth per proxy, broken down by billable 
 urnet-tools proxy traffic                            # Binary
 docker exec urfix cat /root/.urnetwork/proxy_traffic.state  # Docker
 ```
+
