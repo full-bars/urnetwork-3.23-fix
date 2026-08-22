@@ -103,7 +103,8 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 
 	if p.Unit != "" {
 		if isUserUnit(p.Unit) && p.User != "" {
-			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", p.Unit).CombinedOutput(); err != nil {
+			args := append(systemctlUserArgs(p.User), "disable", "--now", p.Unit)
+			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
 				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
 			}
 		} else {

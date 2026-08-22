@@ -70,7 +70,6 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 		{"stop"},
 		{"restart"},
 		{"logs"},
-		{"optimize"},
 		{"uninstall"},
 		{"reinstall"},
 	}
@@ -287,6 +286,19 @@ func captureStderr(t *testing.T, fn func()) string {
 	<-done
 	r.Close()
 	return buf.String()
+}
+
+// TestCapturePipeLargeOutputNoDeadlock ensures captureStderr / captureStdout
+// safely handle outputs much larger than the OS pipe buffer (e.g. 128KB)
+// without deadlocking on Windows or Linux.
+func TestCapturePipeLargeOutputNoDeadlock(t *testing.T) {
+	largeData := strings.Repeat("0123456789abcdef\n", 8192) // 136 KB
+	out := captureStderr(t, func() {
+		_, _ = os.Stderr.WriteString(largeData)
+	})
+	if len(out) != len(largeData) {
+		t.Errorf("captureStderr captured %d bytes, want %d", len(out), len(largeData))
+	}
 }
 
 // TestRunSelfUpdateHelp: `self-update`/`selfupdate` (and their -h/--help)

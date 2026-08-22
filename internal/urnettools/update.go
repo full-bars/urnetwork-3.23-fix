@@ -555,11 +555,13 @@ func restartProvider(p Provider) error {
 			// User-level unit in the owning user's session (the missing
 			// path — previously fell straight to PID signaling, which
 			// cannot restart a stopped user unit).
-			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).CombinedOutput(); err == nil {
+			args := append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+			args = append(args, "restart", p.Unit)
+			if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err == nil {
 				fmt.Printf("restarted %s (user %s)\n", p.Unit, p.User)
 				return nil
 			} else if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
-				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+				return fmt.Errorf("systemctl restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
 			}
 		}
 	}

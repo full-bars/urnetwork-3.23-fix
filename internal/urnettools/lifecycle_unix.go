@@ -10,18 +10,6 @@ import (
 	"strings"
 )
 
-// systemctlUserArgs returns the systemctl argv prefix for a user-level unit,
-// using the local session bus when the target user IS the current user and
-// -M <user>@ (machined) otherwise. Mirrors discoverUserUnits: the -M form
-// can fail on CI runners (no cross-user session bus) even when the local
-// user manager works, so same-user invocations must not go through machined.
-func systemctlUserArgs(user string) []string {
-	if user == currentUserName() {
-		return []string{"--user"}
-	}
-	return []string{"--user", "-M", user + "@"}
-}
-
 // setAutoStart enables or disables login auto-start for the provider's
 // owning systemd unit. On Linux/macOS the provider runs as a systemd (or
 // launchd) unit, so this is the systemctl enable/disable path.
