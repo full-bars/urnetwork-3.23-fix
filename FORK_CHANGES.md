@@ -122,7 +122,7 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB
 
 **How to Identify in New Upstream**:
 - Check `provider/Makefile` for build flags
-- Verify `greenteagc` experiment is still viable in newer Go versions
+- `greenteagc` experiment verified viable in Go 1.27.0: it is an upstream experiment bundled in stock 1.27 (mgcmark_greenteagc.go + exp_greenteagc_on/off.go). The provider builds and runs clean under `GOEXPERIMENT=greenteagc` on 1.27. No source patch needed.
 - Confirm `-ldflags` pattern is preserved
 
 **Status**: ✅ Shipped; unlikely to conflict with upstream unless build system changes significantly
