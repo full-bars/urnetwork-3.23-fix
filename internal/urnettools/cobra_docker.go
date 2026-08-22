@@ -67,7 +67,7 @@ func buildDockerRootCmd() *cobra.Command {
 func newDockerProvidersCmd() *cobra.Command {
 	return withHelp(newCobraCmd("providers", "list all provider containers", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerProviders(args)
-	}), "List every provider container on the host, identified by its in-container JWT.", "  urnet-docker providers\n  urnet-docker providers --unit urnet-test")
+	}), "List every provider container on the host, identified by its in-container JWT.", "  urnet-docker providers")
 }
 
 func newDockerStatusCmd() *cobra.Command {
@@ -131,8 +131,14 @@ func newDockerReportCmd() *cobra.Command {
 }
 
 func newDockerUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("update [target]", "update the host urnet-docker binary, or update a provider container in place (no recreate) with a target", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("update [--unit <name>]", "update the host urnet-docker binary, or a container's provider in place (no recreate)", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			// self-update/selfupdate are ALWAYS host-only: they must never be
+			// routed at a target (Opus HIGH #453). Only the literal 'update'
+			// command may target a container.
+			if cmd.CalledAs() != "update" {
+				return cmdSelfUpdate(rest, force, dryRun)
+			}
 			return cmdDockerUpdate(rest, force, dryRun)
 		})
 	}), "Update the host urnet-docker binary, or with a target flag update a provider container in place (no recreate).", "  urnet-docker update\n  urnet-docker update --unit urnet-test\n  urnet-docker update --unit=urnet-test")
@@ -148,7 +154,7 @@ func newDockerVersionCmd() *cobra.Command {
 // dockerProxySub builds one `proxy <sub>` cobra command. It forwards its
 // own args plus the subcommand name to the shared proxy dispatcher
 // (cmdDockerProxy), which owns target resolution + the in-container exec.
-// DisableFlagParsing keeps sail the flags that belong to the container
+// DisableFlagParsing keeps intact the flags that belong to the container
 // command; -h/--help inside the subcommand render that subcommand's help.
 func dockerProxySub(sub, use, short, long, example string) *cobra.Command {
 	return &cobra.Command{
@@ -173,8 +179,8 @@ func newDockerProxyCmd() *cobra.Command {
 		Long:               "Manage proxies for a provider container: add from a host file or a URL source, prune, and inspect health and traffic.",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 || hasHelpFlag(args) {
-				return cmd.Help() // bare `proxy` / `proxy -h`: show the proxy subcommand list
+			if len(args) == 0 || hasHelpFlag(args) || (len(args) == 1 && args[0] == "help") {
+				return cmd.Help() // bare `proxy` / `proxy -h` / `proxy help`: show the proxy subcommand list
 			}
 			return cmdDockerProxy(args) // unknown subcommand -> dispatcher reports it
 		},
@@ -198,7 +204,7 @@ func newDockerProxyCmd() *cobra.Command {
 		dockerProxySub("health", "health [target]", "show proxy health and live event log", "Show dead/degraded proxy health and the live health event log.", "  urnet-docker proxy health"),
 		dockerProxySub("traffic", "traffic [target]", "real-time bandwidth and client load", "Show real-time bandwidth and client session load.", "  urnet-docker proxy traffic"),
 		dockerProxySub("summary", "summary [target]", "proxy activity and performance summary", "Show a per-proxy activity and performance summary.", "  urnet-docker proxy summary"),
-		dockerProxySub("trim", "trim <N> [target]", "hold running proxies at N, shed worst first", "Hard-cap running proxies at N, shedding the worst-graded (F -> A) first.",
+		dockerProxySub("trim", "trim <N|off> [target]", "hold running proxies at N, shed worst first", "Hard-cap running proxies at N, shedding the worst-graded (F -> A) first.",
 			"  urnet-docker proxy trim 50\n"+
 				"  urnet-docker proxy trim off"),
 		dockerProxySub("exclude", "exclude [<pattern>] [target]", "exclude proxies matching a pattern", "Exclude proxies matching a pattern (show current exclusions with no argument).", "  urnet-docker proxy exclude 1.2.3.4"),
@@ -249,8 +255,7 @@ func newDockerExecCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Pre-separator help is urnet-docker's own; render exec's help.
-			if pre, _, err := splitExecArgs(args); err == errHelpShown {
-				_ = pre
+			if _, _, err := splitExecArgs(args); err == errHelpShown {
 				return cmd.Help()
 			}
 			return cmdDockerExec(args)

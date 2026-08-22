@@ -97,7 +97,7 @@ func newProvidersCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List every provider on this box with its unit, network, state dir and version.", "  urnet-tools providers\n  urnet-tools providers --unit urnetwork-native.service")
+	}), "List every provider on this box with its unit, network, state dir and version.", "  urnet-tools providers")
 }
 
 func newStatusCmd() *cobra.Command {
