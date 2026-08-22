@@ -159,8 +159,21 @@ func TestStageSessionIgnoresForeignEntries(t *testing.T) {
 	if _, err := stageSessionFiles(p, files, false); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".session-staging/evil")); !os.IsNotExist(err) {
-		t.Fatalf("foreign entry must not be staged, err=%v", err)
+	// Staging must contain EXACTLY the allowlisted files present in the bundle,
+	// not a crafted ../ name that cleans to somewhere else (review MEDIUM).
+	entries, err := os.ReadDir(filepath.Join(dir, ".session-staging"))
+	if err != nil {
+		t.Fatalf("read staging: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "jwt" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("staging entries = %v, want exactly [jwt]", names)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "..", "..", "evil")); !os.IsNotExist(err) {
+		t.Fatalf("foreign entry escaped staging, err=%v", err)
 	}
 }
 
@@ -199,5 +212,47 @@ func TestDecryptTamperedRejected(t *testing.T) {
 	tampered[len(tampered)-1] ^= 0xff
 	if _, err := decryptUntar(string(tampered), testPass); err == nil {
 		t.Fatal("tampered bundle must fail decryption")
+	}
+}
+
+// TestSessionForceSurvivesDispatch: -f must be consumed by cmdSession, not
+// rejected as an extra argument (the reason session bypasses parseGlobalFlags).
+func TestSessionForceSurvivesDispatch(t *testing.T) {
+	err := Run([]string{"session", "load", "/nonexistent-session-file", "-f"})
+	if err == nil {
+		t.Fatal("expected an error (file or provider), got nil")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "takes no extra arguments") {
+		t.Fatalf("-f was not consumed by cmdSession: %v", err)
+	}
+	if strings.Contains(msg, "unknown flag") {
+		t.Fatalf("-f was rejected as a flag: %v", err)
+	}
+}
+
+// TestSessionDryRunAccepted: -n/--dry-run is accepted by cmdSession (routes to
+// the confirm gate), not rejected as an unknown extra argument.
+func TestSessionDryRunAccepted(t *testing.T) {
+	err := Run([]string{"session", "load", "/nonexistent-session-file", "-n"})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), "takes no extra arguments") {
+		t.Fatalf("-n was not consumed by cmdSession: %v", err)
+	}
+}
+
+// TestDecryptShortOrMisalignedRejected covers the decryptUntar length guards:
+// a bundle shorter than the Salted__+salt header, and a non-block-multiple
+// ciphertext, must both be rejected (review MEDIUM).
+func TestDecryptShortOrMisalignedRejected(t *testing.T) {
+	for _, in := range []string{
+		"short",
+		"Salted__01234567" + strings.Repeat("A", 17), // ct 17 bytes, not %16
+	} {
+		if _, err := decryptUntar(in, testPass); err == nil {
+			t.Fatalf("decryptUntar(%d bytes) must be rejected, got nil", len(in))
+		}
 	}
 }

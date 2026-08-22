@@ -2,7 +2,6 @@ package urnettools
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/aes"
@@ -245,29 +244,29 @@ func decodeJWTFromBytes(raw []byte) (netName, netID string, exp time.Time, err e
 	return p.NetworkName, p.NetworkID, exp, nil
 }
 
-// readPassphrase prints prompt and reads a line from stdin with echo off
-// (x/term), so the passphrase is never echoed. Falls back to a plain line
-// read when the terminal is not usable (e.g. piped stdin).
+// readPassphrase prints prompt and reads a passphrase with echo off (x/term).
+// It requires an interactive terminal: a passphrase must never be scripted from
+// piped stdin, and a second bufio.Reader must not be opened over os.Stdin (the
+// package owns the single stdinReader). Refuse when not interactive rather than
+// block or read a buffered leftover (review finding HIGH).
 func readPassphrase(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
+	if !stdinIsInteractive() {
+		return "", fmt.Errorf("stdin is not a terminal; passphrase entry requires an interactive session")
 	}
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	return strings.TrimRight(line, "\r\n"), err
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // readYesNo prompts for a y/N answer and returns true only on an explicit yes.
+// Uses the shared confirmStdinRead so it honors the single-reader rule and
+// refuses cleanly on non-interactive stdin (review finding HIGH).
 func readYesNo(prompt string) bool {
-	fmt.Fprintf(os.Stderr, "%s ", prompt)
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
+	line, err := confirmStdinRead(prompt)
 	if err != nil {
 		return false
 	}
@@ -287,12 +286,13 @@ func cmdSession(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools session — export/import provider identity + proxy state
 
 Usage: urnet-tools session save <file> [target]
-       urnet-tools session load <file> [target] [-f]
+       urnet-tools session load <file> [target] [-f] [-n] [--allow-different-account]
 
 save bundles the provider's identity and proxy state into an encrypted file.
-load restores a bundle, backing up the current state first. The loaded session
-must match the same URnetwork account unless -f is given. A restart is prompted
-after load to apply the session.
+load restores a bundle, backing up the current state first, and prompts to
+restart. The loaded session must match the same URnetwork account unless
+--allow-different-account is given. -f skips the confirmation prompt; -n prints
+the plan and changes nothing.
 `)
 		return nil
 	}
@@ -300,15 +300,19 @@ after load to apply the session.
 		return errors.New("session requires an action: save <file> | load <file>")
 	}
 	action := args[0]
-	force := false
+	force, dryRun, allowDiff := false, false, false
 	var rest []string
 	for _, a := range args[1:] {
-		if a == "-f" || a == "--force" {
+		switch a {
+		case "-f", "--force":
 			force = true
-			continue
+		case "-n", "--dry-run":
+			dryRun = true
+		case "--allow-different-account":
+			allowDiff = true
+		default:
+			rest = append(rest, a)
 		}
-
-		rest = append(rest, a)
 	}
 	if len(rest) < 1 {
 		return fmt.Errorf("session %s requires a file path", action)
@@ -332,7 +336,7 @@ after load to apply the session.
 	case "save":
 		return cmdSessionSave(p, file)
 	case "load":
-		return cmdSessionLoad(p, file, force)
+		return cmdSessionLoad(p, file, force, dryRun, allowDiff)
 	default:
 		return fmt.Errorf("session action must be 'save' or 'load' (got %q)", action)
 	}
@@ -359,12 +363,31 @@ func cmdSessionSave(p Provider, outFile string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no session files found under %s", p.StateDir)
 	}
+	// Refuse to clobber an existing destination silently (running as root,
+	// os.WriteFile truncates whatever path is named). Require an explicit yes
+	// to overwrite (review finding LOW).
+	if _, err := os.Stat(outFile); err == nil {
+		if !readYesNo("destination already exists — overwrite? (y/n):") {
+			return fmt.Errorf("aborted; %s already exists", outFile)
+		}
+	}
 	bundle, err := tarAndEncrypt(files, pass)
 	if err != nil {
 		return fmt.Errorf("failed to create session bundle: %v", err)
 	}
-	if err := os.WriteFile(outFile, bundle, 0o600); err != nil {
+	f, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return fmt.Errorf("write %s: %v", outFile, err)
+	}
+	if _, err := f.Write(bundle); err != nil {
+		f.Close()
+		return fmt.Errorf("write %s: %v", outFile, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write %s: %v", outFile, err)
+	}
+	if err := os.Chmod(outFile, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %v", outFile, err)
 	}
 	fmt.Printf("Session saved to %s (encrypted)\n", outFile)
 	return nil
@@ -374,7 +397,7 @@ func cmdSessionSave(p Provider, outFile string) error {
 // stages the new files, and marks the load pending. Extracted from
 // cmdSessionLoad so the load safety logic is directly unit-testable with a
 // temp state dir and in-memory files (no live provider, no interactive prompt).
-func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string, error) {
+func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (string, error) {
 	newID := sessionNetworkID(files)
 	if newID == "" {
 		return "", errors.New("could not extract network_id from the session bundle's JWT; bundle may be corrupt")
@@ -389,10 +412,10 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 	if b, err := os.ReadFile(jwtPath); err == nil {
 		_, cur, _, decErr := decodeJWTFromBytes(b)
 		if decErr != nil {
-			if force {
+			if allowDiff {
 				currentID = "" // operator explicitly replaced the corrupt identity
 			} else {
-				return "", fmt.Errorf("current provider jwt at %s is present but unreadable: %v (use -f to replace)", jwtPath, decErr)
+				return "", fmt.Errorf("current provider jwt at %s is present but unreadable: %v (use --allow-different-account to replace)", jwtPath, decErr)
 			}
 		} else {
 			currentID = cur
@@ -400,8 +423,8 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("could not read current provider jwt at %s: %v", jwtPath, err)
 	}
-	if currentID != "" && newID != currentID && !force {
-		return "", fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (add -f to force)", currentID, newID)
+	if currentID != "" && newID != currentID && !allowDiff {
+		return "", fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (use --allow-different-account)", currentID, newID)
 	}
 
 	// Back up the live state before touching anything. Nanosecond suffix avoids
@@ -410,11 +433,22 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return "", err
 	}
+	if err := chownLikeStateOwner(p.StateDir, backupDir); err != nil {
+		return "", err
+	}
 	for _, name := range sessionFiles {
-		if b, err := os.ReadFile(filepath.Join(p.StateDir, name)); err == nil {
-			if err := os.WriteFile(filepath.Join(backupDir, name), b, 0o600); err != nil {
-				return "", fmt.Errorf("backup %s: %v", name, err)
+		b, err := os.ReadFile(filepath.Join(p.StateDir, name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // absent, fine
 			}
+			return "", fmt.Errorf("backup %s: %v", name, err) // unreadable/perm: fail, do not silently skip (MEDIUM)
+		}
+		if err := os.WriteFile(filepath.Join(backupDir, name), b, 0o600); err != nil {
+			return "", fmt.Errorf("backup %s: %v", name, err)
+		}
+		if err := chownLikeStateOwner(p.StateDir, filepath.Join(backupDir, name)); err != nil {
+			return "", err
 		}
 	}
 
@@ -427,14 +461,24 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		return "", err
 	}
+	if err := chownLikeStateOwner(p.StateDir, stagingDir); err != nil {
+		return "", err
+	}
 	for _, name := range sessionFiles {
 		if data, ok := files[name]; ok {
 			if err := os.WriteFile(filepath.Join(stagingDir, name), data, 0o600); err != nil {
 				return "", err
 			}
+			if err := chownLikeStateOwner(p.StateDir, filepath.Join(stagingDir, name)); err != nil {
+				return "", err
+			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(p.StateDir, ".session-pending"), []byte{}, 0o600); err != nil {
+	pending := filepath.Join(p.StateDir, ".session-pending")
+	if err := os.WriteFile(pending, []byte{}, 0o600); err != nil {
+		return "", err
+	}
+	if err := chownLikeStateOwner(p.StateDir, pending); err != nil {
 		return "", err
 	}
 	return backupDir, nil
@@ -443,7 +487,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 // cmdSessionLoad decrypts a session bundle and stages it into the provider's
 // state dir via stageSessionFiles, then prompts to restart so the provider
 // picks the session up at its staged-session apply on startup.
-func cmdSessionLoad(p Provider, inFile string, force bool) error {
+func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) error {
 	bundle, err := os.ReadFile(inFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -462,7 +506,17 @@ func cmdSessionLoad(p Provider, inFile string, force bool) error {
 	if !sessionHasJWT(files) {
 		return errors.New("session bundle is missing 'jwt', not a valid session bundle")
 	}
-	backupDir, err := stageSessionFiles(p, files, force)
+	// Reinstate the audit + confirm gate the other destructive commands share:
+	// loading stages a full identity replacement. -n prints the plan and does
+	// nothing; -f skips the prompt (review finding MEDIUM).
+	ok, err := confirmGate("load session into "+providerLabel(p), p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run or declined: confirmGate printed the audit line
+	}
+	backupDir, err := stageSessionFiles(p, files, allowDiff)
 	if err != nil {
 		return err
 	}
