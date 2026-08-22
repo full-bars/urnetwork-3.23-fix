@@ -327,8 +327,8 @@ func TestRunSelfUpdateHelp(t *testing.T) {
 					t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "urnet-tools — provider-aware") {
-				t.Errorf("Run([%q %q]) stderr = %q, want urnet-tools usage", cmd, flag, out)
+			if !strings.Contains(out, "update this tool binary itself") {
+				t.Errorf("Run([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
 	}
@@ -346,8 +346,8 @@ func TestRunDockerUpdateHelp(t *testing.T) {
 					t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "urnet-docker — docker-container") {
-				t.Errorf("RunDocker([%q %q]) stderr = %q, want urnet-docker usage", cmd, flag, out)
+			if !strings.Contains(out, "update urnet-docker binary on host") {
+				t.Errorf("RunDocker([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
 	}
