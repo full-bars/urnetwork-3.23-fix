@@ -5,7 +5,6 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -28,7 +27,12 @@ func discoverProcesses() []Provider {
 		err = windows.Process32First(snapshot, &entry)
 		for err == nil {
 			name := windows.UTF16ToString(entry.ExeFile[:])
-			if strings.EqualFold(name, "urnetwork.exe") {
+			// Match against the shared known-binary set (urnetwork, provider_beta,
+			// provider) via isProviderArg, which strips .exe and matches by
+			// basename prefix — so the beta build (provider_beta.exe) is found on
+			// Windows just like it is on Linux (was invisible before; the
+			// hardcoded EqualFold("urnetwork.exe") missed it).
+			if isProviderArg(name) {
 				exe := resolveProcessExe(int(entry.ProcessID), name)
 				out = append(out, Provider{
 					User:     currentUser(),
