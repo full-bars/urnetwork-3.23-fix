@@ -220,7 +220,7 @@ func providerUsesRamlogs(p Provider) bool {
 // drop-in for the targeted provider's unit, or installs the hub binary.
 func cmdHub(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("hub requires a subcommand: set <url> | off | install")
+		return fmt.Errorf("hub requires a subcommand: set <url> | off | install | init | link | unlink | test | onboard-cmd | show-password | open-port | update")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -264,8 +264,83 @@ func cmdHub(args []string, force, dryRun bool) error {
 		return removeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL")
 	case "install":
 		return cmdHubInstall(p, rest)
+	case "init":
+		password := ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--password" || rest[i] == "-p" {
+				if i+1 < len(rest) {
+					password = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--password requires a value")
+				}
+			} else {
+				return fmt.Errorf("unknown hub init argument %q", rest[i])
+			}
+		}
+		ok, err := confirmGate("init hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubInit(p, password)
+	case "show-password":
+		return cmdHubShowPassword(p)
+	case "onboard-cmd":
+		return cmdHubOnboardCmd(p)
+	case "link":
+		url, token := "", ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--token" {
+				if i+1 < len(rest) {
+					token = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--token requires a value")
+				}
+			} else if url == "" {
+				url = rest[i]
+			} else {
+				return fmt.Errorf("unexpected hub link argument %q", rest[i])
+			}
+		}
+		if url == "" {
+			return fmt.Errorf("hub link requires a URL: hub link <https://hub-host:port> [--token <onboard-token>]")
+		}
+		return cmdHubLink(p, url, token, force)
+	case "test":
+		url := ""
+		if len(rest) > 0 {
+			url = rest[0]
+		}
+		return cmdHubTest(p, url)
+	case "unlink":
+		ok, err := confirmGate("unlink hub from "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUnlink(p, force)
+	case "update":
+		ok, err := confirmGate("update hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUpdate(p, rest)
+	case "open-port":
+		if len(rest) < 1 {
+			return fmt.Errorf("hub open-port requires a port, e.g. hub open-port 8443")
+		}
+		return cmdHubOpenPort(rest[0])
 	default:
-		return fmt.Errorf("unknown hub subcommand %q (set|off|install)", sub)
+		return fmt.Errorf("unknown hub subcommand %q (set|off|install|init|link|unlink|test|onboard-cmd|show-password|open-port|update)", sub)
 	}
 }
 
