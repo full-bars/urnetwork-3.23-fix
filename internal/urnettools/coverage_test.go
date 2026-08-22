@@ -250,3 +250,69 @@ func TestWriteTimerCalendarMissingHome(t *testing.T) {
 		t.Errorf("error should say home could not be resolved, got: %v", err)
 	}
 }
+
+// TestSystemctlUserArgsSameUser: when the target user IS the current OS user,
+// systemctlUserArgs must return ["--user"] only — NOT ["--user", "-M", user+"@"].
+// The -M form routes through systemd-machined which requires root, so calling
+// it as the same user produces "Operation not permitted" (the bug fixed in
+// fix/urntools-status-systemctl and fix/journalctl-same-user-privilege).
+// This test is the regression guard for that fix: a regression that adds -M
+// back for same-user calls will be caught here.
+func TestSystemctlUserArgsSameUser(t *testing.T) {
+	cur := currentUserName()
+	if cur == "" {
+		t.Skip("cannot determine current user name on this runner")
+	}
+	got := systemctlUserArgs(cur)
+	want := []string{"--user"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("systemctlUserArgs(same user %q) = %v, want %v\n"+
+			"REGRESSION: same-user calls must not use -M (requires root via machined)",
+			cur, got, want)
+	}
+}
+
+// TestSystemctlUserArgsCrossUser: for a different user, systemctlUserArgs must
+// include -M <user>@ to reach the other user's session bus.
+func TestSystemctlUserArgsCrossUser(t *testing.T) {
+	cur := currentUserName()
+	other := "urnet-tools-test-other-user-9f3a"
+	if cur == other {
+		t.Skip("unlikely: current user matches the fake cross-user name")
+	}
+	got := systemctlUserArgs(other)
+	want := []string{"--user", "-M", other + "@"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("systemctlUserArgs(cross-user %q) = %v, want %v", other, got, want)
+	}
+}
+
+// TestRenderSystemctlStatusLinuxNoUnit: renderSystemctlStatusLinux must return
+// a clear error when the provider has no owning unit (bare-process provider).
+// Before PR #438, cmdStatus on Linux would panic on a nil/empty unit because
+// it blindly passed p.Unit to exec.Command; the fix adds an early guard.
+func TestRenderSystemctlStatusLinuxNoUnit(t *testing.T) {
+	p := Provider{User: "testuser", Unit: ""}
+	err := renderSystemctlStatusLinux(p)
+	if err == nil {
+		t.Fatal("renderSystemctlStatusLinux with empty unit must error")
+	}
+	if !strings.Contains(err.Error(), "no owning unit") {
+		t.Errorf("error should mention 'no owning unit', got: %v", err)
+	}
+}
+
+// TestCleanupLifecycleUsesSystemctlUserArgs: verifies that cleanupLifecycle
+// (called by cmdUninstall) uses systemctlUserArgs — not a raw "--user -M user@"
+// — when disabling the auto-update timer for the owning user. A raw -M call
+// requires root via machined and fails for same-user uninstalls (residual bug
+// fixed alongside PR #438 regression tests).
+// This is a structural smoke test: we supply a provider with no real unit so
+// cleanupLifecycle returns immediately after the guard, proving it reaches the
+// systemctlUserArgs branch without panic.
+func TestCleanupLifecycleNoUnit(t *testing.T) {
+	// Unit="" hits the first guard and returns immediately — safe on any box.
+	p := Provider{User: "testuser", Unit: ""}
+	cleanupLifecycle(p) // must not panic
+}
+

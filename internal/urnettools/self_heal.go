@@ -24,6 +24,9 @@ func cmdSelfHeal(args []string) error {
 		mode = args[0]
 	}
 	switch mode {
+	case "-h", "--help":
+		usage()
+		return nil
 	case "on", "off":
 		return writeSelfHeal(mode)
 	case "status":
