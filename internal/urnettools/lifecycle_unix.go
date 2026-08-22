@@ -167,7 +167,8 @@ func cleanupLifecycle(p Provider) {
 	}
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
 	if isUserUnit(timer) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", timer).Run()
+		args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
+		_ = exec.Command("systemctl", args...).Run()
 		return
 	}
 	_ = exec.Command("systemctl", "disable", "--now", timer).Run()

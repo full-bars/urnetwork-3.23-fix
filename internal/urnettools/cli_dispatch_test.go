@@ -21,6 +21,10 @@ func TestRunHelpEveryCommand(t *testing.T) {
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
 		"uninstall", "reinstall",
+		// PR #438: self-heal and its alias are dispatched by Run() but
+		// were not in this table; a regression adding -h that errors would
+		// have gone unnoticed.
+		"self-heal", "selfheal",
 	}
 	for _, cmd := range cmds {
 		for _, flag := range []string{"-h", "--help"} {
@@ -404,5 +408,66 @@ func TestParseTargetFlagsEqualsFormEmptyValue(t *testing.T) {
 func TestParseTargetFlagsSpaceFormEmptyValue(t *testing.T) {
 	if _, _, err := parseTargetFlags([]string{"--user", ""}); err == nil {
 		t.Fatal("expected error for empty space-separated value, got nil")
+	}
+}
+
+// TestRunSelfHealNoProviderRequired: `self-heal status` must succeed (or at
+// minimum not error with "no providers found") on a box with zero providers,
+// because self-heal reads/writes ~/.urnetwork/proxy_self_heal — it has no
+// dependency on Discover(). A regression that adds provider-selection to
+// cmdSelfHeal would break self-heal on bare/docker boxes.
+func TestRunSelfHealNoProviderRequired(t *testing.T) {
+	if len(Discover()) != 0 {
+		t.Skip("this test requires a box with zero discoverable providers")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	err := Run([]string{"self-heal", "status"})
+	if err != nil && strings.Contains(err.Error(), "no providers found") {
+		t.Errorf("Run([self-heal status]) = %v\n"+
+			"REGRESSION: self-heal must not require provider discovery", err)
+	}
+}
+
+// TestRunSelfHealInvalidArg: an unrecognized sub-arg to self-heal must return
+// a clear error naming the invalid arg (not panic or silently no-op).
+// Covers the default branch of cmdSelfHeal's switch.
+func TestRunSelfHealInvalidArg(t *testing.T) {
+	err := Run([]string{"self-heal", "bogus"})
+	if err == nil {
+		t.Fatal("Run([self-heal bogus]) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should name the invalid arg, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "on|off|status") {
+		t.Errorf("error should list valid args (on|off|status), got: %v", err)
+	}
+}
+
+// TestUsageContainsExpectedSections: pins the help output structure so a
+// future refactor can't silently drop the sectioned layout introduced in
+// PR #437. This covers both the emoji-decorated section headers and the
+// section names that operators rely on when reading `urnet-tools help`.
+func TestUsageContainsExpectedSections(t *testing.T) {
+	out := captureStderr(t, func() { usage() })
+	sections := []string{
+		"urnet-tools",
+		"Core Commands",
+		"Performance",
+		"Proxy Management",
+		"Hub Management",
+		"Maintenance",
+		"Targeting rules",
+		"Force",
+		"-f, --force",
+		"-n, --dry-run",
+	}
+	for _, sec := range sections {
+		if !strings.Contains(out, sec) {
+			t.Errorf("usage() output missing %q\nREGRESSION: help section dropped or renamed", sec)
+		}
 	}
 }
