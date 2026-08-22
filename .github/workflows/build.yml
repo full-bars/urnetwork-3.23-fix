@@ -8,6 +8,10 @@ on:
     tags:
       - 'v*'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'releases/**'
     branches:
       - main
       - fix/v3.23-custom
