@@ -2862,7 +2862,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: Part of PR #428 on the `feat/adaptive-gc-consolidation` branch. Not yet shipped to a release. Tests cover the single-writer governor and the kill switch.
 
-## 84. Go 1.27 Toolchain Bump
+## 130. Go 1.27 Toolchain Bump
 
 **Purpose**: Move the compiler from Go 1.26.4 to 1.27.0.
 
