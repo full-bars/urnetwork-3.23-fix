@@ -416,6 +416,7 @@ Proxy Management [target]:
   proxy health              show dead/degraded proxies + live event log
   proxy traffic             real-time bandwidth & client session load
   proxy remove-dead         interactively prune dead/degraded/failing
+  proxy trim <N>            hold running proxies at N, shed the A-F-worst
   report <url> [target]     set hub report URL at runtime (no restart)
 
 Hub Management [target]:
