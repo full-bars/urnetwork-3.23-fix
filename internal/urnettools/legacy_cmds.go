@@ -309,6 +309,15 @@ func cmdHub(args []string, force, dryRun bool) error {
 		if url == "" {
 			return fmt.Errorf("hub link requires a URL: hub link <https://hub-host:port> [--token <onboard-token>]")
 		}
+		// Gate like the other mutating hub subcommands: --dry-run must not write
+		// trust, and neither should an unconfirmed --force run (review MEDIUM).
+		ok, gerr := confirmGate("link hub "+providerLabel(p), p, force, dryRun)
+		if gerr != nil {
+			return gerr
+		}
+		if !ok {
+			return nil // dry-run or declined
+		}
 		return cmdHubLink(p, url, token, force)
 	case "test":
 		url := ""
