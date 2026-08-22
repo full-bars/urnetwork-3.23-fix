@@ -733,6 +733,7 @@ Usage:
     provider proxy remove-source <url>
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
+    provider proxy trim <count> [--preview]
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> <connect_url>
@@ -786,6 +787,7 @@ Options:
                                      credentials). Removes matches from the proxy list, proxy file, and URL
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
+    <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
                                      With no pattern, 'proxy exclude' lists active patterns.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -837,6 +839,8 @@ Options:
 			proxyActivity()
 		} else if summary, _ := opts.Bool("summary"); summary {
 			proxySummary()
+		} else if trim, _ := opts.Bool("trim"); trim {
+			proxyTrim(opts)
 		}
 	} else if wallet, _ := opts.Bool("wallet"); wallet {
 		if set, _ := opts.Bool("set"); set {
