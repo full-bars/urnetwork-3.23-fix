@@ -18,6 +18,7 @@ func buildDockerRootCmd() *cobra.Command {
 	}
 	rootCmd.SetOut(os.Stderr)
 	rootCmd.SetErr(os.Stderr)
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	rootCmd.PersistentFlags().String("unit", "", "container name (mapped to Unit)")
 	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. tacogonzalez3000")
@@ -126,7 +127,7 @@ func newDockerUpdateCmd() *cobra.Command {
 }
 
 func newDockerVersionCmd() *cobra.Command {
-	return newCobraCmd("version", "print tool version", []string{"-v", "--version"}, func(cmd *cobra.Command, args []string) error {
+	return newCobraCmd("version", "print tool version", nil, func(cmd *cobra.Command, args []string) error {
 		fmt.Println(ToolVersion)
 		return nil
 	})
@@ -139,13 +140,15 @@ func newDockerProxyCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+				// Bare `proxy` prints the subcommand list and exits 0, matching the
+				// pre-cobra dispatcher (exit 1 broke scripts that call it to show
+				// the menu, review MEDIUM).
+				fmt.Fprintln(os.Stderr, "proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+				return nil
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {
-					// In docker, help flag triggers usageDocker() in the original CLI.
-					// But wait, the original `cmdDockerProxy` didn't print help, it was printed by `usageDocker()`.
-					// We can just let Cobra print the help.
+					// Let Cobra print the proxy help on an explicit -h/--help.
 					return cmd.Help()
 				}
 			}
@@ -185,7 +188,16 @@ func newDockerSessionCmd() *cobra.Command {
 }
 
 func newDockerExecCmd() *cobra.Command {
-	return newCobraCmd("exec", "run arbitrary command inside container", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdDockerExec(args)
-	})
+	// MUST NOT use newCobraCmd: its broad hasHelpFlag intercepts '--help' AFTER
+	// the '--' separator, which belongs to the container command being run
+	// (review CRITICAL - help-after-sep must be forwarded). splitExecArgs decides
+	// what is help; delegate straight through.
+	return &cobra.Command{
+		Use:                "exec",
+		Short:              "run arbitrary command inside container",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdDockerExec(args)
+		},
+	}
 }
