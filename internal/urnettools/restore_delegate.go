@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // This file restores urnet-tools commands that the Go rewrite STRIPPED from
@@ -22,6 +24,22 @@ import (
 // consumed by the tool. fast-auth and set are file operations in the
 // provider's state dir (~/.urnetwork), matching the files the provider reads
 // at runtime.
+
+// stripDryRunFlag extracts -n/--dry-run from args. Used by the delegation
+// commands (auth/choose-network) that must honour dry-run rather than forward
+// it to a provider binary that rejects it (review MEDIUM).
+func stripDryRunFlag(args []string) (bool, []string) {
+	dry := false
+	var rest []string
+	for _, a := range args {
+		if a == "-n" || a == "--dry-run" {
+			dry = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return dry, rest
+}
 
 // cmdAuth restores `urnet-tools auth [<auth-code>] [target]`. It delegates
 // to the targeted provider binary's `auth` subcommand, streaming output and
@@ -44,6 +62,7 @@ each provider's --unit/--user/--network.
 `)
 		return nil
 	}
+	dryRun, args := stripDryRunFlag(args)
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
@@ -51,6 +70,12 @@ each provider's --unit/--user/--network.
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
 		return err
+	}
+	// Audience trail without an extra prompt (auth is a consequential write).
+	_, _ = confirmGate("authenticate "+providerLabel(p), p, true, dryRun)
+	if dryRun {
+		fmt.Printf("[dry-run] would delegate 'provider auth' on %s\n", providerLabel(p))
+		return nil
 	}
 	return providerSubcommand(p, append([]string{"auth"}, rest...)...)
 }
@@ -73,6 +98,7 @@ network. Delegates to the provider binary and streams its output.
 `)
 		return nil
 	}
+	dryRun, args := stripDryRunFlag(args)
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
@@ -80,6 +106,13 @@ network. Delegates to the provider binary and streams its output.
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
 		return err
+	}
+	// Audience trail without an extra prompt (repointing the network is
+	// consequential).
+	_, _ = confirmGate("choose network "+providerLabel(p), p, true, dryRun)
+	if dryRun {
+		fmt.Printf("[dry-run] would delegate 'provider choose_network' on %s\n", providerLabel(p))
+		return nil
 	}
 	return providerSubcommand(p, append([]string{"choose_network"}, rest...)...)
 }
@@ -142,6 +175,37 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	return nil
 }
 
+// validateSetValue rejects values the provider would silently discard (it keeps
+// the startup default for an unparseable/out-of-range value), so the command
+// never reports an effect that provably cannot take place (review MEDIUM).
+func validateSetValue(key, value string) error {
+	switch key {
+	case "report-interval", "proxy-url-refresh", "cleanup-interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("%s: invalid duration %q (use e.g. 30s, 5m, 1h)", key, value)
+		}
+		min := 10 * time.Second
+		if key == "cleanup-interval" {
+			min = time.Minute
+		}
+		if d < min {
+			return fmt.Errorf("%s: %s is below the minimum %s", key, value, min)
+		}
+	case "proxy-url-max":
+		if n, err := strconv.Atoi(value); err != nil || n < 0 {
+			return fmt.Errorf("%s: must be a non-negative integer (got %q)", key, value)
+		}
+	case "cleanup-scope":
+		switch value {
+		case "none", "url", "all":
+		default:
+			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
+		}
+	}
+	return nil
+}
+
 // setKeyFiles maps a user-facing `set` key to the filename the provider reads
 // in its state dir. Mirrors the legacy _set_key_to_file table.
 var setKeyFiles = map[string]string{
@@ -158,10 +222,10 @@ var setKeyFiles = map[string]string{
 var setKeyHelps = []string{
 	"  node-name           <string>    node name reported to the fleet hub (default: hostname)",
 	"  report-interval     <duration>  bandwidth report cadence (default: 5m, min: 10s)",
-	"  proxy-url-max       <int>       max proxies from URL feeds, 0 = unlimited (default: 0)",
+	"  proxy-url-max       <int>       max proxies from URL feeds (default: 500)",
 	"  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)",
-	"  cleanup-scope       none|url|all  dead proxy auto-cleanup scope (default: none)",
-	"  cleanup-interval    <duration>  dead proxy cleanup interval (default: 24h, min: 1m)",
+	"  cleanup-scope       none|url|all  dead proxy auto-cleanup scope (default: url)",
+	"  cleanup-interval    <duration>  dead proxy cleanup interval (default: 6h, min: 1m)",
 	"  fast-auth           on|off      bypass auth rate limiter (marker file)",
 }
 
@@ -263,6 +327,10 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		}
 	}
 
+	if err := validateSetValue(key, value); err != nil {
+		return err
+	}
+
 	file := filepath.Join(p.StateDir, filename)
 	if value == "off" {
 		if dryRun {
@@ -280,7 +348,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		fmt.Printf("[dry-run] would set %s=%s for %s (%s)\n", key, value, providerLabel(p), file)
 		return nil
 	}
-	if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
+	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
 	// 0o644, matching the sibling override-writers: the provider often runs
@@ -316,7 +384,7 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 		fmt.Printf("[dry-run] would enable fast-auth for %s (marker %s)\n", providerLabel(p), file)
 		return nil
 	}
-	if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
+	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
 	if err := os.WriteFile(file, nil, 0o644); err != nil {

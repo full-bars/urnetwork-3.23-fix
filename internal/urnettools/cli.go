@@ -236,6 +236,10 @@ func Run(args []string) error {
 	case "choose-network", "choose_network":
 		return cmdChooseNetwork(rest)
 	case "fast-auth", "fastauth":
+		if hasHelpFlag(rest) {
+			fmt.Fprint(os.Stderr, "urnet-tools fast-auth - manage the auth rate limiter bypass\n\nUsage: urnet-tools fast-auth <on|off|status> [target]\n\n  on     bypass the auth rate limiter (writes the marker)\n  off    re-enable the rate limiter\n  status show the current state (read-only)\n")
+			return nil
+		}
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
 			return nil
@@ -245,6 +249,10 @@ func Run(args []string) error {
 		}
 		return cmdFastAuth(rest2, force, dryRun)
 	case "set":
+		if hasHelpFlag(rest) {
+			printSetHelp()
+			return nil
+		}
 		force, dryRun, rest2, err := parseGlobalFlags(rest)
 		if err == errHelpShown {
 			return nil
