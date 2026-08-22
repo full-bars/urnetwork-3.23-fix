@@ -30,18 +30,30 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	return cmd.Run()
 }
 
+// systemctlUserArgs returns the systemctl argv prefix for a user-level unit,
+// using the local session bus when the target user IS the current user and
+// -M <user>@ (machined) otherwise. Same-user invocations must not go through
+// machined because `-M` requires root privileges on journalctl and systemctl.
+func systemctlUserArgs(user string) []string {
+	if user == currentUserName() {
+		return []string{"--user"}
+	}
+	return []string{"--user", "-M", user + "@"}
+}
+
 // unitCommandArgs builds the systemctl argv for an action on the provider's
 // unit: system units use "systemctl <action> <unit>"; user units are scoped
-// to the owning user's session via "--user -M <user>@ <action> <unit>". The
-// unit name is ALWAYS the final argument — systemctl errors "Too few
-// arguments" without it (gauntlet finding: hot-restart printed that error;
-// the pre-fix unitCommandArgs omitted the unit entirely).
+// to the owning user's session via systemctlUserArgs. The unit name is
+// ALWAYS the final argument — systemctl errors "Too few arguments" without
+// it (gauntlet finding: hot-restart printed that error; the pre-fix
+// unitCommandArgs omitted the unit entirely).
 func unitCommandArgs(p Provider, action string, extra ...string) []string {
 	if p.Unit == "" {
 		return []string{"systemctl", action}
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		args := []string{"systemctl", "--user", "-M", p.User + "@", action, p.Unit}
+		args := append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+		args = append(args, action, p.Unit)
 		return append(args, extra...)
 	}
 	args := []string{"systemctl", action, p.Unit}
@@ -182,11 +194,14 @@ func cmdLogs(args []string) error {
 }
 
 // journalctlArgs builds the journalctl argv for following a provider's
-// unit: system units use "-fu <unit>"; user units are scoped to the owning
-// user's session via "-M <user>@ --user-unit <unit> -f" (a plain "-fu"
-// against a user unit name would query the SYSTEM journal instead).
+// unit: system units use "-fu <unit>"; user units for the current user
+// use "--user -u <unit> -f"; cross-user user units use "-M <user>@ --user-unit <unit> -f"
+// (as -M requires root privileges, same-user MUST use --user).
 func journalctlArgs(p Provider) []string {
 	if isUserUnit(p.Unit) && p.User != "" {
+		if p.User == currentUserName() {
+			return []string{"--user", "-u", p.Unit, "-f"}
+		}
 		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
 	}
 	return []string{"-fu", p.Unit}
@@ -203,7 +218,8 @@ func providerUsesRamlogs(p Provider) bool {
 	var out []byte
 	var err error
 	if isUserUnit(p.Unit) && p.User != "" {
-		out, err = exec.Command("systemctl", "--user", "-M", p.User+"@", "show", p.Unit, "-p", "Environment").Output()
+		args := append(systemctlUserArgs(p.User), "show", p.Unit, "-p", "Environment")
+		out, err = exec.Command("systemctl", args...).Output()
 	} else {
 		out, err = exec.Command("systemctl", "show", p.Unit, "-p", "Environment").Output()
 	}
@@ -580,11 +596,13 @@ func restartAfterDropin(p Provider) error {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
+		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
+		_ = exec.Command("systemctl", argsReload...).Run()
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
 		// provider never actually restarted (Sonnet MEDIUM-2).
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).Run()
+		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
+		return exec.Command("systemctl", argsRestart...).Run()
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	return exec.Command("systemctl", "restart", p.Unit).Run()
@@ -790,9 +808,20 @@ func optimizeFor(goos string) func() error {
 // the two connection-churn knobs that matter most for a proxy box — the
 // ephemeral port pool (ip_local_port_range) and TIME_WAIT recycling
 // (tcp_fin_timeout). Conservative; failures are logged, never fatal.
+// If run as non-root, attempts sudo sysctl if sudo is available; otherwise
+// returns an actionable error pointing to the absolute binary path.
 func optimizeLinux() error {
+	var prefix []string
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run with sudo or as root", os.Geteuid())
+		if _, err := exec.LookPath("sudo"); err == nil {
+			prefix = []string{"sudo"}
+		} else {
+			self, _ := os.Executable()
+			if self == "" {
+				self = "urnet-tools"
+			}
+			return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+		}
 	}
 	// Buffer + FD settings mirror the legacy do_optimize; the port range
 	// and TIME_WAIT knobs are new (proxy-scale outbound churn exhausts
@@ -803,8 +832,17 @@ func optimizeLinux() error {
 		{"-w", "net.ipv4.ip_local_port_range=1024 65535"},
 		{"-w", "net.ipv4.tcp_fin_timeout=15"},
 	} {
-		cmd := exec.Command("sysctl", args...)
+		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Stdin = os.Stdin
 		if out, err := cmd.CombinedOutput(); err != nil {
+			if len(prefix) > 0 && (strings.Contains(string(out), "password") || strings.Contains(string(out), "incorrect") || strings.Contains(string(out), "sudoers")) {
+				self, _ := os.Executable()
+				if self == "" {
+					self = "urnet-tools"
+				}
+				return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+			}
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
 		}
 	}
