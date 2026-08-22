@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,10 +80,17 @@ func capturePanel(t *testing.T, p Provider) string {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
 	renderStatusPanel(p)
 	w.Close()
-	var buf bytes.Buffer
-	_, _ = buf.ReadFrom(r)
+	<-done
+	r.Close()
 	return buf.String()
 }
 
