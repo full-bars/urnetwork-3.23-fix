@@ -5,6 +5,10 @@ on:
   push:
     branches: [main, "fix/*"]
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'releases/**'
 
 jobs:
   native-functional-smoke:
