@@ -19,11 +19,11 @@ func TestSelectWorstRunningProxies(t *testing.T) {
 	running := []string{"dead:1", "f:1", "a:1", "c:1", "ungrad:1"}
 	traffic := map[string]uint64{"a:1": 500, "f:1": 1000, "c:1": 700}
 	// Shed 1: dead first.
-	if got := selectWorstRunningProxies(state, traffic, running, 1); len(got) != 1 || got[0] != "dead:1" {
+	if got := selectWorstRunningProxies(state, nil, traffic, running, 1); len(got) != 1 || got[0] != "dead:1" {
 		t.Fatalf("shed 1 = %v, want [dead:1]", got)
 	}
 	// Shed 3: dead, then ungraded, then worst grade (f:1 score 0.1 < c:1 0.5).
-	got := selectWorstRunningProxies(state, traffic, running, 3)
+	got := selectWorstRunningProxies(state, nil, traffic, running, 3)
 	want := []string{"dead:1", "ungrad:1", "f:1"}
 	for i := range want {
 		if got[i] != want[i] {
@@ -41,7 +41,7 @@ func TestSelectWorstTrafficTiebreak(t *testing.T) {
 		"high:1": {Health: "up", Score: 0.5, Graded: true},
 	}
 	traffic := map[string]uint64{"low:1": 100, "high:1": 1000}
-	got := selectWorstRunningProxies(state, traffic, []string{"high:1", "low:1"}, 1)
+	got := selectWorstRunningProxies(state, nil, traffic, []string{"high:1", "low:1"}, 1)
 	if got[0] != "low:1" {
 		t.Fatalf("traffic tiebreak shed = %v, want [low:1]", got)
 	}

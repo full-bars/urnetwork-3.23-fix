@@ -393,13 +393,26 @@ func (r *ProxyReloader) reload() {
 	// budget so the pool cannot regrow above the cap until it is raised.
 	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 {
 		traffic := runningProxyTraffic()
+		// Read the URL cache here: the urlState read earlier is scoped to its own
+		// if/else and is not visible in this hook.
+		trimURLState, _ := readProxyURLState()
+		gradeFor := buildTrimGradeResolver(r.state, trimURLState, desiredSet)
 		shedCount := 0
 		if len(running) > trimCap {
+			// Shed candidates exclude addresses already selected for removal by
+			// the ordinary desired-set diff, so they do not double-count toward
+			// the budget (review finding MEDIUM).
+			excluded := make(map[string]bool, len(removed))
+			for _, a := range removed {
+				excluded[a] = true
+			}
 			rlist := make([]string, 0, len(running))
 			for a := range running {
-				rlist = append(rlist, a)
+				if !excluded[a] {
+					rlist = append(rlist, a)
+				}
 			}
-			for _, addr := range selectWorstRunningProxies(r.state.Proxies, traffic, rlist, len(running)-trimCap) {
+			for _, addr := range selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, rlist, len(running)-trimCap) {
 				if _, ok := running[addr]; ok {
 					removed = append(removed, addr)
 					delete(desiredSet, addr)
@@ -416,7 +429,7 @@ func (r *ProxyReloader) reload() {
 			for _, s := range added {
 				alist = append(alist, s.Address)
 			}
-			drop := selectWorstRunningProxies(r.state.Proxies, traffic, alist, len(added)-budget)
+			drop := selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, alist, len(added)-budget)
 			dropSet := make(map[string]bool, len(drop))
 			for _, a := range drop {
 				dropSet[a] = true
@@ -424,7 +437,9 @@ func (r *ProxyReloader) reload() {
 			kept := added[:0]
 			for _, s := range added {
 				if dropSet[s.Address] {
-					delete(desiredSet, s.Address)
+					// Deferred, not undesired: leave it in desiredSet so the
+					// prune pass keeps this proxy's grade/health history
+					// (review finding HIGH). It re-enters the budget next cycle.
 					continue
 				}
 				kept = append(kept, s)
