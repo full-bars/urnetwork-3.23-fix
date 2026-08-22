@@ -88,8 +88,8 @@ network. Delegates to the provider binary and streams its output.
 // manages the ~/.urnetwork/fast_auth marker file that bypasses the provider's
 // auth rate limiter. Existence of the marker is the on/off state (the
 // provider treats any presence of the file as unlocked), matching the legacy
-// shell do_fast_auth. Honours --dry-run.
-func cmdFastAuth(args []string, dryRun bool) error {
+// shell do_fast_auth. Honours --dry-run and the confirm/force gate.
+func cmdFastAuth(args []string, force, dryRun bool) error {
 	// Parse the full arg list for target flags FIRST, then take the action
 	// token from what remains. This matches cmdSet and means a target flag
 	// placed before the action (e.g. `fast-auth --unit myunit on`) is handled
@@ -114,30 +114,21 @@ func cmdFastAuth(args []string, dryRun bool) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	file := filepath.Join(p.StateDir, "fast_auth")
 	switch sub {
-	case "on":
-		if dryRun {
-			fmt.Printf("[dry-run] would enable fast-auth for %s (marker %s)\n", providerLabel(p), file)
-			return nil
-		}
-		if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
+	case "on", "off":
+		// Mirrors the audit-trail + confirm convention used by hub set/off and
+		// the tune commands: even -f prints the target line to stderr; without
+		// -f the operator must type an explicit yes (review finding HIGH).
+		ok, err := confirmGate("fast-auth "+sub+" "+providerLabel(p), p, force, dryRun)
+		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(file, nil, 0o644); err != nil {
-			return err
+		if !ok {
+			return nil // dry-run or declined: confirmGate printed the audit line
 		}
-		fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
-	case "off":
-		if dryRun {
-			fmt.Printf("[dry-run] would disable fast-auth for %s (remove %s)\n", providerLabel(p), file)
-			return nil
-		}
-		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		fmt.Printf("fast-auth: off for %s — auth rate limiter active\n", providerLabel(p))
+		return setFastAuthMarker(p, sub == "on", dryRun)
 	default: // "" / "status"
+		file := filepath.Join(p.StateDir, "fast_auth")
 		if _, err := os.Stat(file); err == nil {
 			fmt.Printf("fast-auth: on for %s (rate limiter bypassed)\n", providerLabel(p))
 		} else {
@@ -195,7 +186,7 @@ Duration format: Go-style, e.g. 30s, 5m, 1h, 24h.
 // cmdSet restores `urnet-tools set <key> [<value>|off] [target]`: it reads and
 // writes the provider's runtime-override files in ~/.urnetwork. The provider
 // consumes these at runtime, so no restart is needed.
-func cmdSet(args []string, dryRun bool) error {
+func cmdSet(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -227,6 +218,15 @@ func cmdSet(args []string, dryRun bool) error {
 	}
 	if len(rest) > 2 {
 		return fmt.Errorf("set takes <key> [<value>|off] (got %v)", rest[1:])
+	}
+	// Gate before mutating the state dir, like the other single-target write
+	// commands (audit line to stderr even under -f; explicit yes otherwise).
+	ok, err := confirmGate(fmt.Sprintf("set %s on %s", key, providerLabel(p)), p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run or declined: confirmGate printed the audit line
 	}
 	return applySetOverride(p, key, rest[1], dryRun)
 }
