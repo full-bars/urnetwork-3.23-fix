@@ -787,8 +787,8 @@ Options:
                                      credentials). Removes matches from the proxy list, proxy file, and URL
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
-    <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
                                      With no pattern, 'proxy exclude' lists active patterns.
+    <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
 		DefaultApiUrl,
