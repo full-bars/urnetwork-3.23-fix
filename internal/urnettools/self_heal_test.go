@@ -11,6 +11,7 @@ import (
 func TestCmdSelfHealRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// status with no marker -> off
 	if err := cmdSelfHeal([]string{"status"}); err != nil {
