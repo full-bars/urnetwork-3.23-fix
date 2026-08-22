@@ -20,8 +20,9 @@ curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 The tool is self-updating afterwards:
 
 ```sh
-urnet-docker update          # update the tool binary itself (containers update by image pull)
-urnet-tools self-update      # same, for the process/systemd tool
+urnet-docker update                  # update the tool binary itself
+urnet-docker update --unit urfix     # update a provider container in place (no recreate)
+urnet-tools self-update              # same, for the process/systemd tool
 ```
 
 Common host-side commands:
@@ -37,7 +38,7 @@ urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 ```
 
 > [!NOTE]
-> Containers themselves update by pulling new images and recreating the container (e.g. via Docker Compose or Watchtower).
+> `urnet-docker update` with a target flag (such as `--unit`) updates a provider container in place. The container ID stays the same. Plain `urnet-docker update` with no target updates only the host tool binary. Containers can also be updated by pulling a new image and recreating the container (e.g. via Docker Compose or Watchtower).
 
 ## 🗄️ Image Registries
 
