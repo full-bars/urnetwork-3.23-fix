@@ -35,9 +35,9 @@ type ProxyEntry struct {
 	// Score is the stage-1 table probe result (ok/total) from the last
 	// graded pass, 0 when the entry has never been graded. Mirrors the URL
 	// store's ProxyURLEntry fields so fleet grading consumes both stores
-	// uniformly. Written ONLY by the paid/file-proxy grading sweep — the
-	// admission and eviction paths never read or write these fields, so
-	// grades for non-URL proxies are read-only advisory by construction.
+	// uniformly. Written ONLY by the paid/file-proxy grading sweep. The
+	// admission and eviction paths never read or write these fields; the
+	// operator proxy-trim shed ranking DOES read them (see proxy_trim.go).
 	Score float64 `json:"score,omitempty"`
 	// Graded is true once a stage-1 table probe has recorded a DECIDABLE
 	// result for this proxy. Distinct from Score: a decidable 0.0 is a

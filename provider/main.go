@@ -2988,6 +2988,11 @@ func provide(opts docopt.Opts) {
 		drainingProxies: make(map[string]context.CancelFunc),
 	}
 	reloader.StartWatcher(ctx)
+	// Enforce an operator trim cap immediately at startup. The initial launch
+	// loop spawns every entry in the source, so without this the first reload
+	// reconciler tick (up to an hour later) would be the first time the cap
+	// binds (review finding HIGH).
+	reloader.reload()
 
 	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
 	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
