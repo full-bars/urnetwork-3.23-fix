@@ -69,11 +69,13 @@ func discoverDockerContainers() []dockerContainer {
 }
 
 // isDockerCandidate reports whether an image/name pair looks like a
-// URnetwork provider container.
+// URnetwork provider container (including meso-miner images).
 func isDockerCandidate(image, name string) bool {
 	il := strings.ToLower(image)
 	nl := strings.ToLower(name)
-	return strings.Contains(il, "urnetwork") || strings.Contains(nl, "urnet")
+	return strings.Contains(il, "urnetwork") || strings.Contains(nl, "urnet") ||
+		strings.Contains(il, "meso") || strings.Contains(nl, "meso") ||
+		strings.Contains(il, "miner") || strings.Contains(nl, "miner")
 }
 
 // containerStateDir resolves the provider state dir inside the container:
