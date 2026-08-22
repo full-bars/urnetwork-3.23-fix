@@ -315,4 +315,3 @@ func TestCleanupLifecycleNoUnit(t *testing.T) {
 	p := Provider{User: "testuser", Unit: ""}
 	cleanupLifecycle(p) // must not panic
 }
-
