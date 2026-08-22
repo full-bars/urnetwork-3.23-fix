@@ -69,7 +69,7 @@ Core Commands:
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
   report <url> [target]   set hub report URL inside container (no restart)
-  update [target]          update host binary (no target) or provider in a container in place (target)
+  update [--unit <name>]    update host binary, or a container's provider in place (no recreate)
   version                 print tool version
 
 Proxy Management [target]:
@@ -451,10 +451,13 @@ func cmdDockerAuth(args []string) error {
 // cmdDockerChooseNetwork delegates choose_network into the container.
 func cmdDockerChooseNetwork(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags (e.g. --reset) survive and are
+	// forwarded to the container command (regression fix).
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
