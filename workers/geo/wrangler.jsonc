@@ -1,0 +1,8 @@
+{
+  "name": "geo",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-01",
+  "routes": [
+    { "pattern": "geo.fullbars.xyz/*", "zone_name": "fullbars.xyz" }
+  ]
+}

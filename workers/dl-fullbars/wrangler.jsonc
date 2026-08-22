@@ -1,0 +1,9 @@
+{
+  "name": "dl-fullbars",
+  "main": "src/index.js",
+  "compatibility_date": "2025-02-04",
+  "routes": [
+    { "pattern": "dl.fullbars.xyz/latest-version", "zone_name": "fullbars.xyz" },
+    { "pattern": "dl.fullbars.xyz/releases/download/*", "zone_name": "fullbars.xyz" }
+  ]
+}

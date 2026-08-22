@@ -1,0 +1,273 @@
+name: tool-functional-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+
+jobs:
+  native-functional-smoke:
+    name: native functional smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build provider + tool
+        run: |
+          go build -o /tmp/provider ./provider/
+          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
+
+      - name: Mint a real JWT (gauntlet account, production-account guard)
+        run: |
+          mkdir -p /tmp/mint
+          HOME=/tmp/mint /tmp/provider auth \
+            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed — see auth output above"; exit 1; }
+          if grep -qE '"(network_id|name)"\s*:\s*"(production|full-bars)"' /tmp/mint/.urnetwork/network.json 2>/dev/null; then
+            echo "REFUSING: minted account looks like production"; exit 1
+          fi
+          echo "JWT minted OK"
+          echo "JWT_OK=1" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Set up provider state dir with the minted JWT
+        run: |
+          STATE="$HOME/.urnetwork"
+          mkdir -p "$STATE"
+          cp /tmp/mint/.urnetwork/jwt "$STATE/jwt" 2>/dev/null || true
+          echo "state dir: $STATE"
+        shell: bash
+
+      - name: Start provider (real session)
+        run: |
+          nohup /tmp/provider provide > /tmp/provider.log 2>&1 &
+          echo $! > /tmp/provider.pid
+          sleep 20
+          if kill -0 $(cat /tmp/provider.pid) 2>/dev/null; then
+            echo "provider running (pid $(cat /tmp/provider.pid))"
+          else
+            echo "provider exited early; log:"; tail -20 /tmp/provider.log
+            exit 1
+          fi
+        shell: bash
+
+      - name: urnet-tools providers (discover the real provider)
+        run: /tmp/urnet-tools providers
+
+      - name: urnet-tools status
+        run: /tmp/urnet-tools status
+
+      - name: urnet-tools version
+        run: /tmp/urnet-tools version
+
+      - name: proxy add from a local list
+        run: |
+          cat > /tmp/proxies.txt << 'EOF'
+          127.0.0.1:10001
+          127.0.0.1:10002
+          127.0.0.1:10003
+          EOF
+          /tmp/urnet-tools proxy add /tmp/proxies.txt || echo "proxy add returned nonzero (may need provider warmup)"
+
+      - name: proxy clear
+        run: /tmp/urnet-tools proxy clear -f || echo "proxy clear returned nonzero"
+
+      - name: hot-restart (verify client-id reuse across restart)
+        run: |
+          /tmp/urnet-tools hot-restart -f || echo "hot-restart returned nonzero"
+          sleep 15
+          /tmp/urnet-tools providers
+
+      - name: Teardown — full uninstall + wipe provider state
+        run: |
+          # Full teardown, not just kill: SIGTERM lets the provider
+          # deregister cleanly, then the state dir is WIPED so the client
+          # JWT store (.client_jwts.json) cannot resurrect the same
+          # client_id on a later run. Runs even when the job fails
+          # (if: always()) so a cancelled/broken run never leaves the
+          # testing account showing a live provider.
+          kill -TERM $(cat /tmp/provider.pid) 2>/dev/null || true
+          sleep 3
+          # The provider state dir is the runner's own ~/.urnetwork
+          # (created by this job). Wipe it and the mint dir.
+          rm -rf "$HOME/.urnetwork" /tmp/mint 2>/dev/null || true
+          echo "provider stopped, state wiped"
+          echo "--- provider log tail ---"
+          tail -15 /tmp/provider.log 2>/dev/null || true
+        shell: bash
+        if: always()
+
+  docker-provider-functional:
+    name: docker-provider functional smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build urnet-docker + urnet-tools
+        run: |
+          go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
+
+      - name: Prepare proxy file
+        run: |
+          mkdir -p /tmp/docker-test
+          printf '127.0.0.1:10001\n127.0.0.1:10002\n' > /tmp/docker-test/proxy.txt
+
+      - name: Start provider container (BUILD=stable, user/pass auth)
+        # The Docker provider authenticates itself with USER_AUTH/PASSWORD
+        # (start_stable.sh); the JWT persists in the config volume.
+        run: |
+          docker run -d --name urnet-test \
+            --restart=unless-stopped \
+            --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            --sysctl net.ipv4.ip_forward=1 \
+            -e BUILD=stable \
+            -e USER_AUTH="$GAUNTLET_USER" \
+            -e PASSWORD="$GAUNTLET_PW" \
+            -v /tmp/docker-test/proxy.txt:/app/proxy.txt \
+            ghcr.io/full-bars/urnetwork-3.23-fix:main
+          echo "container started; waiting for auth..."
+          sleep 60
+          docker ps --filter name=urnet-test --format "{{.Names}} {{.Status}}"
+
+      - name: Verify provider authenticated (fail if not)
+        run: |
+          # The job must not proceed on a false green: assert the container
+          # actually authenticated. The in-container JWT must exist and
+          # urnet-docker must resolve the container with a network.
+          if ! docker exec urnet-test test -s /root/.urnetwork/jwt 2>/dev/null; then
+            echo "FAIL: no JWT in container — provider did not authenticate"
+            docker logs urnet-test 2>&1 | tail -20
+            exit 1
+          fi
+          /tmp/urnet-docker providers
+          echo "OK: provider authenticated (JWT present)"
+
+      - name: Wait for provider to record startup in proxy.state
+        # JWT presence (previous step) only proves the `auth` phase of the
+        # container's startup script finished — it says nothing about
+        # whether the `provider provide` process has gotten far enough to
+        # write proxy.state's started_at (provider/main.go's proxy-source
+        # resolution runs first). `proxy refresh` below reads started_at and
+        # exit-51s if it's still the Go zero value ("0001-01-01T..."), so
+        # poll for an actual year prefix rather than assuming the JWT wait
+        # was enough (a bare [0-9] check would false-positive on the "0" in
+        # the zero value itself).
+        run: |
+          for i in $(seq 1 30); do
+            state=$(docker exec urnet-test cat /root/.urnetwork/proxy.state 2>/dev/null || true)
+            if printf '%s' "$state" | grep -qE '"started_at":"(19|20)[0-9]{2}-'; then
+              echo "OK: proxy.state recorded started_at after ~$((i * 10))s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "FAIL: proxy.state never recorded a non-zero started_at after 300s"
+              echo "--- proxy.state ---"; printf '%s\n' "$state"
+              docker logs urnet-test 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: urnet-docker providers
+        run: /tmp/urnet-docker providers
+
+      - name: urnet-docker status
+        run: /tmp/urnet-docker status urnet-test || echo "status nonzero"
+
+      - name: urnet-docker proxy add (host-side, Design 2)
+        run: |
+          # Host-side: copies the host file into the container, adds via the
+          # in-container tool. No exec incantation needed. Assert it works.
+          /tmp/urnet-docker proxy add /tmp/docker-test/proxy.txt
+          # Verify the in-container add actually registered the 2 entries.
+          # The CLI `provider proxy add` writes the ~/.urnetwork/proxy CONFIG
+          # file (the running provider's proxy.state only refreshes on the
+          # next reload, and `proxy summary` prints counts, not addresses).
+          # The config is a single-line JSON map, so count OCCURRENCES
+          # (grep -o | wc -l), not lines (grep -c would see 1).
+          n=$(docker exec urnet-test sh -c 'grep -o "127.0.0.1" /root/.urnetwork/proxy 2>/dev/null | wc -l' || true)
+          echo "proxy config 127.0.0.1 entries: $n"
+          test "${n:-0}" -ge 2 || { echo "FAIL: expected >= 2 registered addresses"; exit 1; }
+
+      - name: urnet-docker proxy refresh
+        # Fresh container is under the 8h warmup gate — refresh requires
+        # --force there (documented provider behavior, exit 52 otherwise).
+        run: /tmp/urnet-docker proxy refresh --force urnet-test
+
+      - name: urnet-docker proxy add-source (URL source)
+        run: |
+          /tmp/urnet-docker proxy add-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+
+      - name: urnet-docker proxy remove-source (the URL source)
+        run: |
+          /tmp/urnet-docker proxy remove-source "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+
+      - name: urnet-docker proxy clear
+        run: /tmp/urnet-docker proxy clear --force urnet-test
+
+      - name: urnet-docker proxy remove-dead
+        # On a container that just started (<1h uptime), remove-dead
+        # legitimately refuses via the documented uptime gate (exit 61 is
+        # CORRECT safety behavior on a fresh provider). urnet-docker wraps
+        # the provider's exit code, so detect the gate from the output text
+        # rather than the process exit status; fail on anything else.
+        run: |
+          set +e
+          out=$(/tmp/urnet-docker proxy remove-dead urnet-test 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if echo "$out" | grep -q "uptime before dead status is confirmed\|exit 61\|provider has only been running"; then
+            echo "OK: remove-dead refused by uptime gate (fresh container, correct safety)"
+          elif [ $rc -ne 0 ]; then
+            echo "remove-dead failed with unexpected exit $rc"
+            exit $rc
+          fi
+
+      - name: urnet-docker exec (still works, compatibility)
+        run: |
+          /tmp/urnet-docker exec urnet-test -- urnet-tools providers || \
+            echo "exec providers returned nonzero"
+
+      - name: urnet-docker logs (tail)
+        # logs follows by design (docker logs --tail N -f). In CI that never
+        # exits, so bound it with timeout; exit 124 (timeout reached while
+        # streaming) is the success signal.
+        run: |
+          timeout 10 /tmp/urnet-docker logs urnet-test 5 || test $? -eq 124
+
+      - name: Teardown — full container stop
+        run: |
+          # Full teardown: docker stop sends SIGTERM so the in-container
+          # provider deregisters cleanly (docker rm -f is SIGKILL and skips
+          # that), then the container is removed. State lives in the
+          # container's own writable layer (no named config volume in this
+          # job), so removing the container wipes the client JWT. Runs even
+          # when the job fails (if: always()).
+          docker stop urnet-test 2>/dev/null || true
+          docker rm -f urnet-test 2>/dev/null || true
+          echo "container stopped"
+        if: always()

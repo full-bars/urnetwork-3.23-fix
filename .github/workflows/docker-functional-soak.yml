@@ -1,0 +1,135 @@
+name: docker-functional-soak
+
+on:
+  # Manual-only: a multi-hour test must not auto-fire on push.
+  workflow_dispatch:
+
+jobs:
+  docker-soak:
+    name: Docker provider soak (accelerated, ~3h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build urnet-docker
+        run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+
+      - name: Build the provider image locally (includes the wrapper fix)
+        # Pulling :latest would test the STALE published image (old wrapper
+        # without the clear fix). Build from the checkout so the soak tests
+        # the current code, mirroring the binary soak.
+        run: |
+          docker build -t urnetwork-test:local .
+          echo "local image built"
+
+      - name: Start provider container (BUILD=stable, capped at 25)
+        run: |
+          cat > /tmp/docker-compose.yml << 'EOF'
+          services:
+            urfix-soak:
+              image: urnetwork-test:local
+              container_name: urfix-soak
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=stable
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
+                - URNETWORK_NODE_NAME=urfix-soak
+                - URNETWORK_PROFILE=auto
+                # Cap URL-sourced proxies at 25 (ToS-conscious, small footprint).
+                - PROXY_URL_MAX=25
+              volumes:
+                - ur_config:/root/.urnetwork
+          volumes:
+            ur_config:
+          EOF
+          cd /tmp && docker compose -f docker-compose.yml up -d
+          echo "container started; waiting for auth..."
+          sleep 90
+          docker ps --filter name=urfix-soak --format "{{.Names}} {{.Status}}"
+
+      - name: Verify provider authenticated (fail if not)
+        run: |
+          if ! docker exec urfix-soak test -s /root/.urnetwork/jwt 2>/dev/null; then
+            echo "FAIL: no JWT in container — provider did not authenticate"
+            docker logs urfix-soak 2>&1 | tail -20
+            exit 1
+          fi
+          echo "OK: provider authenticated"
+
+      - name: Add URL source via urnet-docker (host-side, Design 2)
+        run: |
+          /tmp/urnet-docker proxy add-source --unit urfix-soak \
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+
+      - name: Basic tool commands
+        run: |
+          /tmp/urnet-docker providers
+          /tmp/urnet-docker status urfix-soak | head -8
+
+      - name: Soak block 1 (50 min pool observation)
+        run: |
+          for i in $(seq 1 10); do
+            echo "--- block1 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-docker exec --unit urfix-soak -- urnet-tools proxy summary 2>/dev/null | head -5 || true
+            /tmp/urnet-docker providers
+            sleep 300
+          done
+
+      - name: proxy clear (tests the wrapper fix) + refresh
+        run: |
+          /tmp/urnet-docker proxy clear --unit urfix-soak
+          # --force bypasses the 8-12h warmup gate (refresh's usage has
+          # [--force]; the gate lives in proxyRefresh). Without it a fresh
+          # provider exits 52.
+          /tmp/urnet-docker proxy refresh --force --unit urfix-soak
+          sleep 30
+          /tmp/urnet-docker providers
+
+      - name: Soak block 2 (50 min pool observation)
+        run: |
+          for i in $(seq 1 10); do
+            echo "--- block2 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-docker exec --unit urfix-soak -- urnet-tools proxy summary 2>/dev/null | head -5 || true
+            /tmp/urnet-docker providers
+            sleep 300
+          done
+
+      - name: Container restart (client-ID reuse check)
+        run: |
+          /tmp/urnet-docker restart --force urfix-soak
+          sleep 30
+          /tmp/urnet-docker providers
+
+      - name: Soak block 3 (50 min pool observation)
+        run: |
+          for i in $(seq 1 10); do
+            echo "--- block3 window $i @ $(date -u +%T) ---"
+            /tmp/urnet-docker exec --unit urfix-soak -- urnet-tools proxy summary 2>/dev/null | head -5 || true
+            /tmp/urnet-docker providers
+            sleep 300
+          done
+
+      - name: Teardown
+        run: |
+          # Full teardown: SIGTERM (compose stop) lets the in-container
+          # provider deregister, then -v removes the config volume so the
+          # client JWT cannot persist. Runs even when the job fails.
+          cd /tmp && docker compose -f docker-compose.yml stop 2>/dev/null || true
+          docker compose -f docker-compose.yml down -v 2>/dev/null || true
+          echo "--- container logs (errors) ---"
+          docker logs urfix-soak 2>&1 | grep -iE "error|panic|fatal" | tail -10 || echo "no errors"
+        if: always()

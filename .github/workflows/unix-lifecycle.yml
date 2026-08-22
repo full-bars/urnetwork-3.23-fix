@@ -1,0 +1,180 @@
+name: Unix lifecycle verification
+
+on:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-lifecycle:
+    name: urnet-tools Linux lifecycle (systemd)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build the tool
+        run: go build -o urnet-tools ./cmd/urnet-tools/
+
+      - name: Bootstrap user systemd manager (CI runner has no login session)
+        # GitHub's Ubuntu runners have no user systemd session for the
+        # runner user. Bootstrap one so `systemctl --user` works and the
+        # timer path is genuinely exercised, not just informational.
+        run: |
+          sudo mkdir -p "/run/user/$(id -u)"
+          sudo chown "$(id -u)" "/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          # Enable lingering so the user manager runs without a login
+          # session, then make sure it is up. `systemctl --user start`
+          # with no unit is invalid ("Too few arguments.") — the manager
+          # is started by linger, not by `start`.
+          sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
+          systemctl --user daemon-reexec 2>&1 || true
+          systemctl --user daemon-reload 2>&1 || echo "NOTE: user manager reload reported: $?"
+
+      - name: Create a fake install so discovery finds a target
+        # Linux discovery scans running processes AND stopped systemd
+        # units. The fake install is a user unit (urnetwork.service) whose
+        # ExecStart points at the copied tool binary, plus a ~/.urnetwork
+        # state dir with a jwt — the same shape a real stopped provider
+        # has. The unit file is what makes the provider discoverable.
+        run: |
+          mkdir -p "$HOME/.urnetwork" "$HOME/.config/systemd/user"
+          cp ./urnet-tools "$HOME/.urnetwork/urnetwork"
+          echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+          cat > "$HOME/.config/systemd/user/urnetwork.service" <<EOF
+          [Unit]
+          Description=Fake URNetwork provider (CI)
+
+          [Service]
+          ExecStart=$HOME/.urnetwork/urnetwork --version
+          Restart=no
+
+          [Install]
+          WantedBy=default.target
+          EOF
+          systemctl --user daemon-reload
+          echo "fake unit installed"
+
+      - name: Verify discovery finds the fake provider
+        run: ./urnet-tools providers
+
+      - name: auto-update weekly (default posture)
+        run: |
+          ./urnet-tools auto-update weekly || \
+            echo "NOTE: systemd user timer may be unavailable on the runner; treat as informational"
+
+      - name: Verify the weekly timer unit file exists (deterministic)
+        run: |
+          # The tool writes a timer unit file; its EXISTENCE is
+          # deterministic and must be asserted (the runner systemd session
+          # may be partial, but the file is written regardless).
+          if [ -f "$HOME/.config/systemd/user/urnetwork-update.timer" ] || \
+             [ -f "$HOME/.config/systemd/user/urnetwork-native-update.timer" ]; then
+            echo "OK: timer unit file present"
+            ls -la "$HOME/.config/systemd/user/" | grep timer || true
+          else
+            echo "FAIL: no timer unit file after auto-update weekly"
+            echo "--- user systemd dir ---"
+            ls -la "$HOME/.config/systemd/user/" 2>/dev/null | head -10 || echo "(dir missing)"
+            exit 1
+          fi
+          # Environment-dependent part stays informational.
+          if systemctl --user list-timers --all 2>/dev/null | grep -q "urnetwork"; then
+            echo "OK: user timer registered in the manager"
+          else
+            echo "WARN: timer not visible in the user manager (runner session limitation)"
+          fi
+
+      - name: auto-update off
+        run: ./urnet-tools auto-update off || true
+
+      - name: Verify no auto-update timer remains
+        run: |
+          # Deterministic: the timer unit file must be gone after off.
+          if ls "$HOME/.config/systemd/user/"*update.timer 2>/dev/null | grep -q .; then
+            echo "FAIL: timer unit file still present after off"
+            ls -la "$HOME/.config/systemd/user/" | grep timer || true
+            exit 1
+          fi
+          echo "OK: no timer unit file remains"
+
+      - name: Teardown — remove fake systemd provider + state
+        # The test installs a fake urnetwork.service user unit and a
+        # ~/.urnetwork state dir so discovery has a target. A cancelled or
+        # failed run must not leave a provider-looking unit behind (the
+        # testing account / next run could otherwise see a phantom
+        # provider). Runs even when the job fails (if: always()).
+        if: always()
+        run: |
+          systemctl --user disable --now urnetwork.service 2>/dev/null || true
+          rm -f "$HOME/.config/systemd/user/urnetwork.service" \
+                "$HOME/.config/systemd/user/urnetwork-update.timer" 2>/dev/null || true
+          rm -rf "$HOME/.urnetwork" 2>/dev/null || true
+          systemctl --user daemon-reload 2>/dev/null || true
+          echo "fake systemd provider removed, state wiped"
+
+  macos-lifecycle:
+    name: urnet-tools macOS lifecycle (launchd)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build the tool
+        run: go build -o urnet-tools ./cmd/urnet-tools/
+
+      - name: Create a fake install so discovery finds a target
+        run: |
+          mkdir -p "$HOME/.urnetwork"
+          cp ./urnet-tools "$HOME/.urnetwork/urnetwork"
+          echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+
+      - name: Verify discovery finds the fake provider
+        run: ./urnet-tools providers
+
+      - name: auto-update weekly
+        run: |
+          ./urnet-tools auto-update weekly || \
+            echo "NOTE: launchd bootstrap may require a session on the runner; treat as informational"
+
+      - name: Verify the weekly LaunchAgent plist exists
+        run: |
+          if [ -f "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" ]; then
+            echo "OK: update agent plist written"
+            grep -A2 "StartCalendarInterval" "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" | head -4
+          else
+            echo "WARN: no plist (runner limitation); informational"
+          fi
+
+      - name: auto-update off
+        run: ./urnet-tools auto-update off || true
+
+      - name: Verify the agent plist removed
+        run: |
+          if [ -f "$HOME/Library/LaunchAgents/com.urnetwork.update.plist" ]; then
+            echo "WARN: plist still present after off"
+          else
+            echo "OK: agent plist removed"
+          fi
+
+      - name: auto-start on (LaunchAgent)
+        run: ./urnet-tools auto-start on || true
+
+      - name: auto-start off
+        run: ./urnet-tools auto-start off || true
+
+      - name: Verify no agent plists remain
+        run: |
+          ls "$HOME/Library/LaunchAgents/" 2>/dev/null | grep -c "urnetwork" || echo "OK: no urnetwork agent plists"

@@ -1,0 +1,536 @@
+syntax = "proto3";
+package bringyour;
+
+
+option go_package = "github.com/urnetwork/connect/protocol";
+
+
+import "frame.proto";
+
+
+// changes 2026-03:
+// 1. stream_version added to create contract.
+//    unset (default) disables streams on companion contracts
+//    1 enables streams on companion contracts
+// 2. TransferPath now allows source, destination, and stream to be set simultaneously
+// changes 2024-08: 
+// 1. transfer can now be addressed to/from a stream_id
+//    Anywhere transfer would be addressed to a destination_id or from a source_id,
+//    it can now be to/from a stream_id.
+// 2. stream_ids are created by adding intermediary_destination_ids to CreateContract
+// 3. multi-hop state is created with StreamOpen
+//    This is sent each time a stream contract is created,
+//    so that the hop state can time out the same as the sender state.
+
+message TransferPath {
+    // ulid
+    optional bytes source_id = 2;
+    // ulid
+    optional bytes destination_id = 1;
+    // ulid
+    optional bytes stream_id = 3;
+}
+
+
+// when `EncryptedTransferFrame` is set, only `TransferPath` is expected to set
+// the rest of the values will come from decrypting the `EncryptedTransferFrame` bytes
+message TransferFrame {
+    TransferPath transfer_path = 1;
+    optional Frame frame = 2 [deprecated = true];
+    optional MessageType message_type = 3 [deprecated = true];
+    optional Pack pack = 4;
+    optional Ack ack = 5;
+    optional bytes encryptedTransferFrame = 6;
+    // Performance hint for `encryptedTransferFrame`: the role of the
+    // per-peer session that produced the wrapped bytes. The receiver
+    // decrypts with the complement local session. When unset
+    // (`SequenceRoleUnknown`) the receiver trial-decrypts against every
+    // per-peer session it holds — senders may leave it unset for
+    // additional on-wire anonymity. Ignored for plaintext frames.
+    optional SequenceRole session_role = 7;
+    // Performance hint paired with `session_role`: the companion bit of the
+    // producing session. Stamped on EncryptedControl carrier packs and on
+    // wrapped frames. When unset, the receiver trial-decrypts / trial-routes
+    // across both companion values for the (complement) role — exactly as an
+    // unset `session_role` trials both roles. Unlike `session_role`, companion
+    // is not complemented by the receiver: both peers of a session share the
+    // same companion identity. `optional` so "unset" (trial) stays
+    // distinguishable from an explicit `false`.
+    optional bool session_companion = 8;
+}
+
+// SequenceRole identifies which side of a per-peer encryption session
+// (TLS client/initiator or TLS server/responder) a frame or control
+// message originated from. Each ordered pair of peers can run up to two
+// independent sessions: one where the local client is the TLS client
+// (carrying the local client's outbound application data) and one where
+// it is the TLS server (responding to the peer's initiation). The
+// receiver of a session-tagged message routes to the complement local
+// session: a `SequenceRoleClient` message is consumed by the receiver's
+// server-role session, and vice versa.
+enum SequenceRole {
+    // Unset. On a `TransferFrame` this means "no hint" (trial-decrypt).
+    // On an `EncryptedControl` it is invalid — the sender always sets a
+    // concrete role.
+    SequenceRoleUnknown = 0;
+    // The sender holds the TLS-client (initiator) role for the session
+    // that produced this frame/control.
+    SequenceRoleClient = 1;
+    // The sender holds the TLS-server (responder) role.
+    SequenceRoleServer = 2;
+}
+
+
+// this is the minimal subset of `TransferFrame` used when making a routing decision
+message FilteredTransferFrame {
+    TransferPath transfer_path = 1;
+}
+
+
+message Pack {
+    // ulid
+    bytes message_id = 1;
+    // ulid
+    bytes sequence_id = 2;
+    uint64 sequence_number = 3;
+    // this marks the head message in the sender's sequence
+    // it means that any message with an earlier sequence_id won't arrive
+    // and is used when a receiver is recreated with zero state
+    bool head = 4;
+
+    repeated Frame frames = 5;
+
+    // when true, deliver out of sequence with no acks and no retry
+    // use true when there is an external transfer control
+    // default to false for backward compatibility
+    bool nack = 6;
+
+    optional Frame contract_frame = 7;
+
+    // this is threaded back by the `Ack`
+    // so that the client can compute a single message rtt
+    optional Tag tag = 8;
+
+    // contract_id lock
+    // this is required for nack messages. There is no need to set this for ack messages.
+    // ulid
+    optional bytes contract_id = 9;
+}
+
+
+// used for deep message inspection
+message FilteredPack {
+    optional Frame contract_frame = 7;
+}
+
+
+// ack of a later message means all prior messages have been ackd
+message Ack {
+    // ulid
+    bytes message_id = 1;
+    // ulid
+    bytes sequence_id = 2;
+    // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
+    bool selective = 3;
+
+    // from the `Pack` this responds to
+    optional Tag tag = 4;
+}
+
+
+message Tag {
+    uint64 send_time = 1;
+}
+
+
+// this is a connection local message that is sent at the start of each connection to the control platform
+// there is no response. the other side will close the connection if no auth
+// no auth can happen if the jwt is not valid, or the client_id is not associated with the jwt
+// note that association of the client_id to the jwt uses the api (see openapi spec in the api dir)
+message Auth {
+    // the jwt will have the client_id in it
+    string by_jwt = 1;
+    // the version of the app, a semver managed by warp
+    string app_version = 2;
+
+    // the pair (client_id, instance_id) represents a single in memory instance
+    // this helps the platform distinguish multiple instances from multiple transports of the same instance
+    bytes instance_id = 3;
+}
+
+
+// CHANGE FROM PRIOR VERSION, modes should be considered individually as a mask and do not imply other modes
+enum ProvideMode {
+    None = 0; // this is interpreted the same as a `null` provide mode
+    Network = 1;
+    FriendsAndFamily = 2;
+    Public = 3;
+    Stream = 4;
+    PublicStream = 5;
+}
+
+
+message Provide {
+    repeated ProvideKey keys = 1;
+}
+
+
+message ProvideKey {
+    ProvideMode mode = 1;
+    // used to sign the `StoredContract` bytes
+    bytes provide_secret_key = 2;
+}
+
+
+// each hop on the stream receives this to configure its state,
+// including the first and last hops
+// this is sent each time a stream contract is created
+message StreamOpen {
+    // ulid
+    optional bytes source_id = 2;
+    // ulid
+    optional bytes destination_id = 1;
+    // ulid
+    bytes stream_id = 3;
+}
+
+// each hop on the stream receives this to configure its state
+// this is sent when all open contracts for the stream are closed
+message StreamClose {
+    // ulid
+    bytes stream_id = 3;
+}
+
+message StreamReset {
+    repeated StreamOpen streams = 1;
+}
+
+// a network peer: a connected top-level client in the same network and its
+// identity metadata. When `disconnect_time` is set, this entry is a
+// disconnect marker for a recently disconnected peer.
+message NetworkPeer {
+    // ulid
+    bytes client_id = 1;
+    // the peer's enabled provide modes
+    repeated ProvideMode provide_modes = 2;
+    // identity principal assigned at client creation
+    string principal = 3;
+    // roles assigned at client creation
+    repeated string roles = 4;
+    string device_name = 5;
+    string device_spec = 6;
+    // unix milliseconds. Set when the peer recently disconnected;
+    // the receiver ages the marker out locally
+    optional uint64 disconnect_time = 7;
+}
+
+// control message. Marks the start of a complete network peers list;
+// the receiver clears its peer state. The complete list follows as
+// `NetworkPeersUpdate` messages.
+message NetworkPeersReset {
+}
+
+// control message. Upserts peers (and disconnect markers) into the
+// receiver's peer state.
+message NetworkPeersUpdate {
+    repeated NetworkPeer peers = 1;
+}
+
+
+enum SignalType {
+    // reset means clear all previous signals for the transfer peer pair
+    NoSignal = 0;
+    SdpOffer = 1;
+    SdpAnswer = 2;
+    IceCandidate = 3;
+    WaitingForSdpOffer = 4;
+}
+
+message ExchangeSignals {
+    // ulid
+    bytes stream_id = 1;
+    bool reset_signals = 2;
+    repeated ExchangeSignal signals = 3;
+    // Per-PeerConnection sender generation. This disambiguates a delayed
+    // initial WaitingForSdpOffer from a newly restarted passive association.
+    // Older peers omit/ignore it and retain the legacy compatibility path.
+    bytes sender_generation_id = 4;
+}
+
+// signals are sent in real time to the destination of the peer pair
+message ExchangeSignal {
+    SignalType signal_type = 3;
+
+    // json encoded using the structure in the code
+    optional bytes sdp = 4;
+    // json encoded using the structure in the code
+    optional bytes ice_candidate = 5;
+}
+
+
+
+// control message to create a contract
+// platform sends a CreateContractResult
+message CreateContract {
+    // ulid
+    optional bytes destination_id = 1;
+    uint64 transfer_byte_count = 2;
+    // restrict the contract to a companion of an existing open contract
+    bool companion = 3;
+    // ulids
+    repeated bytes used_contract_ids = 4;
+
+    // ulids
+    repeated bytes intermediary_ids = 5;
+    // optional bytes stream_id = 6 [deprecated=true];
+    reserved 6;
+    reserved "stream_id";
+
+    // stream will be used when intermediary_ids or stream_id is set
+    // in the case of wanting to use streams with no intermediaries, set `force_stream=true`
+    optional bool force_stream = 7;
+    // see stream version reference at top
+    optional uint32 stream_version = 8;
+}
+// the creator knows all the hops on the stream from the enumerated linpaths
+// when evaluating the completed contracts, the send and receive count involving the source_id
+// is the baseline to evaluate the other contracts for disputes
+
+
+enum ContractError {
+    NoPermission = 0;
+    InsufficientBalance = 1;
+    Setup = 2;
+    Trust = 3;
+    Invalid = 4;
+}
+
+
+message CreateContractResult {
+    optional ContractError error = 1;
+    // the public contract to share with the transfer destination
+    // note this may contain a `stream_id` which directs the client to switch to a stream
+    optional Contract contract = 2;
+
+    // echo the `CreateContract` to allow associating the result with the request
+    optional CreateContract create_contract = 3;
+}
+
+
+// append this message inline a pack to enable the connection
+message Contract {
+    // ulid
+    bytes stored_contract_bytes = 1;
+    // `stored_contract_bytes` signed with the `provider_secret_key`
+    bytes stored_contract_hmac = 2;
+    // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
+    ProvideMode provide_mode = 3;
+    // PEM-encoded X.509 certificate chain (leaf first) that the destination is
+    // bound to use as its server TLS identity for this contract. Each entry is
+    // one PEM block. The sender verifies that the certificate observed during
+    // the SendSequence TLS handshake matches a certificate in this chain. The
+    // platform populates this from the destination's
+    // `ProvideKey.provide_tls_certificate`.
+    repeated bytes provide_tls_certificate = 4;
+    // Destination's 32-byte Ed25519 public identity key (see `ClientKey`).
+    // Authoritative copy lives in `StoredContract`; this is a convenience
+    // copy for clients that don't unmarshal the stored bytes.
+    bytes destination_client_public_key = 5;
+    // Destination's Ed25519 signature over the canonical concatenation
+    // of every PEM block in `provide_tls_certificate`, made with the
+    // destination's long-lived client identity private key (see
+    // `EncryptedKey.client_key_signed_tls_certificate`). The sender
+    // verifies this signature against the destination's public client
+    // key (fetched out-of-band, not trusted from this field of the
+    // contract) before treating the cert chain as a valid commitment.
+    // Authoritative copy lives in `StoredContract`; this is a
+    // convenience copy.
+    bytes destination_client_key_signed_tls_certificate = 6;
+}
+
+message StoredContract {
+    bytes contract_id = 1;
+    uint64 transfer_byte_count = 2;
+    // ulid
+    optional bytes source_id = 3;
+    // ulid
+    optional bytes destination_id = 4;
+    // ulid
+    optional bytes stream_id = 5;
+
+    // relative priority
+    // 0 (missing) is least priority
+    // any positive priority value is 100% more than 0
+    // generally only positive priority data will matter for the community payouts,
+    // and priority will scale the payout amount,
+    // so it is in a provider's interest to prioritize data with positive priority
+    optional uint32 priority = 6;
+
+    // PEM-encoded X.509 certificate chain (leaf first) committed by the
+    // destination at provide time. Each entry is one PEM block. Sealed into
+    // the platform-signed contract bytes so the sender can rely on the
+    // certificate identity for the TLS session with the destination.
+    repeated bytes provide_tls_certificate = 7;
+
+    // Destination's 32-byte Ed25519 public identity key (see `ClientKey`).
+    // Sealed into the platform-signed contract bytes so the sender can
+    // bind the cert commitment in this contract to a stable long-lived
+    // identity. Sender should additionally cross-check this key against
+    // the out-of-band public-key lookup before extending trust.
+    bytes destination_client_public_key = 8;
+    // Destination's Ed25519 signature over the canonical concatenation
+    // of every PEM block in `provide_tls_certificate`, made with the
+    // destination's long-lived client identity private key. Verified by
+    // the sender against the destination's public client key — gating
+    // whether the cert chain in this contract is admitted into the
+    // session's trusted-peer-cert set.
+    bytes destination_client_key_signed_tls_certificate = 9;
+
+    // FIXME companion contract id
+}
+
+
+// control message
+message CloseContract {
+    bytes contract_id = 1;
+    uint64 acked_byte_count = 2;
+    uint64 unacked_byte_count = 3;
+    bool checkpoint = 4;
+}
+
+
+// peer auditing
+// the acl will block contracts between between two parties with bad audits of each other
+message PeerAudit {
+    // ulid
+    bytes peer_id = 1;
+    // number of seconds in the audit
+    uint64 duration = 2;
+    bool abuse = 3;
+    uint64 bad_contract_count = 4;
+    uint64 discarded_byte_count = 5;
+    uint64 discarded_count = 6;
+    uint64 bad_message_byte_count = 7;
+    uint64 bad_message_count = 8;
+    uint64 send_byte_count = 9;
+    uint64 send_count = 10;
+    uint64 resend_byte_count = 11;
+    uint64 resend_count = 12;
+    // ulid
+    bytes stream_id = 13;
+}
+
+
+message ControlPing {
+}
+
+
+message ProvidePing {
+}
+
+
+enum EncryptedControlType {
+    EncryptedControlNone = 0;
+    // Raw TLS handshake bytes. The peer's encryption session feeds these
+    // straight into its `tls.Conn` state machine. Pack delivery is reliable
+    // and in order, so no chunk indexing is needed.
+    EncryptedControlHandshake = 1;
+    // Post-handshake identity proof. `payload` is the sender's Ed25519
+    // signature, made with its long-lived client identity key, over the
+    // 32-byte TLS exporter output for label
+    // `urnetwork-sequence-identity-proof`. The receiver verifies the
+    // signature against the sender's public client key (fetched
+    // out-of-band, not from the platform-authored contract). A valid
+    // proof binds the negotiated TLS session keys to the sender's
+    // long-lived identity, defeating an active MITM whose substituted
+    // TLS cert would produce a different exporter on each leg.
+    EncryptedControlIdentityProof = 2;
+}
+
+// EncryptedKey publishes this client's public TLS certificate to the
+// platform. Sent as a control message (MessageType = TransferEncryptedKey).
+// Each client has exactly one such certificate, generated and held by the
+// local `EncryptionSessionManager` and shared across every per-peer
+// encryption session this client owns. The platform stores it per
+// `client_id` (not per provide mode) and attaches it to every contract
+// whose destination is this client so the sender can verify the cert
+// observed during the per-peer TLS handshake.
+message EncryptedKey {
+    // PEM-encoded X.509 certificate chain (leaf first). Each entry is one
+    // PEM block (`-----BEGIN CERTIFICATE-----` ... `-----END CERTIFICATE-----`).
+    repeated bytes provide_tls_certificate = 1;
+    // Ed25519 signature over the canonical concatenation of every PEM
+    // block in `provide_tls_certificate`, made with this client's
+    // long-lived identity private key (see `ClientKey`). Lets a remote
+    // peer verify that the cert chain attached to a contract by the
+    // platform was authentically committed by this client — substituting
+    // the cert without also forging this signature requires the client
+    // private key, which never leaves the client process.
+    bytes client_key_signed_tls_certificate = 2;
+}
+
+
+// ClientKey publishes this client's long-lived public identity key
+// (Ed25519) to the platform. Sent as a control message
+// (MessageType = TransferClientKey). One key per client; the private
+// half stays in the client process. The platform stores the public key
+// per `client_id` and serves it to remote peers via an unauthenticated
+// lookup API — peers fetch it directly from that API, not via the
+// contract pipeline, so a malicious platform that substitutes a cert
+// in a contract cannot also substitute the identity key that would
+// validate the substituted cert's signature.
+message ClientKey {
+    // 32-byte Ed25519 public key.
+    bytes public_key = 1;
+}
+
+
+// out-of-band control messages between paired encryption sessions on two
+// peers. Carried inside a regular `Pack` as a `Frame` with
+// `message_type = TransferEncryptedControl`, so delivery is reliable and in
+// order. The destination `ReceiveSequence` intercepts these frames and
+// delivers the payload to the encryption session instead of the application
+// receive callback. Sent unencrypted (no outer wrap) because they describe
+// the encryption itself, including bootstrap before any cipher exists.
+message EncryptedControl {
+    EncryptedControlType control_type = 1;
+    // For `EncryptedControlHandshake`: raw TLS handshake bytes. Empty for
+    // other control types.
+    bytes payload = 2;
+    // The role of the sending per-peer session: `SequenceRoleClient` for
+    // handshake/identity bytes from the sender's TLS-client session,
+    // `SequenceRoleServer` for its TLS-server session. The receiver feeds
+    // the payload into its complement session (client->server,
+    // server->client), creating that session if it does not exist yet.
+    // Always set on send; `SequenceRoleUnknown` is treated as a protocol
+    // error and dropped.
+    SequenceRole session_role = 3;
+    // The companion bit of the per-peer session that produced this control:
+    // the TLS-client initiator's contract-companion mode, echoed unchanged by
+    // the TLS-server responder. Together with `session_role` it pins the exact
+    // local session the receiver routes this control into —
+    // `(peerId, companion, complement(session_role))` — so a peer that runs
+    // both a companion and a non-companion session of the same role keeps
+    // their handshakes cleanly separated. A responder stores this value at
+    // session creation (from the initiator's ClientHello) and stamps it on
+    // every reply, so the initiator's reply state matches the originating
+    // session. Distinct from which contract the carrier itself rides (a
+    // responder replies under `EncryptionControlUseCompanion`, independent of
+    // this bit).
+    bool companion = 4;
+    // Epoch (handshake generation) this control belongs to, as a ulid
+    // (changes 2026-08). The TLS-client role mints it per epoch; the
+    // TLS-server role adopts it from the inbound handshake and echoes it.
+    //
+    // Without it, epochs have no wire identity: under churn one side
+    // re-handshakes (new epoch, new TLS exporter) while the other holds the
+    // old one, and the late identity proof — bound to the NEW exporter —
+    // fails signature verification against the OLD, which is indistinguishable
+    // from manipulation and terminally tombstones the session while the
+    // established peer keeps encrypting into it (a full data stall).
+    // Carrying the epoch lets the receiver route a control to the right
+    // generation, and reset toward a newer one, instead of misjudging it.
+    // Unset (legacy peers) keeps the pre-epoch behavior for that control.
+    optional bytes epoch_id = 5;
+}
+

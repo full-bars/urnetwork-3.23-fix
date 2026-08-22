@@ -1,0 +1,162 @@
+name: docker-multi-container
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "fix/*"]
+
+jobs:
+  multi-container:
+    name: docker multi-container targeting + modes
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+      GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build urnet-docker
+        run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+
+      - name: Prepare per-mode proxy files (10 each)
+        run: |
+          mkdir -p /tmp/multi
+          for i in $(seq 1 10); do echo "127.0.0.1:$((20000+i))"; done > /tmp/multi/turbo.txt
+          for i in $(seq 1 10); do echo "127.0.0.1:$((21000+i))"; done > /tmp/multi/auto.txt
+          for i in $(seq 1 10); do echo "127.0.0.1:$((22000+i))"; done > /tmp/multi/lowmem.txt
+          echo "proxy files ready: $(wc -l /tmp/multi/*.txt | tail -1)"
+
+      - name: Start 3 provider containers (turbo-v8 / auto / lowmem) via compose
+        # Username/password auth: BUILD=stable + USER_AUTH + PASSWORD
+        # (start_stable.sh). NOT BUILD=jwt — that needs the single-use auth
+        # code flow, and we authenticate with the gauntlet user/password.
+        # Keeps the wiki-inspired multi-node structure (shared config volume,
+        # per-node name/profile).
+        run: |
+          cat > /tmp/docker-compose.yml << 'EOF'
+          services:
+            urfix-turbo:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
+              container_name: urfix-turbo
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=stable
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
+                - URNETWORK_NODE_NAME=urfix-turbo
+                - URNETWORK_PROFILE=turbo-v8
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/turbo.txt:/app/proxy.txt
+            urfix-auto:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
+              container_name: urfix-auto
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=stable
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
+                - URNETWORK_NODE_NAME=urfix-auto
+                - URNETWORK_PROFILE=auto
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/auto.txt:/app/proxy.txt
+            urfix-lowmem:
+              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
+              container_name: urfix-lowmem
+              restart: unless-stopped
+              cap_add: [NET_ADMIN, NET_RAW]
+              sysctls:
+                net.ipv4.ip_forward: 1
+              environment:
+                - BUILD=stable
+                - USER_AUTH=${{ secrets.GAUNTLET_USER }}
+                - PASSWORD=${{ secrets.GAUNTLET_PW }}
+                - URNETWORK_NODE_NAME=urfix-lowmem
+                - URNETWORK_PROFILE=lowmem
+              volumes:
+                - ur_config:/root/.urnetwork
+                - /tmp/multi/lowmem.txt:/app/proxy.txt
+          volumes:
+            ur_config:
+          EOF
+          cd /tmp && docker compose -f docker-compose.yml up -d
+          echo "containers started; waiting for auth..."
+          sleep 90
+          docker ps --filter name=urfix --format "{{.Names}} {{.Status}}"
+
+      - name: Verify all 3 providers authenticated (fail if not)
+        run: |
+          for c in urfix-turbo urfix-auto urfix-lowmem; do
+            if ! docker exec "$c" test -s /root/.urnetwork/jwt 2>/dev/null; then
+              echo "FAIL: $c has no JWT — provider did not authenticate"
+              docker logs "$c" 2>&1 | tail -15
+              exit 1
+            fi
+          done
+          echo "OK: all 3 providers authenticated"
+
+      - name: urnet-docker providers (should show 3)
+        run: /tmp/urnet-docker providers
+
+      - name: No-flag proxy add must REFUSE (3 containers, no picker in CI)
+        run: |
+          # selectTargetInteractive needs a TTY for the picker; in CI (no TTY)
+          # a multi-container no-flag command must refuse, never guess.
+          /tmp/urnet-docker proxy add /tmp/multi/turbo.txt 2>&1 | head -3
+          rc=${PIPESTATUS[0]}
+          if [ $rc -eq 0 ]; then
+            echo "REFUSAL FAILED: no-flag multi-container add succeeded (should refuse)"
+            exit 1
+          fi
+          echo "OK: no-flag multi-container add refused (exit $rc)"
+
+      - name: Flag-targeted proxy add (each mode container)
+        run: |
+          /tmp/urnet-docker proxy add --unit urfix-turbo /tmp/multi/turbo.txt 
+          /tmp/urnet-docker proxy add --unit urfix-auto /tmp/multi/auto.txt 
+          /tmp/urnet-docker proxy add --unit urfix-lowmem /tmp/multi/lowmem.txt 
+
+      - name: Verify per-container state (status on each)
+        # Bare container names resolve as targets now (status [target]);
+        # no head pipe — the pipeline would mask the exit code.
+        run: |
+          /tmp/urnet-docker status urfix-turbo
+          /tmp/urnet-docker status urfix-auto
+          /tmp/urnet-docker status urfix-lowmem
+
+      - name: urnet-docker proxy clear (flag-targeted)
+        run: |
+          /tmp/urnet-docker proxy clear --unit urfix-turbo 
+          /tmp/urnet-docker proxy clear --unit urfix-lowmem 
+
+      - name: Multi-container logs via flag target
+        # logs follows by design; bound it with timeout in CI (exit 124
+        # while streaming = success).
+        run: |
+          timeout 10 /tmp/urnet-docker logs urfix-auto 3 || test $? -eq 124
+
+      - name: Teardown — full teardown of containers + shared config volume
+        run: |
+          # Full teardown: stop (SIGTERM -> provider deregisters), remove
+          # containers, and drop the shared ur_config volume so the client
+          # JWT/state cannot persist across runs. Runs even when the job
+          # fails (if: always()).
+          cd /tmp && docker compose -f docker-compose.yml stop 2>/dev/null || true
+          docker rm -f urfix-turbo urfix-auto urfix-lowmem 2>/dev/null || true
+          docker volume rm ur_config 2>/dev/null || true
+          echo "containers stopped, shared volume wiped"
+        if: always()
