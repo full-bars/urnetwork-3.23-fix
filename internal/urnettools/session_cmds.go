@@ -379,10 +379,26 @@ func stageSessionFiles(p Provider, files map[string][]byte, force bool) (string,
 	if newID == "" {
 		return "", errors.New("could not extract network_id from the session bundle's JWT; bundle may be corrupt")
 	}
+	// Read the current identity. Distinguish "no jwt" (fresh provider, no
+	// account to enforce against) from "jwt present but unreadable", which
+	// must fail closed rather than silently skip the same-account gate
+	// (review finding): a truncated/corrupt live jwt must not let a bundle
+	// for a different network load as if no identity existed.
 	currentID := ""
-	if b, err := os.ReadFile(filepath.Join(p.StateDir, "jwt")); err == nil {
-		_, cur, _, _ := decodeJWTFromBytes(b)
-		currentID = cur
+	jwtPath := filepath.Join(p.StateDir, "jwt")
+	if b, err := os.ReadFile(jwtPath); err == nil {
+		_, cur, _, decErr := decodeJWTFromBytes(b)
+		if decErr != nil {
+			if force {
+				currentID = "" // operator explicitly replaced the corrupt identity
+			} else {
+				return "", fmt.Errorf("current provider jwt at %s is present but unreadable: %v (use -f to replace)", jwtPath, decErr)
+			}
+		} else {
+			currentID = cur
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("could not read current provider jwt at %s: %v", jwtPath, err)
 	}
 	if currentID != "" && newID != currentID && !force {
 		return "", fmt.Errorf("network ID mismatch (current=%s, session=%s); a session loads only under the same account (add -f to force)", currentID, newID)
