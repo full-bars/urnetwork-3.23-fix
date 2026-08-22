@@ -117,22 +117,33 @@ func TestIsUserUnitVendorDir(t *testing.T) {
 
 // TestJournalctlArgsUserVsSystem covers the argv construction split (free
 // review + coderabbit passes): system units use "-fu <unit>"; user units
-// scope to the owning user's session via -M/--user-unit, because a plain
-// "-fu" against a user-unit name queries the SYSTEM journal instead.
+// TestJournalctlArgsUserVsSystem ensures user-level units for the current user
+// use "--user -u <unit> -f" (no root needed), while cross-user units scope via
+// "-M <user>@ --user-unit <unit> -f", and system units use "-fu <unit>".
 func TestJournalctlArgsUserVsSystem(t *testing.T) {
-	// A unit name with no backing file anywhere -> isUserUnit is true.
-	userProvider := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service", User: "urnet"}
-	got := journalctlArgs(userProvider)
-	want := []string{"-M", "urnet@", "--user-unit", userProvider.Unit, "-f"}
+	unit := "urnet-tools-test-fake-unit-9f3a.service"
+
+	// Same user: MUST NOT use -M (requires root privileges).
+	sameUserProvider := Provider{Unit: unit, User: currentUserName()}
+	got := journalctlArgs(sameUserProvider)
+	want := []string{"--user", "-u", unit, "-f"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("journalctlArgs(user unit) = %v, want %v", got, want)
+		t.Errorf("journalctlArgs(same user) = %v, want %v", got, want)
+	}
+
+	// Cross user: scopes via -M when user differs from caller.
+	foreignUserProvider := Provider{Unit: unit, User: "foreign-user-9f3a"}
+	got = journalctlArgs(foreignUserProvider)
+	want = []string{"-M", "foreign-user-9f3a@", "--user-unit", unit, "-f"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("journalctlArgs(cross user) = %v, want %v", got, want)
 	}
 
 	// No User set: even if the unit "looks" user-level, we can't scope a
 	// session without a user, so it falls back to plain -fu.
-	noUserProvider := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service"}
+	noUserProvider := Provider{Unit: unit}
 	got = journalctlArgs(noUserProvider)
-	want = []string{"-fu", noUserProvider.Unit}
+	want = []string{"-fu", unit}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("journalctlArgs(no user) = %v, want %v", got, want)
 	}
@@ -314,4 +325,27 @@ func TestCleanupLifecycleNoUnit(t *testing.T) {
 	// Unit="" hits the first guard and returns immediately — safe on any box.
 	p := Provider{User: "testuser", Unit: ""}
 	cleanupLifecycle(p) // must not panic
+}
+
+// TestJournalctlArgsSameUser: same-user journalctlArgs must NOT include -M.
+// The -M form routes via machined (requires root); same-user log tailing must
+// use "--user-unit <unit> -f" without a -M prefix.
+// Regression guard for commit 64455c84 (fix/journalctl-same-user-privilege).
+func TestJournalctlArgsSameUser(t *testing.T) {
+	cur := currentUserName()
+	if cur == "" {
+		t.Skip("cannot determine current user name on this runner")
+	}
+	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service", User: cur}
+	got := journalctlArgs(p)
+	// Should be ["--user-unit", unit, "-f"] with no -M.
+	for _, arg := range got {
+		if arg == "-M" {
+			t.Errorf("journalctlArgs(same user) = %v, must not contain -M\n"+
+				"REGRESSION: same-user log tailing must not use machined (requires root)", got)
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] != "-f" {
+		t.Errorf("journalctlArgs(same user) = %v, expected -f as last arg", got)
+	}
 }
