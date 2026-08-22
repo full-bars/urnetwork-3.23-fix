@@ -517,7 +517,7 @@ func hubUnitPath(p Provider) (string, error) {
 // hubUnitCommand runs a systemctl --user command for the hub unit, scoped to
 // the provider's user session.
 func hubUnitCommand(p Provider, args ...string) error {
-	base := []string{"--user", "-M", p.User + "@"}
+	base := systemctlUserArgs(p.User)
 	cmd := exec.Command("systemctl", append(base, args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
