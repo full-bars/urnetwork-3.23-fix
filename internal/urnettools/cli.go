@@ -422,7 +422,7 @@ Hub Management [target]:
   hub set <host:port>       configure hub report URL
   hub off                   stop reporting to hub (no restart)
   hub install [--tag=TAG]   install hub as a systemd service
-  hub init [--password PW]  provision the hub (TLS :8443 + CA cert)
+  hub init [--password-stdin|--password PW]  provision the hub (TLS :8443 + CA cert)
   hub link <url> [--token]  fetch hub CA + enable TLS trust, set report URL
   hub unlink                remove hub trust + stop reporting
   hub test <url>            verify TLS to the hub against the saved pin
