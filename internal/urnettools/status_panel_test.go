@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,17 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
 	fn()
 	w.Close()
-	var buf bytes.Buffer
-	_, _ = buf.ReadFrom(r)
+	<-done
+	r.Close()
 	return buf.String()
 }
 
