@@ -387,6 +387,55 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 
+	// Operator trim cap (provider proxy trim <N>): hold the running pool at N.
+	// Shed the A-F-worst running proxies above N (folded into removed so they are
+	// cancelled), and drop the worst-graded not-yet-running additions above the
+	// budget so the pool cannot regrow above the cap until it is raised.
+	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 {
+		traffic := runningProxyTraffic()
+		shedCount := 0
+		if len(running) > trimCap {
+			rlist := make([]string, 0, len(running))
+			for a := range running {
+				rlist = append(rlist, a)
+			}
+			for _, addr := range selectWorstRunningProxies(r.state.Proxies, traffic, rlist, len(running)-trimCap) {
+				if _, ok := running[addr]; ok {
+					removed = append(removed, addr)
+					delete(desiredSet, addr)
+					shedCount++
+				}
+			}
+		}
+		budget := trimCap - (len(running) - shedCount)
+		if budget < 0 {
+			budget = 0
+		}
+		if len(added) > budget {
+			alist := make([]string, 0, len(added))
+			for _, s := range added {
+				alist = append(alist, s.Address)
+			}
+			drop := selectWorstRunningProxies(r.state.Proxies, traffic, alist, len(added)-budget)
+			dropSet := make(map[string]bool, len(drop))
+			for _, a := range drop {
+				dropSet[a] = true
+			}
+			kept := added[:0]
+			for _, s := range added {
+				if dropSet[s.Address] {
+					delete(desiredSet, s.Address)
+					continue
+				}
+				kept = append(kept, s)
+			}
+			added = kept
+		}
+		if shedCount > 0 {
+			tlog("[proxy][trim] cap=%d: shed %d worst-graded running proxies, holding %d additions\n", trimCap, shedCount, len(added))
+		}
+	}
+
 	// Remove proxies: cancel immediately if idle, or drain gracefully if active.
 	for _, addr := range removed {
 		if r.isDraining(addr) {
