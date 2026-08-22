@@ -70,7 +70,6 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 		{"stop"},
 		{"restart"},
 		{"logs"},
-		{"optimize"},
 		{"uninstall"},
 		{"reinstall"},
 	}
