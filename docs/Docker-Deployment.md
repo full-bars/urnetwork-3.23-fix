@@ -12,8 +12,9 @@ This page keeps the copy-paste Docker examples from the README in one place. Use
 Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 # installs /usr/local/bin/urnet-docker (or ~/.local/bin when not root)
+# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 The tool is self-updating afterwards:
@@ -29,6 +30,8 @@ Common host-side commands:
 urnet-docker providers                          # list provider containers
 urnet-docker status --unit urfix                # status of one container
 urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host
+urnet-docker proxy trim --unit urfix 500        # hold running proxies at cap (A-F worst first)
+urnet-docker proxy refresh --unit urfix         # reload proxies without restart
 urnet-docker restart --unit urfix               # restart a container
 urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 ```
