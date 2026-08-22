@@ -18,6 +18,8 @@ func buildRootCmd() *cobra.Command {
 	}
 	rootCmd.SetOut(os.Stderr)
 	rootCmd.SetErr(os.Stderr)
+	// The old dispatcher had no 'completion' subcommand; keep the surface stable.
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	rootCmd.PersistentFlags().String("unit", "", "systemd unit, e.g. urnetwork-native.service")
 	rootCmd.PersistentFlags().String("user", "", "OS user, e.g. urnet")
@@ -168,7 +170,9 @@ func newSummaryCmd() *cobra.Command {
 }
 
 func newVersionCmd() *cobra.Command {
-	return newCobraCmd("version", "print this tool's version", []string{"-v", "--version"}, func(cmd *cobra.Command, args []string) error {
+	// '-v'/'--version' were dead aliases: Cobra strips '-' tokens before alias
+	// matching, so they never resolve (handled at top level). Keep plain 'version'.
+	return newCobraCmd("version", "print this tool's version", nil, func(cmd *cobra.Command, args []string) error {
 		fmt.Println(ToolVersion)
 		return nil
 	})
@@ -181,9 +185,16 @@ func newDefaultCmd() *cobra.Command {
 }
 
 func newSessionCmd() *cobra.Command {
-	return newCobraCmd("session", "export/import identity + proxy state", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdSession(args)
-	})
+	// cmdSession owns its rich help (save|load <file>, --allow-different-account);
+	// building raw here lets that help fire instead of Cobra's stub (review MEDIUM).
+	return &cobra.Command{
+		Use:                "session",
+		Short:              "export/import identity + proxy state",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdSession(args)
+		},
+	}
 }
 
 func newTurboCmd() *cobra.Command {
@@ -375,7 +386,14 @@ func newAutoStartCmd() *cobra.Command {
 }
 
 func newSelfHealCmd() *cobra.Command {
-	return newCobraCmd("self-heal", "self heal", []string{"selfheal"}, func(cmd *cobra.Command, args []string) error {
-		return cmdSelfHeal(args)
-	})
+	// cmdSelfHeal has its own -h handling; building raw preserves it (review MEDIUM).
+	return &cobra.Command{
+		Use:                "self-heal",
+		Short:              "self heal",
+		Aliases:            []string{"selfheal"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdSelfHeal(args)
+		},
+	}
 }

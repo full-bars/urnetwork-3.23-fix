@@ -34,6 +34,9 @@ func RunDocker(args []string) error {
 		}
 	}
 	rootCmd := buildDockerRootCmd()
+	if args == nil {
+		args = []string{}
+	}
 	rootCmd.SetArgs(args)
 	return rootCmd.Execute()
 }
