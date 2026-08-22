@@ -189,7 +189,19 @@ EOF
 esac
 
 echo
-echo "Usage:"
-echo "  $TOOL providers                          # list provider containers"
-echo "  $TOOL update                             # update $TOOL itself"
-echo "  $TOOL exec -- <container-command>        # run a command in a container"
+echo "Usage: $TOOL <command> [flags]"
+echo
+echo "Commands:"
+echo "  $TOOL providers                 # list provider containers"
+echo "  $TOOL status [target]           # detailed container status"
+echo "  $TOOL logs [target] [N]         # tail container logs (RAMLOGS-aware)"
+echo "  $TOOL start|stop|restart [target] # control container lifecycle"
+echo "  $TOOL proxy add <file>          # bulk add proxies from host file"
+echo "  $TOOL proxy health|traffic      # view live proxy health & metrics"
+echo "  $TOOL proxy trim <N>            # hold running proxies at cap N"
+echo "  $TOOL proxy refresh|clear       # reload or clear proxy pool"
+echo "  $TOOL self-heal <on|off|status> # manage proxy self-healing"
+echo "  $TOOL auth [<code>] [target]    # authenticate provider in container"
+echo "  $TOOL summary [target]          # fleet-style summary for container"
+echo "  $TOOL update                    # update $TOOL itself"
+echo "  $TOOL exec [target] [--] <cmd>  # run arbitrary command inside container"
