@@ -139,18 +139,11 @@ func newDockerProxyCmd() *cobra.Command {
 		Short:              "Proxy Management",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				// Bare `proxy` prints the subcommand list and exits 0, matching the
-				// pre-cobra dispatcher (exit 1 broke scripts that call it to show
-				// the menu, review MEDIUM).
-				fmt.Fprintln(os.Stderr, "proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+			if len(args) == 0 || hasHelpFlag(args) {
+				// Bare `proxy` (or an explicit -h/--help) printed the full docker
+				// usage and exited 0 in the pre-cobra dispatcher; keep that (review).
+				usageDocker()
 				return nil
-			}
-			for _, a := range args {
-				if a == "-h" || a == "--help" {
-					// Let Cobra print the proxy help on an explicit -h/--help.
-					return cmd.Help()
-				}
 			}
 			return cmdDockerProxy(args)
 		},
