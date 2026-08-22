@@ -10,10 +10,10 @@ import (
 // buildDockerRootCmd creates the root Cobra command for urnet-docker.
 func buildDockerRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "urnet-docker",
-		Short: "docker-container URnetwork manager",
-		Long:  "urnet-docker — docker-container URnetwork manager",
-		SilenceUsage: true,
+		Use:           "urnet-docker",
+		Short:         "docker-container URnetwork manager",
+		Long:          "urnet-docker — docker-container URnetwork manager",
+		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	rootCmd.SetOut(os.Stderr)
@@ -145,7 +145,7 @@ func newDockerProxyCmd() *cobra.Command {
 				if a == "-h" || a == "--help" {
 					// In docker, help flag triggers usageDocker() in the original CLI.
 					// But wait, the original `cmdDockerProxy` didn't print help, it was printed by `usageDocker()`.
-					// We can just let Cobra print the help. 
+					// We can just let Cobra print the help.
 					return cmd.Help()
 				}
 			}
