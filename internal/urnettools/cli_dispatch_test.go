@@ -498,3 +498,19 @@ func TestUsageContainsExpectedSections(t *testing.T) {
 		}
 	}
 }
+
+// TestRunDockerExecHelpAfterSepNotIntercepted guards the CRITICAL review fix:
+// `exec -- <cmd> --help` must forward the help after the separator to the
+// container command, NOT be intercepted by the docker CLI's own help routing.
+// The old dispatcher did not broad-scan hasHelpFlag for exec (help after '--'
+// belongs to the container binary). The buggy Cobra migration re-introduced it
+// and printed the docker exec help; the fix builds exec raw.
+func TestRunDockerExecHelpAfterSepNotIntercepted(t *testing.T) {
+	out := captureStderr(t, func() { _ = RunDocker([]string{"exec", "--", "urnet-tools", "proxy", "--help"}) })
+	// If the docker CLI intercepted, it would print the exec command's own help
+	// (its Short text) and return nil. Now it delegates, so that help text must
+	// not appear, and we should not have silently returned success-as-help.
+	if strings.Contains(out, "run arbitrary command inside container") {
+		t.Fatalf("help after '--' was intercepted by the docker CLI: %q", out)
+	}
+}
