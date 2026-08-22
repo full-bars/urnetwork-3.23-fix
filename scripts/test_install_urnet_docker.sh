@@ -1,0 +1,302 @@
+#!/bin/bash
+set -e
+
+echo "======================================"
+echo " install-urnet-docker.sh Test Suite"
+echo "======================================"
+
+# install-urnet-docker.sh is a linear script (no functions besides pr_err)
+# that hits the network almost immediately after resolving arch/os/asset/
+# install-dir. Mirror test_provider_install.sh's convention: cut the script
+# before its first network operation and source only the deterministic,
+# locally-resolvable prefix (arch detection, OS detection, asset name,
+# install dir). Everything below the cut point (release lookup, download,
+# verify, install) is exercised indirectly via the digest-extraction and
+# PATH-check snippets tested separately below, without ever touching the
+# network.
+
+# Use a private temp file for the sourced lib so parallel test runs never
+# collide on a shared /tmp path, and always clean it up (verified 2026-08-12
+# review). Child shells reference it via LIB_FILE.
+LIB_FILE="$(mktemp)"
+trap 'rm -f "$LIB_FILE"' EXIT
+sed '/^# --- resolve latest release tag ---$/,$d' scripts/install-urnet-docker.sh > "$LIB_FILE"
+export LIB_FILE
+
+FAILS=0
+
+assert_eq() {
+    local expected="$1"
+    local actual="$2"
+    local msg="$3"
+    if [ "$expected" = "$actual" ]; then
+        echo "✅ PASS: $msg"
+    else
+        echo "❌ FAIL: $msg"
+        echo "   Expected: '$expected'"
+        echo "   Actual:   '$actual'"
+        FAILS=$((FAILS + 1))
+    fi
+}
+
+# --- TEST 1: arch detection maps uname -m to Go arch names ---
+test_arch_detection() {
+    # 32-bit x86 is REJECTED, not mapped to "386": the release matrix builds
+    # amd64/arm64 only, so a 386 mapping guarantees a misleading missing-asset
+    # error later (verified 2026-08-12 review). Tested separately below.
+    local cases="x86_64:amd64 amd64:amd64 aarch64:arm64 arm64:arm64"
+    for c in $cases; do
+        local machine="${c%%:*}"
+        local want="${c##*:}"
+        local got
+        got=$(bash -c "
+            uname() { case \"\$1\" in -m) echo '$machine';; -s) echo 'Linux';; esac; }
+            id() { echo '1000'; }
+            source "$LIB_FILE"
+            echo \"\$ARCH\"
+        ")
+        assert_eq "$want" "$got" "uname -m '$machine' maps to ARCH '$want'"
+    done
+}
+test_arch_detection
+
+# --- TEST 1b: 32-bit x86 refuses with a clear error (not mapped to 386) ---
+test_arch_32bit_rejected() {
+    for machine in i386 i686; do
+        local out rc
+        out=$(bash -c "
+            uname() { case \"\$1\" in -m) echo '$machine';; -s) echo 'Linux';; esac; }
+            id() { echo '1000'; }
+            source "$LIB_FILE"
+        " 2>&1) && rc=0 || rc=$?
+        if [ "$rc" -eq 1 ] && case "$out" in *"32-bit x86 is not supported"*) true;; *) false;; esac; then
+            echo "✅ PASS: uname -m '$machine' rejected with the 32-bit message"
+        else
+            echo "❌ FAIL: uname -m '$machine' rc=$rc out=$out"
+            FAILS=$((FAILS + 1))
+        fi
+    done
+}
+test_arch_32bit_rejected
+
+# --- TEST 2: unsupported architecture refuses with a clear error ---
+test_arch_unsupported() {
+    local out rc
+    out=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'riscv64';; -s) echo 'Linux';; esac; }
+        id() { echo '1000'; }
+        source "$LIB_FILE"
+    " 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -eq 1 ] && case "$out" in *"unsupported architecture: riscv64"*) true;; *) false;; esac; then
+        echo "✅ PASS: unsupported architecture refuses with exit 1 and a clear message"
+    else
+        echo "❌ FAIL: unsupported architecture rc=$rc out=$out"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_arch_unsupported
+
+# --- TEST 3: OS detection accepts linux/darwin, rejects everything else ---
+test_os_detection() {
+    for os_name in Linux Darwin; do
+        local got
+        got=$(bash -c "
+            uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo '$os_name';; esac; }
+            id() { echo '1000'; }
+            source "$LIB_FILE"
+            echo \"\$OS\"
+        ")
+        assert_eq "$(printf '%s' "$os_name" | tr '[:upper:]' '[:lower:]')" "$got" "uname -s '$os_name' resolves to lowercase OS '$got'"
+    done
+}
+test_os_detection
+
+test_os_unsupported() {
+    local out rc
+    out=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Windows';; esac; }
+        id() { echo '1000'; }
+        source "$LIB_FILE"
+    " 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -eq 1 ] && case "$out" in *"unsupported OS: windows"*) true;; *) false;; esac; then
+        echo "✅ PASS: unsupported OS refuses with exit 1 and a clear message"
+    else
+        echo "❌ FAIL: unsupported OS rc=$rc out=$out"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_os_unsupported
+
+# --- TEST 4: TOOL defaults to urnet-docker, overridable by $1 ---
+test_tool_default_and_override() {
+    local got_default got_override
+    got_default=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
+        id() { echo '1000'; }
+        source "$LIB_FILE"
+        echo \"\$TOOL\"
+    ")
+    assert_eq "urnet-docker" "$got_default" "TOOL defaults to urnet-docker with no argument"
+
+    got_override=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
+        id() { echo '1000'; }
+        source "$LIB_FILE" urnet-tools
+        echo \"\$TOOL\"
+    ")
+    assert_eq "urnet-tools" "$got_override" "TOOL is overridden by the first argument (urnet-tools)"
+}
+test_tool_default_and_override
+
+# --- TEST 5: ASSET is composed as <tool>-<os>-<arch> ---
+test_asset_name() {
+    local got
+    got=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'arm64';; -s) echo 'Darwin';; esac; }
+        id() { echo '1000'; }
+        source "$LIB_FILE" urnet-tools
+        echo \"\$ASSET\"
+    ")
+    assert_eq "urnet-tools-darwin-arm64" "$got" "ASSET composes tool-os-arch (never carries .exe on any platform)"
+}
+test_asset_name
+
+# --- TEST 6: INSTALL_DIR resolution (root vs non-root, PREFIX override) ---
+test_install_dir_resolution() {
+    local got_root got_nonroot got_prefix
+    got_root=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
+        id() { echo '0'; }
+        source "$LIB_FILE"
+        echo \"\$INSTALL_DIR\"
+    ")
+    assert_eq "/usr/local/bin" "$got_root" "root (id -u = 0) installs to /usr/local/bin"
+
+    got_nonroot=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
+        id() { echo '1000'; }
+        HOME=/home/testuser
+        source "$LIB_FILE"
+        echo \"\$INSTALL_DIR\"
+    ")
+    assert_eq "/home/testuser/.local/bin" "$got_nonroot" "non-root installs to \$HOME/.local/bin"
+
+    got_prefix=$(bash -c "
+        uname() { case \"\$1\" in -m) echo 'x86_64';; -s) echo 'Linux';; esac; }
+        id() { echo '1000'; }
+        PREFIX=/opt/custom
+        source "$LIB_FILE"
+        echo \"\$INSTALL_DIR\"
+    ")
+    assert_eq "/opt/custom" "$got_prefix" "\$PREFIX overrides the default install dir even as non-root"
+}
+test_install_dir_resolution
+
+# --- TEST 7: asset digest extraction (jq) ---
+# The digest lookup is inlined directly in install-urnet-docker.sh (unlike
+# Provider_Install_Linux.sh's extracted get_asset_digest_from_api_response),
+# so exercise the exact jq invocation used in the script against a release
+# JSON fixture, both for a present and a missing asset.
+test_digest_extraction_jq() {
+    # Skip cleanly when jq is unavailable (the production script falls back
+    # to python3 then; this test is jq-specific — verified 2026-08-12 review).
+    if ! command -v jq > /dev/null 2>&1; then
+        echo "⊘ SKIP: jq not installed, skipping jq digest-extraction test"
+        return 0
+    fi
+    local json='{"tag_name": "v9.9.9", "assets": [
+        {"name": "urnetwork-provider-v9.9.9.tar.gz", "digest": "sha256:abc123"},
+        {"name": "urnet-docker-linux-amd64", "digest": "sha256:def456"}
+    ]}'
+    local asset="urnet-docker-linux-amd64"
+    local digest
+    digest="$(printf "%s" "$json" | jq -r --arg a "$asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://')"
+    assert_eq "def456" "$digest" "jq digest extraction finds the named asset and strips sha256:"
+
+    local missing_asset="urnet-docker-windows-amd64"
+    local missing_digest
+    missing_digest="$(printf "%s" "$json" | jq -r --arg a "$missing_asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://')"
+    assert_eq "" "$missing_digest" "jq digest extraction yields empty for a missing asset (release predates tool binaries)"
+
+    # A JSON null digest (assets uploaded before digest support) must also
+    # yield empty, not the literal "null" — the production script normalizes
+    # via '.digest // ""' plus a null|None case guard (verified 2026-08-12
+    # review). This pins that path so a regression can't cause a download +
+    # sha256 mismatch instead of the clean fallback.
+    local null_json='{"tag_name": "v9.9.9", "assets": [
+        {"name": "old-tool.tar.gz", "digest": null}
+    ]}'
+    local null_digest
+    null_digest="$(printf "%s" "$null_json" | jq -r --arg a "old-tool.tar.gz" '.assets[] | select(.name == $a) | .digest // ""' 2>/dev/null | sed 's/^sha256://')"
+    assert_eq "" "$null_digest" "jq digest extraction yields empty for a JSON null digest (pre-digest asset)"
+}
+test_digest_extraction_jq
+
+# --- TEST 8: asset digest extraction (python3 fallback) ---
+test_digest_extraction_python() {
+    local json='{"tag_name": "v9.9.9", "assets": [
+        {"name": "urnetwork-provider-v9.9.9.tar.gz", "digest": "sha256:abc123"},
+        {"name": "urnet-docker-linux-amd64", "digest": "sha256:def456"}
+    ]}'
+    local digest
+    digest="$(printf "%s" "$json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((a.get("digest","").replace("sha256:","") for a in d.get("assets",[]) if a.get("name")==sys.argv[1]), ""))' "urnet-docker-linux-amd64" 2>/dev/null)"
+    assert_eq "def456" "$digest" "python3 fallback digest extraction finds the named asset and strips sha256:"
+}
+test_digest_extraction_python
+
+# --- TEST 9: PATH-already-contains-INSTALL_DIR note logic ---
+# The trailing "add this to your PATH" hint must only fire when the install
+# dir is genuinely absent from $PATH, and must never fire (false positive)
+# for a substring match against a differently-named directory.
+test_path_note_logic() {
+    local install_dir="/home/testuser/.local/bin"
+
+    local printed_present=0
+    case ":/usr/bin:/home/testuser/.local/bin:/bin:" in
+        *":$install_dir:"*) printed_present=0 ;;
+        *) printed_present=1 ;;
+    esac
+    if [ "$printed_present" -eq 0 ]; then
+        echo "✅ PASS: PATH note is suppressed when INSTALL_DIR is already on PATH"
+    else
+        echo "❌ FAIL: PATH note incorrectly fired even though INSTALL_DIR is on PATH"
+        FAILS=$((FAILS + 1))
+    fi
+
+    local printed_absent=0
+    case ":/usr/bin:/bin:" in
+        *":$install_dir:"*) printed_absent=0 ;;
+        *) printed_absent=1 ;;
+    esac
+    if [ "$printed_absent" -eq 1 ]; then
+        echo "✅ PASS: PATH note fires when INSTALL_DIR is absent from PATH"
+    else
+        echo "❌ FAIL: PATH note failed to fire even though INSTALL_DIR is absent"
+        FAILS=$((FAILS + 1))
+    fi
+
+    # A directory that is merely a substring of another PATH entry (e.g.
+    # /home/testuser/.local/bin-extra) must NOT satisfy the match — the
+    # case pattern requires the exact ":$install_dir:" delimiters.
+    local printed_substring=0
+    case ":/home/testuser/.local/bin-extra:" in
+        *":$install_dir:"*) printed_substring=0 ;;
+        *) printed_substring=1 ;;
+    esac
+    if [ "$printed_substring" -eq 1 ]; then
+        echo "✅ PASS: PATH note is not fooled by a directory that is only a prefix/substring match"
+    else
+        echo "❌ FAIL: PATH note treated a substring match as present on PATH"
+        FAILS=$((FAILS + 1))
+    fi
+}
+test_path_note_logic
+
+echo "======================================"
+if [ $FAILS -eq 0 ]; then
+    echo "🎉 All tests passed!"
+    exit 0
+else
+    echo "🚨 $FAILS test(s) failed."
+    exit 1
+fi

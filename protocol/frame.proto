@@ -1,0 +1,72 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "github.com/urnetwork/connect/protocol";
+
+
+// frames are used at all levels
+// flatten all message types into this enum
+enum MessageType {
+    TransferPack = 0;
+    TransferAck = 1;
+    TransferContract = 2;
+    TransferProvide = 3;
+    TransferAuth = 4;
+    TransferCreateStream = 5;
+    TransferCreateStreamResult = 6;
+    /* REMOVED */ TransferCloseStream = 7;
+    TransferStreamOpen = 8;
+    TransferStreamClose = 9;
+    TransferCreateContract = 10;
+    TransferCreateContractResult = 11;
+    TransferCloseContract = 12;
+    TransferPeerAudit = 13;
+    TestSimpleMessage = 14;
+    IpIpPacketToProvider = 15;
+    IpIpPacketFromProvider = 16;
+    IpIpPing = 17;
+    TransferControlPing = 18;
+    TransferProvidePing = 19;
+    TransferExchangeSignals = 20;
+    TransferExchangeSignal = 21;
+    TransferStreamReset = 22;
+    // out-of-band control for the per-peer TLS encryption session.
+    // `Frame.message_bytes` is a marshaled `EncryptedControl`. Carried inside
+    // a regular `Pack`/`Ack` flow, so it is delivered reliably and in order
+    // by the existing sequence machinery; the destination `ReceiveSequence`
+    // intercepts these frames and routes them into the encryption session
+    // instead of the application receive callback.
+    TransferEncryptedControl = 23;
+    // control message that publishes this client's public TLS certificate
+    // chain to the platform. `Frame.message_bytes` is a marshaled
+    // `EncryptedKey`. Sent once per client on startup (and again when the
+    // cert rotates). The platform stores the cert per `client_id` and
+    // attaches it to every contract whose destination is this client.
+    TransferEncryptedKey = 24;
+    // control message that publishes this client's long-lived public
+    // identity key (Ed25519) to the platform. `Frame.message_bytes` is
+    // a marshaled `ClientKey`. The platform stores the public key per
+    // `client_id` and serves it via an unauthenticated lookup API, so
+    // remote peers can fetch the binding independently of the contract
+    // pipeline that the platform itself authors. The corresponding
+    // private key is held only by the client process.
+    TransferClientKey = 25;
+    // control message that marks the start of a complete network peers
+    // list for the receiving client. `Frame.message_bytes` is a marshaled
+    // `NetworkPeersReset`. The receiver clears its peer state; the
+    // complete list follows as `TransferNetworkPeersUpdate` messages.
+    TransferNetworkPeersReset = 26;
+    // control message that upserts network peers (and disconnect markers)
+    // into the receiving client's peer state. `Frame.message_bytes` is a
+    // marshaled `NetworkPeersUpdate`.
+    TransferNetworkPeersUpdate = 27;
+}
+
+
+message Frame {
+    MessageType message_type = 1;
+    bytes message_bytes = 2;
+    // true when the message_bytes is the message
+    // this is used for messages that are already packed e.g. network packets
+    bool raw = 3;
+}

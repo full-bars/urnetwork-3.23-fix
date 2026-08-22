@@ -1,0 +1,36 @@
+# Docker build context exclusions
+# History/notes/docs (never needed at build time)
+progress.md
+GEMINI.md
+CLAUDE.md
+AGENTS.md
+*.md
+docs/
+res/
+
+# VCS
+.git
+.github
+.direnv
+.worktrees
+.claude/worktrees
+
+# Binaries & build artifacts
+provider_bin
+provider/provider_bin
+*.exe
+*.test
+*.out
+coverage.*
+
+# Release/temp/scratch
+releases/
+win-install-review-prompt.txt
+windows-installer-review-sonnet.md
+pr343-review.diff
+mimo_suggested_test.go
+.hermes-tmp.*
+
+# Fetched/scratch dirs
+work/
+*.log

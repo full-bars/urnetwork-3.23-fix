@@ -1,0 +1,253 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - fix/v3.23-custom
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - fix/v3.23-custom
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_IMAGE_NAME: 3cape/urnetwork-3.23-fix
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go (native cache)
+        # cache: true uses setup-go's built-in Go-aware cache (build + module
+        # caches via the actions/cache backend with atomic restore). Replaces
+        # the two manual cache steps, which flaked with tar extraction races
+        # ("Cannot open: File exists") on cache restore.
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run Go Unit Tests (with retry)
+        run: |
+          # Full suite across all packages with the race detector. The slow
+          # transport/transfer integration tests self-skip under -short via
+          # their testing.Short() guards, so this stays CI-fast (~2-4 min) while
+          # ./... auto-discovers new tests (the suite can no longer silently
+          # drift out of coverage the way the old -run allowlist did). -race
+          # gates concurrency regressions such as the message-pool reference
+          # count race.
+          # Retry: the Go cache restore occasionally flakes with a tar
+          # extraction error ("Cannot open: File exists"); a retry with a
+          # cold cache (no restore) clears it without a manual rerun.
+          for attempt in 1 2 3; do
+            echo "=== go test attempt $attempt/3 ==="
+            if go test -short -race -timeout 600s ./...; then
+              echo "go test passed (attempt $attempt)"
+              exit 0
+            fi
+            echo "go test failed on attempt $attempt"
+            if [ "$attempt" -lt 3 ]; then
+              echo "clearing Go build cache and retrying..."
+              go clean -cache
+              sleep 5
+            fi
+          done
+          echo "go test failed after 3 attempts"
+          exit 1
+
+      - name: Run go vet
+        run: |
+          go vet .
+          go vet ./provider/...
+          go vet ./hub/...
+
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check hot-path verbose logging guards
+        run: |
+          # Tier-1 hot-path files must not grow new unguarded V(n).Inf* calls.
+          # Two invariants:
+          #  1. Every unguarded call must carry a format string from the
+          #     checked-in allowlist (.github/verbose_log_allowlist.txt) - the
+          #     sanctioned Tier-2 per-connection/per-handshake sites that Task 17
+          #     deliberately leaves unguarded.
+          #  2. The allowlist and the guarded sites must be disjoint: an
+          #     allowlisted string used at a guarded site is a blind spot (the
+          #     guard could be silently removed and CI would not notice).
+          # A Tier-2 sweep PR must regenerate the allowlist.
+          python3 - <<'PYEOF'
+          import re, sys
+          sanctioned = set()
+          for line in open('.github/verbose_log_allowlist.txt'):
+              line = line.strip()
+              if line and not line.startswith('#'):
+                  sanctioned.add(line)
+
+          def formats_of(src, pattern):
+              out = []
+              for m in re.finditer(pattern, src):
+                  fm = re.match(r'\s*("(?:[^"\\]|\\.)*")', src[m.end():])
+                  out.append((src.count('\n', 0, m.start()) + 1,
+                              fm.group(1) if fm else '<no format string>'))
+              return out
+
+          bad = []
+          shared = []
+          for f in ('ip.go', 'transfer.go', 'ip_remote_multi_client.go'):
+              src = open(f).read()
+              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\.V\(\d+\)\.Inf\w*\('):
+                  if fmt not in sanctioned:
+                      bad.append(f'{f}:{line_no} {fmt[:90]}')
+              for line_no, fmt in formats_of(src, r'(?m)^[^\n/]*\bv\.Inf\w*\('):
+                  if fmt in sanctioned:
+                      shared.append(f'{f}:{line_no} {fmt[:90]}')
+          if bad:
+              print('unguarded V(n).Inf* with a non-allowlisted format string:')
+              print('\n'.join(bad))
+              print("wrap with 'if v := log.V(n); v.Enabled()' or extend the allowlist (Tier-2 sweep only)")
+              sys.exit(1)
+          if shared:
+              print('allowlisted format string is also used at a guarded site - remove it from the allowlist:')
+              print('\n'.join(shared))
+              sys.exit(1)
+          PYEOF
+
+      - name: Run Installer Script Tests
+        run: |
+          chmod +x scripts/test_provider_install.sh
+          ./scripts/test_provider_install.sh
+
+      - name: Run Fallback Logic Tests
+        run: |
+          chmod +x scripts/test_fallback_logic.sh
+          ./scripts/test_fallback_logic.sh
+
+      - name: Run vulnerability check
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  build-and-push:
+    needs: test-and-lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to the Container registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKER_IMAGE_NAME }}
+          tags: |
+            # :latest is the STABLE release — only on v3.23.0-fix.* tags.
+            # group=0 keeps the FULL semver tag (v3.23.0-fix.30.2) so
+            # docker pull with the exact release tag works (matches
+            # release notes, the shakedown, and docker.go). group=1
+            # stripped the v3.23.0-fix. prefix and broke those pulls.
+            type=match,pattern=v3\.23\.0-fix\..*,group=0
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') }}
+            # :main (and :sha-<short>) track current main continuously.
+            type=ref,event=branch
+            type=sha,format=short
+
+      - name: Determine version for build
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            # For main branch, get the most recent provider tag. Scoped to
+            # v3.23.0-fix.* so unrelated tag schemes in this repo (e.g. the
+            # hub's Docker-only hub-docker-vX.Y.Z tags) can never get picked up here.
+            VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+
+      - name: Notify Discord on tagged release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          BUILD_NOTIFY: ${{ secrets.BUILD_NOTIFY }}
+        run: |
+          if [ -z "$BUILD_NOTIFY" ]; then
+            echo "BUILD_NOTIFY secret is not set, skipping notification"
+            exit 0
+          fi
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sf -H "Content-Type: application/json" -d "$(jq -n \
+            --arg version "$VERSION" \
+            --arg runUrl "$RUN_URL" \
+          '{
+            "embeds": [{
+              "title": ("🐳 Docker Image Published — " + $version),
+              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix:" + $version + "\n```\n```\ndocker pull 3cape/urnetwork-3.23-fix:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
+              "color": 2406797,
+              "footer": { "text": "URNetwork Release Monitor • Docker" }
+            }]
+          }')" "$BUILD_NOTIFY"

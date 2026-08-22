@@ -1,0 +1,1040 @@
+name: Upstream Monitoring
+
+on:
+  schedule:
+    - cron: '0 0,12 * * *' # Run twice a day (midnight and noon UTC)
+  workflow_dispatch: # Allow manual triggering from the Actions tab
+
+jobs:
+  monitor-critical-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
+      - name: Monitor critical file changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+
+          # Regex patterns for files that affect the provider fork.
+          # Patterns use extended regex (-E); ^ anchors match start of filename.
+          # Grouped by subsystem for maintainability:
+          #   ip_*       — all IP/packet/security files
+          #   transfer_* — all contract/routing/encryption files
+          #   transport* — all transport abstraction files
+          #   net_*      — all HTTP/resilience/TLS/extender files
+          #   message_*  — all buffer/message-pool files
+          #   proxy_*    — all proxy health/URL/probe files
+          #   protocol/  — protobuf definitions
+          #   provider/  — CLI entry point
+          #   build      — go.mod, Dockerfile, Makefile, security generator
+          CRITICAL_FILES=(
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
+          )
+
+          echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
+
+          # Fetch the 15 most recently updated open PRs
+          PRS=$(gh api repos/$UPSTREAM_REPO/pulls?state=open\&sort=updated\&direction=desc\&per_page=15)
+
+          # Calculate timestamp for 12 hours ago
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$PRS" | jq -c '.[]' | while read -r pr; do
+            PR_NUMBER=$(echo "$pr" | jq -r '.number')
+            PR_TITLE=$(echo "$pr" | jq -r '.title')
+            PR_URL=$(echo "$pr" | jq -r '.html_url')
+            PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
+            PR_AUTHOR=$(echo "$pr" | jq -r '.user.login')
+            PR_AVATAR=$(echo "$pr" | jq -r '.user.avatar_url')
+
+            if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
+              FILES=$(gh api repos/$UPSTREAM_REPO/pulls/$PR_NUMBER/files | jq -r '.[].filename')
+
+              MATCHED_FILES=""
+              while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$match_name" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$FILES"
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🚨 CRITICAL: PR #$PR_NUMBER touches:$MATCHED_FILES"
+
+                AI_SUMMARY=""
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" --pr "$PR_NUMBER" 2>/dev/null || echo "could not build compact diff")
+                PROMPT="You are an expert Go developer. Analyze this pull request diff and produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
+                
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
+                
+                Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT]. Also honor any explicit fork-aware annotations embedded in the diff; they are authoritative and override the shared-file heuristic: a FORK LACKS marker means the file does NOT exist in the 3.23-fix fork, so classify its change as [NO ACTION] (a code-path fix touching only that file cannot apply). A FORK DIVERGED marker means the fork carries the file but its generated table is a fork snapshot with its own counts. Compare each changed constant to the fork counts in the annotation: a family where the fork lags upstream is a genuine [WATCH] port candidate; a family where the fork already leads is [NO ACTION]. Do not classify a data-only refresh as [MUST PORT].
+                
+                Diff:
+                                ${COMPACT_DIFF}"
+
+                # Tier 1: opencode-go gateway (via opencode CLI)
+                if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                  OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                  fi
+                fi
+
+                # Tier 2: DeepSeek API
+                if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                  JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                    "model": "deepseek-v4-flash",
+                    "messages": [{
+                      "role": "user",
+                      "content": $prompt
+                    }],
+                    "temperature": 0.2,
+                    "max_tokens": 1500
+                  }')
+
+                  DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+                    -d "$JSON_PAYLOAD" \
+                    "https://api.deepseek.com/chat/completions")
+
+                  API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
+                  if [ -n "$API_ERROR" ]; then
+                    echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                  else
+                    RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                    fi
+                  fi
+                fi
+
+                # Tier 3: Gemini API
+                if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                  JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                    "contents": [{
+                      "parts": [{
+                        "text": $prompt
+                      }]
+                    }],
+                    "generationConfig": { "temperature": 0.2 }
+                  }')
+
+                  GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                    -d "$JSON_PAYLOAD" \
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                  API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                  if [ -n "$API_ERROR" ]; then
+                    echo "[ERROR] Gemini API error: $API_ERROR"
+                  else
+                    RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[ERROR] Failed to extract summary from Gemini response"
+                    fi
+                  fi
+                fi
+
+                if [ -z "$AI_SUMMARY" ]; then
+                  AI_SUMMARY="*AI Summary unavailable.*"
+                fi
+
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=16711680
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$PR_URL" \
+                    --arg prTitle "$PR_TITLE" \
+                    --arg author "$PR_AUTHOR" \
+                    --arg avatar "$PR_AVATAR" \
+                    --arg summary "$AI_SUMMARY" \
+                    --arg files "$MATCHED_FILES" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
+                  '{
+                    "embeds": [{
+                      "title": "🚨 Upstream PR Modifies Critical Files",
+                      "url": $url,
+                      "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author + "\n\n**Modified Files:**\n" + $files + "\n\n**🤖 AI Summary:**\n>>> " + $summary),
+                      "color": $verdictColor,
+                      "thumbnail": { "url": $avatar },
+                      "footer": { "text": "URNetwork Upstream Monitor • Critical Files" }
+                    }]
+                  }')
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+                fi
+              fi
+            fi
+          done
+
+  monitor-all-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Monitor all upstream PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+
+          echo "Fetching recently updated PRs from $UPSTREAM_REPO..."
+          PRS=$(gh api repos/$UPSTREAM_REPO/pulls?state=open\&sort=updated\&direction=desc\&per_page=5)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$PRS" | jq -c '.[]' | while read -r pr; do
+            PR_NUMBER=$(echo "$pr" | jq -r '.number')
+            PR_TITLE=$(echo "$pr" | jq -r '.title')
+            PR_URL=$(echo "$pr" | jq -r '.html_url')
+            PR_UPDATED=$(echo "$pr" | jq -r '.updated_at')
+            PR_AUTHOR=$(echo "$pr" | jq -r '.user.login')
+            PR_AVATAR=$(echo "$pr" | jq -r '.user.avatar_url')
+
+            if [[ "$PR_UPDATED" > "$TWELVE_HOURS_AGO" ]]; then
+              echo "📢 New/Updated PR: #$PR_NUMBER by $PR_AUTHOR"
+
+              if [ -n "$DISCORD_WEBHOOK" ]; then
+                DISCORD_JSON=$(jq -n \
+                  --arg url "$PR_URL" \
+                  --arg prTitle "$PR_TITLE" \
+                  --arg author "$PR_AUTHOR" \
+                  --arg avatar "$PR_AVATAR" \
+                '{
+                  "embeds": [{
+                    "title": "📢 Upstream PR Activity",
+                    "url": $url,
+                    "description": ("**PR:** [" + $prTitle + "](" + $url + ")\n**Author:** " + $author),
+                    "color": 3447003,
+                    "thumbnail": { "url": $avatar },
+                    "footer": { "text": "URNetwork Upstream Monitor • All PRs" }
+                  }]
+                }')
+                echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+              fi
+            fi
+          done
+
+  monitor-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
+      - name: Monitor upstream commits to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          UPSTREAM_REPO="urnetwork/connect"
+
+          # Keep in sync with the CRITICAL_FILES in monitor-critical-files above.
+          CRITICAL_FILES=(
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
+          )
+
+          echo "Fetching recent commits to $UPSTREAM_REPO/main..."
+
+          # Fetch last 20 commits to main
+          COMMITS=$(gh api repos/$UPSTREAM_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$UPSTREAM_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$match_name" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "✅ MERGED: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                AI_SUMMARY=""
+                COMMIT_SHA_FULL=$(echo "$commit" | jq -r '.sha')
+                # Compact, faithful change representation: real code patches in
+                # full; generated data-table files as meaningful const deltas
+                # (the packed blobs are opaque; the API elides them anyway).
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" "$COMMIT_SHA_FULL" 2>/dev/null || echo "could not build compact diff")
+                PROMPT="You are an expert Go developer. Analyze this commit diff and produce a structured summary of approximately 150-250 words with exactly these three bolded sections:
+                
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, or the provider binary
+                
+                Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT]. Also honor any explicit fork-aware annotations embedded in the diff; they are authoritative and override the shared-file heuristic: a FORK LACKS marker means the file does NOT exist in the 3.23-fix fork, so classify its change as [NO ACTION] (a code-path fix touching only that file cannot apply). A FORK DIVERGED marker means the fork carries the file but its generated table is a fork snapshot with its own counts. Compare each changed constant to the fork counts in the annotation: a family where the fork lags upstream is a genuine [WATCH] port candidate; a family where the fork already leads is [NO ACTION]. Do not classify a data-only refresh as [MUST PORT].
+                
+                Diff:
+                                ${COMPACT_DIFF}"
+
+                if [ -n "$COMPACT_DIFF" ]; then
+                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                    fi
+                  fi
+
+                  # Tier 2: DeepSeek API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "model": "deepseek-v4-flash",
+                      "messages": [{
+                        "role": "user",
+                        "content": $prompt
+                      }],
+                      "temperature": 0.2,
+                      "max_tokens": 1000
+                    }')
+                    DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://api.deepseek.com/chat/completions")
+                    API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                    else
+                      RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                      fi
+                    fi
+                  fi
+
+                  # Tier 3: Gemini API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "contents": [{
+                        "parts": [{
+                          "text": $prompt
+                        }]
+                      }],
+                      "generationConfig": { "temperature": 0.2 }
+                    }')
+                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[ERROR] Gemini API error: $API_ERROR"
+                    else
+                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[ERROR] Failed to extract summary from Gemini response"
+                      fi
+                    fi
+                  fi
+                fi
+
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=65280
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                    --arg summary "$AI_SUMMARY" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
+                  '{
+                    "embeds": [{
+                      "title": "✅ Upstream Commit to Main (Critical Files)",
+                      "url": $url,
+                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Summary:**\n" + $summary else "" end)),
+                      "color": $verdictColor,
+                      "footer": { "text": "URNetwork Upstream Monitor • Merged" }
+                    }]
+                  }')
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+                fi
+              fi
+            fi
+          done
+
+  monitor-sibling-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Detect sibling-fork commits to critical files not yet ported
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          # full-bars/connect is the upstream-tracking sibling fork: safety fixes
+          # (message-pool corrections, bandwidth-leak gating, etc.) land there
+          # first and must then be ported into this production fork. The two
+          # trees drift silently otherwise - FORK_CHANGES.md tracks what the fork
+          # ADDS, nothing tracks what it is MISSING. Surface recent sibling
+          # commits that touch shared critical files so a human can decide
+          # whether each needs porting.
+          SIBLING_REPO="full-bars/connect"
+
+          # Keep in sync with the CRITICAL_FILES in monitor-critical-files above.
+          CRITICAL_FILES=(
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^ip_test\.go$"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
+          )
+
+          echo "Fetching recent commits to $SIBLING_REPO/main..."
+          COMMITS=$(gh api repos/$SIBLING_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$SIBLING_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$match_name" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🔀 SIBLING DRIFT: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                  '{
+                    "embeds": [{
+                      "title": "🔀 Sibling Fork Advanced on Critical Files (port check)",
+                      "url": $url,
+                      "description": ("full-bars/connect committed to a file shared with this production fork. Confirm whether the change needs porting here.\n\n**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files),
+                      "color": 16753920,
+                      "footer": { "text": "URNetwork Fork Drift Monitor • Port check" }
+                    }]
+                  }')
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+                fi
+              fi
+            fi
+          done
+
+  monitor-build-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
+      - name: Watch urnetwork/build for new releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          BUILD_REPO="urnetwork/build"
+          UPSTREAM_REPO="urnetwork/connect"
+
+          # Same critical-file patterns as the commit monitor above.
+          CRITICAL_FILES=(
+            "^ip\.go$"
+            "^ip_packet\.go$"
+            "^ip_remote_multi_client"
+            "^ip_security"
+            "^transfer\.go$"
+            "^transfer_"
+            "^transport"
+            "^net_"
+            "^message_"
+            "^proxy_"
+            "^provider/main\.go$"
+            "^protocol/.*\.proto$"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "^security/gen\.sh$"
+          )
+
+          # Files that are client-only / not used by the provider binary.
+          # When ALL modified files match these patterns, the notification
+          # explicitly says "client-only" so you don't worry.
+          CLIENT_ONLY_FILES=(
+            "^tun"
+            "^transport_p2p_webrtc_pc_js"
+            "^transport_p2p_webrtc_android"
+            "^connect_filtered_path"
+            "^connectctl/"
+            "^hub/"
+            "^mobile/"
+            "\.aar$"
+            "\.xcframework$"
+            # NOTE: no "^v2026/" entry here: paths are normalized (the
+            # v2026/ prefix is stripped) before matching, so v2026/ip_security
+            # and friends classify as CRITICAL, not client-only.
+            "^security/ips\.go$"
+            "^security/ips\.txt$"
+          )
+
+          echo "Fetching latest releases from $BUILD_REPO..."
+
+          RELEASES=$(gh api repos/$BUILD_REPO/releases?per_page=2)
+          LATEST_TAG=$(echo "$RELEASES" | jq -r '.[0].tag_name')
+          PREV_TAG=$(echo "$RELEASES" | jq -r '.[1].tag_name')
+          LATEST_DATE=$(echo "$RELEASES" | jq -r '.[0].created_at')
+          LATEST_URL=$(echo "$RELEASES" | jq -r '.[0].html_url')
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [[ "$LATEST_DATE" < "$TWELVE_HOURS_AGO" ]]; then
+            echo "No new releases in window. Latest: $LATEST_TAG ($LATEST_DATE)"
+            exit 0
+          fi
+
+          echo "New release: $LATEST_TAG (previous: $PREV_TAG, created: $LATEST_DATE)"
+
+          PREV_SHA=$(gh api repos/$UPSTREAM_REPO/git/refs/tags/$PREV_TAG -q '.object.sha' 2>/dev/null || echo "")
+          LATEST_SHA=$(gh api repos/$UPSTREAM_REPO/git/refs/tags/$LATEST_TAG -q '.object.sha' 2>/dev/null || echo "")
+
+          if [ -z "$LATEST_SHA" ]; then
+            echo "Tag $LATEST_TAG not yet in $UPSTREAM_REPO — delaying until next run"
+            exit 0
+          fi
+
+          COMMIT_COUNT="?"
+          CRITICAL_MATCHES=""
+          ALL_FILES=""
+          CLIENT_ONLY_COUNT=0
+          SAMPLE_COMMIT=""
+          AI_SUMMARY=""
+
+          if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$LATEST_SHA" ]; then
+            COMPARE=$(gh api repos/$UPSTREAM_REPO/compare/$PREV_TAG...$LATEST_TAG 2>/dev/null || echo "")
+            # Guard the jq calls: if the compare returned nothing (the tags
+            # can be out of order across repos, or the range is empty), the
+            # monitor must log and degrade gracefully, NOT crash the job
+            # (observed: jq "Cannot iterate over null" killed the workflow
+            # when previous-tag > latest-tag). This is an informational
+            # monitor; a failed compare is a skip, not a failure.
+            if ! echo "$COMPARE" | jq -e '.files' >/dev/null 2>&1; then
+              echo "compare $PREV_TAG...$LATEST_TAG returned no file list (tags out of order or empty range); skipping diff details"
+              COMPARE=""
+            fi
+            COMMIT_COUNT=$(echo "$COMPARE" | jq -r '.total_commits // "?"' 2>/dev/null || echo "?")
+
+            MODIFIED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename // empty' 2>/dev/null || true)
+            while IFS= read -r filename; do
+              [ -z "$filename" ] && continue
+              # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+              # match against the root-relative name so the anchored
+              # patterns keep working; report the real upstream path.
+              match_name="${filename#v2026/}"
+              ALL_FILES="$ALL_FILES \`$filename\`"
+
+              IS_CRITICAL=false
+              for pattern in "${CRITICAL_FILES[@]}"; do
+                if echo "$match_name" | grep -q -E "$pattern"; then
+                  CRITICAL_MATCHES="$CRITICAL_MATCHES \`$filename\`"
+                  IS_CRITICAL=true
+                  break
+                fi
+              done
+
+              if ! $IS_CRITICAL; then
+                for pattern in "${CLIENT_ONLY_FILES[@]}"; do
+                  if echo "$match_name" | grep -q -E "$pattern"; then
+                    CLIENT_ONLY_COUNT=$((CLIENT_ONLY_COUNT + 1))
+                    break
+                  fi
+                done
+              fi
+            done <<< "$MODIFIED_FILES"
+
+            SAMPLE_COMMIT=$(echo "$COMPARE" | jq -r '.commits[-1].commit.message // empty' | head -1 | cut -c1-200)
+
+            AI_SUMMARY=""
+            COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$UPSTREAM_REPO" "${PREV_SHA}...${LATEST_SHA}" 2>/dev/null || echo "could not build compact diff")
+            PROMPT="You are an expert Go developer. The following is the git diff between two releases of urnetwork/connect. Produce a structured summary of approximately 250-350 words with exactly these three bolded sections:
+            
+            **Architectural Changes** - what changed structurally and why
+            **Performance Impact** - throughput, latency, memory, or CPU effects
+            **Breaking Changes** - anything that breaks behavior, wire format, routing, encryption, contracts, or the provider binary
+            
+            Be specific and reference actual code paths. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
+            - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+            - [WATCH] for behavior changes worth tracking
+            - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
+            with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT]. Also honor any explicit fork-aware annotations embedded in the diff; they are authoritative and override the shared-file heuristic: a FORK LACKS marker means the file does NOT exist in the 3.23-fix fork, so classify its change as [NO ACTION] (a code-path fix touching only that file cannot apply). A FORK DIVERGED marker means the fork carries the file but its generated table is a fork snapshot with its own counts. Compare each changed constant to the fork counts in the annotation: a family where the fork lags upstream is a genuine [WATCH] port candidate; a family where the fork already leads is [NO ACTION]. Do not classify a data-only refresh as [MUST PORT].
+            
+            Diff:
+                        ${COMPACT_DIFF}"
+
+            if [ -n "$COMPACT_DIFF" ]; then
+              # Tier 1: opencode-go gateway (via opencode CLI)
+              if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                  AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                  echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                else
+                  echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                fi
+              fi
+
+              # Tier 2: DeepSeek API
+              if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                  "model": "deepseek-v4-flash",
+                  "messages": [{
+                    "role": "user",
+                    "content": $prompt
+                  }],
+                  "temperature": 0.2,
+                  "max_tokens": 1500
+                }')
+
+                DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+                  -d "$JSON_PAYLOAD" \
+                  "https://api.deepseek.com/chat/completions")
+
+                API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
+                if [ -n "$API_ERROR" ]; then
+                  echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                else
+                  RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                  fi
+                fi
+              fi
+
+              # Tier 3: Gemini API
+              if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                  "contents": [{
+                    "parts": [{
+                      "text": $prompt
+                    }]
+                  }],
+                  "generationConfig": { "temperature": 0.2 }
+                }')
+
+                GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                  -d "$JSON_PAYLOAD" \
+                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+
+                API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                if [ -n "$API_ERROR" ]; then
+                  echo "[ERROR] Gemini API error: $API_ERROR"
+                else
+                  RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                  else
+                    echo "[ERROR] Failed to extract summary from Gemini response"
+                  fi
+                fi
+              fi
+            fi
+          fi
+
+          # Build title, colour, and classification note
+          if [ -n "$CRITICAL_MATCHES" ]; then
+            TITLE="🚀 New Build Release — Provider Impact"
+            COLOR=16776960
+            CLASSIFICATION="**⚠️ Provider-critical files changed** — evaluate porting need"
+          elif [ "$CLIENT_ONLY_COUNT" -gt 0 ] && [ "$CLIENT_ONLY_COUNT" -eq "$(echo "$ALL_FILES" | wc -w)" ]; then
+            TITLE="📦 New Build Release — Client Only"
+            COLOR=3447003
+            CLASSIFICATION="**ℹ️ Client-only release** — no provider impact"
+          else
+            TITLE="📦 New Build Release"
+            COLOR=3447003
+            CLASSIFICATION="**ℹ️ No provider-critical files changed**"
+          fi
+
+          DESCRIPTION="**Release:** [$LATEST_TAG]($LATEST_URL)\n"
+          DESCRIPTION+="**Previous:** \`$PREV_TAG\`\n"
+          DESCRIPTION+="**Commits:** $COMMIT_COUNT\n\n"
+          DESCRIPTION+="$CLASSIFICATION\n\n"
+
+          if [ -n "$CRITICAL_MATCHES" ]; then
+            DESCRIPTION+="**Files changed:**$CRITICAL_MATCHES\n\n"
+          fi
+
+          if [ -n "$SAMPLE_COMMIT" ]; then
+            DESCRIPTION+="**Last commit:** $SAMPLE_COMMIT"
+          fi
+
+          if [ -n "$AI_SUMMARY" ]; then
+            DESCRIPTION+="\n\n**🤖 AI Summary:**\n$AI_SUMMARY"
+          fi
+
+          echo "---"
+          echo -e "$DESCRIPTION"
+
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            DISCORD_JSON=$(jq -n \
+              --arg title "$TITLE" \
+              --arg desc "$DESCRIPTION" \
+              --argjson color $COLOR \
+            '{
+              "embeds": [{
+                "title": $title,
+                "description": $desc,
+                "color": $color,
+                "footer": { "text": "URNetwork Upstream Monitor • Build Releases" }
+              }]
+            }')
+            echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+            python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+          fi
+
+  monitor-sn-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (for helper script)
+        uses: actions/checkout@v4
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai >/dev/null 2>&1 || echo "opencode install failed (falling back to DeepSeek API)"
+      - name: Watch urfoundation/sn for provider-relevant changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # urfoundation/sn is the Bittensor subnet repo that absorbed the old
+          # connect/provider (the "sn transition", July 2026). Provider-relevant
+          # changes now land here instead of urnetwork/connect: miner/ (run.go,
+          # sn.go, sn_rpc.go, onchain/), cli/miner/, cmd/, and dependency files.
+          # This job surfaces new commits so a human can judge portability back
+          # into the 3.23-fix production fork.
+          SN_REPO="urfoundation/sn"
+
+          CRITICAL_FILES=(
+            "^miner/"
+            "^cli/miner/"
+            "^cmd/"
+            "^onchain/"
+            "^go\.mod$"
+            "^go\.sum$"
+            "^Makefile$"
+            "^Dockerfile$"
+            "\.proto$"
+          )
+
+          echo "Fetching recent commits to $SN_REPO/main..."
+          COMMITS=$(gh api repos/$SN_REPO/commits?sha=main\&per_page=20)
+
+          TWELVE_HOURS_AGO=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "$COMMITS" | jq -c '.[]' | while read -r commit; do
+            COMMIT_SHA=$(echo "$commit" | jq -r '.sha' | cut -c1-8)
+            COMMIT_MSG=$(echo "$commit" | jq -r '.commit.message' | head -1)
+            COMMIT_URL=$(echo "$commit" | jq -r '.html_url')
+            COMMIT_AUTHOR=$(echo "$commit" | jq -r '.commit.author.name')
+            COMMIT_DATE=$(echo "$commit" | jq -r '.commit.author.date')
+
+            if [[ "$COMMIT_DATE" > "$TWELVE_HOURS_AGO" ]]; then
+              COMMIT_FILES=$(gh api repos/$SN_REPO/commits/$COMMIT_SHA | jq -r '.files[].filename')
+
+              MATCHED_FILES=""
+              while IFS= read -r filename; do
+                # Upstream moved its tree into v2026/ (647a86a, 2026-08-15):
+                # match against the root-relative name so the anchored
+                # patterns keep working; report the real upstream path.
+                match_name="${filename#v2026/}"
+                for pattern in "${CRITICAL_FILES[@]}"; do
+                  if echo "$match_name" | grep -q -E "$pattern"; then
+                    MATCHED_FILES="$MATCHED_FILES \`$filename\`"
+                    break
+                  fi
+                done
+              done <<< "$COMMIT_FILES"
+
+              if [ -n "$MATCHED_FILES" ]; then
+                echo "🛰️ SN REPO: Commit $COMMIT_SHA touches:$MATCHED_FILES"
+
+                AI_SUMMARY=""
+                COMPACT_DIFF=$(python3 .github/scripts/compact_commit_diff.py "$SN_REPO" "$COMMIT_SHA" 2>/dev/null || echo "could not build compact diff")
+                PROMPT="You are an expert Go developer. The following is a commit diff from urfoundation/sn (the Bittensor subnet repo that absorbed the old connect/provider code). Produce a structured summary of approximately 200-300 words with exactly these three bolded sections:
+                
+                **Architectural Changes** - what changed structurally and why
+                **Performance Impact** - throughput, latency, memory, or CPU effects
+                **Breaking Changes** - anything affecting contract handling, routing, encryption, proxy management, or the provider binary
+                
+                Be specific. Then add a final portability verdict for the 3.23-fix production fork, exactly one line:
+                - [MUST PORT] if the 3.23-fix fork plausibly contains the same code path, constant, or defect this change fixes. The fork is a direct descendant of this repo and shares most files, so a bug fix to shared code is a MUST PORT even when the diff is one line and touches no sensitive subsystem. Also [MUST PORT] if it touches contract signing/HMAC/network-event dates, routing, encryption, proxy management, auth, or dependency pins
+                - [WATCH] for behavior changes worth tracking
+                - [NO ACTION] only if the fork cannot contain the issue: an upstream-only file, a subsystem this fork has replaced, or a change with no behavioural effect. Do not answer [NO ACTION] merely because the change is small or sits outside the subsystem list above
+                with a one-line justification after it that names the specific file, symbol, or constant the fork shares with this change. If you cannot name one, the verdict is not [MUST PORT]. Also honor any explicit fork-aware annotations embedded in the diff; they are authoritative and override the shared-file heuristic: a FORK LACKS marker means the file does NOT exist in the 3.23-fix fork, so classify its change as [NO ACTION] (a code-path fix touching only that file cannot apply). A FORK DIVERGED marker means the fork carries the file but its generated table is a fork snapshot with its own counts. Compare each changed constant to the fork counts in the annotation: a family where the fork lags upstream is a genuine [WATCH] port candidate; a family where the fork already leads is [NO ACTION]. Do not classify a data-only refresh as [MUST PORT].
+                
+                Diff:
+                                ${COMPACT_DIFF}"
+
+                if [ -n "$COMPACT_DIFF" ]; then
+                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
+                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                    else
+                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
+                    fi
+                  fi
+
+                  # Tier 2: DeepSeek API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "model": "deepseek-v4-flash",
+                      "messages": [{
+                        "role": "user",
+                        "content": $prompt
+                      }],
+                      "temperature": 0.2,
+                      "max_tokens": 1200
+                    }')
+                    DEEPSEEK_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://api.deepseek.com/chat/completions")
+                    API_ERROR=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[WARN] DeepSeek API error: $API_ERROR; falling back to Gemini"
+                    else
+                      RAW_SUMMARY=$(echo "$DEEPSEEK_RESPONSE" | jq -r '.choices[0].message.content // empty')
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via DeepSeek (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[WARN] DeepSeek returned no content; falling back to Gemini"
+                      fi
+                    fi
+                  fi
+
+                  # Tier 3: Gemini API
+                  if [ -z "$AI_SUMMARY" ] && [ -n "$GEMINI_API_KEY" ]; then
+                    JSON_PAYLOAD=$(jq -n --arg prompt "$PROMPT" '{
+                      "contents": [{
+                        "parts": [{
+                          "text": $prompt
+                        }]
+                      }],
+                      "generationConfig": { "temperature": 0.2 }
+                    }')
+                    GEMINI_RESPONSE=$(curl -s -H "Content-Type: application/json" \
+                      -d "$JSON_PAYLOAD" \
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}")
+                    API_ERROR=$(echo "$GEMINI_RESPONSE" | jq -r '.error.message // empty')
+                    if [ -n "$API_ERROR" ]; then
+                      echo "[ERROR] Gemini API error: $API_ERROR"
+                    else
+                      RAW_SUMMARY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via Gemini (${#RAW_SUMMARY} chars)"
+                      else
+                        echo "[ERROR] Failed to extract summary from Gemini response"
+                      fi
+                    fi
+                  fi
+                fi
+
+                # Color embed by AI verdict when available
+                VERDICT_COLOR=16753920
+                if [ -n "$AI_SUMMARY" ]; then
+                  if echo "$AI_SUMMARY" | grep -q "\[MUST PORT\]"; then
+                    VERDICT_COLOR=16711680
+                  elif echo "$AI_SUMMARY" | grep -q "\[WATCH\]"; then
+                    VERDICT_COLOR=16753920
+                  elif echo "$AI_SUMMARY" | grep -q "\[NO ACTION\]"; then
+                    VERDICT_COLOR=65280
+                  fi
+                fi
+
+                if [ -n "$DISCORD_WEBHOOK" ]; then
+                  DISCORD_JSON=$(jq -n \
+                    --arg url "$COMMIT_URL" \
+                    --arg sha "$COMMIT_SHA" \
+                    --arg msg "$COMMIT_MSG" \
+                    --arg author "$COMMIT_AUTHOR" \
+                    --arg files "$MATCHED_FILES" \
+                    --arg summary "$AI_SUMMARY" \
+                    --argjson verdictColor "$VERDICT_COLOR" \
+                  '{
+                    "embeds": [{
+                      "title": "🛰️ urfoundation/sn Committed to Provider-Relevant Files",
+                      "url": $url,
+                      "description": ("**Commit:** `" + $sha + "`\n**Author:** " + $author + "\n**Message:** " + $msg + "\n\n**Modified Files:**\n" + $files + (if $summary != "" then "\n\n**🤖 Portability Assessment:**\n" + $summary else "" end)),
+                      "color": $verdictColor,
+                      "footer": { "text": "URNetwork Upstream Monitor • SN Repo" }
+                    }]
+                  }')
+                  echo "$DISCORD_JSON" > /tmp/urnet_discord.json
+                  python3 .github/scripts/discord_chunked_send.py /tmp/urnet_discord.json
+                fi
+              fi
+            fi
+          done

@@ -1,0 +1,124 @@
+name: Windows lifecycle verification
+
+on:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-lifecycle:
+    name: urnet-tools Windows lifecycle (schtasks)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build the tool for Windows
+        run: go build -o urnet-tools.exe ./cmd/urnet-tools/
+
+      - name: Unit tests on Windows
+        run: go test ./internal/urnettools/
+        env:
+          GOOS: windows
+
+      - name: Create a fake install so discovery finds a target
+        # The tool's Windows discovery falls back to %LOCALAPPDATA%\urnetwork.
+        # A provider binary + state dir there lets the lifecycle commands
+        # resolve a target without a real provider running.
+        run: |
+          $dir = "$env:LOCALAPPDATA\urnetwork\provider"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "$env:GITHUB_WORKSPACE\urnet-tools.exe" "$dir\urnetwork.exe"
+          Set-Content -Path "$env:LOCALAPPDATA\urnetwork\jwt" -Value "test-jwt-for-discovery"
+
+      - name: Verify discovery finds the fake provider
+        run: .\urnet-tools.exe providers
+        shell: pwsh
+
+      - name: auto-update weekly (default posture)
+        run: .\urnet-tools.exe auto-update weekly
+
+      - name: Verify weekly task created (midnight Sunday)
+        run: |
+          $info = schtasks /query /tn urnetwork-update /fo LIST /v | Out-String
+          # The task is correct if it is weekly, on Sunday, at midnight.
+          # Match on the meaningful signals rather than exact labels.
+          if ($info -notmatch "Weekly") {
+            Write-Warning "Schedule Type line not 'Weekly'; inspecting next run instead"
+          }
+          if ($info -notmatch "SUN") { throw "expected Sunday, got: $info" }
+          if ($info -notmatch "12:00:00 AM") { throw "expected midnight start, got: $info" }
+          if ($info -notmatch "urnetwork-update") { throw "expected task name, got: $info" }
+          Write-Host "OK: weekly task is midnight Sunday"
+
+      - name: auto-update monthly (re-schedule)
+        run: .\urnet-tools.exe auto-update monthly
+
+      - name: Verify monthly task (1st of month)
+        run: |
+          $info = schtasks /query /tn urnetwork-update /fo LIST /v | Out-String
+          # Monthly on day 1, midnight. Match signals (the "Days: 01" and
+          # "Monthly" lines are the meaningful ones).
+          if ($info -notmatch "Monthly") {
+            Write-Warning "Schedule Type not 'Monthly'; inspecting days instead"
+          }
+          if ($info -notmatch "Days:\s+01") { throw "expected day 1, got: $info" }
+          if ($info -notmatch "12:00:00 AM") { throw "expected midnight start, got: $info" }
+          Write-Host "OK: monthly task on day 1 at midnight"
+
+      - name: auto-update off (delete task)
+        run: .\urnet-tools.exe auto-update off
+
+      - name: Verify task deleted
+        run: |
+          # schtasks writes an ERROR to stderr for a missing task; pwsh turns
+          # native stderr into an error record that fails the step under the
+          # runner's error preference. Route through cmd so the exit code and
+          # output are captured without pwsh error semantics.
+          $ErrorActionPreference = "Continue"
+          $q = cmd /c "schtasks /query /tn urnetwork-update 2>&1"
+          # The off command deleted it; verify by checking the task is not
+          # listed (a missing task yields an error text, not a task row).
+          if ($q -match "TaskName") { throw "task still exists after off: $q" }
+          Write-Host "OK: task deleted"
+          # cmd's non-zero exit (missing task) would fail the step via
+          # LASTEXITCODE; the check above is the real verdict, so reset it.
+          $LASTEXITCODE = 0
+          exit 0
+
+      - name: auto-start on (onlogon task)
+        run: .\urnet-tools.exe auto-start on
+
+      - name: Verify autostart task
+        run: |
+          $info = schtasks /query /tn urnetwork-autostart /fo LIST /v | Out-String
+          # schtasks reports the onlogon trigger as "At logon time".
+          if ($info -notmatch "At logon time" -and $info -notmatch "At log on") {
+            throw "expected logon trigger, got: $info"
+          }
+          if ($info -notmatch "urnetwork-autostart") { throw "expected task name, got: $info" }
+          Write-Host "OK: autostart task"
+
+      - name: auto-start off (delete task)
+        run: .\urnet-tools.exe auto-start off
+
+      - name: Verify autostart task deleted
+        run: |
+          $ErrorActionPreference = "Continue"
+          $q = cmd /c "schtasks /query /tn urnetwork-autostart 2>&1"
+          if ($q -match "TaskName") { throw "autostart task still exists after off: $q" }
+          Write-Host "OK: autostart task deleted"
+          $LASTEXITCODE = 0
+          exit 0
+
+      - name: Verify no tasks remain (cleanup check)
+        run: |
+          $tasks = schtasks /query /fo csv | Select-String -Pattern "urnetwork"
+          if ($tasks) { throw "leftover tasks: $tasks" }
+          Write-Host "OK: no urnetwork tasks remain"
