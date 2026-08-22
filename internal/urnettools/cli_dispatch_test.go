@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -269,10 +270,19 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	os.Stderr = w
 	defer func() { os.Stderr = old }()
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
 	fn()
 	w.Close()
-	b, _ := io.ReadAll(r)
-	return string(b)
+	<-done
+	r.Close()
+	return buf.String()
 }
 
 // TestRunSelfUpdateHelp: `self-update`/`selfupdate` (and their -h/--help)

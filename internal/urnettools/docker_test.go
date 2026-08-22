@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -138,14 +139,23 @@ func TestSplitExecArgs(t *testing.T) {
 		}
 		os.Stderr = w
 		defer func() { os.Stderr = old }()
+
+		var buf bytes.Buffer
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(&buf, r)
+			close(done)
+		}()
+
 		err = cmdDockerExec([]string{"--unit", "x", "--help"})
 		w.Close()
-		out, _ := io.ReadAll(r)
+		<-done
+		r.Close()
 		if err != nil {
 			t.Fatalf("cmdDockerExec([--unit x --help]) err = %v, want nil", err)
 		}
-		if !strings.Contains(string(out), "urnet-docker") {
-			t.Fatalf("cmdDockerExec([--unit x --help]) did not print usage, got %q", string(out))
+		if !strings.Contains(buf.String(), "urnet-docker") {
+			t.Fatalf("cmdDockerExec([--unit x --help]) did not print usage, got %q", buf.String())
 		}
 	})
 	for _, c := range cases {

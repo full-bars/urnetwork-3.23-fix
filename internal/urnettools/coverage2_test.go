@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"os/exec"
@@ -78,17 +79,24 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
 	err := cmdProxyTrafficTarget(p)
 	if cerr := w.Close(); cerr != nil {
 		t.Fatalf("closing capture pipe: %v", cerr)
 	}
 	os.Stdout = old
+	<-done
+	r.Close()
 	if err != nil {
 		t.Fatalf("unexpected error reading snapshot: %v", err)
 	}
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "rx=100") {
-		t.Errorf("printed output should contain the snapshot contents, got: %q", out)
+	if !strings.Contains(buf.String(), "rx=100") {
+		t.Errorf("printed output should contain the snapshot contents, got: %q", buf.String())
 	}
 }
 
