@@ -3,6 +3,7 @@ package urnettools
 import (
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,7 +170,17 @@ func fetchHubCA(baseURL, token string) (caPEM, fingerprint string, err error) {
 	if token != "" {
 		u = strings.TrimRight(baseURL, "/") + "/api/ca-cert?token=" + urlQueryEscape(token)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	// The hub serves a self-signed CA (the setup docs call this endpoint with
+	// curl -k), so transport TLS cannot be verified against system roots. This
+	// is TOFU: link then pins the returned CA/fingerprint, which is the trust
+	// decision the operator confirms. Disabling transport verification here is
+	// required for the feature to work at all against a real hub.
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // TOFU: pinned below
+		},
+	}
 	resp, err := client.Get(u)
 	if err != nil {
 		return "", "", fmt.Errorf("could not reach hub at %s: %v", baseURL, err)
@@ -186,7 +198,15 @@ func fetchHubCA(baseURL, token string) (caPEM, fingerprint string, err error) {
 		return "", "", fmt.Errorf("hub error: %s", r.ErrorMessage)
 	}
 	if r.CAPEM != "" {
-		return strings.ReplaceAll(r.CAPEM, `\n`, "\n"), r.CAFingerprint, nil
+		caPEM := strings.ReplaceAll(r.CAPEM, `\n`, "\n")
+		// Reject a mismatched (fingerprint, ca_pem) pair: the fingerprint shown
+		// for confirmation must match the CA actually persisted (review HIGH).
+		if r.CAFingerprint != "" {
+			if computed, ferr := pemFingerprint(caPEM); ferr == nil && computed != r.CAFingerprint {
+				return "", "", fmt.Errorf("hub CA fingerprint mismatch: reported %s does not match the served CA certificate", r.CAFingerprint)
+			}
+		}
+		return caPEM, r.CAFingerprint, nil
 	}
 	if r.LegacyFp != "" {
 		return "", r.LegacyFp, nil
@@ -195,7 +215,7 @@ func fetchHubCA(baseURL, token string) (caPEM, fingerprint string, err error) {
 }
 
 func urlQueryEscape(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, "+", "%2B"), "=", "%3D"), "/", "%2F")
+	return url.QueryEscape(s)
 }
 
 // tlsFingerprint connects to host:port, validates the TLS handshake against
@@ -340,6 +360,24 @@ func cmdHubTest(p Provider, url string) error {
 		return err
 	}
 	fmt.Printf("Testing TLS to %s:%s ...\n", host, port)
+
+	// CA-trust mode (the default after hub link): verify the presented chain
+	// against the saved hub_ca.pem. Fall back to a pinned fingerprint only when
+	// no CA file exists.
+	if b, err := os.ReadFile(filepath.Join(p.StateDir, "hub_ca.pem")); err == nil {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(b) {
+			return fmt.Errorf("hub_ca.pem is not a valid PEM certificate")
+		}
+		conn, derr := tls.Dial("tcp", net.JoinHostPort(host, port), &tls.Config{RootCAs: pool})
+		if derr != nil {
+			return fmt.Errorf("TLS FAILED — CA chain verification error: %v", derr)
+		}
+		conn.Close()
+		fmt.Println("TLS OK — CA chain verification passed.")
+		return nil
+	}
+
 	actual, err := tlsFingerprint(host, port)
 	if err != nil {
 		return fmt.Errorf("TLS FAILED — could not connect: %v", err)
@@ -487,8 +525,15 @@ func cmdHubInit(p Provider, password string) error {
 	_ = hubUnitCommand(p, "daemon-reload")
 	if activeErr := hubUnitCommand(p, "is-active", "--quiet", "urnetwork-hub.service"); activeErr == nil {
 		_ = hubUnitCommand(p, "restart", "urnetwork-hub.service")
-	} else if mask := hubUnitCommand(p, "is-enabled", "urnetwork-hub.service"); mask != nil {
-		_ = hubUnitCommand(p, "start", "urnetwork-hub.service")
+	} else {
+		// Not running: enable (surfaces a masked unit) then start, and surface
+		// a start failure rather than swallowing it into a generic timeout.
+		if enableErr := hubUnitCommand(p, "enable", "urnetwork-hub.service"); enableErr != nil {
+			return fmt.Errorf("failed to enable urnetwork-hub.service (it may be masked): %v", enableErr)
+		}
+		if startErr := hubUnitCommand(p, "start", "urnetwork-hub.service"); startErr != nil {
+			return fmt.Errorf("failed to start urnetwork-hub.service: %v", startErr)
+		}
 	}
 
 	// Wait briefly for the CA cert to be generated.
