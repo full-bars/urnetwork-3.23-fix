@@ -127,13 +127,17 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 			return nil // dry-run or declined: confirmGate printed the audit line
 		}
 		return setFastAuthMarker(p, sub == "on", dryRun)
-	default: // "" / "status"
+	case "", "status":
 		file := filepath.Join(p.StateDir, "fast_auth")
 		if _, err := os.Stat(file); err == nil {
 			fmt.Printf("fast-auth: on for %s (rate limiter bypassed)\n", providerLabel(p))
 		} else {
 			fmt.Printf("fast-auth: off for %s (rate limiter active) — use 'fast-auth on' to bypass\n", providerLabel(p))
 		}
+	default:
+		// Unknown action is rejected, never silently treated as status: a typo
+		// must not enable the bypass.
+		return fmt.Errorf("fast-auth action must be on, off, or status (got %q)", sub)
 	}
 	return nil
 }
@@ -248,7 +252,15 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 	// fast-auth is existence-based, not value-based — manage the marker file
 	// directly so the message and the on/off semantics match do_fast_auth.
 	if filename == "fast_auth" {
-		return setFastAuthMarker(p, value != "off", dryRun)
+		switch value {
+		case "on":
+			return setFastAuthMarker(p, true, dryRun)
+		case "off":
+			return setFastAuthMarker(p, false, dryRun)
+		default:
+			// A typo must not silently enable the bypass.
+			return fmt.Errorf("set fast-auth accepts 'on' or 'off' only (got %q); 'fast-auth <on|off|status>' queries status", value)
+		}
 	}
 
 	file := filepath.Join(p.StateDir, filename)

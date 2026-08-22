@@ -150,3 +150,20 @@ func TestSetDryRunNoWrite(t *testing.T) {
 		t.Fatalf("dry-run clear must not remove node_name: %v", err)
 	}
 }
+
+// TestFastAuthInvalidRejected pins the CodeRabbit finding: an invalid
+// fast-auth value must error, not silently enable the bypass, for both the
+// standalone command and `set fast-auth <value>`.
+func TestFastAuthInvalidRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir}
+	if err := applySetOverride(p, "fast-auth", "bogus", false); err == nil {
+		t.Fatal("set fast-auth bogus must be rejected")
+	}
+	if err := applySetOverride(p, "fast-auth", "onn", false); err == nil {
+		t.Fatal("set fast-auth onn (typo) must be rejected, not enable")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fast_auth")); !os.IsNotExist(err) {
+		t.Fatal("invalid fast-auth value must not create the bypass marker")
+	}
+}
