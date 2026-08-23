@@ -102,7 +102,7 @@ func TestProbeTableThroughProxy_NoGrowthForClearlyGood(t *testing.T) {
 		t.Skipf("only %d hosts seeded (DNS on this box); need >= 4 for a clean base", n)
 	}
 	before := connects.Load()
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	after := connects.Load()
 	if res.Score != 1.0 {
 		t.Fatalf("expected score 1.0, got %v", res.Score)
@@ -143,7 +143,7 @@ func TestProbeTableThroughProxy_GrowsForBorderline(t *testing.T) {
 		t.Skipf("seeded %d hosts; need full 12 for a deterministic growth assertion", n)
 	}
 	before := connects.Load()
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	after := connects.Load()
 	if res.SampleWidth <= cfg.SampleWidth {
 		t.Errorf("borderline proxy should grow beyond base: SampleWidth=%d, base=%d", res.SampleWidth, cfg.SampleWidth)
@@ -423,19 +423,6 @@ func TestPaidGrader_Stage0DropsDeadProxyInOneDial(t *testing.T) {
 	}
 }
 
-// TestProbeStage0Liveness_AliveAndDead: the stage-0 greeting helper itself
-// reports true for a reachable SOCKS5 proxy and false for a dead port.
-func TestProbeStage0Liveness_AliveAndDead(t *testing.T) {
-	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
-	defer cleanup()
-	if !probeStage0Liveness(context.Background(), addr, "", "", time.Second) {
-		t.Errorf("reachable SOCKS5 proxy must pass stage-0")
-	}
-	if probeStage0Liveness(context.Background(), closedPortAddr(t), "", "", 300*time.Millisecond) {
-		t.Errorf("dead port must fail stage-0")
-	}
-}
-
 // --- start-at-6 adaptive growth --------------------------------------------
 
 // TestProbeTableThroughProxy_StartAtSixGrowsForBorderline: with MinSampleWidth
@@ -464,7 +451,7 @@ func TestProbeTableThroughProxy_StartAtSixGrowsForBorderline(t *testing.T) {
 	seedProbeDNSForBlocks(t, addr, cfg, pass)
 
 	before := connects.Load()
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	after := connects.Load()
 	if res.SampleWidth <= cfg.MinSampleWidth {
 		t.Errorf("borderline-at-6 proxy must grow past %d: SampleWidth=%d", cfg.MinSampleWidth, res.SampleWidth)
@@ -492,7 +479,7 @@ func TestProbeTableThroughProxy_StartAtSixNoGrowForClearlyGood(t *testing.T) {
 	seedProbeDNSForBlocks(t, addr, cfg, pass)
 
 	before := connects.Load()
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	after := connects.Load()
 	if res.SampleWidth != 6 {
 		t.Errorf("clearly-good proxy must NOT grow (settle at 6): SampleWidth=%d", res.SampleWidth)

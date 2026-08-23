@@ -823,7 +823,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// detection), and the reaper must not keep running them on the stale
 		// cadence (self-review finding).
 		if c.wasProbeOK && res == probeAPIReachable && probeCfg.Enabled && refreshBudget > 0 {
-			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, probeCfg)
+			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, "", 0, probeCfg)
 			entry.tableProbed = true
 			refreshBudget--
 		}

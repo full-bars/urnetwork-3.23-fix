@@ -382,7 +382,7 @@ func TestReview_FailFast_AboveBarProxyRunsFullPass(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = 2 * time.Second
 
-	got := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	got := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 
 	if got.Total != cfg.SampleWidth {
 		t.Skipf("only %d of %d targets resolved on this box; the full-block comparison needs every host to resolve", got.Total, cfg.SampleWidth)
@@ -413,7 +413,7 @@ func TestReview_FailFast_AlternatingFailuresCountedIndividually(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = 2 * time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total < 8 {
 		t.Skipf("only %d targets resolved; need most of the block", res.Total)
 	}
@@ -441,7 +441,7 @@ func TestReview_CancelledPass_IsUndecidableNotZeroVerdict(t *testing.T) {
 	cfg.SampleWidth = 8
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(ctx, addr, "", "", cfg)
+	res := probeTableThroughProxy(ctx, addr, "", "", "", 0, cfg)
 	if res.Total != 0 {
 		t.Fatalf("a cancelled pass attempted %d targets, want 0", res.Total)
 	}
@@ -1264,7 +1264,7 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 
 	// First, verify the denominator is attempted-not-intended on a healthy
 	// resolver: all hosts resolve, so attempted == intended and score is 1.0.
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if !res.Decidable {
 		t.Skipf("fewer than quorum of %d targets resolved on this box (total=%d); cannot test the healthy case", cfg.SampleWidth, res.Total)
 	}
@@ -1313,7 +1313,7 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 		t.Skip("no cached hosts to simulate resolver failure; run once after a warm pass")
 	}
 
-	res2 := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res2 := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res2.Total == 0 {
 		t.Fatal("all sampled hosts became unresolvable; cannot test partial case")
 	}

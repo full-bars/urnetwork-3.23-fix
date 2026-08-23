@@ -243,7 +243,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				snapshotGradedAt: t.snapshotGradedAt,
 				user:             t.user,
 				password:         t.password,
-				table:            probeTableThroughProxy(ctx, t.addr, t.user, t.password, probeCfg),
+				table:            probeTableThroughProxy(ctx, t.addr, t.user, t.password, apiHost, apiPort, probeCfg),
 			}
 		}(i, t)
 	}
