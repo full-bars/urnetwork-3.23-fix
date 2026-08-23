@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.5
+**Current Version**: v3.23.0-fix.30.6
 
 ---
 
@@ -2903,3 +2903,31 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - `vt-scan.py` treats a VirusTotal upload, lookup, or analysis timeout as non-fatal. A timed-out artifact is recorded UNKNOWN in the summary report. The scan job stays green. Only a genuine malicious hit above the fail threshold fails the job. This stops a transient VirusTotal analysis timeout from turning the otherwise non-blocking scan job red.
 
 **How to Identify in New Upstream**: the `paths-ignore` blocks on the five workflows and the UNKNOWN non-fatal branches in `vt-scan.py` are fork additions.
+
+## 133. In-Place Container Update: Any-Image Repair + Auto-Restart (PR #455)
+
+**Purpose**: Make `urnet-docker update` update a running provider container in place regardless of which image the container was provisioned from. Older images ship a broken in-container update routine, which previously forced operators to recreate old-image containers from a current image before they could be updated in place.
+
+**Files Modified**: `internal/urnettools/cli_docker.go`, `internal/urnettools/docker_update_shim_test.go`
+
+**Change**:
+- The host-side `urnet-docker update` no longer blindly delegates to the container's own update script. Older images ship that script broken: a busybox `mktemp` rejects the `XXXXXX.tar.gz` template with `Invalid argument`, and `pkill -x` misses the 15-character `comm` truncation. The old path failed in-place update on old-image containers out of the box.
+- The command now repairs the container's `/app/urnet-tools.sh` from the host first (`sed`, run directly via `exec.Command`, no shell layer), then the update proceeds and swaps the provider binary in place to the new release.
+- Auto-restart: older container images stop when the provider process is killed (their start loop exits instead of relaunching). After the binary swap, the command checks whether the container stopped and `docker start`s it (same container, no recreate) so the provider launches on the new binary. On newer images that keep running after the swap, nothing extra happens.
+- `update` now also accepts a bare container name as the target, and the update help documents both the `<container>` and `--unit` forms.
+
+**How to Identify in New Upstream**: the host-side shim repair and the post-swap auto-restart in `internal/urnettools/cli_docker.go` are fork additions.
+
+## 134. Post-Quantum (PQE) Session Visibility (PR #455)
+
+**Purpose**: make it observable whether end-to-end sessions use post-quantum or classical TLS key exchange, both live and over time, so operators can see adoption of the hybrid post-quantum groups.
+
+**Files Modified**: `pqe_tracker.go` (new), `transfer_encrypt.go`, `provider/main.go`
+
+**Change**:
+- Detect PQE from the negotiated TLS curve via `tls.ConnectionState().CurveID` (Go 1.24+). The post-quantum hybrid groups `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, and `MLKEM1024` classify as PQE.
+- End-to-end session-up and session-close log lines are tagged `[pqe-<curve>]` for post-quantum sessions; classical sessions stay untagged.
+- A rolling `PQETracker` owned by the `EncryptionSessionManager` tracks live plus 1h, 24h, 7d, and lifetime post-quantum and classical session-opens, exposed through `PQECounts()`.
+- The provider emits a periodic `[pqe]` log line alongside the existing tick logs that reports the live counts plus the rolling open totals.
+
+**How to Identify in New Upstream**: `pqe_tracker.go` and the `pqeDisplay`/`pqeTag` helpers in `transfer_encrypt.go` are fork additions.
