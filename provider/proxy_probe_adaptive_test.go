@@ -413,8 +413,10 @@ func TestPaidGrader_Stage0DropsDeadProxyInOneDial(t *testing.T) {
 
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
-	// Dead-at-stage-0 => no grade, no pending, no LastGraded advance (never
-	// got a completed pass to the table). It will be re-collected next sweep.
+	// Dead-at-stage-0 => no grade, no pending. LastGraded DOES advance (it is
+	// set unconditionally for any target reaching the apply loop), which is
+	// correct: it paces re-probing to the 3-6h paid cadence so a transient
+	// backend outage self-heals and is never re-dialed every tick.
 	if e.Graded {
 		t.Errorf("dead-at-stage-0 proxy must not be graded: %+v", e)
 	}
