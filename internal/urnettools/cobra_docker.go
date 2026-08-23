@@ -20,6 +20,65 @@ func withHelp(cmd *cobra.Command, long, example string) *cobra.Command {
 	return cmd
 }
 
+// dockerRootHelpMenu is the curated root menu for urnet-docker, matching the
+// tool's sectioned/emoji style. Replaces Cobra's flat list; per-command help
+// pages are untouched (subcommands reset to the default template below).
+const dockerRootHelpMenu = `urnet-docker — docker-container URnetwork manager
+
+Usage:
+  urnet-docker [command]
+
+Core Commands:
+  start                     Start container
+  stop                      Stop container
+  restart                   Restart container
+  update                    Update host binary or provider in place (no recreate)
+  status                    Detailed status of one container
+  logs                      Follow container logs
+  exec <cmd>                Run arbitrary command inside the container
+  providers                 List all provider containers
+  version                   Print this tool's version
+
+Proxy Management (inside the container):
+  proxy add <file>                Bulk add proxies
+  proxy clear                     Remove all configured proxies
+  proxy remove                    Remove proxies (by addr/match, or all)
+  proxy refresh [--force]         Re-read configs and hot-reload
+  proxy trim <N>                  Hold running proxies at N, shed worst first
+  proxy add-source <url>          Add a URL proxy source
+  proxy remove-source <url>       Remove a URL proxy source
+  proxy health                    Show dead/degraded proxies
+  proxy traffic                   Real-time bandwidth & client session load
+  proxy summary                   Fleet-style summary (sources, health, counts)
+  proxy remove-dead               Prune dead/degraded/failing proxies
+
+Hub Management:
+  hub ...                         hub CA, trust, report set/off, onboard, install, update
+
+Config & Automation:
+  auth [<code>]             Authenticate (interactive paste)
+  choose-network            Set API/connect endpoints
+  fast-auth [on|off]        Bypass auth rate limiter without restart
+  set [<k> [<v>|off]]       Show or change runtime tuning overrides
+  self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
+  session save|load <file>  Export/import identity + proxy state (encrypted)
+  report <url>|off          Set hub report URL
+  help <command>            Show help for a command
+
+Targeting (used when more than one container exists):
+  --unit <container>        container name (mapped to Unit)
+  --network <name>          JWT network name
+  --network-id <id>         JWT network id (true unique identity)
+  --state-dir <dir>         state dir INSIDE the container
+
+Batch / safety flags:
+  -f, --force                 bypass the confirm gate
+  -n, --dry-run               show what would happen without doing it
+  -h, --help                  show help (never executes)
+
+Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix
+`
+
 func buildDockerRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:           "urnet-docker",
@@ -31,6 +90,12 @@ func buildDockerRootCmd() *cobra.Command {
 	rootCmd.SetOut(os.Stderr)
 	rootCmd.SetErr(os.Stderr)
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	// Curated root menu for bare urnet-docker / root -h; subcommands keep
+	// their own per-command Cobra help page (reset below).
+	rootCmd.Run = func(cmd *cobra.Command, args []string) {
+		fmt.Fprint(cmd.OutOrStderr(), dockerRootHelpMenu)
+	}
+	rootCmd.SetHelpTemplate(dockerRootHelpMenu)
 
 	rootCmd.PersistentFlags().String("unit", "", "container name (mapped to Unit)")
 	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. tacogonzalez3000")
@@ -60,6 +125,10 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerSessionCmd(),
 		newDockerExecCmd(),
 	)
+	for _, sub := range rootCmd.Commands() {
+		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+	}
 
 	return rootCmd
 }

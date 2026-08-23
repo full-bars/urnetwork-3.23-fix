@@ -7,6 +7,96 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// rootHelpTemplate is the curated, sectioned root help for urnet-tools. It
+// replaces Cobra's default flat "Available Commands" list with the grouped,
+// emoji-style layout the operator approved in the legacy shell tool — now
+// relaying every command the Go/Cobra build exposes. Per-command help is
+// unaffected (each subcommand keeps its own Cobra help page on -h/--help).
+// The support footer matches the legacy tool the user liked.
+const rootHelpMenu = `urnet-tools — provider-aware URnetwork manager
+
+Usage:
+  urnet-tools [command]
+
+Core Commands:
+  start                   Start the provider
+  stop                    Stop the provider
+  restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)
+  update                  Upgrade to the latest version
+  self-update             Update this tool binary itself
+  status                  Show provider service status
+  logs [all|dump|-i]      Stream logs (all=from start, dump=save, -i=important only)
+
+Performance & Tuning:
+  turbo <v4|v8|off>       RAISE throughput limits for RAM-rich boxes
+  auto <on|off>           AUTO-TUNE detect hardware and pick best profile
+  eco <on|off>            ECO MODE GC-tuned for low-RAM systems
+  lowmode <on|off>        LOW-MEMORY reduced buffers for max RAM savings
+  ramlogs <on|off>        RAM LOGS zero disk I/O logging
+  hot-restart <on|off>    reuse client_ids across restarts
+  optimize                Apply Golden Fleet OS/kernel limits
+  set [<k> [<v>|off]]     Show or change runtime tuning overrides
+  fast-auth [on|off]      Bypass auth rate limiter without restart
+
+Session & Identity:
+  session save <file>     Export identity + proxy state (encrypted)
+  session load <file>     Import identity + proxy state, then restart
+  auth [<code>]           Authenticate (omit for interactive paste)
+  choose-network          Set API/connect endpoints
+  default                 Persist a default provider target for this box
+
+Proxy Management:
+  proxy add <file>        Bulk add proxies from a text file
+  proxy clear             Remove all configured proxies
+  proxy remove            Remove proxies (by addr/match, or all)
+  proxy refresh [--force] Re-read configs and hot-reload proxies
+  proxy trim <N>          Hold running proxies at N, shed worst first
+  proxy health            Show dead/degraded proxies + live event log
+  proxy traffic           Real-time bandwidth & client session load
+  proxy summary           Fleet-style summary (sources, health, counts)
+  proxy remove-dead       Prune dead/degraded/failing proxies interactively
+  report [<url>|off]      Set hub report URL
+  self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
+
+Hub Management:
+  hub init                        Initialize hub and generate CA certificate
+  hub link <url> [--token]        Fetch CA cert and pin the hub identity
+  hub unlink                      Revert to HTTP (remove pin + CA cert)
+  hub test [<url>]                Probe TLS connection, verify cert
+  hub set <host:port>             Set legacy HTTP hub report URL
+  hub off                         Stop reporting to hub (no restart)
+  hub onboard-cmd                 Mint 15-min join token, print curl/sh line
+  hub show-password               Show CA password (printed once after init)
+  hub open-port <port>            Open port in firewall
+  hub install [--docker]          Install hub as service
+  hub update [--docker]           Update hub to latest version
+
+Maintenance:
+  reinstall                     Reinstall provider
+  uninstall                     Uninstall provider
+  auto-update                   Manage auto-update (--interval daily|weekly|monthly)
+  auto-start                    Toggle auto-start on login
+  providers                     List all providers on this box
+
+Info:
+  version                       Print this tool's version
+  help <command>                Show help for a command
+
+Targeting (used when the box runs more than one provider):
+  --unit <unit>             systemd unit, e.g. urnetwork-native.service
+  --user <user>             OS user, e.g. urnet
+  --network <name>          JWT network name (account identity)
+  --network-id <id>         JWT network id (true unique identity)
+  --state-dir <dir>         state dir
+
+Batch / safety flags:
+  -f, --force                 skip confirmation prompts ONLY (never picks providers)
+  -n, --dry-run               print the plan, change nothing
+  -h, --help                  show help (never executes)
+
+Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix
+`
+
 // buildRootCmd creates the root Cobra command for urnet-tools.
 func buildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
@@ -18,6 +108,17 @@ func buildRootCmd() *cobra.Command {
 	}
 	rootCmd.SetOut(os.Stderr)
 	rootCmd.SetErr(os.Stderr)
+	// Restore the curated sectioned root menu (the operator-approved layout)
+	// WITHOUT touching per-command help: the root's own Run and Help print the
+	// menu; every subcommand keeps Cobra's default per-command -h/--help page.
+	// Using SetHelpTemplate here would CASCADE to subcommands and break their
+	// per-command help pages, so instead we bind the menu to the root only.
+	rootCmd.Run = func(cmd *cobra.Command, args []string) {
+		fmt.Fprint(cmd.OutOrStderr(), rootHelpMenu)
+	}
+	// Root -h/--help renders the same curated menu. Subcommands reset their own
+	// help template so they keep Cobra's per-command page (see newCobraCmd).
+	rootCmd.SetHelpTemplate(rootHelpMenu)
 	// The old dispatcher had no 'completion' subcommand; keep the surface stable.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
@@ -62,6 +163,17 @@ func buildRootCmd() *cobra.Command {
 		newAutoStartCmd(),
 		newSelfHealCmd(),
 	)
+	// Force every subcommand (however it was constructed) back to Cobra's
+	// default per-command help page. The root's curated menu must only ever
+	// show for bare `urnet-tools` / root -h; without this reset the root's
+	// custom help template would cascade down to subcommand -h/--help pages.
+	for _, sub := range rootCmd.Commands() {
+		// Restore Cobra's default per-command help page (the framework's
+		// private defaultHelpTemplate). The root's curated menu must show only
+		// for bare `urnet-tools` / root -h, never for a subcommand's -h.
+		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+	}
 
 	return rootCmd
 }
@@ -330,7 +442,7 @@ func newProxyCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | refresh")
+				return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {
