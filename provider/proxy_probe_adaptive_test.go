@@ -280,7 +280,7 @@ func TestApplyPaidProbeBudget_DisabledWhenZero(t *testing.T) {
 // not a throughput check. The behavior itself is covered indirectly by the
 // full provider suite (the dial limiter must not break probe timing).
 func TestGlobalProbeDialLimiter_Constants(t *testing.T) {
-	if maxProbeDialsPerSec != 50 {
+	if maxProbeDialsPerSec != 25 {
 		t.Errorf("maxProbeDialsPerSec = %d, want 50", maxProbeDialsPerSec)
 	}
 	if maxProbeDialBurst <= 0 {
