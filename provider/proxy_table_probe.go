@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+
+	"golang.org/x/time/rate"
 )
 
 // Stage-1 quality probe: a table probe against a sampled block of the
@@ -56,18 +58,54 @@ type proxyTableProbeConfig struct {
 	PassBar float64
 	// PreferredBar is the preferred tier, validated >= PassBar.
 	PreferredBar float64
+	// MaxSampleWidth is the upper bound the ADAPTIVE probe may grow to for
+	// a borderline proxy (one whose provisional score sits within
+	// BorderlineBand of PassBar after the base SampleWidth, where a wider
+	// sample decides quality with more confidence). Clearly-good and
+	// clearly-dead proxies stop at (or before) SampleWidth, spending paid
+	// probe bandwidth only in the uncertain middle. Default 30. Clamped to
+	// <= ProbeHostCount/2 like SampleWidth. Effective when >= SampleWidth.
+	MaxSampleWidth int
+	// BorderlineBand is the half-width (around PassBar) below which a
+	// provisional base-sample score is treated as "too close to call" and
+	// the probe grows the base toward MaxSampleWidth. A score more than
+	// BorderlineBand away from PassBar is a decisive verdict and stops at
+	// the base width. Default 0.15.
+	BorderlineBand float64
+	// MaxPaidProbesPerTick caps how many paid/file proxies ONE grading pass
+	// (one 5-minute tick) may probe. This is the throughput lever that turns
+	// a 4000-proxy full sweep from ~22h into ~100 minutes: the collector
+	// keeps the OLDEST-STALE-FIRST entries up to this budget and defers the
+	// rest to a later tick, so a pass is bounded regardless of how stale the
+	// fleet is. 0 disables the cap (probe everything eligible this pass).
+	// Default 200.
+	MaxPaidProbesPerTick int
 }
 
 // defaultProxyTableProbeConfig returns the stock configuration. SampleWidth
 // 12, 4s per target, tiered 0.9/0.6.
 func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 	return proxyTableProbeConfig{
-		Enabled:       true,
-		SampleWidth:   12,
-		TargetTimeout: 4 * time.Second,
-		PassBar:       0.6,
-		PreferredBar:  0.9,
+		Enabled:              true,
+		SampleWidth:          12,
+		TargetTimeout:        4 * time.Second,
+		PassBar:              0.6,
+		PreferredBar:         0.9,
+		MaxSampleWidth:       30,
+		BorderlineBand:       0.15,
+		MaxPaidProbesPerTick: 200,
 	}
+}
+
+// probeWidth returns the width of the host pool sampled for a pass: the
+// wider of SampleWidth and MaxSampleWidth, so the adaptive path always has
+// hosts to grow into. Equal to SampleWidth when MaxSampleWidth is at/below
+// it (adaptive overflow disabled / no room to grow).
+func (c proxyTableProbeConfig) probeWidth() int {
+	if c.MaxSampleWidth > c.SampleWidth {
+		return c.MaxSampleWidth
+	}
+	return c.SampleWidth
 }
 
 // proxyProbeOverridePath returns ~/.urnetwork/proxy_probe.json, a runtime
@@ -75,7 +113,8 @@ func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 // JSON shape matches proxyTableProbeConfig:
 //
 //	{"enabled": true, "sample_width": 12, "timeout_ms": 4000,
-//	 "pass_bar": 0.6, "preferred_bar": 0.9}
+//	 "pass_bar": 0.6, "preferred_bar": 0.9, "max_sample_width": 30,
+//	 "borderline_band": 0.15, "max_paid_probes_per_tick": 200}
 //
 // Missing or malformed keys fall back to defaults.
 func proxyProbeOverridePath() (string, error) {
@@ -129,11 +168,14 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 		return cfg
 	}
 	var over struct {
-		Enabled      *bool    `json:"enabled"`
-		SampleWidth  *int     `json:"sample_width"`
-		TimeoutMS    *int     `json:"timeout_ms"`
-		PassBar      *float64 `json:"pass_bar"`
-		PreferredBar *float64 `json:"preferred_bar"`
+		Enabled        *bool    `json:"enabled"`
+		SampleWidth    *int     `json:"sample_width"`
+		TimeoutMS      *int     `json:"timeout_ms"`
+		PassBar        *float64 `json:"pass_bar"`
+		PreferredBar   *float64 `json:"preferred_bar"`
+		MaxSampleWidth *int     `json:"max_sample_width"`
+		BorderlineBand *float64 `json:"borderline_band"`
+		MaxPaidPerTick *int     `json:"max_paid_probes_per_tick"`
 	}
 	if err := json.Unmarshal(b, &over); err != nil {
 		return cfg
@@ -153,6 +195,15 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	if over.PreferredBar != nil && *over.PreferredBar > 0 && *over.PreferredBar <= 1.0 {
 		cfg.PreferredBar = *over.PreferredBar
 	}
+	if over.MaxSampleWidth != nil && *over.MaxSampleWidth > 0 {
+		cfg.MaxSampleWidth = *over.MaxSampleWidth
+	}
+	if over.BorderlineBand != nil && *over.BorderlineBand >= 0 && *over.BorderlineBand <= 1.0 {
+		cfg.BorderlineBand = *over.BorderlineBand
+	}
+	if over.MaxPaidPerTick != nil && *over.MaxPaidPerTick >= 0 {
+		cfg.MaxPaidProbesPerTick = *over.MaxPaidPerTick
+	}
 	// Clamp sample width so the disjoint-block rotation property holds
 	// (two blocks of n out of a table of total are disjoint only when
 	// 2n <= total). Upstream's default width is the whole table; a wide
@@ -165,6 +216,12 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 			tlog("[proxy][url] stage-1: sample_width clamped to %d (half the %d-host table; disjoint rotation requires 2*width <= table)\n",
 				maxWidth, connect.ProbeHostCount())
 		})
+	}
+	// Clamp the adaptive ceiling too (same disjoint-block constraint). An
+	// operator may set it below SampleWidth, which simply disables adaptive
+	// overflow (the probe uses SampleWidth alone); no warning needed there.
+	if cfg.MaxSampleWidth > connect.ProbeHostCount()/2 {
+		cfg.MaxSampleWidth = connect.ProbeHostCount() / 2
 	}
 	// An inverted bar pair would let the log label ("preferred") disagree
 	// with the gate decision. Clamp PreferredBar up to PassBar.
@@ -326,20 +383,26 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	pass := tableProbePassCounter.Load()
 	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
 
+	// res.SampleWidth is the number of targets the pass INTENDED to dial
+	// (base block len(hosts), plus any adaptive growth). Unresolvable hosts
+	// stay inside SampleWidth (they are part of the intended sample) but are
+	// excluded from Total and from the score denominator, matching upstream's
+	// Answered/Sent semantics: a DNS failure on the box is the box's problem,
+	// not the proxy's, and must not convict it.
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
-	unresolved := 0
+	baseUnresolved := 0
+	extraUnresolved := 0
 
+	// --- Base block (unchanged semantics) ---------------------------------
 	for _, host := range hosts {
 		if ctx.Err() != nil {
 			break
 		}
 		ip := resolveProbeTarget(ctx, host)
 		if ip == nil {
-			// Not the proxy's fault; excluded from the pass.
-			unresolved++
+			baseUnresolved++
 			continue
 		}
-
 		res.Total++
 		if probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout) {
 			res.OK++
@@ -355,13 +418,61 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 		// can never abort a pass that could still qualify on its resolvable
 		// targets (review #8). This preserves the no-convict guarantee
 		// (finding H2): an aborted pass is never a biased sample, because
-		// the only way to abort is to be unable to qualify. A good proxy
-		// that fails a run of adjacent anti-bot targets walks the whole
-		// block and is scored on its full pass.
-		remaining := len(hosts) - res.Total - unresolved
+		// the only way to abort is to be unable to qualify. A good proxy that
+		// fails a run of adjacent anti-bot targets walks the whole block and
+		// is scored on its full pass.
+		remaining := len(hosts) - res.Total - baseUnresolved
 		best := float64(res.OK+remaining) / float64(res.Total+remaining)
 		if best < cfg.PassBar {
 			break
+		}
+	}
+
+	// ADAPTIVE GROWTH (borderline-only). The base pass already yields a
+	// decisive verdict for clearly-good and clearly-dead proxies. A proxy
+	// whose base score lands within BorderlineBand of PassBar is genuinely
+	// uncertain — the small sample cannot tell a mediocre-but-usable proxy
+	// from a failing one. For exactly those we grow the sample up to
+	// MaxSampleWidth using a second, DISJOINT rotation block (deterministic
+	// offset seed), so the expanded pass still walks distinct targets.
+	// Clearly-good and clearly-dead proxies never grow: paid probe bandwidth
+	// is spent only in the uncertain middle. (Design 2026-08-23.)
+	if cfg.MaxSampleWidth > cfg.SampleWidth && growthNeeded(res, cfg) {
+		extra := cfg.MaxSampleWidth - res.SampleWidth
+		extraHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass)+adaptiveBlockSeedOffset, extra)
+		grew := 0
+		for _, host := range extraHosts {
+			if ctx.Err() != nil {
+				break
+			}
+			ip := resolveProbeTarget(ctx, host)
+			if ip == nil {
+				// Intended but not resolvable from this box; still counted so
+				// the decidable quorum matches the base convention.
+				res.SampleWidth++
+				extraUnresolved++
+				grew++
+				continue
+			}
+			res.Total++
+			res.SampleWidth++
+			grew++
+			if probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout) {
+				res.OK++
+			} else {
+				res.Failed = append(res.Failed, host)
+			}
+			// Re-check viability at the grown denominator so an expansion can
+			// never drift into a biased sample: if even a perfect finish of
+			// the remaining grown block cannot clear the bar, stop spending.
+			remainingExtra := extra - grew
+			if remainingExtra < 0 {
+				remainingExtra = 0
+			}
+			best := float64(res.OK+remainingExtra) / float64(res.Total+remainingExtra)
+			if best < cfg.PassBar {
+				break
+			}
 		}
 	}
 
@@ -374,19 +485,45 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	// cases leave the prior grade intact. The quorum is measured against
 	// RESOLVABLE hosts, so a pass that ran to completion on a healthy
 	// resolver is decidable even though the abort skipped the tail.
-	resolvable := len(hosts) - unresolved
-	res.Decidable = resolvable >= (len(hosts)+1)/2 && res.Total > 0 && ctx.Err() == nil
-	// Score is OK / ATTEMPTED (matching upstream's Answered/Sent): hosts
-	// the box's own resolver could not answer are excluded from the
-	// denominator exactly as they are excluded from the pass — a DNS
-	// failure on this box must not convict a proxy that was never asked
-	// the question. The viability abort already guarantees an aborted pass
-	// could not qualify, so the smaller denominator never lets a truncated
-	// pass look better than the evidence.
+	resolvable := res.SampleWidth - baseUnresolved - extraUnresolved
+	res.Decidable = resolvable >= (res.SampleWidth+1)/2 && res.Total > 0 && ctx.Err() == nil
+	// Score is OK / ATTEMPTED (matching upstream's Answered/Sent): hosts the
+	// box's own resolver could not answer are excluded from the denominator
+	// exactly as they are excluded from the pass — a DNS failure on this box
+	// must not convict a proxy that was never asked the question. The
+	// viability abort already guarantees an aborted pass could not qualify,
+	// so the smaller denominator never lets a truncated pass look better
+	// than the evidence.
 	if res.Total > 0 {
 		res.Score = float64(res.OK) / float64(res.Total)
 	}
 	return res
+}
+
+// adaptiveBlockSeedOffset is added to a proxy's base rotation seed to derive
+// the DISJOINT block used for adaptive sample growth. It must be large enough
+// that consecutive base seeds never collide with the grown block, so the grown
+// block walks different targets from the base block. Fixed constant (not
+// derived at runtime) so the same (address, pass) always grows with the same
+// block — the reproducibility of a field report survives the adaptive path.
+const adaptiveBlockSeedOffset = 1 << 40
+
+// growthNeeded reports whether a base sample is borderline enough to warrant
+// adaptive growth: the base score sits within BorderlineBand of PassBar, so
+// the small sample genuinely cannot tell a mediocre-but-usable proxy from a
+// failing one. Clearly-good scores (well above the top of the band) and
+// clearly-dead scores (well below the bottom, or already viability-aborted)
+// return false — they are never grown, keeping probe bandwidth on the
+// uncertain middle. A pass with no attempted targets (resolver outage) is not
+// grown either: more of the same unresolvable table would not help.
+func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
+	if res.Total <= 0 {
+		return false
+	}
+	score := float64(res.OK) / float64(res.Total)
+	lo := cfg.PassBar - cfg.BorderlineBand
+	hi := cfg.PassBar + cfg.BorderlineBand
+	return score >= lo && score <= hi
 }
 
 // probeSocks5Connect dials the proxy, completes the SOCKS5 greeting (with
@@ -400,7 +537,36 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 // answer (finding H1). The greeting method byte is inspected — a proxy that
 // answers "no acceptable method" (0xFF) fails the greeting rather than
 // proceeding into a CONNECT it will reject.
+// maxProbeDialsPerSec caps how many per-target SOCKS5 CONNECT dials the whole
+// provider may issue per second (across all concurrent table probes). 50 is a
+// deliberately modest ceiling: high enough that a single proxy's adaptive
+// probe (<= ~30 targets every few minutes) is unaffected, and low enough that
+// even a full fleet sweep never thrashes target egress IPs or the box. This is
+// the global dial rate limit from the probe-redesign: the per-tick budget caps
+// HOW MANY proxies one pass probes; this caps how FAST their dials go out.
+const maxProbeDialsPerSec = 50
+
+// maxProbeDialBurst is the token-bucket burst for the global dial limiter: a
+// small short-run allowance so a probe pass does not stall on its first few
+// targets while the bucket refills.
+const maxProbeDialBurst = 10
+
+// globalProbeDialLimiter is the process-wide token bucket in front of every
+// per-target CONNECT dial in probeSocks5Connect. One limiter covers all
+// concurrent table probes (URL stage-1 and paid/file grading alike), so a
+// large fleet sweep simply paces itself instead of bursting target-site
+// connections in a scanning-like pattern from the proxy egress IPs. Design
+// 2026-08-23.
+var globalProbeDialLimiter = rate.NewLimiter(rate.Limit(maxProbeDialsPerSec), maxProbeDialBurst)
+
 func probeSocks5Connect(ctx context.Context, address, user, password string, ip net.IP, port uint16, timeout time.Duration) bool {
+	// Global dial rate limit, applied here (one call per sampled health
+	// target, through the proxy). Wait blocks long enough to hold the
+	// long-term ceiling flat; it is cancellable via ctx so a shutdown or a
+	// timed-out caller is not held hostage by the bucket.
+	if err := globalProbeDialLimiter.Wait(ctx); err != nil {
+		return false
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var d net.Dialer
@@ -690,6 +856,6 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 // describeProxyTableProbeConfig is for logs: a one-line dump of the
 // effective stage-1 configuration.
 func describeProxyTableProbeConfig(cfg proxyTableProbeConfig) string {
-	return fmt.Sprintf("enabled=%v sample_width=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f",
-		cfg.Enabled, cfg.SampleWidth, cfg.TargetTimeout, cfg.PassBar, cfg.PreferredBar)
+	return fmt.Sprintf("enabled=%v sample_width=%d max_sample_width=%d borderline_band=%.2f max_paid_per_tick=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f",
+		cfg.Enabled, cfg.SampleWidth, cfg.MaxSampleWidth, cfg.BorderlineBand, cfg.MaxPaidProbesPerTick, cfg.TargetTimeout, cfg.PassBar, cfg.PreferredBar)
 }

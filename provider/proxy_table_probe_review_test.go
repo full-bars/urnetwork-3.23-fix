@@ -638,7 +638,7 @@ func TestReview_ResolveConfig_RejectsOutOfRangeValues(t *testing.T) {
 			def},
 		{"a partial file leaves other fields at their defaults",
 			map[string]any{"sample_width": 7},
-			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar}},
+			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar, MaxSampleWidth: def.MaxSampleWidth, BorderlineBand: def.BorderlineBand, MaxPaidProbesPerTick: def.MaxPaidProbesPerTick}},
 		{"an empty object is all defaults", map[string]any{}, def},
 	}
 	for _, c := range cases {
