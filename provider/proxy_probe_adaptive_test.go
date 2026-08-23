@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/time/rate"
 )
 
 // Tests for the probe redesign (2026-08-23): adaptive sample growth, honest
@@ -21,34 +22,48 @@ import (
 // caller that needs every sampled host resolvable can skip on a short count.
 func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConfig, pass uint64) int {
 	t.Helper()
+	// Mirror the probe's own derivations EXACTLY (Opus review TEST-1): the
+	// staged probe dials the base block at baseW (= MinSampleWidth when
+	// staging is active, else SampleWidth) and grows via disjoint SAME-WIDTH
+	// strides to probeWidth(). Seeding any other width seeds a DIFFERENT
+	// block entirely ((seed*n)%total), which made these tests silently depend
+	// on live DNS instead of the seeded universe.
+	baseW := cfg.MinSampleWidth
+	if baseW <= 0 || baseW > cfg.SampleWidth {
+		baseW = cfg.SampleWidth
+	}
+	growTo := cfg.probeWidth()
+
 	added := map[string]bool{}
-	probeDNSCache.Lock()
 	seed := func(blockSeed uint64, width int) {
 		if width <= 0 {
 			return
 		}
 		hosts, _ := connect.SampleProbeTargets(blockSeed, width)
 		for _, h := range hosts {
-			if !added[h] {
-				added[h] = true
-			}
+			added[h] = true
 			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}
-	seed(tableProbeSeed(address, pass), cfg.SampleWidth)
-	// Growth now walks consecutive SAME-WIDTH strides (disjointGrowthHosts):
-	// seed the same consecutive blocks so the offline probe resolves them.
-	if cfg.MaxSampleWidth > cfg.SampleWidth {
-		// Growth now walks consecutive SAME-WIDTH strides (disjointGrowthHosts);
-		// seed those same hosts so the offline probe resolves them.
-		for _, h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, cfg.MaxSampleWidth-cfg.SampleWidth) {
-			if !added[h] {
-				added[h] = true
-			}
+	probeDNSCache.Lock()
+	seed(tableProbeSeed(address, pass), baseW)
+	if growTo > baseW {
+		for _, h := range disjointGrowthHosts(address, pass, baseW, growTo-baseW) {
+			added[h] = true
 			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
+	}
+	// Poison every OTHER table host into the fail-cache so a seeding mistake
+	// fails loudly (Total collapses -> assertion fires) instead of silently
+	// reaching live DNS and passing only on network-dependent boxes.
+	allHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), connect.ProbeHostCount())
+	for _, h := range allHosts {
+		if added[h] {
+			continue
+		}
+		probeDNSCache.fail[h] = time.Now()
 	}
 	probeDNSCache.Unlock()
 	t.Cleanup(func() {
@@ -56,6 +71,13 @@ func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConf
 		defer probeDNSCache.Unlock()
 		for h := range added {
 			delete(probeDNSCache.m, h)
+			delete(probeDNSCache.fail, h)
+		}
+		// Also clear the POISONED entries: they must not leak into later
+		// tests (probeDNSFailTTL is 30s, longer than several tests).
+		allHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), connect.ProbeHostCount())
+		for _, h := range allHosts {
+			delete(probeDNSCache.fail, h)
 		}
 	})
 	return len(added)
@@ -279,6 +301,29 @@ func TestApplyPaidProbeBudget_DisabledWhenZero(t *testing.T) {
 // limiter is a process-global at test startup), so this is a wiring check,
 // not a throughput check. The behavior itself is covered indirectly by the
 // full provider suite (the dial limiter must not break probe timing).
+// TestGlobalProbeDialLimiter_DenialIsBoxSide pins the Opus CRITICAL-1 fix
+// end-to-end at the helper boundary: when the global bucket is drained, a
+// dial must report attempted=false (box-side), NOT a proxy failure. This is
+// the regression that previously produced a decidable F on zero dials.
+func TestGlobalProbeDialLimiter_DenialIsBoxSide(t *testing.T) {
+	// Swap in an EMPTY limiter so the denial is deterministic and the shared
+	// bucket is untouched (no pollution for other tests).
+	orig := globalProbeDialLimiter
+	globalProbeDialLimiter = rate.NewLimiter(rate.Limit(maxProbeDialsPerSec), 0)
+	t.Cleanup(func() { globalProbeDialLimiter = orig })
+
+	answered, attempted := probeSocks5Connect(context.Background(), "127.0.0.1:1", "", "", nil, 443, 20*time.Millisecond)
+	if attempted {
+		t.Errorf("limiter-denied dial must report attempted=false (box-side), got attempted=true")
+	}
+	if answered {
+		t.Error("limiter-denied dial must not report answered")
+	}
+}
+
+// TestGlobalProbeDialLimiter_Constants checks the token-bucket wiring is
+// present (rate/burst are sane). It does NOT exercise Wait() timing — see
+// TestGlobalProbeDialLimiter_DenialIsBoxSide for the behavioral regression.
 func TestGlobalProbeDialLimiter_Constants(t *testing.T) {
 	if maxProbeDialsPerSec != 50 {
 		t.Errorf("maxProbeDialsPerSec = %d, want 50", maxProbeDialsPerSec)

@@ -115,39 +115,37 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// resolve each tracked address's settings (with Auth) from the same
 		// readers the probe needs; a paid proxy with no resolvable creds is still
 		// graded (the dial may succeed without auth).
-		credsByAddr := map[string]*connect.ProxySettings{}
-		if state.Source != "" {
-			if cf, cerr := readProxySettingsFromFile(state.Source); cerr == nil {
-				for _, s := range cf {
-					credsByAddr[s.Address] = s
-				}
-			} else {
-				tlog("[proxy][grade] warning: %v\n", cerr)
-			}
-		}
-		for _, s := range readProxySettings() {
-			if _, ok := credsByAddr[s.Address]; !ok {
-				credsByAddr[s.Address] = s
-			}
-		}
+		credsByAddr, desiredSetTrusted := paidDesiredSet(state)
 
 		var desired []*connect.ProxySettings
 		if len(state.Proxies) > 0 {
 			for addr, entry := range state.Proxies {
-				// Ownership rule (established): an address in the paid/file
-				// desired set (credsByAddr) is served as a paid proxy and
-				// graded by the sweep even if its first-seen tag says "url"
-				// ("file wins"). A GENUINELY URL-ONLY address (never in
-				// file/internal creds) is owned by the URL pipeline, not this
-				// sweep: dialing it here is wasted (the apply set can't grade
-				// it) and would let a never-graded URL entry crowd out real
-				// paid/file targets from the per-tick budget (review CRITICAL-2).
+				// Collect predicate MUST mirror the apply predicate (membership
+				// in this same union), or a tracked-but-not-desired entry is
+				// dialed every tick and discarded at apply before LastGraded
+				// advances — a permanent never-graded budget squatter that can
+				// starve real paid targets of all 200 slots (Opus review HIGH-1,
+				// proven with a two-tick harness).
+				//
+				// Membership IS the gradability condition WHEN the union is
+				// trustworthy (file read fine or no source file). When the
+				// source file is UNREADABLE we cannot know ownership, so we
+				// keep grading tracked entries whose tag says paid/file-owned
+				// (collect-fix behavior; ReadErrorStillProbesTracked) and only
+				// drop explicitly URL-tagged ones. "File wins" still applies:
+				// an address in the union is graded regardless of its tag.
 				inDesired := credsByAddr[addr] != nil
-				if entry.Source == "url" && !inDesired {
+				if !inDesired && desiredSetTrusted {
+					continue
+				}
+				if !inDesired && !desiredSetTrusted && entry.Source == "url" {
 					continue
 				}
 				ps := &connect.ProxySettings{Network: "tcp", Address: addr}
-				if creds, ok := credsByAddr[addr]; ok && creds.Auth != nil {
+				// Creds may be unresolvable here (unreadable file / not in the
+				// union): the proxy is still graded, the dial may succeed
+				// without auth (collect-fix invariant).
+				if creds := credsByAddr[addr]; creds != nil && creds.Auth != nil {
 					ps.Auth = creds.Auth
 				}
 				desired = append(desired, ps)
@@ -271,6 +269,14 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// never modified, and nothing here gates, evicts, or gives up on any
 	// proxy.
 	func() {
+		if ctx.Err() != nil {
+			// A cancelled sweep carries no verdict (finding C1): in-flight
+			// probes bailed early, so persisting now would mark up to
+			// maxPaidProbesPerTick proxies Pending / advance their clocks for
+			// "we were shutting down" rather than evidence. Leave state alone;
+			// the next tick re-collects (Opus review MEDIUM-1).
+			return
+		}
 		proxyStateMu.Lock()
 		defer proxyStateMu.Unlock()
 
@@ -295,19 +301,9 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// paid-budget sort keeping its never-graded flag first forever
 		// (Sonnet review CRITICAL).
 		current := map[string]connect.ProxySettings{}
-		if state.Source != "" {
-			if cur, err := readProxySettingsFromFile(state.Source); err == nil {
-				for _, s := range cur {
-					current[s.Address] = *s
-				}
-			} else {
-				tlog("[proxy][grade] warning: %v (apply proceeds with internal config only; file %s unreadable)\n", err, state.Source)
-			}
-		}
-		for _, s := range readProxySettings() {
-			if _, ok := current[s.Address]; !ok {
-				current[s.Address] = *s
-			}
+		desiredSet, _ := paidDesiredSet(state)
+		for addr, s := range desiredSet {
+			current[addr] = *s
 		}
 		changed := false
 		graded := 0
@@ -396,6 +392,51 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			}
 		}
 	}()
+}
+
+// paidDesiredSet returns the addresses the paid grader OWNS: the UNION of the
+// live source file (when state.Source is set) and the internal config. This
+// union is the single source of truth for paid ownership and MUST be used by
+// every site that needs it — the collect phase (which targets to dial), the
+// apply phase (which results are gradable), and the summary (whose ownership
+// bucketing must agree with the writer). A previous either/or construction in
+// the summary let internal-config addresses under a set state.Source be
+// reported ungraded with the wrong staleness window (Opus review MEDIUM-2);
+// centralizing guarantees the three sites cannot drift again. File-read errors
+// are logged and skipped: apply proceeds with the internal config, mirroring
+// the collect side.
+// The second return (fileOK) reports whether the source-file leg of the union
+// could be trusted: false means state.Source was SET but its file could not be
+// read, so membership in the set alone cannot prove "not paid-owned" — the
+// collector must then fall back to grading tracked non-URL-tagged entries
+// (TestPaidProxyGrader_ReadErrorStillProbesTracked pins this).
+func paidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bool) {
+	out := map[string]*connect.ProxySettings{}
+	fileOK := true
+	if state.Source != "" {
+		cf, err := readProxySettingsFromFile(state.Source)
+		switch {
+		case err != nil:
+			// Unreadable: membership cannot prove non-ownership.
+			fileOK = false
+			tlog("[proxy][grade] warning: %v (paid desired set proceeds with internal config only; file %s unreadable)\n", err, state.Source)
+		case len(cf) == 0:
+			// Readable but EMPTY: it proves nothing about ownership either —
+			// the operator's file may be momentarily empty mid-edit — so keep
+			// the fallback path (EmptySourceFileStillProbesTracked).
+			fileOK = false
+		default:
+			for _, s := range cf {
+				out[s.Address] = s
+			}
+		}
+	}
+	for _, s := range readProxySettings() {
+		if _, ok := out[s.Address]; !ok {
+			out[s.Address] = s
+		}
+	}
+	return out, fileOK
 }
 
 // paidGradeSettingsMatch reports whether the address's current settings
