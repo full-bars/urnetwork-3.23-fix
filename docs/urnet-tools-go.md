@@ -1,6 +1,6 @@
 # urnet-tools (Go) — Provider-Aware Fleet Ops
 
-> Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.30.4). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
+> Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.30.6). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
 
 ## Why this exists
 
