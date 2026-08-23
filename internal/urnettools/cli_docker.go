@@ -322,7 +322,29 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		return fmt.Errorf("prepare %s for in-place update: %w", p.Unit, err)
 	}
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
-	return containerExecByName(p.Unit, "urnet-tools", "update")
+	if err := containerExecByName(p.Unit, "urnet-tools", "update"); err != nil {
+		return err
+	}
+	// Older container images stop when the provider process is killed (their
+	// start loop exits instead of relaunching). Bring the SAME container back
+	// up (no recreate) so the provider launches on the newly-swapped binary.
+	// This is what docker start does; verified live on an old 26.4-image
+	// container: after the swap the container stopped, and docker start brought
+	// it up running the new version, container ID unchanged.
+	if !containerRunning(p.Unit) {
+		fmt.Printf("container %s stopped after the swap; starting it (no recreate)...\n", p.Unit)
+		if err := containerStartByName(p.Unit); err != nil {
+			return fmt.Errorf("restart container %s after update: %w", p.Unit, err)
+		}
+	}
+	return nil
+}
+
+// containerRunning reports whether the named container is currently running.
+func containerRunning(name string) bool {
+	cmd := exec.Command(dockerCLI(), "inspect", "-f", "{{.State.Running}}", name)
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // repairContainerUpdateScript applies two safe, idempotent fixes to a
