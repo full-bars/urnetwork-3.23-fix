@@ -327,7 +327,7 @@ func TestRunSelfUpdateHelp(t *testing.T) {
 					t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "update this tool binary itself") {
+			if !strings.Contains(out, "Update only the urnet-tools binary itself") {
 				t.Errorf("Run([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
