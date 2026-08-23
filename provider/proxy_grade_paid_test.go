@@ -251,7 +251,7 @@ func TestPaidProxyGrader_SkipsMissingEntry(t *testing.T) {
 
 // TestPaidProxyGrader_ReadErrorNoOp: an unreadable source file logs a
 // warning and leaves state untouched — no crash, no grades, no probes.
-func TestPaidProxyGrader_ReadErrorNoOp(t *testing.T) {
+func TestPaidProxyGrader_ReadErrorStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
 
@@ -272,19 +272,23 @@ func TestPaidProxyGrader_ReadErrorNoOp(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("read error must short-circuit before probing: %d CONNECTs", n)
+	// The tracked proxy must STILL be probed/graded even though the source
+	// file is unreadable: the collector uses tracked proxy.state entries as
+	// the source of truth (fix for "paid proxies never graded when
+	// state.Source is empty or the file is missing").
+	if n := connects.Load(); n == 0 {
+		t.Fatalf("tracked proxy must be probed despite source-file read error (0 CONNECTs)")
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
-	if e.Graded || !e.LastGraded.IsZero() {
-		t.Errorf("read error must not write grades: %+v", e)
+	if !e.LastGraded.IsZero() {
+		t.Errorf("expected a grade write (LastGraded advanced) for the tracked proxy: %+v", e)
 	}
 }
 
 // TestPaidProxyGrader_EmptyDesiredNoOp: an empty source file yields zero
 // targets and a clean no-op.
-func TestPaidProxyGrader_EmptyDesiredNoOp(t *testing.T) {
+func TestPaidProxyGrader_EmptySourceFileStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
 
@@ -306,8 +310,11 @@ func TestPaidProxyGrader_EmptyDesiredNoOp(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("empty desired set must be a no-op: %d CONNECTs", n)
+	// Tracked proxies must be probed even when the source file is empty: the
+	// tracked proxy.state entries are the source of truth (fix for "paid
+	// proxies stayed ungraded when the config had no proxies").
+	if n := connects.Load(); n == 0 {
+		t.Fatalf("tracked proxy must be probed despite empty source file (0 CONNECTs)")
 	}
 }
 
