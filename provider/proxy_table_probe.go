@@ -469,8 +469,17 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			baseUnresolved++
 			continue
 		}
+		answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+		if !attempted {
+			// Box-side failure (limiter denial / caller deadline): no evidence
+			// about the proxy. Excluded from Total exactly like an unresolved
+			// host — positive-evidence-only (Opus review CRITICAL-1, proven:
+			// a limiter denial previously produced a decidable F on ZERO dials).
+			baseUnresolved++
+			continue
+		}
 		res.Total++
-		if probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout) {
+		if answered {
 			res.OK++
 		} else {
 			res.Failed = append(res.Failed, host)
@@ -480,10 +489,10 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		// decided: even if every remaining target succeeds, the bar is
 		// unreachable. Viability is measured against the denominator the
 		// score will actually use (attempted + still-untried), so hosts the
-		// box's resolver cannot answer — which leave the score denominator —
-		// can never abort a pass that could still qualify on its resolvable
-		// targets (review #8). This preserves the no-convict guarantee
-		// (finding H2).
+		// box's resolver cannot answer or that never left this box — which
+		// leave the score denominator — can never abort a pass that could
+		// still qualify on its resolvable targets (review #8). This preserves
+		// the no-convict guarantee (finding H2).
 		remaining := len(hosts) - res.Total - baseUnresolved
 		best := float64(res.OK+remaining) / float64(res.Total+remaining)
 		if best < cfg.PassBar {
@@ -517,9 +526,16 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 				unresolvedGrowth++
 				continue
 			}
+			answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+			if !attempted {
+				// Box-side failure: no evidence; exclude from Total (CRITICAL-1).
+				res.SampleWidth++
+				unresolvedGrowth++
+				continue
+			}
 			res.Total++
 			res.SampleWidth++
-			if probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout) {
+			if answered {
 				res.OK++
 			} else {
 				res.Failed = append(res.Failed, host)
@@ -677,20 +693,32 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 // probing sequentially, the token bucket staggers their dials smoothly.
 const maxProbeDialsPerSec = 50
 
-// maxProbeDialBurst is the token-bucket burst for the global dial limiter: a
-// small short-run allowance so a probe pass does not stall on its first few
-// targets while the bucket refills.
-const maxProbeDialBurst = 10
+// maxProbeDialBurst is the token-bucket burst for the global dial limiter:
+// one second's worth of tokens. The sustained ceiling stays maxProbeDialsPerSec;
+// the burst only absorbs the natural start-of-pass cluster (and concurrent
+// passes' first dials) so that queued dials are never denied outright — denial
+// would wrongly render a pass undecidable under load. Pacing, not strictness,
+// is the goal.
+const maxProbeDialBurst = maxProbeDialsPerSec
 
 // globalProbeDialLimiter is the process-wide token bucket in front of every
-// per-target CONNECT dial in probeSocks5Connect. One limiter covers all
+// per-target health-host dial in probeSocks5Connect. One limiter covers all
 // concurrent table probes (URL stage-1 and paid/file grading alike), so a
 // large fleet sweep simply paces itself instead of bursting target-site
-// connections in a scanning-like pattern from the proxy egress IPs. Design
-// 2026-08-23.
+// connections in a scanning-like pattern from the proxy egress IPs. Note the
+// stage-0 backend gate dials PROXIES (not health hosts) via probeProxy and
+// intentionally bypasses this bucket; those are bounded by MaxPaidProbesPerTick
+// instead. Design 2026-08-23.
 var globalProbeDialLimiter = rate.NewLimiter(rate.Limit(maxProbeDialsPerSec), maxProbeDialBurst)
 
-func probeSocks5Connect(ctx context.Context, address, user, password string, ip net.IP, port uint16, timeout time.Duration) bool {
+// probeSocks5Connect dials one health target THROUGH the proxy and reports two
+// independent facts: (answered, attempted). attempted=false means the dial NEVER
+// LEFT THIS BOX — a global rate-limiter denial, an expired caller deadline, or a
+// local socket error — and carries NO evidence about the proxy. The caller must
+// exclude unattempted hosts from Total exactly like an unresolvable host
+// (positive-evidence-only: box-side failures never convict). answered is only
+// meaningful when attempted=true.
+func probeSocks5Connect(ctx context.Context, address, user, password string, ip net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
 	// Global dial rate limit, applied here (one call per sampled health target,
 	// through the proxy). Wait blocks long enough to hold the long-term ceiling
 	// flat; it is cancellable via ctx so a shutdown or a timed-out caller is not
@@ -701,14 +729,21 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 	err := globalProbeDialLimiter.Wait(waitCtx)
 	cancelWait()
 	if err != nil {
-		return false
+		// Box-side: limiter denial is not evidence about the proxy.
+		return false, false
+	}
+	if ctx.Err() != nil {
+		// Caller deadline/shutdown raced the token grant: not evidence either.
+		return false, false
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var d net.Dialer
 	conn, err := d.DialContext(dialCtx, "tcp", address)
 	if err != nil {
-		return false
+		// A dial failure AFTER the limiter granted a token IS proxy evidence:
+		// the box was willing and able to send, the proxy endpoint refused it.
+		return false, true
 	}
 	defer conn.Close()
 
@@ -722,18 +757,18 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 	// a server that picks a method we never offered is not an answer
 	// (review #3).
 	if !socks5Greet(conn, user, password) {
-		return false
+		return false, true
 	}
 
 	connectFrame := socks5ConnectV4(ip, port)
 	if _, err := conn.Write(connectFrame); err != nil {
-		return false
+		return false, true
 	}
 	// The CONNECT reply is parsed by ATYP (IPv4/domain/IPv6), not by a
 	// fixed length, so a short domain reply or an IPv6 BND.ADDR is handled
 	// correctly; only a fully-consumed reply with REP 0x00 counts (review
 	// #9/10).
-	return readSocks5ConnectReply(conn)
+	return readSocks5ConnectReply(conn), true
 }
 
 // proxyURLGrade is the admission decision for one URL-source line after the

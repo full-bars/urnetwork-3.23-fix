@@ -273,19 +273,15 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// for that ownership (independent review finding). On a desired-set
 	// read error the summary falls back to the state tags (read-only;
 	// the worst case is a stale bucket, not a wrong write).
+	// Ownership resolution MUST agree with the paid grader's UNION (file when
+	// set + internal), not an either/or: a mixed file+internal deployment would
+	// otherwise report internal-config addresses as ungraded with the wrong
+	// staleness window (Opus review MEDIUM-2). Uses the same helper as the
+	// grader so the reader cannot drift from the writer.
 	desired := map[string]struct{}{}
-	if state.Source != "" {
-		if ds, err := readProxySettingsFromFile(state.Source); err != nil {
-			tlog("[proxy][grade] warning: %v (summary falls back to state tags)\n", err)
-		} else {
-			for _, s := range ds {
-				desired[s.Address] = struct{}{}
-			}
-		}
-	} else {
-		for _, s := range readProxySettings() {
-			desired[s.Address] = struct{}{}
-		}
+	paidOwned, _ := paidDesiredSet(state)
+	for addr := range paidOwned {
+		desired[addr] = struct{}{}
 	}
 
 	for addr, entry := range state.Proxies {
