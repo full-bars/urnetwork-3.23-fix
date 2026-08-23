@@ -600,11 +600,13 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 // maxProbeDialsPerSec caps how many per-target SOCKS5 CONNECT dials the whole
 // provider may issue per second (across all concurrent table probes). 50 is a
 // deliberately modest ceiling: high enough that a single proxy's adaptive
-// probe (<= ~30 targets every few minutes) is unaffected, and low enough that
+// probe (<= ~36 targets every few minutes) is unaffected, and low enough that
 // even a full fleet sweep never thrashes target egress IPs or the box. This is
 // the global dial rate limit from the probe-redesign: the per-tick budget caps
-// HOW MANY proxies one pass probes; this caps how FAST their dials go out.
-const maxProbeDialsPerSec = 25
+// HOW MANY proxies one pass probes; this caps how FAST their dials go out. Even
+// at 50/s a batch is never 200-at-once: with up to ~50 concurrent proxies each
+// probing sequentially, the token bucket staggers their dials smoothly.
+const maxProbeDialsPerSec = 50
 
 // maxProbeDialBurst is the token-bucket burst for the global dial limiter: a
 // small short-run allowance so a probe pass does not stall on its first few
