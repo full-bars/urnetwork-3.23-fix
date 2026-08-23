@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,19 +47,21 @@ func listenSocks5Raw(t *testing.T, handle func(c net.Conn)) (addr string, cleanu
 }
 
 // listenSocks5Sequenced answers the SOCKS5 greeting normally and replies to
-// the Nth CONNECT (1-based, counted across connections) with repFor(n).
+// the Nth CONNECT (1-based, counted across connections) with repFor(n). The
+// greeting is parsed by its NMETHODS length (not a fixed 3 bytes), so a
+// credentialed line's longer offer (0x05 0x02 0x00 0x02) does not misalign the
+// subsequent CONNECT frame — which stage-0 greetings (may carry creds) require.
 func listenSocks5Sequenced(t *testing.T, repFor func(n int) byte) (addr string, connects *atomic.Int64, cleanup func()) {
 	t.Helper()
 	var n atomic.Int64
 	addr, cleanup = listenSocks5Raw(t, func(c net.Conn) {
 		defer c.Close()
-		greeting := make([]byte, 3)
-		if _, err := c.Read(greeting); err != nil {
+		if !readSocks5Greeting(c) {
 			return
 		}
 		c.Write([]byte{0x05, 0x00})
 		frame := make([]byte, 10)
-		if _, err := c.Read(frame); err != nil {
+		if _, err := io.ReadFull(c, frame); err != nil {
 			return
 		}
 		rep := repFor(int(n.Add(1)))

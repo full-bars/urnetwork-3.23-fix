@@ -70,6 +70,17 @@ func runPaidProxyGrader(ctx context.Context, apiHost string, apiPort uint16) {
 // the heartbeat.
 func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) {
 	probeCfg := resolveProxyTableProbeConfig()
+	// Paid-only probe knobs: a cheap stage-0 SOCKS5-greeting liveness gate so a
+	// dead paid proxy is dropped in ONE dial (no sample block wasted), and a
+	// START-SMALL base width so a clearly-good or clearly-dead proxy settles at
+	// 6 dials instead of the full sample width — bandwidth is spent only in the
+	// borderline middle, which grows toward the cap. These are set here (not in
+	// the shared proxy_probe.json) because URL admission must keep its own
+	// stage-0 + full-width behavior unchanged.
+	probeCfg.Stage0Liveness = true
+	if probeCfg.MinSampleWidth <= 0 || probeCfg.MinSampleWidth >= probeCfg.SampleWidth {
+		probeCfg.MinSampleWidth = 6
+	}
 	if !probeCfg.Enabled {
 		// Kill switch: stage-1 table probing is off globally. Paid
 		// grading must be a full skip too — the operator turned the
