@@ -1433,8 +1433,20 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 	}()
 	if ok {
-		// pqeOfEpoch guards a nil tlsConn (synthetic/test epochs), like the
-		// session-up path below.
+		// Report the open only when this epoch actually won promotion (self.epoch
+		// == e). A stale/losing epoch that verifies identity first must not consume
+		// the per-session once-guard or log "e2e session up" for a handshake that
+		// will be superseded (Sonnet MEDIUM #455).
+		promoted := false
+		self.stateLock.Lock()
+		if self.epoch == e {
+			promoted = true
+		}
+		self.stateLock.Unlock()
+		if !promoted {
+			self.client.log.V(1).Infof("[tls]%s peer identity proof verified for superseded epoch — not promoted\n", self.logTag)
+			return
+		}
 		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
 		if manager := self.manager; manager != nil {
