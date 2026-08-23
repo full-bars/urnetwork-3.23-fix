@@ -1191,6 +1191,10 @@ func nextMidnight(t time.Time) time.Time {
 // the 1m, 5m, 15m, and 60m windows. Handles counter resets (proxy restart) by
 // treating a backwards counter as a zero-delta tick. Silent when no proxies are
 // registered (non-proxy mode).
+// currentEncryptionManager holds the live provider encryption session manager,
+// set during provider setup, so the periodic [pqe] log line can sample counts.
+var currentEncryptionManager *connect.EncryptionSessionManager
+
 func runEarningWindows(ctx context.Context) {
 	const maxSamples = 60
 	deltas := make([]uint64, 0, maxSamples)
@@ -1205,6 +1209,14 @@ func runEarningWindows(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+
+		if mgr := currentEncryptionManager; mgr != nil {
+			c := mgr.PQECounts()
+			tlog("🔐 [pqe] live pqe=%d classical=%d | opens 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d | lifetime: pqe=%d clas=%d\n",
+				c.ActivePQE, c.ActiveClas,
+				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek,
+				c.PQELifetime, c.ClasLifetime)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -2694,6 +2706,7 @@ func provide(opts docopt.Opts) {
 		clientOob := connect.NewApiOutOfBandControl(proxyCtx, clientStrategy, byClientJwt, apiUrl)
 		connectClient := connect.NewClient(proxyCtx, clientId, clientOob, clientSettings)
 		defer connectClient.Close()
+		currentEncryptionManager = connectClient.EncryptionSessionManager()
 
 		// Persist the live identity material so the next process
 		// start loads the same values. On a fresh install both
