@@ -53,11 +53,12 @@ func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	// The sweep calls probeTableThroughProxy directly (no separate stage-0
-	// API CONNECT — the design note specifies the same probe the URL
-	// machinery's stage 1 uses), so exactly sample_width=4 CONNECTs.
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("expected 4 table CONNECTs (sample_width), got %d", n)
+	// The paid sweep runs a stage-0 backend-reachability pass (probeProxy:
+	// SOCKS5 + API CONNECT through the proxy) THEN the table probe. Both dial
+	// the fake proxy, so the count is sample_width table CONNECTs + 1 stage-0
+	// dial = 5.
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("expected 5 CONNECTs (4 table + 1 stage-0), got %d", n)
 	}
 	state, err := readProxyState()
 	if err != nil {
@@ -102,8 +103,8 @@ func TestPaidProxyGrader_InternalConfig(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("internal-config proxy must be graded: %d CONNECTs, want 4 (sample_width)", n)
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("internal-config proxy must be graded: %d CONNECTs, want 5 (4 table + 1 stage-0)", n)
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
@@ -206,8 +207,8 @@ func TestPaidProxyGrader_GradesFileProxyWithStaleURLTag(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("file-desired proxy with stale url tag must be graded: %d CONNECTs, want 4", n)
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("file-desired proxy with stale url tag must be graded: %d CONNECTs, want 5 (4 table + 1 stage-0)", n)
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
@@ -383,11 +384,13 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
 		t.Error("LastGraded must advance on any completed pass (no re-probe herd)")
 	}
-	// No resolvable table targets -> the table probe dials nothing (the
-	// sweep has no separate stage-0). Pins that an undecidable pass does
-	// not hammer the proxy.
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("expected 0 CONNECTs (all sampled targets unresolvable), got %d", n)
+	// No resolvable table targets -> the TABLE probe dials nothing; only the
+	// single stage-0 backend-reachability pass hits the proxy (probeProxy:
+	// SOCKS5 + API CONNECT, which the fake answers, then TLS fails ->
+	// probeTLSFailed -> passes the gate). So exactly 1 dial, not a hammered
+	// block. Pins that an undecidable pass does NOT burn a sample on it.
+	if n := connects.Load(); n != 1 {
+		t.Fatalf("expected 1 CONNECT (stage-0 only; table unresolvable), got %d", n)
 	}
 }
 

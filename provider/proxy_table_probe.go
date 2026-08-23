@@ -415,17 +415,22 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 // credentialed URL entries — usually the paid, higher-quality ones — are
 // graded on the same evidence as everyone else instead of being convicted
 // on a handshake they were never offered (finding H3).
-func probeTableThroughProxy(ctx context.Context, address, user, password string, cfg proxyTableProbeConfig) tableProbeResult {
-	// STAGE-0 (paid sweep only, cfg.Stage0Liveness): a single TCP connect +
-	// SOCKS5 GREETING to the proxy's own address — the cheapest possible
-	// liveness check. A proxy that cannot even complete the greeting is dead
-	// or not a SOCKS5 proxy; drop it in one dial instead of burning a whole
-	// sample block on it. This is intentionally a greeting ONLY (no CONNECT,
-	// no TLS): it answers "is this a reachable SOCKS5 proxy at all", which is
-	// the one thing every table target presupposes, for a fraction of a
-	// target's cost. Dead => return with no verdict and no grade.
+func probeTableThroughProxy(ctx context.Context, address, user, password, apiHost string, apiPort uint16, cfg proxyTableProbeConfig) tableProbeResult {
+	// STAGE-0 (paid sweep only, cfg.Stage0Liveness): a BACKEND-reachability
+	// gate, not just a SOCKS5 greeting. The paid grader probes credentialed
+	// :1081 proxies whose entire value is billable relay to the URnetwork
+	// backend (api.bringyour.com). A proxy that can complete a SOCKS5 greeting
+	// but CANNOT CONNECT through to the API is a nonstarter — every table
+	// target dials through the same tunnel, so if the backend is unreachable
+	// the whole probe is pointless. Use the existing dual-stage reachability
+	// probe (SOCKS5 + API CONNECT + TLS) so stage-0 rejects a proxy that
+	// cannot reach the backend, saving a sample block on it. probeSocks5Only
+	// and probeDead fail the gate; probeAPIReachable / probeTLSFailed (the
+	// tunnel works; TLS result is the MITM distinction unrelated to liveness)
+	// pass. Dead => no verdict, no grade; the reaper re-collects next sweep.
 	if cfg.Stage0Liveness {
-		if !probeStage0Liveness(ctx, address, user, password, cfg.TargetTimeout) {
+		r := probeProxy(ctx, address, user, password, apiHost, apiPort)
+		if r == probeDead || r == probeSocks5Only {
 			return tableProbeResult{SampleWidth: 0, Failed: []string{}}
 		}
 	}
@@ -629,30 +634,6 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 	return out
 }
 
-// probeStage0Liveness dials a proxy's OWN address and completes only the SOCKS5
-// greeting (TCP + method exchange), reporting whether the proxy is reachable and
-// speaks SOCKS5 at all. It deliberately does NOT do a CONNECT or TLS handshake:
-// the greeting alone answers "is this a live SOCKS5 proxy", which is the one
-// thing every table target presupposes, for a fraction of a target's cost. Used
-// as stage-0 by the paid grading sweep (cfg.Stage0Liveness) to drop a dead proxy
-// in one dial instead of burning a sample block on it.
-func probeStage0Liveness(ctx context.Context, address, user, password string, timeout time.Duration) bool {
-	dialCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var d net.Dialer
-	conn, err := d.DialContext(dialCtx, "tcp", address)
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	if deadline, ok := dialCtx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-	}
-	// Greeting only; validates the server is SOCKS5 and (if credentials were
-	// supplied and required) negotiates the RFC 1929 auth. No CONNECT.
-	return socks5Greet(conn, user, password)
-}
-
 // probeSocks5Connect dials the proxy, completes the SOCKS5 greeting (with
 // RFC 1929 username/password sub-negotiation when the proxy requires it and
 // credentials were supplied), and issues a CONNECT to ip:port, reporting
@@ -821,7 +802,7 @@ func probeAndGradeProxyURLLines(ctx context.Context, lines []string, apiHost str
 		go func(i int, address string, user, password string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			stage1Results[i] = probeTableThroughProxy(ctx, address, user, password, cfg)
+			stage1Results[i] = probeTableThroughProxy(ctx, address, user, password, "", 0, cfg)
 		}(i, address, creds.user, creds.password)
 	}
 	wg.Wait()

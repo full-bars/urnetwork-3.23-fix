@@ -55,7 +55,7 @@ func TestProbeTableThroughProxy_AllSuccess(t *testing.T) {
 	cfg.SampleWidth = 4 // small block for the test
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total != res.SampleWidth {
 		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the full-success assertion needs every host to resolve", res.Total, res.SampleWidth)
 	}
@@ -86,7 +86,7 @@ func TestProbeTableThroughProxy_AllFail(t *testing.T) {
 	cfg.SampleWidth = 4
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total == 0 {
 		t.Fatalf("expected a non-zero attempted sample, got total=0")
 	}
@@ -117,7 +117,7 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = 100 * time.Millisecond
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total != res.SampleWidth {
 		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the exact abort count assumes every host resolves", res.Total, res.SampleWidth)
 	}
@@ -159,7 +159,7 @@ func TestProbeTableThroughProxy_AdjacentFailuresNotBias(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total < 10 {
 		t.Skipf("only %d targets resolved on this box; need most of the block", res.Total)
 	}
