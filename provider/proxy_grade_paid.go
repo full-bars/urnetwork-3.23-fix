@@ -85,12 +85,47 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			tlog("[proxy][grade] warning: could not read proxy.state: %v\n", err)
 			return
 		}
-		var desired []*connect.ProxySettings
+		// Collect the paid/file target set from the TRACKED proxy.state entries
+		// (the authoritative runtime list of every proxy actually serving),
+		// merging each address's credentials from the config readers. Previously,
+		// when state.Source=="" the collector read the static proxy.json config,
+		// which is empty at runtime (proxies come from a file/internal reload into
+		// proxy.state, not the static config), so it collected ZERO targets every
+		// sweep and paid proxies stayed ungraded forever even though they were
+		// tracked and running.
+		//
+		// Credentials: ProxyEntry (proxy.state) does not carry user/pass, so we
+		// resolve each tracked address's settings (with Auth) from the same
+		// readers the probe needs; a paid proxy with no resolvable creds is still
+		// graded (the dial may succeed without auth).
+		credsByAddr := map[string]*connect.ProxySettings{}
 		if state.Source != "" {
+			if cf, cerr := readProxySettingsFromFile(state.Source); cerr == nil {
+				for _, s := range cf {
+					credsByAddr[s.Address] = s
+				}
+			} else {
+				tlog("[proxy][grade] warning: %v\n", cerr)
+			}
+		}
+		for _, s := range readProxySettings() {
+			if _, ok := credsByAddr[s.Address]; !ok {
+				credsByAddr[s.Address] = s
+			}
+		}
+
+		var desired []*connect.ProxySettings
+		if len(state.Proxies) > 0 {
+			for addr := range state.Proxies {
+				ps := &connect.ProxySettings{Network: "tcp", Address: addr}
+				if creds, ok := credsByAddr[addr]; ok && creds.Auth != nil {
+					ps.Auth = creds.Auth
+				}
+				desired = append(desired, ps)
+			}
+		} else if state.Source != "" {
 			desired, err = readProxySettingsFromFile(state.Source)
 			if err != nil {
-				// readProxySettingsFromFile already wraps the path in its
-				// error; do not re-state it (double-wrap in the log).
 				tlog("[proxy][grade] warning: %v\n", err)
 				return
 			}
