@@ -256,24 +256,37 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			tlog("[proxy][grade] warning: could not read proxy.state: %v\n", err)
 			return
 		}
-		// Re-read the CURRENT desired settings so a concurrent reload that
-		// changed an address's credentials (or removed it) between collect
+		// Re-read the CURRENT settings so a concurrent reload that changed an
+		// address's credentials (or removed it) between collect and apply
+		// cannot have a stale-creds probe result persisted (coderabbit
+		// review). On mismatch the result is skipped entirely — no grade, no
+		// LastGraded advance — so the next sweep probes with current settings.
+		//
+		// This apply-time set is built the way the COLLECT side builds it
+		// (union of the source file, when set, AND the internal config),
+		// because the collector's desired set is every tracked proxy in
+		// state.Proxies — including URL-admitted and mixed file+internal
+		// addresses. A single-source either/or here would let such an
+		// address be collected + dialed every pass yet fail this lookup and
+		// hit continue: never graded, LastGraded never advancing, and the
+		// paid-budget sort keeping its never-graded flag first forever
+		// (Sonnet review CRITICAL).
 		// and apply cannot have a stale-creds probe result persisted
 		// (coderabbit review). On mismatch the result is skipped entirely —
 		// no grade, no LastGraded advance — so the next sweep probes with
 		// the current settings.
 		current := map[string]connect.ProxySettings{}
 		if state.Source != "" {
-			cur, err := readProxySettingsFromFile(state.Source)
-			if err != nil {
-				tlog("[proxy][grade] warning: %v (skipping apply)\n", err)
-				return
+			if cur, err := readProxySettingsFromFile(state.Source); err == nil {
+				for _, s := range cur {
+					current[s.Address] = *s
+				}
+			} else {
+				tlog("[proxy][grade] warning: %v (apply proceeds with internal config only)\n", err)
 			}
-			for _, s := range cur {
-				current[s.Address] = *s
-			}
-		} else {
-			for _, s := range readProxySettings() {
+		}
+		for _, s := range readProxySettings() {
+			if _, ok := current[s.Address]; !ok {
 				current[s.Address] = *s
 			}
 		}
