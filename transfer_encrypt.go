@@ -306,6 +306,33 @@ func newSequenceCipher(tlsConn *tls.Conn) (*sequenceCipher, error) {
 	return &sequenceCipher{aead: aead}, nil
 }
 
+// pqeDisplay reports whether a negotiated TLS curve is a hybrid post-quantum
+// group, and returns a short diagnostic marker ("PQE" or "classical") to tag
+// log lines. Go exposes the negotiated group via tls.ConnectionState().CurveID
+// (Go 1.24+); the ML-KEM hybrids are the post-quantum key exchanges.
+func pqeDisplay(curve tls.CurveID) (bool, string) {
+	switch curve {
+	case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
+		return true, "[pqe-" + curve.String() + "] "
+	default:
+		return false, ""
+	}
+}
+
+// pqeTag returns a PQE/classical marker for the currently established epoch's
+// negotiated curve (or an empty tag if none). Lock-guarded. Used on the
+// session-close path so the log says which kind of session ended.
+func (self *peerEncryptionSession) pqeTag() string {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	e := self.establishedEpoch
+	if e == nil || e.tlsConn == nil {
+		return ""
+	}
+	_, tag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+	return tag
+}
+
 func (c *sequenceCipher) Seal(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, sequenceTlsAeadNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
@@ -882,7 +909,8 @@ func (self *peerEncryptionSession) Run() {
 		// (the next burst reuses it) without leaking sessions indefinitely.
 		for {
 			if self.CancelIfIdle() {
-				self.client.log.V(1).Infof("[tls]%s session idle — reaped\n", self.logTag)
+				pqeTag := self.pqeTag()
+				self.client.log.V(1).Infof("[tls]%s%s e2e session closed (reaped)\n", pqeTag, self.logTag)
 				return
 			}
 			select {
@@ -898,6 +926,7 @@ func (self *peerEncryptionSession) Run() {
 
 // currentEpoch returns the session's current handshake epoch, or nil if
 // none has been started.
+
 func (self *peerEncryptionSession) currentEpoch() *tlsHandshakeEpoch {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -1396,7 +1425,11 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 	}()
 	if ok {
-		self.client.log.V(1).Infof("[tls]%s peer identity proof verified — cipher is now usable\n", self.logTag)
+		_, pqeTag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
+		if manager := self.manager; manager != nil {
+			manager.notePqeSession(self.pqeOfEpoch(e))
+		}
 		// the established + identity-verified peer set grew (or the
 		// established epoch swapped): the only promote path runs above
 		self.manager.peerIdentityChanged()
@@ -2336,8 +2369,53 @@ func (self *peerEncryptionSession) retain() {
 // wire — there is no explicit TLS close. A later SendSequence that
 // re-acquires the peer starts a fresh session and handshake.
 func (self *peerEncryptionSession) close() {
+	// Decrement the live e2e session counter (PQE or classical) so the
+	// periodic traffic log stays in sync when this session ends.
+	self.stateLock.Lock()
+	e := self.establishedEpoch
+	wasPQE := false
+	if e != nil && e.tlsConn != nil {
+		_, tag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+		wasPQE = tag != ""
+	}
+	self.stateLock.Unlock()
+	if mgr := self.manager; mgr != nil {
+		mgr.notePqeSessionClose(wasPQE)
+	}
 	self.cancel()
 	self.closeTls()
+}
+
+// pqeOfEpoch reports whether an epoch negotiated a post-quantum key exchange.
+func (self *peerEncryptionSession) pqeOfEpoch(e *tlsHandshakeEpoch) bool {
+	if e == nil || e.tlsConn == nil {
+		return false
+	}
+	isPQE, _ := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+	return isPQE
+}
+
+// notePqeSession records an e2e session open with the given key-exchange family.
+func (self *EncryptionSessionManager) notePqeSession(pqe bool) {
+	if self.pqeTracker != nil {
+		self.pqeTracker.NoteOpen(pqe)
+	}
+}
+
+// notePqeSessionClose records an e2e session close with the given family.
+func (self *EncryptionSessionManager) notePqeSessionClose(pqe bool) {
+	if self.pqeTracker != nil {
+		self.pqeTracker.NoteClose(pqe)
+	}
+}
+
+// PQECounts returns the live + windowed + lifetime PQE/classical session
+// counts for the provider's periodic [pqe] log line.
+func (self *EncryptionSessionManager) PQECounts() PQECounts {
+	if self.pqeTracker == nil {
+		return PQECounts{}
+	}
+	return self.pqeTracker.Snapshot()
 }
 
 // EncryptionSessionManager owns per-peer TLS sessions for the local Client.
@@ -2382,6 +2460,10 @@ type EncryptionSessionManager struct {
 
 	stateLock sync.Mutex
 	sessions  map[sessionKey]*peerEncryptionSession
+	// pqeTracker records e2e session open/close by key-exchange family for the
+	// provider's periodic [pqe] log line (windows + lifetime). Not nil once the
+	// manager is constructed.
+	pqeTracker *PQETracker
 }
 
 func NewEncryptionSessionManager(ctx context.Context, client *Client, clientKeyManager *ClientKeyManager, settings *EncryptionSettings) *EncryptionSessionManager {
