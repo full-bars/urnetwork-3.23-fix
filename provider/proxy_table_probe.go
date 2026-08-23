@@ -204,6 +204,17 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	if over.MaxPaidPerTick != nil && *over.MaxPaidPerTick >= 0 {
 		cfg.MaxPaidProbesPerTick = *over.MaxPaidPerTick
 	}
+	// Clamp the borderline band so the uncertain-margin stays within [0,1]
+	// around PassBar. A band wider than the distance to the nearer edge would
+	// push the low end of [PassBar-band, PassBar+band] below 0 (or the high
+	// end above 1), making EVERY real score "borderline" and defeating the
+	// "grow only in the uncertain middle" intent (review MEDIUM). The band
+	// caps at the smaller of PassBar and 1-PassBar.
+	if cfg.PassBar > 0 && cfg.BorderlineBand > 0 {
+		if cap := min(cfg.PassBar, 1-cfg.PassBar); cfg.BorderlineBand > cap {
+			cfg.BorderlineBand = cap
+		}
+	}
 	// Clamp sample width so the disjoint-block rotation property holds
 	// (two blocks of n out of a table of total are disjoint only when
 	// 2n <= total). Upstream's default width is the whole table; a wide
@@ -856,6 +867,6 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 // describeProxyTableProbeConfig is for logs: a one-line dump of the
 // effective stage-1 configuration.
 func describeProxyTableProbeConfig(cfg proxyTableProbeConfig) string {
-	return fmt.Sprintf("enabled=%v sample_width=%d max_sample_width=%d borderline_band=%.2f max_paid_per_tick=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f",
+	return fmt.Sprintf("enabled=%v sample_width=%d max_sample_width=%d borderline_band=%.2f max_paid_probes_per_tick=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f",
 		cfg.Enabled, cfg.SampleWidth, cfg.MaxSampleWidth, cfg.BorderlineBand, cfg.MaxPaidProbesPerTick, cfg.TargetTimeout, cfg.PassBar, cfg.PreferredBar)
 }
