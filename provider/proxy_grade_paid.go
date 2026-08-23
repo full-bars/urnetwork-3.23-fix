@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"sort"
 )
 
 // Paid/file-list proxy grading (design note 2026-08-09).
@@ -33,6 +34,17 @@ import (
 // grading rides the existing stale sweep cadence. Kill switch:
 // proxy_probe.json enabled=false disables the table probe here too
 // (a full skip, mirroring the fetch-side invariant).
+
+// gradeTarget is one paid/file proxy scheduled for this grading pass: its
+// address, credentials (when resolvable), and the LastGraded snapshot it was
+// collected under (so the apply phase can detect a concurrent refresh). Shared
+// between the collector, the per-tick budget sorter, and the probe fan-out.
+type gradeTarget struct {
+	addr             string
+	user             string
+	password         string
+	snapshotGradedAt time.Time
+}
 
 // runPaidProxyGrader drives the paid/file-proxy grade sweep on the reaper
 // ticker cadence. The pass itself is split out so it can be exercised
@@ -65,12 +77,6 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		return
 	}
 
-	type gradeTarget struct {
-		addr             string
-		user             string
-		password         string
-		snapshotGradedAt time.Time
-	}
 	var targets []gradeTarget
 
 	// Collect the non-URL desired set under the lock, then probe outside
@@ -192,6 +198,17 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		return
 	}
 
+	// PER-TICK PROBE BUDGET (maxPaidProbesPerTick). The collector above keeps
+	// every stale/eligible paid proxy; when the fleet is large that can be
+	// thousands per 5-minute tick, which is the ~22h full-sweep problem. Cap
+	// this pass at MaxPaidProbesPerTick, probing the OLDEST-STALE-FIRST
+	// (smallest snapshotGradedAt = longest since last grade, never-graded
+	// first) and deferring the rest to a later tick. Self-throttling and
+	// bounded: a 4000-proxy sweep at 200/tick finishes in ~20 ticks
+	// (~100 minutes) while paying at most 200 paid probes per 5 minutes.
+	// (Design 2026-08-23.)
+	targets = applyPaidProbeBudget(targets, probeCfg.MaxPaidProbesPerTick)
+
 	// Probe in parallel under the same pressure-scaled semaphore the fetch
 	// uses; each individual table pass is sequential through its proxy.
 	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
@@ -262,6 +279,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		}
 		changed := false
 		graded := 0
+		pending := 0
 		tierChanges := 0
 		for _, r := range results {
 			entry, ok := state.Proxies[r.addr]
@@ -296,6 +314,15 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				entry.Score = r.table.Score
 				entry.Graded = true
 				entry.Failed = capFailedList(r.table.Failed)
+				// A decidable verdict REPLACES any prior pending state: we can
+				// now call the proxy from this box, so the honest status is
+				// its grade, not "couldn't evaluate". Cleared here whether the
+				// grade changed or not (a repeat B has a fresh LastGraded but
+				// must also clear a stale Pending from an earlier DNS-gutted
+				// pass — see the pending branch below).
+				if entry.Pending {
+					entry.Pending = false
+				}
 				graded++
 				if oldTier != newTier {
 					tierChanges++
@@ -304,15 +331,32 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					// Per-address delta line into grades.log history too.
 					emitProxyGradeDelta(r.addr, oldTier, newTier, oldScore, r.table.Score, wasGraded)
 				}
+			} else if r.table.Total > 0 {
+				// REACHABLE-but-undecidable: the probe dialed through the
+				// proxy (or at least reached it) but could not produce a
+				// confident verdict — the box's DNS could not answer most of
+				// the intended sample, or the proxy is so strict/rate-limited
+				// that a through-proxy answer could not be confirmed. This is
+				// NOT a grade and NOT "ungraded (never reached)": it is an
+				// honest "could not evaluate from this box". Persist a
+				// distinct pending status so the operator does not mistake a
+				// method artifact for proxy quality — and so the summary can
+				// report it (design 2026-08-23).
+				entry.Pending = true
+				// A pending pass does NOT write a grade: Score/Graded stay at
+				// their prior values (or absent for a never-graded proxy), so
+				// a pending proxy is never labelled with a wrong tier.
+				pending++
 			}
 			state.Proxies[r.addr] = entry
 			changed = true
 		}
-		if graded > 0 {
+		if graded > 0 || pending > 0 {
 			// One aggregate line per pass, matching the reaper's summary
 			// convention (the important buffer must not become a
 			// per-proxy stream on a large file list).
-			importantLogf("[proxy][grade] graded %d paid/file proxies (%d tier changes)\n", graded, tierChanges)
+			importantLogf("[proxy][grade] graded %d paid/file proxies (%d pending, %d tier changes)\n",
+				graded, pending, tierChanges)
 		}
 		if changed {
 			if err := writeProxyState(state); err != nil {
@@ -330,4 +374,23 @@ func paidGradeSettingsMatch(s connect.ProxySettings, user, password string) bool
 		return user == "" && password == ""
 	}
 	return s.Auth.User == user && s.Auth.Password == password
+}
+
+// applyPaidProbeBudget caps a graded target list at budget, keeping the
+// oldest-stale-first (never-graded and longest-since-graded first). budget<=0
+// disables the cap. The sort is stable so same-staleness targets keep their
+// (deterministic) collection order.
+func applyPaidProbeBudget(targets []gradeTarget, budget int) []gradeTarget {
+	if budget <= 0 || len(targets) <= budget {
+		return targets
+	}
+	sort.SliceStable(targets, func(i, j int) bool {
+		// Zero (never graded) sorts before any timestamp: a never-graded paid
+		// proxy is the most urgent to evaluate. Then oldest LastGraded first.
+		if targets[i].snapshotGradedAt.IsZero() != targets[j].snapshotGradedAt.IsZero() {
+			return targets[i].snapshotGradedAt.IsZero()
+		}
+		return targets[i].snapshotGradedAt.Before(targets[j].snapshotGradedAt)
+	})
+	return targets[:budget]
 }

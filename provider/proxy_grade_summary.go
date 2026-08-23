@@ -326,6 +326,15 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 			if !lastProbe.IsZero() && now.Sub(lastProbe) > gradeSummaryStaleAfter(src, pressure) {
 				s.stale++
 			}
+		} else if entry.Pending {
+			// REACHABLE-but-undecidable paid proxy: honest "could not
+			// evaluate from this box" status, surfaced distinctly from both a
+			// grade and a never-reached "ungraded". Design 2026-08-23.
+			s.tiers["pending"]++
+			if s.sources[src] == nil {
+				s.sources[src] = map[string]int{}
+			}
+			s.sources[src]["pending"]++
 		} else {
 			s.tiers["ungraded"]++
 			if s.sources[src] == nil {
@@ -339,9 +348,9 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 }
 
 func (s gradeSummary) tierLine() string {
-	return fmt.Sprintf("running: A=%d B=%d C=%d D=%d F=%d ungraded=%d (%d running, %d tracked)",
+	return fmt.Sprintf("running: A=%d B=%d C=%d D=%d F=%d pending=%d ungraded=%d (%d running, %d tracked)",
 		s.tiers["A"], s.tiers["B"], s.tiers["C"], s.tiers["D"], s.tiers["F"],
-		s.tiers["ungraded"], s.running, s.tracked)
+		s.tiers["pending"], s.tiers["ungraded"], s.running, s.tracked)
 }
 
 func (s gradeSummary) sourcesLine() string {
@@ -352,7 +361,7 @@ func (s gradeSummary) sourcesLine() string {
 	}
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
-	tierOrder := []string{"A", "B", "C", "D", "F", "ungraded"}
+	tierOrder := []string{"A", "B", "C", "D", "F", "pending", "ungraded"}
 	for _, name := range names {
 		var b strings.Builder
 		b.WriteString(name)
@@ -410,7 +419,7 @@ func (s gradeSummary) changesLine() string {
 		return "changes vs last round: (first snapshot)"
 	}
 	var parts []string
-	all := []string{"A", "B", "C", "D", "F", "ungraded"}
+	all := []string{"A", "B", "C", "D", "F", "pending", "ungraded"}
 	for _, t := range all {
 		d := s.tiers[t] - gradeSummaryPrev.tiers[t]
 		if d > 0 {
