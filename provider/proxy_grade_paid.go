@@ -133,7 +133,19 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 
 		var desired []*connect.ProxySettings
 		if len(state.Proxies) > 0 {
-			for addr := range state.Proxies {
+			for addr, entry := range state.Proxies {
+				// Ownership rule (established): an address in the paid/file
+				// desired set (credsByAddr) is served as a paid proxy and
+				// graded by the sweep even if its first-seen tag says "url"
+				// ("file wins"). A GENUINELY URL-ONLY address (never in
+				// file/internal creds) is owned by the URL pipeline, not this
+				// sweep: dialing it here is wasted (the apply set can't grade
+				// it) and would let a never-graded URL entry crowd out real
+				// paid/file targets from the per-tick budget (review CRITICAL-2).
+				inDesired := credsByAddr[addr] != nil
+				if entry.Source == "url" && !inDesired {
+					continue
+				}
 				ps := &connect.ProxySettings{Network: "tcp", Address: addr}
 				if creds, ok := credsByAddr[addr]; ok && creds.Auth != nil {
 					ps.Auth = creds.Auth
