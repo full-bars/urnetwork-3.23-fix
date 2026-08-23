@@ -389,19 +389,31 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		}
 		return t, rest, nil
 	}
-	for _, a := range args {
+	// A bare container name is accepted as the target ONLY as the first
+	// positional, and only when it exactly matches a discovered container. This
+	// avoids confusing a host self-update option value (e.g. `--tag <value>`)
+	// or a trailing argument for a container target. The remaining arguments are
+	// returned so the caller can validate them rather than silently dropping
+	// them (e.g. `update urnet-test extra` must not ignore `extra`).
+	first := -1
+	for i, a := range args {
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
+		first = i
+		break
+	}
+	if first >= 0 {
 		for _, p := range providers {
-			if p.Unit == a {
-				return Target{Unit: a}, nil, nil
+			if p.Unit == args[first] {
+				rest := append([]string{}, args[:first]...)
+				rest = append(rest, args[first+1:]...)
+				return Target{Unit: p.Unit}, rest, nil
 			}
 		}
-		// First non-flag positional that is not a container name: not a target.
-		// Leave it for the host self-update (e.g. it may be a --tag value or a typo).
-		return Target{}, nil, nil
 	}
+	// No bare container target: fall through to the host self-update and let it
+	// interpret the args (flags, --tag value, or a typo).
 	return Target{}, nil, nil
 }
 
