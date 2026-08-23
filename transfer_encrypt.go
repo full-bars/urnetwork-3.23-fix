@@ -770,6 +770,11 @@ type peerEncryptionSession struct {
 
 	// state (locked)
 	stateLock sync.Mutex
+	// pqeOpenReported is set once the session's first established epoch is noted
+	// as an "open" in the manager's tracker. Re-handshakes (restartHandshake)
+	// create new epochs but must NOT re-count the open, or long-lived re-keying
+	// peers would inflate the opens/lifetime numbers. Guarded by stateLock.
+	pqeOpenReported bool
 	// epoch is the newest handshake epoch — in-flight (handshaking) or, once it
 	// establishes, the established one. A client restart or an inbound
 	// ClientHello on an already-established session installs a fresh in-flight
@@ -2369,18 +2374,26 @@ func (self *peerEncryptionSession) retain() {
 // wire — there is no explicit TLS close. A later SendSequence that
 // re-acquires the peer starts a fresh session and handshake.
 func (self *peerEncryptionSession) close() {
-	// Decrement the live e2e session counter (PQE or classical) so the
-	// periodic traffic log stays in sync when this session ends.
+	// Decrement the live counter exactly once per established session. close()
+	// is re-entrant (multiple call sites), so a once-guard keeps the tracker's
+	// active count from being under-counted on double-close.
+	var wasPQE bool
+	var report bool
 	self.stateLock.Lock()
-	e := self.establishedEpoch
-	wasPQE := false
-	if e != nil && e.tlsConn != nil {
-		_, tag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
-		wasPQE = tag != ""
+	if self.pqeOpenReported {
+		self.pqeOpenReported = false
+		e := self.establishedEpoch
+		if e != nil && e.tlsConn != nil {
+			_, tag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+			wasPQE = tag != ""
+		}
+		report = true
 	}
 	self.stateLock.Unlock()
-	if mgr := self.manager; mgr != nil {
-		mgr.notePqeSessionClose(wasPQE)
+	if report {
+		if mgr := self.manager; mgr != nil {
+			mgr.notePqeSessionClose(wasPQE)
+		}
 	}
 	self.cancel()
 	self.closeTls()
@@ -2478,6 +2491,7 @@ func NewEncryptionSessionManager(ctx context.Context, client *Client, clientKeyM
 		sessions:         map[sessionKey]*peerEncryptionSession{},
 
 		peerIdentityChangeCallbacks: NewCallbackList[func()](),
+		pqeTracker:                  newPQETracker(),
 	}
 	if settings.Mode != EncryptionModeOff {
 		serverTlsConfig, selfCertPem, selfPrivateKeyPem, err := resolveReceiveTlsConfig(
