@@ -770,11 +770,14 @@ type peerEncryptionSession struct {
 
 	// state (locked)
 	stateLock sync.Mutex
-	// pqeOpenReported is set once the session's first established epoch is noted
+	// pqeOpenReported is set once this session's first established epoch is noted
 	// as an "open" in the manager's tracker. Re-handshakes (restartHandshake)
-	// create new epochs but must NOT re-count the open, or long-lived re-keying
-	// peers would inflate the opens/lifetime numbers. Guarded by stateLock.
+	// create new epochs but must NOT re-count the open: long-lived re-keying
+	// peers would otherwise inflate the opens/lifetime numbers. Guarded by
+	// stateLock. pqeWasOpen persists the first epoch's classification so close()
+	// reports the same family it opened with.
 	pqeOpenReported bool
+	pqeWasOpen      bool
 	// epoch is the newest handshake epoch — in-flight (handshaking) or, once it
 	// establishes, the established one. A client restart or an inbound
 	// ClientHello on an already-established session installs a fresh in-flight
@@ -1435,7 +1438,17 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
 		if manager := self.manager; manager != nil {
-			manager.notePqeSession(self.pqeOfEpoch(e))
+			var report bool
+			self.stateLock.Lock()
+			if !self.pqeOpenReported {
+				self.pqeOpenReported = true
+				self.pqeWasOpen = self.pqeOfEpoch(e)
+				report = true
+			}
+			self.stateLock.Unlock()
+			if report {
+				manager.notePqeSession(self.pqeWasOpen)
+			}
 		}
 		// the established + identity-verified peer set grew (or the
 		// established epoch swapped): the only promote path runs above
@@ -2384,11 +2397,7 @@ func (self *peerEncryptionSession) close() {
 	self.stateLock.Lock()
 	if self.pqeOpenReported {
 		self.pqeOpenReported = false
-		e := self.establishedEpoch
-		if e != nil && e.tlsConn != nil {
-			_, tag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
-			wasPQE = tag != ""
-		}
+		wasPQE = self.pqeWasOpen
 		report = true
 	}
 	self.stateLock.Unlock()

@@ -38,10 +38,18 @@ func TestDockerUpdateDispatchViaShim(t *testing.T) {
 	if s := readLog(); !strings.Contains(s, "exec urnet-test urnet-tools update") {
 		t.Fatalf("update --unit did not exec in-container urnet-tools update; shim got %q", s)
 	}
-	// The host-side repair must run first (sed the mktemp + pkill patterns), so
-	// in-place update works even on old images with a broken update script.
-	if s := readLog(); !strings.Contains(s, "sed") {
-		t.Fatalf("update did not repair the container update script first; shim got %q", s)
+	// The host-side repair must run BEFORE the update exec, and BOTH repairs
+	// (mktemp X template + pkill comm-truncation) must be applied, so in-place
+	// update works even on old images with a broken update script.
+	log1 := readLog()
+	execIdx := strings.Index(log1, "exec urnet-test urnet-tools update")
+	sed1Idx := strings.Index(log1, "XXXXXX")
+	sed2Idx := strings.Index(log1, "pkill -f")
+	if sed1Idx < 0 || sed2Idx < 0 {
+		t.Fatalf("update did not run BOTH repair seds (mktemp + pkill); shim got %q", log1)
+	}
+	if execIdx >= 0 && (sed1Idx > execIdx || sed2Idx > execIdx) {
+		t.Fatalf("repair sed ran after the update exec; shim got %q", log1)
 	}
 
 	resetLog()

@@ -206,7 +206,7 @@ func newDockerProxyCmd() *cobra.Command {
 			"  urnet-docker proxy trim 50 --unit mynetwork-provider\n"+
 				"  urnet-docker proxy trim off --unit mynetwork-provider"),
 		dockerProxySub("exclude", "exclude [<pattern>] [target]", "exclude proxies matching a pattern", "Exclude proxies matching a pattern for the provider inside the targeted container, or show current exclusions with no pattern.", "  urnet-docker proxy exclude 1.2.3.4 --unit mynetwork-provider\n"+
-				"  urnet-docker proxy exclude --unit mynetwork-provider"),
+			"  urnet-docker proxy exclude --unit mynetwork-provider"),
 	)
 	return proxy
 }
