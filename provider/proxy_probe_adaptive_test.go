@@ -383,3 +383,124 @@ func TestDisjointGrowthHosts_NoBaseOverlap(t *testing.T) {
 		}
 	}
 }
+
+// --- stage-0 liveness gate (paid-only) -------------------------------------
+
+// TestPaidGrader_Stage0DropsDeadProxyInOneDial: with Stage0Liveness enabled, a
+// paid proxy that cannot even complete a SOCKS5 greeting (dead port) is dropped
+// after the single stage-0 dial — no table sample is wasted on it, and no
+// grade/pending is recorded (it is simply not evaluated this pass).
+func TestPaidGrader_Stage0DropsDeadProxyInOneDial(t *testing.T) {
+	withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+	// A DEAD proxy address: nothing listening on the port (stage-0 greeting
+	// fails on dial, so the sweep returns before the table probe).
+	addr := closedPortAddr(t)
+
+	src := filepathJoinHome(t, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{
+		Source: src,
+		Proxies: map[string]ProxyEntry{
+			addr: {ID: 5, Health: "up", Source: "file"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	state, _ := readProxyState()
+	e := state.Proxies[addr]
+	// Dead-at-stage-0 => no grade, no pending, no LastGraded advance (never
+	// got a completed pass to the table). It will be re-collected next sweep.
+	if e.Graded {
+		t.Errorf("dead-at-stage-0 proxy must not be graded: %+v", e)
+	}
+	if e.Pending {
+		t.Errorf("dead-at-stage-0 proxy must not be pending: %+v", e)
+	}
+}
+
+// TestProbeStage0Liveness_AliveAndDead: the stage-0 greeting helper itself
+// reports true for a reachable SOCKS5 proxy and false for a dead port.
+func TestProbeStage0Liveness_AliveAndDead(t *testing.T) {
+	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	if !probeStage0Liveness(context.Background(), addr, "", "", time.Second) {
+		t.Errorf("reachable SOCKS5 proxy must pass stage-0")
+	}
+	if probeStage0Liveness(context.Background(), closedPortAddr(t), "", "", 300*time.Millisecond) {
+		t.Errorf("dead port must fail stage-0")
+	}
+}
+
+// --- start-at-6 adaptive growth --------------------------------------------
+
+// TestProbeTableThroughProxy_StartAtSixGrowsForBorderline: with MinSampleWidth
+// staging (base 6) and MaxSampleWidth 36, a proxy whose base-6 score is
+// borderline (within Band of PassBar) GROWS toward the larger width, so the
+// uncertain middle gets the wider sample (start-small, expand while borderline).
+func TestProbeTableThroughProxy_StartAtSixGrowsForBorderline(t *testing.T) {
+	// Pattern: fail the 1st and 6th of a 6-wide base -> base score 4/6=0.667,
+	// inside [0.45,0.75], so it must grow past width 6.
+	repFor := func(n int) byte {
+		if n == 1 || n == 6 {
+			return 0x05
+		}
+		return 0x00
+	}
+	addr, connects, cleanup := listenSocks5Sequenced(t, repFor)
+	defer cleanup()
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 12
+	cfg.MinSampleWidth = 6
+	cfg.MaxSampleWidth = 36
+	cfg.PassBar = 0.6
+	cfg.BorderlineBand = 0.15
+	cfg.TargetTimeout = time.Second
+	pass := tableProbePassCounter.Load()
+	seedProbeDNSForBlocks(t, addr, cfg, pass)
+
+	before := connects.Load()
+	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	after := connects.Load()
+	if res.SampleWidth <= cfg.MinSampleWidth {
+		t.Errorf("borderline-at-6 proxy must grow past %d: SampleWidth=%d", cfg.MinSampleWidth, res.SampleWidth)
+	}
+	if !res.Decidable || res.Total <= 0 {
+		t.Errorf("grown pass must be decidable+attempted: decidable=%v total=%d", res.Decidable, res.Total)
+	}
+	// Dial count must equal the grown intended width (all resolvable).
+	if int(after-before) != res.SampleWidth {
+		t.Errorf("dial count %d should equal grown SampleWidth %d", after-before, res.SampleWidth)
+	}
+}
+
+// TestProbeTableThroughProxy_StartAtSixNoGrowForClearlyGood: a clearly-good
+// proxy settles at the SMALL base (6) and does NOT pay for the wider sample.
+func TestProbeTableThroughProxy_StartAtSixNoGrowForClearlyGood(t *testing.T) {
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
+	defer cleanup()
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 12
+	cfg.MinSampleWidth = 6
+	cfg.MaxSampleWidth = 36
+	cfg.TargetTimeout = time.Second
+	pass := tableProbePassCounter.Load()
+	seedProbeDNSForBlocks(t, addr, cfg, pass)
+
+	before := connects.Load()
+	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	after := connects.Load()
+	if res.SampleWidth != 6 {
+		t.Errorf("clearly-good proxy must NOT grow (settle at 6): SampleWidth=%d", res.SampleWidth)
+	}
+	if res.Score != 1.0 {
+		t.Errorf("expected score 1.0, got %v", res.Score)
+	}
+	if int(after-before) != 6 {
+		t.Errorf("expected 6 dials (start-at-6, no grow), got %d", after-before)
+	}
+}
