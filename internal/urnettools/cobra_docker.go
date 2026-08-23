@@ -131,24 +131,23 @@ func newDockerReportCmd() *cobra.Command {
 }
 
 func newDockerUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("update [--unit <name>]", "update the host urnet-docker binary, or a container's provider in place (no recreate)", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("update [<container> | --unit <name>]", "update the host urnet-docker binary, or a container's provider in place (no recreate)", []string{"self-update", "selfupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			// self-update/selfupdate are ALWAYS host-only: they must never be
-			// routed at a target (Opus HIGH #453). Only the literal 'update'
-			// command may target a container.
+			// routed at a target. Only the literal 'update' command targets a container.
 			if cmd.CalledAs() != "update" {
 				return cmdSelfUpdate(rest, force, dryRun)
 			}
 			return cmdDockerUpdate(rest, force, dryRun)
 		})
-	}), "Update the host urnet-docker binary, or with a target flag update a provider container in place (no recreate).", "  urnet-docker update\n  urnet-docker update --unit urnet-test\n  urnet-docker update --unit=urnet-test")
+	}), "Update the host urnet-docker binary, or update a provider container in place (no recreate). To update a container, give its name directly (urnet-docker update <container>) or pick it with a target flag (--unit/--user/--network/--network-id/--state-dir). With no target, the host urnet-docker binary is self-updated.", "  urnet-docker update\n  urnet-docker update ps\n  urnet-docker update --unit urnet-test\n  urnet-docker update --unit=urnet-test")
 }
 
 func newDockerVersionCmd() *cobra.Command {
-	return newCobraCmd("version", "print tool version", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("version", "print tool version", nil, func(cmd *cobra.Command, args []string) error {
 		fmt.Println(ToolVersion)
 		return nil
-	})
+	}), "Print the urnet-docker tool version.", "  urnet-docker version")
 }
 
 // dockerProxySub builds one `proxy <sub>` cobra command. It forwards its
@@ -213,33 +212,33 @@ func newDockerProxyCmd() *cobra.Command {
 }
 
 func newDockerSelfHealCmd() *cobra.Command {
-	return newCobraCmd("self-heal", "manage automatic proxy self-healing", []string{"selfheal"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("self-heal", "manage automatic proxy self-healing", []string{"selfheal"}, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSelfHeal(args)
-	})
+	}), "Manage automatic proxy self-healing inside a container.", "  urnet-docker self-heal on --unit urnet-test")
 }
 
 func newDockerSetCmd() *cobra.Command {
-	return newCobraCmd("set", "runtime tuning override in container state", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("set", "runtime tuning override in container state", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSet(args)
-	})
+	}), "Runtime tuning override in the container state, read live without restart.", "  urnet-docker set <key> [<value>|off] --unit urnet-test")
 }
 
 func newDockerFastAuthCmd() *cobra.Command {
-	return newCobraCmd("fast-auth", "manage auth rate limiter bypass marker", []string{"fastauth"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("fast-auth", "manage auth rate limiter bypass marker", []string{"fastauth"}, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerFastAuth(args)
-	})
+	}), "Manage the auth rate limiter bypass marker.", "  urnet-docker fast-auth on --unit urnet-test")
 }
 
 func newDockerHubCmd() *cobra.Command {
-	return newCobraCmd("hub", "delegate hub management commands", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hub", "delegate hub management commands", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerHub(args)
-	})
+	}), "Delegate hub management commands to a container.", "  urnet-docker hub --unit urnet-test")
 }
 
 func newDockerSessionCmd() *cobra.Command {
-	return newCobraCmd("session", "export/import encrypted identity+proxy bundle", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("session", "export/import encrypted identity+proxy bundle", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSession(args)
-	})
+	}), "Export or import an encrypted identity and proxy bundle for a container.", "  urnet-docker session save bundle.bin --unit urnet-test")
 }
 
 func newDockerExecCmd() *cobra.Command {
