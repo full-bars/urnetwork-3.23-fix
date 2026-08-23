@@ -1430,7 +1430,9 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 	}()
 	if ok {
-		_, pqeTag := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+		// pqeOfEpoch guards a nil tlsConn (synthetic/test epochs), like the
+		// session-up path below.
+		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
 		if manager := self.manager; manager != nil {
 			manager.notePqeSession(self.pqeOfEpoch(e))
@@ -2400,11 +2402,17 @@ func (self *peerEncryptionSession) close() {
 }
 
 // pqeOfEpoch reports whether an epoch negotiated a post-quantum key exchange.
-func (self *peerEncryptionSession) pqeOfEpoch(e *tlsHandshakeEpoch) bool {
+// pqeCurveOf returns the negotiated TLS curve ID of an epoch, or 0 when the
+// epoch or its TLS connection is absent (synthetic/test epochs have no handshake).
+func pqeCurveOf(e *tlsHandshakeEpoch) tls.CurveID {
 	if e == nil || e.tlsConn == nil {
-		return false
+		return 0
 	}
-	isPQE, _ := pqeDisplay(e.tlsConn.ConnectionState().CurveID)
+	return e.tlsConn.ConnectionState().CurveID
+}
+
+func (self *peerEncryptionSession) pqeOfEpoch(e *tlsHandshakeEpoch) bool {
+	isPQE, _ := pqeDisplay(pqeCurveOf(e))
 	return isPQE
 }
 
