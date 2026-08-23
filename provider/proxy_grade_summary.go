@@ -313,7 +313,19 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 			lastProbe = entry.LastGraded
 		}
 
-		if graded {
+		// PENDING wins over a stale tier: a proxy that was previously graded
+		// (Graded=true + old Score) but whose last pass was reachable-but-
+		// undecidable must surface as "could not evaluate right now", not
+		// hide behind its old letter tier. Otherwise a DNS-gutted re-probe of
+		// a formerly-B proxy silently keeps it in the B bucket and the
+		// operator never sees it went undecidable (review HIGH).
+		if entry.Pending {
+			s.tiers["pending"]++
+			if s.sources[src] == nil {
+				s.sources[src] = map[string]int{}
+			}
+			s.sources[src]["pending"]++
+		} else if graded {
 			t := tierName(score)
 			s.tiers[t]++
 			if s.sources[src] == nil {
@@ -326,15 +338,6 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 			if !lastProbe.IsZero() && now.Sub(lastProbe) > gradeSummaryStaleAfter(src, pressure) {
 				s.stale++
 			}
-		} else if entry.Pending {
-			// REACHABLE-but-undecidable paid proxy: honest "could not
-			// evaluate from this box" status, surfaced distinctly from both a
-			// grade and a never-reached "ungraded". Design 2026-08-23.
-			s.tiers["pending"]++
-			if s.sources[src] == nil {
-				s.sources[src] = map[string]int{}
-			}
-			s.sources[src]["pending"]++
 		} else {
 			s.tiers["ungraded"]++
 			if s.sources[src] == nil {

@@ -263,6 +263,12 @@ func TestApplyPaidProbeBudget_DisabledWhenZero(t *testing.T) {
 
 // --- global dial rate limiter ---------------------------------------------
 
+// TestGlobalProbeDialLimiter_Constants checks the token-bucket wiring is
+// present (rate/burst are sane). It does NOT exercise Wait() timing — a
+// real rate-limit assertion needs an injectable clock (the production
+// limiter is a process-global at test startup), so this is a wiring check,
+// not a throughput check. The behavior itself is covered indirectly by the
+// full provider suite (the dial limiter must not break probe timing).
 func TestGlobalProbeDialLimiter_Constants(t *testing.T) {
 	if maxProbeDialsPerSec != 50 {
 		t.Errorf("maxProbeDialsPerSec = %d, want 50", maxProbeDialsPerSec)
@@ -282,38 +288,6 @@ func filepathJoinHome(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(home, name)
-}
-
-// seedOnlyOneProbeDNSHost makes the box resolve exactly ONE host of the base
-// block (plus nothing else), so a probe REACHES the proxy (Total>0) but
-// cannot reach the decidable quorum (half the sample) — the DNS-gutted box a
-// 'pending' status exists to represent. The resolveProbeTarget fail-cache is
-// cleared for every base host, but only one is given a resolution.
-func seedOnlyOneProbeDNSHost(t *testing.T, address string) {
-	t.Helper()
-	cfg := resolveProxyTableProbeConfig()
-	pass := tableProbePassCounter.Load()
-	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
-	probeDNSCache.Lock()
-	// Clear any prior fail-cache for every base host so none short-circuit.
-	for _, h := range hosts {
-		delete(probeDNSCache.fail, h)
-	}
-	if len(hosts) > 0 {
-		probeDNSCache.m[hosts[0]] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
-	} else {
-		for _, h := range hosts {
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
-		}
-	}
-	probeDNSCache.Unlock()
-	t.Cleanup(func() {
-		probeDNSCache.Lock()
-		defer probeDNSCache.Unlock()
-		for _, h := range hosts {
-			delete(probeDNSCache.m, h)
-		}
-	})
 }
 
 // ---------- helpers -------------------------------------------------------
