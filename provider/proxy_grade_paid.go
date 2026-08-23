@@ -303,6 +303,15 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// DNS-gutted (undecidable) pass does not re-probe every tick;
 			// the grade itself is persisted only on a decidable verdict.
 			entry.LastGraded = probeDone
+			// PENDING always reflects the CURRENT pass's outcome, never a
+			// lingering value from an earlier one. Reset here so (a) a
+			// decidable pass clears a stale Pending without a special-case
+			// guard, (b) a fully-unreachable pass (Total==0, below) clears a
+			// Pending set when the proxy was previously reachable-but-
+			// undecidable — otherwise an unreachable proxy would be mislabeled
+			// "could not evaluate from this box" forever. Re-set to true only
+			// in the reachable-but-undecidable branch.
+			entry.Pending = false
 			if r.table.Decidable {
 				oldTier := ""
 				oldScore := entry.Score
@@ -314,15 +323,6 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				entry.Score = r.table.Score
 				entry.Graded = true
 				entry.Failed = capFailedList(r.table.Failed)
-				// A decidable verdict REPLACES any prior pending state: we can
-				// now call the proxy from this box, so the honest status is
-				// its grade, not "couldn't evaluate". Cleared here whether the
-				// grade changed or not (a repeat B has a fresh LastGraded but
-				// must also clear a stale Pending from an earlier DNS-gutted
-				// pass — see the pending branch below).
-				if entry.Pending {
-					entry.Pending = false
-				}
 				graded++
 				if oldTier != newTier {
 					tierChanges++
