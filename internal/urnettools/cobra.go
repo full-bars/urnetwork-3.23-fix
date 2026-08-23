@@ -133,19 +133,19 @@ func newRestartCmd() *cobra.Command {
 }
 
 func newUpdateCmd() *cobra.Command {
-	return newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	})
+	}), "Update the selected provider(s) to the latest version.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service")
 }
 
 func newSelfUpdateCmd() *cobra.Command {
-	return newCobraCmd("self-update", "update this tool binary itself", []string{"selfupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("self-update", "update this tool binary itself", []string{"selfupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSelfUpdate(rest, force, dryRun)
 		})
-	})
+	}), "update this tool binary itself to the latest version", "  urnet-tools self-update")
 }
 
 func newLogsCmd() *cobra.Command {
@@ -157,7 +157,7 @@ func newLogsCmd() *cobra.Command {
 }
 
 func newSummaryCmd() *cobra.Command {
-	return newCobraCmd("summary [target]", "fleet-style summary for one provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("summary [target]", "fleet-style summary for one provider", nil, func(cmd *cobra.Command, args []string) error {
 		rest, err := parseDelegationArgs(args)
 		if err == errHelpShown {
 			return nil
@@ -166,22 +166,22 @@ func newSummaryCmd() *cobra.Command {
 			return err
 		}
 		return cmdSimpleDelegation("summary", rest)
-	})
+	}), "Show a fleet-style summary for one provider.", "  urnet-tools summary\n  urnet-tools summary --unit urnetwork-native.service")
 }
 
 func newVersionCmd() *cobra.Command {
 	// '-v'/'--version' were dead aliases: Cobra strips '-' tokens before alias
 	// matching, so they never resolve (handled at top level). Keep plain 'version'.
-	return newCobraCmd("version", "print this tool's version", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("version", "print this tool's version", nil, func(cmd *cobra.Command, args []string) error {
 		fmt.Println(ToolVersion)
 		return nil
-	})
+	}), "Print this tool's version.", "  urnet-tools version")
 }
 
 func newDefaultCmd() *cobra.Command {
-	return newCobraCmd("default", "persist a default provider target for this box", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("default", "persist a default provider target for this box", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDefault(args)
-	})
+	}), "Persist, show, or clear the default provider target for this box.", "  urnet-tools default set --unit urnetwork-native.service\n  urnet-tools default show\n  urnet-tools default clear")
 }
 
 func newSessionCmd() *cobra.Command {
@@ -190,6 +190,8 @@ func newSessionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "session",
 		Short:              "export/import identity + proxy state",
+		Long:               "Export or import an encrypted identity and proxy bundle.",
+		Example:            "  urnet-tools session save bundle.bin\n  urnet-tools session load bundle.bin",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdSession(args)
@@ -198,65 +200,67 @@ func newSessionCmd() *cobra.Command {
 }
 
 func newTurboCmd() *cobra.Command {
-	return newCobraCmd("turbo", "RAISE throughput limits for RAM-rich boxes", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("turbo", "RAISE throughput limits for RAM-rich boxes", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("turbo", rest, force, dryRun)
 		})
-	})
+	}), "Raise throughput limits for RAM-rich boxes.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
 }
 
 func newAutoCmd() *cobra.Command {
-	return newCobraCmd("auto", "AUTO-TUNE detect hardware and pick best profile", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("auto", "AUTO-TUNE detect hardware and pick best profile", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("auto", rest, force, dryRun)
 		})
-	})
+	}), "Auto-detect hardware and pick the best performance profile.", "  urnet-tools auto on\n  urnet-tools auto off")
 }
 
 func newEcoCmd() *cobra.Command {
-	return newCobraCmd("eco", "ECO MODE GC-tuned for low-RAM systems", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("eco", "ECO MODE GC-tuned for low-RAM systems", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("eco", rest, force, dryRun)
 		})
-	})
+	}), "Enable eco mode with GC tuning for low-RAM systems.", "  urnet-tools eco on\n  urnet-tools eco off")
 }
 
 func newLowmodeCmd() *cobra.Command {
-	return newCobraCmd("lowmode", "LOW-MEMORY reduced buffers for max RAM savings", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("lowmode", "LOW-MEMORY reduced buffers for max RAM savings", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("lowmode", rest, force, dryRun)
 		})
-	})
+	}), "Enable low-memory mode with reduced buffers for maximum RAM savings.", "  urnet-tools lowmode on\n  urnet-tools lowmode off")
 }
 
 func newRamlogsCmd() *cobra.Command {
-	return newCobraCmd("ramlogs", "RAM LOGS zero disk I/O logging", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("ramlogs", "RAM LOGS zero disk I/O logging", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("ramlogs", rest, force, dryRun)
 		})
-	})
+	}), "Enable zero disk I/O logging backed by RAM.", "  urnet-tools ramlogs on\n  urnet-tools ramlogs off")
 }
 
 func newOptimizeCmd() *cobra.Command {
-	return newCobraCmd("optimize", "apply golden-fleet OS/kernel limits", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("optimize", "apply golden-fleet OS/kernel limits", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdOptimize(rest, force, dryRun)
 		})
-	})
+	}), "Apply golden-fleet OS and kernel limits.", "  urnet-tools optimize\n  urnet-tools optimize --unit urnetwork-native.service")
 }
 
 func newHotRestartCmd() *cobra.Command {
-	return newCobraCmd("hot-restart", "reuse client_ids across restarts", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hot-restart", "reuse client_ids across restarts", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotRestart(rest, force, dryRun)
 		})
-	})
+	}), "Reuse client IDs across provider restarts.", "  urnet-tools hot-restart --unit urnetwork-native.service")
 }
 
 func newFastAuthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "fast-auth",
 		Short:              "manage the auth rate limiter",
+		Long:               "Manage the auth rate limiter bypass marker.",
+		Example:            "  urnet-tools fast-auth on\n  urnet-tools fast-auth status",
 		Aliases:            []string{"fastauth"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -275,6 +279,8 @@ func newSetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "set",
 		Short:              "runtime tuning override",
+		Long:               "Runtime tuning override in the provider state, read live without restart.",
+		Example:            "  urnet-tools set <key> [<value>|off]",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -292,6 +298,8 @@ func newAuthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "auth",
 		Short:              "authenticate",
+		Long:               "Authenticate the provider with an auth code.",
+		Example:            "  urnet-tools auth <CODE>\n  urnet-tools auth <CODE> --unit urnetwork-native.service",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdAuth(args)
@@ -303,6 +311,8 @@ func newChooseNetworkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "choose-network",
 		Short:              "set API/connect endpoints",
+		Long:               "Set the API and connect endpoints used by the provider.",
+		Example:            "  urnet-tools choose-network <api> <connect>\n  urnet-tools choose-network --reset",
 		Aliases:            []string{"choose_network"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -315,6 +325,8 @@ func newProxyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "proxy",
 		Short:              "Proxy Management",
+		Long:               "Manage proxies for a provider: add from a file, clear, remove, refresh, and inspect health and traffic.",
+		Example:            "  urnet-tools proxy add ~/proxies.txt\n  urnet-tools proxy clear",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -333,7 +345,7 @@ func newProxyCmd() *cobra.Command {
 }
 
 func newReportCmd() *cobra.Command {
-	return newCobraCmd("report", "set hub report URL", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("report", "set hub report URL", nil, func(cmd *cobra.Command, args []string) error {
 		rest, err := parseDelegationArgs(args)
 		if err == errHelpShown {
 			return nil
@@ -342,47 +354,47 @@ func newReportCmd() *cobra.Command {
 			return err
 		}
 		return cmdReport(rest)
-	})
+	}), "Set the hub report URL used by a provider (no restart).", "  urnet-tools report https://hub.example.com\n  urnet-tools report off")
 }
 
 func newHubCmd() *cobra.Command {
-	return newCobraCmd("hub", "Hub Management", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hub", "Hub Management", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHub(rest, force, dryRun)
 		})
-	})
+	}), "Manage the hub: install, init, link, unlink, test, update, and control reporting.", "  urnet-tools hub set host:port\n  urnet-tools hub off")
 }
 
 func newReinstallCmd() *cobra.Command {
-	return newCobraCmd("reinstall", "reinstall provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("reinstall", "reinstall provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdReinstall(rest, force, dryRun)
 		})
-	})
+	}), "Reinstall the provider.", "  urnet-tools reinstall")
 }
 
 func newUninstallCmd() *cobra.Command {
-	return newCobraCmd("uninstall", "uninstall provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("uninstall", "uninstall provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUninstall(rest, force, dryRun)
 		})
-	})
+	}), "Uninstall the provider.", "  urnet-tools uninstall")
 }
 
 func newAutoUpdateCmd() *cobra.Command {
-	return newCobraCmd("auto-update", "manage auto-update schedule", []string{"autoupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("auto-update", "manage auto-update schedule", []string{"autoupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdAutoUpdate(rest, force, dryRun)
 		})
-	})
+	}), "Manage the auto-update schedule.", "  urnet-tools auto-update on\n  urnet-tools auto-update off")
 }
 
 func newAutoStartCmd() *cobra.Command {
-	return newCobraCmd("auto-start", "toggle auto-start on login", []string{"autostart"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("auto-start", "toggle auto-start on login", []string{"autostart"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdAutoStart(rest, force, dryRun)
 		})
-	})
+	}), "Toggle provider auto-start on login.", "  urnet-tools auto-start on\n  urnet-tools auto-start off")
 }
 
 func newSelfHealCmd() *cobra.Command {
@@ -390,9 +402,16 @@ func newSelfHealCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "self-heal",
 		Short:              "self heal",
+		Long:               "Manage automatic proxy self-healing.",
+		Example:            "  urnet-tools self-heal on\n  urnet-tools self-heal off",
 		Aliases:            []string{"selfheal"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Route -h/--help here so the per-command page renders instead of
+			// the top-level menu that cmdSelfHeal would print.
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
 			return cmdSelfHeal(args)
 		},
 	}
