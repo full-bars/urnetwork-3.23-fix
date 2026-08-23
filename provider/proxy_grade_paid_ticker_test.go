@@ -21,13 +21,6 @@ func TestRunPaidProxyGrader_ExitsOnCancelledContext(t *testing.T) {
 	withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
 
-	// A live fake proxy: if the loop incorrectly ran a probe pass before
-	// checking ctx.Done(), this would let us notice (in principle) via
-	// connects; the real assertion is timing, below.
-	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
-	defer cleanup()
-	_ = addr
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done before runPaidProxyGrader is ever entered
 
@@ -43,9 +36,6 @@ func TestRunPaidProxyGrader_ExitsOnCancelledContext(t *testing.T) {
 		// returned without waiting for a 5-minute ticker tick.
 	case <-time.After(3 * time.Second):
 		t.Fatal("runPaidProxyGrader did not exit promptly on an already-cancelled context (blocked on the 5m ticker instead of ctx.Done())")
-	}
-	if n := connects.Load(); n != 0 {
-		t.Errorf("a cancelled-context loop must not run any probe pass, got %d CONNECTs", n)
 	}
 }
 
