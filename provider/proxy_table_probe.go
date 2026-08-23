@@ -91,7 +91,7 @@ func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 		TargetTimeout:        4 * time.Second,
 		PassBar:              0.6,
 		PreferredBar:         0.9,
-		MaxSampleWidth:       30,
+		MaxSampleWidth:       36,
 		BorderlineBand:       0.15,
 		MaxPaidProbesPerTick: 200,
 	}
@@ -113,7 +113,7 @@ func (c proxyTableProbeConfig) probeWidth() int {
 // JSON shape matches proxyTableProbeConfig:
 //
 //	{"enabled": true, "sample_width": 12, "timeout_ms": 4000,
-//	 "pass_bar": 0.6, "preferred_bar": 0.9, "max_sample_width": 30,
+//	 "pass_bar": 0.6, "preferred_bar": 0.9, "max_sample_width": 36,
 //	 "borderline_band": 0.15, "max_paid_probes_per_tick": 200}
 //
 // Missing or malformed keys fall back to defaults.
@@ -604,7 +604,7 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 // even a full fleet sweep never thrashes target egress IPs or the box. This is
 // the global dial rate limit from the probe-redesign: the per-tick budget caps
 // HOW MANY proxies one pass probes; this caps how FAST their dials go out.
-const maxProbeDialsPerSec = 50
+const maxProbeDialsPerSec = 25
 
 // maxProbeDialBurst is the token-bucket burst for the global dial limiter: a
 // small short-run allowance so a probe pass does not stall on its first few
