@@ -360,10 +360,10 @@ func TestGradeSummaryLines(t *testing.T) {
 		sources: map[string]map[string]int{"url": {"A": 1, "F": 1}, "file": {"B": 1, "ungraded": 1}},
 		scores:  []float64{0.1, 0.5, 0.9},
 	}
-	if got := s.tierLine(); !contains(got, "A=1 B=1 C=0 D=0 F=1 ungraded=1 (3 running, 5 tracked)") {
+	if got := s.tierLine(); !contains(got, "A=1 B=1 C=0 D=0 F=1 pending=0 ungraded=1 (3 running, 5 tracked)") {
 		t.Fatalf("tierLine: %q", got)
 	}
-	if got := s.sourcesLine(); !contains(got, "file A=0 B=1 C=0 D=0 F=0 ungraded=1") || !contains(got, "url A=1 B=0 C=0 D=0 F=1 ungraded=0") {
+	if got := s.sourcesLine(); !contains(got, "file A=0 B=1 C=0 D=0 F=0 pending=0 ungraded=1") || !contains(got, "url A=1 B=0 C=0 D=0 F=1 pending=0 ungraded=0") {
 		t.Fatalf("sourcesLine: %q", got)
 	}
 	if got := s.scoresLine(); !contains(got, "median 0.50") || !contains(got, "p95 0.90") {
