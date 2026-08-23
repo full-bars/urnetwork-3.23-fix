@@ -4,11 +4,12 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased]
+## [v3.23.0-fix.30.6]
 
 ### Added
 - **Real per-command help (PR #448, #453)**: `urnet-tools` and `urnet-docker` now route through the Cobra CLI framework. Every command prints real per-command help with `-h` or `--help`. Each help page has a usage line, a short description, and copy-paste examples. The `urnet-docker proxy` command is a parent with 12 subcommand help pages. `urnet-docker exec -h` renders the in-container command's own help. `--help` never executes an action.
-- **In-place container update (PR #453)**: `urnet-docker update <target>` updates a running provider container in place. A target flag (`--unit`, `--user`, `--network`, or `--state-dir`) runs the in-container `urnet-tools update` self-update without recreating the container, behind the confirm gate. Plain `urnet-docker update` still self-updates the host binary only. The `self-update` and `selfupdate` aliases always update the host binary only.
+- **In-place container update (PR #453, #455)**: `urnet-docker update <target>` updates a running provider container in place. A target flag (`--unit`, `--user`, `--network`, or `--state-dir`) or a bare container name selects the container, then runs the in-container `urnet-tools update` self-update without recreating the container, behind the confirm gate. In-place update now works on any container image. A host-side repair fixes an in-container update script that older images ship broken (a busybox `mktemp` bug and a `pkill` name-truncation issue), then swaps the provider binary. If the swap stops the container (older images stop instead of relaunching), the command auto-restarts the same container so the provider comes back on the new binary. Plain `urnet-docker update` still self-updates the host binary only. The `self-update` and `selfupdate` aliases always update the host binary only.
+- **Post-quantum session visibility (PR #455)**: the provider detects whether an end-to-end session uses post-quantum or classical TLS from the negotiated curve in the TLS connection state. The post-quantum hybrid curves `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, and `MLKEM1024` tag session-up and session-close log lines. A periodic `[pqe]` provider log line reports live post-quantum and classical session counts plus opens over 1h, 24h, 7d, and lifetime.
 
 ### Changed
 - **Go 1.27.0 toolchain bump (PR #449)**: Compiler bumped from Go 1.26.4 to 1.27.0. Updates the `go` directive in `go.mod` to `1.27.0`, floats the CI `go-version` pins to 1.27 across all workflows, and moves the Docker builder base to `golang:1.27-alpine`. Validated under 1.27.0 with a clean `go build`, `go vet`, the full `-short -race` test suite, the complete cross-compile matrix (including 386 and mips/mipsle/mips64/mips64le), and a functional smoke. `go mod tidy` required no dependency changes.
