@@ -38,6 +38,11 @@ func TestDockerUpdateDispatchViaShim(t *testing.T) {
 	if s := readLog(); !strings.Contains(s, "exec urnet-test urnet-tools update") {
 		t.Fatalf("update --unit did not exec in-container urnet-tools update; shim got %q", s)
 	}
+	// The host-side repair must run first (sed the mktemp + pkill patterns), so
+	// in-place update works even on old images with a broken update script.
+	if s := readLog(); !strings.Contains(s, "sed") {
+		t.Fatalf("update did not repair the container update script first; shim got %q", s)
+	}
 
 	resetLog()
 	err := RunDocker([]string{"self-update", "--unit", "urnet-test"})

@@ -69,7 +69,7 @@ Core Commands:
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
   report <url> [target]   set hub report URL inside container (no restart)
-  update [--unit <name>]    update host binary, or a container's provider in place (no recreate)
+  update [<container>]     update a container's provider in place (no recreate), or the host binary
   version                 print tool version
 
 Proxy Management [target]:
@@ -284,18 +284,16 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 // recreating the container. The in-container path runs the container's own
 // urnet-tools self-update via docker exec.
 func cmdDockerUpdate(args []string, force, dryRun bool) error {
-	// In-container update requires an explicit target flag (--unit/--user/
-	// --network/--network-id/--state-dir). Without one, `update`/`-f`/a bare
-	// positional/unknown flag all fall through to the host self-update so its
-	// own help and unknown-flag errors surface unchanged. Gating on a target
-	// flag avoids treating a self-update argument as a container target.
-	if !hasAnyTargetFlag(args) {
-		return cmdSelfUpdate(args, force, dryRun)
-	}
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	t, rest, err := updateTargetFromArgs(args, providers)
 	if err != nil {
 		return err
+	}
+	if t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" {
+		// No container target resolved. This is the host urnet-docker
+		// self-update; pass the ORIGINAL args so host --tag/--digest/--url and
+		// its unknown-flag/help behavior surface unchanged.
+		return cmdSelfUpdate(args, force, dryRun)
 	}
 	if len(rest) > 0 {
 		return fmt.Errorf("unexpected argument(s) after update target: %v", rest)
@@ -314,8 +312,75 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run or declined
 	}
+	// Older container images ship a broken in-place update routine (busybox
+	// mktemp rejects the XXXX.tar.gz template, and pkill -x misses the
+	// 15-char-truncated process comm). Repair that routine from the host first
+	// so in-place update works on ANY container image, not just ones that
+	// already ship the fixed script. Idempotent: it only rewrites the known
+	// broken patterns to their fixed forms.
+	if err := repairContainerUpdateScript(p.Unit); err != nil {
+		return fmt.Errorf("prepare %s for in-place update: %w", p.Unit, err)
+	}
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
 	return containerExecByName(p.Unit, "urnet-tools", "update")
+}
+
+// repairContainerUpdateScript applies two safe, idempotent fixes to a
+// container's in-place update routine (/app/urnet-tools.sh) so it works on any
+// image, including ones built before the fixes landed upstream:
+//  1. busybox mktemp: the template must END in X, so a trailing ".tar.gz"
+//     suffix fails with "Invalid argument". The tarball path is rewritten to
+//     the mktemp-valid form.
+//  2. pkill comm truncation: Linux truncates a process's comm to 15 chars, so
+//     `pkill -x "urnetwork_<arch>_stable"` matches nothing. It is replaced with
+//     `pkill -f "^/app/urnetwork_<arch>_stable provide"` (full command line).
+//
+// sed is invoked directly via exec.Command (no host or container /bin/sh layer),
+// so the literal ${arch} is passed through untampered; only sed's own \$ escape
+// is used to match a literal dollar sign.
+func repairContainerUpdateScript(unit string) error {
+	expr1 := "s|mktemp /tmp/urnetwork-update-XXXXXX.tar.gz|mktemp /tmp/urnetwork-update-XXXXXX|"
+	expr2 := `s|pkill -x "urnetwork_\${arch}_stable"|pkill -f "^/app/urnetwork_\${arch}_stable provide"|`
+	c := exec.Command(dockerCLI(), "exec", unit, "sed", "-i", expr1, "/app/urnet-tools.sh")
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("repair mktemp in %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	c2 := exec.Command(dockerCLI(), "exec", unit, "sed", "-i", expr2, "/app/urnet-tools.sh")
+	if out, err := c2.CombinedOutput(); err != nil {
+		return fmt.Errorf("repair pkill in %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// updateTargetFromArgs resolves a container target for `update` from either an
+// explicit target flag (--unit/--user/--network/--network-id/--state-dir, bare
+// or = form) or a BARE container name that exactly matches a discovered
+// container (so `update ps` works just like `status ps` / `logs ps`). When no
+// target resolves it returns an empty Target, and the caller falls through to
+// the host self-update. This preserves host self-update args (--tag/--digest/
+// --url) because those are never target flags and never match a container name.
+func updateTargetFromArgs(args []string, providers []Provider) (Target, []string, error) {
+	if hasAnyTargetFlag(args) {
+		t, rest, err := dockerTargetFromArgs(args, providers)
+		if err != nil {
+			return t, rest, err
+		}
+		return t, rest, nil
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		for _, p := range providers {
+			if p.Unit == a {
+				return Target{Unit: a}, nil, nil
+			}
+		}
+		// First non-flag positional that is not a container name: not a target.
+		// Leave it for the host self-update (e.g. it may be a --tag value or a typo).
+		return Target{}, nil, nil
+	}
+	return Target{}, nil, nil
 }
 
 // hasAnyTargetFlag reports whether args contain an explicit targeting flag, in
