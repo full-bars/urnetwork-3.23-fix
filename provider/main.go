@@ -1191,9 +1191,63 @@ func nextMidnight(t time.Time) time.Time {
 // the 1m, 5m, 15m, and 60m windows. Handles counter resets (proxy restart) by
 // treating a backwards counter as a zero-delta tick. Silent when no proxies are
 // registered (non-proxy mode).
-// currentEncryptionManager holds the live provider encryption session manager,
-// set during provider setup, so the periodic [pqe] log line can sample counts.
-var currentEncryptionManager *connect.EncryptionSessionManager
+// encryptionManagers is a thread-safe registry of the live per-proxy encryption
+// session managers. Multiple providers (a native client plus each proxy's
+// client) each own their own connect client -> encryption manager, so a single
+// pointer was both a data race (written per provideWithProxy, read by the
+// periodic [pqe] line) and dropped every manager but the last. The [pqe] line
+// sums counts across every registered manager.
+var encryptionManagers = struct {
+	mu  sync.Mutex
+	set []*connect.EncryptionSessionManager
+}{}
+
+func registerEncryptionManager(m *connect.EncryptionSessionManager) {
+	if m == nil {
+		return
+	}
+	encryptionManagers.mu.Lock()
+	defer encryptionManagers.mu.Unlock()
+	encryptionManagers.set = append(encryptionManagers.set, m)
+}
+
+func unregisterEncryptionManager(m *connect.EncryptionSessionManager) {
+	if m == nil {
+		return
+	}
+	encryptionManagers.mu.Lock()
+	defer encryptionManagers.mu.Unlock()
+	for i, x := range encryptionManagers.set {
+		if x == m {
+			encryptionManagers.set = append(encryptionManagers.set[:i], encryptionManagers.set[i+1:]...)
+			return
+		}
+	}
+}
+
+// pqeTotalCounts sums PQECounts across all live encryption managers.
+func pqeTotalCounts() connect.PQECounts {
+	var total connect.PQECounts
+	encryptionManagers.mu.Lock()
+	n := len(encryptionManagers.set)
+	snapshot := make([]*connect.EncryptionSessionManager, n)
+	copy(snapshot, encryptionManagers.set)
+	encryptionManagers.mu.Unlock()
+	for _, m := range snapshot {
+		c := m.PQECounts()
+		total.ActivePQE += c.ActivePQE
+		total.ActiveClas += c.ActiveClas
+		total.PQEHour += c.PQEHour
+		total.PQEDay += c.PQEDay
+		total.PQEWeek += c.PQEWeek
+		total.PQELifetime += c.PQELifetime
+		total.ClasHour += c.ClasHour
+		total.ClasDay += c.ClasDay
+		total.ClasWeek += c.ClasWeek
+		total.ClasLifetime += c.ClasLifetime
+	}
+	return total
+}
 
 func runEarningWindows(ctx context.Context) {
 	const maxSamples = 60
@@ -1211,8 +1265,11 @@ func runEarningWindows(ctx context.Context) {
 		case <-ticker.C:
 		}
 
-		if mgr := currentEncryptionManager; mgr != nil {
-			c := mgr.PQECounts()
+		c := pqeTotalCounts()
+		if c.ActivePQE != 0 || c.ActiveClas != 0 || c.PQEHour != 0 || c.PQEDay != 0 ||
+			c.PQEWeek != 0 || c.PQELifetime != 0 || c.ClasHour != 0 || c.ClasDay != 0 ||
+			c.ClasWeek != 0 || c.ClasLifetime != 0 {
+			_ = c
 			tlog("🔐 [pqe] live pqe=%d classical=%d | opens 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d | lifetime: pqe=%d clas=%d\n",
 				c.ActivePQE, c.ActiveClas,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek,
@@ -2705,8 +2762,11 @@ func provide(opts docopt.Opts) {
 
 		clientOob := connect.NewApiOutOfBandControl(proxyCtx, clientStrategy, byClientJwt, apiUrl)
 		connectClient := connect.NewClient(proxyCtx, clientId, clientOob, clientSettings)
-		defer connectClient.Close()
-		currentEncryptionManager = connectClient.EncryptionSessionManager()
+		defer func() {
+			unregisterEncryptionManager(connectClient.EncryptionSessionManager())
+			connectClient.Close()
+		}()
+		registerEncryptionManager(connectClient.EncryptionSessionManager())
 
 		// Persist the live identity material so the next process
 		// start loads the same values. On a fresh install both
