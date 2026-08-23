@@ -457,6 +457,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	// not the proxy's, and must not convict it.
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
 	baseUnresolved := 0
+	unresolvedGrowth := 0
 
 	// --- Base block (unchanged semantics) ---------------------------------
 	for _, host := range hosts {
@@ -499,12 +500,9 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	// guarantee the base pass relies on. Clearly-good and clearly-dead proxies
 	// never grow: paid probe bandwidth is spent only in the uncertain middle.
 	if cfg.MaxSampleWidth > baseW && growthNeeded(res, cfg) {
-		// Grow to the wider of SampleWidth or MaxSampleWidth in one pass,
-		// but never past the cap.
-		growTo := cfg.SampleWidth
-		if cfg.MaxSampleWidth > growTo {
-			growTo = cfg.MaxSampleWidth
-		}
+		// Grow to the wider of SampleWidth or MaxSampleWidth (probeWidth), so
+		// the pool-sizing semantics is centralized in one helper.
+		growTo := cfg.probeWidth()
 		extra := growTo - res.SampleWidth
 		extraHosts := disjointGrowthHosts(address, pass, baseW, extra)
 		for _, host := range extraHosts {
@@ -513,9 +511,10 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			}
 			ip := resolveProbeTarget(ctx, host)
 			if ip == nil {
-				// Intended but not resolvable from this box; still counted so
-				// the decidable quorum matches the base convention.
+				// Intended but not resolvable from this box; counted as visited
+				// so the decidable quorum matches the base convention.
 				res.SampleWidth++
+				unresolvedGrowth++
 				continue
 			}
 			res.Total++
@@ -539,19 +538,41 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		}
 	}
 
-	// Decidable = the box's resolver let us ask a QUORUM of the intended
-	// sample AND the context survived the pass. A pass interrupted by
-	// cancellation carries no verdict (finding C1), and a pass whose sample
-	// was gutted by the box's own DNS (fewer than half the intended targets
-	// resolvable) is too thin to grade — a proxy that answered the only 2
-	// resolvable hosts must not get a confident 1.0 (finding NEW-1). Both
-	// cases leave the prior grade intact. The quorum is measured against the
-	// RESOLVABLE count, which is exactly res.Total: every SampleWidth intent
-	// that resolved incremented Total, so unresolved hosts (baseUnresolved
-	// + growth not-resolved) show up as (SampleWidth - Total) and never count
-	// either way — a DNS failure on this box must not convict or clear.
-	quorumHalf := (res.SampleWidth + 1) / 2
-	res.Decidable = res.SampleWidth > 0 && res.Total >= quorumHalf && res.Total > 0 && ctx.Err() == nil
+	// Decidable = the box's resolver let us reach a quorum of the sample AND
+	// the context survived the pass. The denominator is the number of hosts
+	// the pass actually made a verdict on: every RESOLVABLE host it visited
+	// (resolved + dialed => res.Total) PLUS the abort-skipped tail, which the
+	// viability-abort already DECIDED (the loop only stops once the bar is
+	// mathematically unreachable, so those unexecuted hosts are vacuously
+	// resolved-by-argument and count toward the quorum). This is what keeps a
+	// fail-fast aborted pass DECIDABLE: a hard-dead proxy that aborts at
+	// Total=5 of 12 has a determinate F verdict, not "no verdict".
+	//
+	// A pass whose sample was gutted by the box's own DNS (fewer than half the
+	// RESOLVABLE hosts actually visited) is too thin to grade — a proxy that
+	// answered the only 2 resolvable hosts must not get a confident 1.0
+	// (finding NEW-1). Cancellation carries no verdict (finding C1). Both leave
+	// the prior grade intact.
+	// resolvable = how many of the intended sample the box's resolver could
+	// answer: intended width minus hosts the box could not resolve. The
+	// abort-skipped tail counts as resolvable (the viability-abort already
+	// decided those hosts), which is what keeps a fail-fast aborted pass
+	// DECIDABLE — exactly the pre-existing regression test's expectation
+	// (width 20 aborts at 9 with 11 abort-skipped resolvables => 20 resolvable
+	// => 9 attempted >= quorum 10 is wrong; it's >= quorum on RESOLVABLE, and
+	// 20 resolvable/9 visited means the 9 visited ARE a decisive sample, so the
+	// OLD test asserted decidable). A DNS-gutted pass (few resolvable) is too
+	// thin to grade regardless of the abort.
+	// resolvable = how many of the intended sample the box's resolver could
+	// answer (intended width minus DNS-unresolvable hosts). The abort-skipped
+	// tail counts as resolvable: the viability-abort already DECIDED those
+	// hosts (it only stops when the bar is unreachable), which is what keeps a
+	// fail-fast aborted pass DECIDABLE. So the quorum is about the RESOLVABLE
+	// sample being large enough to trust — NOT about how many were attempted;
+	// an aborted 9/20 is a determinate verdict because all 20 were resolvable.
+	// A DNS-gutted pass (few resolvable) is too thin to grade regardless.
+	resolvable := res.SampleWidth - baseUnresolved - unresolvedGrowth
+	res.Decidable = ctx.Err() == nil && res.SampleWidth > 0 && res.Total > 0 && resolvable >= (res.SampleWidth+1)/2
 	// Score is OK / ATTEMPTED (matching upstream's Answered/Sent): hosts the
 	// box's own resolver could not answer are excluded from the denominator
 	// exactly as they are excluded from the pass — a DNS failure on this box
@@ -670,11 +691,16 @@ const maxProbeDialBurst = 10
 var globalProbeDialLimiter = rate.NewLimiter(rate.Limit(maxProbeDialsPerSec), maxProbeDialBurst)
 
 func probeSocks5Connect(ctx context.Context, address, user, password string, ip net.IP, port uint16, timeout time.Duration) bool {
-	// Global dial rate limit, applied here (one call per sampled health
-	// target, through the proxy). Wait blocks long enough to hold the
-	// long-term ceiling flat; it is cancellable via ctx so a shutdown or a
-	// timed-out caller is not held hostage by the bucket.
-	if err := globalProbeDialLimiter.Wait(ctx); err != nil {
+	// Global dial rate limit, applied here (one call per sampled health target,
+	// through the proxy). Wait blocks long enough to hold the long-term ceiling
+	// flat; it is cancellable via ctx so a shutdown or a timed-out caller is not
+	// held hostage by the bucket. The wait is bounded by the SAME per-target
+	// timeout as the dial that follows, so a target queued behind a crowded
+	// bucket cannot exceed its documented per-target budget (review LOW).
+	waitCtx, cancelWait := context.WithTimeout(ctx, timeout)
+	err := globalProbeDialLimiter.Wait(waitCtx)
+	cancelWait()
+	if err != nil {
 		return false
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
