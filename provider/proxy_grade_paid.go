@@ -271,10 +271,6 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// hit continue: never graded, LastGraded never advancing, and the
 		// paid-budget sort keeping its never-graded flag first forever
 		// (Sonnet review CRITICAL).
-		// and apply cannot have a stale-creds probe result persisted
-		// (coderabbit review). On mismatch the result is skipped entirely —
-		// no grade, no LastGraded advance — so the next sweep probes with
-		// the current settings.
 		current := map[string]connect.ProxySettings{}
 		if state.Source != "" {
 			if cur, err := readProxySettingsFromFile(state.Source); err == nil {
@@ -282,7 +278,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					current[s.Address] = *s
 				}
 			} else {
-				tlog("[proxy][grade] warning: %v (apply proceeds with internal config only)\n", err)
+				tlog("[proxy][grade] warning: %v (apply proceeds with internal config only; file %s unreadable)\n", err, state.Source)
 			}
 		}
 		for _, s := range readProxySettings() {

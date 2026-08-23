@@ -40,12 +40,12 @@ func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConf
 	// Growth now walks consecutive SAME-WIDTH strides (disjointGrowthHosts):
 	// seed the same consecutive blocks so the offline probe resolves them.
 	if cfg.MaxSampleWidth > cfg.SampleWidth {
-		extra := cfg.MaxSampleWidth - cfg.SampleWidth
-		for h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, extra) {
-			_ = h
-		}
-		// (disjointGrowthHosts returns hosts; seed them the same way.)
-		for _, h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, extra) {
+		// Growth now walks consecutive SAME-WIDTH strides (disjointGrowthHosts);
+		// seed those same hosts so the offline probe resolves them.
+		for _, h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, cfg.MaxSampleWidth-cfg.SampleWidth) {
+			if !added[h] {
+				added[h] = true
+			}
 			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
@@ -347,10 +347,13 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 	})
 }
 
-// TestDisjointGrowthHosts_NoBaseOverlap is the regression test for Sonnet
-// MEDIUM B: the growth block must share NO host with the base block, across
-// many (address, pass) combos. This is what the same-width stride-tiling
-// guarantees and a previous different-width growth call violated (~20%).
+// TestDisjointGrowthHosts_NoBaseOverlap is a FORWARD guard on the disjoint
+// growth invariant (Sonnet MEDIUM B): the same-width stride-tiling in
+// disjointGrowthHosts must keep the growth block free of ANY base-block host
+// and internally distinct, across many (address, pass) combos. It does not
+// invoke the superseded different-width call (that path no longer exists), so
+// it is a regression guard on the design guarantee, not a replay of the old
+// collision — the invariant it enforces is the one the fix exists to hold.
 func TestDisjointGrowthHosts_NoBaseOverlap(t *testing.T) {
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 6
