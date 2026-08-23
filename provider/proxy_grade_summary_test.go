@@ -647,3 +647,53 @@ func TestRunProxyGradeSummaryOnce_SkipsWhenDisabled(t *testing.T) {
 		t.Fatalf("grades dir created despite enabled=false (err=%v)", err)
 	}
 }
+
+// TestCollectProxyGradeSummary_PendingWinsOverStaleTier is the regression
+// test for the Pending-bucketing fix: a proxy that was previously graded
+// (Graded=true, old Score) but whose LAST pass was reachable-but-undecidable
+// (Pending=true) must land in the "pending" bucket, NOT its stale letter
+// tier. Before the summary ordering fix, the Graded branch won and a
+// formerly-B proxy silently stayed in the B bucket after going undecidable.
+func TestCollectProxyGradeSummary_PendingWinsOverStaleTier(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A paid/file-entry with a prior grade AND pending: the pending state must
+	// win. Score 0.85 = B tier if the stale grade were shown.
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"9.9.9.9:1080": {Health: "up", Source: "file", Score: 0.85, Graded: true, Pending: true, LastGraded: time.Now()},
+		// A second proxy that is merely graded (no pending) must stay in its tier.
+		"8.8.8.8:1080": {Health: "up", Source: "file", Score: 0.9, Graded: true, LastGraded: time.Now()},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+	// Ensure both are treated as paid/file-owned (desired set read succeeds).
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte("9.9.9.9:1080\n8.8.8.8:1080\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fin := state
+	fin.Source = src
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), fin); err != nil {
+		t.Fatal(err)
+	}
+
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
+	// 9.9.9.9 is Graded + Pending -> must NOT show in B; must show in pending.
+	if s.tiers["pending"] != 1 {
+		t.Errorf("pending bucket = %d, want 1 (%+v)", s.tiers["pending"], s.tiers)
+	}
+	if s.tiers["B"] != 0 {
+		t.Errorf("stale B tier shown for pending proxy: B=%d, want 0 (%+v)", s.tiers["B"], s.tiers)
+	}
+	// 8.8.8.8 still in A.
+	if s.tiers["A"] != 1 {
+		t.Errorf("A bucket = %d, want 1 (%+v)", s.tiers["A"], s.tiers)
+	}
+}

@@ -444,13 +444,19 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	// whose base score lands within BorderlineBand of PassBar is genuinely
 	// uncertain — the small sample cannot tell a mediocre-but-usable proxy
 	// from a failing one. For exactly those we grow the sample up to
-	// MaxSampleWidth using a second, DISJOINT rotation block (deterministic
-	// offset seed), so the expanded pass still walks distinct targets.
-	// Clearly-good and clearly-dead proxies never grow: paid probe bandwidth
-	// is spent only in the uncertain middle. (Design 2026-08-23.)
+	// MaxSampleWidth using GROWTH BLOCKS DRAWN AT THE BASE WIDTH, so they are
+	// provably disjoint from the base block AND from each other: sampleProbe
+	// targets tiles the table by `(seed*width) % total`, so consecutive seeds
+	// at the SAME width return consecutive, non-overlapping strides. Requesting
+	// the growth block at a DIFFERENT width (`extra`) would break that tiling
+	// and silently overlap the base ~20% of rows (Sonnet review MEDIUM B).
+	// Successive same-width blocks are drained in order until `extra` distinct
+	// hosts are gathered; the expanded pass therefore walks genuinely new
+	// targets. Clearly-good and clearly-dead proxies never grow: paid probe
+	// bandwidth is spent only in the uncertain middle. (Design 2026-08-23.)
 	if cfg.MaxSampleWidth > cfg.SampleWidth && growthNeeded(res, cfg) {
 		extra := cfg.MaxSampleWidth - res.SampleWidth
-		extraHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass)+adaptiveBlockSeedOffset, extra)
+		extraHosts := disjointGrowthHosts(address, pass, cfg.SampleWidth, extra)
 		grew := 0
 		for _, host := range extraHosts {
 			if ctx.Err() != nil {
@@ -511,22 +517,22 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	return res
 }
 
-// adaptiveBlockSeedOffset is added to a proxy's base rotation seed to derive
-// the DISJOINT block used for adaptive sample growth. It must be large enough
-// that consecutive base seeds never collide with the grown block, so the grown
-// block walks different targets from the base block. Fixed constant (not
-// derived at runtime) so the same (address, pass) always grows with the same
-// block — the reproducibility of a field report survives the adaptive path.
-const adaptiveBlockSeedOffset = 1 << 40
-
 // growthNeeded reports whether a base sample is borderline enough to warrant
 // adaptive growth: the base score sits within BorderlineBand of PassBar, so
-// the small sample genuinely cannot tell a mediocre-but-usable proxy from a
-// failing one. Clearly-good scores (well above the top of the band) and
-// clearly-dead scores (well below the bottom, or already viability-aborted)
-// return false — they are never grown, keeping probe bandwidth on the
-// uncertain middle. A pass with no attempted targets (resolver outage) is not
-// grown either: more of the same unresolvable table would not help.
+// the small sample cannot tell a mediocre-but-usable proxy from a failing
+// one. Clearly-good scores (well above the top of the band) and clearly-dead
+// scores (well below the bottom) return false — they are never grown, keeping
+// probe bandwidth on the uncertain middle. A pass with no attempted sample
+// (resolver outage) is not grown either.
+//
+// NOTE on viability-aborted bases: growth may still trigger for a base that
+// hit the viability abort, as long as its score falls within the band. The
+// abort means the base block's own remaining hosts could not recover it — but
+// the GROWTH block is a fresh, wider host universe, so re-checking there can
+// legitimately recover a proxy the marginal base block happened to under-serve.
+// This is the adaptive intent (spend where the sample is genuinely uncertain),
+// not a contradiction: an abort only marks the base block exhausted, and a
+// score inside the band is precisely the uncertain case growth exists for.
 func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 	if res.Total <= 0 {
 		return false
@@ -535,6 +541,49 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 	lo := cfg.PassBar - cfg.BorderlineBand
 	hi := cfg.PassBar + cfg.BorderlineBand
 	return score >= lo && score <= hi
+}
+
+// disjointGrowthHosts returns up to `extra` DISTINCT hosts to add to a base
+// probe block, drawn from consecutive SAME-WIDTH rotation strides so they are
+// provably disjoint from the base block and from one another.
+//
+// sampleProbeTargets(seed, width) tiles the host table into disjoint
+// `width`-wide strides: block start = (seed*width) % total. Consecutive seeds
+// at the SAME width therefore land on consecutive non-overlapping strides.
+// Walking seed+1, seed+2, ... at the base width collects genuinely new hosts
+// (draining the table in order), stopping at `count`. This is what makes the
+// adaptive growth block overlap-free — a call at a DIFFERENT width would
+// break the stride tiling and collide with the base ~20% of the time (Sonnet
+// review MEDIUM B).
+func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []string {
+	seen := map[string]bool{}
+	var out []string
+	// Walk the table in consecutive same-width strides (seed, seed+1, ...)
+	// so each block is disjoint from the base and from every other growth
+	// block, collecting distinct hosts until `count` are gathered. The seen
+	// guard stays as a defensive net: the table is small (ProbeHostCount()
+	// ~127), so enough consecutive steps can wrap around the boundary back
+	// into already-visited hosts.
+	for step := 1; len(out) < count; step++ {
+		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass)+uint64(step), baseWidth)
+		if len(hosts) == 0 {
+			break // table exhausted (guard; should not happen)
+		}
+		for _, h := range hosts {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			out = append(out, h)
+			if len(out) >= count {
+				break
+			}
+		}
+		if len(seen) >= connect.ProbeHostCount() {
+			break // walked the whole table; no new hosts to give
+		}
+	}
+	return out
 }
 
 // probeSocks5Connect dials the proxy, completes the SOCKS5 greeting (with
