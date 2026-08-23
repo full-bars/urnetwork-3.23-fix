@@ -37,8 +37,18 @@ func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConf
 		}
 	}
 	seed(tableProbeSeed(address, pass), cfg.SampleWidth)
+	// Growth now walks consecutive SAME-WIDTH strides (disjointGrowthHosts):
+	// seed the same consecutive blocks so the offline probe resolves them.
 	if cfg.MaxSampleWidth > cfg.SampleWidth {
-		seed(tableProbeSeed(address, pass)+adaptiveBlockSeedOffset, cfg.MaxSampleWidth-cfg.SampleWidth)
+		extra := cfg.MaxSampleWidth - cfg.SampleWidth
+		for h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, extra) {
+			_ = h
+		}
+		// (disjointGrowthHosts returns hosts; seed them the same way.)
+		for _, h := range disjointGrowthHosts(address, pass, cfg.SampleWidth, extra) {
+			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			delete(probeDNSCache.fail, h)
+		}
 	}
 	probeDNSCache.Unlock()
 	t.Cleanup(func() {
@@ -335,4 +345,38 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 			delete(probeDNSCache.fail, h)
 		}
 	})
+}
+
+// TestDisjointGrowthHosts_NoBaseOverlap is the regression test for Sonnet
+// MEDIUM B: the growth block must share NO host with the base block, across
+// many (address, pass) combos. This is what the same-width stride-tiling
+// guarantees and a previous different-width growth call violated (~20%).
+func TestDisjointGrowthHosts_NoBaseOverlap(t *testing.T) {
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 6
+	cfg.MaxSampleWidth = 12
+	extra := cfg.MaxSampleWidth - cfg.SampleWidth
+	for p := 0; p < 400; p++ {
+		seed := tableProbeSeed("1.2.3.4:1080", uint64(p))
+		base, _ := connect.SampleProbeTargets(seed, cfg.SampleWidth)
+		baseSet := map[string]bool{}
+		for _, h := range base {
+			baseSet[h] = true
+		}
+		grown := disjointGrowthHosts("1.2.3.4:1080", uint64(p), cfg.SampleWidth, extra)
+		if len(grown) != extra {
+			t.Errorf("pass %d: growth returned %d hosts, want %d", p, len(grown), extra)
+			return
+		}
+		seen := map[string]bool{}
+		for _, h := range grown {
+			if baseSet[h] {
+				t.Errorf("pass %d: growth host %q collides with base", p, h)
+			}
+			if seen[h] {
+				t.Errorf("pass %d: duplicate host %q inside growth block", p, h)
+			}
+			seen[h] = true
+		}
+	}
 }
