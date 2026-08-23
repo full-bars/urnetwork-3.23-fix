@@ -48,10 +48,20 @@ type proxyTableProbeConfig struct {
 	// When false, URL-source proxies are admitted on stage 0 alone, exactly
 	// as before this feature shipped.
 	Enabled bool
-	// SampleWidth is how many health hosts one pass dials (upstream
+	// SampleWidth is how many health hosts a FULL pass dials (upstream
 	// ProbeSampleHostCount). Clamped to at most half the table so the
 	// disjoint-block rotation property holds.
 	SampleWidth int
+	// MinSampleWidth is the SMALL initial width the adaptive probe starts
+	// at, growing toward SampleWidth (then MaxSampleWidth) ONLY while the
+	// score stays borderline (within BorderlineBand of PassBar). A
+	// clearly-good or clearly-dead proxy is settled at this small width,
+	// so paid/free probe bandwidth is spent proportional to uncertainty:
+	// a dead proxy burns a few fail-fast dials, a good one burns a few
+	// confirm dials, and only the genuinely-uncertain middle grows to the
+	// full width. Default 0 (= use SampleWidth; staging disabled), unless
+	// the paid grader overrides it to 6 for the paid sweep.
+	MinSampleWidth int
 	// TargetTimeout bounds each individual CONNECT attempt.
 	TargetTimeout time.Duration
 	// PassBar is the qualification bar (free-tier admission).
@@ -72,6 +82,12 @@ type proxyTableProbeConfig struct {
 	// BorderlineBand away from PassBar is a decisive verdict and stops at
 	// the base width. Default 0.15.
 	BorderlineBand float64
+	// Stage0Liveness cheap-checks each paid proxy with a single SOCKS5
+	// greeting (TCP + method exchange) BEFORE the table probe, dropping a
+	// proxy that cannot even greet in one dial instead of wasting a whole
+	// sample block on it. Scoped to the paid grading sweep only (the URL
+	// admission path already runs its own stage-0 SOCKS5+API liveness).
+	Stage0Liveness bool
 	// MaxPaidProbesPerTick caps how many paid/file proxies ONE grading pass
 	// (one 5-minute tick) may probe. This is the throughput lever that turns
 	// a 4000-proxy full sweep from ~22h into ~100 minutes: the collector
@@ -88,6 +104,7 @@ func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 	return proxyTableProbeConfig{
 		Enabled:              true,
 		SampleWidth:          12,
+		MinSampleWidth:       0,
 		TargetTimeout:        4 * time.Second,
 		PassBar:              0.6,
 		PreferredBar:         0.9,
@@ -176,6 +193,8 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 		MaxSampleWidth *int     `json:"max_sample_width"`
 		BorderlineBand *float64 `json:"borderline_band"`
 		MaxPaidPerTick *int     `json:"max_paid_probes_per_tick"`
+		MinSampleWidth *int     `json:"min_sample_width"`
+		Stage0On       *bool    `json:"stage0_liveness"`
 	}
 	if err := json.Unmarshal(b, &over); err != nil {
 		return cfg
@@ -203,6 +222,12 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	}
 	if over.MaxPaidPerTick != nil && *over.MaxPaidPerTick >= 0 {
 		cfg.MaxPaidProbesPerTick = *over.MaxPaidPerTick
+	}
+	if over.MinSampleWidth != nil && *over.MinSampleWidth > 0 {
+		cfg.MinSampleWidth = *over.MinSampleWidth
+	}
+	if over.Stage0On != nil {
+		cfg.Stage0Liveness = *over.Stage0On
 	}
 	// Clamp the borderline band so the uncertain-margin stays within [0,1]
 	// around PassBar. A band wider than the distance to the nearer edge would
@@ -391,8 +416,33 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 // graded on the same evidence as everyone else instead of being convicted
 // on a handshake they were never offered (finding H3).
 func probeTableThroughProxy(ctx context.Context, address, user, password string, cfg proxyTableProbeConfig) tableProbeResult {
+	// STAGE-0 (paid sweep only, cfg.Stage0Liveness): a single TCP connect +
+	// SOCKS5 GREETING to the proxy's own address — the cheapest possible
+	// liveness check. A proxy that cannot even complete the greeting is dead
+	// or not a SOCKS5 proxy; drop it in one dial instead of burning a whole
+	// sample block on it. This is intentionally a greeting ONLY (no CONNECT,
+	// no TLS): it answers "is this a reachable SOCKS5 proxy at all", which is
+	// the one thing every table target presupposes, for a fraction of a
+	// target's cost. Dead => return with no verdict and no grade.
+	if cfg.Stage0Liveness {
+		if !probeStage0Liveness(ctx, address, user, password, cfg.TargetTimeout) {
+			return tableProbeResult{SampleWidth: 0, Failed: []string{}}
+		}
+	}
+
 	pass := tableProbePassCounter.Load()
-	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+	// START-SMALL (start-at-6): dial only the first MinSampleWidth hosts, then
+	// grow only if the score stays borderline. If MinSampleWidth <= 0 or >=
+	// SampleWidth, staging is disabled and we dial the full base width at once
+	// (the unchanged pre-feature path for URL admission).
+	baseW := cfg.MinSampleWidth
+	if baseW <= 0 {
+		baseW = cfg.SampleWidth
+	}
+	if baseW > cfg.SampleWidth {
+		baseW = cfg.SampleWidth
+	}
+	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), baseW)
 
 	// res.SampleWidth is the number of targets the pass INTENDED to dial
 	// (base block len(hosts), plus any adaptive growth). Unresolvable hosts
@@ -402,7 +452,6 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	// not the proxy's, and must not convict it.
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
 	baseUnresolved := 0
-	extraUnresolved := 0
 
 	// --- Base block (unchanged semantics) ---------------------------------
 	for _, host := range hosts {
@@ -428,10 +477,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 		// box's resolver cannot answer — which leave the score denominator —
 		// can never abort a pass that could still qualify on its resolvable
 		// targets (review #8). This preserves the no-convict guarantee
-		// (finding H2): an aborted pass is never a biased sample, because
-		// the only way to abort is to be unable to qualify. A good proxy that
-		// fails a run of adjacent anti-bot targets walks the whole block and
-		// is scored on its full pass.
+		// (finding H2).
 		remaining := len(hosts) - res.Total - baseUnresolved
 		best := float64(res.OK+remaining) / float64(res.Total+remaining)
 		if best < cfg.PassBar {
@@ -439,25 +485,23 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 		}
 	}
 
-	// ADAPTIVE GROWTH (borderline-only). The base pass already yields a
-	// decisive verdict for clearly-good and clearly-dead proxies. A proxy
-	// whose base score lands within BorderlineBand of PassBar is genuinely
-	// uncertain — the small sample cannot tell a mediocre-but-usable proxy
-	// from a failing one. For exactly those we grow the sample up to
-	// MaxSampleWidth using GROWTH BLOCKS DRAWN AT THE BASE WIDTH, so they are
-	// provably disjoint from the base block AND from each other: sampleProbe
-	// targets tiles the table by `(seed*width) % total`, so consecutive seeds
-	// at the SAME width return consecutive, non-overlapping strides. Requesting
-	// the growth block at a DIFFERENT width (`extra`) would break that tiling
-	// and silently overlap the base ~20% of rows (Sonnet review MEDIUM B).
-	// Successive same-width blocks are drained in order until `extra` distinct
-	// hosts are gathered; the expanded pass therefore walks genuinely new
-	// targets. Clearly-good and clearly-dead proxies never grow: paid probe
-	// bandwidth is spent only in the uncertain middle. (Design 2026-08-23.)
-	if cfg.MaxSampleWidth > cfg.SampleWidth && growthNeeded(res, cfg) {
-		extra := cfg.MaxSampleWidth - res.SampleWidth
-		extraHosts := disjointGrowthHosts(address, pass, cfg.SampleWidth, extra)
-		grew := 0
+	// ADAPTIVE GROWTH (borderline-only) toward SampleWidth, then MaxSampleWidth
+	// when MinSampleWidth staged the base smaller. The base pass yields a
+	// decisive verdict for clearly-good and clearly-dead proxies
+	// (growthNeeded false); only a score within BorderlineBand of PassBar
+	// grows. Growth blocks are drawn at the BASE WIDTH (consecutive same-width
+	// strides via disjointGrowthHosts), maintaining the disjoint-rotation
+	// guarantee the base pass relies on. Clearly-good and clearly-dead proxies
+	// never grow: paid probe bandwidth is spent only in the uncertain middle.
+	if cfg.MaxSampleWidth > baseW && growthNeeded(res, cfg) {
+		// Grow to the wider of SampleWidth or MaxSampleWidth in one pass,
+		// but never past the cap.
+		growTo := cfg.SampleWidth
+		if cfg.MaxSampleWidth > growTo {
+			growTo = cfg.MaxSampleWidth
+		}
+		extra := growTo - res.SampleWidth
+		extraHosts := disjointGrowthHosts(address, pass, baseW, extra)
 		for _, host := range extraHosts {
 			if ctx.Err() != nil {
 				break
@@ -467,22 +511,19 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 				// Intended but not resolvable from this box; still counted so
 				// the decidable quorum matches the base convention.
 				res.SampleWidth++
-				extraUnresolved++
-				grew++
 				continue
 			}
 			res.Total++
 			res.SampleWidth++
-			grew++
 			if probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout) {
 				res.OK++
 			} else {
 				res.Failed = append(res.Failed, host)
 			}
 			// Re-check viability at the grown denominator so an expansion can
-			// never drift into a biased sample: if even a perfect finish of
-			// the remaining grown block cannot clear the bar, stop spending.
-			remainingExtra := extra - grew
+			// never drift into a biased sample: if even a perfect finish of the
+			// remaining grown block cannot clear the bar, stop spending.
+			remainingExtra := extra - (res.SampleWidth - len(hosts))
 			if remainingExtra < 0 {
 				remainingExtra = 0
 			}
@@ -499,11 +540,13 @@ func probeTableThroughProxy(ctx context.Context, address, user, password string,
 	// was gutted by the box's own DNS (fewer than half the intended targets
 	// resolvable) is too thin to grade — a proxy that answered the only 2
 	// resolvable hosts must not get a confident 1.0 (finding NEW-1). Both
-	// cases leave the prior grade intact. The quorum is measured against
-	// RESOLVABLE hosts, so a pass that ran to completion on a healthy
-	// resolver is decidable even though the abort skipped the tail.
-	resolvable := res.SampleWidth - baseUnresolved - extraUnresolved
-	res.Decidable = resolvable >= (res.SampleWidth+1)/2 && res.Total > 0 && ctx.Err() == nil
+	// cases leave the prior grade intact. The quorum is measured against the
+	// RESOLVABLE count, which is exactly res.Total: every SampleWidth intent
+	// that resolved incremented Total, so unresolved hosts (baseUnresolved
+	// + growth not-resolved) show up as (SampleWidth - Total) and never count
+	// either way — a DNS failure on this box must not convict or clear.
+	quorumHalf := (res.SampleWidth + 1) / 2
+	res.Decidable = res.SampleWidth > 0 && res.Total >= quorumHalf && res.Total > 0 && ctx.Err() == nil
 	// Score is OK / ATTEMPTED (matching upstream's Answered/Sent): hosts the
 	// box's own resolver could not answer are excluded from the denominator
 	// exactly as they are excluded from the pass — a DNS failure on this box
@@ -584,6 +627,30 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 		}
 	}
 	return out
+}
+
+// probeStage0Liveness dials a proxy's OWN address and completes only the SOCKS5
+// greeting (TCP + method exchange), reporting whether the proxy is reachable and
+// speaks SOCKS5 at all. It deliberately does NOT do a CONNECT or TLS handshake:
+// the greeting alone answers "is this a live SOCKS5 proxy", which is the one
+// thing every table target presupposes, for a fraction of a target's cost. Used
+// as stage-0 by the paid grading sweep (cfg.Stage0Liveness) to drop a dead proxy
+// in one dial instead of burning a sample block on it.
+func probeStage0Liveness(ctx context.Context, address, user, password string, timeout time.Duration) bool {
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(dialCtx, "tcp", address)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	if deadline, ok := dialCtx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+	// Greeting only; validates the server is SOCKS5 and (if credentials were
+	// supplied and required) negotiates the RFC 1929 auth. No CONNECT.
+	return socks5Greet(conn, user, password)
 }
 
 // probeSocks5Connect dials the proxy, completes the SOCKS5 greeting (with
