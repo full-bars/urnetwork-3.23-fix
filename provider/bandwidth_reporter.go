@@ -201,15 +201,15 @@ func alertWebhookOverridePath() (string, error) {
 }
 
 // resolveAlertWebhook mirrors resolveReportURL: the override file takes
-// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup)
-// when present and non-blank.
+// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup).
+// A readable-but-empty override file means "alerting off" and resolves to ""
+// so the outage watcher stops firing; only an unreadable file (missing,
+// permission error) falls back to the startup env value.
 func resolveAlertWebhook(envFallback string) string {
 	path, err := alertWebhookOverridePath()
 	if err == nil {
 		if b, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(b)); v != "" {
-				return v
-			}
+			return strings.TrimSpace(string(b))
 		}
 	}
 	return envFallback
