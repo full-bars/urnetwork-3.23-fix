@@ -5,6 +5,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // listenSocks5ConnectOnce starts a TCP listener that answers the SOCKS5
@@ -55,7 +57,7 @@ func TestProbeTableThroughProxy_AllSuccess(t *testing.T) {
 	cfg.SampleWidth = 4 // small block for the test
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total != res.SampleWidth {
 		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the full-success assertion needs every host to resolve", res.Total, res.SampleWidth)
 	}
@@ -86,7 +88,7 @@ func TestProbeTableThroughProxy_AllFail(t *testing.T) {
 	cfg.SampleWidth = 4
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total == 0 {
 		t.Fatalf("expected a non-zero attempted sample, got total=0")
 	}
@@ -117,10 +119,36 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = 100 * time.Millisecond
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
-	if res.Total != res.SampleWidth {
-		t.Skipf("only %d of %d sampled targets resolved on this box (DNS); the exact abort count assumes every host resolves", res.Total, res.SampleWidth)
+	// Seed ALL 20 sampled hosts with synthetic resolutions so the test runs
+	// deterministically offline (no real DNS) and the abort fires exactly as
+	// the arithmetic below predicts — the earlier skip-guard (Total != 20)
+	// silently masked a real decidable-regression on partial-DNS boxes.
+	// Pin the pass counter for the whole test so a concurrent URL fetch (which
+	// advances tableProbePassCounter) cannot move the probe's internal seed
+	// between the seeding below and the probe read inside probeTableThroughProxy
+	// — an unseeded block would hit real DNS / the fail-cache and hard-FAIL at
+	// the Total!=9 assert below instead of running deterministically (feedback
+	// from the closed skip-guard).
+	origPass := tableProbePassCounter.Load()
+	pass := origPass
+	tableProbePassCounter.Store(pass)
+	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(addr, pass), 20)
+	probeDNSCache.Lock()
+	for _, h := range hosts {
+		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+		delete(probeDNSCache.fail, h)
 	}
+	probeDNSCache.Unlock()
+	t.Cleanup(func() {
+		tableProbePassCounter.Store(origPass)
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for _, h := range hosts {
+			delete(probeDNSCache.m, h)
+		}
+	})
+
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.OK != 0 {
 		t.Fatalf("expected 0 successes, got %d", res.OK)
 	}
@@ -132,7 +160,7 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 		t.Fatalf("expected viability abort after 9 attempts (needed 12 of 20), got total=%d (walked: %+v)", res.Total, res)
 	}
 	if !res.Decidable {
-		t.Fatal("a viability-aborted pass IS decidable: the bar is unreachable, the verdict is determined")
+		t.Fatalf("a viability-aborted pass IS decidable: the bar is unreachable, the verdict is determined (got SampleWidth=%d Total=%d Decidable=%v)", res.SampleWidth, res.Total, res.Decidable)
 	}
 	if res.Score != 0.0 {
 		t.Fatalf("expected score 0.0, got %v", res.Score)
@@ -159,7 +187,7 @@ func TestProbeTableThroughProxy_AdjacentFailuresNotBias(t *testing.T) {
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total < 10 {
 		t.Skipf("only %d targets resolved on this box; need most of the block", res.Total)
 	}

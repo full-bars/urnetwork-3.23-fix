@@ -53,11 +53,12 @@ func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	// The sweep calls probeTableThroughProxy directly (no separate stage-0
-	// API CONNECT — the design note specifies the same probe the URL
-	// machinery's stage 1 uses), so exactly sample_width=4 CONNECTs.
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("expected 4 table CONNECTs (sample_width), got %d", n)
+	// The paid sweep runs a stage-0 backend-reachability pass (probeProxy:
+	// SOCKS5 + API CONNECT through the proxy) THEN the table probe. Both dial
+	// the fake proxy, so the count is sample_width table CONNECTs + 1 stage-0
+	// dial = 5.
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("expected 5 CONNECTs (4 table + 1 stage-0), got %d", n)
 	}
 	state, err := readProxyState()
 	if err != nil {
@@ -102,8 +103,8 @@ func TestPaidProxyGrader_InternalConfig(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("internal-config proxy must be graded: %d CONNECTs, want 4 (sample_width)", n)
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("internal-config proxy must be graded: %d CONNECTs, want 5 (4 table + 1 stage-0)", n)
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
@@ -206,8 +207,8 @@ func TestPaidProxyGrader_GradesFileProxyWithStaleURLTag(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 4 {
-		t.Fatalf("file-desired proxy with stale url tag must be graded: %d CONNECTs, want 4", n)
+	if n := connects.Load(); n != 5 {
+		t.Fatalf("file-desired proxy with stale url tag must be graded: %d CONNECTs, want 5 (4 table + 1 stage-0)", n)
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
@@ -249,9 +250,10 @@ func TestPaidProxyGrader_SkipsMissingEntry(t *testing.T) {
 	}
 }
 
-// TestPaidProxyGrader_ReadErrorNoOp: an unreadable source file logs a
-// warning and leaves state untouched — no crash, no grades, no probes.
-func TestPaidProxyGrader_ReadErrorNoOp(t *testing.T) {
+// TestPaidProxyGrader_ReadErrorStillProbesTracked: an unreadable source
+// file cannot prove non-ownership, so tracked non-URL entries are still
+// probed AND graded (the read error only degrades the file leg of the union).
+func TestPaidProxyGrader_ReadErrorStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
 
@@ -272,19 +274,24 @@ func TestPaidProxyGrader_ReadErrorNoOp(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("read error must short-circuit before probing: %d CONNECTs", n)
+	// The tracked proxy must STILL be probed/graded even though the source
+	// file is unreadable: the collector uses tracked proxy.state entries as
+	// the source of truth (fix for "paid proxies never graded when
+	// state.Source is empty or the file is missing").
+	if n := connects.Load(); n == 0 {
+		t.Fatalf("tracked proxy must be probed despite source-file read error (0 CONNECTs)")
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
-	if e.Graded || !e.LastGraded.IsZero() {
-		t.Errorf("read error must not write grades: %+v", e)
+	if e.LastGraded.IsZero() {
+		t.Errorf("expected a grade write (LastGraded advanced) for the tracked proxy: %+v", e)
 	}
 }
 
-// TestPaidProxyGrader_EmptyDesiredNoOp: an empty source file yields zero
-// targets and a clean no-op.
-func TestPaidProxyGrader_EmptyDesiredNoOp(t *testing.T) {
+// TestPaidProxyGrader_EmptySourceFileStillProbesTracked: a readable-but-empty
+// source file proves nothing about ownership (mid-edit), so tracked entries
+// stay probed instead of a clean no-op.
+func TestPaidProxyGrader_EmptySourceFileStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
 
@@ -306,8 +313,11 @@ func TestPaidProxyGrader_EmptyDesiredNoOp(t *testing.T) {
 
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("empty desired set must be a no-op: %d CONNECTs", n)
+	// Tracked proxies must be probed even when the source file is empty: the
+	// tracked proxy.state entries are the source of truth (fix for "paid
+	// proxies stayed ungraded when the config had no proxies").
+	if n := connects.Load(); n == 0 {
+		t.Fatalf("tracked proxy must be probed despite empty source file (0 CONNECTs)")
 	}
 }
 
@@ -376,11 +386,13 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
 		t.Error("LastGraded must advance on any completed pass (no re-probe herd)")
 	}
-	// No resolvable table targets -> the table probe dials nothing (the
-	// sweep has no separate stage-0). Pins that an undecidable pass does
-	// not hammer the proxy.
-	if n := connects.Load(); n != 0 {
-		t.Fatalf("expected 0 CONNECTs (all sampled targets unresolvable), got %d", n)
+	// No resolvable table targets -> the TABLE probe dials nothing; only the
+	// single stage-0 backend-reachability pass hits the proxy (probeProxy:
+	// SOCKS5 + API CONNECT, which the fake answers, then TLS fails ->
+	// probeTLSFailed -> passes the gate). So exactly 1 dial, not a hammered
+	// block. Pins that an undecidable pass does NOT burn a sample on it.
+	if n := connects.Load(); n != 1 {
+		t.Fatalf("expected 1 CONNECT (stage-0 only; table unresolvable), got %d", n)
 	}
 }
 
