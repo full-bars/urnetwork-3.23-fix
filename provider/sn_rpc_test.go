@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -30,6 +31,11 @@ func TestParseEthHexQuantity(t *testing.T) {
 		// is the actual current behaviour; a bare quantity is out of the
 		// json-rpc spec but the leniency is intentional in the code today.
 		{name: "no 0x prefix succeeds", input: "ff", want: 255},
+		// parseEthHexQuantity only TrimPrefixes the lowercase "0x", so an
+		// uppercase "0X" prefix is NOT stripped and must error, unlike
+		// parseBytes32Arg/parseEvmAddressArg which strip both. eth_chainId always
+		// answers lowercase, but pin the asymmetry so a change is noticed.
+		{name: "0X uppercase prefix errors", input: "0X1", wantErr: true},
 		{name: "empty string errors", input: "", wantErr: true},
 		{name: "bare 0x errors", input: "0x", wantErr: true},
 		{name: "non-hex errors", input: "0xzz", wantErr: true},
@@ -106,7 +112,10 @@ func bytesEqual(a, b []byte) bool {
 }
 
 func TestEthRpcHexResult_Success(t *testing.T) {
-	var gotMethod string
+	var (
+		mu        sync.Mutex
+		gotMethod string
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -127,7 +136,9 @@ func TestEthRpcHexResult_Success(t *testing.T) {
 		if req.ID != 1 {
 			t.Errorf("request id = %d; want 1", req.ID)
 		}
+		mu.Lock()
 		gotMethod = req.Method
+		mu.Unlock()
 		if len(req.Params) == 0 {
 			t.Errorf("request carries no params array")
 		}
@@ -146,8 +157,11 @@ func TestEthRpcHexResult_Success(t *testing.T) {
 	if result != "0xdeadbeef" {
 		t.Errorf("ethRpcHexResult = %q; want %q", result, "0xdeadbeef")
 	}
-	if gotMethod != "eth_call" {
-		t.Errorf("the method the function sent in the body = %q; want eth_call", gotMethod)
+	mu.Lock()
+	sentMethod := gotMethod
+	mu.Unlock()
+	if sentMethod != "eth_call" {
+		t.Errorf("the method the function sent in the body = %q; want eth_call", sentMethod)
 	}
 }
 
@@ -345,7 +359,7 @@ func TestSnReadHeadBindDigest_ShortReturnData(t *testing.T) {
 
 	w.Close()
 	out, _ := io.ReadAll(r)
-	os.Stdout = old
+	// os.Stdout is restored by the deferred func() { os.Stdout = old } above.
 
 	if callErr == nil {
 		t.Fatal("short headBindDigest data must fail when it is the only endpoint")

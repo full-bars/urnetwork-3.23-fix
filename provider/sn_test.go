@@ -165,6 +165,18 @@ func TestParseEvmAddressArg(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "odd number of hex digits",
+			field:   "--registrant",
+			input:   "0x" + valid20[:39],
+			wantErr: true,
+		},
+		{
+			name:    "bare 0x with nothing else",
+			field:   "--registrant",
+			input:   "0x",
+			wantErr: true,
+		},
+		{
 			name:    "empty string",
 			field:   "--registrant",
 			input:   "",
