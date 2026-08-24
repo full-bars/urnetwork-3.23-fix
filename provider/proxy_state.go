@@ -35,9 +35,9 @@ type ProxyEntry struct {
 	// Score is the stage-1 table probe result (ok/total) from the last
 	// graded pass, 0 when the entry has never been graded. Mirrors the URL
 	// store's ProxyURLEntry fields so fleet grading consumes both stores
-	// uniformly. Written ONLY by the paid/file-proxy grading sweep — the
-	// admission and eviction paths never read or write these fields, so
-	// grades for non-URL proxies are read-only advisory by construction.
+	// uniformly. Written ONLY by the paid/file-proxy grading sweep. The
+	// admission and eviction paths never read or write these fields; the
+	// operator proxy-trim shed ranking DOES read them (see proxy_trim.go).
 	Score float64 `json:"score,omitempty"`
 	// Graded is true once a stage-1 table probe has recorded a DECIDABLE
 	// result for this proxy. Distinct from Score: a decidable 0.0 is a
@@ -51,6 +51,20 @@ type ProxyEntry struct {
 	// threshold (1-3h), so a DNS-gutted pass does not trigger a
 	// re-probe-every-tick herd.
 	LastGraded time.Time `json:"last_graded,omitempty"`
+
+	// Pending is true when the last stage-1 pass REACHED the proxy but could
+	// not produce a DECIDABLE verdict (fewer than half the intended sample
+	// resolved through it — e.g. the box's DNS resolver could not answer most
+	// health hosts, or the proxy is so strict/rate-limited that a
+	// through-proxy answer could not be confirmed). This is the HONEST status
+	// for a paid proxy we could not evaluate from this box, distinct from a
+	// fabricated tier grade: it tells the operator "probe reached it but
+	// cannot call it from here", NOT "it is graded F". Set true only on a
+	// reachable-but-undecidable pass; cleared on any subsequent DECIDABLE
+	// pass (which replaces the grade) and on a never-grade (never reached).
+	// Never graded (no verdict, no reachability) leaves Graded/Pending both
+	// false, meaning "not yet evaluated").
+	Pending bool `json:"pending,omitempty"`
 }
 
 func proxyStatePath() (string, error) {

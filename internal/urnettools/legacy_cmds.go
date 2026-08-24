@@ -30,18 +30,30 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	return cmd.Run()
 }
 
+// systemctlUserArgs returns the systemctl argv prefix for a user-level unit,
+// using the local session bus when the target user IS the current user and
+// -M <user>@ (machined) otherwise. Same-user invocations must not go through
+// machined because `-M` requires root privileges on journalctl and systemctl.
+func systemctlUserArgs(user string) []string {
+	if user == currentUserName() {
+		return []string{"--user"}
+	}
+	return []string{"--user", "-M", user + "@"}
+}
+
 // unitCommandArgs builds the systemctl argv for an action on the provider's
 // unit: system units use "systemctl <action> <unit>"; user units are scoped
-// to the owning user's session via "--user -M <user>@ <action> <unit>". The
-// unit name is ALWAYS the final argument — systemctl errors "Too few
-// arguments" without it (gauntlet finding: hot-restart printed that error;
-// the pre-fix unitCommandArgs omitted the unit entirely).
+// to the owning user's session via systemctlUserArgs. The unit name is
+// ALWAYS the final argument — systemctl errors "Too few arguments" without
+// it (gauntlet finding: hot-restart printed that error; the pre-fix
+// unitCommandArgs omitted the unit entirely).
 func unitCommandArgs(p Provider, action string, extra ...string) []string {
 	if p.Unit == "" {
 		return []string{"systemctl", action}
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		args := []string{"systemctl", "--user", "-M", p.User + "@", action, p.Unit}
+		args := append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+		args = append(args, action, p.Unit)
 		return append(args, extra...)
 	}
 	args := []string{"systemctl", action, p.Unit}
@@ -182,11 +194,14 @@ func cmdLogs(args []string) error {
 }
 
 // journalctlArgs builds the journalctl argv for following a provider's
-// unit: system units use "-fu <unit>"; user units are scoped to the owning
-// user's session via "-M <user>@ --user-unit <unit> -f" (a plain "-fu"
-// against a user unit name would query the SYSTEM journal instead).
+// unit: system units use "-fu <unit>"; user units for the current user
+// use "--user -u <unit> -f"; cross-user user units use "-M <user>@ --user-unit <unit> -f"
+// (as -M requires root privileges, same-user MUST use --user).
 func journalctlArgs(p Provider) []string {
 	if isUserUnit(p.Unit) && p.User != "" {
+		if p.User == currentUserName() {
+			return []string{"--user", "-u", p.Unit, "-f"}
+		}
 		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
 	}
 	return []string{"-fu", p.Unit}
@@ -203,7 +218,8 @@ func providerUsesRamlogs(p Provider) bool {
 	var out []byte
 	var err error
 	if isUserUnit(p.Unit) && p.User != "" {
-		out, err = exec.Command("systemctl", "--user", "-M", p.User+"@", "show", p.Unit, "-p", "Environment").Output()
+		args := append(systemctlUserArgs(p.User), "show", p.Unit, "-p", "Environment")
+		out, err = exec.Command("systemctl", args...).Output()
 	} else {
 		out, err = exec.Command("systemctl", "show", p.Unit, "-p", "Environment").Output()
 	}
@@ -220,7 +236,7 @@ func providerUsesRamlogs(p Provider) bool {
 // drop-in for the targeted provider's unit, or installs the hub binary.
 func cmdHub(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("hub requires a subcommand: set <url> | off | install")
+		return fmt.Errorf("hub requires a subcommand: set <url> | off | install | init | link | unlink | test | onboard-cmd | show-password | open-port | update")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -264,8 +280,107 @@ func cmdHub(args []string, force, dryRun bool) error {
 		return removeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL")
 	case "install":
 		return cmdHubInstall(p, rest)
+	case "init":
+		password := ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--password" || rest[i] == "-p" {
+				if i+1 < len(rest) {
+					password = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--password requires a value")
+				}
+			} else if rest[i] == "--password-stdin" {
+				// Read the CA password from stdin so it never appears in argv
+				// (visible to every local user via ps) (review LOW).
+				b, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("read --password-stdin: %v", err)
+				}
+				password = strings.TrimRight(string(b), "\r\n")
+			} else {
+				return fmt.Errorf("unknown hub init argument %q", rest[i])
+			}
+		}
+		ok, err := confirmGate("init hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubInit(p, password)
+	case "show-password":
+		return cmdHubShowPassword(p)
+	case "onboard-cmd":
+		return cmdHubOnboardCmd(p)
+	case "link":
+		url, token := "", ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--token" {
+				if i+1 < len(rest) {
+					token = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--token requires a value")
+				}
+			} else if url == "" {
+				url = rest[i]
+			} else {
+				return fmt.Errorf("unexpected hub link argument %q", rest[i])
+			}
+		}
+		if url == "" {
+			return fmt.Errorf("hub link requires a URL: hub link <https://hub-host:port> [--token <onboard-token>]")
+		}
+		// Gate like the other mutating hub subcommands: --dry-run must not write
+		// trust, and neither should an unconfirmed --force run (review MEDIUM).
+		ok, gerr := confirmGate("link hub "+providerLabel(p), p, force, dryRun)
+		if gerr != nil {
+			return gerr
+		}
+		if !ok {
+			return nil // dry-run or declined
+		}
+		return cmdHubLink(p, url, token, force)
+	case "test":
+		url := ""
+		if len(rest) > 0 {
+			url = rest[0]
+		}
+		return cmdHubTest(p, url)
+	case "unlink":
+		ok, err := confirmGate("unlink hub from "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUnlink(p, force)
+	case "update":
+		ok, err := confirmGate("update hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUpdate(p, rest)
+	case "open-port":
+		if len(rest) < 1 {
+			return fmt.Errorf("hub open-port requires a port, e.g. hub open-port 8443")
+		}
+		ok, err := confirmGate("open port "+rest[0]+"/tcp on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubOpenPort(rest[0])
 	default:
-		return fmt.Errorf("unknown hub subcommand %q (set|off|install)", sub)
+		return fmt.Errorf("unknown hub subcommand %q (set|off|install|init|link|unlink|test|onboard-cmd|show-password|open-port|update)", sub)
 	}
 }
 
@@ -481,11 +596,13 @@ func restartAfterDropin(p Provider) error {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "daemon-reload").Run()
+		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
+		_ = exec.Command("systemctl", argsReload...).Run()
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
 		// provider never actually restarted (Sonnet MEDIUM-2).
-		return exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).Run()
+		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
+		return exec.Command("systemctl", argsRestart...).Run()
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	return exec.Command("systemctl", "restart", p.Unit).Run()
@@ -657,21 +774,35 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
 // network stack equivalents matter for proxy-scale connection churn).
+//
+// NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
+// on the host kernel, not on a specific provider process. Requiring a
+// discovered provider caused `sudo urnet-tools optimize` to fail with "no
+// providers found" because Discover() runs as root and cannot see user-session
+// units owned by the ubuntu user.
 func cmdOptimize(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	// Ignore provider target flags — optimize is host-wide. If unknown flags
+	// are present parseTargetFlags will still error on malformed input.
+	_, remaining, err := parseTargetFlags(args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
-	if err != nil {
-		return err
+	if len(remaining) > 0 {
+		return fmt.Errorf("optimize: unexpected arguments: %v", remaining)
 	}
-	ok, err := confirmGate("apply golden-fleet OS/kernel limits to "+providerLabel(p), p, force, dryRun)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	if dryRun {
+		fmt.Fprintln(os.Stderr, "[dry-run] would apply golden-fleet OS/kernel limits — no changes made")
 		return nil
+	}
+	if !force {
+		fmt.Fprintln(os.Stderr, "[urnet-tools] apply golden-fleet OS/kernel limits to this host")
+		line, err := confirmStdinRead("Type 'yes' to continue: ")
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		if strings.TrimSpace(line) != "yes" {
+			return fmt.Errorf("aborted (confirmation did not match)")
+		}
 	}
 	fmt.Println("optimize: applying golden-fleet network limits")
 	return optimizeFor(runtime.GOOS)()
@@ -691,9 +822,20 @@ func optimizeFor(goos string) func() error {
 // the two connection-churn knobs that matter most for a proxy box — the
 // ephemeral port pool (ip_local_port_range) and TIME_WAIT recycling
 // (tcp_fin_timeout). Conservative; failures are logged, never fatal.
+// If run as non-root, attempts sudo sysctl if sudo is available; otherwise
+// returns an actionable error pointing to the absolute binary path.
 func optimizeLinux() error {
+	var prefix []string
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run with sudo or as root", os.Geteuid())
+		if _, err := exec.LookPath("sudo"); err == nil {
+			prefix = []string{"sudo"}
+		} else {
+			self, _ := os.Executable()
+			if self == "" {
+				self = "urnet-tools"
+			}
+			return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+		}
 	}
 	// Buffer + FD settings mirror the legacy do_optimize; the port range
 	// and TIME_WAIT knobs are new (proxy-scale outbound churn exhausts
@@ -704,8 +846,17 @@ func optimizeLinux() error {
 		{"-w", "net.ipv4.ip_local_port_range=1024 65535"},
 		{"-w", "net.ipv4.tcp_fin_timeout=15"},
 	} {
-		cmd := exec.Command("sysctl", args...)
+		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Stdin = os.Stdin
 		if out, err := cmd.CombinedOutput(); err != nil {
+			if len(prefix) > 0 && (strings.Contains(string(out), "password") || strings.Contains(string(out), "incorrect") || strings.Contains(string(out), "sudoers")) {
+				self, _ := os.Executable()
+				if self == "" {
+					self = "urnet-tools"
+				}
+				return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+			}
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
 		}
 	}

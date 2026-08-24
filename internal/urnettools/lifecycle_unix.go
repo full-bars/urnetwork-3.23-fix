@@ -10,18 +10,6 @@ import (
 	"strings"
 )
 
-// systemctlUserArgs returns the systemctl argv prefix for a user-level unit,
-// using the local session bus when the target user IS the current user and
-// -M <user>@ (machined) otherwise. Mirrors discoverUserUnits: the -M form
-// can fail on CI runners (no cross-user session bus) even when the local
-// user manager works, so same-user invocations must not go through machined.
-func systemctlUserArgs(user string) []string {
-	if user == currentUserName() {
-		return []string{"--user"}
-	}
-	return []string{"--user", "-M", user + "@"}
-}
-
 // setAutoStart enables or disables login auto-start for the provider's
 // owning systemd unit. On Linux/macOS the provider runs as a systemd (or
 // launchd) unit, so this is the systemctl enable/disable path.
@@ -167,8 +155,36 @@ func cleanupLifecycle(p Provider) {
 	}
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
 	if isUserUnit(timer) && p.User != "" {
-		_ = exec.Command("systemctl", "--user", "-M", p.User+"@", "disable", "--now", timer).Run()
+		args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
+		_ = exec.Command("systemctl", args...).Run()
 		return
 	}
 	_ = exec.Command("systemctl", "disable", "--now", timer).Run()
+}
+
+// renderSystemctlStatus reproduces the pre-rewrite Linux `status` behavior:
+// runs `systemctl status <unit>` (user or system scope) exactly as the old
+// tool did (`systemctl --user status urnetwork.service`), giving the full
+// systemd view (load, ActiveState, uptime, memory, tasks, unit path).
+func init() {
+	renderSystemctlStatus = renderSystemctlStatusLinux
+}
+
+func renderSystemctlStatusLinux(p Provider) error {
+	if p.Unit == "" {
+		return fmt.Errorf("provider %s has no owning unit (bare process)", providerLabel(p))
+	}
+	var args []string
+	if p.User != "" {
+		args = append(systemctlUserArgs(p.User), "status", p.Unit)
+	} else {
+		args = []string{"status", p.Unit}
+	}
+	cmd := exec.Command("systemctl", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	return nil
 }

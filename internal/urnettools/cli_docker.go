@@ -25,88 +25,22 @@ func parseLogLineCount(rest []string) (int, error) {
 	return n, nil
 }
 
-// RunDocker is the CLI entry point for the urnet-docker binary. It mirrors
-// urnet-tools' targeting/confirm-gate philosophy but discovers docker
-// containers and delegates provider internals via docker exec.
 func RunDocker(args []string) error {
-	if len(args) == 0 {
-		usageDocker()
-		return nil
+	// Match on args[0] regardless of trailing args, as the old dispatcher did:
+	// `-v junk` still prints the version (Sonnet/Muse review).
+	if len(args) >= 1 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Println(ToolVersion)
+			return nil
+		}
 	}
-	op := args[0]
-	switch op {
-	case "version", "--version", "-v":
-		fmt.Println(ToolVersion)
-		return nil
+	rootCmd := buildDockerRootCmd()
+	if args == nil {
+		args = []string{}
 	}
-	rest := args[1:]
-	switch op {
-	case "providers", "list", "ps":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerProviders(rest)
-	case "status":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerStatus(rest)
-	case "exec":
-		// NOTE: no broad hasHelpFlag here — an inner `--help` after the `--`
-		// separator belongs to the container command, not urnet-docker
-		// (coderabbit major). splitExecArgs handles -h/--help on the
-		// PRE-separator (urnet-docker) side only.
-		return cmdDockerExec(rest)
-	case "restart":
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdDockerRestart(rest2, force, dryRun)
-	case "update", "self-update", "selfupdate":
-		// Docker containers update by pulling new images (out of this
-		// tool's scope); `urnet-docker update` refreshes the TOOL binary
-		// itself. Host-side only — never executed inside a container.
-		// Help must show the DOCKER usage (the shared parseGlobalFlags
-		// would print the urnet-tools one — verified 2026-08-12 review).
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		force, dryRun, rest2, err := parseGlobalFlags(rest)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdSelfUpdate(rest2, force, dryRun)
-	case "logs":
-		if hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerLogs(rest)
-	case "proxy":
-		// First-class host-side proxy management (Design 2): the exec
-		// plumbing (target resolution, file copy, in-container invocation)
-		// is hidden behind a clean subcommand surface.
-		if len(rest) == 0 || hasHelpFlag(rest) {
-			usageDocker()
-			return nil
-		}
-		return cmdDockerProxy(rest)
-	case "help", "-h", "--help":
-		usageDocker()
-		return nil
-	default:
-		return fmt.Errorf("unknown command %q (see 'urnet-docker help')", op)
-	}
+	rootCmd.SetArgs(args)
+	return rootCmd.Execute()
 }
 
 // hasHelpFlag reports whether args contains -h/--help (used by the
@@ -126,31 +60,51 @@ func usageDocker() {
 
 Usage: urnet-docker <command> [flags]
 
-Commands:
-  providers              list all provider containers (identified by in-container JWT)
-  status [target]        detailed status of one container
-  exec [target flags] [--] <cmd...> run a command inside the container; target flags
+Core Commands:
+  providers               list all provider containers (identified by in-container JWT)
+  status [target]         detailed status of one container
+  start|stop|restart [target]   control container lifecycle (docker start/stop/restart)
+  logs [target] [N]       follow container logs (RAMLOGS-aware /dev/shm fallback)
+  auth [<code>] [target]  authenticate provider inside container
+  choose-network <api> <connect> [target]  set API/connect endpoints inside container
+  summary [target]        activity & performance summary for container
+  report <url> [target]   set hub report URL inside container (no restart)
+  update [<container>]     update a container's provider in place (no recreate), or the host binary
+  version                 print tool version
+
+Proxy Management [target]:
+  proxy add <file>          copy host file and bulk add proxies to container
+  proxy clear|remove        remove configured proxies
+  proxy refresh             hot-reload proxy sources inside container
+  proxy add-source <url>    add URL proxy source
+  proxy remove-source <url> remove URL proxy source
+  proxy health              show dead/degraded proxy health and live event log
+  proxy traffic             real-time bandwidth & client session load
+  proxy remove-dead         prune dead/degraded proxies
+  proxy trim <N>            hold running proxies at N, shed worst first (F -> A)
+  proxy exclude [<pattern>] exclude proxies matching pattern
+
+Performance & Tuning [target]:
+  self-heal <on|off|status> manage automatic proxy self-healing
+  set <key> [<value>|off]   runtime tuning override in container state
+  fast-auth <on|off|status> manage auth rate limiter bypass marker
+
+Hub & Session Management [target]:
+  hub link <url> [--token]  link container provider to central hub
+  hub unlink                remove hub trust and report URL
+  session save <file>       export encrypted identity+proxy bundle
+  session load <file>       import encrypted bundle into container
+
+Advanced:
+  exec [target] [--] <cmd...> run arbitrary command inside container; target flags
                           (--unit/--network/etc) must precede the command; use "--" to
                           forward inner flags verbatim, e.g.
                           urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
-  exec <cmd...>           command-first form still works (target flags optional;
-                          required when more than one provider container exists)
-  proxy add <file>       add proxies from a host proxy file (copied into the container)
-  proxy clear            remove all proxies
-  proxy remove [--all]   remove proxies
-  proxy add-source <url> add a URL proxy source
-  proxy remove-source <url>  remove a URL proxy source
-  proxy refresh          re-read the proxy source
-  proxy remove-dead      remove dead or degraded proxies
-  restart [target]       restart the container
-  update                 update this tool binary itself (containers update by image pull)
-  logs [target] [N]    follow the container's logs (last N lines, default 250;
-                          RAMLOGS-aware: streams /dev/shm when enabled, else docker logs;
-                          interactive picker when multiple providers)
 
 Targeting flags (required when more than one provider container exists):
   --unit <name>          container name (mapped to Unit)
   --network <name>       JWT network name, e.g. tacogonzalez3000
+  --network-id <id>      JWT network id
   --state-dir <path>     state dir INSIDE the container (rarely needed)
 
 Global flags:
@@ -325,6 +279,212 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 	return args[:split], args[split:], nil
 }
 
+// cmdDockerUpdate updates the urnet-docker binary on the host (no target) or
+// the provider inside a running container in place (with a target), without
+// recreating the container. The in-container path runs the container's own
+// urnet-tools self-update via docker exec.
+func cmdDockerUpdate(args []string, force, dryRun bool) error {
+	providers := DiscoverDocker()
+	t, rest, err := updateTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	if t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" {
+		// No container target resolved. This is the host urnet-docker
+		// self-update; pass the ORIGINAL args so host --tag/--digest/--url and
+		// its unknown-flag/help behavior surface unchanged.
+		return cmdSelfUpdate(args, force, dryRun)
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("unexpected argument(s) after update target: %v", rest)
+	}
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if !p.Running {
+		return fmt.Errorf("container %s is not running; start it before updating in place", p.Unit)
+	}
+	ok, err := confirmGate("update provider inside container "+p.Unit+" in place (no recreate)", p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run or declined
+	}
+	// Older container images ship a broken in-place update routine (busybox
+	// mktemp rejects the XXXX.tar.gz template, and pkill -x misses the
+	// 15-char-truncated process comm). Repair that routine from the host first
+	// so in-place update works on ANY container image, not just ones that
+	// already ship the fixed script. Idempotent: it only rewrites the known
+	// broken patterns to their fixed forms.
+	if err := repairContainerUpdateScript(p.Unit); err != nil {
+		return fmt.Errorf("prepare %s for in-place update: %w", p.Unit, err)
+	}
+	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
+	if err := containerExecByName(p.Unit, "urnet-tools", "update"); err != nil {
+		return err
+	}
+	// Older container images stop when the provider process is killed (their
+	// start loop exits instead of relaunching). Bring the SAME container back
+	// up (no recreate) so the provider launches on the newly-swapped binary.
+	// This is what docker start does; verified live on an old 26.4-image
+	// container: after the swap the container stopped, and docker start brought
+	// it up running the new version, container ID unchanged.
+	if !containerRunning(p.Unit) {
+		fmt.Printf("container %s stopped after the swap; starting it (no recreate)...\n", p.Unit)
+		if err := containerStartByName(p.Unit); err != nil {
+			return fmt.Errorf("restart container %s after update: %w", p.Unit, err)
+		}
+	}
+	return nil
+}
+
+// containerRunning reports whether the named container is currently running.
+func containerRunning(name string) bool {
+	cmd := exec.Command(dockerCLI(), "inspect", "-f", "{{.State.Running}}", name)
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// repairContainerUpdateScript applies two safe, idempotent fixes to a
+// container's in-place update routine (/app/urnet-tools.sh) so it works on any
+// image, including ones built before the fixes landed upstream:
+//  1. busybox mktemp: the template must END in X, so a trailing ".tar.gz"
+//     suffix fails with "Invalid argument". The tarball path is rewritten to
+//     the mktemp-valid form.
+//  2. pkill comm truncation: Linux truncates a process's comm to 15 chars, so
+//     `pkill -x "urnetwork_<arch>_stable"` matches nothing. It is replaced with
+//     `pkill -f "^/app/urnetwork_<arch>_stable provide"` (full command line).
+//
+// sed is invoked directly via exec.Command (no host or container /bin/sh layer),
+// so the literal ${arch} is passed through untampered; only sed's own \$ escape
+// is used to match a literal dollar sign.
+func repairContainerUpdateScript(unit string) error {
+	expr1 := "s|mktemp /tmp/urnetwork-update-XXXXXX.tar.gz|mktemp /tmp/urnetwork-update-XXXXXX|"
+	expr2 := `s|pkill -x "urnetwork_\${arch}_stable"|pkill -f "^/app/urnetwork_\${arch}_stable provide"|`
+	c := exec.Command(dockerCLI(), "exec", unit, "sed", "-i", expr1, "/app/urnet-tools.sh")
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("repair mktemp in %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	c2 := exec.Command(dockerCLI(), "exec", unit, "sed", "-i", expr2, "/app/urnet-tools.sh")
+	if out, err := c2.CombinedOutput(); err != nil {
+		return fmt.Errorf("repair pkill in %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// updateTargetFromArgs resolves a container target for `update` from either an
+// explicit target flag (--unit/--user/--network/--network-id/--state-dir, bare
+// or = form) or a BARE container name that exactly matches a discovered
+// container (so `update ps` works just like `status ps` / `logs ps`). When no
+// target resolves it returns an empty Target, and the caller falls through to
+// the host self-update. This preserves host self-update args (--tag/--digest/
+// --url) because those are never target flags and never match a container name.
+func updateTargetFromArgs(args []string, providers []Provider) (Target, []string, error) {
+	if hasAnyTargetFlag(args) {
+		t, rest, err := dockerTargetFromArgs(args, providers)
+		if err != nil {
+			return t, rest, err
+		}
+		return t, rest, nil
+	}
+	// A bare container name is accepted as the target ONLY as the first
+	// positional, and only when it exactly matches a discovered container. This
+	// avoids confusing a host self-update option value (e.g. `--tag <value>`)
+	// or a trailing argument for a container target. The remaining arguments are
+	// returned so the caller can validate them rather than silently dropping
+	// them (e.g. `update urnet-test extra` must not ignore `extra`).
+	first := -1
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		first = i
+		break
+	}
+	if first >= 0 {
+		for _, p := range providers {
+			if p.Unit == args[first] {
+				rest := append([]string{}, args[:first]...)
+				rest = append(rest, args[first+1:]...)
+				return Target{Unit: p.Unit}, rest, nil
+			}
+		}
+	}
+	// No bare container target: fall through to the host self-update and let it
+	// interpret the args (flags, --tag value, or a typo).
+	return Target{}, nil, nil
+}
+
+// hasAnyTargetFlag reports whether args contain an explicit targeting flag, in
+// either the bare (`--unit x`) or the `--flag=value` form. Without this, the
+// `--flag=value` form would miss the in-container gate and fall through to the
+// host self-update (Sonnet HIGH on #453).
+func hasAnyTargetFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--unit" || a == "--user" || a == "--network" || a == "--network-id" || a == "--state-dir" {
+			return true
+		}
+		if strings.HasPrefix(a, "--unit=") || strings.HasPrefix(a, "--user=") ||
+			strings.HasPrefix(a, "--network=") || strings.HasPrefix(a, "--network-id=") ||
+			strings.HasPrefix(a, "--state-dir=") {
+			return true
+		}
+	}
+	return false
+}
+
+// cmdDockerStart starts a stopped container (confirm gate applies).
+func cmdDockerStart(args []string, force, dryRun bool) error {
+	providers := DiscoverDocker()
+	t, _, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if p.Running {
+		fmt.Printf("container %s is already running\n", p.Unit)
+		return nil
+	}
+	ok, err := confirmGate("start container "+p.Unit, p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run
+	}
+	return containerStartByName(p.Unit)
+}
+
+// cmdDockerStop stops a running container (confirm gate applies).
+func cmdDockerStop(args []string, force, dryRun bool) error {
+	providers := DiscoverDocker()
+	t, _, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTarget(providers, t)
+	if err != nil {
+		return err
+	}
+	if !p.Running {
+		fmt.Printf("container %s is already stopped\n", p.Unit)
+		return nil
+	}
+	ok, err := confirmGate("stop container "+p.Unit, p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // dry-run
+	}
+	return containerStopByName(p.Unit)
+}
+
 // cmdDockerRestart restarts a container (destructive gate applies).
 func cmdDockerRestart(args []string, force, dryRun bool) error {
 	providers := DiscoverDocker()
@@ -372,6 +532,143 @@ func cmdDockerLogs(args []string) error {
 	return containerLogsFollow(p.Unit, n)
 }
 
+// cmdDockerAuth delegates provider authentication into the container.
+func cmdDockerAuth(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "auth"}, rest...)
+	return containerInteractiveExecByName(p.Unit, inner...)
+}
+
+// cmdDockerChooseNetwork delegates choose_network into the container.
+func cmdDockerChooseNetwork(args []string) error {
+	providers := DiscoverDocker()
+	// Lenient parse so pass-through flags (e.g. --reset) survive and are
+	// forwarded to the container command (regression fix).
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "choose_network"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerSummary shows provider performance & activity summary.
+func cmdDockerSummary(args []string) error {
+	providers := DiscoverDocker()
+	t, _, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	return containerExecByName(p.Unit, "urnet-tools", "proxy", "summary")
+}
+
+// cmdDockerReport configures the hub report URL inside the container.
+func cmdDockerReport(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "report"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerSelfHeal manages the proxy self-heal marker inside the container.
+func cmdDockerSelfHeal(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "self-heal"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerSet manages runtime tuning overrides in the container state dir.
+func cmdDockerSet(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "set"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerFastAuth manages the auth rate limiter bypass marker in the container.
+func cmdDockerFastAuth(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "fast-auth"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerHub delegates hub management commands into the container.
+func cmdDockerHub(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "hub"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerSession delegates interactive session save/load into the container.
+func cmdDockerSession(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "session"}, rest...)
+	return containerInteractiveExecByName(p.Unit, inner...)
+}
+
 // cmdDockerProxy implements host-side proxy management for containerized
 // providers (Design 2). The user runs e.g. `urnet-docker proxy add ~/p.txt`
 // and the exec plumbing is hidden: target resolution (interactive when
@@ -379,7 +676,7 @@ func cmdDockerLogs(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -415,14 +712,14 @@ func cmdDockerProxy(args []string) error {
 		}
 		hostFile := rest2[0]
 		// Unique in-container path so concurrent proxy ops cannot collide
-		// (DeepSeek SF4). NOTE: the in-container proxyAdd never deletes this
-		// file — plaintext proxy creds stay in the container at this path.
-		// Low severity (container-local) but a future cleanup should rm it
-		// after a successful add.
+		// (DeepSeek SF4).
 		inPath := fmt.Sprintf("/tmp/urnet-proxies-%d.txt", os.Getpid())
 		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
 			return fmt.Errorf("copy %s into container: %w", hostFile, err)
 		}
+		defer func() {
+			_ = exec.Command(dockerCLI(), "exec", container, "rm", "-f", inPath).Run()
+		}()
 		// --proxy_file= is REQUIRED: the in-container urnet-tools is the
 		// shell wrapper (urnet-tools.sh), which forwards a bare path as a
 		// key_address — the path string would be registered as a proxy
@@ -455,6 +752,24 @@ func cmdDockerProxy(args []string) error {
 		return containerExecByName(container, inner...)
 	case "remove-dead":
 		inner := append([]string{"urnet-tools", "proxy", "remove-dead"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "health":
+		inner := append([]string{"urnet-tools", "proxy", "health"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "traffic":
+		inner := append([]string{"urnet-tools", "proxy", "traffic"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "summary":
+		inner := append([]string{"urnet-tools", "proxy", "summary"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "trim":
+		if len(rest2) == 0 {
+			return fmt.Errorf("proxy trim requires a count (e.g. 'urnet-docker proxy trim 500')")
+		}
+		inner := append([]string{"urnet-tools", "proxy", "trim"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "exclude":
+		inner := append([]string{"urnet-tools", "proxy", "exclude"}, rest2...)
 		return containerExecByName(container, inner...)
 	default:
 		return fmt.Errorf("unknown proxy subcommand %q", sub)

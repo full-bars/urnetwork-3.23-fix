@@ -1,0 +1,242 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index ae9752b4..e1abf62b 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -38,7 +38,7 @@ jobs:
+         # ("Cannot open: File exists") on cache restore.
+         uses: actions/setup-go@v5
+         with:
+-          go-version: '1.26'
++          go-version: '1.27'
+           cache: true
+           cache-dependency-path: go.sum
+ 
+diff --git a/.github/workflows/docker-functional-soak.yml b/.github/workflows/docker-functional-soak.yml
+index ff449183..b8aa01ba 100644
+--- a/.github/workflows/docker-functional-soak.yml
++++ b/.github/workflows/docker-functional-soak.yml
+@@ -19,7 +19,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build urnet-docker
+         run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+diff --git a/.github/workflows/docker-multi-container.yml b/.github/workflows/docker-multi-container.yml
+index feb2b6a3..7d512f21 100644
+--- a/.github/workflows/docker-multi-container.yml
++++ b/.github/workflows/docker-multi-container.yml
+@@ -20,7 +20,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build urnet-docker
+         run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 3cad6a73..34a42342 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -21,7 +21,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: '1.26'
++          go-version: '1.27'
+ 
+       - name: Cache Go module download
+         uses: actions/cache@v4
+diff --git a/.github/workflows/shakedown.yml b/.github/workflows/shakedown.yml
+index ebb20842..25f4a5bc 100644
+--- a/.github/workflows/shakedown.yml
++++ b/.github/workflows/shakedown.yml
+@@ -33,7 +33,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: '1.26'
++          go-version: '1.27'
+ 
+       - name: Resolve target release version
+         id: version
+diff --git a/.github/workflows/tool-functional-smoke.yml b/.github/workflows/tool-functional-smoke.yml
+index e3f74c40..ea72af06 100644
+--- a/.github/workflows/tool-functional-smoke.yml
++++ b/.github/workflows/tool-functional-smoke.yml
+@@ -21,7 +21,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build provider + tool
+         run: |
+@@ -123,7 +123,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build urnet-docker + urnet-tools
+         run: |
+diff --git a/.github/workflows/tool-functional-soak.yml b/.github/workflows/tool-functional-soak.yml
+index 6a0a9dd4..715dc014 100644
+--- a/.github/workflows/tool-functional-soak.yml
++++ b/.github/workflows/tool-functional-soak.yml
+@@ -32,7 +32,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build provider + tool
+         run: |
+diff --git a/.github/workflows/unix-lifecycle.yml b/.github/workflows/unix-lifecycle.yml
+index d0d17cf3..ea6d6c95 100644
+--- a/.github/workflows/unix-lifecycle.yml
++++ b/.github/workflows/unix-lifecycle.yml
+@@ -17,7 +17,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build the tool
+         run: go build -o urnet-tools ./cmd/urnet-tools/
+@@ -130,7 +130,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build the tool
+         run: go build -o urnet-tools ./cmd/urnet-tools/
+diff --git a/.github/workflows/windows-lifecycle.yml b/.github/workflows/windows-lifecycle.yml
+index dc5bc7c5..5a8a7806 100644
+--- a/.github/workflows/windows-lifecycle.yml
++++ b/.github/workflows/windows-lifecycle.yml
+@@ -17,7 +17,7 @@ jobs:
+       - name: Set up Go
+         uses: actions/setup-go@v5
+         with:
+-          go-version: "1.26"
++          go-version: "1.27"
+ 
+       - name: Build the tool for Windows
+         run: go build -o urnet-tools.exe ./cmd/urnet-tools/
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0339bde2..3ecb5055 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
+ 
+ ---
+ 
++## [Unreleased] — Go 1.27 Toolchain
++
++### Changed
++- **Go 1.27.0 toolchain bump (PR #449)**: Compiler bumped from Go 1.26.4 to 1.27.0. Updates the `go` directive in `go.mod` to `1.27.0`, floats the CI `go-version` pins to 1.27 across all workflows, and moves the Docker builder base to `golang:1.27-alpine`. Validated under 1.27.0 with a clean `go build`, `go vet`, the full `-short -race` test suite, the complete cross-compile matrix (including 386 and mips/mipsle/mips64/mips64le), and a functional smoke. `go mod tidy` required no dependency changes.
++
++---
+ ## [v3.23.0-fix.30.4] — 2026-08-22
+ 
+ ### Added
+diff --git a/Dockerfile b/Dockerfile
+index 1832f018..861d6ae4 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,5 +1,5 @@
+ # --- Build Stage ---
+-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
++FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
+ 
+ ARG TARGETARCH
+ ARG VERSION=v.unknown
+diff --git a/FORK_CHANGES.md b/FORK_CHANGES.md
+index f8fe945c..145b006c 100644
+--- a/FORK_CHANGES.md
++++ b/FORK_CHANGES.md
+@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
+ 
+ **Fork Based On**: urnetwork/connect v3.23  
+ **Repository**: github.com/full-bars/urnetwork-3.23-fix  
+-**Current Version**: v3.23.0-fix.30.3
++**Current Version**: v3.23.0-fix.30.4
+ 
+ ---
+ 
+@@ -2861,3 +2861,16 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
+ **How to Identify in New Upstream**: `runEcoMemoryMonitor` no longer exists in `provider/main.go`. The adaptive GC logic lives in `provider/resource_pressure.go` as `gcGovernor`, `gcGovernorState`, and `runPressureMonitor`. The `URNETWORK_ADAPTIVE_GC` env var and the `gc_state`/`heap_frac` fields in the pressure status file are fork additions.
+ 
+ **Status**: Part of PR #428 on the `feat/adaptive-gc-consolidation` branch. Not yet shipped to a release. Tests cover the single-writer governor and the kill switch.
++
++## 84. Go 1.27 Toolchain Bump
++
++**Purpose**: Move the compiler from Go 1.26.4 to 1.27.0.
++
++**Files Modified**: `go.mod`, all `.github/workflows/*.yml` (`go-version` pins), `Dockerfile`, `hub/Dockerfile` (builder bases), `README.md`, `docs/Project-Structure.md`.
++
++**Change**:
++- `go.mod` `go` directive changed from `1.26.4` to `1.27.0`.
++- CI `go-version` pins floated from `1.26` to `1.27` across all workflows.
++- Docker builder base `golang:1.26-alpine` updated to `golang:1.27-alpine`.
++
++**Status**: Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.
+diff --git a/README.md b/README.md
+index 176237f0..2b48150d 100644
+--- a/README.md
++++ b/README.md
+@@ -200,7 +200,7 @@ See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub
+ ## 🏗 Build Info
+ 
+ - **Base engine:** UrNetwork v3.23
+-- **Language:** Go 1.26, compiled on Alpine
++- **Language:** Go 1.27, compiled on Alpine
+ - **Images:** Multi-arch `linux/amd64` + `linux/arm64`, `darwin/amd64` + `darwin/arm64` via GitHub Actions → GHCR
+ - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
+ 
+diff --git a/docs/Project-Structure.md b/docs/Project-Structure.md
+index 9a0561b0..1b9685c1 100644
+--- a/docs/Project-Structure.md
++++ b/docs/Project-Structure.md
+@@ -3,7 +3,7 @@
+ ```
+ urnetwork-3.23-fix/
+ ├── *.go                          # Core network stack (root package)
+-├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.26)
++├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.27)
+ ├── Dockerfile                    # Alpine multi-arch provider image
+ ├── CHANGELOG.md                  # Version history with per-release notes
+ ├── FORK_CHANGES.md               # Delta summary vs upstream urnetwork/connect
+diff --git a/go.mod b/go.mod
+index a82e7bee..b1c27968 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,6 +1,6 @@
+ module github.com/urnetwork/connect
+ 
+-go 1.26.4
++go 1.27.0
+ 
+ require (
+ 	github.com/bytemare/ecc v0.9.0
+diff --git a/hub/Dockerfile b/hub/Dockerfile
+index 3e21d071..dd2f92c0 100644
+--- a/hub/Dockerfile
++++ b/hub/Dockerfile
+@@ -1,5 +1,5 @@
+ # --- Build Stage ---
+-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
++FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
+ 
+ ARG TARGETARCH
+ ARG VERSION=v.unknown

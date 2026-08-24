@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -20,6 +21,10 @@ func TestRunHelpEveryCommand(t *testing.T) {
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
 		"uninstall", "reinstall",
+		// PR #438: self-heal and its alias are dispatched by Run() but
+		// were not in this table; a regression adding -h that errors would
+		// have gone unnoticed.
+		"self-heal", "selfheal",
 	}
 	for _, cmd := range cmds {
 		for _, flag := range []string{"-h", "--help"} {
@@ -65,7 +70,6 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 		{"stop"},
 		{"restart"},
 		{"logs"},
-		{"optimize"},
 		{"uninstall"},
 		{"reinstall"},
 	}
@@ -183,7 +187,12 @@ func TestRunForceAndDryRunParsed(t *testing.T) {
 // TestRunDockerHelpEveryCommand mirrors TestRunHelpEveryCommand for the
 // urnet-docker entry point (RunDocker), which had 0% coverage.
 func TestRunDockerHelpEveryCommand(t *testing.T) {
-	for _, cmd := range []string{"providers", "list", "ps", "status", "exec", "restart", "logs"} {
+	for _, cmd := range []string{
+		"providers", "list", "ps", "status", "start", "stop", "restart", "logs",
+		"auth", "choose-network", "choose_network", "summary", "report",
+		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "hub", "session",
+		"proxy",
+	} {
 		for _, flag := range []string{"-h", "--help"} {
 			if err := RunDocker([]string{cmd, flag}); err != nil {
 				t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
@@ -216,8 +225,18 @@ func TestRunDockerNoContainers(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"status"},
+		{"start"},
+		{"stop"},
 		{"restart"},
 		{"logs"},
+		{"auth"},
+		{"choose-network", "a", "b"},
+		{"summary"},
+		{"self-heal"},
+		{"set"},
+		{"fast-auth"},
+		{"hub"},
+		{"session"},
 	} {
 		err := RunDocker(args)
 		if err == nil || !strings.Contains(err.Error(), "no providers found") {
@@ -269,10 +288,32 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	os.Stderr = w
 	defer func() { os.Stderr = old }()
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
 	fn()
 	w.Close()
-	b, _ := io.ReadAll(r)
-	return string(b)
+	<-done
+	r.Close()
+	return buf.String()
+}
+
+// TestCapturePipeLargeOutputNoDeadlock ensures captureStderr / captureStdout
+// safely handle outputs much larger than the OS pipe buffer (e.g. 128KB)
+// without deadlocking on Windows or Linux.
+func TestCapturePipeLargeOutputNoDeadlock(t *testing.T) {
+	largeData := strings.Repeat("0123456789abcdef\n", 8192) // 136 KB
+	out := captureStderr(t, func() {
+		_, _ = os.Stderr.WriteString(largeData)
+	})
+	if len(out) != len(largeData) {
+		t.Errorf("captureStderr captured %d bytes, want %d", len(out), len(largeData))
+	}
 }
 
 // TestRunSelfUpdateHelp: `self-update`/`selfupdate` (and their -h/--help)
@@ -286,8 +327,8 @@ func TestRunSelfUpdateHelp(t *testing.T) {
 					t.Errorf("Run([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "urnet-tools — provider-aware") {
-				t.Errorf("Run([%q %q]) stderr = %q, want urnet-tools usage", cmd, flag, out)
+			if !strings.Contains(out, "Update only the urnet-tools binary itself") {
+				t.Errorf("Run([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
 	}
@@ -305,10 +346,39 @@ func TestRunDockerUpdateHelp(t *testing.T) {
 					t.Errorf("RunDocker([%q, %q]) = %v, want nil", cmd, flag, err)
 				}
 			})
-			if !strings.Contains(out, "urnet-docker — docker-container") {
-				t.Errorf("RunDocker([%q %q]) stderr = %q, want urnet-docker usage", cmd, flag, out)
+			if !strings.Contains(out, "urnet-docker binary") && !strings.Contains(out, "host binary") {
+				t.Errorf("RunDocker([%q %q]) stderr = %q, want command-specific usage", cmd, flag, out)
 			}
 		}
+	}
+}
+
+// TestRunDockerUpdateFlagValueTarget: update with the --flag=value target form
+// (e.g. --unit=NAME) must take the in-container branch, not fall through to the
+// host self-update (Sonnet HIGH on #453 - hasAnyTargetFlag must match both forms).
+func TestRunDockerUpdateFlagValueTarget(t *testing.T) {
+	err := RunDocker([]string{"update", "--unit=nonexistent-update-test-xyz"})
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent target container")
+	}
+	if strings.Contains(err.Error(), "self-update") || strings.Contains(err.Error(), "urnet-docker binary") {
+		t.Fatalf("update --unit=X routed to host self-update instead of in-container target: %v", err)
+	}
+}
+
+// TestRunDockerUpdateTargetRoutesToContainer: `update --unit <name>` must take
+// the in-container branch (resolve the container, then exec its urnet-tools
+// update), NOT the host self-update. On a box with no matching container it
+// fails with a target/container error, not a host self-update error.
+func TestRunDockerUpdateTargetRoutesToContainer(t *testing.T) {
+	err := RunDocker([]string{"update", "--unit", "nonexistent-update-test-container"})
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent target container")
+	}
+	// A host self-update error would mention self-update/urnet-docker; the
+	// target path fails with a container/provider resolution error instead.
+	if strings.Contains(err.Error(), "self-update") || strings.Contains(err.Error(), "urnet-docker binary") {
+		t.Fatalf("update --unit routed to host self-update instead of in-container target: %v", err)
 	}
 }
 
@@ -394,5 +464,82 @@ func TestParseTargetFlagsEqualsFormEmptyValue(t *testing.T) {
 func TestParseTargetFlagsSpaceFormEmptyValue(t *testing.T) {
 	if _, _, err := parseTargetFlags([]string{"--user", ""}); err == nil {
 		t.Fatal("expected error for empty space-separated value, got nil")
+	}
+}
+
+// TestRunSelfHealNoProviderRequired: `self-heal status` must succeed (or at
+// minimum not error with "no providers found") on a box with zero providers,
+// because self-heal reads/writes ~/.urnetwork/proxy_self_heal — it has no
+// dependency on Discover(). A regression that adds provider-selection to
+// cmdSelfHeal would break self-heal on bare/docker boxes.
+func TestRunSelfHealNoProviderRequired(t *testing.T) {
+	if len(Discover()) != 0 {
+		t.Skip("this test requires a box with zero discoverable providers")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	err := Run([]string{"self-heal", "status"})
+	if err != nil && strings.Contains(err.Error(), "no providers found") {
+		t.Errorf("Run([self-heal status]) = %v\n"+
+			"REGRESSION: self-heal must not require provider discovery", err)
+	}
+}
+
+// TestRunSelfHealInvalidArg: an unrecognized sub-arg to self-heal must return
+// a clear error naming the invalid arg (not panic or silently no-op).
+// Covers the default branch of cmdSelfHeal's switch.
+func TestRunSelfHealInvalidArg(t *testing.T) {
+	err := Run([]string{"self-heal", "bogus"})
+	if err == nil {
+		t.Fatal("Run([self-heal bogus]) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should name the invalid arg, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "on|off|status") {
+		t.Errorf("error should list valid args (on|off|status), got: %v", err)
+	}
+}
+
+// TestUsageContainsExpectedSections: pins the help output structure so a
+// future refactor can't silently drop the sectioned layout introduced in
+// PR #437. This covers both the emoji-decorated section headers and the
+// section names that operators rely on when reading `urnet-tools help`.
+func TestUsageContainsExpectedSections(t *testing.T) {
+	out := captureStderr(t, func() { usage() })
+	sections := []string{
+		"urnet-tools",
+		"Core Commands",
+		"Performance",
+		"Proxy Management",
+		"Hub Management",
+		"Maintenance",
+		"Targeting rules",
+		"Force",
+		"-f, --force",
+		"-n, --dry-run",
+	}
+	for _, sec := range sections {
+		if !strings.Contains(out, sec) {
+			t.Errorf("usage() output missing %q\nREGRESSION: help section dropped or renamed", sec)
+		}
+	}
+}
+
+// TestRunDockerExecHelpAfterSepNotIntercepted guards the CRITICAL review fix:
+// `exec -- <cmd> --help` must forward the help after the separator to the
+// container command, NOT be intercepted by the docker CLI's own help routing.
+// The old dispatcher did not broad-scan hasHelpFlag for exec (help after '--'
+// belongs to the container binary). The buggy Cobra migration re-introduced it
+// and printed the docker exec help; the fix builds exec raw.
+func TestRunDockerExecHelpAfterSepNotIntercepted(t *testing.T) {
+	out := captureStderr(t, func() { _ = RunDocker([]string{"exec", "--", "urnet-tools", "proxy", "--help"}) })
+	// If the docker CLI intercepted, it would print the exec command's own help
+	// (its Short text) and return nil. Now it delegates, so that help text must
+	// not appear, and we should not have silently returned success-as-help.
+	if strings.Contains(out, "run arbitrary command inside container") {
+		t.Fatalf("help after '--' was intercepted by the docker CLI: %q", out)
 	}
 }

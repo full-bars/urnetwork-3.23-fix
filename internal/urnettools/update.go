@@ -540,26 +540,40 @@ func updateProvider(p Provider, cfg updateConfig) error {
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
 	if p.Unit != "" {
-		// System-level units are owned by root; user-level units run in the
-		// user's session. Try the system manager first, then the user one,
-		// then the PID-signal fallback.
-		if out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput(); err == nil {
-			fmt.Printf("restarted %s\n", p.Unit)
-			return nil
-		} else if strings.Contains(string(out), "not found") || strings.Contains(string(out), "No such") {
-			// Not a system unit — fall through to user-level.
-		} else {
-			return fmt.Errorf("systemctl restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
-		}
-		if p.User != "" {
-			// User-level unit in the owning user's session (the missing
-			// path — previously fell straight to PID signaling, which
-			// cannot restart a stopped user unit).
-			if out, err := exec.Command("systemctl", "--user", "-M", p.User+"@", "restart", p.Unit).CombinedOutput(); err == nil {
+		// Determine the unit's real scope up front (isUserUnit checks whether
+		// a systemd system unit file exists). A user-owned unit MUST be
+		// restarted in the owning user's --user session first: restarting it
+		// via the system scope prompts for root/polkit (systemd1.manage-units)
+		// or fails outright non-interactively. Only treat it as a system unit
+		// when there is genuinely a system unit file. This was the bug: the
+		// previous order tried the SYSTEM scope first, so a user's provider
+		// asked for the root password (losangeles1) or failed (ATL2).
+		userScoped := isUserUnit(p.Unit)
+		if userScoped && p.User != "" {
+			// Restart in the owning user's --user session (no root/polkit).
+			args := append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+			args = append(args, "restart", p.Unit)
+			out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+			if err == nil {
 				fmt.Printf("restarted %s (user %s)\n", p.Unit, p.User)
 				return nil
-			} else if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+			}
+			// If the user session is unreachable (not logged in / no manager),
+			// fall through to the PID-signal fallback below rather than
+			// demanding root or erroring the whole update.
+			if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") &&
+				!strings.Contains(string(out), "Could not get properties") && !strings.Contains(string(out), "Failed to connect") {
 				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
+			}
+		} else if !userScoped {
+			// Genuinely system-owned unit: restart via the system manager.
+			out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput()
+			if err == nil {
+				fmt.Printf("restarted %s\n", p.Unit)
+				return nil
+			}
+			if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+				return fmt.Errorf("systemctl restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
 			}
 		}
 	}
