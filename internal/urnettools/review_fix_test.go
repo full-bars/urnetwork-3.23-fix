@@ -287,14 +287,21 @@ func TestRunVersionCommand(t *testing.T) {
 			t.Fatal(err)
 		}
 		os.Stdout = w
+		var buf bytes.Buffer
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(&buf, r)
+			close(done)
+		}()
 		runErr := Run(args)
 		w.Close()
 		os.Stdout = oldOut
-		out, _ := io.ReadAll(r)
+		<-done
+		r.Close()
 		if runErr != nil {
 			t.Errorf("Run(%v) = %v, want nil", args, runErr)
 		}
-		if got := strings.TrimSpace(string(out)); got != "test-version" {
+		if got := strings.TrimSpace(buf.String()); got != "test-version" {
 			t.Errorf("Run(%v) printed %q, want %q", args, got, "test-version")
 		}
 	}

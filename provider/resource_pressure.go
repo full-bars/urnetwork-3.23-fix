@@ -793,22 +793,7 @@ func aimdStep(target, cacheSize int, pressure float64, ceiling int) int {
 // ascending traffic — shedding an earning proxy is the last resort, and the
 // caller logs each healthy shed individually.
 func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, n int) []string {
-	rank := func(health string) int {
-		switch health {
-		case "dead":
-			return 0
-		case "inactive":
-			return 1
-		case "long_offline":
-			return 2
-		case "offline":
-			return 3
-		case "recently_offline":
-			return 4
-		default: // "up" and anything unknown sheds last
-			return 5
-		}
-	}
+	rank := healthRank // shared with the operator proxy-trim shed ranking
 	type cand struct {
 		addr string
 		r    int
@@ -911,6 +896,12 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 			}
 		}
 		next := aimdStep(target, cacheSize, effectivePressure, resolveProxyURLMax(configuredMax))
+		// An operator trim cap overrides the AIMD operating point: never grow
+		// the URL pool target above the running-proxy cap (they fight otherwise,
+		// burning fetch/probe work on proxies that can never launch - review MEDIUM).
+		if tc, _ := readTrimTarget(); tc > 0 && next > tc {
+			next = tc
+		}
 		if next != urlState.TargetPoolSize {
 			urlState.TargetPoolSize = next
 			if err := writeProxyURLState(urlState); err != nil {

@@ -273,19 +273,15 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// for that ownership (independent review finding). On a desired-set
 	// read error the summary falls back to the state tags (read-only;
 	// the worst case is a stale bucket, not a wrong write).
+	// Ownership resolution MUST agree with the paid grader's UNION (file when
+	// set + internal), not an either/or: a mixed file+internal deployment would
+	// otherwise report internal-config addresses as ungraded with the wrong
+	// staleness window (Opus review MEDIUM-2). Uses the same helper as the
+	// grader so the reader cannot drift from the writer.
 	desired := map[string]struct{}{}
-	if state.Source != "" {
-		if ds, err := readProxySettingsFromFile(state.Source); err != nil {
-			tlog("[proxy][grade] warning: %v (summary falls back to state tags)\n", err)
-		} else {
-			for _, s := range ds {
-				desired[s.Address] = struct{}{}
-			}
-		}
-	} else {
-		for _, s := range readProxySettings() {
-			desired[s.Address] = struct{}{}
-		}
+	paidOwned, _ := paidDesiredSet(state)
+	for addr := range paidOwned {
+		desired[addr] = struct{}{}
 	}
 
 	for addr, entry := range state.Proxies {
@@ -313,7 +309,19 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 			lastProbe = entry.LastGraded
 		}
 
-		if graded {
+		// PENDING wins over a stale tier: a proxy that was previously graded
+		// (Graded=true + old Score) but whose last pass was reachable-but-
+		// undecidable must surface as "could not evaluate right now", not
+		// hide behind its old letter tier. Otherwise a DNS-gutted re-probe of
+		// a formerly-B proxy silently keeps it in the B bucket and the
+		// operator never sees it went undecidable (review HIGH).
+		if entry.Pending {
+			s.tiers["pending"]++
+			if s.sources[src] == nil {
+				s.sources[src] = map[string]int{}
+			}
+			s.sources[src]["pending"]++
+		} else if graded {
 			t := tierName(score)
 			s.tiers[t]++
 			if s.sources[src] == nil {
@@ -339,9 +347,9 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 }
 
 func (s gradeSummary) tierLine() string {
-	return fmt.Sprintf("running: A=%d B=%d C=%d D=%d F=%d ungraded=%d (%d running, %d tracked)",
+	return fmt.Sprintf("running: A=%d B=%d C=%d D=%d F=%d pending=%d ungraded=%d (%d running, %d tracked)",
 		s.tiers["A"], s.tiers["B"], s.tiers["C"], s.tiers["D"], s.tiers["F"],
-		s.tiers["ungraded"], s.running, s.tracked)
+		s.tiers["pending"], s.tiers["ungraded"], s.running, s.tracked)
 }
 
 func (s gradeSummary) sourcesLine() string {
@@ -352,7 +360,7 @@ func (s gradeSummary) sourcesLine() string {
 	}
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
-	tierOrder := []string{"A", "B", "C", "D", "F", "ungraded"}
+	tierOrder := []string{"A", "B", "C", "D", "F", "pending", "ungraded"}
 	for _, name := range names {
 		var b strings.Builder
 		b.WriteString(name)
@@ -410,7 +418,7 @@ func (s gradeSummary) changesLine() string {
 		return "changes vs last round: (first snapshot)"
 	}
 	var parts []string
-	all := []string{"A", "B", "C", "D", "F", "ungraded"}
+	all := []string{"A", "B", "C", "D", "F", "pending", "ungraded"}
 	for _, t := range all {
 		d := s.tiers[t] - gradeSummaryPrev.tiers[t]
 		if d > 0 {

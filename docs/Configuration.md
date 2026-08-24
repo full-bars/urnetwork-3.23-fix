@@ -62,7 +62,14 @@ Quick jump:
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
 | `URNETWORK_REPORT_URL` | - | HTTP URL of a bandwidth hub server. When set, the provider POSTs a JSON report with per-proxy metrics (Clients, TotalRx/Tx, BillableRx/Tx). See `hub/main.go` for the server. Can be changed at runtime without restart by writing to `~/.urnetwork/report_url` (or using `urnet-tools report <url>`). |
 | `URNETWORK_REPORT_INTERVAL` | `5m` | How often bandwidth reports are posted to `URNETWORK_REPORT_URL`. Accepts Go duration strings such as `30s` or `2m`. Minimum `10s`. The `5m` default keeps the hub's historical SQLite write volume modest across a large fleet; lower it where a more live dashboard matters. |
+| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | Provider heartbeat cadence to the hub (minimum `5s`). Shortening it fleet-wide can thundering-herd the hub. |
 | `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires on outage start and recovery. |
+| `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
+| `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
+| `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
+| `URNETWORK_PROXY_HEALTH_DIR` | `<home>/.urnetwork` | Directory for persistent `proxy_health.state` and `proxy_traffic.state` files (Docker: `/root/.urnetwork`). |
+| `URNETWORK_CONTAINER_NAME` | `<container-id>` | Container name used in copy-paste `docker exec <name> tail -f` hints for RAM logs. |
+| `WARP_HOST` | `<hostname>` | Override the host string reported by the warp status endpoint. Diagnostic only. |
 
 ## 📄 `proxy_probe.json` (Stage-1 Gate)
 
@@ -76,10 +83,15 @@ a restart.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | Kill switch. `false` disables stage-1 entirely; proxies are admitted on stage-0 alone. |
-| `sample_width` | int | `12` | Number of destination-table hosts probed per pass. |
+| `sample_width` | int | `12` | Intended sample base width, in destination-table hosts. |
+| `min_sample_width` | int | `0` | The small width a probe starts at. The paid grader forces 6. A clean verdict settles here and spends almost no probe bandwidth. |
+| `max_sample_width` | int | `36` | Upper bound adaptive sample growth may reach for a borderline proxy. |
 | `timeout_ms` | int | `4000` | Per-target dial timeout, in milliseconds. |
 | `pass_bar` | float | `0.6` | Minimum score (fraction of successful dials) required for admission to the auth queue. |
 | `preferred_bar` | float | `0.9` | Score threshold above which a proxy is marked preferred tier. |
+| `border_line_band` | float | `0.15` | Half-width around the pass bar that counts a proxy as borderline. A borderline score grows the sample toward `max_sample_width`; a score farther away is a decisive verdict and stops at the base width. |
+| `max_paid_probes_per_tick` | int | `200` | Cap on how many paid/file proxies one 5-minute scoring sweep probes. |
+| `stage0_liveness` | bool | `false` | One-dial SOCKS5 and API reachability gate before a sample block. The paid grader forces true. |
 
 Example, disabling the gate entirely:
 

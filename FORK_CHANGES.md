@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.3
+**Current Version**: v3.23.0-fix.30.7
 
 ---
 
@@ -122,7 +122,7 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB
 
 **How to Identify in New Upstream**:
 - Check `provider/Makefile` for build flags
-- Verify `greenteagc` experiment is still viable in newer Go versions
+- `greenteagc` experiment verified viable in Go 1.27.0: it is an upstream experiment bundled in stock 1.27 (mgcmark_greenteagc.go + exp_greenteagc_on/off.go). The provider builds and runs clean under `GOEXPERIMENT=greenteagc` on 1.27. No source patch needed.
 - Confirm `-ldflags` pattern is preserved
 
 **Status**: ✅ Shipped; unlikely to conflict with upstream unless build system changes significantly
@@ -2861,3 +2861,108 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **How to Identify in New Upstream**: `runEcoMemoryMonitor` no longer exists in `provider/main.go`. The adaptive GC logic lives in `provider/resource_pressure.go` as `gcGovernor`, `gcGovernorState`, and `runPressureMonitor`. The `URNETWORK_ADAPTIVE_GC` env var and the `gc_state`/`heap_frac` fields in the pressure status file are fork additions.
 
 **Status**: Part of PR #428 on the `feat/adaptive-gc-consolidation` branch. Not yet shipped to a release. Tests cover the single-writer governor and the kill switch.
+
+## 130. Go 1.27 Toolchain Bump
+
+**Purpose**: Move the compiler from Go 1.26.4 to 1.27.0.
+
+**Files Modified**: `go.mod`, all `.github/workflows/*.yml` (`go-version` pins), `Dockerfile`, `hub/Dockerfile` (builder bases), `README.md`, `docs/Project-Structure.md`.
+
+**Change**:
+- `go.mod` `go` directive changed from `1.26.4` to `1.27.0`.
+- CI `go-version` pins floated from `1.26` to `1.27` across all workflows.
+- Docker builder base `golang:1.26-alpine` updated to `golang:1.27-alpine`.
+
+**Status**: PR #449. Validated on stock Go 1.27.0. Build, vet, the full `-short -race` test suite, the cross-compile matrix, and a functional smoke are all green. `go mod tidy` produced no dependency changes. The dev-only custom `greenteagc`/`nodwarf5` toolchain is not shipped because `release.yml` builds stock Go.
+
+## 131. Cobra CLI Migration + Real Per-Command Help (PR #448, #453)
+
+**Purpose**: Route both `urnet-tools` and `urnet-docker` command dispatch through the Cobra CLI framework. This gives every command real, discoverable help instead of a hand-written dispatch table.
+
+**Files Modified**: `internal/urnettools/cobra.go`, `internal/urnettools/cobra_docker.go` (new), `internal/urnettools/cli.go`, `internal/urnettools/cli_docker.go`, `go.mod`
+
+**Change**:
+- PR #448 migrates the hand-written dispatch in `cli.go` and `cli_docker.go` to Cobra command trees in `cobra.go` and `cobra_docker.go`.
+- Every command now answers `-h` or `--help` with a real help page. Each page has a usage line, a short description, and copy-paste examples (Cobra `Short`, `Long`, and `Example`).
+- `urnet-docker proxy` is a Cobra parent command. It hides the exec plumbing and lists 12 subcommand help pages: `add`, `clear`, `remove`, `add-source`, `remove-source`, `refresh`, `remove-dead`, `health`, `traffic`, `summary`, `trim`, and `exclude`. Bare `proxy` prints that subcommand list.
+- `urnet-docker exec -h` renders the target in-container command's own help.
+- `--help` never executes an action.
+
+**PR #453 adds in-place container update**: `urnet-docker update <target>` updates a running provider container in place. A target flag (`--unit`, `--user`, `--network`, or `--state-dir`) selects the container, then runs the in-container `urnet-tools update` self-update without recreating the container, behind the confirm gate. Plain `urnet-docker update` (no target) self-updates the host binary as before. The `self-update` and `selfupdate` aliases are always host-only. Verified live: an old container updated in place to the current release with the container ID unchanged.
+
+**How to Identify in New Upstream**: `internal/urnettools/cobra.go` and `internal/urnettools/cobra_docker.go` do not exist upstream. Upstream still uses the hand-written dispatch found in the original `cli.go`.
+
+## 132. CI Docs-Only PR Skip + Non-Blocking VirusTotal Scan (PR #452)
+
+**Purpose**: Keep the heavy CI matrix green for documentation-only pull requests, and stop a transient VirusTotal failure from turning the scan job red.
+
+**Files Modified**: `.github/workflows/build.yml`, `dash-compat.yml`, `tool-functional-smoke.yml`, `unix-lifecycle.yml`, `windows-lifecycle.yml`, `.github/scripts/vt-scan.py`
+
+**Change**:
+- The five heavy workflows add a `pull_request` `paths-ignore` for `**/*.md`, `docs/**`, and `releases/**`. A docs-only PR skips the heavy jobs. The labeler still always runs.
+- `vt-scan.py` treats a VirusTotal upload, lookup, or analysis timeout as non-fatal. A timed-out artifact is recorded UNKNOWN in the summary report. The scan job stays green. Only a genuine malicious hit above the fail threshold fails the job. This stops a transient VirusTotal analysis timeout from turning the otherwise non-blocking scan job red.
+
+**How to Identify in New Upstream**: the `paths-ignore` blocks on the five workflows and the UNKNOWN non-fatal branches in `vt-scan.py` are fork additions.
+
+## 133. In-Place Container Update: Any-Image Repair + Auto-Restart (PR #455)
+
+**Purpose**: Make `urnet-docker update` update a running provider container in place regardless of which image the container was provisioned from. Older images ship a broken in-container update routine, which previously forced operators to recreate old-image containers from a current image before they could be updated in place.
+
+**Files Modified**: `internal/urnettools/cli_docker.go`, `internal/urnettools/docker_update_shim_test.go`
+
+**Change**:
+- The host-side `urnet-docker update` no longer blindly delegates to the container's own update script. Older images ship that script broken: a busybox `mktemp` rejects the `XXXXXX.tar.gz` template with `Invalid argument`, and `pkill -x` misses the 15-character `comm` truncation. The old path failed in-place update on old-image containers out of the box.
+- The command now repairs the container's `/app/urnet-tools.sh` from the host first (`sed`, run directly via `exec.Command`, no shell layer), then the update proceeds and swaps the provider binary in place to the new release.
+- Auto-restart: older container images stop when the provider process is killed (their start loop exits instead of relaunching). After the binary swap, the command checks whether the container stopped and `docker start`s it (same container, no recreate) so the provider launches on the new binary. On newer images that keep running after the swap, nothing extra happens.
+- `update` now also accepts a bare container name as the target, and the update help documents both the `<container>` and `--unit` forms.
+
+**How to Identify in New Upstream**: the host-side shim repair and the post-swap auto-restart in `internal/urnettools/cli_docker.go` are fork additions.
+
+## 134. Post-Quantum (PQE) Session Visibility (PR #455)
+
+**Purpose**: make it observable whether end-to-end sessions use post-quantum or classical TLS key exchange, both live and over time, so operators can see adoption of the hybrid post-quantum groups.
+
+**Files Modified**: `pqe_tracker.go` (new), `transfer_encrypt.go`, `provider/main.go`
+
+**Change**:
+- Detect PQE from the negotiated TLS curve via `tls.ConnectionState().CurveID` (Go 1.24+). The post-quantum hybrid groups `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, and `MLKEM1024` classify as PQE.
+- End-to-end session-up and session-close log lines are tagged `[pqe-<curve>]` for post-quantum sessions; classical sessions stay untagged.
+- A rolling `PQETracker` owned by the `EncryptionSessionManager` tracks live plus 1h, 24h, 7d, and lifetime post-quantum and classical session-opens, exposed through `PQECounts()`.
+- The provider emits a periodic `[pqe]` log line alongside the existing tick logs that reports the live counts plus the rolling open totals.
+
+**How to Identify in New Upstream**: `pqe_tracker.go` and the `pqeDisplay`/`pqeTag` helpers in `transfer_encrypt.go` are fork additions.
+
+---
+
+## 135. Adaptive Paid and File Proxy Grading (PR #458)
+
+**Purpose**: Give every tracked paid and file-list proxy a real reachability grade, so trimming and the proxy summary reflect proxy health. Before this change those proxies were never graded.
+
+**Files Modified**: `proxy_grade_paid.go`, `proxy_grade_summary.go`, `proxy_table_probe.go`, `proxy_table_probe_integration_test.go`, `proxy_probe_adaptive_test.go`.
+
+**Change**:
+- The paid/file grading sweep now collects from the tracked `proxy.state` entries (the authoritative runtime list) and table-probes each one.
+- A sweep assigns an A-F reachability grade (`[proxy][grade] paid <addr> graded <tier>`) and prints a summary line.
+- Sampling is adaptive: a probe starts at `min_sample_width` (the paid grader forces 6) and only grows toward `max_sample_width` while the score stays within `pass_bar` plus or minus `border_line_band`. Clearly-good and clearly-dead proxies settle at the small width.
+- A reachable-but-undecidable pass (too few sampled hosts resolvable from the box) marks the proxy pending instead of assigning a fabricated grade.
+- A per-tick budget caps one 5-minute sweep at `max_paid_probes_per_tick` (default 200), oldest-stale first.
+- A stage-0 one-dial SOCKS5 and API reachability gate drops a dead paid proxy before a sample block.
+- Grades are applied only to the current desired set; a concurrent reload changing credentials drops the stale result. A cancelled sweep persists nothing.
+
+**Impact**: Proxy trimming and proxy summary now see paid/file proxy health. Operators get a new `proxy_probe.json` config surface.
+
+**How to Identify in New Upstream**: none of this exists upstream; the fork's `proxy_grade_paid.go` sweep + `proxy_table_probe.go` adaptive sampling are fork additions.
+
+---
+
+## 136. Tool Restart-Scope Fix (PR #459)
+
+**Purpose**: Restore approved emoji/sectioned help and correct restart targeting for user-owned units.
+
+**Files Modified**: `internal/urnettools/*`, `cmd/urnet-tools`, `cmd/urnet-docker`.
+
+**Change**:
+- `urnet-tools` and `urnet-docker` restore the approved emoji and sectioned per-command help output.
+- A fix corrects restart targeting when a provider unit is owned by another user; the restart runs against the right unit instead of the current user's scope.
+
+**Impact**: CLI help restores the approved styling; restarts hit the correct user unit.

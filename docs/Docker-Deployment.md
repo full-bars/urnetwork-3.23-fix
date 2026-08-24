@@ -12,15 +12,17 @@ This page keeps the copy-paste Docker examples from the README in one place. Use
 Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 # installs /usr/local/bin/urnet-docker (or ~/.local/bin when not root)
+# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 The tool is self-updating afterwards:
 
 ```sh
-urnet-docker update          # update the tool binary itself (containers update by image pull)
-urnet-tools self-update      # same, for the process/systemd tool
+urnet-docker update                  # update the tool binary itself
+urnet-docker update --unit urfix     # update a provider container in place (no recreate)
+urnet-tools self-update              # same, for the process/systemd tool
 ```
 
 Common host-side commands:
@@ -29,12 +31,14 @@ Common host-side commands:
 urnet-docker providers                          # list provider containers
 urnet-docker status --unit urfix                # status of one container
 urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host
+urnet-docker proxy trim --unit urfix 500        # hold running proxies at cap (A-F worst first)
+urnet-docker proxy refresh --unit urfix         # reload proxies without restart
 urnet-docker restart --unit urfix               # restart a container
 urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 ```
 
 > [!NOTE]
-> Containers themselves update by pulling new images and recreating the container (e.g. via Docker Compose or Watchtower).
+> `urnet-docker update` with a target flag (such as `--unit`) updates a provider container in place. The container ID stays the same. Plain `urnet-docker update` with no target updates only the host tool binary. Containers can also be updated by pulling a new image and recreating the container (e.g. via Docker Compose or Watchtower).
 
 ## 🗄️ Image Registries
 
