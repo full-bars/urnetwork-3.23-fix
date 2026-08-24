@@ -51,6 +51,20 @@ type ProxyEntry struct {
 	// threshold (1-3h), so a DNS-gutted pass does not trigger a
 	// re-probe-every-tick herd.
 	LastGraded time.Time `json:"last_graded,omitempty"`
+
+	// Pending is true when the last stage-1 pass REACHED the proxy but could
+	// not produce a DECIDABLE verdict (fewer than half the intended sample
+	// resolved through it — e.g. the box's DNS resolver could not answer most
+	// health hosts, or the proxy is so strict/rate-limited that a
+	// through-proxy answer could not be confirmed). This is the HONEST status
+	// for a paid proxy we could not evaluate from this box, distinct from a
+	// fabricated tier grade: it tells the operator "probe reached it but
+	// cannot call it from here", NOT "it is graded F". Set true only on a
+	// reachable-but-undecidable pass; cleared on any subsequent DECIDABLE
+	// pass (which replaces the grade) and on a never-grade (never reached).
+	// Never graded (no verdict, no reachability) leaves Graded/Pending both
+	// false, meaning "not yet evaluated").
+	Pending bool `json:"pending,omitempty"`
 }
 
 func proxyStatePath() (string, error) {
