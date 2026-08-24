@@ -123,7 +123,15 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	// deterministically offline (no real DNS) and the abort fires exactly as
 	// the arithmetic below predicts — the earlier skip-guard (Total != 20)
 	// silently masked a real decidable-regression on partial-DNS boxes.
-	pass := tableProbePassCounter.Load()
+	// Pin the pass counter for the whole test so a concurrent URL fetch (which
+	// advances tableProbePassCounter) cannot move the probe's internal seed
+	// between the seeding below and the probe read inside probeTableThroughProxy
+	// — an unseeded block would hit real DNS / the fail-cache and hard-FAIL at
+	// the Total!=9 assert below instead of running deterministically (feedback
+	// from the closed skip-guard).
+	origPass := tableProbePassCounter.Load()
+	pass := origPass
+	tableProbePassCounter.Store(pass)
 	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(addr, pass), 20)
 	probeDNSCache.Lock()
 	for _, h := range hosts {
@@ -132,6 +140,7 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	}
 	probeDNSCache.Unlock()
 	t.Cleanup(func() {
+		tableProbePassCounter.Store(origPass)
 		probeDNSCache.Lock()
 		defer probeDNSCache.Unlock()
 		for _, h := range hosts {

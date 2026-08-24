@@ -301,7 +301,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// paid-budget sort keeping its never-graded flag first forever
 		// (Sonnet review CRITICAL).
 		current := map[string]connect.ProxySettings{}
-		desiredSet, _ := paidDesiredSet(state)
+		desiredSet, fileOK := paidDesiredSet(state)
 		for addr, s := range desiredSet {
 			current[addr] = *s
 		}
@@ -319,7 +319,20 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			}
 			s, ok := current[r.addr]
 			if !ok {
-				continue // removed from the desired set mid-pass; do not grade
+				// Mirror the collect-side fallback so apply cannot discard what
+				// collect dialed. When fileOK is false the source-file leg of the
+				// union is untrusted (unreadable/empty), so membership alone cannot
+				// prove "not paid-owned"; collect therefore probes every tracked
+				// non-URL-tagged entry without creds. Rejecting it HERE -- before
+				// LastGraded advances -- makes it a permanent squatter: dialed every
+				// tick, never graded, its never-graded flag keeping it first in the
+				// paid-budget sort and starving graded targets of the per-tick
+				// budget. This is the exact inverse of the fileOK=false predicates
+				// on the collect side (proxy_grade_paid.go collect filter).
+				if fileOK || entry.Source == "url" {
+					continue // removed from the desired set mid-pass; do not grade
+				}
+				s = connect.ProxySettings{Network: "tcp", Address: r.addr}
 			}
 			if !paidGradeSettingsMatch(s, r.user, r.password) {
 				// Credentials changed mid-pass: the probe ran against the
