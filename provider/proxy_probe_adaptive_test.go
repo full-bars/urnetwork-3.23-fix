@@ -282,6 +282,35 @@ func TestApplyPaidProbeBudget_Basic(t *testing.T) {
 	}
 }
 
+func TestApplyPaidProbeBudget_TieBreakByAddr(t *testing.T) {
+	// Equal staleness (all never-graded) must be ordered by address, NOT by the
+	// randomized source-map iteration order (coderabbit review). Otherwise the
+	// budget cut picks an arbitrary subset and a deferred proxy can starve
+	// across ticks.
+	targets := []gradeTarget{
+		{addr: "c", snapshotGradedAt: time.Time{}},
+		{addr: "a", snapshotGradedAt: time.Time{}},
+		{addr: "b", snapshotGradedAt: time.Time{}},
+	}
+	got := applyPaidProbeBudget(targets, 2)
+	if len(got) != 2 {
+		t.Fatalf("want 2 kept, got %d", len(got))
+	}
+	if got[0].addr != "a" || got[1].addr != "b" {
+		t.Errorf("equal staleness must tie-break by addr ascending, got %s, %s", got[0].addr, got[1].addr)
+	}
+	// The tie-break must decide regardless of input order.
+	reversed := []gradeTarget{
+		{addr: "b", snapshotGradedAt: time.Time{}},
+		{addr: "c", snapshotGradedAt: time.Time{}},
+		{addr: "a", snapshotGradedAt: time.Time{}},
+	}
+	got2 := applyPaidProbeBudget(reversed, 2)
+	if got2[0].addr != "a" || got2[1].addr != "b" {
+		t.Errorf("tie-break must ignore input order, got %s, %s", got2[0].addr, got2[1].addr)
+	}
+}
+
 func TestApplyPaidProbeBudget_DisabledWhenZero(t *testing.T) {
 	now := time.Now()
 	targets := []gradeTarget{
