@@ -508,6 +508,28 @@ func TestRunProxyJWTWatcherRejectsJwtMissingClientId(t *testing.T) {
 // Setup: the global store points at an unwritable path (Put always fails),
 // so the ONLY renewal trigger available is the 401 counter — a clean
 // isolation of the "counter must stay armed on persistence failure" behavior.
+// waitForRenewalRequest polls until the auth-client endpoint has handled at
+// least one MORE request than `baseline`, failing after a bounded deadline.
+// Polling replaces the old fixed `time.Sleep(300ms)` waits that flaked under
+// full-suite CPU contention: the watcher's renewal goroutine occasionally took
+// longer than 300ms, so totalRequests was read before the renewal landed and
+// the next assert tripped. The condition is "count grew past the snapshot", so
+// it stays correct even if a single renewal issues multiple auth-client calls.
+func (ts *renewalTestServer) waitForRenewalRequest(t *testing.T, baseline int32) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		if ts.totalRequests.Load() > baseline {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("watcher did not make a renewal request: total auth-client requests = %d, baseline = %d", ts.totalRequests.Load(), baseline)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
 func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
 	// Read-only dir does not block writes for UID 0 (CI images often run as
 	// root, bypassing mode bits) — the Put-failure premise doesn't hold
@@ -558,18 +580,18 @@ func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
 	if err := ts.forceOob401(oob); err != nil {
 		t.Fatal(err)
 	}
-	// First renewNow: renewal runs, Put fails → counter must stay armed.
+	// First renewNow: renewal runs, Put fails → counter must stay armed. Wait
+	// (adaptively) for the endpoint hit instead of a fixed sleep.
+	baseline := ts.totalRequests.Load()
 	renewNow <- struct{}{}
-	time.Sleep(300 * time.Millisecond)
+	ts.waitForRenewalRequest(t, baseline)
 	first := ts.totalRequests.Load()
-	if first == 0 {
-		t.Fatal("first renewal never hit the auth-client endpoint")
-	}
 
 	// Second renewNow: if the counter had been reset, nothing would fire
 	// (the exp check is disabled — currentJwt is empty on a broken store).
+	baseline = ts.totalRequests.Load()
 	renewNow <- struct{}{}
-	time.Sleep(300 * time.Millisecond)
+	ts.waitForRenewalRequest(t, baseline)
 	second := ts.totalRequests.Load()
 	if second <= first {
 		t.Fatalf("401 counter was reset after a failed store write: requests %d -> %d — next 401 must re-trigger renewal", first, second)
