@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,19 +47,21 @@ func listenSocks5Raw(t *testing.T, handle func(c net.Conn)) (addr string, cleanu
 }
 
 // listenSocks5Sequenced answers the SOCKS5 greeting normally and replies to
-// the Nth CONNECT (1-based, counted across connections) with repFor(n).
+// the Nth CONNECT (1-based, counted across connections) with repFor(n). The
+// greeting is parsed by its NMETHODS length (not a fixed 3 bytes), so a
+// credentialed line's longer offer (0x05 0x02 0x00 0x02) does not misalign the
+// subsequent CONNECT frame — which stage-0 greetings (may carry creds) require.
 func listenSocks5Sequenced(t *testing.T, repFor func(n int) byte) (addr string, connects *atomic.Int64, cleanup func()) {
 	t.Helper()
 	var n atomic.Int64
 	addr, cleanup = listenSocks5Raw(t, func(c net.Conn) {
 		defer c.Close()
-		greeting := make([]byte, 3)
-		if _, err := c.Read(greeting); err != nil {
+		if !readSocks5Greeting(c) {
 			return
 		}
 		c.Write([]byte{0x05, 0x00})
 		frame := make([]byte, 10)
-		if _, err := c.Read(frame); err != nil {
+		if _, err := io.ReadFull(c, frame); err != nil {
 			return
 		}
 		rep := repFor(int(n.Add(1)))
@@ -131,7 +134,7 @@ func TestReview_ProbeSocks5Connect_ShortReplyIsNotSuccess(t *testing.T) {
 	})
 	defer cleanup()
 
-	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, 2*time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, 2*time.Second); answered {
 		t.Error("a 1-byte CONNECT reply was scored as a SynAck; io.ReadFull must reject partial frames")
 	}
 }
@@ -150,7 +153,7 @@ func TestReview_ProbeSocks5Connect_RejectsWrongVersion(t *testing.T) {
 	})
 	defer cleanup()
 
-	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second); answered {
 		t.Error("a non-SOCKS5 responder was scored as a SynAck")
 	}
 }
@@ -162,7 +165,7 @@ func TestReview_ProbeSocks5Connect_AuthRequiredWithCredsScores(t *testing.T) {
 	addr, cleanup := listenSocks5AuthRequired(t, 0x00)
 	defer cleanup()
 
-	if !probeSocks5Connect(context.Background(), addr, "user", "pass", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "user", "pass", net.ParseIP("93.184.216.34"), 443, time.Second); !answered {
 		t.Fatal("an auth-required proxy with correct RFC 1929 credentials must complete the CONNECT")
 	}
 }
@@ -181,7 +184,7 @@ func TestReview_ProbeSocks5Connect_AuthRequiredNoCredsFails(t *testing.T) {
 	})
 	defer cleanup()
 
-	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second); answered {
 		t.Error("an auth-required proxy with no credentials must not be scored as a SynAck")
 	}
 }
@@ -206,7 +209,7 @@ func TestReview_ProbeSocks5Connect_DomainReplyAccepted(t *testing.T) {
 	})
 	defer cleanup()
 
-	if !probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second); !answered {
 		t.Error("a short-domain CONNECT reply must be scored as a SynAck (parsed by ATYP, not fixed length)")
 	}
 }
@@ -233,7 +236,7 @@ func TestReview_ProbeSocks5Connect_IPv6ReplyAccepted(t *testing.T) {
 	})
 	defer cleanup()
 
-	if !probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second); !answered {
 		t.Error("an IPv6 BND.ADDR CONNECT reply must be scored as a SynAck (parsed by ATYP, not fixed length)")
 	}
 }
@@ -259,7 +262,7 @@ func TestReview_ProbeSocks5Connect_TruncatedDomainReplyRejected(t *testing.T) {
 	})
 	defer cleanup()
 
-	if probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second) {
+	if answered, _ := probeSocks5Connect(context.Background(), addr, "", "", net.ParseIP("93.184.216.34"), 443, time.Second); answered {
 		t.Error("a truncated domain reply must not be scored as a SynAck")
 	}
 }
@@ -377,9 +380,9 @@ func TestReview_FailFast_AboveBarProxyRunsFullPass(t *testing.T) {
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 12
 	cfg.PassBar = 0.6
-	cfg.TargetTimeout = 2 * time.Second
+	cfg.TargetTimeout = 10 * time.Second
 
-	got := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	got := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 
 	if got.Total != cfg.SampleWidth {
 		t.Skipf("only %d of %d targets resolved on this box; the full-block comparison needs every host to resolve", got.Total, cfg.SampleWidth)
@@ -408,9 +411,9 @@ func TestReview_FailFast_AlternatingFailuresCountedIndividually(t *testing.T) {
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 10
 	cfg.PassBar = 0.6
-	cfg.TargetTimeout = 2 * time.Second
+	cfg.TargetTimeout = 10 * time.Second
 
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total < 8 {
 		t.Skipf("only %d targets resolved; need most of the block", res.Total)
 	}
@@ -436,9 +439,9 @@ func TestReview_CancelledPass_IsUndecidableNotZeroVerdict(t *testing.T) {
 
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 8
-	cfg.TargetTimeout = time.Second
+	cfg.TargetTimeout = 10 * time.Second
 
-	res := probeTableThroughProxy(ctx, addr, "", "", cfg)
+	res := probeTableThroughProxy(ctx, addr, "", "", "", 0, cfg)
 	if res.Total != 0 {
 		t.Fatalf("a cancelled pass attempted %d targets, want 0", res.Total)
 	}
@@ -595,7 +598,11 @@ func TestReview_DuplicateAddressIsTableProbedOnce(t *testing.T) {
 
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 4
-	cfg.TargetTimeout = time.Second
+	// Generous per-target timeout: under the full parallel suite the shared
+	// dial bucket can queue dials; a denial now (correctly) renders a pass
+	// undecidable rather than convicting, which would fail the qualify
+	// assertion for reasons unrelated to dedup. 10s keeps every dial live.
+	cfg.TargetTimeout = 10 * time.Second
 
 	lines := []string{addr, addr + ":user:pass"}
 	grades := probeAndGradeProxyURLLines(context.Background(), lines, "api.bringyour.com", 443, cfg)
@@ -638,7 +645,7 @@ func TestReview_ResolveConfig_RejectsOutOfRangeValues(t *testing.T) {
 			def},
 		{"a partial file leaves other fields at their defaults",
 			map[string]any{"sample_width": 7},
-			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar}},
+			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar, MaxSampleWidth: def.MaxSampleWidth, BorderlineBand: def.BorderlineBand, MaxPaidProbesPerTick: def.MaxPaidProbesPerTick}},
 		{"an empty object is all defaults", map[string]any{}, def},
 	}
 	for _, c := range cases {
@@ -1257,11 +1264,11 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 12
-	cfg.TargetTimeout = time.Second
+	cfg.TargetTimeout = 10 * time.Second
 
 	// First, verify the denominator is attempted-not-intended on a healthy
 	// resolver: all hosts resolve, so attempted == intended and score is 1.0.
-	res := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if !res.Decidable {
 		t.Skipf("fewer than quorum of %d targets resolved on this box (total=%d); cannot test the healthy case", cfg.SampleWidth, res.Total)
 	}
@@ -1310,7 +1317,7 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 		t.Skip("no cached hosts to simulate resolver failure; run once after a warm pass")
 	}
 
-	res2 := probeTableThroughProxy(context.Background(), addr, "", "", cfg)
+	res2 := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res2.Total == 0 {
 		t.Fatal("all sampled hosts became unresolvable; cannot test partial case")
 	}
