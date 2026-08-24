@@ -250,8 +250,9 @@ func TestPaidProxyGrader_SkipsMissingEntry(t *testing.T) {
 	}
 }
 
-// TestPaidProxyGrader_ReadErrorNoOp: an unreadable source file logs a
-// warning and leaves state untouched — no crash, no grades, no probes.
+// TestPaidProxyGrader_ReadErrorStillProbesTracked: an unreadable source
+// file cannot prove non-ownership, so tracked non-URL entries are still
+// probed AND graded (the read error only degrades the file leg of the union).
 func TestPaidProxyGrader_ReadErrorStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
@@ -282,13 +283,14 @@ func TestPaidProxyGrader_ReadErrorStillProbesTracked(t *testing.T) {
 	}
 	state, _ := readProxyState()
 	e := state.Proxies[addr]
-	if !e.LastGraded.IsZero() {
+	if e.LastGraded.IsZero() {
 		t.Errorf("expected a grade write (LastGraded advanced) for the tracked proxy: %+v", e)
 	}
 }
 
-// TestPaidProxyGrader_EmptyDesiredNoOp: an empty source file yields zero
-// targets and a clean no-op.
+// TestPaidProxyGrader_EmptySourceFileStillProbesTracked: a readable-but-empty
+// source file proves nothing about ownership (mid-edit), so tracked entries
+// stay probed instead of a clean no-op.
 func TestPaidProxyGrader_EmptySourceFileStillProbesTracked(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
