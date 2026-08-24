@@ -192,7 +192,14 @@ func TestPaidGrader_SetsPendingOnReachableUndecidable(t *testing.T) {
 	// reaches the proxy yet produces no decidable verdict -> Pending.
 	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x00 })
 	defer cleanup()
-	writePaidGradeProbeOverride(t, true)
+	// IP-safe config: sample_width 12 with min_sample_width 10 keeps the quorum
+	// at (10+1)/2 = 5, but the host table holds only 3 literal-IP entries
+	// (1.1.1.1, 8.8.8.8, ...) which resolveProbeTarget always resolves (literal
+	// IPs bypass the fail-cache). So even a 10-host block with all 3 IPs has at
+	// most 3 IPs + 1 seeded host = 4 resolvable < 5 = quorum -> the pass is
+	// permanently undecidable regardless of block (previously sample_width:4
+	// made ANY block containing an IP flake to decidable).
+	writeReviewProbeOverride(t, map[string]any{"enabled": true, "sample_width": 12, "min_sample_width": 10, "timeout_ms": 500})
 
 	src := filepathJoinHome(t, "paid.txt") // see helper below
 	os.WriteFile(src, []byte(addr+":u:p\n"), 0600)
@@ -376,45 +383,71 @@ func filepathJoinHome(t *testing.T, name string) string {
 
 // ---------- helpers -------------------------------------------------------
 
-// seedOnlyOneProbeHost makes the box resolve exactly ONE host of the base
-// block (plus nothing else), so a probe REACHES the proxy (Total>0) but cannot
-// reach the decidable quorum (half the sample) — the DNS-gutted box a 'pending'
-// status exists to represent. The resolveProbeTarget fail-cache is cleared for
-// every base host, but only the first is given a resolution.
+// seedOnlyOneProbeHost makes the box resolve exactly ONE host of the probe's
+// dialed base block (plus nothing else), so a probe REACHES the proxy
+// (Total>0) but can never reach the decidable quorum (resolvable < half) —
+// the DNS-gutted box the 'pending' status exists to represent.
+//
+// Hermetic: it mirrors the probe's EXACT dial-set derivation (the staged base
+// at baseW, then adaptive growth via disjoint SAME-WIDTH strides to
+// probeWidth()) and POISONS every remaining table host into the fail-cache.
+// Only base-block host[0] can resolve; any other host the probe dials — base,
+// growth, or any shifted block — fast-fails without touching live DNS. This
+// removes the old flake, where this helper seeded the SampleWidth and
+// MaxSampleWidth blocks at one width while the probe actually staged a
+// different baseW and grew via consecutive-strided blocks, so real DNS could
+// resolve unreservedGrowth hosts and flip the pass to decidable (intermittent
+// Pending=false).
 func seedOnlyOneProbeHost(t *testing.T, address string) {
 	t.Helper()
 	cfg := resolveProxyTableProbeConfig()
 	pass := tableProbePassCounter.Load()
-	// Collect the full base+growth block so every host the grader might dial
-	// is accounted and isolated from any prior test's DNS cache state.
-	var hosts []string
-	for _, w := range []int{cfg.SampleWidth, cfg.MaxSampleWidth} {
-		if w <= 0 {
-			continue
-		}
-		h, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), w)
-		hosts = append(hosts, h...)
+
+	// The staged probe dials the base block at baseW and grows via disjoint
+	// same-width strides to probeWidth(); mirror that derivation so the seeded
+	// dial set is exactly what the grader will touch (Opus review TEST-1).
+	baseW := cfg.MinSampleWidth
+	if baseW <= 0 || baseW > cfg.SampleWidth {
+		baseW = cfg.SampleWidth
 	}
+	baseHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), baseW)
+	if len(baseHosts) == 0 {
+		t.Fatalf("empty base block at width %d for %s", baseW, address)
+	}
+	resolvable := baseHosts[0]
+
 	probeDNSCache.Lock()
-	for _, h := range hosts {
-		delete(probeDNSCache.m, h)
-		delete(probeDNSCache.fail, h)
-	}
-	if len(hosts) > 0 {
-		// Exactly one resolvable host -> the probe REACHES the proxy but the
-		// box cannot resolve the rest of the sample (DNS-gutted): Total>0 yet
-		// below the decidable quorum. All other hosts fast-fail via the
-		// fail-cache (probeDNSFailTTL) without touching the network.
-		probeDNSCache.m[hosts[0]] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
-		for _, h := range hosts[1:] {
+	defer probeDNSCache.Unlock()
+	// One resolvable host: the first the probe dials.
+	probeDNSCache.m[resolvable] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+	delete(probeDNSCache.fail, resolvable)
+
+	// Fail-cache the adaptive growth block too (same-width consecutive strides),
+	// so growth can never reach live DNS either.
+	growTo := cfg.probeWidth()
+	if growTo > baseW {
+		for _, h := range disjointGrowthHosts(address, pass, baseW, growTo-baseW) {
+			// delete any stale SUCCESS entry too: a prior test that resolved this
+			// host via live DNS leaves an m entry (probeDNSSuccessTTL=2h), and
+			// resolveProbeTarget checks m BEFORE fail, so a leftover success would
+			// override this fail and leak a real resolution (suite-level flake).
+			delete(probeDNSCache.m, h)
 			probeDNSCache.fail[h] = time.Now()
 		}
 	}
-	probeDNSCache.Unlock()
+	// Poison every other table host: any block the probe might dial fast-fails.
+	allHosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), connect.ProbeHostCount())
+	for _, h := range allHosts {
+		if h != resolvable {
+			delete(probeDNSCache.m, h)
+			probeDNSCache.fail[h] = time.Now()
+		}
+	}
+
 	t.Cleanup(func() {
 		probeDNSCache.Lock()
 		defer probeDNSCache.Unlock()
-		for _, h := range hosts {
+		for _, h := range allHosts {
 			delete(probeDNSCache.m, h)
 			delete(probeDNSCache.fail, h)
 		}
