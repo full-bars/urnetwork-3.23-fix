@@ -83,10 +83,15 @@ a restart.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | Kill switch. `false` disables stage-1 entirely; proxies are admitted on stage-0 alone. |
-| `sample_width` | int | `12` | Number of destination-table hosts probed per pass. |
+| `sample_width` | int | `12` | Intended sample base width, in destination-table hosts. |
+| `min_sample_width` | int | `0` | The small width a probe starts at. The paid grader forces 6. A clean verdict settles here and spends almost no probe bandwidth. |
+| `max_sample_width` | int | `36` | Upper bound adaptive sample growth may reach for a borderline proxy. |
 | `timeout_ms` | int | `4000` | Per-target dial timeout, in milliseconds. |
 | `pass_bar` | float | `0.6` | Minimum score (fraction of successful dials) required for admission to the auth queue. |
 | `preferred_bar` | float | `0.9` | Score threshold above which a proxy is marked preferred tier. |
+| `border_line_band` | float | `0.15` | Half-width around the pass bar that counts a proxy as borderline. A borderline score grows the sample toward `max_sample_width`; a score farther away is a decisive verdict and stops at the base width. |
+| `max_paid_probes_per_tick` | int | `200` | Cap on how many paid/file proxies one 5-minute scoring sweep probes. |
+| `stage0_liveness` | bool | `false` | One-dial SOCKS5 and API reachability gate before a sample block. The paid grader forces true. |
 
 Example, disabling the gate entirely:
 

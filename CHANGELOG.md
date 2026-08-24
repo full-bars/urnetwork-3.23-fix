@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.7]
+
+### Added
+- **Paid and file-list proxy grading (PR #458)**: the provider now table-probes every tracked paid and file-list proxy and assigns an A-F reachability grade. Before this release those proxies were never graded. Trimming and the proxy summary could not see their health. A per-sweep summary line reports how many proxies were graded and how many are pending. Proxies are only demoted on positive evidence, never on silence.
+- **Adaptive sample sampling (PR #458)**: a probe starts small (min_sample_width) and grows toward max_sample_width only while a proxy's score stays borderline (within pass_bar plus or minus border_line_band). Clearly-good and clearly-dead proxies settle at the small width and spend almost no probe bandwidth.
+- **Honest pending status (PR #458)**: a proxy the probe reaches but cannot decide (too few of the sampled hosts resolvable from the box) is marked pending instead of being assigned a fabricated grade.
+- **Per-tick probe budget (PR #458)**: one 5-minute scoring sweep probes at most max_paid_probes_per_tick proxies (default 200). Oldest-stale probes are scored first.
+- **Stage-0 liveness gate (PR #458)**: paid proxies get a one-dial SOCKS5 and API reachability check before a sample block.
+- **Restored emoji and sectioned help (PR #459)**: `urnet-tools` and `urnet-docker` restore the approved emoji and sectioned per-command help.
+
+### Changed
+- **Probe configuration JSON (PR #458)**: proxy probe settings now read from `~/.urnetwork/proxy_probe.json` with keys `enabled`, `sample_width`, `min_sample_width`, `max_sample_width`, `timeout_ms`, `pass_bar`, `preferred_bar`, `border_line_band`, `max_paid_probes_per_tick`, and `stage0_liveness`.
+- **Restart targeting for user-owned units (PR #459)**: a fix corrects restart targeting when a provider unit is owned by another user. The restart runs against the right unit instead of the current user's scope.
+- **Suite test hardening (PR #460)**: the provider test suite replaces a fixed-wait flake with an adaptive wait and makes a paid-grader test hermetic. No production behavior change.
+
+---
+
 ## [v3.23.0-fix.30.6]
 
 ### Added
