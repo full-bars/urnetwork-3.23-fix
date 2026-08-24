@@ -194,6 +194,26 @@ func TestParseEvmAddressArg(t *testing.T) {
 	}
 }
 
+func TestParseEvmAddressArg_UppercasePrefix(t *testing.T) {
+	valid20 := "0102030405060708090a0b0c0d0e0f1011121314"
+	var want [20]byte
+	for i := range want {
+		want[i] = byte(i + 1)
+	}
+
+	// parseBytes32Arg's "0X" (uppercase prefix) case is covered above;
+	// parseEvmAddressArg shares the same TrimPrefix("0x")/TrimPrefix("0X")
+	// logic and deserves the same regression coverage on its own, since a
+	// future refactor could accidentally decouple the two implementations.
+	got, err := parseEvmAddressArg("--registrant", "0X"+valid20)
+	if err != nil {
+		t.Fatalf("parseEvmAddressArg(%q) unexpected error: %s", "0X"+valid20, err)
+	}
+	if got != want {
+		t.Errorf("parseEvmAddressArg(%q) = %x; want %x", "0X"+valid20, got, want)
+	}
+}
+
 // fixedEvmAddress builds a deterministic common.Address for use as the
 // `registrant` argument in snSignBindHead tests.
 func fixedEvmAddress(b byte) common.Address {
