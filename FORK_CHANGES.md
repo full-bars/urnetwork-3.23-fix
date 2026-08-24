@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.6
+**Current Version**: v3.23.0-fix.30.7
 
 ---
 
@@ -2931,3 +2931,38 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - The provider emits a periodic `[pqe]` log line alongside the existing tick logs that reports the live counts plus the rolling open totals.
 
 **How to Identify in New Upstream**: `pqe_tracker.go` and the `pqeDisplay`/`pqeTag` helpers in `transfer_encrypt.go` are fork additions.
+
+---
+
+## 135. Adaptive Paid and File Proxy Grading (PR #458)
+
+**Purpose**: Give every tracked paid and file-list proxy a real reachability grade, so trimming and the proxy summary reflect proxy health. Before this change those proxies were never graded.
+
+**Files Modified**: `proxy_grade_paid.go`, `proxy_grade_summary.go`, `proxy_table_probe.go`, `proxy_table_probe_integration_test.go`, `proxy_probe_adaptive_test.go`.
+
+**Change**:
+- The paid/file grading sweep now collects from the tracked `proxy.state` entries (the authoritative runtime list) and table-probes each one.
+- A sweep assigns an A-F reachability grade (`[proxy][grade] paid <addr> graded <tier>`) and prints a summary line.
+- Sampling is adaptive: a probe starts at `min_sample_width` (the paid grader forces 6) and only grows toward `max_sample_width` while the score stays within `pass_bar` plus or minus `border_line_band`. Clearly-good and clearly-dead proxies settle at the small width.
+- A reachable-but-undecidable pass (too few sampled hosts resolvable from the box) marks the proxy pending instead of assigning a fabricated grade.
+- A per-tick budget caps one 5-minute sweep at `max_paid_probes_per_tick` (default 200), oldest-stale first.
+- A stage-0 one-dial SOCKS5 and API reachability gate drops a dead paid proxy before a sample block.
+- Grades are applied only to the current desired set; a concurrent reload changing credentials drops the stale result. A cancelled sweep persists nothing.
+
+**Impact**: Proxy trimming and proxy summary now see paid/file proxy health. Operators get a new `proxy_probe.json` config surface.
+
+**How to Identify in New Upstream**: none of this exists upstream; the fork's `proxy_grade_paid.go` sweep + `proxy_table_probe.go` adaptive sampling are fork additions.
+
+---
+
+## 136. Tool Restart-Scope Fix (PR #459)
+
+**Purpose**: Restore approved emoji/sectioned help and correct restart targeting for user-owned units.
+
+**Files Modified**: `internal/urnettools/*`, `cmd/urnet-tools`, `cmd/urnet-docker`.
+
+**Change**:
+- `urnet-tools` and `urnet-docker` restore the approved emoji and sectioned per-command help output.
+- A fix corrects restart targeting when a provider unit is owned by another user; the restart runs against the right unit instead of the current user's scope.
+
+**Impact**: CLI help restores the approved styling; restarts hit the correct user unit.
