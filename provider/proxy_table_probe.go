@@ -73,7 +73,7 @@ type proxyTableProbeConfig struct {
 	// BorderlineBand of PassBar after the base SampleWidth, where a wider
 	// sample decides quality with more confidence). Clearly-good and
 	// clearly-dead proxies stop at (or before) SampleWidth, spending paid
-	// probe bandwidth only in the uncertain middle. Default 30. Clamped to
+	// probe bandwidth only in the uncertain middle. Default 36. Clamped to
 	// <= ProbeHostCount/2 like SampleWidth. Effective when >= SampleWidth.
 	MaxSampleWidth int
 	// BorderlineBand is the half-width (around PassBar) below which a
@@ -569,24 +569,6 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	// answered the only 2 resolvable hosts must not get a confident 1.0
 	// (finding NEW-1). Cancellation carries no verdict (finding C1). Both leave
 	// the prior grade intact.
-	// resolvable = how many of the intended sample the box's resolver could
-	// answer: intended width minus hosts the box could not resolve. The
-	// abort-skipped tail counts as resolvable (the viability-abort already
-	// decided those hosts), which is what keeps a fail-fast aborted pass
-	// DECIDABLE — exactly the pre-existing regression test's expectation
-	// (width 20 aborts at 9 with 11 abort-skipped resolvables => 20 resolvable
-	// => 9 attempted >= quorum 10 is wrong; it's >= quorum on RESOLVABLE, and
-	// 20 resolvable/9 visited means the 9 visited ARE a decisive sample, so the
-	// OLD test asserted decidable). A DNS-gutted pass (few resolvable) is too
-	// thin to grade regardless of the abort.
-	// resolvable = how many of the intended sample the box's resolver could
-	// answer (intended width minus DNS-unresolvable hosts). The abort-skipped
-	// tail counts as resolvable: the viability-abort already DECIDED those
-	// hosts (it only stops when the bar is unreachable), which is what keeps a
-	// fail-fast aborted pass DECIDABLE. So the quorum is about the RESOLVABLE
-	// sample being large enough to trust — NOT about how many were attempted;
-	// an aborted 9/20 is a determinate verdict because all 20 were resolvable.
-	// A DNS-gutted pass (few resolvable) is too thin to grade regardless.
 	resolvable := res.SampleWidth - baseUnresolved - unresolvedGrowth
 	res.Decidable = ctx.Err() == nil && res.SampleWidth > 0 && res.Total > 0 && resolvable >= (res.SampleWidth+1)/2
 	// Score is OK / ATTEMPTED (matching upstream's Answered/Sent): hosts the
