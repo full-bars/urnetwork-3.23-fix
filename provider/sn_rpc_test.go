@@ -358,6 +358,47 @@ func TestSnReadHeadBindDigest_ShortReturnData(t *testing.T) {
 	}
 }
 
+func TestSnReadHeadBindDigest_BadChainIdFailsOverToNextEndpoint(t *testing.T) {
+	want := wantSnDigest()
+
+	// First endpoint answers eth_chainId with a non-hex value. Per
+	// snReadHeadBindDigest, a parseEthHexQuantity failure on eth_chainId
+	// must be treated as a per-endpoint failure (printed, then `continue`),
+	// not a fatal error — the loop must still try the next endpoint.
+	badChainId := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "eth_chainId" {
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":"0xzz"}`)
+			return
+		}
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}`)
+	}))
+	defer badChainId.Close()
+
+	good := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
+	defer good.Close()
+
+	digest, chainId, rpcUrl, err := snReadHeadBindDigest(context.Background(),
+		[]string{badChainId.URL, good.URL}, "0x1234", []byte{1, 2, 3})
+	if err != nil {
+		t.Fatalf("snReadHeadBindDigest should fail over past a malformed eth_chainId, got error: %s", err)
+	}
+	if rpcUrl != good.URL {
+		t.Errorf("rpcUrl = %q; want the second (working) endpoint %q", rpcUrl, good.URL)
+	}
+	if chainId != 1 {
+		t.Errorf("chainId = %d; want 1", chainId)
+	}
+	if digest != want {
+		t.Errorf("digest = %x; want %x", digest, want)
+	}
+}
+
 func TestSnReadHeadBindDigest_AllEndpointsFail(t *testing.T) {
 	bad1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
