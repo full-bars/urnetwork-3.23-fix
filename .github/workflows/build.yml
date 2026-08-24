@@ -197,13 +197,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
             ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
-            # :latest is the STABLE release — only on v3.23.0-fix.* tags.
-            # group=0 keeps the FULL semver tag (v3.23.0-fix.30.2) so
-            # docker pull with the exact release tag works (matches
-            # release notes, the shakedown, and docker.go). group=1
-            # stripped the v3.23.0-fix. prefix and broke those pulls.
-            type=match,pattern=v3\.23\.0-fix\..*,group=0
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') }}
+            # :latest is the STABLE release — only on v*-meso release tags.
+            # group=0 keeps the FULL tag (e.g. v2026.8.24-102938475-meso) so
+            # docker pull with the exact release tag works. A group=1
+            # variant would strip parts of the tag and break those pulls.
+            type=match,pattern=v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso,group=0
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && endsWith(github.ref, '-meso') }}
             # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
             type=sha,format=short
@@ -214,10 +213,10 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
           else
-            # For main branch, get the most recent provider tag. Scoped to
-            # v3.23.0-fix.* so unrelated tag schemes in this repo (e.g. the
-            # hub's Docker-only hub-docker-vX.Y.Z tags) can never get picked up here.
-            VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
+            # For main branch, get the most recent meso release tag. Scoped to
+            # *-meso so unrelated tag schemes in this repo can never get
+            # picked up here.
+            VERSION=$(git describe --tags --abbrev=0 --match 'v*-meso' 2>/dev/null || echo "v2026.1.1-0-meso")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
