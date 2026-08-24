@@ -464,8 +464,9 @@ func paidGradeSettingsMatch(s connect.ProxySettings, user, password string) bool
 
 // applyPaidProbeBudget caps a graded target list at budget, keeping the
 // oldest-stale-first (never-graded and longest-since-graded first). budget<=0
-// disables the cap. The sort is stable so same-staleness targets keep their
-// (deterministic) collection order.
+// disables the cap. The sort is stable AND tie-broken by address: without the
+// address tie-break, equal-staleness targets would keep the source map's
+// randomized iteration order and the budget cut would pick an arbitrary subset.
 func applyPaidProbeBudget(targets []gradeTarget, budget int) []gradeTarget {
 	if budget <= 0 || len(targets) <= budget {
 		return targets
@@ -475,6 +476,15 @@ func applyPaidProbeBudget(targets []gradeTarget, budget int) []gradeTarget {
 		// proxy is the most urgent to evaluate. Then oldest LastGraded first.
 		if targets[i].snapshotGradedAt.IsZero() != targets[j].snapshotGradedAt.IsZero() {
 			return targets[i].snapshotGradedAt.IsZero()
+		}
+		// Deterministic tie-break for equal staleness (coderabbit review): the
+		// input comes from state.Proxies map iteration, whose order is
+		// intentionally randomized in Go. Without this, equal-staleness targets
+		// keep a random stable order and the budget cut below picks an arbitrary
+		// subset each tick -- a deferred proxy could starve indefinitely.
+		// Addresses are unique, so `<` is a total order.
+		if targets[i].snapshotGradedAt.Equal(targets[j].snapshotGradedAt) {
+			return targets[i].addr < targets[j].addr
 		}
 		return targets[i].snapshotGradedAt.Before(targets[j].snapshotGradedAt)
 	})
