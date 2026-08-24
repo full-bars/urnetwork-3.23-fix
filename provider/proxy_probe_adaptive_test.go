@@ -384,14 +384,6 @@ func filepathJoinHome(t *testing.T, name string) string {
 func seedOnlyOneProbeHost(t *testing.T, address string) {
 	t.Helper()
 	cfg := resolveProxyTableProbeConfig()
-	// Pin the pass counter for the whole test so a concurrent URL fetch (which
-	// advances tableProbePassCounter) cannot move the probe's internal seed
-	// between the block seeded below (base + growth widths) and the probe read
-	// inside runPaidProxyGradeOnce — an unseeded block hits real DNS / the
-	// fail-cache and the Pending/LastGraded asserts flake (same class as the
-	// ViabilityAbort pin-fix, CR review MINOR).
-	origPass := tableProbePassCounter.Load()
-	tableProbePassCounter.Store(origPass)
 	pass := tableProbePassCounter.Load()
 	// Collect the full base+growth block so every host the grader might dial
 	// is accounted and isolated from any prior test's DNS cache state.
@@ -420,7 +412,6 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 	}
 	probeDNSCache.Unlock()
 	t.Cleanup(func() {
-		tableProbePassCounter.Store(origPass)
 		probeDNSCache.Lock()
 		defer probeDNSCache.Unlock()
 		for _, h := range hosts {
