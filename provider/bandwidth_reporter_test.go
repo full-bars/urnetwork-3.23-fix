@@ -124,6 +124,26 @@ func TestResolveAlertWebhook_FallsBackToEnvWhenNoOverrideFile(t *testing.T) {
 	}
 }
 
+// TestResolveAlertWebhook_EmptyOverrideDisablesAlerting pins the "off"
+// behavior: an operator clearing the override file (writing it empty) must
+// disable alerting at runtime, not silently fall back to the startup env
+// webhook. Regression for the v != "" check that made the empty file fall
+// through to envFallback, leaving no way to turn alerting off.
+func TestResolveAlertWebhook_EmptyOverrideDisablesAlerting(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "alert_webhook"), []byte("  \n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveAlertWebhook("https://fallback.example.com"); got != "" {
+		t.Fatalf("expected empty override file to disable alerting (got %q), not fall back to env", got)
+	}
+}
+
 // TestBuildHeartbeat_NoProxiesConfigured is the deterministic case for
 // buildHeartbeat: with no proxies registered in the global bandwidth map,
 // it must still return a well-formed report (node/host set, zeroed
