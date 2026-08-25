@@ -40,36 +40,72 @@ jobs:
             ${{ runner.os }}-gobuild-
 
       - name: Build provider
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Build hub
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Build urnet-tools (Go tool)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Build urnet-docker (Go tool, container variant)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Upload provider artifact
         uses: actions/upload-artifact@v4

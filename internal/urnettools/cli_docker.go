@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 // defaultLogTailLines is how many lines `logs` prints before following.
@@ -290,10 +292,33 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		return err
 	}
 	if t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" {
-		// No container target resolved. This is the host urnet-docker
-		// self-update; pass the ORIGINAL args so host --tag/--digest/--url and
-		// its unknown-flag/help behavior surface unchanged.
-		return cmdSelfUpdate(args, force, dryRun)
+		// No container target resolved (LA1 defect 1, 2026-08-24): bare
+		// `update` must NOT silently become a host self-update when
+		// provider containers exist. With exactly ONE container, target
+		// it; with several, refuse and list them; with none, fall through
+		// to the host self-update (nothing else to update).
+		//
+		// Host self-update pinning options (--tag/--digest/--url) say the
+		// user asked to update the HOST tool, not a container. Route those
+		// to the host self-update so the options take effect, never to the
+		// lone-container auto-select below (CodeRabbit PR #465).
+		if hasSelfUpdateArg(args) {
+			return cmdSelfUpdate(args, force, dryRun)
+		}
+		switch len(providers) {
+		case 0:
+			return cmdSelfUpdate(args, force, dryRun)
+		case 1:
+			t = Target{Unit: providers[0].Unit}
+			fmt.Printf("no target given; updating the lone provider container %s (use `self-update` for the host tool)\n", providers[0].Unit)
+		default:
+			var b strings.Builder
+			fmt.Fprintf(&b, "%d provider containers found — name one (e.g. `update <container>`), or use `self-update` for the host tool:\n", len(providers))
+			for _, p := range providers {
+				fmt.Fprintf(&b, "  %s\n", p.Unit)
+			}
+			return fmt.Errorf("%s", b.String())
+		}
 	}
 	if len(rest) > 0 {
 		return fmt.Errorf("unexpected argument(s) after update target: %v", rest)
@@ -321,6 +346,13 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	if err := repairContainerUpdateScript(p.Unit); err != nil {
 		return fmt.Errorf("prepare %s for in-place update: %w", p.Unit, err)
 	}
+	// Read the PRE-update live version BEFORE the in-place swap. After the
+	// swap the on-disk binary is already the new version, so capturing the
+	// baseline here (post-swap) would make the difference check below
+	// unsatisfiable — every real update would falsely fail and force an
+	// unplanned container cycle (ox-alpha C1, PR #465). Read it first so
+	// waitForLiveVersion can detect the bump to the new release.
+	beforeVer := strings.TrimSpace(containerLiveVersion(p.Unit))
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
 	if err := containerExecByName(p.Unit, "urnet-tools", "update"); err != nil {
 		return err
@@ -337,14 +369,96 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 			return fmt.Errorf("restart container %s after update: %w", p.Unit, err)
 		}
 	}
-	return nil
+	if beforeVer == "" {
+		// Could not read the running binary's version pre-swap (the image's
+		// --version output is empty/unparseable). Fall back to confirming the
+		// provider process is up after the swap.
+		if containerProviderAlive(p.Unit) {
+			fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
+			return nil
+		}
+		return fmt.Errorf("could not confirm the provider process inside %s after the update — check `docker logs %s`", p.Unit, p.Unit)
+	}
+	// No-op: the in-container update finished but the live version is
+	// unchanged (the container already ran the target release). Report it and
+	// stop — do not bounce a healthy production container or fail hard
+	// (ox-alpha M2, PR #465).
+	if cur := strings.TrimSpace(containerLiveVersion(p.Unit)); cur == beforeVer {
+		fmt.Printf("%s is already at %s (no change).\n", p.Unit, cur)
+		return nil
+	}
+	if v, ok := waitForLiveVersion(p.Unit, beforeVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s (was %s).\n", p.Unit, v, beforeVer)
+		return nil
+	}
+	// The swap moved the on-disk binary to a new version but the provider did
+	// not come back up on it within the window; cycle the container once and
+	// re-verify before declaring failure.
+	fmt.Printf("provider did not come back on a new version; cycling container %s once...\n", p.Unit)
+	if err := containerRestartByName(p.Unit); err != nil {
+		return fmt.Errorf("cycle container %s after update: %w", p.Unit, err)
+	}
+	if v, ok := waitForLiveVersion(p.Unit, beforeVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s (after one cycle).\n", p.Unit, v)
+		return nil
+	}
+	return fmt.Errorf("container %s did not come up on a new version within the wait window — check `docker logs %s`", p.Unit, p.Unit)
+}
+
+// containerProviderAlive reports whether a provider process is running
+// inside the named container (pgrep via docker exec). Declared as a var
+// (not a func) so tests can inject a mock (CR #1).
+var containerProviderAlive = func(name string) bool {
+	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
+		"pgrep -f 'urnetwork_.*_stable provide' >/dev/null 2>&1")
+	return cmd.Run() == nil
+}
+
+// containerLiveVersion reads the provider binary's --version inside the
+// container. Best effort: empty string when unreadable. Declared as a var
+// (not a func) so tests can inject a mock (CR #1).
+var containerLiveVersion = func(name string) string {
+	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
+		"for b in /app/urnetwork_*_stable; do [ -x \"$b\" ] && \"$b\" --version 2>/dev/null && break; done")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // containerRunning reports whether the named container is currently running.
-func containerRunning(name string) bool {
+// Declared as a var (not a func) so tests can inject a mock (CR #1).
+var containerRunning = func(name string) bool {
 	cmd := exec.Command(dockerCLI(), "inspect", "-f", "{{.State.Running}}", name)
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// waitForLiveVersion polls until the container's live provider version
+// DIFFERS from prev (i.e. an in-place binary swap actually landed a new
+// version) or until timeout. Returns the observed version on success.
+//
+// It compares against the PRE-update live reading, NOT the docker image tag
+// (p.Version): the image tag is fixed at container-creation time and never
+// changes on an in-place binary swap, while the in-container update picks
+// its own target via latestRelease() and never reports it back. Comparing
+// against the tag produced a false failure on a real update and a false
+// success on a no-op update (CR #1). A no-op update (same version) will now
+// correctly report failure rather than a false success.
+func waitForLiveVersion(name, prev string, timeoutSec int) (string, bool) {
+	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
+	for {
+		if containerRunning(name) && containerProviderAlive(name) {
+			if v := containerLiveVersion(name); v != "" && v != prev {
+				return v, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", false
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // repairContainerUpdateScript applies two safe, idempotent fixes to a
@@ -389,12 +503,17 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		}
 		return t, rest, nil
 	}
+	// Host self-update pinning (--tag/--digest/--url) means the user asked to
+	// update the HOST tool. Its value may coincidentally equal a container
+	// name; never treat it as a container target, and return empty so
+	// cmdDockerUpdate routes to the host self-update (ox-alpha L2, PR #465).
+	if hasSelfUpdateArg(args) {
+		return Target{}, nil, nil
+	}
 	// A bare container name is accepted as the target ONLY as the first
-	// positional, and only when it exactly matches a discovered container. This
-	// avoids confusing a host self-update option value (e.g. `--tag <value>`)
-	// or a trailing argument for a container target. The remaining arguments are
-	// returned so the caller can validate them rather than silently dropping
-	// them (e.g. `update urnet-test extra` must not ignore `extra`).
+	// positional, and only when it exactly matches a discovered container. The
+	// remaining arguments are returned so the caller can validate them rather
+	// than silently dropping them (e.g. `update urnet-test extra`).
 	first := -1
 	for i, a := range args {
 		if strings.HasPrefix(a, "-") {
@@ -411,9 +530,19 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 				return Target{Unit: p.Unit}, rest, nil
 			}
 		}
+		// A bare container name was given but matches nothing. Refuse instead
+		// of silently falling through to the lone-container auto-select, which
+		// would update a DIFFERENT container than the one named (ox-alpha H1,
+		// PR #465).
+		names := make([]string, 0, len(providers))
+		for _, p := range providers {
+			names = append(names, p.Unit)
+		}
+		sort.Strings(names)
+		return Target{}, nil, fmt.Errorf("no provider container named %q — available: %s (use `self-update` for the host tool)", args[first], strings.Join(names, ", "))
 	}
 	// No bare container target: fall through to the host self-update and let it
-	// interpret the args (flags, --tag value, or a typo).
+	// interpret the args (remaining flags or a typo).
 	return Target{}, nil, nil
 }
 
@@ -429,6 +558,24 @@ func hasAnyTargetFlag(args []string) bool {
 		if strings.HasPrefix(a, "--unit=") || strings.HasPrefix(a, "--user=") ||
 			strings.HasPrefix(a, "--network=") || strings.HasPrefix(a, "--network-id=") ||
 			strings.HasPrefix(a, "--state-dir=") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSelfUpdateArg reports whether args contain a host self-update pinning
+// option (--tag/--digest/--url), in either the bare (`--tag X`) or
+// `--flag=value` form. When present, an update with no container target must
+// be treated as a HOST self-update, never auto-targeted to a lone container
+// (a regression introduced by the D1 auto-select: `update --tag vX` on a
+// single-container box silently updated the container and dropped --tag).
+func hasSelfUpdateArg(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "--tag" || a == "--digest" || a == "--url":
+			return true
+		case strings.HasPrefix(a, "--tag=") || strings.HasPrefix(a, "--digest=") || strings.HasPrefix(a, "--url="):
 			return true
 		}
 	}
