@@ -296,6 +296,14 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// provider containers exist. With exactly ONE container, target
 		// it; with several, refuse and list them; with none, fall through
 		// to the host self-update (nothing else to update).
+		//
+		// Host self-update pinning options (--tag/--digest/--url) say the
+		// user asked to update the HOST tool, not a container. Route those
+		// to the host self-update so the options take effect, never to the
+		// lone-container auto-select below (CodeRabbit PR #465).
+		if hasSelfUpdateArg(args) {
+			return cmdSelfUpdate(args, force, dryRun)
+		}
 		switch len(providers) {
 		case 0:
 			return cmdSelfUpdate(args, force, dryRun)
@@ -524,6 +532,24 @@ func hasAnyTargetFlag(args []string) bool {
 		if strings.HasPrefix(a, "--unit=") || strings.HasPrefix(a, "--user=") ||
 			strings.HasPrefix(a, "--network=") || strings.HasPrefix(a, "--network-id=") ||
 			strings.HasPrefix(a, "--state-dir=") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSelfUpdateArg reports whether args contain a host self-update pinning
+// option (--tag/--digest/--url), in either the bare (`--tag X`) or
+// `--flag=value` form. When present, an update with no container target must
+// be treated as a HOST self-update, never auto-targeted to a lone container
+// (a regression introduced by the D1 auto-select: `update --tag vX` on a
+// single-container box silently updated the container and dropped --tag).
+func hasSelfUpdateArg(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "--tag" || a == "--digest" || a == "--url":
+			return true
+		case strings.HasPrefix(a, "--tag=") || strings.HasPrefix(a, "--digest=") || strings.HasPrefix(a, "--url="):
 			return true
 		}
 	}

@@ -24,7 +24,7 @@ jobs:
 
       - name: Build urnet-docker
         env:
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
