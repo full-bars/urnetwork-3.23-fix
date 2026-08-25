@@ -41,7 +41,7 @@ jobs:
 
       - name: Build provider
         env:
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
           for attempt in 1 2 3; do
@@ -58,7 +58,7 @@ jobs:
 
       - name: Build hub
         env:
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
           for attempt in 1 2 3; do
@@ -75,7 +75,7 @@ jobs:
 
       - name: Build urnet-tools (Go tool)
         env:
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
           for attempt in 1 2 3; do
@@ -92,7 +92,7 @@ jobs:
 
       - name: Build urnet-docker (Go tool, container variant)
         env:
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
           for attempt in 1 2 3; do

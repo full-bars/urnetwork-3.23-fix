@@ -119,7 +119,7 @@ jobs:
           GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
           GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
           DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
-          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           # Build the provider binary and mint a fresh JWT for the shakedown
           # account. The credentials are injected by GitHub, never written
