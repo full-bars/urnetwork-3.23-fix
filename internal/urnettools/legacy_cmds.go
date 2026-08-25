@@ -78,12 +78,15 @@ func isUserUnit(unit string) bool {
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("start", args)
 	if err != nil {
 		return err
 	}
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
@@ -96,12 +99,15 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return unitCommand(p, "start")
 }
 func cmdStop(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("stop", args)
 	if err != nil {
 		return err
 	}
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if dryRun {
@@ -113,12 +119,15 @@ func cmdStop(args []string, force, dryRun bool) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("restart", args)
 	if err != nil {
 		return err
 	}
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
