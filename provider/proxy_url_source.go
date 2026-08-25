@@ -1082,6 +1082,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	for !proxyWarmupDone.Load() {
 		select {
 		case <-ctx.Done():
+			// CR #5: cancelled during warmup — publish a distinct
+			// "inactive" state so countdownLine() doesn't keep showing
+			// the stale "pending" it was set to above.
+			setURLFetcherState("inactive")
 			return
 		case <-time.After(5 * time.Second):
 		}
@@ -1095,6 +1099,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	// seconds, then fetches once as normal.
 	select {
 	case <-ctx.Done():
+		// CR #5: cancelled during the startup cooldown — publish a
+		// distinct "inactive" state so countdownLine() doesn't keep
+		// showing the stale "pending".
+		setURLFetcherState("inactive")
 		return
 	case <-time.After(probeStartupCooldown):
 	}
