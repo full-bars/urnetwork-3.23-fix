@@ -28,9 +28,26 @@ jobs:
           go-version: "1.27"
 
       - name: Build provider + tool
+        env:
+          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
         run: |
-          go build -o /tmp/provider ./provider/
-          go build -o /tmp/urnet-tools ./cmd/urnet-tools/
+          # Retry logic for transient Go module-proxy errors (stream INTERNAL_ERROR
+          # from proxy.golang.org — not a code issue; see PR #465 smoke failure).
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o /tmp/provider ./provider/ && \
+               go build -o /tmp/urnet-tools ./cmd/urnet-tools/; then
+              echo "Build succeeded"
+              break
+            fi
+            if [ $attempt -lt 3 ]; then
+              echo "Build failed, retrying in 10s..."
+              sleep 10
+            else
+              echo "Build failed after 3 attempts"
+              exit 1
+            fi
+          done
 
       - name: Mint a real JWT (gauntlet account, production-account guard)
         run: |
