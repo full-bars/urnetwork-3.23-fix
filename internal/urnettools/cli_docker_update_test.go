@@ -78,6 +78,38 @@ func TestHasSelfUpdateArg(t *testing.T) {
 	}
 }
 
+// A bare container name that matches nothing must be a loud error, never a
+// silent fall-through to the lone-container auto-select (which would update a
+// DIFFERENT container than the one named) — ox-alpha H1, PR #465.
+func TestUpdateTargetFromArgs_UnmatchedBareNameErrors(t *testing.T) {
+	providers := []Provider{{User: "docker:ps", Unit: "ps"}}
+	_, _, err := updateTargetFromArgs([]string{"prod2"}, providers)
+	if err == nil {
+		t.Fatal("expected an error for an unmatched bare container name")
+	}
+	if !strings.Contains(err.Error(), "no provider container named \"prod2\"") ||
+		!strings.Contains(err.Error(), "ps") {
+		t.Fatalf("error should name the missing container and list available ones: %v", err)
+	}
+	// A valid name still resolves.
+	if tt, _, err := updateTargetFromArgs([]string{"ps"}, providers); err != nil || tt.Unit != "ps" {
+		t.Fatalf("valid name should still resolve: tt=%+v err=%v", tt, err)
+	}
+}
+
+// A self-update pin value must never be treated as a container name, even if
+// it coincidentally equals one — ox-alpha L2, PR #465.
+func TestUpdateTargetFromArgs_SelfUpdateValueNotContainer(t *testing.T) {
+	providers := []Provider{{User: "docker:v1", Unit: "v1"}}
+	tt, _, err := updateTargetFromArgs([]string{"--tag", "v1"}, providers)
+	if err != nil {
+		t.Fatalf("self-update args are valid: %v", err)
+	}
+	if tt.Unit != "" {
+		t.Fatalf("--tag value must not resolve to a container, got %+v", tt)
+	}
+}
+
 func TestUpdateTargetFromArgs_ExplicitFlagWins(t *testing.T) {
 	providers := []Provider{
 		{User: "docker:a", Unit: "a"},
