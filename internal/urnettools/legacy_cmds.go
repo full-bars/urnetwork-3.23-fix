@@ -82,9 +82,13 @@ func cmdStart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "start")
 	}
 	if err := guardSystemdProvider(p); err != nil {
 		return err
@@ -96,16 +100,26 @@ func cmdStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "start")
+	fmt.Printf("starting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "start"); err != nil {
+		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("started %s\n", providerLabel(p))
+	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
 	t, err := guardLifecycleArgs("stop", args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "stop")
 	}
 	if err := guardSystemdProvider(p); err != nil {
 		return err
@@ -114,7 +128,13 @@ func cmdStop(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "stop")
+	fmt.Printf("stopping %s...\n", providerLabel(p))
+	if err := unitCommand(p, "stop"); err != nil {
+		fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("stopped %s\n", providerLabel(p))
+	return nil
 }
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
@@ -123,9 +143,13 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "restart")
 	}
 	if err := guardSystemdProvider(p); err != nil {
 		return err
@@ -137,7 +161,13 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run
 	}
-	return unitCommand(p, "restart")
+	fmt.Printf("restarting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "restart"); err != nil {
+		fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("restarted %s\n", providerLabel(p))
+	return nil
 }
 
 // discoverDockerFn is the docker-provider discovery function, as a var so
