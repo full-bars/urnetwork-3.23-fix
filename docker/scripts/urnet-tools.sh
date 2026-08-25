@@ -311,9 +311,22 @@ do_update() {
     waited=0
     while pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; do
         if [ "$waited" -ge "$shutdown_timeout" ]; then
-            echo "ERROR: provider process still running ${shutdown_timeout}s after termination attempt."
-            rm -f "$marker_dir/update-pending"
-            exit 1
+            # The binary swap ALREADY succeeded; a slow graceful shutdown
+            # must not fail the whole update (LA1 defect 2: exit 1 on
+            # success). Escalate to SIGKILL and re-check briefly.
+            echo "WARNING: provider still running ${shutdown_timeout}s after SIGTERM — sending SIGKILL."
+            pkill -KILL -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || true
+            kill_wait=0
+            while pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; do
+                if [ "$kill_wait" -ge 5 ]; then
+                    echo "ERROR: provider process survived SIGKILL — update not verified."
+                    rm -f "$marker_dir/update-pending"
+                    exit 1
+                fi
+                sleep 1
+                kill_wait=$((kill_wait + 1))
+            done
+            break
         fi
         sleep 1
         waited=$((waited + 1))

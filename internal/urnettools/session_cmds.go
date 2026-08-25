@@ -293,6 +293,11 @@ load restores a bundle, backing up the current state first, and prompts to
 restart. The loaded session must match the same URnetwork account unless
 --allow-different-account is given. -f skips the confirmation prompt; -n prints
 the plan and changes nothing.
+
+Examples:
+  urnet-tools session save ~/urnet-session.enc               # Linux / macOS
+  urnet-tools session save C:\Users\<you>\urnet-session.enc   # Windows (\ or / separators)
+  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service
 `)
 		return nil
 	}
