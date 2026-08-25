@@ -1,0 +1,27 @@
+## Findings
+
+**[HIGH] AI.md:144-148 — Dedupe claim is false; duplication caused real drift** — README.md:46-62 ("⚡ Quick Start") and AI.md:124-148 ("Quick Start: Install the Provider" → "Add Proxies") both describe the exact same install→auth→add-proxies flow, independently worded. They have drifted: AI.md:145-147 gives
+```
+urnet-tools proxy add file proxies.txt
+urnet-tools proxy add url https://...
+```
+but the actual CLI (internal/urnettools/cobra.go:49,441) only supports `urnet-tools proxy add <file>` (e.g. `urnet-tools proxy add ~/proxies.txt`) — no `file`/`url` subcommands exist. README.md:60 has the correct syntax. This is a concrete, user-facing consequence of the duplication the commit message claims doesn't exist. Fix: make AI.md's Quick Start a pointer to README's Quick Start (or docs/Adding-Proxies.md) instead of a parallel copy, and correct the `proxy add` example.
+
+**[MEDIUM] docs/Installation.md:97 — "typo fix" silently changed the doc's claim about `optimize` on macOS, without verifying it** — Old text: "macOS doesn't support `ecoramlogs` or `optimize`". New text: "macOS doesn't support `eco` or `ramlogs`" — `optimize` was dropped entirely, and the note now implies `optimize` works fine on macOS ("All other commands work natively"). But internal/urnettools/legacy_cmds.go:882-886 (`optimizeFor`) has no darwin branch — Darwin falls through to `optimizeLinux()` (legacy_cmds.go:895), which runs Linux-only `sysctl -w net.core.rmem_max=...` etc. On macOS these sysctl keys don't exist; failures there are caught only as "password/incorrect/sudoers" (line ~912) and otherwise just print a warning per key (line ~917) — the command still prints "optimize: done" and exits 0. So `optimize` on macOS silently no-ops while claiming success — arguably *worse* than the eco/ramlogs case, and the doc now tells users the opposite of what happens. This wasn't verified before the "fix" per the commit's own dedupe-sweep claim; it should have been. Fix: restore `optimize` to the unsupported/limited list, or word it as "optimize has no effect on macOS (uses Linux-specific sysctl keys)."
+
+**[LOW] FORK_CHANGES.md — section numbering out of order (pre-existing, not introduced by this diff)** — sections 13/14/16 appear after "## Questions for Future Merges?" (line 385) rather than in numeric sequence with 10/11/12/15. Not a duplication issue, but worth a follow-up cleanup pass since Stage 2 explicitly audited this file.
+
+### Dedupe claim
+**LIST-THE-DUPES** (contradicts the commit's "no duplication" assertion): README.md Quick Start vs AI.md Quick Start (see HIGH finding above) — same content, different/stale command syntax. PROJECT_STRUCTURE.md and the bulk of FORK_CHANGES.md are otherwise distinct and not duplicative. The wiki/legacy-backup/superpowers dir claim is correct — `ls` confirms none of those directories exist in this tree.
+
+### C. `ecoramlogs` fix
+The `eco`/`ramlogs` correction itself is correct: both are systemd-drop-in-based (legacy_cmds.go:805-816, `unitDropinDir`/`restartAfterDropin`), genuinely unavailable without systemd (i.e., on macOS), and match the command table at docs/Installation.md:119-120 and AI.md. No other `ecoramlogs`/stale-typo occurrences found elsewhere in the repo (grep only hits legitimate `optimize` command references). The regression is the *silent removal* of `optimize` from the exclusion note (see MEDIUM finding), not the `eco`/`ramlogs` part.
+
+### STAGE3_SYNC_PLAN.md
+Reviewed in full (65 lines). Repo C is correctly gated behind explicit per-gate approval (lines 10-11, 45-55); privacy scrub gate is concrete and greppable (lines 15-18, 49-51); "3.23-fix NOT frozen until migration" is stated without contradiction (lines 26, 39-40); the plan is internally consistent about Repo B not being cloned locally — it flags this at line 22 and explicitly marks the Repo B mirror edit as PENDING rather than assuming B's presence (line 64), and lists the exact B path ambiguity as an open question (line 58). No factual errors spotted in repo names/paths. Dual-apply mechanism (lines 28-36) is concrete enough to follow, including a per-change checklist.
+
+**APPROVE-AS-IS** for STAGE3_SYNC_PLAN.md.
+
+### VERDICT: REQUEST_CHANGES
+
+The plan document and the `eco`/`ramlogs` fix are sound, but the commit's two core claims don't hold up: the "no duplication" sweep missed a real, user-facing case of drift (stale `proxy add` syntax in AI.md), and the `optimize`-on-macOS note was weakened without verifying against the actual platform-dispatch code, making the doc actively misleading about what happens when a macOS user runs `optimize`.
