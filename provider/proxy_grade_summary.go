@@ -166,13 +166,29 @@ func readProxyGradesConfig() proxyGradesConfig {
 }
 
 // Next-probe timing, published by the fetch + reaper loops so the summary
-// can report honest countdowns.
+// can report honest countdowns. urlFetcherState explains WHY no countdown
+// exists when nextFetchProbeAt is zero: "" = state unknown/legacy,
+// "none" = no URL sources configured (fetch loop never started),
+// "pending" = sources exist but the first fetch has not happened yet.
 var (
 	nextFetchProbeAtMu   sync.Mutex
 	nextFetchProbeAt     = time.Time{}
+	urlFetcherState      string
 	nextGradeRefreshAtMu sync.Mutex
 	nextGradeRefreshAt   = time.Time{}
 )
+
+func setURLFetcherState(s string) {
+	nextFetchProbeAtMu.Lock()
+	defer nextFetchProbeAtMu.Unlock()
+	urlFetcherState = s
+}
+
+func getURLFetcherState() string {
+	nextFetchProbeAtMu.Lock()
+	defer nextFetchProbeAtMu.Unlock()
+	return urlFetcherState
+}
 
 func setNextFetchProbeAt(t time.Time) {
 	nextFetchProbeAtMu.Lock()
@@ -450,7 +466,17 @@ func countdownLine() string {
 		}
 		b.WriteString(" in " + d.Round(time.Second).String())
 	} else {
-		b.WriteString(" unknown (fetcher idle)")
+		// Zero countdown: say WHY honestly instead of the old opaque
+		// "unknown (fetcher idle)" (LA1 defect 5 — confirmed expected
+		// state, wording only).
+		switch getURLFetcherState() {
+		case "none":
+			b.WriteString(" n/a (no URL sources configured)")
+		case "pending":
+			b.WriteString(" pending (waiting for first fetch: warmup + startup cooldown)")
+		default:
+			b.WriteString(" unknown (fetcher has not reported a schedule)")
+		}
 	}
 	nextGradeRefreshAtMu.Lock()
 	refreshAt := nextGradeRefreshAt
