@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,27 +92,19 @@ func providerFromUnit(unit, user string) Provider {
 	p.Network, p.NetworkID, p.JWTExpires = netName, netID, exp
 	if jwtErr != nil {
 		// Distinguish "no identity" from "identity unreadable": a
-		// permission error on another account's state dir must not print
-		// as a blank-but-valid net= field (LA1 6c). Any other decode
-		// failure (missing/corrupt) keeps the old silent-empty behavior.
-		if _, statErr := os.Stat(jwtPath); statErr == nil {
-			if !readableByCurrentUser(p.StateDir) {
-				p.IdentityRestricted = true
-			}
+		// permission error on another account's state dir (or on the jwt
+		// file itself) must not print as a blank-but-valid net= field
+		// (LA1 6c). Go 1.27 maps os.ReadFile's *os.PathError to
+		// fs.ErrPermission, so a permission-denied on the jwt file itself
+		// is now caught directly — the old readableByCurrentUser probe
+		// missed that case (it only checked the parent dir). Any other
+		// decode failure (missing/corrupt) keeps the old silent-empty
+		// behavior.
+		if errors.Is(jwtErr, fs.ErrPermission) {
+			p.IdentityRestricted = true
 		}
 	}
 	return p
-}
-
-// readableByCurrentUser reports whether the current process can actually
-// open files in dir (a cheap probe; os.Getuid-based checks miss ACLs).
-func readableByCurrentUser(dir string) bool {
-	f, err := os.Open(dir)
-	if err != nil {
-		return false
-	}
-	f.Close()
-	return true
 }
 
 // Discover returns every provider on the box: running processes across all

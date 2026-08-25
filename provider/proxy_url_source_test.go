@@ -465,6 +465,45 @@ func TestRunProxyURLFetcher_StartupCooldownDefersFirstFetch(t *testing.T) {
 	if n := requests.Load(); n != 0 {
 		t.Fatalf("fetcher made %d request(s) before the startup cooldown elapsed — the cooldown must defer the first fetch", n)
 	}
+
+	// CR #5: cancellation during the startup cooldown must publish a
+	// distinct "inactive" state (not leave the stale "pending" it was set
+	// to before the cooldown select).
+	if s := getURLFetcherState(); s != "inactive" {
+		t.Fatalf("after cooldown cancellation urlFetcherState = %q, want \"inactive\"", s)
+	}
+}
+
+// TestRunProxyURLFetcher_WarmupCancelSetsInactiveState pins CR #5 for the
+// OTHER early-return path: when the context is cancelled while the fetcher is
+// still parked in the file-proxy warmup loop (proxyWarmupDone still false),
+// it must also publish "inactive" instead of the stale "pending".
+func TestRunProxyURLFetcher_WarmupCancelSetsInactiveState(t *testing.T) {
+	withTempHome(t)
+	// Keep warmup incomplete so the fetcher parks in the warmup loop.
+	proxyWarmupDone.Store(false)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runProxyURLFetcher(ctx, []string{"http://example.invalid/urls"}, time.Hour, 0, "", 0, true)
+		close(done)
+	}()
+
+	// Cancel while still in warmup; the fetcher must publish "inactive".
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runProxyURLFetcher did not stop after context cancellation during warmup")
+	}
+
+	if s := getURLFetcherState(); s != "inactive" {
+		t.Fatalf("after warmup cancellation urlFetcherState = %q, want \"inactive\"", s)
+	}
 }
 
 // TestResolveSelfHealEnabled_Override covers the `urnet-tools self-heal
