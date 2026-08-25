@@ -79,6 +79,10 @@ Subcommands:
   remove-dead            remove dead/degraded proxies (single target)
   trim <N>               hold running proxies at N, shed the A-F-worst (single target)
 
+Examples (proxy add):
+  urnet-tools proxy add ~/proxies.txt                 # Linux / macOS
+  urnet-tools proxy add C:\Users\<you>\proxies.txt     # Windows (\ or / separators)
+
 Targets and batch flags work as for other commands (--unit/--user/--network,
 --all/--include/--exclude/--select). See 'urnet-tools help' for targeting.
 `)
