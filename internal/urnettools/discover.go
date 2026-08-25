@@ -85,8 +85,32 @@ func providerFromUnit(unit, user string) Provider {
 	if p.StateDir == "" {
 		return p // no resolvable state dir — listed, but ungraded
 	}
-	p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
+	jwtPath := filepath.Join(p.StateDir, "jwt")
+	netName, netID, exp, jwtErr := decodeJWT(jwtPath)
+	p.Network, p.NetworkID, p.JWTExpires = netName, netID, exp
+	if jwtErr != nil {
+		// Distinguish "no identity" from "identity unreadable": a
+		// permission error on another account's state dir must not print
+		// as a blank-but-valid net= field (LA1 6c). Any other decode
+		// failure (missing/corrupt) keeps the old silent-empty behavior.
+		if _, statErr := os.Stat(jwtPath); statErr == nil {
+			if !readableByCurrentUser(p.StateDir) {
+				p.IdentityRestricted = true
+			}
+		}
+	}
 	return p
+}
+
+// readableByCurrentUser reports whether the current process can actually
+// open files in dir (a cheap probe; os.Getuid-based checks miss ACLs).
+func readableByCurrentUser(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 // Discover returns every provider on the box: running processes across all

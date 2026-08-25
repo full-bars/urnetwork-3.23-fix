@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
@@ -226,6 +229,32 @@ func cmdLogs(args []string) error {
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid,
 	// free-review critical). Scope user units explicitly.
+	//
+	// A cross-user `-M <user>@` query from an unprivileged caller can HANG
+	// waiting on machined/polkit instead of failing fast (LA1 6c:
+	// `logs --user=urnetwork-beta` blocked indefinitely). Bound it to 10s
+	// and turn the timeout into an actionable error.
+	if isUserUnit(p.Unit) && p.User != "" && p.User != currentUserName() && os.Geteuid() != 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "journalctl", journalctlArgs(p)...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = io.Discard
+		var errBuf bytes.Buffer
+		cmd.Stderr = &errBuf
+		runErr := cmd.Run()
+		if ctx.Err() == context.DeadlineExceeded {
+			hint := ""
+			if h := rootHint(); h != "" {
+				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
+			}
+			return fmt.Errorf("journal access to user %s timed out (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
+		}
+		if runErr != nil {
+			return fmt.Errorf("journalctl for %s: %v", providerLabel(p), runErr)
+		}
+		return nil
+	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
