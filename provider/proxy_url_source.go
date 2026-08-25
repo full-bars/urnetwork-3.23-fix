@@ -1069,8 +1069,12 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // so a fresh box under load still bootstraps.
 func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16, selfHealEnabled bool) {
 	if len(urls) == 0 {
+		// Publish why the countdown line will stay zero forever: nothing
+		// to fetch (LA1 defect 5 — descriptive state, not "fetcher idle").
+		setURLFetcherState("none")
 		return
 	}
+	setURLFetcherState("pending")
 
 	// Wait for file-proxy warmup to finish before the first fetch, so URL-
 	// sourced proxies never compete for auth rate-limiter slots with the
@@ -1078,6 +1082,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	for !proxyWarmupDone.Load() {
 		select {
 		case <-ctx.Done():
+			// CR #5: cancelled during warmup — publish a distinct
+			// "inactive" state so countdownLine() doesn't keep showing
+			// the stale "pending" it was set to above.
+			setURLFetcherState("inactive")
 			return
 		case <-time.After(5 * time.Second):
 		}
@@ -1091,6 +1099,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	// seconds, then fetches once as normal.
 	select {
 	case <-ctx.Done():
+		// CR #5: cancelled during the startup cooldown — publish a
+		// distinct "inactive" state so countdownLine() doesn't keep
+		// showing the stale "pending".
+		setURLFetcherState("inactive")
 		return
 	case <-time.After(probeStartupCooldown):
 	}

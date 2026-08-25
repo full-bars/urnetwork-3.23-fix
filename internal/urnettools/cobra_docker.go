@@ -255,7 +255,8 @@ func newDockerProxyCmd() *cobra.Command {
 	}
 	proxy.AddCommand(
 		dockerProxySub("add", "add <file> [target]", "copy a host proxy file and bulk-add to the container", "Copy a host proxy file (host:port, or host:port:user:pass per line) into the targeted container and bulk-add it to the provider running there.",
-			"  urnet-docker proxy add ~/proxies.txt\n"+
+			"  urnet-docker proxy add ~/proxies.txt              # Linux / macOS\n"+
+				"  urnet-docker proxy add C:\\Users\\<you>\\proxies.txt   # Windows (\\ or / separators)\n"+
 				"  urnet-docker proxy add ~/proxies.txt --unit mynetwork-provider"),
 		dockerProxySub("clear", "clear [target] [--force]", "remove configured proxies", "Remove all configured proxies from the provider inside the targeted container. Any extra flags, such as --force, are forwarded so this is scriptable from a non-interactive job.",
 			"  urnet-docker proxy clear --unit mynetwork-provider\n"+
