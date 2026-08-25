@@ -24,7 +24,17 @@ jobs:
           go-version: "1.27"
 
       - name: Build the tool
-        run: go build -o urnet-tools ./cmd/urnet-tools/
+        env:
+          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o urnet-tools ./cmd/urnet-tools/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Bootstrap user systemd manager (CI runner has no login session)
         # GitHub's Ubuntu runners have no user systemd session for the
@@ -137,7 +147,17 @@ jobs:
           go-version: "1.27"
 
       - name: Build the tool
-        run: go build -o urnet-tools ./cmd/urnet-tools/
+        env:
+          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o urnet-tools ./cmd/urnet-tools/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Create a fake install so discovery finds a target
         run: |

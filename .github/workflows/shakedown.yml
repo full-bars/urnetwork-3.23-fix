@@ -119,11 +119,19 @@ jobs:
           GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
           GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
           DO_TOKEN: ${{ secrets.DIGITAL_OCEAN }}
+          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
         run: |
           # Build the provider binary and mint a fresh JWT for the shakedown
           # account. The credentials are injected by GitHub, never written
           # to files or echoed.
-          go build -ldflags "-X main.Version=shakedown-mint" -o /tmp/provider ./provider/
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -ldflags "-X main.Version=shakedown-mint" -o /tmp/provider ./provider/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
           mkdir -p /tmp/mint
           HOME=/tmp/mint /tmp/provider auth \
             --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
