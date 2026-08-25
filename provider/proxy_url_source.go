@@ -1069,8 +1069,12 @@ func pruneURLProxyBlacklist(ctx context.Context) {
 // so a fresh box under load still bootstraps.
 func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time.Duration, maxTotal int, apiHost string, apiPort uint16, selfHealEnabled bool) {
 	if len(urls) == 0 {
+		// Publish why the countdown line will stay zero forever: nothing
+		// to fetch (LA1 defect 5 — descriptive state, not "fetcher idle").
+		setURLFetcherState("none")
 		return
 	}
+	setURLFetcherState("pending")
 
 	// Wait for file-proxy warmup to finish before the first fetch, so URL-
 	// sourced proxies never compete for auth rate-limiter slots with the
