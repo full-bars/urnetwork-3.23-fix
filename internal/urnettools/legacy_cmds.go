@@ -2,7 +2,6 @@ package urnettools
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -235,27 +235,39 @@ func cmdLogs(args []string) error {
 	// `logs --user=urnetwork-beta` blocked indefinitely). Bound it to 10s
 	// and turn the timeout into an actionable error.
 	if isUserUnit(p.Unit) && p.User != "" && p.User != currentUserName() && os.Geteuid() != 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "journalctl", journalctlArgs(p)...)
-		cmd.Stdout = os.Stdout
+		// Cross-user `journalctl -M <user>@` from an unprivileged caller can
+		// HANG waiting on machined/polkit instead of failing fast (LA1 6c:
+		// `logs --user=urnetwork-beta` blocked indefinitely). Detect that hang
+		// WITHOUT cutting off a legitimately-working follow at a fixed cap:
+		// kill the command only if it produces NO output within the window.
+		// Once logs start streaming it is a real follow and runs until the
+		// user stops it (ox-alpha M1, PR #465 — the prior hard 10s cap cut a
+		// working follow and misreported it as requiring root).
+		produced := make(chan struct{})
+		cmd := exec.Command("journalctl", journalctlArgs(p)...)
+		cmd.Stdout = &firstByteWriter{w: os.Stdout, produced: produced}
 		var errBuf bytes.Buffer
 		cmd.Stderr = &errBuf
-		runErr := cmd.Run()
-		if ctx.Err() == context.DeadlineExceeded {
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+		}
+		select {
+		case <-produced:
+			// Output started within the window: a real follow. Let it run.
+			if err := cmd.Wait(); err != nil {
+				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+			}
+			return nil
+		case <-time.After(10 * time.Second):
+			// No output within the window: genuine machined/polkit hang.
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 			hint := ""
 			if h := rootHint(); h != "" {
 				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
 			}
-			return fmt.Errorf("journal access to user %s timed out (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
+			return fmt.Errorf("journal access to user %s produced no output within 10s (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
 		}
-		if runErr != nil {
-			// Wire the captured stderr in so the operator sees the real
-			// cause (e.g. machined lookup failure) instead of a bare
-			// "exit status 1" (CR #3).
-			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), runErr, errBuf.String())
-		}
-		return nil
 	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
 	cmd.Stdout = os.Stdout
@@ -275,6 +287,20 @@ func journalctlArgs(p Provider) []string {
 		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
 	}
 	return []string{"-fu", p.Unit}
+}
+
+// firstByteWriter forwards writes to w and, on the first byte, closes produced
+// (idempotently). Used to tell a genuinely-working cross-user journal follow
+// (produces output) from a machined/polkit hang (no output within a window).
+type firstByteWriter struct {
+	w        io.Writer
+	produced chan struct{}
+	once     sync.Once
+}
+
+func (f *firstByteWriter) Write(p []byte) (int, error) {
+	f.once.Do(func() { close(f.produced) })
+	return f.w.Write(p)
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
