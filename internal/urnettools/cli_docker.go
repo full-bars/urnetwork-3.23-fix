@@ -353,46 +353,52 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 			return fmt.Errorf("restart container %s after update: %w", p.Unit, err)
 		}
 	}
-	// LA1 defect 3 (2026-08-24): report success only once the LIVE provider
-	// actually runs the new version. Some images' start loop breaks on a
-	// clean exit (SIGTERM) without respawning, so poll for the new version;
-	// if it never lands, cycle the container once and re-check.
-	newVer := strings.TrimSpace(p.Version)
-	if newVer == "" {
-		// Image tag was latest/stable/etc.: no version token to assert.
-		// Fall back to confirming the provider process is running inside.
+	// CR #1 (CodeRabbit PR #465, 2026-08-25): confirm the in-place swap
+	// actually changed the RUNNING binary. The docker image tag (p.Version)
+	// is fixed at container-creation time and never updates on a binary
+	// swap, so comparing the live version against the tag gave a false
+	// failure on a real update and a false success on a no-op update.
+	// Instead re-read the live version now and wait for it to DIFFER
+	// post-swap.
+	beforeVer := strings.TrimSpace(containerLiveVersion(p.Unit))
+	if beforeVer == "" {
+		// Could not read the running binary's version (the image's
+		// --version output is empty/unparseable). Fall back to confirming
+		// the provider process is up after the swap.
 		if containerProviderAlive(p.Unit) {
-			fmt.Printf("update applied to %s (image carries no version tag; provider process is up).\n", p.Unit)
+			fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
 			return nil
 		}
 		return fmt.Errorf("could not confirm the provider process inside %s after the update — check `docker logs %s`", p.Unit, p.Unit)
 	}
-	if v, ok := waitForLiveVersion(p.Unit, newVer, 60); ok {
-		fmt.Printf("verified: %s now runs %s.\n", p.Unit, v)
+	if v, ok := waitForLiveVersion(p.Unit, beforeVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s (was %s).\n", p.Unit, v, beforeVer)
 		return nil
 	}
-	fmt.Printf("provider did not come back on the new version; cycling container %s once...\n", p.Unit)
+	fmt.Printf("provider did not come back on a new version; cycling container %s once...\n", p.Unit)
 	if err := containerRestartByName(p.Unit); err != nil {
 		return fmt.Errorf("cycle container %s after update: %w", p.Unit, err)
 	}
-	if _, ok := waitForLiveVersion(p.Unit, newVer, 60); ok {
-		fmt.Printf("verified: %s now runs %s (after one cycle).\n", p.Unit, newVer)
+	if v, ok := waitForLiveVersion(p.Unit, beforeVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s (after one cycle).\n", p.Unit, v)
 		return nil
 	}
-	return fmt.Errorf("container %s did not come up on %s within the wait window — check `docker logs %s`", p.Unit, newVer, p.Unit)
+	return fmt.Errorf("container %s did not come up on a new version within the wait window — check `docker logs %s`", p.Unit, p.Unit)
 }
 
 // containerProviderAlive reports whether a provider process is running
-// inside the named container (pgrep via docker exec).
-func containerProviderAlive(name string) bool {
+// inside the named container (pgrep via docker exec). Declared as a var
+// (not a func) so tests can inject a mock (CR #1).
+var containerProviderAlive = func(name string) bool {
 	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
 		"pgrep -f 'urnetwork_.*_stable provide' >/dev/null 2>&1")
 	return cmd.Run() == nil
 }
 
 // containerLiveVersion reads the provider binary's --version inside the
-// container. Best effort: empty string when unreadable.
-func containerLiveVersion(name string) string {
+// container. Best effort: empty string when unreadable. Declared as a var
+// (not a func) so tests can inject a mock (CR #1).
+var containerLiveVersion = func(name string) string {
 	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
 		"for b in /app/urnetwork_*_stable; do [ -x \"$b\" ] && \"$b\" --version 2>/dev/null && break; done")
 	out, err := cmd.Output()
@@ -402,13 +408,30 @@ func containerLiveVersion(name string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// containerRunning reports whether the named container is currently running.
+// Declared as a var (not a func) so tests can inject a mock (CR #1).
+var containerRunning = func(name string) bool {
+	cmd := exec.Command(dockerCLI(), "inspect", "-f", "{{.State.Running}}", name)
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
 // waitForLiveVersion polls until the container's live provider version
-// equals want (or timeout). Returns the observed version on success.
-func waitForLiveVersion(name, want string, timeoutSec int) (string, bool) {
+// DIFFERS from prev (i.e. an in-place binary swap actually landed a new
+// version) or until timeout. Returns the observed version on success.
+//
+// It compares against the PRE-update live reading, NOT the docker image tag
+// (p.Version): the image tag is fixed at container-creation time and never
+// changes on an in-place binary swap, while the in-container update picks
+// its own target via latestRelease() and never reports it back. Comparing
+// against the tag produced a false failure on a real update and a false
+// success on a no-op update (CR #1). A no-op update (same version) will now
+// correctly report failure rather than a false success.
+func waitForLiveVersion(name, prev string, timeoutSec int) (string, bool) {
 	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
 	for {
 		if containerRunning(name) && containerProviderAlive(name) {
-			if v := containerLiveVersion(name); v != "" && strings.Contains(v, want) {
+			if v := containerLiveVersion(name); v != "" && v != prev {
 				return v, true
 			}
 		}
@@ -417,13 +440,6 @@ func waitForLiveVersion(name, want string, timeoutSec int) (string, bool) {
 		}
 		time.Sleep(3 * time.Second)
 	}
-}
-
-// containerRunning reports whether the named container is currently running.
-func containerRunning(name string) bool {
-	cmd := exec.Command(dockerCLI(), "inspect", "-f", "{{.State.Running}}", name)
-	out, err := cmd.Output()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // repairContainerUpdateScript applies two safe, idempotent fixes to a
