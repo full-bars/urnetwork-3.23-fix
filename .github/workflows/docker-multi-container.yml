@@ -23,7 +23,17 @@ jobs:
           go-version: "1.27"
 
       - name: Build urnet-docker
-        run: go build -o /tmp/urnet-docker ./cmd/urnet-docker/
+        env:
+          GOPROXY: "https://proxy.golang.org,https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o /tmp/urnet-docker ./cmd/urnet-docker/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Prepare per-mode proxy files (10 each)
         run: |
