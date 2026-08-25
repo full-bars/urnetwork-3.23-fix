@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 // defaultLogTailLines is how many lines `logs` prints before following.
@@ -290,10 +291,25 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		return err
 	}
 	if t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" {
-		// No container target resolved. This is the host urnet-docker
-		// self-update; pass the ORIGINAL args so host --tag/--digest/--url and
-		// its unknown-flag/help behavior surface unchanged.
-		return cmdSelfUpdate(args, force, dryRun)
+		// No container target resolved (LA1 defect 1, 2026-08-24): bare
+		// `update` must NOT silently become a host self-update when
+		// provider containers exist. With exactly ONE container, target
+		// it; with several, refuse and list them; with none, fall through
+		// to the host self-update (nothing else to update).
+		switch len(providers) {
+		case 0:
+			return cmdSelfUpdate(args, force, dryRun)
+		case 1:
+			t = Target{Unit: providers[0].Unit}
+			fmt.Printf("no target given; updating the lone provider container %s (use `self-update` for the host tool)\n", providers[0].Unit)
+		default:
+			var b strings.Builder
+			fmt.Fprintf(&b, "%d provider containers found — name one (e.g. `update <container>`), or use `self-update` for the host tool:\n", len(providers))
+			for _, p := range providers {
+				fmt.Fprintf(&b, "  %s\n", p.Unit)
+			}
+			return fmt.Errorf("%s", b.String())
+		}
 	}
 	if len(rest) > 0 {
 		return fmt.Errorf("unexpected argument(s) after update target: %v", rest)
@@ -337,7 +353,70 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 			return fmt.Errorf("restart container %s after update: %w", p.Unit, err)
 		}
 	}
-	return nil
+	// LA1 defect 3 (2026-08-24): report success only once the LIVE provider
+	// actually runs the new version. Some images' start loop breaks on a
+	// clean exit (SIGTERM) without respawning, so poll for the new version;
+	// if it never lands, cycle the container once and re-check.
+	newVer := strings.TrimSpace(p.Version)
+	if newVer == "" {
+		// Image tag was latest/stable/etc.: no version token to assert.
+		// Fall back to confirming the provider process is running inside.
+		if containerProviderAlive(p.Unit) {
+			fmt.Printf("update applied to %s (image carries no version tag; provider process is up).\n", p.Unit)
+			return nil
+		}
+		return fmt.Errorf("could not confirm the provider process inside %s after the update — check `docker logs %s`", p.Unit, p.Unit)
+	}
+	if v, ok := waitForLiveVersion(p.Unit, newVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s.\n", p.Unit, v)
+		return nil
+	}
+	fmt.Printf("provider did not come back on the new version; cycling container %s once...\n", p.Unit)
+	if err := containerRestartByName(p.Unit); err != nil {
+		return fmt.Errorf("cycle container %s after update: %w", p.Unit, err)
+	}
+	if _, ok := waitForLiveVersion(p.Unit, newVer, 60); ok {
+		fmt.Printf("verified: %s now runs %s (after one cycle).\n", p.Unit, newVer)
+		return nil
+	}
+	return fmt.Errorf("container %s did not come up on %s within the wait window — check `docker logs %s`", p.Unit, newVer, p.Unit)
+}
+
+// containerProviderAlive reports whether a provider process is running
+// inside the named container (pgrep via docker exec).
+func containerProviderAlive(name string) bool {
+	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
+		"pgrep -f 'urnetwork_.*_stable provide' >/dev/null 2>&1")
+	return cmd.Run() == nil
+}
+
+// containerLiveVersion reads the provider binary's --version inside the
+// container. Best effort: empty string when unreadable.
+func containerLiveVersion(name string) string {
+	cmd := exec.Command(dockerCLI(), "exec", name, "sh", "-c",
+		"for b in /app/urnetwork_*_stable; do [ -x \"$b\" ] && \"$b\" --version 2>/dev/null && break; done")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// waitForLiveVersion polls until the container's live provider version
+// equals want (or timeout). Returns the observed version on success.
+func waitForLiveVersion(name, want string, timeoutSec int) (string, bool) {
+	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
+	for {
+		if containerRunning(name) && containerProviderAlive(name) {
+			if v := containerLiveVersion(name); v != "" && strings.Contains(v, want) {
+				return v, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", false
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // containerRunning reports whether the named container is currently running.
