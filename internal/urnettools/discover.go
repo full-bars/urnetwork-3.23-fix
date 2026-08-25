@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,7 +87,23 @@ func providerFromUnit(unit, user string) Provider {
 	if p.StateDir == "" {
 		return p // no resolvable state dir — listed, but ungraded
 	}
-	p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
+	jwtPath := filepath.Join(p.StateDir, "jwt")
+	netName, netID, exp, jwtErr := decodeJWT(jwtPath)
+	p.Network, p.NetworkID, p.JWTExpires = netName, netID, exp
+	if jwtErr != nil {
+		// Distinguish "no identity" from "identity unreadable": a
+		// permission error on another account's state dir (or on the jwt
+		// file itself) must not print as a blank-but-valid net= field
+		// (LA1 6c). Go 1.27 maps os.ReadFile's *os.PathError to
+		// fs.ErrPermission, so a permission-denied on the jwt file itself
+		// is now caught directly — the old readableByCurrentUser probe
+		// missed that case (it only checked the parent dir). Any other
+		// decode failure (missing/corrupt) keeps the old silent-empty
+		// behavior.
+		if errors.Is(jwtErr, fs.ErrPermission) {
+			p.IdentityRestricted = true
+		}
+	}
 	return p
 }
 

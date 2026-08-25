@@ -24,12 +24,26 @@ jobs:
           go-version: "1.27"
 
       - name: Build the tool for Windows
-        run: go build -o urnet-tools.exe ./cmd/urnet-tools/
+        # The retry loop below is Bash syntax; the Windows runner defaults to
+        # PowerShell, which fails on `[ $attempt -lt 3 ]`. Pin bash explicitly.
+        shell: bash
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o urnet-tools.exe ./cmd/urnet-tools/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Unit tests on Windows
         run: go test ./internal/urnettools/
         env:
           GOOS: windows
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
 
       - name: Create a fake install so discovery finds a target
         # The tool's Windows discovery falls back to %LOCALAPPDATA%\urnetwork.
