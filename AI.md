@@ -144,9 +144,9 @@ Docker deployments can use email/password instead (see [Docker Deployment](docs/
 ### Add Proxies
 
 ```bash
-urnet-tools proxy add file proxies.txt     # one ip:port per line
-urnet-tools proxy add url https://...      # auto-refreshing URL source
-urnet-tools proxy summary                  # fleet-wide proxy overview
+urnet-tools proxy add proxies.txt           # one ip:port per line (file path, no "file" keyword)
+urnet-tools proxy add-source https://...    # auto-refreshing URL source (separate subcommand)
+urnet-tools proxy summary                    # fleet-wide proxy overview
 ```
 
 Full proxy docs: [docs/Proxy-Management.md](docs/Proxy-Management.md), [docs/Proxy-URL-Sources.md](docs/Proxy-URL-Sources.md).
@@ -251,8 +251,8 @@ urnet-tools choose_network <api_url> <connect_url>  # save a custom API/connect 
 urnet-tools choose_network --reset  # clear saved custom network, revert to main network
 
 # Proxy Management
-urnet-tools proxy add file <path>  # bulk add from file
-urnet-tools proxy add url <url>    # auto-refreshing URL source
+urnet-tools proxy add <path>     # bulk add from file (no "file" keyword)
+urnet-tools proxy add-source <url>  # auto-refreshing URL source (separate subcommand)
 urnet-tools proxy remove <addr>    # remove specific proxy
 urnet-tools proxy remove --match <pattern>  # pattern-based removal
 urnet-tools proxy remove-dead      # interactive dead proxy cleanup
