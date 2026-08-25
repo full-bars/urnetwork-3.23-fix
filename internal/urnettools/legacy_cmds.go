@@ -239,7 +239,6 @@ func cmdLogs(args []string) error {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "journalctl", journalctlArgs(p)...)
 		cmd.Stdout = os.Stdout
-		cmd.Stderr = io.Discard
 		var errBuf bytes.Buffer
 		cmd.Stderr = &errBuf
 		runErr := cmd.Run()
@@ -251,7 +250,10 @@ func cmdLogs(args []string) error {
 			return fmt.Errorf("journal access to user %s timed out (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
 		}
 		if runErr != nil {
-			return fmt.Errorf("journalctl for %s: %v", providerLabel(p), runErr)
+			// Wire the captured stderr in so the operator sees the real
+			// cause (e.g. machined lookup failure) instead of a bare
+			// "exit status 1" (CR #3).
+			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), runErr, errBuf.String())
 		}
 		return nil
 	}
