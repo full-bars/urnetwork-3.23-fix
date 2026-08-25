@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -127,11 +128,25 @@ func TestUpdateTargetFromArgs_ExplicitFlagWins(t *testing.T) {
 	}
 }
 
-// The lone-container selection message must mention both the container and
-// the self-update alias so the operator learns the new vocabulary.
-func TestCmdDockerUpdate_LoneContainerMessageShape(t *testing.T) {
-	msg := "no target given; updating the lone provider container ps (use `self-update` for the host tool)"
-	if !strings.Contains(msg, "self-update") || !strings.Contains(msg, "ps") {
-		t.Fatal("message shape changed; keep container name + self-update hint")
+// firstByteWriter is the M1 (PR #465) hang-detection helper: it forwards
+// writes to the real destination and closes `produced` once, on the first
+// byte, so a working cross-user journal follow is distinguished from a hang.
+func TestFirstByteWriter(t *testing.T) {
+	produced := make(chan struct{})
+	var got bytes.Buffer
+	w := firstByteWriter{w: &got, produced: produced}
+	if _, err := w.Write([]byte("a")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := w.Write([]byte("b")); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	select {
+	case <-produced: // closed exactly once (sync.Once guards double-close)
+	default:
+		t.Fatal("produced should be closed after the first byte")
+	}
+	if got.String() != "ab" {
+		t.Fatalf("data not forwarded verbatim: %q", got.String())
 	}
 }
