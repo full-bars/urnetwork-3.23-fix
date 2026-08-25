@@ -474,6 +474,8 @@ func countdownLine() string {
 			b.WriteString(" n/a (no URL sources configured)")
 		case "pending":
 			b.WriteString(" pending (waiting for first fetch: warmup + startup cooldown)")
+		case "inactive":
+			b.WriteString(" n/a (fetcher cancelled)")
 		default:
 			b.WriteString(" unknown (fetcher has not reported a schedule)")
 		}
