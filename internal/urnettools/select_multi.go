@@ -43,6 +43,23 @@ func printNarrowedNote(totalFound int, p Provider, what string) {
 	fmt.Println(note)
 }
 
+// printLifecycleNarrowedNote is the ACTION variant of printNarrowedNote for
+// start/stop/restart: the sole-accessible auto-pick must be loud on a
+// mutating command (LA1 6b — recovery failed because the operator could not
+// tell whether anything had been targeted at all).
+func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
+	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — %s it.", totalFound, p.User, action+"ting")
+	if action == "stop" {
+		note = fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — stopping it.", totalFound, p.User)
+	} else if action == "start" {
+		note = fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — starting it.", totalFound, p.User)
+	}
+	if hint := rootHint(); hint != "" {
+		note += fmt.Sprintf(" To target another provider: %s --unit <unit>", hint)
+	}
+	fmt.Println(note)
+}
+
 // selectTargets resolves a provider list against targeting criteria and
 // returns the chosen set (one or more providers). It is the batch analogue
 // of selectTarget.
