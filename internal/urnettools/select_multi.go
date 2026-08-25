@@ -48,12 +48,17 @@ func printNarrowedNote(totalFound int, p Provider, what string) {
 // mutating command (LA1 6b — recovery failed because the operator could not
 // tell whether anything had been targeted at all).
 func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
-	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — %s it.", totalFound, p.User, action+"ting")
-	if action == "stop" {
-		note = fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — stopping it.", totalFound, p.User)
-	} else if action == "start" {
-		note = fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — starting it.", totalFound, p.User)
+	// Explicit gerund map: action+"ting" would yield "restartting" for
+	// restart (CR #4 typo). Unknown actions fall back to the old heuristic.
+	gerund := map[string]string{
+		"stop":    "stopping",
+		"start":   "starting",
+		"restart": "restarting",
+	}[action]
+	if gerund == "" {
+		gerund = action + "ting"
 	}
+	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — %s it.", totalFound, p.User, gerund)
 	if hint := rootHint(); hint != "" {
 		note += fmt.Sprintf(" To target another provider: %s --unit <unit>", hint)
 	}
