@@ -1265,12 +1265,27 @@ func uDelta(cur uint64, prev *uint64) uint64 {
 	return d
 }
 
+// iDelta is uDelta's counterpart for signed counters (contract totals are
+// int64 atomics): negative or decreasing readings contribute zero.
+func iDelta(cur int64, prev *int64) uint64 {
+	var d int64
+	if cur >= *prev {
+		d = cur - *prev
+	}
+	*prev = cur
+	if d < 0 {
+		return 0
+	}
+	return uint64(d)
+}
+
 // runLifetimeCollector samples the existing exported counters once per earn
 // tick, converts them to reset-guarded deltas, and feeds the persistent
 // store. Read-only over the network stack: nothing here can affect the hot
 // path.
 func runLifetimeCollector(ctx context.Context) {
-	var prevPQE, prevClas, prevUp, prevDeny uint64
+	var prevPQE, prevClas uint64
+	var prevUp, prevDeny int64
 	prevBillable := map[string]uint64{}
 	var prevRx, prevTx uint64
 	var prevTime time.Time
@@ -1290,19 +1305,19 @@ func runLifetimeCollector(ctx context.Context) {
 
 		// Billable + transit volumes from the read-only health snapshot,
 		// with the same per-proxy reset guard the [traffic] loop uses.
-		var billableSum, rxSum, txSum, clients int64
+		var billableSum, rxSum, txSum, clients uint64
 		serving := 0
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 		for key, b := range bw {
 			billable := b.BillableRx.Load() + b.BillableTx.Load()
 			if pb := prevBillable[key]; billable >= pb {
-				billableSum += int64(billable - pb)
+				billableSum += billable - pb
 			}
 			prevBillable[key] = billable
-			rxSum += int64(b.TotalRx.Load())
-			txSum += int64(b.TotalTx.Load())
+			rxSum += b.TotalRx.Load()
+			txSum += b.TotalTx.Load()
 			if c := b.Clients.Load(); c > 0 {
-				clients += c
+				clients += uint64(c)
 				serving++
 			}
 		}
@@ -1320,16 +1335,16 @@ func runLifetimeCollector(ctx context.Context) {
 		lifetimeStore.Add(
 			uDelta(uint64(pq.PQELifetime), &prevPQE),
 			uDelta(uint64(pq.ClasLifetime), &prevClas),
-			uDelta(uint64(up), &prevUp),
-			uDelta(uint64(deny), &prevDeny),
+			iDelta(up, &prevUp),
+			iDelta(deny, &prevDeny),
 			0, 0, // recovered/lost are fed by the health-heartbeat owner
-			uint64(billableSum),
+			billableSum,
 		)
 		lifetimeStore.MaybeFlush(time.Now())
 
 		// All-time rollup line (only once there is something to show).
 		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
-		if a1|a2|a3|a4|a5|a6 != 0 {
+		if a1|a2|a3|a4|a5|a6|a7 != 0 {
 			tlog("♾️ [lifetime] all-time: pqe_opens=%d clas_opens=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
 				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
 		}
@@ -1344,10 +1359,10 @@ func runLifetimeCollector(ctx context.Context) {
 			}
 			tlog("🛰️ [relay] as-hop: clients=%d on %d proxy(ies) rx=%s tx=%s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])\n",
 				clients, serving,
-				fmtRate(float64(uDelta(uint64(rxSum), &prevRx))/elapsed),
-				fmtRate(float64(uDelta(uint64(txSum), &prevTx))/elapsed))
+				fmtRate(float64(uDelta(rxSum, &prevRx))/elapsed),
+				fmtRate(float64(uDelta(txSum, &prevTx))/elapsed))
 		} else {
-			_, _ = uDelta(uint64(rxSum), &prevRx), uDelta(uint64(txSum), &prevTx)
+			_, _ = uDelta(rxSum, &prevRx), uDelta(txSum, &prevTx)
 		}
 		prevTime = now
 	}

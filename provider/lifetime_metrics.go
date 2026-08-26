@@ -72,6 +72,7 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 		ProxiesRecov  uint64 `json:"proxies_recovered"`
 		ProxiesLost   uint64 `json:"proxies_lost"`
 		BillableBytes uint64 `json:"billable_bytes"`
+		SavedAt       string `json:"saved_at"`
 	}
 	if json.Unmarshal(data, &persisted) != nil {
 		return lm
@@ -83,6 +84,12 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	lm.ProxiesRecov = persisted.ProxiesRecov
 	lm.ProxiesLost = persisted.ProxiesLost
 	lm.BillableBytes = persisted.BillableBytes
+	// Anchor the flush throttle to the last real save (not boot time), so a
+	// quick restart doesn't delay the first persistence of new deltas by a
+	// full throttle window after an already-stale file (Sonnet review LOW).
+	if savedAt, perr := time.Parse(time.RFC3339, persisted.SavedAt); perr == nil {
+		lm.lastFlush = savedAt
+	}
 	return lm
 }
 
