@@ -16,16 +16,28 @@ package urnettools
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestMain(m *testing.M) {
-	// Keep resolveDefaultProvider (persisted default provider config) from
-	// reading the developer's real ~/.config during tests.
+	// Isolate every platform-specific config location this package reads,
+	// so no developer/runner state leaks into selection behavior:
+	//   unix:  $HOME + $XDG_CONFIG_HOME (UserHomeDir/UserConfigDir)
+	//   win:   %USERPROFILE% (UserHomeDir) + %APPDATA% (UserConfigDir)
+	// Without the Windows pair, os.UserConfigDir() still sees the runner's
+	// real AppData and a stray persisted default silently changes the
+	// selection path (seen as a spurious CI failure).
 	os.Unsetenv("URNET_TOOLS_DEFAULT_PROVIDER")
-	_ = os.Setenv("HOME", os.TempDir())
-	_ = os.Setenv("XDG_CONFIG_HOME", os.TempDir())
+	tmp := os.TempDir()
+	_ = os.Setenv("HOME", tmp)
+	if runtime.GOOS == "windows" {
+		_ = os.Setenv("USERPROFILE", tmp)
+		_ = os.Setenv("APPDATA", tmp)
+	} else {
+		_ = os.Setenv("XDG_CONFIG_HOME", tmp)
+	}
 	os.Exit(m.Run())
 }
 
