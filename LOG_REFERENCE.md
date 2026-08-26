@@ -349,6 +349,54 @@ The per-proxy lines only appear for proxies that moved bytes since the last tick
 
 ---
 
+## 🔐 Post-Quantum Session Visibility (`[pqe]`)
+
+```
+🔐 [pqe] direct-e2e tunnels terminated: live pqe=10 classical=0 | opens since-start: pqe=10 clas=0 | 1h: pqe=10 clas=0 | 24h: pqe=50 clas=0 | 7d: pqe=50 clas=0
+🔐 [pqe] all-time opens (persists across restarts): pqe=50 classical=0
+```
+
+Fires on the earning-windows tick when any PQE/classical session activity exists. Counts **per-peer end-to-end TLS tunnels this node personally terminates**, classified by negotiated key exchange (ML-KEM hybrids = `pqe`, anything else = `classical`). Modern peers almost always negotiate PQE, so `clas=` lines staying 0 is normal.
+
+**Scope warning:** these are NOT client or earnings counters. Client traffic merely *forwarded* through this node (transit hops) never opens an e2e session here — transit visibility lives on `🛰️ [relay] as-hop:` and byte totals on `📈 [traffic]`.
+
+| Field | Meaning |
+|---|---|
+| `live` | Tunnels currently in flight. |
+| `since-start` | Opens since process start (the old "lifetime" — resets every restart). |
+| `1h` / `24h` / `7d` | Sliding windows of open events. |
+| `all-time` | Cumulative opens from `~/.urnetwork/lifetime_metrics.json` — survives restarts. |
+
+---
+
+## ♾️ All-Time Lifetime Metrics (`[lifetime]`)
+
+```
+♾️ [lifetime] all-time: pqe_opens=50 clas_opens=0 contracts_acquired=312 denied=41 proxies_recovered=51 lost=39 billable_total=842.1 GB
+```
+
+Emitted on the earning tick once any total is non-zero. Backed by `~/.urnetwork/lifetime_metrics.json` (atomic writes, 5-minute flush throttle, final flush at shutdown). Counters are fed reset-guarded deltas from the existing live counters: a source counter restarting contributes zero for that tick rather than corrupting history; worst case (power loss) loses at most one throttle window of deltas. A corrupt state file resets stats rather than blocking the provider.
+
+| Field | Meaning |
+|---|---|
+| `pqe_opens` / `clas_opens` | All-time e2e tunnel opens by key-exchange family. |
+| `contracts_acquired` / `denied` | All-time bandwidth-contract wins/losses. |
+| `proxies_recovered` / `lost` | All-time proxy health transitions. |
+| `billable_total` | Cumulative billable bytes ever relayed. |
+
+---
+
+## 🛰️ Transit Hop Visibility (`[relay]`)
+
+```
+🛰️ [relay] as-hop: clients=27 on 12 proxy(ies) rx=32.5 KB/s tx=8.1 KB/s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])
+```
+
+Emitted on the earning tick only while transit traffic is actively flowing (silent when idle to avoid duplicating `[traffic]`). Reports what this node carries **as an intermediate hop**: client sessions routed through its proxies and their current rates. Distinct identities behind transit hops are unknowable by design (end-to-end encryption) — volume + serving proxies is the honest transit metric.
+
+
+---
+
 ## 💰 Profit Heartbeat (3.23-fix)
 
 ```
