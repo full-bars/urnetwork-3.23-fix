@@ -148,9 +148,12 @@ func cmdHotRestart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	providers := Discover()
+	providers := lifecycleCandidates(t)
 	p, err := selectTarget(providers, t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if len(rest) > 0 {
