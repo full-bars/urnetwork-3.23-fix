@@ -330,8 +330,11 @@ Examples:
 	if len(targetRest) > 0 {
 		return fmt.Errorf("session takes no extra arguments (got %v)", targetRest)
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if p.StateDir == "" {
