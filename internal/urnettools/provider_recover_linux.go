@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -42,24 +43,29 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	}
 	defer in.Close()
 
-	tmp := fmt.Sprintf("%s.recover-%d", binary, pid)
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", tmp, err)
-	}
-	n, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("copy binary from %s: %v", procExe, copyErr)
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close %s: %v", tmp, closeErr)
-	}
-	if n == 0 {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("recovered binary is empty (source %s gave 0 bytes)", procExe)
+	// Unique temp sibling in the same directory (atomic rename must stay on
+	// one filesystem). CreateTemp keeps the name collision-free even if two
+	// providerSubcommand calls race for the same provider (mimo review LOW);
+	// OpenFile(O_TRUNC) on a PID-derived name could truncate a peer's in-flight
+	// copy. Mode 0600 until the final Chmod(0o755) below.
+	tmp := ""
+	if out, err := os.CreateTemp(filepath.Dir(binary), filepath.Base(binary)+".recover-*"); err != nil {
+		return fmt.Errorf("create temp for %s: %w", binary, err)
+	} else {
+		tmp = out.Name()
+		if n, copyErr := io.Copy(out, in); copyErr != nil {
+			out.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("copy binary from %s: %v", procExe, copyErr)
+		} else if n == 0 {
+			out.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("recovered binary is empty (source %s gave 0 bytes)", procExe)
+		}
+		if closeErr := out.Close(); closeErr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("close %s: %v", tmp, closeErr)
+		}
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		_ = os.Remove(tmp)
@@ -75,7 +81,11 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	// the provider's own read/exec of its binary. Not fatal on failure.
 	if os.Geteuid() == 0 && user != "" {
 		if uid, gid, err := lookupUserIDs(user); err == nil {
-			_ = os.Chown(binary, uid, gid)
+			if cerr := os.Chown(binary, uid, gid); cerr != nil {
+				// Not fatal, but surface it: a root-owned recovered binary can
+				// make the provider's own read/exec fail (mimo review NIT).
+				fmt.Fprintf(os.Stderr, "note: recovered binary %s is root-owned (chown to %s failed: %v) — provider may fail to exec it\n", binary, user, cerr)
+			}
 		}
 	}
 	return nil

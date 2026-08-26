@@ -35,8 +35,11 @@ func ensureBinaryRecoverable(p Provider) (string, bool, error) {
 	}
 
 	if err := recoverDeletedBinary(p.Binary, p.PID, p.User); err != nil {
+		// %w (not %v) so a caller can errors.Is on errBinaryAppeared and tell
+		// "a concurrent updater won the race" apart from a genuine recovery
+		// failure (mimo review MEDIUM).
 		return "", false, fmt.Errorf(
-			"provider %s: binary %s is missing on disk (a prior update deleted it) but its process still runs; auto-recovery failed: %v — rerun as root to allow recovery, or restart the unit",
+			"provider %s: binary %s is missing on disk (a prior update deleted it) but its process still runs; auto-recovery failed: %w — rerun as root to allow recovery, or restart the unit",
 			providerLabel(p), p.Binary, err)
 	}
 	return p.Binary, true, nil
