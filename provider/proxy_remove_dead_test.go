@@ -126,6 +126,16 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			wantAuth: []string{"recent_off_hi"}, // still auth-fail eligible (deliberate)
 		},
 		{
+			name: "long_offline and recently_offline also collected as degraded when old enough",
+			proxies: map[string]ProxyEntry{
+				"lo": {ID: 1, Health: "long_offline", Source: "file", DownSince: downOld},
+				"ro": {ID: 2, Health: "recently_offline", Source: "file", DownSince: downOld},
+			},
+			opts:    removeDeadOptions{degradedDur: 24 * time.Hour},
+			uptime:  2 * time.Hour,
+			wantDeg: []string{"lo", "ro"},
+		},
+		{
 			name: "unparsable down-since is fail-closed (not removed)",
 			proxies: map[string]ProxyEntry{
 				"bad": {ID: 1, Health: "offline", Source: "file", DownSince: "not-a-time"},
