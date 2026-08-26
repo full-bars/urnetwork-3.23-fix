@@ -992,7 +992,9 @@ func optimizeWindows() error {
 // keys must NEVER run on macOS (they don't exist there; previously the darwin
 // build fell through to optimizeLinux, warned on every missing key, and still
 // printed a false "done"). Requires root (or sudo); failures are logged, never
-// fatal. Some keys apply only at boot (persist them in /etc/sysctl.conf).
+// fatal. All keys apply immediately with sudo but do NOT persist across
+// reboot — persist them with a LaunchDaemon that runs sysctl -w at boot, not
+// /etc/sysctl.conf (modern macOS ignores it).
 func optimizeDarwin() error {
 	var prefix []string
 	if os.Geteuid() != 0 {
