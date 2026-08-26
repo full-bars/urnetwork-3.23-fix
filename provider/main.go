@@ -4892,13 +4892,21 @@ func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime 
 		case "inactive":
 			inactive = append(inactive, removedProxy{addr: addr, entry: e})
 		case "recently_offline", "offline", "long_offline":
+			// Degraded removal requires an explicit --degraded threshold;
+			// without it (degradedDur==0) offline proxies are NOT collected
+			// here (matches the auto-cleanup path runProxyURLCleanupOnce), so
+			// a plain `proxy remove-dead` does not silently prune every
+			// offline proxy. Whether degraded is disabled or the proxy is
+			// not yet old enough, fall through to the auth-fail check below
+			// via `break` (NOT `continue`, which in a switch skips the loop
+			// remainder and would wrongly drop the auth evaluation).
 			if o.degradedDur > 0 {
 				ds, err := time.Parse(time.RFC3339, e.DownSince)
 				if err != nil || time.Since(ds) < o.degradedDur {
-					continue
+					break
 				}
+				degraded = append(degraded, removedProxy{addr: addr, entry: e})
 			}
-			degraded = append(degraded, removedProxy{addr: addr, entry: e})
 		}
 		if o.authFailMin > 0 && e.Health != "up" {
 			days := int64(max(1, int(uptime.Hours())/24))
