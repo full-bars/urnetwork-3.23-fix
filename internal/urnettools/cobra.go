@@ -162,6 +162,7 @@ func buildRootCmd() *cobra.Command {
 		newAutoUpdateCmd(),
 		newAutoStartCmd(),
 		newSelfHealCmd(),
+		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
