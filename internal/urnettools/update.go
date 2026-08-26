@@ -251,13 +251,21 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	defer os.RemoveAll(stageDir)
 	cfg.StageDir = stageDir
 
+	// Pre-stage THIS release's tool binary so the restart escalation path
+	// can run `sudo -n <staged new tool> __do-restart` if the provider unit
+	// refuses to restart without privileges. The running binary always
+	// predates its own restart-flow fixes; retrying through the staged copy
+	// makes this release's fixes live during this very update. Best effort:
+	// unavailability only disables the escalation leg.
+	stagedTool := stageToolForEscalation(cfg)
+
 	failures := 0
 	for _, p := range chosen {
 		if p.Version == cfg.Tag {
 			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
 			continue
 		}
-		if err := updateProvider(p, cfg); err != nil {
+		if err := updateProviderWithRestart(p, cfg, stagedTool); err != nil {
 			// Continue the batch; report all failures at the end rather
 			// than aborting mid-fleet (free-review major).
 			fmt.Fprintf(os.Stderr, "update %s failed: %v\n", providerLabel(p), err)
@@ -266,9 +274,12 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	}
 
 	// Self-update leg: refresh the tool binary itself from the same release.
-	// A failure here is reported but does NOT fail the command — providers
-	// were the primary job and may have succeeded; the tool can be retried
-	// (e.g. `urnet-tools self-update`) without touching providers.
+	// The download+verify already happened above for the escalation path;
+	// selfUpdateTool re-downloads ONLY if the staged file is gone or stale,
+	// and skips instantly on digest match otherwise. A failure here is
+	// reported but does NOT fail the command — providers were the primary
+	// job and may have succeeded; the tool can be retried (e.g.
+	// `urnet-tools self-update`) without touching providers.
 	if err := runToolSelfUpdate(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
 	}
@@ -431,6 +442,21 @@ func splitLabels(s string) []string {
 	return out
 }
 
+// updateProviderWithRestart wraps updateProvider so its final restart goes
+// through restartLadder with THIS update's staged tool binary. When
+// stagedTool is empty the restart behaves exactly as before.
+func updateProviderWithRestart(p Provider, cfg updateConfig, stagedTool string) error {
+	if stagedTool == "" || p.Unit == "" {
+		return updateProvider(p, cfg)
+	}
+	orig := restartForUpdate
+	restartForUpdate = func(pp Provider) error {
+		return restartLadder(pp, stagedTool)
+	}
+	defer func() { restartForUpdate = orig }()
+	return updateProvider(p, cfg)
+}
+
 // updateProvider performs the surgical binary swap for one provider:
 //  1. Stage the tarball on real disk (never /tmp tmpfs).
 //  2. Verify sha256 against the release digest when provided.
@@ -532,8 +558,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
-	// Restart the unit that owns the running process.
-	return restartProvider(p)
+	// Restart the unit that owns the running process. restartForUpdate is
+	// plain restartProvider by default; the update flow temporarily routes
+	// it through the staged-tool escalation ladder
+	// (updateProviderWithRestart).
+	return restartForUpdate(p)
 }
 
 // restartProvider restarts the systemd unit (system or user level) that owns
@@ -546,8 +575,9 @@ func restartProvider(p Provider) error {
 		// via the system scope prompts for root/polkit (systemd1.manage-units)
 		// or fails outright non-interactively. Only treat it as a system unit
 		// when there is genuinely a system unit file. This was the bug: the
-		// previous order tried the SYSTEM scope first, so a user's provider
-		// asked for the root password (losangeles1) or failed (ATL2).
+		// previous order tried the SYSTEM scope first, so a user-owned
+		// provider demanded the root password on some boxes and failed
+		// outright on others.
 		userScoped := isUserUnit(p.Unit)
 		if userScoped && p.User != "" {
 			// Restart in the owning user's --user session (no root/polkit).
@@ -862,14 +892,21 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		url = toolAssetURL(cfg.Tag, cfg.ToolAsset)
 	}
 	staged := filepath.Join(cfg.StageDir, cfg.ToolAsset)
-	fmt.Printf("downloading %s\n", url)
-	if err := downloadFile(url, staged); err != nil {
-		return fmt.Errorf("download tool: %w", err)
+	// Reuse an already-staged copy when its digest matches (the update flow
+	// pre-stages this exact asset for the restart-escalation path — never
+	// download the same verified file twice).
+	if cur, serr := fileSHA256(staged); serr == nil && strings.EqualFold(cur, cfg.ToolDigest) {
+		fmt.Println("staged tool already verified")
+	} else {
+		fmt.Printf("downloading %s\n", url)
+		if err := downloadFile(url, staged); err != nil {
+			return fmt.Errorf("download tool: %w", err)
+		}
+		if err := verifySHA256(staged, cfg.ToolDigest); err != nil {
+			return err
+		}
+		fmt.Println("tool sha256 verified")
 	}
-	if err := verifySHA256(staged, cfg.ToolDigest); err != nil {
-		return err
-	}
-	fmt.Println("tool sha256 verified")
 	if !isRecognizedExecutable(staged) {
 		return fmt.Errorf("staged tool %s is not a %s executable (corrupted or wrong asset) — refusing to install", staged, runtime.GOOS)
 	}
