@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -43,6 +44,15 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	}
 	defer in.Close()
 
+	// If the provider process exits mid-copy, /proc/<pid>/exe yields a
+	// TRUNCATED image. fstat the open handle for its real size and require a
+	// full read; a short, non-zero copy would otherwise pass the n==0 check and
+	// install a corrupt executable (nemotron review #4).
+	want := int64(-1)
+	if fi, serr := in.Stat(); serr == nil {
+		want = fi.Size()
+	}
+
 	// Unique temp sibling in the same directory (atomic rename must stay on
 	// one filesystem). CreateTemp keeps the name collision-free even if two
 	// providerSubcommand calls race for the same provider (mimo review LOW);
@@ -61,6 +71,10 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 			out.Close()
 			_ = os.Remove(tmp)
 			return fmt.Errorf("recovered binary is empty (source %s gave 0 bytes)", procExe)
+		} else if want > 0 && int64(n) != want {
+			out.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("recovered binary truncated during copy (got %d bytes, expected %d from %s)", n, want, procExe)
 		}
 		if closeErr := out.Close(); closeErr != nil {
 			_ = os.Remove(tmp)
@@ -70,6 +84,13 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	// Belt-and-braces: confirm the recovered bytes are a valid executable for
+	// this platform before installing (catches a truncated/corrupt image the
+	// size check or the process-exit race could slip through).
+	if !isRecognizedExecutable(tmp) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("recovered binary is not a valid %s executable — refusing to install", runtime.GOOS)
 	}
 
 	if err := installRecovered(tmp, binary); err != nil {
@@ -87,32 +108,6 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 				fmt.Fprintf(os.Stderr, "note: recovered binary %s is root-owned (chown to %s failed: %v) — provider may fail to exec it\n", binary, user, cerr)
 			}
 		}
-	}
-	return nil
-}
-
-// errBinaryAppeared is returned by installRecovered when the target path
-// materialized between recovery's initial stat and its final install — a
-// concurrent updater won the race, so the recovered (stale) image must not
-// overwrite the fresh binary that legitimate update just placed there.
-var errBinaryAppeared = fmt.Errorf("provider binary reappeared during recovery; refusing to overwrite")
-
-// installRecovered atomically moves tmp into binary, refusing to clobber a file
-// that appears between recovery construction and install. This closes the
-// stale-vs-fresh TOCTOU: the window shrinks from "whole /proc read + copy" to a
-// single lstat + rename, and if an updater wins, recovery yields rather than
-// overwrite a freshly-installed binary with the deleted-inode image.
-func installRecovered(tmp, binary string) error {
-	if _, err := os.Lstat(binary); err == nil {
-		_ = os.Remove(tmp)
-		return errBinaryAppeared
-	} else if !os.IsNotExist(err) {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("stat %s: %w", binary, err)
-	}
-	if err := os.Rename(tmp, binary); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s -> %s: %w", tmp, binary, err)
 	}
 	return nil
 }
