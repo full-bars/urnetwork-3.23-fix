@@ -4845,6 +4845,86 @@ func proxySummary() {
 	fmt.Println("=========================================================================")
 }
 
+// removedProxy is one proxy the remove-dead command selected as a removal
+// candidate, carrying its address and state entry.
+type removedProxy struct {
+	addr  string
+	entry ProxyEntry
+}
+
+// removeDeadOptions captures the parsed remove-dead flags that drive which
+// proxies are selected for removal: the source filter ("" = all), the degraded
+// offline threshold (0 = disabled), and the minimum auth-failures/day (0 =
+// disabled) that qualifies a proxy as auth-failing.
+type removeDeadOptions struct {
+	sourceFilter string
+	degradedDur  time.Duration
+	authFailMin  int64
+}
+
+// collectRemoveDeadCandidates is the pure decision core of the `proxy
+// remove-dead` command: given the provider state, the parsed options, and the
+// provider uptime, it returns the proxies to be removed, split into categories
+// (dead / inactive / degraded / authFailing). It is extracted from
+// proxyRemoveDead so this removal-selection logic — historically the site of
+// the most regressions — can be unit-tested without docopt, interactive
+// prompts, or a live provider that has been running past the 65-minute uptime
+// gate (a proxy is only "confirmed dead" after the health system has settled;
+// tests feed a state with a backdated StartedAt + explicit Health verdicts).
+func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime time.Duration) (dead, inactive, degraded, authFailing []removedProxy) {
+	for addr, e := range state.Proxies {
+		// Resolve the effective source for untagged entries (pre-source-tagging).
+		effectiveSource := e.Source
+		if effectiveSource == "" {
+			if state.Source != "" {
+				effectiveSource = "file"
+			} else {
+				effectiveSource = "internal"
+			}
+		}
+		if o.sourceFilter != "" && effectiveSource != o.sourceFilter {
+			continue
+		}
+
+		switch e.Health {
+		case "dead":
+			dead = append(dead, removedProxy{addr: addr, entry: e})
+		case "inactive":
+			inactive = append(inactive, removedProxy{addr: addr, entry: e})
+		case "recently_offline", "offline", "long_offline":
+			// Degraded removal requires an explicit --degraded threshold:
+			// without it (degradedDur==0) offline proxies are NOT collected
+			// here (matches runProxyURLCleanupOnce), so a plain `proxy
+			// remove-dead` does not silently prune every offline proxy.
+			// This block uses `break` (exits the switch only), NOT `continue`
+			// (which inside a switch targets the ENCLOSING for loop and would
+			// skip the auth-fail check below). Deliberate: offline proxies
+			// remain auth-fail eligible regardless of degraded status/age —
+			// auth failures are an independent, actionable signal and
+			// dropping it would hide removals.
+			if o.degradedDur > 0 {
+				ds, err := time.Parse(time.RFC3339, e.DownSince)
+				if err != nil || time.Since(ds) < o.degradedDur {
+					break
+				}
+				degraded = append(degraded, removedProxy{addr: addr, entry: e})
+			}
+		}
+		// A proxy can land in BOTH a category (dead/inactive/degraded) AND
+		// authFailing — a deliberate, pre-existing overlap. At removal
+		// removeDeadProxies de-dupes by source bucket and each per-source
+		// removal is idempotent, so the overlap has no removal-correctness
+		// impact (it only double-prints in the confirmation prompt).
+		if o.authFailMin > 0 && e.Health != "up" {
+			days := int64(max(1, int(uptime.Hours())/24))
+			if e.AuthFailures >= o.authFailMin*days {
+				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
+			}
+		}
+	}
+	return dead, inactive, degraded, authFailing
+}
+
 func proxyRemoveDead(opts docopt.Opts) {
 	state, err := readProxyState()
 	if err != nil || state.StartedAt.IsZero() {
@@ -4893,48 +4973,14 @@ func proxyRemoveDead(opts docopt.Opts) {
 		authFailMin = 250
 	}
 
-	type removedProxy struct {
-		addr  string
-		entry ProxyEntry
-	}
-
-	// Collect candidates by category
-	var dead, inactive, degraded, authFailing []removedProxy
-	for addr, e := range state.Proxies {
-		// Apply source filter
-		effectiveSource := e.Source
-		if effectiveSource == "" {
-			if state.Source != "" {
-				effectiveSource = "file"
-			} else {
-				effectiveSource = "internal"
-			}
-		}
-		if sourceFilter != "" && effectiveSource != sourceFilter {
-			continue
-		}
-
-		switch e.Health {
-		case "dead":
-			dead = append(dead, removedProxy{addr: addr, entry: e})
-		case "inactive":
-			inactive = append(inactive, removedProxy{addr: addr, entry: e})
-		case "recently_offline", "offline", "long_offline":
-			if degradedDur > 0 {
-				ds, err := time.Parse(time.RFC3339, e.DownSince)
-				if err != nil || time.Since(ds) < degradedDur {
-					continue
-				}
-			}
-			degraded = append(degraded, removedProxy{addr: addr, entry: e})
-		}
-		if authFailMin > 0 && e.Health != "up" {
-			days := int64(max(1, int(uptime.Hours())/24))
-			if e.AuthFailures >= authFailMin*days {
-				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})
-			}
-		}
-	}
+	// Collect candidates by category. The pure decision core lives in
+	// collectRemoveDeadCandidates so the removal-selection logic (the area
+	// that has seen the most regressions) is unit-testable.
+	dead, inactive, degraded, authFailing := collectRemoveDeadCandidates(state, removeDeadOptions{
+		sourceFilter: sourceFilter,
+		degradedDur:  degradedDur,
+		authFailMin:  authFailMin,
+	}, uptime)
 
 	if len(dead) == 0 && len(inactive) == 0 && len(degraded) == 0 && len(authFailing) == 0 {
 		fmt.Println("Nothing to remove.")
