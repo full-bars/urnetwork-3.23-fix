@@ -27,8 +27,11 @@ func cmdAutoStart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 
@@ -59,8 +62,11 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	label := autoUpdateLabel(p)
@@ -89,8 +95,11 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("uninstall (remove binary, state, and unit) for "+providerLabel(p), p, force, dryRun)
@@ -189,8 +198,11 @@ func cmdReinstall(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("reinstall (rerun installer) for "+providerLabel(p), p, force, dryRun)
