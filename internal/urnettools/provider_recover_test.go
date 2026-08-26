@@ -69,7 +69,7 @@ func TestProvRecoverHelperProcess(t *testing.T) {
 	if os.Getenv("URNPROV_RECOVER_HELPER") != "1" {
 		return
 	}
-	time.Sleep(30 * time.Second)
+	time.Sleep(60 * time.Second)
 }
 
 func TestEnsureBinaryRecoverable_WhenBinaryExists_NoOp(t *testing.T) {

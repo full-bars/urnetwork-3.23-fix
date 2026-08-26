@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
 
 // ensureBinaryRecoverable guarantees the provider binary exists on disk before
@@ -37,10 +38,46 @@ func ensureBinaryRecoverable(p Provider) (string, bool, error) {
 	if err := recoverDeletedBinary(p.Binary, p.PID, p.User); err != nil {
 		// %w (not %v) so a caller can errors.Is on errBinaryAppeared and tell
 		// "a concurrent updater won the race" apart from a genuine recovery
-		// failure (mimo review MEDIUM).
+		// failure (mimo review MEDIUM). The root hint is Linux-only: root can
+		// read another account's /proc there, but it cannot enable recovery on
+		// macOS/Windows (nemotron review #3).
+		hint := "restart the unit, or reinstall"
+		if runtime.GOOS == "linux" {
+			hint = "rerun as root to allow recovery, or restart the unit"
+		}
 		return "", false, fmt.Errorf(
-			"provider %s: binary %s is missing on disk (a prior update deleted it) but its process still runs; auto-recovery failed: %w — rerun as root to allow recovery, or restart the unit",
-			providerLabel(p), p.Binary, err)
+			"provider %s: binary %s is missing on disk (a prior update deleted it) but its process still runs; auto-recovery failed: %w — %s",
+			providerLabel(p), p.Binary, err, hint)
 	}
 	return p.Binary, true, nil
+}
+
+// errBinaryAppeared is returned by installRecovered when the target path
+// materialized between recovery's initial check and its final install — a
+// concurrent updater won the race, so the recovered (stale) image must not
+// overwrite the fresh binary that legitimate update just placed there.
+var errBinaryAppeared = fmt.Errorf("provider binary reappeared during recovery; refusing to overwrite")
+
+// installRecovered atomically moves tmp into binary, refusing to clobber a file
+// that appears between recovery construction and install. It lives in the
+// shared (non-build-tagged) file so the package's tests and the Windows
+// `go test` step compile it on every platform (os.Lstat/os.Rename are
+// cross-platform; the RENAME_NOREPLACE atomic fast path is Linux-only and is
+// not used here). This narrows the stale-vs-fresh TOCTOU to a single
+// lstat+rename — an accepted residual per the design review, Sonnet, and mimo
+// — and if an updater wins the race, recovery yields rather than overwrite a
+// freshly-installed binary with the deleted-inode image.
+func installRecovered(tmp, binary string) error {
+	if _, err := os.Lstat(binary); err == nil {
+		_ = os.Remove(tmp)
+		return errBinaryAppeared
+	} else if !os.IsNotExist(err) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("stat %s: %w", binary, err)
+	}
+	if err := os.Rename(tmp, binary); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, binary, err)
+	}
+	return nil
 }
