@@ -16,7 +16,18 @@ func providerSubcommand(p Provider, args ...string) error {
 	if p.Binary == "" {
 		return fmt.Errorf("provider %s has no resolvable binary path", providerLabel(p))
 	}
-	cmd := exec.Command(p.Binary, args...)
+	// The provider binary may have been deleted on disk by a prior update
+	// while the process kept running on the freed inode; in that state a
+	// plain exec fails with ENOENT. Restore the live image so every delegated
+	// command still works against the ACTIVE provider, no restart needed.
+	bin, recovered, err := ensureBinaryRecoverable(p)
+	if err != nil {
+		return err
+	}
+	if recovered {
+		fmt.Fprintf(os.Stderr, "note: recovered deleted-but-running provider binary (%s, from /proc/%d/exe)\n", p.Binary, p.PID)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Run with the provider's HOME so state lands in the right directory.
