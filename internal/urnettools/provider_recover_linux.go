@@ -66,9 +66,8 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 
-	if err := os.Rename(tmp, binary); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s -> %s: %w", tmp, binary, err)
+	if err := installRecovered(tmp, binary); err != nil {
+		return fmt.Errorf("install recovered binary: %w", err)
 	}
 
 	// Best-effort ownership fix when we are root and the provider runs as
@@ -78,6 +77,32 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 		if uid, gid, err := lookupUserIDs(user); err == nil {
 			_ = os.Chown(binary, uid, gid)
 		}
+	}
+	return nil
+}
+
+// errBinaryAppeared is returned by installRecovered when the target path
+// materialized between recovery's initial stat and its final install — a
+// concurrent updater won the race, so the recovered (stale) image must not
+// overwrite the fresh binary that legitimate update just placed there.
+var errBinaryAppeared = fmt.Errorf("provider binary reappeared during recovery; refusing to overwrite")
+
+// installRecovered atomically moves tmp into binary, refusing to clobber a file
+// that appears between recovery construction and install. This closes the
+// stale-vs-fresh TOCTOU: the window shrinks from "whole /proc read + copy" to a
+// single lstat + rename, and if an updater wins, recovery yields rather than
+// overwrite a freshly-installed binary with the deleted-inode image.
+func installRecovered(tmp, binary string) error {
+	if _, err := os.Lstat(binary); err == nil {
+		_ = os.Remove(tmp)
+		return errBinaryAppeared
+	} else if !os.IsNotExist(err) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("stat %s: %w", binary, err)
+	}
+	if err := os.Rename(tmp, binary); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, binary, err)
 	}
 	return nil
 }
