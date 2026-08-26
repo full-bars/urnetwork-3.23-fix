@@ -1306,6 +1306,16 @@ func runLifetimeCollector(ctx context.Context) {
 				serving++
 			}
 		}
+		// Evict baselines for proxies no longer in the snapshot so the map
+		// cannot grow unbounded across proxy pool churn (Sonnet review MED).
+		// A removed-then-returned proxy restarts its baseline at whatever
+		// its counter reads on return; if that is a reset, uDelta-style
+		// guarding below keeps history intact.
+		for key := range prevBillable {
+			if _, live := bw[key]; !live {
+				delete(prevBillable, key)
+			}
+		}
 
 		lifetimeStore.Add(
 			uDelta(uint64(pq.PQELifetime), &prevPQE),
@@ -1370,9 +1380,8 @@ func runEarningWindows(ctx context.Context) {
 				c.ActivePQE, c.ActiveClas,
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
-			tlog("🔐 [pqe] all-time opens (persists across restarts): pqe=%d classical=%d\n",
-				func() uint64 { p, _, _, _, _, _, _ := lifetimeStore.Snapshot(); return p }(),
-				func() uint64 { _, cl, _, _, _, _, _ := lifetimeStore.Snapshot(); return cl }())
+			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
+			tlog("🔐 [pqe] all-time opens (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1727,10 +1736,16 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
 		// Feed the persistent all-time store: this loop is the exclusive
-		// consumer of the heartbeat report, so the recovered/lost deltas
-		// are captured exactly once, here.
+		// consumer of the heartbeat report, so transition deltas are
+		// captured exactly once, here. Lost = up->down EVENTS only:
+		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
+		// newly confirmed dead). report.Dead is the COMPLETE currently-
+		// dead list rebuilt every tick — counting it here would inflate
+		// the persisted counter on every tick a proxy stays dead
+		// (Sonnet review HIGH).
 		lifetimeStore.Add(0, 0, 0, 0,
-			uint64(len(report.Recovered)), uint64(len(report.NewlyDegraded))+uint64(len(report.Dead)), 0)
+			uint64(len(report.Recovered)),
+			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
 		if len(report.Dead) > 0 {
 			tlog("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
 		}
