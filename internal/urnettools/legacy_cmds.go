@@ -85,7 +85,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	providers := Discover()
+	providers := lifecycleCandidates(t)
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
@@ -116,7 +116,7 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	providers := Discover()
+	providers := lifecycleCandidates(t)
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
@@ -146,7 +146,7 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	providers := Discover()
+	providers := lifecycleCandidates(t)
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
 		return err
@@ -176,6 +176,42 @@ func cmdRestart(args []string, force, dryRun bool) error {
 // discoverDockerFn is the docker-provider discovery function, as a var so
 // errWithDockerHint's docker branch is testable without a live daemon.
 var discoverDockerFn = DiscoverDocker
+
+// discoverSystemdFn is the systemd/process discovery function, as a var so
+// lifecycleCandidates is testable without live processes or units.
+var discoverSystemdFn = Discover
+
+// hasExplicitTarget reports whether the operator named a provider with a
+// flag (--unit / --user / --network / --network-id / --state-dir). A bare
+// positional is NOT an explicit target: guardLifecycleArgs already
+// hard-errors on leftovers before selection runs.
+func hasExplicitTarget(t Target) bool {
+	return t.Unit != "" || t.User != "" || t.Network != "" ||
+		t.NetworkID != "" || t.StateDir != ""
+}
+
+// lifecycleCandidates builds the candidate pool for start/stop/restart.
+//
+// The pool is Discover() (systemd/process providers) ALONE whenever no
+// explicit target was given — that keeps every default-selection path
+// (sole-provider auto-pick, narrowToAccessible, defaultProvider, ambiguity
+// inventory) byte-for-byte identical to pre-#465 behavior, even on boxes
+// running containers alongside host providers.
+//
+// When the operator DID name a target, docker containers join the pool.
+// They can only be selected by an exact match (selectTarget requires it),
+// and any container that matches is then refused by guardSystemdProvider
+// with an actionable "use urnet-docker" error — instead of the old plain
+// not-found. This makes guardSystemdProvider reachable on the lifecycle
+// paths (Sonnet HIGH, meso-miner PR #10/#12) without widening any
+// automatic-selection surface.
+func lifecycleCandidates(t Target) []Provider {
+	providers := discoverSystemdFn()
+	if !hasExplicitTarget(t) {
+		return providers
+	}
+	return append(providers, discoverDockerFn()...)
+}
 
 // errWithDockerHint wraps a no-provider error with a pointer to the docker
 // variant when provider containers exist: the systemd/process tool cannot
