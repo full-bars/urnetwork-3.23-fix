@@ -168,11 +168,10 @@ func TestTarRelPath(t *testing.T) {
 	}
 }
 
-// TestOptimizeForDispatch covers the platform dispatch in cmdOptimize
-// (Linux sysctl vs Windows netsh/reg): windows must route to
-// optimizeWindows, every other GOOS to optimizeLinux. Compares function
-// pointers so the actual (root-requiring, host-mutating) implementations
-// never run.
+// TestOptimizeForDispatch covers the platform dispatch in cmdOptimize:
+// windows -> optimizeWindows, linux -> optimizeLinux, darwin -> optimizeDarwin.
+// Compares function pointers so the actual (root-requiring, host-mutating)
+// implementations never run.
 func TestOptimizeForDispatch(t *testing.T) {
 	fnPtr := func(f func() error) uintptr { return reflect.ValueOf(f).Pointer() }
 
@@ -182,13 +181,18 @@ func TestOptimizeForDispatch(t *testing.T) {
 	if got, want := fnPtr(optimizeFor("linux")), fnPtr(optimizeLinux); got != want {
 		t.Errorf("optimizeFor(linux) did not dispatch to optimizeLinux")
 	}
-	// Any other GOOS (darwin, freebsd, ...) falls back to the Linux path
-	// rather than erroring — cmdOptimize has no third implementation.
-	if got, want := fnPtr(optimizeFor("darwin")), fnPtr(optimizeLinux); got != want {
-		t.Errorf("optimizeFor(darwin) should default to optimizeLinux")
+	// macOS must dispatch to its own BSD implementation, NOT the Linux path
+	// (the Linux net.core/net.ipv4 keys don't exist on darwin and previously
+	// produced a false "optimize: done").
+	if got, want := fnPtr(optimizeFor("darwin")), fnPtr(optimizeDarwin); got != want {
+		t.Errorf("optimizeFor(darwin) did not dispatch to optimizeDarwin")
 	}
-	// Sanity: the real runtime.GOOS on this test box must resolve to one
-	// of the two known branches without panicking.
+	// Unknown GOOSes still fall back to the Linux path rather than erroring.
+	if got, want := fnPtr(optimizeFor("freebsd")), fnPtr(optimizeLinux); got != want {
+		t.Errorf("optimizeFor(freebsd) should default to optimizeLinux")
+	}
+	// Sanity: the real runtime.GOOS on this test box must resolve to one of
+	// the branches without panicking.
 	_ = optimizeFor(runtime.GOOS)
 }
 
