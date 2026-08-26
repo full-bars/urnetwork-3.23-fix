@@ -130,11 +130,22 @@ func currentUserName() string {
 	return currentUser()
 }
 
-// narrowToAccessible is a no-op on Windows: there's no systemd -M cross-user
-// enumeration gap the way Linux has (see discover_unix.go), so the ghost-
-// provider permission case doesn't apply here.
+// narrowToAccessible filters to providers the invoking user can actually
+// act on without elevation. Mirrors discover_unix.go even though Windows has
+// no systemd -M cross-user enumeration gap (the Linux ghost-provider case):
+// an unprivileged, non-elevated Windows caller cannot manage another
+// account's providers either, so the accessible set is this user's own. This
+// keeps the unprivileged auto-narrow (selectTargetOrSoleAccessible) and its
+// "only user=X is accessible" note consistent across every platform.
 func narrowToAccessible(providers []Provider) []Provider {
-	return providers
+	current := currentUserName()
+	var out []Provider
+	for _, p := range providers {
+		if p.User != "" && p.User == current {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // platformIsPrivileged on Windows does a real elevation check: whether the
