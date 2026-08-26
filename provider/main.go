@@ -4892,14 +4892,16 @@ func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime 
 		case "inactive":
 			inactive = append(inactive, removedProxy{addr: addr, entry: e})
 		case "recently_offline", "offline", "long_offline":
-			// Degraded removal requires an explicit --degraded threshold;
+			// Degraded removal requires an explicit --degraded threshold:
 			// without it (degradedDur==0) offline proxies are NOT collected
-			// here (matches the auto-cleanup path runProxyURLCleanupOnce), so
-			// a plain `proxy remove-dead` does not silently prune every
-			// offline proxy. Whether degraded is disabled or the proxy is
-			// not yet old enough, fall through to the auth-fail check below
-			// via `break` (NOT `continue`, which in a switch skips the loop
-			// remainder and would wrongly drop the auth evaluation).
+			// here (matches runProxyURLCleanupOnce), so a plain `proxy
+			// remove-dead` does not silently prune every offline proxy.
+			// This block uses `break` (exits the switch only), NOT `continue`
+			// (which inside a switch targets the ENCLOSING for loop and would
+			// skip the auth-fail check below). Deliberate: offline proxies
+			// remain auth-fail eligible regardless of degraded status/age —
+			// auth failures are an independent, actionable signal and
+			// dropping it would hide removals.
 			if o.degradedDur > 0 {
 				ds, err := time.Parse(time.RFC3339, e.DownSince)
 				if err != nil || time.Since(ds) < o.degradedDur {
@@ -4908,6 +4910,11 @@ func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime 
 				degraded = append(degraded, removedProxy{addr: addr, entry: e})
 			}
 		}
+		// A proxy can land in BOTH a category (dead/inactive/degraded) AND
+		// authFailing — a deliberate, pre-existing overlap. At removal
+		// removeDeadProxies de-dupes by source bucket and each per-source
+		// removal is idempotent, so the overlap has no removal-correctness
+		// impact (it only double-prints in the confirmation prompt).
 		if o.authFailMin > 0 && e.Health != "up" {
 			days := int64(max(1, int(uptime.Hours())/24))
 			if e.AuthFailures >= o.authFailMin*days {
