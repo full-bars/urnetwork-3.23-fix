@@ -869,7 +869,8 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
-// network stack equivalents matter for proxy-scale connection churn).
+// network stack equivalents matter for proxy-scale connection churn), and
+// macOS uses the BSD net.inet.*/kern.* sysctls via optimizeDarwin.
 //
 // NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
 // on the host kernel, not on a specific provider process. Requiring a
@@ -1010,7 +1011,7 @@ func optimizeDarwin() error {
 	}
 	for _, args := range [][]string{
 		{"-w", "net.inet.tcp.recvspace=4194304", "net.inet.tcp.sendspace=4194304"},
-		{"-w", "kern.maxfiles=500000", "kern.maxfilesperproc=250000"},
+		{"-w", "kern.maxfiles=200000", "kern.maxfilesperproc=100000"},
 		{"-w", "net.inet.ip.portrange.first=1024", "net.inet.ip.portrange.last=65535"},
 		{"-w", "net.inet.tcp.msl=2000"},
 	} {
