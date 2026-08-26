@@ -869,7 +869,8 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
-// network stack equivalents matter for proxy-scale connection churn).
+// network stack equivalents matter for proxy-scale connection churn), and
+// macOS uses the BSD net.inet.*/kern.* sysctls via optimizeDarwin.
 //
 // NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
 // on the host kernel, not on a specific provider process. Requiring a
@@ -910,6 +911,9 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 func optimizeFor(goos string) func() error {
 	if goos == "windows" {
 		return optimizeWindows
+	}
+	if goos == "darwin" {
+		return optimizeDarwin
 	}
 	return optimizeLinux
 }
@@ -977,6 +981,55 @@ func optimizeWindows() error {
 		fmt.Fprintf(os.Stderr, "optimize: warning: reg TcpTimedWaitDelay failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
 	}
 	fmt.Println("optimize: done (TcpTimedWaitDelay takes effect on reboot)")
+	return nil
+}
+
+// optimizeDarwin applies the macOS (BSD) equivalents of the Linux tuning:
+// socket-buffer sizes (net.inet.tcp.recvspace/sendspace), file-descriptor and
+// per-process limits (kern.maxfiles/kern.maxfilesperproc), the ephemeral port
+// pool (net.inet.ip.portrange.first/.last), and TIME_WAIT recycling
+// (net.inet.tcp.msl). These are the darwin-namespace analogs of the
+// net.core/net.ipv4 keys optimizeLinux sets — the OIDs differ, so the Linux
+// keys must NEVER run on macOS (they don't exist there; previously the darwin
+// build fell through to optimizeLinux, warned on every missing key, and still
+// printed a false "done"). Requires root (or sudo); failures are logged, never
+// fatal. All keys apply immediately with sudo but do NOT persist across
+// reboot — persist them with a LaunchDaemon that runs sysctl -w at boot, not
+// /etc/sysctl.conf (modern macOS ignores it).
+func optimizeDarwin() error {
+	var prefix []string
+	if os.Geteuid() != 0 {
+		if _, err := exec.LookPath("sudo"); err == nil {
+			prefix = []string{"sudo"}
+		} else {
+			self, _ := os.Executable()
+			if self == "" {
+				self = "urnet-tools"
+			}
+			return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+		}
+	}
+	for _, args := range [][]string{
+		{"-w", "net.inet.tcp.recvspace=4194304", "net.inet.tcp.sendspace=4194304"},
+		{"-w", "kern.maxfiles=200000", "kern.maxfilesperproc=100000"},
+		{"-w", "net.inet.ip.portrange.first=1024", "net.inet.ip.portrange.last=65535"},
+		{"-w", "net.inet.tcp.msl=2000"},
+	} {
+		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Stdin = os.Stdin
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if len(prefix) > 0 && (strings.Contains(string(out), "password") || strings.Contains(string(out), "incorrect") || strings.Contains(string(out), "sudoers")) {
+				self, _ := os.Executable()
+				if self == "" {
+					self = "urnet-tools"
+				}
+				return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+			}
+			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
+		}
+	}
+	fmt.Println("optimize: done (macOS net.inet.*/kern.* equivalents)")
 	return nil
 }
 
