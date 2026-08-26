@@ -65,6 +65,12 @@ func guardLifecycleArgs(cmd string, args []string) (Target, error) {
 // guardSystemdProvider refuses a resolved provider that lives in the docker
 // namespace: unitCommand would run systemctl against the container NAME as
 // if it were a systemd unit (cross-namespace contamination, LA1 D6).
+//
+// Reachability note (Sonnet HIGH, meso-miner PR #10/#12 review): this guard
+// is LIVE on the lifecycle paths (start/stop/restart) because
+// lifecycleCandidates widens the candidate pool with docker containers when
+// an explicit target flag was given. It remains defense-in-depth for every
+// other caller of unitCommand whose discovery does not include containers.
 func guardSystemdProvider(p Provider) error {
 	if isDockerProvider(p) {
 		return fmt.Errorf(
