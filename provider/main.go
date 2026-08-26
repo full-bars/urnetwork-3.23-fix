@@ -1249,6 +1249,110 @@ func pqeTotalCounts() connect.PQECounts {
 	return total
 }
 
+// lifetimeStore persists all-time operator metrics across restarts
+// (~/.urnetwork/lifetime_metrics.json). Collectors feed it guarded deltas;
+// flushes are throttled internally.
+var lifetimeStore = loadLifetimeMetrics(lifetimeMetricsPath())
+
+// uDelta returns cur-prev guarding against counter resets (a reading below
+// the previous sample means the source restarted; contribute 0, never wrap).
+func uDelta(cur uint64, prev *uint64) uint64 {
+	var d uint64
+	if cur >= *prev {
+		d = cur - *prev
+	}
+	*prev = cur
+	return d
+}
+
+// runLifetimeCollector samples the existing exported counters once per earn
+// tick, converts them to reset-guarded deltas, and feeds the persistent
+// store. Read-only over the network stack: nothing here can affect the hot
+// path.
+func runLifetimeCollector(ctx context.Context) {
+	var prevPQE, prevClas, prevUp, prevDeny uint64
+	prevBillable := map[string]uint64{}
+	var prevRx, prevTx uint64
+	var prevTime time.Time
+
+	ticker := time.NewTicker(earnCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			lifetimeStore.Flush()
+			return
+		case <-ticker.C:
+		}
+
+		pq := pqeTotalCounts()
+		up, deny := globalContractMetrics.totals()
+
+		// Billable + transit volumes from the read-only health snapshot,
+		// with the same per-proxy reset guard the [traffic] loop uses.
+		var billableSum, rxSum, txSum, clients int64
+		serving := 0
+		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+		for key, b := range bw {
+			billable := b.BillableRx.Load() + b.BillableTx.Load()
+			if pb := prevBillable[key]; billable >= pb {
+				billableSum += int64(billable - pb)
+			}
+			prevBillable[key] = billable
+			rxSum += int64(b.TotalRx.Load())
+			txSum += int64(b.TotalTx.Load())
+			if c := b.Clients.Load(); c > 0 {
+				clients += c
+				serving++
+			}
+		}
+		// Evict baselines for proxies no longer in the snapshot so the map
+		// cannot grow unbounded across proxy pool churn (Sonnet review MED).
+		// A removed-then-returned proxy restarts its baseline at whatever
+		// its counter reads on return; if that is a reset, uDelta-style
+		// guarding below keeps history intact.
+		for key := range prevBillable {
+			if _, live := bw[key]; !live {
+				delete(prevBillable, key)
+			}
+		}
+
+		lifetimeStore.Add(
+			uDelta(uint64(pq.PQELifetime), &prevPQE),
+			uDelta(uint64(pq.ClasLifetime), &prevClas),
+			uDelta(uint64(up), &prevUp),
+			uDelta(uint64(deny), &prevDeny),
+			0, 0, // recovered/lost are fed by the health-heartbeat owner
+			uint64(billableSum),
+		)
+		lifetimeStore.MaybeFlush(time.Now())
+
+		// All-time rollup line (only once there is something to show).
+		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
+		if a1|a2|a3|a4|a5|a6 != 0 {
+			tlog("♾️ [lifetime] all-time: pqe_opens=%d clas_opens=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
+		}
+
+		// Transit visibility: what this node carries as an INTERMEDIATE hop.
+		// Silent when idle to avoid duplicating the [traffic] rollup.
+		now := time.Now()
+		if clients > 0 && !prevTime.IsZero() {
+			elapsed := now.Sub(prevTime).Seconds()
+			if elapsed < 1 {
+				elapsed = 1
+			}
+			tlog("🛰️ [relay] as-hop: clients=%d on %d proxy(ies) rx=%s tx=%s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])\n",
+				clients, serving,
+				fmtRate(float64(uDelta(uint64(rxSum), &prevRx))/elapsed),
+				fmtRate(float64(uDelta(uint64(txSum), &prevTx))/elapsed))
+		} else {
+			_, _ = uDelta(uint64(rxSum), &prevRx), uDelta(uint64(txSum), &prevTx)
+		}
+		prevTime = now
+	}
+}
+
 func runEarningWindows(ctx context.Context) {
 	const maxSamples = 60
 	deltas := make([]uint64, 0, maxSamples)
@@ -1269,11 +1373,15 @@ func runEarningWindows(ctx context.Context) {
 		if c.ActivePQE != 0 || c.ActiveClas != 0 || c.PQEHour != 0 || c.PQEDay != 0 ||
 			c.PQEWeek != 0 || c.PQELifetime != 0 || c.ClasHour != 0 || c.ClasDay != 0 ||
 			c.ClasWeek != 0 || c.ClasLifetime != 0 {
-			_ = c
-			tlog("🔐 [pqe] live pqe=%d classical=%d | opens 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d | lifetime: pqe=%d clas=%d\n",
+			// "direct-e2e": per-peer TLS tunnels THIS node terminates. Client
+			// traffic merely forwarded through us (transit hops) never opens
+			// such a session here — those appear on 🛰️ [relay] / 📈 [traffic].
+			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | opens since-start: pqe=%d clas=%d | 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d\n",
 				c.ActivePQE, c.ActiveClas,
-				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek,
-				c.PQELifetime, c.ClasLifetime)
+				c.PQELifetime, c.ClasLifetime,
+				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
+			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
+			tlog("🔐 [pqe] all-time opens (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1627,6 +1735,17 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
+		// Feed the persistent all-time store: this loop is the exclusive
+		// consumer of the heartbeat report, so transition deltas are
+		// captured exactly once, here. Lost = up->down EVENTS only:
+		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
+		// newly confirmed dead). report.Dead is the COMPLETE currently-
+		// dead list rebuilt every tick — counting it here would inflate
+		// the persisted counter on every tick a proxy stays dead
+		// (Sonnet review HIGH).
+		lifetimeStore.Add(0, 0, 0, 0,
+			uint64(len(report.Recovered)),
+			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
 		if len(report.Dead) > 0 {
 			tlog("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
 		}
@@ -2411,6 +2530,7 @@ func provide(opts docopt.Opts) {
 	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
+	go runLifetimeCollector(ctx)
 	go runProfitHeartbeat(ctx)
 	go runBillableRateWriter(ctx)
 
