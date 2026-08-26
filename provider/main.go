@@ -1249,6 +1249,193 @@ func pqeTotalCounts() connect.PQECounts {
 	return total
 }
 
+// lifetimeStore persists all-time operator metrics across restarts
+// (~/.urnetwork/lifetime_metrics.json). Collectors feed it guarded deltas;
+// flushes are throttled internally.
+var lifetimeStore = loadLifetimeMetrics(lifetimeMetricsPath())
+
+// uDelta returns cur-prev guarding against counter resets (a reading below
+// the previous sample means the source restarted; contribute 0, never wrap).
+func uDelta(cur uint64, prev *uint64) uint64 {
+	var d uint64
+	if cur >= *prev {
+		d = cur - *prev
+	}
+	*prev = cur
+	return d
+}
+
+// u64At returns a pointer to a stable uint64 slot for key, creating the
+// entry if absent. Map values are not addressable in Go, so the slot is
+// held via *uint64 indirection.
+func u64At(m map[string]*uint64, key string) *uint64 {
+	if p, ok := m[key]; ok {
+		return p
+	}
+	v := uint64(0)
+	m[key] = &v
+	return &v
+}
+
+// iDelta is uDelta's counterpart for signed counters (contract totals are
+// int64 atomics): negative or decreasing readings contribute zero.
+func iDelta(cur int64, prev *int64) uint64 {
+	var d int64
+	if cur >= *prev {
+		d = cur - *prev
+	}
+	*prev = cur
+	if d < 0 {
+		return 0
+	}
+	return uint64(d)
+}
+
+// runLifetimeCollector samples the existing exported counters once per earn
+// tick, converts them to reset-guarded deltas, and feeds the persistent
+// store. Read-only over the network stack: nothing here can affect the hot
+// path.
+func runLifetimeCollector(ctx context.Context) {
+	var prevPQE, prevClas uint64
+	var prevUp, prevDeny int64
+	prevBillable := map[string]uint64{}
+	prevRxPerProxy := map[string]*uint64{}
+	prevTxPerProxy := map[string]*uint64{}
+	var prevTime time.Time
+
+	// departedBaselines remembers the last billable counter reading of
+	// proxies that left the health snapshot, so a proxy returning within
+	// tombstoneProxyBaselineTTL resumes against its old baseline instead
+	// of re-counting its whole history as fresh delta (ox-alpha MED).
+	type departedBaseline struct {
+		baseline uint64
+		left     time.Time
+	}
+	departedBaselines := map[string]departedBaseline{}
+	const tombstoneProxyBaselineTTL = 24 * time.Hour
+
+	ticker := time.NewTicker(earnCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			lifetimeStore.Flush()
+			return
+		case <-ticker.C:
+		}
+
+		pq := pqeTotalCounts()
+		up, deny := globalContractMetrics.totals()
+
+		// Billable + transit volumes from the read-only health snapshot.
+		// Per-key baselines are TOMBSTONED when a proxy leaves the
+		// snapshot (moved to departedBaselines with a timestamp) rather
+		// than deleted: a proxy that returns within tombstoneTTL with an
+		// intact counter resumes against its old baseline — no double-
+		// counting of its history (ox-alpha review MED). If it returns
+		// RESET below baseline, that gap contributes zero and the
+		// baseline re-anchors. Tombstones expire after tombstoneTTL so
+		// the map stays bounded; a proxy returning after expiry is
+		// treated as new (its residual pre-gap bytes are counted once —
+		// accepted worst case).
+		var billableSum, rxSum, txSum, clients uint64
+		serving := 0
+		now := time.Now()
+		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+		for key, b := range bw {
+			billable := b.BillableRx.Load() + b.BillableTx.Load()
+			pb, seen := prevBillable[key]
+			if !seen {
+				if dep, was := departedBaselines[key]; was && now.Sub(dep.left) < tombstoneProxyBaselineTTL {
+					pb, seen = dep.baseline, true
+				}
+			}
+			delete(departedBaselines, key)
+			if seen && billable >= pb {
+				billableSum += billable - pb
+			}
+			prevBillable[key] = billable
+			rxSum += b.TotalRx.Load()
+			txSum += b.TotalTx.Load()
+			if c := b.Clients.Load(); c > 0 {
+				clients += uint64(c)
+				serving++
+			}
+		}
+		// Move baselines of departed proxies into the tombstone map.
+		for key := range prevBillable {
+			if _, live := bw[key]; !live {
+				departedBaselines[key] = departedBaseline{baseline: prevBillable[key], left: now}
+				delete(prevBillable, key)
+			}
+		}
+		// Expire stale tombstones so the map stays bounded under churn.
+		for key, dep := range departedBaselines {
+			if now.Sub(dep.left) >= tombstoneProxyBaselineTTL {
+				delete(departedBaselines, key)
+			}
+		}
+
+		lifetimeStore.Add(
+			uDelta(uint64(pq.PQELifetime), &prevPQE),
+			uDelta(uint64(pq.ClasLifetime), &prevClas),
+			iDelta(up, &prevUp),
+			iDelta(deny, &prevDeny),
+			0, 0, // recovered/lost are fed by the health-heartbeat owner
+			billableSum,
+		)
+		lifetimeStore.MaybeFlush(time.Now())
+
+		// All-time rollup line (only once there is something to show).
+		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
+		if a1|a2|a3|a4|a5|a6|a7 != 0 {
+			tlog("♾️ [lifetime] all-time: pqe_opens=%d clas_opens=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
+		}
+
+		// Transit visibility: what this node carries as an INTERMEDIATE hop.
+		// Silent when idle to avoid duplicating the [traffic] rollup.
+		if clients > 0 && !prevTime.IsZero() {
+			elapsed := now.Sub(prevTime).Seconds()
+			if elapsed < 1 {
+				elapsed = 1
+			}
+			// Per-proxy reset guards on the rate sums (ox-alpha MED):
+			// an aggregate-only guard lets a churned proxy's return dump
+			// its whole counter into one tick's rate.
+			var rxDelta, txDelta uint64
+			for key, b := range bw {
+				rx := b.TotalRx.Load()
+				tx := b.TotalTx.Load()
+				rxDelta += uDelta(rx, u64At(prevRxPerProxy, key))
+				txDelta += uDelta(tx, u64At(prevTxPerProxy, key))
+			}
+			// Drop rate baselines for proxies no longer in the snapshot
+			// (bounded under churn; a returning proxy starts at zero and
+			// its first-tick delta is suppressed by the reset guard).
+			for key := range prevRxPerProxy {
+				if _, live := bw[key]; !live {
+					delete(prevRxPerProxy, key)
+					delete(prevTxPerProxy, key)
+				}
+			}
+			tlog("🛰️ [relay] as-hop: clients=%d on %d proxy(ies) rx=%s tx=%s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])\n",
+				clients, serving,
+				fmtRate(float64(rxDelta)/elapsed),
+				fmtRate(float64(txDelta)/elapsed))
+		} else {
+			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
+			// during the idle window are not smeared into the next active
+			// tick's rate display.
+			for key, b := range bw {
+				*prevRxPerProxy[key] = b.TotalRx.Load()
+				*prevTxPerProxy[key] = b.TotalTx.Load()
+			}
+		}
+		prevTime = now
+	}
+}
+
 func runEarningWindows(ctx context.Context) {
 	const maxSamples = 60
 	deltas := make([]uint64, 0, maxSamples)
@@ -1269,11 +1456,15 @@ func runEarningWindows(ctx context.Context) {
 		if c.ActivePQE != 0 || c.ActiveClas != 0 || c.PQEHour != 0 || c.PQEDay != 0 ||
 			c.PQEWeek != 0 || c.PQELifetime != 0 || c.ClasHour != 0 || c.ClasDay != 0 ||
 			c.ClasWeek != 0 || c.ClasLifetime != 0 {
-			_ = c
-			tlog("🔐 [pqe] live pqe=%d classical=%d | opens 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d | lifetime: pqe=%d clas=%d\n",
+			// "direct-e2e": per-peer TLS tunnels THIS node terminates. Client
+			// traffic merely forwarded through us (transit hops) never opens
+			// such a session here — those appear on 🛰️ [relay] / 📈 [traffic].
+			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | opens since-start: pqe=%d clas=%d | 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d\n",
 				c.ActivePQE, c.ActiveClas,
-				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek,
-				c.PQELifetime, c.ClasLifetime)
+				c.PQELifetime, c.ClasLifetime,
+				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
+			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
+			tlog("🔐 [pqe] all-time opens (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1627,6 +1818,17 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
+		// Feed the persistent all-time store: this loop is the exclusive
+		// consumer of the heartbeat report, so transition deltas are
+		// captured exactly once, here. Lost = up->down EVENTS only:
+		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
+		// newly confirmed dead). report.Dead is the COMPLETE currently-
+		// dead list rebuilt every tick — counting it here would inflate
+		// the persisted counter on every tick a proxy stays dead
+		// (Sonnet review HIGH).
+		lifetimeStore.Add(0, 0, 0, 0,
+			uint64(len(report.Recovered)),
+			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
 		if len(report.Dead) > 0 {
 			tlog("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
 		}
@@ -2411,6 +2613,7 @@ func provide(opts docopt.Opts) {
 	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
+	go runLifetimeCollector(ctx)
 	go runProfitHeartbeat(ctx)
 	go runBillableRateWriter(ctx)
 
