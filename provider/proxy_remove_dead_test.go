@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -25,14 +26,19 @@ func assertCandidatesEqual(t *testing.T, got []removedProxy, want ...string) {
 	for _, s := range want {
 		w[s] = true
 	}
-	for s := range w {
+	var gotAddrs []string
+	for _, rp := range got {
+		gotAddrs = append(gotAddrs, rp.addr)
+	}
+	sort.Strings(gotAddrs)
+	for _, s := range want {
 		if !g[s] {
-			t.Errorf("missing candidate %q (got %v)", s, want)
+			t.Errorf("missing candidate %q (want %v, got %v)", s, want, gotAddrs)
 		}
 	}
 	for s := range g {
 		if !w[s] {
-			t.Errorf("unexpected candidate %q", s)
+			t.Errorf("unexpected candidate %q (want %v, got %v)", s, want, gotAddrs)
 		}
 	}
 }
@@ -108,6 +114,16 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			uptime: 2 * time.Hour,
 			// Old down-since but NO --degraded -> must NOT be collected (matches auto path).
 			wantDeg: []string{},
+		},
+		{
+			name: "degradedDur>0 but recent offline still auth-fails if threshold met",
+			proxies: map[string]ProxyEntry{
+				"recent_off_hi": {ID: 1, Health: "offline", Source: "file", DownSince: downRecent, AuthFailures: 500},
+			},
+			opts:     removeDeadOptions{degradedDur: 24 * time.Hour, authFailMin: 100},
+			uptime:   48 * time.Hour,            // days=2, threshold=200 -> 500 >= 200 auth-fails
+			wantDeg:  []string{},                // not old enough to be degraded
+			wantAuth: []string{"recent_off_hi"}, // still auth-fail eligible (deliberate)
 		},
 		{
 			name: "unparsable down-since is fail-closed (not removed)",
