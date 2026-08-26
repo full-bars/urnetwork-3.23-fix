@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"crypto/sha256"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,55 @@ import (
 	"testing"
 	"time"
 )
+
+func TestInstallRecovered_TargetMissing_Renames(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "tmp.bin")
+	binary := filepath.Join(dir, "provider")
+	if err := os.WriteFile(tmp, []byte("recovered-image"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installRecovered(tmp, binary); err != nil {
+		t.Fatalf("installRecovered (target missing) should succeed, got %v", err)
+	}
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("binary should exist after rename: %v", err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temp file should be consumed by the rename, stat err=%v", err)
+	}
+}
+
+// TestInstallRecovered_TargetAppeared_NoClobber is the regression guard for the
+// stale-vs-fresh TOCTOU: if a target binary materializes between the initial
+// missing-stat and the final install (a concurrent updater won the race),
+// recovery must refuse rather than overwrite the fresh binary.
+func TestInstallRecovered_TargetAppeared_NoClobber(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "tmp.bin")
+	binary := filepath.Join(dir, "provider")
+	if err := os.WriteFile(tmp, []byte("stale-deleted-image"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("fresh-binary-from-updater"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := installRecovered(tmp, binary)
+	if !errors.Is(err, errBinaryAppeared) {
+		t.Fatalf("want errBinaryAppeared, got %v", err)
+	}
+	// The freshly-installed binary must be untouched.
+	got, rerr := os.ReadFile(binary)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != "fresh-binary-from-updater" {
+		t.Fatalf("installRecovered clobbered the fresh binary: %q", got)
+	}
+	if _, serr := os.Stat(tmp); !os.IsNotExist(serr) {
+		t.Fatalf("temp file should be cleaned up on refusal, stat err=%v", serr)
+	}
+}
 
 // TestProvRecoverHelperProcess is a sleeper the integration test launches as a
 // child, then deletes its own on-disk binary mid-run so the recovery path can
