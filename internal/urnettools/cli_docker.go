@@ -372,10 +372,17 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	if beforeVer == "" {
 		// Could not read the running binary's version pre-swap (the image's
 		// --version output is empty/unparseable). Fall back to confirming the
-		// provider process is up after the swap.
-		if containerProviderAlive(p.Unit) {
-			fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
-			return nil
+		// provider process is up after the swap. Poll through the same
+		// recovery window as waitForLiveVersion below instead of a single
+		// check: a freshly started container takes a few seconds to boot its
+		// provider, and one immediate probe reported a false "could not
+		// confirm" (coderabbit follow-up, PR #10).
+		for i := 0; i < 60; i++ {
+			if containerProviderAlive(p.Unit) {
+				fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
+				return nil
+			}
+			time.Sleep(1 * time.Second)
 		}
 		return fmt.Errorf("could not confirm the provider process inside %s after the update — check `docker logs %s`", p.Unit, p.Unit)
 	}
