@@ -694,6 +694,10 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 		setNextGradeRefreshAt(time.Now().Add(proxyReaperInterval))
 		select {
 		case <-ctx.Done():
+			// Clear the published refresh estimate on shutdown so the
+			// summary countdown does not go stale (coderabbit follow-up,
+			// PR #10).
+			setNextGradeRefreshAt(time.Time{})
 			return
 		case <-ticker.C:
 		}
@@ -1131,6 +1135,12 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 	for {
 		select {
 		case <-ctx.Done():
+			// Same CR #5 contract as the fetcher's other two exits: clear
+			// the published schedule so countdownLine() cannot keep showing
+			// a stale "next fetch probe in Xs" after shutdown (coderabbit
+			// follow-up, PR #10).
+			setNextFetchProbeAt(time.Time{})
+			setURLFetcherState("inactive")
 			return
 		case <-ticker.C:
 			// Re-check runtime overrides on every tick
