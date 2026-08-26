@@ -287,17 +287,31 @@ func cmdLogs(args []string) error {
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
 		}
+		waitCh := make(chan error, 1)
+		go func() { waitCh <- cmd.Wait() }()
 		select {
 		case <-produced:
-			// Output started within the window: a real follow. Let it run.
-			if err := cmd.Wait(); err != nil {
+			// Output started within the window: a real follow. Let it run
+			// until journalctl itself exits (user interrupt / end of match).
+			if err := <-waitCh; err != nil {
+				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+			}
+			return nil
+		case err := <-waitCh:
+			// Exited BEFORE producing any output: report the real outcome
+			// instead of mislabeling it a machined/polkit hang — an empty
+			// journal exits 0 immediately and is legitimate (coderabbit
+			// follow-up, PR #10).
+			_ = cmd.Process.Kill()
+			if err != nil {
 				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
 			}
 			return nil
 		case <-time.After(10 * time.Second):
-			// No output within the window: genuine machined/polkit hang.
+			// Still running, still silent after the window: genuine
+			// machined/polkit hang.
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			<-waitCh
 			hint := ""
 			if h := rootHint(); h != "" {
 				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
