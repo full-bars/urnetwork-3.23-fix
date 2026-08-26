@@ -93,12 +93,16 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	return lm
 }
 
-// Add applies positive deltas to named totals. Negative inputs are ignored
-// (defensive: callers compute deltas and may see transient backwards
-// readings around counter resets; history must never go down).
+// Add applies positive deltas to named totals and marks the store dirty.
+// Callers pass reset-guarded deltas; a fully-zero call is a cheap no-op
+// that does NOT mark the store dirty (so idle nodes never rewrite the
+// state file — ox-alpha review LOW).
 func (lm *lifetimeMetrics) Add(pqeOpens, clasOpens, contractsUp, contractsDeny, proxiesRecov, proxiesLost uint64, billableBytesDelta uint64) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
+	if pqeOpens|clasOpens|contractsUp|contractsDeny|proxiesRecov|proxiesLost|billableBytesDelta == 0 {
+		return
+	}
 	lm.PQEOpens += pqeOpens
 	lm.ClasOpens += clasOpens
 	lm.ContractsUp += contractsUp
