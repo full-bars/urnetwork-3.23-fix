@@ -1265,6 +1265,18 @@ func uDelta(cur uint64, prev *uint64) uint64 {
 	return d
 }
 
+// u64At returns a pointer to a stable uint64 slot for key, creating the
+// entry if absent. Map values are not addressable in Go, so the slot is
+// held via *uint64 indirection.
+func u64At(m map[string]*uint64, key string) *uint64 {
+	if p, ok := m[key]; ok {
+		return p
+	}
+	v := uint64(0)
+	m[key] = &v
+	return &v
+}
+
 // iDelta is uDelta's counterpart for signed counters (contract totals are
 // int64 atomics): negative or decreasing readings contribute zero.
 func iDelta(cur int64, prev *int64) uint64 {
@@ -1287,8 +1299,20 @@ func runLifetimeCollector(ctx context.Context) {
 	var prevPQE, prevClas uint64
 	var prevUp, prevDeny int64
 	prevBillable := map[string]uint64{}
-	var prevRx, prevTx uint64
+	prevRxPerProxy := map[string]*uint64{}
+	prevTxPerProxy := map[string]*uint64{}
 	var prevTime time.Time
+
+	// departedBaselines remembers the last billable counter reading of
+	// proxies that left the health snapshot, so a proxy returning within
+	// tombstoneProxyBaselineTTL resumes against its old baseline instead
+	// of re-counting its whole history as fresh delta (ox-alpha MED).
+	type departedBaseline struct {
+		baseline uint64
+		left     time.Time
+	}
+	departedBaselines := map[string]departedBaseline{}
+	const tombstoneProxyBaselineTTL = 24 * time.Hour
 
 	ticker := time.NewTicker(earnCheckInterval)
 	defer ticker.Stop()
@@ -1303,14 +1327,31 @@ func runLifetimeCollector(ctx context.Context) {
 		pq := pqeTotalCounts()
 		up, deny := globalContractMetrics.totals()
 
-		// Billable + transit volumes from the read-only health snapshot,
-		// with the same per-proxy reset guard the [traffic] loop uses.
+		// Billable + transit volumes from the read-only health snapshot.
+		// Per-key baselines are TOMBSTONED when a proxy leaves the
+		// snapshot (moved to departedBaselines with a timestamp) rather
+		// than deleted: a proxy that returns within tombstoneTTL with an
+		// intact counter resumes against its old baseline — no double-
+		// counting of its history (ox-alpha review MED). If it returns
+		// RESET below baseline, that gap contributes zero and the
+		// baseline re-anchors. Tombstones expire after tombstoneTTL so
+		// the map stays bounded; a proxy returning after expiry is
+		// treated as new (its residual pre-gap bytes are counted once —
+		// accepted worst case).
 		var billableSum, rxSum, txSum, clients uint64
 		serving := 0
+		now := time.Now()
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 		for key, b := range bw {
 			billable := b.BillableRx.Load() + b.BillableTx.Load()
-			if pb := prevBillable[key]; billable >= pb {
+			pb, seen := prevBillable[key]
+			if !seen {
+				if dep, was := departedBaselines[key]; was && now.Sub(dep.left) < tombstoneProxyBaselineTTL {
+					pb, seen = dep.baseline, true
+				}
+			}
+			delete(departedBaselines, key)
+			if seen && billable >= pb {
 				billableSum += billable - pb
 			}
 			prevBillable[key] = billable
@@ -1321,14 +1362,17 @@ func runLifetimeCollector(ctx context.Context) {
 				serving++
 			}
 		}
-		// Evict baselines for proxies no longer in the snapshot so the map
-		// cannot grow unbounded across proxy pool churn (Sonnet review MED).
-		// A removed-then-returned proxy restarts its baseline at whatever
-		// its counter reads on return; if that is a reset, uDelta-style
-		// guarding below keeps history intact.
+		// Move baselines of departed proxies into the tombstone map.
 		for key := range prevBillable {
 			if _, live := bw[key]; !live {
+				departedBaselines[key] = departedBaseline{baseline: prevBillable[key], left: now}
 				delete(prevBillable, key)
+			}
+		}
+		// Expire stale tombstones so the map stays bounded under churn.
+		for key, dep := range departedBaselines {
+			if now.Sub(dep.left) >= tombstoneProxyBaselineTTL {
+				delete(departedBaselines, key)
 			}
 		}
 
@@ -1351,18 +1395,42 @@ func runLifetimeCollector(ctx context.Context) {
 
 		// Transit visibility: what this node carries as an INTERMEDIATE hop.
 		// Silent when idle to avoid duplicating the [traffic] rollup.
-		now := time.Now()
 		if clients > 0 && !prevTime.IsZero() {
 			elapsed := now.Sub(prevTime).Seconds()
 			if elapsed < 1 {
 				elapsed = 1
 			}
+			// Per-proxy reset guards on the rate sums (ox-alpha MED):
+			// an aggregate-only guard lets a churned proxy's return dump
+			// its whole counter into one tick's rate.
+			var rxDelta, txDelta uint64
+			for key, b := range bw {
+				rx := b.TotalRx.Load()
+				tx := b.TotalTx.Load()
+				rxDelta += uDelta(rx, u64At(prevRxPerProxy, key))
+				txDelta += uDelta(tx, u64At(prevTxPerProxy, key))
+			}
+			// Drop rate baselines for proxies no longer in the snapshot
+			// (bounded under churn; a returning proxy starts at zero and
+			// its first-tick delta is suppressed by the reset guard).
+			for key := range prevRxPerProxy {
+				if _, live := bw[key]; !live {
+					delete(prevRxPerProxy, key)
+					delete(prevTxPerProxy, key)
+				}
+			}
 			tlog("🛰️ [relay] as-hop: clients=%d on %d proxy(ies) rx=%s tx=%s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])\n",
 				clients, serving,
-				fmtRate(float64(uDelta(rxSum, &prevRx))/elapsed),
-				fmtRate(float64(uDelta(txSum, &prevTx))/elapsed))
+				fmtRate(float64(rxDelta)/elapsed),
+				fmtRate(float64(txDelta)/elapsed))
 		} else {
-			_, _ = uDelta(rxSum, &prevRx), uDelta(txSum, &prevTx)
+			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
+			// during the idle window are not smeared into the next active
+			// tick's rate display.
+			for key, b := range bw {
+				*prevRxPerProxy[key] = b.TotalRx.Load()
+				*prevTxPerProxy[key] = b.TotalTx.Load()
+			}
 		}
 		prevTime = now
 	}
