@@ -100,13 +100,14 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			wantDeg: []string{"old"},
 		},
 		{
-			name: "degraded: degradedDur=0 means NO down-since gate (all offline collected)",
+			name: "degraded: without --degraded (degradedDur=0) offline proxies are NOT degraded",
 			proxies: map[string]ProxyEntry{
 				"old": {ID: 1, Health: "offline", Source: "file", DownSince: downOld},
 			},
-			opts:    removeDeadOptions{degradedDur: 0},
-			uptime:  2 * time.Hour,
-			wantDeg: []string{"old"},
+			opts:   removeDeadOptions{degradedDur: 0},
+			uptime: 2 * time.Hour,
+			// Old down-since but NO --degraded -> must NOT be collected (matches auto path).
+			wantDeg: []string{},
 		},
 		{
 			name: "unparsable down-since is fail-closed (not removed)",
@@ -128,8 +129,8 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			opts:     removeDeadOptions{authFailMin: 100},
 			uptime:   48 * time.Hour, // days = 2 -> threshold = 100*2 = 200
 			wantDead: []string{"dead_hi"},
-			// offline entries also collect as degraded (degradedDur=0 = no gate).
-			wantDeg:  []string{"off_hi", "off_lo"},
+			// degradedDur=0 (no --degraded) => offline entries are NOT degraded.
+			wantDeg:  []string{},
 			wantAuth: []string{"off_hi", "dead_hi"}, // dead_hi double-counts (dead AND auth-failing) - pinned
 		},
 		{
@@ -139,7 +140,7 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			},
 			opts:     removeDeadOptions{authFailMin: 100},
 			uptime:   47*time.Hour + 59*time.Minute, // days = 1 -> threshold 100 -> 150 >= 100 selected
-			wantDeg:  []string{"e"},
+			wantDeg:  []string{},
 			wantAuth: []string{"e"},
 		},
 		{
@@ -149,7 +150,7 @@ func TestCollectRemoveDeadCandidates(t *testing.T) {
 			},
 			opts:     removeDeadOptions{authFailMin: 100},
 			uptime:   48 * time.Hour, // days = 2 -> threshold 200 -> 150 < 200 NOT selected
-			wantDeg:  []string{"e"},
+			wantDeg:  []string{},
 			wantAuth: []string{},
 		},
 	}
