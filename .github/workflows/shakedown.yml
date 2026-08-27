@@ -108,17 +108,22 @@ jobs:
       - name: Syntax-check shakedown script
         run: |
           bash -n .github/scripts/shakedown.sh || { echo "::error::shakedown.sh syntax error"; exit 1; }
-          python3 -c "import ast; ast.parse(open('.github/scripts/shakedown-sweep.py').read())" || { echo "::error::shakedown-sweep.py syntax error"; exit 1; }
 
       - name: Run shakedown on the GH runner
         env:
           EXPECTED_VERSION: ${{ steps.version.outputs.EXPECTED_VERSION }}
         run: |
           # The GH runner IS the disposable clean box. Run the shakedown's
-          # fresh-install flow in a temp HOME, no DigitalOcean.
+          # fresh-install flow in a temp HOME, no DigitalOcean. The runner
+          # workflow user is non-root with passwordless sudo, and shakedown.sh
+          # needs root (it creates the 'urnet' user via runuser and apt-
+          # installs docker), so run it under sudo with HOME in a fresh tempdir.
+          # `timeout` restores the old watchdog semantics: a hang becomes a
+          # catchable 124 exit (so the verdict logic works) instead of a raw
+          # job kill.
           set +e
           RUN_HOME=$(mktemp -d)
-          HOME="$RUN_HOME" bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
+          sudo -E env HOME="$RUN_HOME" timeout 7200 bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
           SHAKE_EXIT=$?
           set -e
           echo "::group::Shakedown Report"
