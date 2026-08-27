@@ -2,6 +2,11 @@
 # urnet-tools -- Docker wrapper for URNetwork provider management
 set -eu
 
+# Digest-verification helpers live alongside this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=update_verify.sh
+. "$SCRIPT_DIR/update_verify.sh"
+
 operation="${1:-}"
 [ -z "$operation" ] && { echo "Usage: urnet-tools <command> [args]"; exit 1; }
 shift
@@ -255,14 +260,44 @@ do_update() {
         exit 1
     }
     tarball="$tmpdir/update.tar.gz"
+
+    # Digest verification: parse the sha256 digest for this asset from the
+    # release JSON BEFORE downloading. No digest published -> refuse the
+    # update rather than install unverified bytes. The asset NAME comes from
+    # the API's name field (matched back from the URL) so the digest lookup
+    # stays keyed on real API names instead of GitHub's URL layout.
+    asset_name=""
+    for upd_candidate in $(printf '%s\n' "$release_json" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+        case "$download_url" in
+            *"/$upd_candidate") asset_name="$upd_candidate"; break ;;
+        esac
+    done
+    [ -n "$asset_name" ] || asset_name="${download_url##*/}"
+    expected_digest="$(upd_asset_digest_from_json "$release_json" "$asset_name")" || {
+        echo "ERROR: release API returned no sha256 digest for $asset_name; refusing to update without verification."
+        rm -rf "$tmpdir"
+        exit 1
+    }
+    echo "Expected digest: $expected_digest"
+
     if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
         echo "Primary download failed, trying GitHub mirror..."
+        download_source="github-mirror"
         curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
             echo "ERROR: download failed."
             rm -rf "$tmpdir"
             exit 1
         }
+    else
+        download_source="dl.fullbars.xyz"
     fi
+
+    if ! upd_verify_digest "$tarball" "$expected_digest" "$download_source"; then
+        echo "ERROR: downloaded tarball failed digest verification; nothing installed."
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    echo "Digest verified OK."
 
     tar -xzf "$tarball" -C "$tmpdir" || {
         echo "ERROR: failed to extract tarball."
@@ -639,6 +674,7 @@ case "$operation" in
         in_int64_range() {
             v="$1"
             len=${#v}
+            # shellcheck disable=SC2071  # intentional: decimal string compare bounds a Go uint64 above int64 max
             if [ "$len" -gt 19 ]; then
                 return 1
             elif [ "$len" -eq 19 ] && [ "$v" \> "9223372036854775807" ]; then

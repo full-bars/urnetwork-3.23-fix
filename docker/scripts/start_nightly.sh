@@ -10,11 +10,16 @@
 #   - Start vnStat monitoring and lightweight HTTP server
 #   - Authenticate and obtain JWT
 #   - Manage provider lifecycle (restart on crash)
-#   - Check for provider updates from GitHub releases
+#   - Check for provider updates from GitHub releases (THIS FORK ONLY)
 #   - Run a time-based watcher to auto-update daily at $UPDATE_TIME
 
 # Exit immediately if any command fails
 set -e
+
+# Resolve this script's directory (update_verify.sh lives alongside it).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=update_verify.sh
+. "$SCRIPT_DIR/update_verify.sh"
 
 # === Configuration Variables ===
 export TZ="America/Tijuana"
@@ -23,7 +28,7 @@ JWT_FILE="/root/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
-API_URL="https://api.github.com/repos/urnetwork/build/releases/latest"
+API_URL="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
 VERSION_FILE="$APP_DIR/version.txt"
 UPDATE_TIME="12:00"
 
@@ -173,43 +178,120 @@ func_check_update() {
     }
     RESP_FILE="$UPDATE_TMP/release.json"
 
+    # Version compare BEFORE downloading anything: the updater's only job is
+    # to install a NEWER release, so if we are already current there is
+    # nothing to fetch and nothing to verify. (An earlier draft fetched the
+    # tarball first and skipped on version match afterwards — dead bytes, no
+    # verification, silent discard on corruption.)
+    RESP_VERSION_FILE="$UPDATE_TMP/version.json"
+    HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_VERSION_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
+    VERSION_JSON="$(cat "$RESP_VERSION_FILE" 2>/dev/null)" || VERSION_JSON=""
+    if [ "$HTTP_CODE" != "000" ] && [ -n "$VERSION_JSON" ]; then
+        LATEST_VERSION_CHECK="$(printf '%s\n' "$VERSION_JSON" \
+          | grep '"browser_download_url"' \
+          | grep 'urnetwork-provider-.*\.tar\.gz' \
+          | sed -E 's/.*"([^"]+)".*/\1/' \
+          | head -n1 \
+          | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
+        CURRENT_VERSION=""
+        if [ -f "$VERSION_FILE" ]; then
+            CURRENT_VERSION="$(cat "$VERSION_FILE")"
+        fi
+        log "[INFO] Current provider version: ${CURRENT_VERSION:-none}"
+        if [ "$LATEST_VERSION_CHECK" = "$CURRENT_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then
+            log "[INFO] Already at latest provider version; skipping."
+            rm -rf "$UPDATE_TMP"
+            return 0
+        fi
+        log "[INFO] Latest provider version: ${LATEST_VERSION_CHECK:-unknown}"
+    fi
+
     HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
     RELEASE_JSON="$(cat "$RESP_FILE" 2>/dev/null)" || RELEASE_JSON=""
-    DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
-      | grep '"browser_download_url"' \
-      | grep 'urnetwork-provider-.*\.tar\.gz' \
-      | sed -E 's/.*"([^"]+)".*/\1/' \
-      | head -n1)"
+    # Pick the asset by NAME from the release JSON itself (jq with a grep
+    # fallback for degenerate responses) and take its URL from the same
+    # object. The asset name must never be derived from the URL: the digest
+    # index is keyed by the API's asset name, so deriving it from
+    # basename(URL) would silently couple verification to GitHub's URL
+    # layout.
+    ASSET_NAME=""
+    DOWNLOAD_URL=""
+    if command -v jq >/dev/null 2>&1 && [ -n "$RELEASE_JSON" ]; then
+        ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
+          | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' 2>/dev/null \
+          | head -n1)"
+        if [ -n "$ASSET_NAME" ]; then
+            DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
+              | jq -r --arg f "$ASSET_NAME" '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)"
+        fi
+    fi
+    if [ -z "$ASSET_NAME" ] || [ -z "$DOWNLOAD_URL" ]; then
+        # Fallback (no jq / unexpected JSON shape): parse URLs textually, then
+        # map each candidate back to an asset name FROM THE JSON so the digest
+        # lookup stays keyed on real API names.
+        DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
+          | grep '"browser_download_url"' \
+          | grep 'urnetwork-provider-.*\.tar\.gz' \
+          | sed -E 's/.*"([^"]+)".*/\1/' \
+          | head -n1)"
+        [ -n "$DOWNLOAD_URL" ] || {
+            log "[ERROR] No urnetwork-provider-*.tar.gz asset in GitHub response." >&2
+            log "[ERROR] HTTP status: $HTTP_CODE" >&2
+            log "[ERROR] Raw response:" >&2
+            log "$RELEASE_JSON" | jq . >&2
+            rm -rf "$UPDATE_TMP"
+            return 0
+        }
+        for upd_candidate in $(printf '%s\n' "$RELEASE_JSON" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+            case "$DOWNLOAD_URL" in
+                *"/$upd_candidate") ASSET_NAME="$upd_candidate"; break ;;
+            esac
+        done
+        [ -n "$ASSET_NAME" ] || ASSET_NAME="${DOWNLOAD_URL##*/}"
+    fi
     [ -n "$DOWNLOAD_URL" ] || {
         log "[ERROR] No .tar.gz URL in GitHub response." >&2
         log "[ERROR] HTTP status: $HTTP_CODE" >&2
-        log "[ERROR] Raw response:" >&2
-        log "$RELEASE_JSON" | jq . >&2
         rm -rf "$UPDATE_TMP"
         return 0
     }
     log "$DOWNLOAD_URL"
 
-    LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
-      | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
-    log "[INFO] Latest provider version: $LATEST_VERSION"
-    if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
-        log "[INFO] Already at latest provider version; skipping."
+    # Digest verification: refuse to install bytes we cannot verify. The
+    # release API publishes a per-asset sha256 digest; a missing digest
+    # (legacy asset or tampered response) aborts the update rather than
+    # risking an unverified binary replacing the running provider.
+    EXPECTED_DIGEST="$(upd_asset_digest_from_json "$RELEASE_JSON" "$ASSET_NAME")" || {
+        log "[ERROR] Release API returned no sha256 digest for $ASSET_NAME." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
         return 0
-    fi
+    }
+    log "[INFO] Expected digest: $EXPECTED_DIGEST"
 
-    log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
+    LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
+      | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
+    log "[INFO] Updating provider to ( $LATEST_VERSION )"
 
     ARCHIVE="$UPDATE_TMP/urnetwork-provider.tar.gz"
     # -f makes curl fail on any HTTP error, so a bad response cannot be
-    # mistaken for a successful download.
-    curl -sfL "$DOWNLOAD_URL" -o "$ARCHIVE" || {
+    # mistaken for a successful download. A connect timeout keeps a stalled
+    # connection from hanging the daily watcher forever.
+    curl -sfL --connect-timeout 30 "$DOWNLOAD_URL" -o "$ARCHIVE" || {
         log "[ERROR] Download failed for $DOWNLOAD_URL" >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
         return 0
     }
+    # Verify BEFORE extract: the tarball must match the release API digest
+    # exactly, else the update aborts and the running binary stays as-is.
+    if ! upd_verify_digest "$ARCHIVE" "$EXPECTED_DIGEST" "release-download"; then
+        log "[ERROR] Downloaded tarball failed digest verification." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    fi
+    log "[INFO] Digest verified OK"
     tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "linux/${A_SYS_ARCH}/provider" || {
         log "[ERROR] Failed to extract provider from tarball." >&2
         log "[INFO] Update aborted; existing provider left untouched."
