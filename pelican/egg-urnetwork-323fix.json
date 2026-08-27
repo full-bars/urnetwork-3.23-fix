@@ -1,0 +1,107 @@
+{
+    "_comment": "UrNetwork provider egg for full-bars/urnetwork-3.23-fix. Updates are owned by the image (re-pull); runtime self-update is disabled inside the container.",
+    "meta": {
+        "version": "PLCN_v3",
+        "update_url": null
+    },
+    "exported_at": "2026-08-27T00:00:00+00:00",
+    "name": "UrNetwork (full-bars 3.23-fix)",
+    "author": "klets",
+    "uuid": "b1f4a2c8-6d97-4f02-9c31-0e5a77d2f8bb",
+    "description": "URnetwork provider (hardened fork). Accepts stable, nightly, or jwt mode. Credentials stay admin-only.",
+    "image": null,
+    "tags": ["urnetwork", "vpn", "provider"],
+    "features": [],
+    "docker_images": {
+        "UrNetwork 3.23-fix": "ghcr.io/full-bars/urnetwork-3.23-fix:latest"
+    },
+    "file_denylist": [],
+    "startup_commands": {
+        "Default": "sh /app/entrypoint.sh"
+    },
+    "config": {
+        "files": "{}",
+        "startup": "{\n    \"done\": \"Provider\"\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": null,
+            "container": "ghcr.io/pelican-eggs/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "BUILD",
+            "description": "Startup mode. stable = tested release; nightly = development snapshot built from main; jwt = authenticate with an auth code instead of user/password (requires AUTHCODE).",
+            "env_variable": "BUILD",
+            "default_value": "stable",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": ["required", "string", "in:stable,nightly,jwt"],
+            "sort": 1
+        },
+        {
+            "name": "Email or phone",
+            "description": "Your URnetwork account email or phone. Required for BUILD=stable and BUILD=nightly. Ignored for BUILD=jwt.",
+            "env_variable": "USER_AUTH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": ["nullable", "string"],
+            "sort": 2
+        },
+        {
+            "name": "Password",
+            "description": "Account password for USER_AUTH. Required for BUILD=stable and BUILD=nightly. Admin-only: users cannot view this value in the panel.",
+            "env_variable": "PASSWORD",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": ["nullable", "string"],
+            "sort": 3
+        },
+        {
+            "name": "Auth code",
+            "description": "One-time authentication code from https://ur.io for passwordless login. Required when BUILD=jwt. Admin-only.",
+            "env_variable": "AUTHCODE",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": ["nullable", "string"],
+            "sort": 4
+        },
+        {
+            "name": "Pelican mode",
+            "description": "Signal for the container that it runs under a panel. Do not change: also disables runtime binary updates so the image stays the single source of truth.",
+            "env_variable": "PELICAN",
+            "default_value": "yes",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": ["required", "string", "in:yes"],
+            "sort": 5
+        },
+        {
+            "name": "Traffic monitor",
+            "description": "vnStat web UI on port 8080. Disabled by default for security (it exposes fleet traffic without authentication). Enable only via a custom image build.",
+            "env_variable": "ENABLE_VNSTAT",
+            "default_value": "false",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": ["required", "string", "in:false"],
+            "sort": 6
+        },
+        {
+            "name": "IP checker",
+            "description": "Diagnostic that prints the container's full public IP to the console at startup. Off by default.",
+            "env_variable": "ENABLE_IP_CHECKER",
+            "default_value": "false",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": ["required", "string", "in:false"],
+            "sort": 7
+        }
+    ]
+}

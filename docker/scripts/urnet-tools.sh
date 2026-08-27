@@ -220,6 +220,12 @@ hub_unlink() {
 
 # === Update Logic ===
 do_update() {
+    # Pelican mode: updates are owned by the panel (image re-pull). A
+    # runtime self-update would bypass the operator's pinned image.
+    if [ "${PELICAN:-}" = "yes" ]; then
+        echo "ERROR: runtime updates are disabled under Pelican — update by re-pulling the image."
+        exit 1
+    fi
     arch="$(uname -m)"
     case "$arch" in
         x86_64) arch="amd64" ;;
