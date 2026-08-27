@@ -40,7 +40,10 @@ Download_API() {
     release_json=$(curl -s "$release_url")
 
     local filename download_url asset_digest
-    filename="$(echo "$release_json" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) | .name' | head -n1)"
+    # NOTE: the parens matter — select((A) and (B)); without them jq parses
+    # select(A) and B as a boolean stage and "| .name" then errors on it
+    # ("Cannot index boolean with string") for every matching asset.
+    filename="$(echo "$release_json" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' | head -n1)"
     download_url="$(echo "$release_json" | jq -r --arg f "$filename" \
         '.assets[] | select(.name == $f) | .browser_download_url')"
     [ -n "$filename" ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] || {

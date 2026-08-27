@@ -78,6 +78,25 @@ else
     pass=$((pass+1)); echo "PASS: empty expected digest rejected"
 fi
 
+# --- Caller asset-selection filter (start_update.sh Download_API) ---
+# Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
+# un-parenthesized form errors "Cannot index boolean with string" on every
+# real release. Pin the CORRECT parenthesized expression + first-wins order.
+JSON_MULTI='{"assets":[
+  {"name":"urnet-tools-linux-amd64","digest":"sha256:1"},
+  {"name":"urnetwork-provider-v9-linux-amd64.tar.gz","digest":"sha256:2"},
+  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:3"}]}'
+sel="$(printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' | head -n1)"
+[ "$sel" = "urnetwork-provider-v9-linux-amd64.tar.gz" ]
+t "start_update asset filter returns exactly one name, first-wins" true
+
+# The broken (unparenthesized) shape must stay broken-and-unused: assert it
+# errors, so nobody reintroduces it thinking it works.
+broken_exit=0
+printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) | .name' >/dev/null 2>&1 || broken_exit=1
+[ "$broken_exit" -eq 1 ]
+t "unparenthesized select+and stays rejected (would abort under set -e)" true
+
 # --- Source guard: upstream repos must not appear in fetch URLs ---
 violations=""
 for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.sh \

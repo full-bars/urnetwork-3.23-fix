@@ -663,6 +663,7 @@ case "$operation" in
         in_int64_range() {
             v="$1"
             len=${#v}
+            # shellcheck disable=SC2071  # intentional: decimal string compare bounds a Go uint64 above int64 max
             if [ "$len" -gt 19 ]; then
                 return 1
             elif [ "$len" -eq 19 ] && [ "$v" \> "9223372036854775807" ]; then
