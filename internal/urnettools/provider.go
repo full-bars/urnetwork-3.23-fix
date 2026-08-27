@@ -60,6 +60,18 @@ type Provider struct {
 	JWTExpires time.Time
 }
 
+// netLabel returns the provider's network identity for display, or
+// "(restricted)" when the JWT could not be read (IdentityRestricted) so no
+// display ever shows a blank/leading dashes that hides the reason the network
+// is unknown (Sonnet backlog #1b). This is display-only — targeting still
+// matches on the raw Network field.
+func (p Provider) netLabel() string {
+	if p.IdentityRestricted {
+		return "(restricted)"
+	}
+	return p.Network
+}
+
 // jwtPayload is the subset of JWT claims the tool needs.
 type jwtPayload struct {
 	NetworkName string `json:"network_name"`

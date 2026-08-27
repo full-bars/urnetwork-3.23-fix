@@ -233,7 +233,7 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	fmt.Fprintf(&b, "%v\n", err)
 	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
 	for _, p := range docker {
-		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.Network)
+		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.netLabel())
 	}
 	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
 	return fmt.Errorf("%s", b.String())
