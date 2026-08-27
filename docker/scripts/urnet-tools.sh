@@ -263,9 +263,17 @@ do_update() {
 
     # Digest verification: parse the sha256 digest for this asset from the
     # release JSON BEFORE downloading. No digest published -> refuse the
-    # update rather than install unverified bytes.
-    asset_name="$(basename "$download_url")"
-    expected_digest="$(asset_digest_from_json "$release_json" "$asset_name")" || {
+    # update rather than install unverified bytes. The asset NAME comes from
+    # the API's name field (matched back from the URL) so the digest lookup
+    # stays keyed on real API names instead of GitHub's URL layout.
+    asset_name=""
+    for upd_candidate in $(printf '%s\n' "$release_json" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+        case "$download_url" in
+            *"/$upd_candidate") asset_name="$upd_candidate"; break ;;
+        esac
+    done
+    [ -n "$asset_name" ] || asset_name="${download_url##*/}"
+    expected_digest="$(upd_asset_digest_from_json "$release_json" "$asset_name")" || {
         echo "ERROR: release API returned no sha256 digest for $asset_name; refusing to update without verification."
         rm -rf "$tmpdir"
         exit 1
@@ -274,14 +282,17 @@ do_update() {
 
     if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
         echo "Primary download failed, trying GitHub mirror..."
+        download_source="github-mirror"
         curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
             echo "ERROR: download failed."
             rm -rf "$tmpdir"
             exit 1
         }
+    else
+        download_source="dl.fullbars.xyz"
     fi
 
-    if ! verify_digest "$tarball" "$expected_digest"; then
+    if ! upd_verify_digest "$tarball" "$expected_digest" "$download_source"; then
         echo "ERROR: downloaded tarball failed digest verification; nothing installed."
         rm -rf "$tmpdir"
         exit 1

@@ -54,7 +54,7 @@ Download_API() {
     # Digest BEFORE downloading anything: if the API does not publish a
     # digest for this asset we refuse the whole update rather than install
     # unverified bytes.
-    asset_digest="$(asset_digest_from_json "$release_json" "$filename")" || {
+    asset_digest="$(upd_asset_digest_from_json "$release_json" "$filename")" || {
         log "[ERROR] Release API returned no sha256 digest for $filename; refusing to update without verification"
         exit 1
     }
@@ -69,7 +69,7 @@ Download_API() {
     curl -L -A "Mozilla/5.0" -o "$filename" "$download_url"
     log "[INFO] Downloaded: $filename"
 
-    verify_digest "$filename" "$asset_digest" || {
+    upd_verify_digest "$filename" "$asset_digest" "release-download" || {
         rm -f "$filename"
         log "[ERROR] Downloaded tarball failed digest verification; nothing installed."
         exit 1

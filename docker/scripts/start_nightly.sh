@@ -208,16 +208,50 @@ func_check_update() {
 
     HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
     RELEASE_JSON="$(cat "$RESP_FILE" 2>/dev/null)" || RELEASE_JSON=""
-    DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
-      | grep '"browser_download_url"' \
-      | grep 'urnetwork-provider-.*\.tar\.gz' \
-      | sed -E 's/.*"([^"]+)".*/\1/' \
-      | head -n1)"
+    # Pick the asset by NAME from the release JSON itself (jq with a grep
+    # fallback for degenerate responses) and take its URL from the same
+    # object. The asset name must never be derived from the URL: the digest
+    # index is keyed by the API's asset name, so deriving it from
+    # basename(URL) would silently couple verification to GitHub's URL
+    # layout.
+    ASSET_NAME=""
+    DOWNLOAD_URL=""
+    if command -v jq >/dev/null 2>&1 && [ -n "$RELEASE_JSON" ]; then
+        ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
+          | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' 2>/dev/null \
+          | head -n1)"
+        if [ -n "$ASSET_NAME" ]; then
+            DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
+              | jq -r --arg f "$ASSET_NAME" '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)"
+        fi
+    fi
+    if [ -z "$ASSET_NAME" ] || [ -z "$DOWNLOAD_URL" ]; then
+        # Fallback (no jq / unexpected JSON shape): parse URLs textually, then
+        # map each candidate back to an asset name FROM THE JSON so the digest
+        # lookup stays keyed on real API names.
+        DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
+          | grep '"browser_download_url"' \
+          | grep 'urnetwork-provider-.*\.tar\.gz' \
+          | sed -E 's/.*"([^"]+)".*/\1/' \
+          | head -n1)"
+        [ -n "$DOWNLOAD_URL" ] || {
+            log "[ERROR] No urnetwork-provider-*.tar.gz asset in GitHub response." >&2
+            log "[ERROR] HTTP status: $HTTP_CODE" >&2
+            log "[ERROR] Raw response:" >&2
+            log "$RELEASE_JSON" | jq . >&2
+            rm -rf "$UPDATE_TMP"
+            return 0
+        }
+        for upd_candidate in $(printf '%s\n' "$RELEASE_JSON" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+            case "$DOWNLOAD_URL" in
+                *"/$upd_candidate") ASSET_NAME="$upd_candidate"; break ;;
+            esac
+        done
+        [ -n "$ASSET_NAME" ] || ASSET_NAME="${DOWNLOAD_URL##*/}"
+    fi
     [ -n "$DOWNLOAD_URL" ] || {
         log "[ERROR] No .tar.gz URL in GitHub response." >&2
         log "[ERROR] HTTP status: $HTTP_CODE" >&2
-        log "[ERROR] Raw response:" >&2
-        log "$RELEASE_JSON" | jq . >&2
         rm -rf "$UPDATE_TMP"
         return 0
     }
@@ -227,8 +261,7 @@ func_check_update() {
     # release API publishes a per-asset sha256 digest; a missing digest
     # (legacy asset or tampered response) aborts the update rather than
     # risking an unverified binary replacing the running provider.
-    ASSET_NAME="$(basename "$DOWNLOAD_URL")"
-    EXPECTED_DIGEST="$(asset_digest_from_json "$RELEASE_JSON" "$ASSET_NAME")" || {
+    EXPECTED_DIGEST="$(upd_asset_digest_from_json "$RELEASE_JSON" "$ASSET_NAME")" || {
         log "[ERROR] Release API returned no sha256 digest for $ASSET_NAME." >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
@@ -252,7 +285,7 @@ func_check_update() {
     }
     # Verify BEFORE extract: the tarball must match the release API digest
     # exactly, else the update aborts and the running binary stays as-is.
-    if ! verify_digest "$ARCHIVE" "$EXPECTED_DIGEST"; then
+    if ! upd_verify_digest "$ARCHIVE" "$EXPECTED_DIGEST" "release-download"; then
         log "[ERROR] Downloaded tarball failed digest verification." >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
