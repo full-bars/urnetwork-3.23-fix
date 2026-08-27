@@ -223,6 +223,11 @@ jobs:
           chmod +x docker/scripts/test_pelican_smoke.sh
           ./docker/scripts/test_pelican_smoke.sh
 
+      - name: Pelican gate behavioral tests + egg invariants
+        run: |
+          chmod +x docker/scripts/test_pelican_gates.sh
+          ./docker/scripts/test_pelican_gates.sh
+
       - name: Shellcheck docker scripts (error severity)
         run: |
           # Error-severity gate over every docker script. Pre-existing
