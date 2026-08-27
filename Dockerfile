@@ -42,7 +42,9 @@ RUN apk update && apk add --no-cache \
   && rm -rf /var/cache/apk/*
 
 # Setup directory structure
-RUN mkdir -p /app/cgi-bin /root/.urnetwork
+# State dir: scripts resolve state at $HOME/.urnetwork so a container run
+# with a different HOME (e.g. Pelican eggs) keeps state on its own volume.
+RUN mkdir -p /app/cgi-bin
 
 # Copy TechRoy's scripts from our local docker/scripts folder
 COPY docker/scripts/*.sh /app/
@@ -76,6 +78,9 @@ RUN sed -i \
   /etc/vnstat.conf
 
 # Setup volumes
+# State volume: fixed path so operators can mount a single known location.
+# Under Pelican the panel writes $URNETWORK_STATE_DIR anyway; keeping the
+# VOLUME declaration at /root/.urnetwork preserves default-Docker behavior.
 VOLUME ["/root/.urnetwork"]
 
 ENTRYPOINT ["/app/entrypoint.sh"]
