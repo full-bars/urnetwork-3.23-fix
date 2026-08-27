@@ -58,6 +58,12 @@ const (
 	// causing genuine proxies to fail auth too. The semaphore is
 	// acquired before the auth attempt and released after.
 	slowRetryMaxConcurrent = 3
+
+	// slowRetryRampAttempts is the number of initial slow-retry
+	// attempts that use the short ramp (5m/10m/15m) before switching
+	// to the 24h daily cadence. Gives briefly-flapping proxies a fast
+	// recovery path without wasting 24h per attempt.
+	slowRetryRampAttempts = 3
 )
 
 var (
@@ -72,11 +78,23 @@ func newProxySlowRetryState() *proxySlowRetryState {
 
 // RecordSlowRetryStart records when this proxy first entered slow retry.
 // Subsequent calls for the same address are no-ops (preserves the original
-// start time). Returns the entry's StartedAt for use in expiry checks.
+// start time). For previously-dropped proxies, preserves the original
+// StartedAt so the 14-day drop ceiling is continuous across restarts.
+// Returns the entry's StartedAt for use in expiry checks.
 func (s *proxySlowRetryState) RecordSlowRetryStart(address string) time.Time {
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if entry, ok := s.Proxies[address]; ok && entry.DroppedAt == nil {
+	if entry, ok := s.Proxies[address]; ok {
+		if entry.DroppedAt == nil {
+			return entry.StartedAt
+		}
+		// Previously dropped — preserve original StartedAt so the 14-day
+		// ceiling is continuous across restarts. Clear DroppedAt so the
+		// entry re-enters active slow retry.
+		entry.DroppedAt = nil
+		entry.LastAttemptAt = time.Time{} // reset daily gate
+		persistProxySlowRetryState(s)
 		return entry.StartedAt
 	}
 	now := time.Now()
@@ -86,7 +104,8 @@ func (s *proxySlowRetryState) RecordSlowRetryStart(address string) time.Time {
 }
 
 // RecordSlowRetryAttempt records a retry attempt. Returns true if the proxy
-// should be attempted now (enforces the 24h daily interval).
+// should be attempted now (enforces the 24h daily interval after the first
+// three slow retries, which use the5m/10m/15m ramp).
 func (s *proxySlowRetryState) RecordSlowRetryAttempt(address string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,6 +120,23 @@ func (s *proxySlowRetryState) RecordSlowRetryAttempt(address string) bool {
 		return true
 	}
 	return false
+}
+
+// TimeUntilNextAttempt returns how long until the next daily retry is
+// allowed. Returns zero if ready now. Used for precise sleep targets
+// instead of sleeping a full 24h from an arbitrary point.
+func (s *proxySlowRetryState) TimeUntilNextAttempt(address string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.Proxies[address]
+	if !ok || entry.DroppedAt != nil || entry.LastAttemptAt.IsZero() {
+		return slowRetryDailyInterval
+	}
+	remaining := slowRetryDailyInterval - time.Since(entry.LastAttemptAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // MarkDropped marks a proxy as dropped from the active pool. Returns the
@@ -152,10 +188,14 @@ func (s *proxySlowRetryState) DropTime(address string) time.Time {
 
 // ClearDropped removes a drop record for an address. Called when a
 // previously-dropped proxy successfully authenticates on restart,
-// or when the operator refreshes the proxy list.
+// or when the operator refreshes the proxy list. No-ops (and skips
+// disk write) if the address has no entry.
 func (s *proxySlowRetryState) ClearDropped(address string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.Proxies[address]; !ok {
+		return
+	}
 	delete(s.Proxies, address)
 	persistProxySlowRetryState(s)
 }
@@ -175,17 +215,30 @@ func LoadProxySlowRetryState() *proxySlowRetryState {
 		return s
 	}
 	if err := json.Unmarshal(data, s); err != nil {
-		tlog("[proxy][slow-retry] warning: corrupt state file, starting fresh: %v\n", err)
-		return s
+		tlog("[proxy][slow-retry] ERROR: corrupt state file, starting fresh: %v\n", err)
+		return newProxySlowRetryState()
 	}
 	if s.Proxies == nil {
 		s.Proxies = make(map[string]*proxySlowRetryEntry)
 		return s
 	}
-	// Prune stale dropped entries (>30 days old).
+	// Defensive cleanup: remove nil entries and entries with zero
+	// StartedAt so ShouldDrop cannot treat them as expired. Then
+	// prune stale entries (>30 days): dropped entries past their
+	// cleanup window, and non-dropped entries that have been in
+	// slow retry longer than the cleanup age without being dropped
+	// (shouldn't happen with 14-day drop, but defensive).
 	staleThreshold := time.Now().Add(-proxySlowRetryCleanupAge)
 	for addr, entry := range s.Proxies {
+		if entry == nil || entry.StartedAt.IsZero() {
+			delete(s.Proxies, addr)
+			continue
+		}
 		if entry.DroppedAt != nil && entry.DroppedAt.Before(staleThreshold) {
+			delete(s.Proxies, addr)
+			continue
+		}
+		if entry.DroppedAt == nil && entry.StartedAt.Before(staleThreshold) {
 			delete(s.Proxies, addr)
 		}
 	}
@@ -205,6 +258,6 @@ func persistProxySlowRetryState(s *proxySlowRetryState) {
 		return
 	}
 	if err := atomicWriteFile(path, data, 0600); err != nil {
-		tlog("[proxy][slow-retry] warning: could not persist state: %v\n", err)
+		tlog("[proxy][slow-retry] ERROR: could not persist state: %v\n", err)
 	}
 }

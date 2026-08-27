@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// proxyAuthSlowRetryDelay must escalate 5m -> 10m -> 15m and cap at 15m, with
-// at most 30s of jitter on top, for any attempt number (including <1).
+// proxyAuthSlowRetryDelay must escalate 5m -> 10m -> 15m for the first 3
+// attempts (ramp for brief flapping), then switch to 24h daily retry.
 func TestProxyAuthSlowRetryDelay(t *testing.T) {
 	const maxJitter = 30 * time.Second
 	cases := []struct {
@@ -18,8 +18,9 @@ func TestProxyAuthSlowRetryDelay(t *testing.T) {
 		{1, 5 * time.Minute},
 		{2, 10 * time.Minute},
 		{3, 15 * time.Minute},
-		{4, 15 * time.Minute},   // capped
-		{100, 15 * time.Minute}, // capped
+		{4, slowRetryDailyInterval},   // daily cadence
+		{5, slowRetryDailyInterval},   // daily cadence
+		{100, slowRetryDailyInterval}, // daily cadence
 	}
 	for _, c := range cases {
 		for i := 0; i < 100; i++ {

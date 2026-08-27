@@ -2747,6 +2747,17 @@ func provide(opts docopt.Opts) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
+
+			// Restart storm guard: if persisted slow-retry state shows
+			// this proxy was recently attempted (or is dropped), skip the
+			// fast-retry phase entirely. Without this, 356 dead proxies
+			// would each run 10 fast auth attempts on restart — 3,560
+			// unthrottled calls before any slow-retry code runs.
+			if proxySettings != nil && !isURLSourced {
+				if globalProxySlowRetryState.WasDropped(proxySettings.Address) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address) > 0 {
+					authFailures = maxAuthFailures
+				}
+			}
 			for {
 				var err error
 				var byClientJwt string
@@ -2803,9 +2814,14 @@ func provide(opts docopt.Opts) {
 					}
 					// Acquire slow-retry semaphore before admission gate so
 					// at most slowRetryMaxConcurrent slow-retry proxies can
-					// be in the auth pipeline at once.
+					// be in the auth pipeline at once. Select on proxyCtx
+					// so a cancelled proxy doesn't hang on the semaphore.
 					if !isURLSourced && authFailures >= maxAuthFailures {
-						slowRetrySemaphore <- struct{}{}
+						select {
+						case slowRetrySemaphore <- struct{}{}:
+						case <-proxyCtx.Done():
+							return "", connect.Id{}, false, proxyCtx.Err()
+						}
 					}
 					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
 					if waitErr != nil {
@@ -2833,6 +2849,10 @@ func provide(opts docopt.Opts) {
 						if err == nil {
 							globalProvenProxies.MarkSucceeded(proxySettings.Address)
 							globalProxyFailureHistory.Reset(proxySettings.Address)
+							// Clear any slow-retry state for a proxy that
+							// just recovered — prevents stale "previously
+							// dropped" log messages on next restart.
+							globalProxySlowRetryState.ClearDropped(proxySettings.Address)
 						}
 						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
 					} else {
@@ -2872,38 +2892,51 @@ func provide(opts docopt.Opts) {
 					cause := classifyAuthFailureCause(err)
 					// URL-sourced (free lists) keep the short leash: give up and let
 					// the requeue path bring them back later, so a huge mostly-dead
-					// list does not pin a goroutine per entry. Operator-curated
-					// proxies (file/internal/direct) get a slow retry with a 14-day
-					// ceiling: daily attempts give brief outages a chance to recover,
-					// but truly dead proxies are dropped from the active pool after
-					// two weeks. The proxy remains in the config file and will be
-					// retried fresh on the next provider restart.
+					// list does not pin a goroutine per entry.
+					// Operator-curated proxies (file/internal) get a slow retry
+					// with a 14-day ceiling: daily attempts give brief outages a
+					// chance to recover, but truly dead proxies are dropped from
+					// the active pool after two weeks. The proxy remains in the
+					// config file and will be retried fresh on the next provider
+					// restart. The native direct connection (proxySettings == nil)
+					// is excluded — it is a single endpoint, not a paid proxy list.
 					if isURLSourced {
 						return "", connect.Id{}, false, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 					}
 					// Persist slow-retry start time (survives reboots) and
 					// check if this proxy has exceeded the 14-day drop window.
 					if proxySettings != nil {
-						globalProxySlowRetryState.RecordSlowRetryStart(proxySettings.Address)
+						startedAt := globalProxySlowRetryState.RecordSlowRetryStart(proxySettings.Address)
 						if globalProxySlowRetryState.ShouldDrop(proxySettings.Address) {
 							globalProxySlowRetryState.MarkDropped(proxySettings.Address)
-							dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
-							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); retry on next restart\n",
+							dropAge := time.Since(startedAt)
+							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); removed from active pool\n",
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
+							// Clean up proxyCancelMap so the reloader can
+							// relaunch this proxy if the operator refreshes
+							// the proxy list (Opus HIGH-2 fix).
+							proxyCancelMu.Lock()
+							delete(proxyCancelMap, proxySettings.Address)
+							proxyCancelMu.Unlock()
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
-						// Enforce 24h daily interval via persisted state.
-						// If we already retried recently (e.g. within the last 24h
-						// before a restart), skip this iteration and wait.
-						if !globalProxySlowRetryState.RecordSlowRetryAttempt(proxySettings.Address) {
-							// Not time yet — sleep until the daily interval
-							// elapses from the last attempt.
-							tlog("[proxy][slow-retry] proxy[%d] (%s) auth still failing after %d attempts (%s); already attempted recently, next check in ~%s\n",
-								proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(slowRetryDailyInterval))
+						// The 24h daily gate only applies after the first 3
+						// slow retries (which use the 5m/10m/15m ramp via
+						// proxyAuthSlowRetryDelay). Before that, fall through
+						// to the ramp delay directly.
+						slowRetryAttempt := authFailures - maxAuthFailures + 1
+						if slowRetryAttempt > slowRetryRampAttempts && !globalProxySlowRetryState.RecordSlowRetryAttempt(proxySettings.Address) {
+							// Not time yet — sleep precisely until the
+							// daily interval elapses from the last attempt.
+							waitTime := globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address)
+							tlog("[proxy][slow-retry] proxy[%d] (%s) auth still failing after %d attempts (%s); already attempted recently, next check in %s\n",
+								proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(waitTime))
+							dailyTimer := time.NewTimer(waitTime)
 							select {
 							case <-proxyCtx.Done():
+								dailyTimer.Stop()
 								return "", connect.Id{}, false, proxyCtx.Err()
-							case <-time.After(slowRetryDailyInterval):
+							case <-dailyTimer.C:
 								continue
 							}
 						}
@@ -3300,9 +3333,11 @@ func provide(opts docopt.Opts) {
 				}
 				// Log previously-dropped proxies on restart so the
 				// operator gets visibility into persistent failures.
+				// The continuous drop clock means this proxy will likely
+				// be re-dropped on the first slow auth attempt.
 				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
 					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
-					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; retrying this session\n",
+					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
 						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}
 				proxyLaunchCount.Add(1)
@@ -3587,7 +3622,7 @@ func proxyAuthSlowRetryDelay(slowAttempt int) time.Duration {
 		slowAttempt = 1
 	}
 	var base time.Duration
-	if slowAttempt <= 3 {
+	if slowAttempt <= slowRetryRampAttempts {
 		base = time.Duration(slowAttempt) * 5 * time.Minute
 	} else {
 		base = slowRetryDailyInterval
