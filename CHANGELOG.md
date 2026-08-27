@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.8]
+
+### Added
+- **Pelican panel egg support (PR #480)**: the hardened provider image is now importable into the Pelican game-server panel as a one-click egg (`pelican/egg-urnetwork-323fix.json`, PLCN_v3). `BUILD` (stable/nightly/jwt) and `USER_AUTH` are user-editable; `PASSWORD` and `AUTHCODE` are admin-only. `PELICAN=yes`, `ENABLE_VNSTAT=false`, and `ENABLE_IP_CHECKER=false` are hidden and non-editable in the egg, pinning the audit-preferred defaults.
+- **Pelican boot smoke (PR #480)**: `docker/scripts/test_pelican_smoke.sh` drives `pelican_panel.sh` against a fake provider binary. Empty credentials fail fast, jwt mode routes to `auth-provide` with the code, stable mode routes through the auth loop to `provide`. Runs in `test-and-lint`.
+- **Pelican behavioral gate tests (PR #480)**: `docker/scripts/test_pelican_gates.sh` adds 15 mutation-checked tests covering the PELICAN update gate in `start_nightly.sh`, the `urnet-tools update` refusal, the `$HOME`-based state-dir resolution in `proxy-health.sh` / `proxy-traffic.sh`, and the egg-JSON invariants (non-empty rules arrays, known validator tokens, unique env_variable and sort values). Wired into CI as its own step.
+
+### Changed
+- **Pelican-gated runtime update policy (PR #480)**: under `PELICAN=yes`, `start_nightly.sh` short-circuits the update check (bootstrap and daily watcher) and `urnet-tools update` exits 1 with a refusal message. The published image is the single source of truth under a panel; a runtime fetch would silently swap the audited fork binary for whatever the release API serves mid-flight. Non-Pelican Docker deployments keep the v3.23.0-fix.30.6 behavior unchanged.
+
+### Fixed
+- **Docker state-dir split-brain (PR #480)**: all `docker/scripts/*.sh` now resolve provider state at `$HOME/.urnetwork` instead of the hardcoded `/root/.urnetwork`. Update-pending markers already used `$HOME`; the auth path was the outlier. Any container run with `HOME != /root` (e.g. Pelican eggs) would have silently split auth and marker state across two directories. Default-Docker behavior is unchanged (the image still ships with HOME=/root); the fix is a no-op for `docker run` and a correctness fix for panel/egg deployments.
+- **Pelican egg vnStat note (PR #480)**: reworded the vnStat description in `pelican/README.md` and the egg JSON. The off-by-default posture in the egg is an operator-preference default, not a current-exposure claim; vnStat was patched long ago.
+
 ## [v3.23.0-fix.30.7]
 
 ### Added
