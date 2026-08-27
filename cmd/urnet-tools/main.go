@@ -5,7 +5,7 @@
 // this implementation discovers every running provider across all users,
 // identifies each by its JWT network name, and requires an explicit target
 // whenever the box runs more than one provider. See
-// /home/user/ur/URN-TOOLS-GO-DESIGN.md for the full design.
+// docs/URN-TOOLS-GO-DESIGN.md for the full design.
 package main
 
 import (
