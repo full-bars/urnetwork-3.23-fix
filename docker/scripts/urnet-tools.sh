@@ -2,6 +2,11 @@
 # urnet-tools -- Docker wrapper for URNetwork provider management
 set -eu
 
+# Digest-verification helpers live alongside this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=update_verify.sh
+. "$SCRIPT_DIR/update_verify.sh"
+
 operation="${1:-}"
 [ -z "$operation" ] && { echo "Usage: urnet-tools <command> [args]"; exit 1; }
 shift
@@ -255,6 +260,18 @@ do_update() {
         exit 1
     }
     tarball="$tmpdir/update.tar.gz"
+
+    # Digest verification: parse the sha256 digest for this asset from the
+    # release JSON BEFORE downloading. No digest published -> refuse the
+    # update rather than install unverified bytes.
+    asset_name="$(basename "$download_url")"
+    expected_digest="$(asset_digest_from_json "$release_json" "$asset_name")" || {
+        echo "ERROR: release API returned no sha256 digest for $asset_name; refusing to update without verification."
+        rm -rf "$tmpdir"
+        exit 1
+    }
+    echo "Expected digest: $expected_digest"
+
     if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
         echo "Primary download failed, trying GitHub mirror..."
         curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
@@ -263,6 +280,13 @@ do_update() {
             exit 1
         }
     fi
+
+    if ! verify_digest "$tarball" "$expected_digest"; then
+        echo "ERROR: downloaded tarball failed digest verification; nothing installed."
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    echo "Digest verified OK."
 
     tar -xzf "$tarball" -C "$tmpdir" || {
         echo "ERROR: failed to extract tarball."

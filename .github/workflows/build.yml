@@ -148,6 +148,48 @@ jobs:
           chmod +x scripts/test_fallback_logic.sh
           ./scripts/test_fallback_logic.sh
 
+      - name: Docker update-source guard (fork-only release fetches)
+        run: |
+          # The docker self-update scripts must ONLY ever fetch provider
+          # releases from this fork. Any api.github.com/repos/<org>/<repo>
+          # URL in docker/scripts that is NOT full-bars/* is a silent
+          # upstream-replace of the hardened binary, so the guard fails the
+          # build. shellcheck separately covers syntax (errors only; the
+          # pre-existing SC2071/SC2155 warnings live on untouched lines).
+          violations=0
+          for f in docker/scripts/*.sh; do
+            while read -r url; do
+              org_repo="$(printf '%s' "$url" | sed -E 's#.*/repos/([^/"]+/[^/"]+).*#\1#')"
+              case "$org_repo" in
+                full-bars/*) ;;
+                *)
+                  echo "VIOLATION $f: $url"
+                  echo "  -> docker update fetches must target full-bars/* only"
+                  violations=$((violations+1))
+                  ;;
+              esac
+            done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" || true)
+          done
+          if [ "$violations" -gt 0 ]; then
+            echo "$violations upstream-fetch violation(s) found"
+            exit 1
+          fi
+          chmod +x docker/scripts/test_update_verify.sh
+          ./docker/scripts/test_update_verify.sh
+
+      - name: Shellcheck docker scripts (new errors only)
+        run: |
+          # Error-severity gate only: warnings that predate this change are
+          # not blocking (tracked for cleanup separately).
+          sudo apt-get install -y shellcheck >/dev/null 2>&1
+          status=0
+          for f in docker/scripts/*.sh; do
+            if ! shellcheck -S error "$f"; then
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Run vulnerability check
         continue-on-error: true
         run: |
