@@ -77,9 +77,9 @@ func TestSelectTargetOrSoleAccessibleNarrowsToOwnUser(t *testing.T) {
 		t.Skip("could not resolve current username")
 	}
 	providers := []Provider{
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service"},
-		{User: me, Unit: "urnetwork-native.service"},
-		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service"},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: me, Unit: "urnetwork-native.service", Running: true},
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
 	}
 
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
@@ -94,6 +94,33 @@ func TestSelectTargetOrSoleAccessibleNarrowsToOwnUser(t *testing.T) {
 	}
 }
 
+// TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped: a provider that is the
+// caller's own AND the sole accessible candidate must still NOT be auto-targeted
+// when it is stopped — the sole-accessible path drives destructive stop/restart
+// and must never pick a non-running provider (Sonnet backlog #1a).
+func TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can reach every provider; narrowing only applies unprivileged")
+	}
+	me := currentUserName()
+	if me == "" {
+		t.Skip("could not resolve current username")
+	}
+	providers := []Provider{
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: me, Unit: "urnetwork-native.service", Running: false}, // stopped
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
+	}
+
+	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
+	if err == nil {
+		t.Fatal("expected an error when the caller's sole own provider is stopped (no running sole candidate)")
+	}
+	if narrowed {
+		t.Error("must not auto-narrow to a STOPPED provider")
+	}
+}
+
 // TestSelectTargetOrSoleAccessibleStillRefusesWhenAmbiguous: two providers
 // both under accounts the caller can't disambiguate (neither is "own user")
 // must still hit the normal refusal — narrowing only resolves the case
@@ -103,8 +130,8 @@ func TestSelectTargetOrSoleAccessibleStillRefusesWhenAmbiguous(t *testing.T) {
 		t.Skip("root can reach every provider; narrowing only applies unprivileged")
 	}
 	providers := []Provider{
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service"},
-		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service"},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
 	}
 
 	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
