@@ -73,7 +73,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
 	}
@@ -463,7 +463,7 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
 	}
@@ -556,7 +556,7 @@ func renderStatusPanel(p Provider) {
 	}
 
 	// Header bar: title + status on the right.
-	title := orDash(p.Network)
+	title := orDash(p.netLabel())
 	if title == "-" {
 		title = orDash(p.User)
 	}
