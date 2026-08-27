@@ -79,21 +79,34 @@ func isUserUnit(unit string) bool {
 	return true
 }
 
-// cmdStart starts the provider's owning unit.
-func cmdStart(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("start", args)
+// selectLifecycleTarget factors the shared start/stop/restart prologue: guard
+// the lifecycle args, list the systemd candidates, auto-narrow to a sole
+// accessible RUNNING target, print the narrowed note, and confirm it is a
+// systemd (non-docker) provider. One place to change instead of triplicating it
+// across the destructive lifecycle commands (free-review clean-up).
+func selectLifecycleTarget(verb string, args []string) (Provider, error) {
+	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
-		return err
+		return Provider{}, err
 	}
 	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, true)
 	if err != nil {
-		return err
+		return Provider{}, err
 	}
 	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "start")
+		printLifecycleNarrowedNote(len(providers), p, verb)
 	}
 	if err := guardSystemdProvider(p); err != nil {
+		return Provider{}, err
+	}
+	return p, nil
+}
+
+// cmdStart starts the provider's owning unit.
+func cmdStart(args []string, force, dryRun bool) error {
+	p, err := selectLifecycleTarget("start", args)
+	if err != nil {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
@@ -112,19 +125,8 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("stop", args)
+	p, err := selectLifecycleTarget("stop", args)
 	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
-	if err != nil {
-		return err
-	}
-	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "stop")
-	}
-	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if dryRun {
@@ -142,19 +144,8 @@ func cmdStop(args []string, force, dryRun bool) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("restart", args)
+	p, err := selectLifecycleTarget("restart", args)
 	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
-	if err != nil {
-		return err
-	}
-	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "restart")
-	}
-	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
@@ -233,7 +224,7 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	fmt.Fprintf(&b, "%v\n", err)
 	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
 	for _, p := range docker {
-		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.Network)
+		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.netLabel())
 	}
 	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
 	return fmt.Errorf("%s", b.String())
@@ -247,7 +238,7 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return errWithDockerHint(err, len(providers))
 	}

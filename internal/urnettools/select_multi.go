@@ -165,14 +165,29 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 // still applies whenever more than one provider is actually reachable, or
 // when root is asking (who CAN reach all of them and should get the normal
 // refusal + inventory).
-func selectTargetOrSoleAccessible(providers []Provider, t Target) (p Provider, narrowed bool, err error) {
+func selectTargetOrSoleAccessible(providers []Provider, t Target, requireRunning bool) (p Provider, narrowed bool, err error) {
 	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
 	// Use the platform privilege seam (isPrivileged), not os.Geteuid() direct:
 	// Geteuid is meaningless on Windows (returns -1) where an elevated Admin
 	// should still get the normal refusal + inventory, not the unprivileged
 	// auto-narrow treatment. Matches target.go and select_multi.go:93.
 	if noTarget && len(providers) > 1 && !isPrivileged() {
-		if accessible := narrowToAccessible(providers); len(accessible) == 1 {
+		if requireRunning {
+			// A sole-accessible-but-STOPPED provider must not be auto-targeted
+			// by this path when it drives destructive stop/restart. Mirror
+			// defaultProvider's Running requirement (Sonnet backlog #1a).
+			// Read-only callers (logs/status/summary) pass false so they can
+			// still reach a stopped provider for diagnostics.
+			var accessible []Provider
+			for _, p := range narrowToAccessible(providers) {
+				if p.Running {
+					accessible = append(accessible, p)
+				}
+			}
+			if len(accessible) == 1 {
+				return accessible[0], true, nil
+			}
+		} else if accessible := narrowToAccessible(providers); len(accessible) == 1 {
 			return accessible[0], true, nil
 		}
 	}
@@ -246,7 +261,7 @@ func interactivePick(providers []Provider) ([]Provider, error) {
 	fmt.Println("Select providers (comma/space separated numbers, or 'all'):")
 	for i, p := range providers {
 		fmt.Printf("  [%d] %s  user=%s  net=%s  state=%s\n",
-			i+1, providerLabel(p), p.User, p.Network, p.StateDir)
+			i+1, providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	line, err := confirmStdinRead("> ")
 	if err != nil {
@@ -325,7 +340,7 @@ func ambiguousError(providers []Provider) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
 	for _, p := range providers {
-		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
+		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	if hint := rootHint(); hint != "" {
 		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
