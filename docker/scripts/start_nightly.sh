@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # === Configuration Variables ===
 export TZ="America/Tijuana"
 APP_DIR="/app"
-JWT_FILE="/root/.urnetwork/jwt"
+JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
@@ -161,6 +161,13 @@ func_start_vnstat() {
 
 # === Provider Update Check ===
 func_check_update() {
+    # Pelican mode: the panel owns updates via image re-pull. A runtime
+    # fetch would silently replace the binary baked into the published
+    # image with whatever the release API serves, bypassing the operator.
+    if [ "${PELICAN:-}" = "yes" ]; then
+        log "[INFO] Runtime updates disabled under Pelican (update by re-pulling the image)"
+        return 0
+    fi
     if [ -f "$VERSION_FILE" ]; then
         CURRENT_VERSION="$(cat "$VERSION_FILE")"
     else

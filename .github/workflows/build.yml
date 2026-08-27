@@ -177,6 +177,57 @@ jobs:
           chmod +x docker/scripts/test_update_verify.sh
           ./docker/scripts/test_update_verify.sh
 
+      - name: Pelican egg checks (JSON validity, var contract, updater disabled)
+        run: |
+          # The egg is a user-facing surface: a malformed import or a variable
+          # rename that breaks the pelican_panel.sh contract must fail CI,
+          # not surface as a broken server in someone's panel.
+          egg=pelican/egg-urnetwork-323fix.json
+
+          jq -e '.meta.version == "PLCN_v3"
+                 and (.docker_images | length == 1)
+                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/"))
+                 and .startup_commands.Default == "sh /app/entrypoint.sh"
+                 and (.config.startup | fromjson | .done == "Provider")' "$egg" >/dev/null \
+            || { echo "FAIL: egg JSON structure invalid"; exit 1; }
+
+          # Required variables with their panel-side roles
+          check_var() {
+            env="$1"; viewable="$2"; editable="$3"; default="$4"
+            jq -e --arg env "$env" --argjson v "$viewable" --argjson e "$editable" \
+                  --arg d "$default" \
+              '[.variables[] | select(.env_variable == $env)][0]
+               and ([.variables[] | select(.env_variable == $env)][0].user_viewable == $v)
+               and ([.variables[] | select(.env_variable == $env)][0].user_editable == $e)
+               and ([.variables[] | select(.env_variable == $env)][0].default_value == $d)' \
+              "$egg" >/dev/null \
+              || { echo "FAIL: variable contract broken: $env"; exit 1; }
+          }
+          check_var BUILD      true  true  'stable'
+          check_var USER_AUTH  true  true  ''
+          check_var PASSWORD   false true  ''
+          check_var AUTHCODE   false true  ''
+          check_var PELICAN    false false 'yes'
+          check_var ENABLE_VNSTAT     false false 'false'
+          check_var ENABLE_IP_CHECKER false false 'false'
+
+          # Under PELICAN=yes no runtime self-update may exist:
+          # nightly bootstrap/watcher gate + urnet-tools do_update refusal.
+          grep -q 'PELICAN' docker/scripts/start_nightly.sh \
+            || { echo "FAIL: nightly update check not PELICAN-gated"; exit 1; }
+          sed -n '/^do_update()/,/^[a-z_]*() {\|^do_update/p' docker/scripts/urnet-tools.sh | head -12 | grep -q 'PELICAN' \
+            || { echo "FAIL: do_update not PELICAN-gated"; exit 1; }
+
+      - name: Pelican panel boot smoke (fake provider binary)
+        run: |
+          chmod +x docker/scripts/test_pelican_smoke.sh
+          ./docker/scripts/test_pelican_smoke.sh
+
+      - name: Pelican gate behavioral tests + egg invariants
+        run: |
+          chmod +x docker/scripts/test_pelican_gates.sh
+          ./docker/scripts/test_pelican_gates.sh
+
       - name: Shellcheck docker scripts (error severity)
         run: |
           # Error-severity gate over every docker script. Pre-existing
