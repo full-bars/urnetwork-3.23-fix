@@ -77,12 +77,12 @@ func TestSelectTargetOrSoleAccessibleNarrowsToOwnUser(t *testing.T) {
 		t.Skip("could not resolve current username")
 	}
 	providers := []Provider{
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service"},
-		{User: me, Unit: "urnetwork-native.service"},
-		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service"},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: me, Unit: "urnetwork-native.service", Running: true},
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
 	}
 
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, Target{}, true)
 	if err != nil {
 		t.Fatalf("selectTargetOrSoleAccessible: %v", err)
 	}
@@ -91,6 +91,47 @@ func TestSelectTargetOrSoleAccessibleNarrowsToOwnUser(t *testing.T) {
 	}
 	if p.User != me {
 		t.Errorf("selected provider user = %q, want %q", p.User, me)
+	}
+}
+
+// TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped: a provider that is the
+// caller's own AND the sole accessible candidate must still NOT be auto-targeted
+// when it is stopped — the sole-accessible path drives destructive stop/restart
+// and must never pick a non-running provider (Sonnet backlog #1a).
+func TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can reach every provider; narrowing only applies unprivileged")
+	}
+	me := currentUserName()
+	if me == "" {
+		t.Skip("could not resolve current username")
+	}
+	providers := []Provider{
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: me, Unit: "urnetwork-native.service", Running: false}, // stopped
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
+	}
+
+	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{}, true)
+	if err == nil {
+		t.Fatal("expected an error when the caller's sole own provider is stopped (no running sole candidate)")
+	}
+	if narrowed {
+		t.Error("must not auto-narrow to a STOPPED provider for a destructive command (requireRunning=true)")
+	}
+
+	// Read-only callers (logs/status/summary) pass requireRunning=false and
+	// MUST still reach a stopped provider for diagnostics (Sonnet backlog #1a
+	// second pass).
+	got, narrowed2, err2 := selectTargetOrSoleAccessible(providers, Target{}, false)
+	if err2 != nil {
+		t.Fatalf("read-only selection of a stopped provider should succeed: %v", err2)
+	}
+	if !narrowed2 {
+		t.Error("read-only (requireRunning=false) should still narrow to the stopped sole provider")
+	}
+	if got.User != me {
+		t.Errorf("read-only selected user %q, want %q", got.User, me)
 	}
 }
 
@@ -103,11 +144,11 @@ func TestSelectTargetOrSoleAccessibleStillRefusesWhenAmbiguous(t *testing.T) {
 		t.Skip("root can reach every provider; narrowing only applies unprivileged")
 	}
 	providers := []Provider{
-		{User: "urnetwork-beta", Unit: "urnetwork-beta.service"},
-		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service"},
+		{User: "urnetwork-beta", Unit: "urnetwork-beta.service", Running: true},
+		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service", Running: true},
 	}
 
-	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
+	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{}, true)
 	if err == nil {
 		t.Fatal("expected refusal when no provider matches the caller's own user")
 	}
@@ -129,7 +170,7 @@ func TestSelectTargetOrSoleAccessibleTreatsBlankUserAsUnresolved(t *testing.T) {
 		{User: "", Unit: "urnetwork-ghost.service"},
 	}
 
-	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{})
+	_, narrowed, err := selectTargetOrSoleAccessible(providers, Target{}, true)
 	if err == nil {
 		t.Fatal("expected refusal when the only candidate has an unresolved owner")
 	}
@@ -185,7 +226,7 @@ func TestSelectTargetOrSoleAccessibleExplicitTargetBypassesNarrowing(t *testing.
 		{User: "urnetwork-alpha", Unit: "urnetwork-alpha.service"},
 	}
 
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, Target{Unit: "urnetwork-alpha.service"})
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, Target{Unit: "urnetwork-alpha.service"}, true)
 	if err != nil {
 		t.Fatalf("selectTargetOrSoleAccessible: %v", err)
 	}
