@@ -90,7 +90,7 @@ func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 		return Provider{}, err
 	}
 	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, true)
 	if err != nil {
 		return Provider{}, err
 	}
@@ -238,7 +238,7 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return errWithDockerHint(err, len(providers))
 	}
