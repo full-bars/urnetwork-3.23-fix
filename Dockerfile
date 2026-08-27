@@ -62,6 +62,9 @@ RUN ln -sf /app/proxy-traffic.sh /usr/local/bin/proxy-traffic
 RUN ln -sf /app/logs.sh /usr/local/bin/logs
 RUN ln -sf /app/urnet-tools.sh /usr/local/bin/urnet-tools
 
+# update_verify.sh is sourced by urnet-tools for digest verification.
+RUN ln -sf /app/update_verify.sh /usr/local/bin/update_verify.sh
+
 # Expose the provider binary on PATH as `provider` for `docker exec <c> provider <cmd>`
 RUN ln -sf /app/urnetwork_${TARGETARCH}_stable /usr/local/bin/provider
 
