@@ -40,6 +40,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
 | Load a proxy file into the provider (per-OS) | [Adding Proxies](docs/Adding-Proxies.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
+| Import into a Pelican game-server panel | [Pelican Panel](docs/Docker-Deployment.md#-pelican-panel) · [Egg README](pelican/README.md) |
 
 ---
 
