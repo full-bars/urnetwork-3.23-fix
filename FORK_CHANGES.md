@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.7
+**Current Version**: v3.23.0-fix.30.8
 
 ---
 
@@ -2966,3 +2966,49 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - A fix corrects restart targeting when a provider unit is owned by another user; the restart runs against the right unit instead of the current user's scope.
 
 **Impact**: CLI help restores the approved styling; restarts hit the correct user unit.
+
+---
+
+## 137. Docker State-Dir $HOME Resolution (PR #480)
+
+**Purpose**: Eliminate a silent split-brain between auth state and update-pending markers in any container run with `HOME != /root` (e.g. Pelican panel eggs).
+
+**Files Modified**: `Dockerfile`, `docker/scripts/entrypoint.sh`, `docker/scripts/proxy-health.sh`, `docker/scripts/proxy-traffic.sh`, `docker/scripts/start_jwt.sh`, `docker/scripts/start_nightly.sh`, `docker/scripts/start_stable.sh`, `docker/scripts/urnet-tools.sh`.
+
+**Change**:
+- Every `docker/scripts/*.sh` resolves provider state at `$HOME/.urnetwork` instead of the hardcoded `/root/.urnetwork`. Update-pending markers already used `$HOME`; the auth path was the outlier.
+- `pelican_panel.sh` and `urnet-tools.sh` were already `$HOME`-based; the eight other scripts now agree.
+- `Dockerfile` keeps `VOLUME /root/.urnetwork` as the documented host mount point; the comment explains the `$HOME`-based resolution and why the volume target is unchanged for the default image (HOME=/root there).
+- Default-Docker behavior is unchanged: existing volumes keep working because the image still ships with HOME=/root. The change is a no-op for `docker run`-style deployments and a correctness fix for panel/egg deployments.
+
+**Impact**: A single source of truth for provider state across all in-container entrypoints. Pelican eggs (PR #480's second commit) can now read the panel-owned `$HOME/.urnetwork` JWT and the same proxy-health/proxy-traffic/session paths the host-side `urnet-tools` uses.
+
+---
+
+## 138. Pelican Panel Egg Support + PELICAN-Gated Runtime Updates (PR #480)
+
+**Purpose**: Make the hardened provider image importable into the Pelican game-server panel as a one-click egg, and remove the runtime-update attack surface that the panel's own image-publish flow would otherwise reintroduce.
+
+**Files Modified**: `.github/workflows/build.yml`, `docker/scripts/start_nightly.sh`, `docker/scripts/urnet-tools.sh`, `docker/scripts/test_pelican_smoke.sh`, `docker/scripts/test_pelican_gates.sh` (new), `pelican/README.md` (new), `pelican/egg-urnetwork-323fix.json` (new).
+
+**Change**:
+- **`pelican/egg-urnetwork-323fix.json`** — PLCN_v3 egg pointing at `ghcr.io/full-bars/urnetwork-3.23-fix:latest`. `BUILD` (stable/nightly/jwt) is user-editable; `USER_AUTH` user-editable; `PASSWORD` and `AUTHCODE` admin-only. `PELICAN=yes`, `ENABLE_VNSTAT=false`, and `ENABLE_IP_CHECKER=false` are hidden and non-editable in the egg — the image ships with the audit-preferred defaults pinned.
+- **Runtime self-update disabled under `PELICAN=yes`**: `start_nightly.sh` short-circuits the update check (both the bootstrap and the daily watcher), and `urnet-tools update` exits 1 with a refusal message. Under a panel the published image is the single source of truth; a runtime fetch would silently swap the audited fork binary for whatever the release API serves mid-flight. Non-Pelican Docker deployments keep the #477 behavior unchanged.
+- **`docker/scripts/test_pelican_smoke.sh`** — boot smoke driving `pelican_panel.sh` against a fake provider binary. Empty credentials fail fast; jwt mode routes to `auth-provide` with the code; stable mode routes through the auth loop to `provide`.
+- **`docker/scripts/test_pelican_gates.sh`** — 15 behavioral gate tests (mutation-checked). `func_check_update` extracted from `start_nightly.sh` and exercised with stubbed `log/curl/wwt`: `PELICAN=yes` exits 0 with the disabled notice and zero network calls; `PELICAN` unset proceeds past the gate. `do_update` extracted from `urnet-tools.sh`: `PELICAN=yes` exits 1 with the refusal message and never reaches arch detection; unset proceeds. State-dir tests verify `proxy-health.sh` / `proxy-traffic.sh` resolve under `$HOME` and honor `URNETWORK_PROXY_HEALTH_DIR`. Egg-JSON invariants check non-empty rules arrays, known validator tokens, and unique env_variable/sort values.
+- **CI**: egg JSON structure + variable-contract assertions, PELICAN gate greps, the boot smoke, and the new behavioral gate tests all run in `test-and-lint`.
+
+**Impact**: The hardened provider is importable as a Pelican egg in one click. Under a panel, the audit chain stays intact — no runtime binary swap path. Operators running plain `docker run` (or non-Pelican compose stacks) get the same security profile as before, plus the optional PELICAN-gated posture. Requires fleet redeploy of the `:latest` image to pick up `start_nightly.sh` and `urnet-tools.sh` changes (the `PELICAN=yes` gate is no-op without the new image).
+
+---
+
+## 139. Pelican Egg Documentation vnStat Note Correction (PR #480)
+
+**Purpose**: Stop describing `ENABLE_VNSTAT` as a vulnerability fix in user-facing docs; it is a preference, not a security claim.
+
+**Files Modified**: `pelican/README.md`, `pelican/egg-urnetwork-323fix.json`.
+
+**Change**:
+- Reworded the vnStat note: the upstream-hardened image is what the egg defaults to (off); the change records the operator-preference default, not a current exposure. vnStat was patched long ago; the off-by-default posture in the egg is to keep the unauthenticated port 8080 traffic UI out of the panel deployment.
+
+**Impact**: Documentation accuracy. No behavior change.
