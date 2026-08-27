@@ -36,47 +36,63 @@ JSON_OK='{"assets":[
 
 ASSET="urnetwork-provider-v3.23.0-fix.30.7.tar.gz"
 
-got="$(asset_digest_from_json "$JSON_OK" "$ASSET")"
+got="$(upd_asset_digest_from_json "$JSON_OK" "$ASSET")"
 [ "$got" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
 t "digest parses from multi-asset JSON and strips sha256: prefix" true
 
-asset_digest_from_json "$JSON_OK" "missing-asset.tar.gz"
+upd_asset_digest_from_json "$JSON_OK" "missing-asset.tar.gz"
 t "rejects missing asset" test $? -ne 0
 
 JSON_NULL='{"assets":[{"name":"old.tar.gz","digest":null}]}'
-asset_digest_from_json "$JSON_NULL" "old.tar.gz"
+upd_asset_digest_from_json "$JSON_NULL" "old.tar.gz"
 t "rejects null digest (legacy asset)" test $? -ne 0
 
 JSON_NODIGEST='{"assets":[{"name":"plain.tar.gz"}]}'
-asset_digest_from_json "$JSON_NODIGEST" "plain.tar.gz"
+upd_asset_digest_from_json "$JSON_NODIGEST" "plain.tar.gz"
 t "rejects asset with no digest field" test $? -ne 0
 
 # --- verify_digest ---
 printf 'provider-bytes-trusted' > "$tmp/good.bin"
 good_sum="$(sha256sum "$tmp/good.bin" | awk '{print $1}')"
-verify_digest "$tmp/good.bin" "$good_sum"
+upd_verify_digest "$tmp/good.bin" "$good_sum" "primary"
 t "verify_digest accepts exact match" true
 
 printf 'provider-bytes-TAMPERED' > "$tmp/bad.bin"
-if verify_digest "$tmp/bad.bin" "$good_sum"; then
+if upd_verify_digest "$tmp/bad.bin" "$good_sum" "primary"; then
     fail=$((fail+1)); echo "FAIL: tampered content accepted by verify_digest"
 else
     pass=$((pass+1)); echo "PASS: verify_digest rejects tampered content"
 fi
 
-if verify_digest "$tmp/nonexistent.bin" "$good_sum"; then
+# Source label must appear in mismatch output (error-indistinction fix).
+upd_verify_digest "$tmp/bad.bin" "$good_sum" "mirror-fallback" 2> "$tmp/err.txt"
+grep -q "mirror-fallback" "$tmp/err.txt"
+t "mismatch error names the download source" true
+
+if upd_verify_digest "$tmp/nonexistent.bin" "$good_sum" "primary"; then
     fail=$((fail+1)); echo "FAIL: verify_digest accepted missing file"
 else
     pass=$((pass+1)); echo "PASS: verify_digest rejects missing file"
 fi
 
 # Empty expected digest must never pass (guards against "" sneaking through).
-if [ -n "$(verify_digest "$tmp/good.bin" "")" ]; then :; fi
-if verify_digest "$tmp/good.bin" ""; then
+if verify_digest_out="$(upd_verify_digest "$tmp/good.bin" "")"; then
     fail=$((fail+1)); echo "FAIL: empty expected digest accepted"
 else
     pass=$((pass+1)); echo "PASS: empty expected digest rejected"
 fi
+
+# POSIX discipline: no `local` anywhere in the sourced helper.
+if grep -qE '^\s*local\s' "$HERE/update_verify.sh"; then
+    fail=$((fail+1)); echo "FAIL: update_verify.sh uses non-POSIX 'local'"
+else
+    pass=$((pass+1)); echo "PASS: update_verify.sh is POSIX-clean (no local)"
+fi
+
+# The helper parses identically under /bin/sh as under bash (shebang contract).
+sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET'" > "$tmp/sh.out"
+[ "$(cat "$tmp/sh.out")" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
+t "helper works when sourced by strict /bin/sh (dash-compatible)" true
 
 # --- Caller asset-selection filter (start_update.sh Download_API) ---
 # Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
