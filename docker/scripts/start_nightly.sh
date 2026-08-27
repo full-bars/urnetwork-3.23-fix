@@ -178,6 +178,34 @@ func_check_update() {
     }
     RESP_FILE="$UPDATE_TMP/release.json"
 
+    # Version compare BEFORE downloading anything: the updater's only job is
+    # to install a NEWER release, so if we are already current there is
+    # nothing to fetch and nothing to verify. (An earlier draft fetched the
+    # tarball first and skipped on version match afterwards — dead bytes, no
+    # verification, silent discard on corruption.)
+    RESP_VERSION_FILE="$UPDATE_TMP/version.json"
+    HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_VERSION_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
+    VERSION_JSON="$(cat "$RESP_VERSION_FILE" 2>/dev/null)" || VERSION_JSON=""
+    if [ "$HTTP_CODE" != "000" ] && [ -n "$VERSION_JSON" ]; then
+        LATEST_VERSION_CHECK="$(printf '%s\n' "$VERSION_JSON" \
+          | grep '"browser_download_url"' \
+          | grep 'urnetwork-provider-.*\.tar\.gz' \
+          | sed -E 's/.*"([^"]+)".*/\1/' \
+          | head -n1 \
+          | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
+        CURRENT_VERSION=""
+        if [ -f "$VERSION_FILE" ]; then
+            CURRENT_VERSION="$(cat "$VERSION_FILE")"
+        fi
+        log "[INFO] Current provider version: ${CURRENT_VERSION:-none}"
+        if [ "$LATEST_VERSION_CHECK" = "$CURRENT_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then
+            log "[INFO] Already at latest provider version; skipping."
+            rm -rf "$UPDATE_TMP"
+            return 0
+        fi
+        log "[INFO] Latest provider version: ${LATEST_VERSION_CHECK:-unknown}"
+    fi
+
     HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
     RELEASE_JSON="$(cat "$RESP_FILE" 2>/dev/null)" || RELEASE_JSON=""
     DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
@@ -210,19 +238,13 @@ func_check_update() {
 
     LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
       | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
-    log "[INFO] Latest provider version: $LATEST_VERSION"
-    if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
-        log "[INFO] Already at latest provider version; skipping."
-        rm -rf "$UPDATE_TMP"
-        return 0
-    fi
-
-    log "[INFO] Updating provider from ( $CURRENT_VERSION ) → ( $LATEST_VERSION )"
+    log "[INFO] Updating provider to ( $LATEST_VERSION )"
 
     ARCHIVE="$UPDATE_TMP/urnetwork-provider.tar.gz"
     # -f makes curl fail on any HTTP error, so a bad response cannot be
-    # mistaken for a successful download.
-    curl -sfL "$DOWNLOAD_URL" -o "$ARCHIVE" || {
+    # mistaken for a successful download. A connect timeout keeps a stalled
+    # connection from hanging the daily watcher forever.
+    curl -sfL --connect-timeout 30 "$DOWNLOAD_URL" -o "$ARCHIVE" || {
         log "[ERROR] Download failed for $DOWNLOAD_URL" >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
