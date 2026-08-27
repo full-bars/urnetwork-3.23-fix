@@ -309,7 +309,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	} else if dryRun {
 		fmt.Printf("[dry-run] would %s on %d provider(s)\n", strings.Join(opArgs, " "), len(chosen))
 		for _, p := range chosen {
-			fmt.Printf("  %s (user=%s, network=%s)\n", providerLabel(p), p.User, p.Network)
+			fmt.Printf("  %s (user=%s, network=%s)\n", providerLabel(p), p.User, p.netLabel())
 		}
 		return nil
 	}
