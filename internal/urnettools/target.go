@@ -92,7 +92,7 @@ func defaultProvider(providers []Provider) (Provider, error) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d providers found for user %q — specify a target to disambiguate (--unit / --network / --network-id):\n", len(mine), current)
 		for _, p := range mine {
-			fmt.Fprintf(&b, "  %s  net=%s state=%s\n", providerLabel(p), p.Network, p.StateDir)
+			fmt.Fprintf(&b, "  %s  net=%s state=%s\n", providerLabel(p), p.netLabel(), p.StateDir)
 		}
 		return Provider{}, fmt.Errorf("%s", b.String())
 	}

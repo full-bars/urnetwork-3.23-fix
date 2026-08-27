@@ -255,7 +255,7 @@ func interactivePick(providers []Provider) ([]Provider, error) {
 	fmt.Println("Select providers (comma/space separated numbers, or 'all'):")
 	for i, p := range providers {
 		fmt.Printf("  [%d] %s  user=%s  net=%s  state=%s\n",
-			i+1, providerLabel(p), p.User, p.Network, p.StateDir)
+			i+1, providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	line, err := confirmStdinRead("> ")
 	if err != nil {
@@ -334,7 +334,7 @@ func ambiguousError(providers []Provider) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
 	for _, p := range providers {
-		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.Network, p.StateDir)
+		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	if hint := rootHint(); hint != "" {
 		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
