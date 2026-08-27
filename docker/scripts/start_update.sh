@@ -6,37 +6,72 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
 
+# Resolve this script's directory (update_verify.sh lives alongside it).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=update_verify.sh
+. "$SCRIPT_DIR/update_verify.sh"
+
 # === Trap errors and print the failing line + function ===
 trap 'log "[ERROR] Failure at line $LINENO in function $FUNCNAME"; exit 1' ERR
 
 log "[INFO] Starting provider update process"
 
+# Upstream repo constant: only OUR fork is a valid update source. The
+# upstream urnetwork/* repos ship the vanilla provider — installing from them
+# would silently replace this fork's hardened binary, so they are never named.
+readonly UPSTREAM_REPO="full-bars/urnetwork-3.23-fix"
+
 # === Function to download release tar.gz from GitHub API ===
 Download_API() {
-    local repo="$1"   # e.g. "connect" or "build"
-    local suffix="$2" # e.g. "stable" or "nightly"
+    local suffix="$1" # e.g. "stable" or "nightly" (asset is per-release tag)
 
-    log "[INFO] Download_API → Repo: $repo | Suffix: $suffix"
+    log "[INFO] Download_API → Repo: $UPSTREAM_REPO | Suffix: $suffix"
 
-    local API="https://api.github.com/repos/urnetwork/${repo}/releases/latest"
+    local API="https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest"
     local release_url
     release_url=$(curl -s "$API" | jq -r '.url')
+    [ -n "$release_url" ] && [ "$release_url" != "null" ] || {
+        log "[ERROR] Could not resolve latest release URL from $API"
+        exit 1
+    }
     log "[INFO] Release URL: $release_url"
 
     local release_json
     release_json=$(curl -s "$release_url")
 
-    local download_url
-    download_url=$(echo "$release_json" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) | .browser_download_url')
-    log "[INFO] Download URL: $download_url"
+    local filename download_url asset_digest
+    filename="$(echo "$release_json" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) | .name' | head -n1)"
+    download_url="$(echo "$release_json" | jq -r --arg f "$filename" \
+        '.assets[] | select(.name == $f) | .browser_download_url')"
+    [ -n "$filename" ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] || {
+        log "[ERROR] No urnetwork-provider-*.tar.gz asset found in latest release"
+        exit 1
+    }
 
-    local filename
-    filename=$(basename "$download_url")
+    # Digest BEFORE downloading anything: if the API does not publish a
+    # digest for this asset we refuse the whole update rather than install
+    # unverified bytes.
+    asset_digest="$(asset_digest_from_json "$release_json" "$filename")" || {
+        log "[ERROR] Release API returned no sha256 digest for $filename; refusing to update without verification"
+        exit 1
+    }
+    log "[INFO] Expected digest: $asset_digest"
+
+    log "[INFO] Download URL: $download_url"
     log "[INFO] Filename: $filename"
 
     log "[INFO] Downloading $filename..."
-    curl -L -k -A "Mozilla/5.0" -o "$filename" "$download_url"
+    # TLS verification ON (-k removed): an unverifiable channel defeats the
+    # digest check's purpose.
+    curl -L -A "Mozilla/5.0" -o "$filename" "$download_url"
     log "[INFO] Downloaded: $filename"
+
+    verify_digest "$filename" "$asset_digest" || {
+        rm -f "$filename"
+        log "[ERROR] Downloaded tarball failed digest verification; nothing installed."
+        exit 1
+    }
+    log "[INFO] Digest verified OK"
 
     echo "$filename $suffix" >> download_list.txt
 }
@@ -64,12 +99,11 @@ Extract_Providers() {
     log "[INFO] Deleted archive: $filename"
 }
 
-# === Phase 1: Download all ===
-log "[INFO] Phase 1: Download releases"
-Download_API "connect" "stable"
-Download_API "build" "nightly"
+# === Phase 1: Download (single fork release, digest-verified) ===
+log "[INFO] Phase 1: Download release"
+Download_API "stable"
 
-# === Phase 2: Extract all ===
+# === Phase 2: Extract ===
 log "[INFO] Phase 2: Extract providers"
 while read -r filename suffix; do
     Extract_Providers "$filename" "$suffix"
