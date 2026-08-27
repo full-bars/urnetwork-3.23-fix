@@ -537,6 +537,9 @@ docker run -d \
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
 
+> [!NOTE]
+> **Pelican Panel deployments**: When the image runs under a [Pelican panel](#-pelican-panel) with `PELICAN=yes`, the self-update scripts are disabled. The panel manages updates by re-pulling the published image. Runtime fetches are blocked to prevent silently replacing the audited fork binary mid-flight.
+
 ## ⏳ Idle Update
 
 As of `v3.23.0-fix.26.5`, `urnet-tools idle-update` lets you apply a pending provider update without interrupting active client sessions — it waits for a quiet traffic window before swapping the binary, instead of updating immediately and cutting off whatever's in flight:
@@ -564,3 +567,51 @@ docker exec -it <container> urnet-tools idle-update --window 0
 > If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update — it fails closed.
 
 For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
+
+## 🐦 Pelican Panel
+
+As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican game-server panel](https://github.com/pelican-dev/panel) as a one-click egg. The egg ships with the audit-preferred defaults pinned — vnStat off, IP checker off, and runtime self-update disabled.
+
+### Importing the egg
+
+1. Download the egg JSON from the repo: `pelican/egg-urnetwork-323fix.json`
+2. In Pelican admin, go to **Nests**, select or create a nest, and use **Import Egg** to upload the JSON.
+3. The egg pulls `ghcr.io/full-bars/urnetwork-3.23-fix:latest` (multi-arch amd64/arm64).
+
+### Configuration variables
+
+| Variable | Editable | Description |
+|---|---|---|
+| `BUILD` | Yes | `stable`, `nightly`, or `jwt` |
+| `USER_AUTH` | Yes | Email/phone for password-based auth. Required for `stable`/`nightly`, ignored for `jwt` |
+| `PASSWORD` | Admin-only | Password for password-based auth. Required for `stable`/`nightly` |
+| `AUTHCODE` | Admin-only | One-time auth code from [ur.io](https://ur.io). Required for `jwt` |
+| `PELICAN` | Hidden | Always `yes` — set by the egg, not editable |
+| `ENABLE_VNSTAT` | Hidden | Always `false` in the egg |
+| `ENABLE_IP_CHECKER` | Hidden | Always `false` in the egg |
+
+### Authentication modes
+
+- **`BUILD=jwt`**: Uses `AUTHCODE` (one-time auth code from [ur.io](https://ur.io)). `pelican_panel.sh` calls `auth-provide "$AUTHCODE" -f` once; it does not retry on failure.
+- **`BUILD=stable`** or **`BUILD=nightly`**: Uses `USER_AUTH` + `PASSWORD` for password-based authentication, with retry-on-failure and automatic JWT re-auth after 3 crashes.
+
+> [!NOTE]
+> Under Pelican, `BUILD=nightly` currently behaves identically to `BUILD=stable`: the panel always routes through `pelican_panel.sh`, which runs the stable provider binary regardless of `BUILD`. The nightly-vs-stable binary split only applies outside Pelican mode. Don't rely on `BUILD=nightly` to get nightly binary behavior when `PELICAN=yes`.
+
+### Resource requirements
+
+The provider needs raw packet access on the node running the egg:
+
+- Container capability `NET_ADMIN` (and typically `NET_RAW`)
+- IP forwarding enabled on the host
+- Outbound UDP allowed, for WebRTC P2P transport
+
+No inbound ports need to be forwarded — the provider dials out.
+
+### Update behavior
+
+Under Pelican (`PELICAN=yes`), the self-update checks in `start_nightly.sh` and `urnet-tools update` are **disabled**. The published image is the single source of truth; to update, re-pull the image via the panel (**Settings → Reinstall**) or `docker pull`.
+
+### Testing
+
+The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` for egg JSON structure, variable contracts, and PELICAN-gate behavior; `docker/scripts/test_pelican_smoke.sh` for a full boot smoke test against a fake provider binary). For a real-panel import walkthrough and log output to expect, see `pelican/README.md`.
