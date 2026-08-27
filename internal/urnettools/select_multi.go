@@ -172,7 +172,16 @@ func selectTargetOrSoleAccessible(providers []Provider, t Target) (p Provider, n
 	// should still get the normal refusal + inventory, not the unprivileged
 	// auto-narrow treatment. Matches target.go and select_multi.go:93.
 	if noTarget && len(providers) > 1 && !isPrivileged() {
-		if accessible := narrowToAccessible(providers); len(accessible) == 1 {
+		// A sole-accessible-but-STOPPED provider must not be auto-targeted
+		// via this path (it drives destructive stop/restart). Mirror
+		// defaultProvider's Running requirement (Sonnet backlog #1a).
+		var accessible []Provider
+		for _, p := range narrowToAccessible(providers) {
+			if p.Running {
+				accessible = append(accessible, p)
+			}
+		}
+		if len(accessible) == 1 {
 			return accessible[0], true, nil
 		}
 	}
