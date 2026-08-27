@@ -186,7 +186,7 @@ jobs:
 
           jq -e '.meta.version == "PLCN_v3"
                  and (.docker_images | length == 1)
-                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/"))
+                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/urnetwork-3.23-fix:latest$"))
                  and .startup_commands.Default == "sh /app/entrypoint.sh"
                  and (.config.startup | fromjson | .done == "Provider")' "$egg" >/dev/null \
             || { echo "FAIL: egg JSON structure invalid"; exit 1; }

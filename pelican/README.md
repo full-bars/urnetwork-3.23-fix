@@ -62,7 +62,7 @@ Ports do NOT need to be publicly forwarded — the provider dials out.
 
 After creating the server, press Start. A healthy boot prints, in order:
 
-```
+```console
 >>> UrNetwork >>> Running Pelican Panel mode...
 [INFO] Public IP detected: <ip>
 [INFO] Credentials found

@@ -74,7 +74,7 @@ run_do_update_gated() {
 
 OUT_GATED="$(run_do_update_gated yes 2>&1)"; rc=$?
 t "do_update: PELICAN=yes exits 1"           test "$rc" -eq 1
-t "do_update: PELICAN=yes prints refusal"    printf '%s' "$OUT_GATED" | grep -qi "runtime updates are disabled"
+t "do_update: PELICAN=yes prints refusal"    sh -c "printf '%s' '$OUT_GATED' | grep -qi 'runtime updates are disabled'"
 t "do_update: PELICAN=yes never reaches arch detection" sh -c "[ ! -s '$tmp/calls2.txt' ]"
 
 run_do_update_gated "" >/dev/null 2>&1 || true
