@@ -2,10 +2,16 @@
 # urnet-tools -- Docker wrapper for URNetwork provider management
 set -eu
 
-# Digest-verification helpers live alongside this script.
+# Digest-verification helpers live alongside this script. When invoked via
+# the /usr/local/bin/urnet-tools symlink, SCRIPT_DIR resolves to the symlink
+# dir, not the real file dir. Try both the resolved path and /app/ fallback.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=update_verify.sh
-. "$SCRIPT_DIR/update_verify.sh"
+if [ -f "$SCRIPT_DIR/update_verify.sh" ]; then
+    . "$SCRIPT_DIR/update_verify.sh"
+else
+    . /app/update_verify.sh
+fi
 
 operation="${1:-}"
 [ -z "$operation" ] && { echo "Usage: urnet-tools <command> [args]"; exit 1; }
