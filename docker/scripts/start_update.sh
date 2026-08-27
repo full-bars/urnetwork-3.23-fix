@@ -66,7 +66,7 @@ Download_API() {
     log "[INFO] Downloading $filename..."
     # TLS verification ON (-k removed): an unverifiable channel defeats the
     # digest check's purpose.
-    curl -L -A "Mozilla/5.0" -o "$filename" "$download_url"
+    curl -fL -A "Mozilla/5.0" -o "$filename" "$download_url"
     log "[INFO] Downloaded: $filename"
 
     upd_verify_digest "$filename" "$asset_digest" "release-download" || {
