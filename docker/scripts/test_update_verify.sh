@@ -94,6 +94,24 @@ sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASS
 [ "$(cat "$tmp/sh.out")" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
 t "helper works when sourced by strict /bin/sh (dash-compatible)" true
 
+# python3 fallback: hide jq from PATH and retry the digest extraction.
+jq_dir="$(dirname "$(command -v jq)")"
+mkdir -p "$tmp/nojq"
+for tool in jq; do
+    p="$(command -v $tool 2>/dev/null)" && ln -sf "$p" "$tmp/nojq/$tool" || true
+done
+PATH="$tmp/nojq:$(echo "$PATH" | tr ':' '\n' | grep -v "^$jq_dir\$" | tr '\n' ':')" \
+  sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET'" > "$tmp/py.out" 2>/dev/null
+[ "$(cat "$tmp/py.out")" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
+t "python3 fallback extracts digest when jq is absent" true
+
+# All-toolless environment must still abort (fail-safe, never skip verify).
+if env -i PATH=/nonexistent sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET'" >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "FAIL: toolless environment did not abort"
+else
+    pass=$((pass+1)); echo "PASS: no-jq-no-python3 environment aborts (fail-safe)"
+fi
+
 # --- Caller asset-selection filter (start_update.sh Download_API) ---
 # Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
 # un-parenthesized form errors "Cannot index boolean with string" on every
