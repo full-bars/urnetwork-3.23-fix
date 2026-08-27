@@ -10,11 +10,16 @@
 #   - Start vnStat monitoring and lightweight HTTP server
 #   - Authenticate and obtain JWT
 #   - Manage provider lifecycle (restart on crash)
-#   - Check for provider updates from GitHub releases
+#   - Check for provider updates from GitHub releases (THIS FORK ONLY)
 #   - Run a time-based watcher to auto-update daily at $UPDATE_TIME
 
 # Exit immediately if any command fails
 set -e
+
+# Resolve this script's directory (update_verify.sh lives alongside it).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=update_verify.sh
+. "$SCRIPT_DIR/update_verify.sh"
 
 # === Configuration Variables ===
 export TZ="America/Tijuana"
@@ -23,7 +28,7 @@ JWT_FILE="/root/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
-API_URL="https://api.github.com/repos/urnetwork/build/releases/latest"
+API_URL="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
 VERSION_FILE="$APP_DIR/version.txt"
 UPDATE_TIME="12:00"
 
@@ -190,6 +195,19 @@ func_check_update() {
     }
     log "$DOWNLOAD_URL"
 
+    # Digest verification: refuse to install bytes we cannot verify. The
+    # release API publishes a per-asset sha256 digest; a missing digest
+    # (legacy asset or tampered response) aborts the update rather than
+    # risking an unverified binary replacing the running provider.
+    ASSET_NAME="$(basename "$DOWNLOAD_URL")"
+    EXPECTED_DIGEST="$(asset_digest_from_json "$RELEASE_JSON" "$ASSET_NAME")" || {
+        log "[ERROR] Release API returned no sha256 digest for $ASSET_NAME." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    }
+    log "[INFO] Expected digest: $EXPECTED_DIGEST"
+
     LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
       | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
     log "[INFO] Latest provider version: $LATEST_VERSION"
@@ -210,6 +228,15 @@ func_check_update() {
         rm -rf "$UPDATE_TMP"
         return 0
     }
+    # Verify BEFORE extract: the tarball must match the release API digest
+    # exactly, else the update aborts and the running binary stays as-is.
+    if ! verify_digest "$ARCHIVE" "$EXPECTED_DIGEST"; then
+        log "[ERROR] Downloaded tarball failed digest verification." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    fi
+    log "[INFO] Digest verified OK"
     tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "linux/${A_SYS_ARCH}/provider" || {
         log "[ERROR] Failed to extract provider from tarball." >&2
         log "[INFO] Update aborted; existing provider left untouched."
