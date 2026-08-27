@@ -27,7 +27,7 @@ Download_API() {
 
     log "[INFO] Download_API → Repo: $UPSTREAM_REPO | Suffix: $suffix"
 
-    local API="https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest"
+    local API="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
     local release_url
     release_url=$(curl -s "$API" | jq -r '.url')
     [ -n "$release_url" ] && [ "$release_url" != "null" ] || {
