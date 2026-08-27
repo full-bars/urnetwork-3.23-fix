@@ -6,7 +6,7 @@
     },
     "exported_at": "2026-08-27T00:00:00+00:00",
     "name": "UrNetwork (full-bars 3.23-fix)",
-    "author": "klets",
+    "author": "full-bars",
     "uuid": "b1f4a2c8-6d97-4f02-9c31-0e5a77d2f8bb",
     "description": "URnetwork provider (hardened fork). Accepts stable, nightly, or jwt mode. Credentials stay admin-only.",
     "image": null,

@@ -39,9 +39,10 @@ serves mid-flight.
 
 ## Security notes
 
-- vnStat's web UI (port 8080) has no authentication and exposes traffic
-  counters. It ships OFF and cannot be enabled via the panel — build a custom
-  image with `ENABLE_VNSTAT=true` if you accept that.
+- vnStat ships OFF by default: its port-8080 web UI exposes traffic counters
+  publicly, which is why the default is off. It was hardened a long time ago,
+  so this is a conservative default, not an open vulnerability — enable it if
+  you want the counters and accept the exposure.
 - State lives under `$HOME/.urnetwork` inside the server's data volume.
   All scripts resolve state there, so no path is hardwired to /root.
 - Credentials are admin-only in the egg definition; users of the server
