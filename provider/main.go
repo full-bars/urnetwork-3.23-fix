@@ -1426,10 +1426,15 @@ func runLifetimeCollector(ctx context.Context) {
 		} else {
 			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
 			// during the idle window are not smeared into the next active
-			// tick's rate display.
+			// tick's rate display. Use u64At to create the baseline slot (the
+			// active branch does the same): on the FIRST tick prevRxPerProxy is
+			// empty while bw is populated with every known proxy, so a bare
+			// index dereference panics (nil *uint64) and — with the collector
+			// launched as a bare `go` — crashes the whole provider process
+			// (Sonnet CRITICAL, 2026-08-27).
 			for key, b := range bw {
-				*prevRxPerProxy[key] = b.TotalRx.Load()
-				*prevTxPerProxy[key] = b.TotalTx.Load()
+				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
+				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
 			}
 		}
 		prevTime = now
