@@ -524,7 +524,7 @@ case "$operation" in
         ;;
     session)
         subcmd="${1:-}"; shift || true
-        state_dir="/root/.urnetwork"
+        state_dir="$HOME/.urnetwork"
         staging_dir="$state_dir/.session-staging"
         provider_bin="/usr/local/bin/provider"
 
@@ -653,10 +653,10 @@ case "$operation" in
                 echo "  save <file>              Encrypt and export identity+proxy state"
                 echo "  load <file> [--force]    Decrypt and import, then restart"
                 echo ""
-                echo "Save: docker exec -it <container> urnet-tools session save /root/.urnetwork/name.urnsession"
-                echo "      docker cp <container>:/root/.urnetwork/name.urnsession ."
-                echo "Load: docker cp file.urnsession <container>:/root/.urnetwork/"
-                echo "      docker exec -it <container> urnet-tools session load /root/.urnetwork/file.urnsession"
+                echo "Save: docker exec -it <container> urnet-tools session save $HOME/.urnetwork/name.urnsession"
+                echo "      docker cp <container>:$HOME/.urnetwork/name.urnsession ."
+                echo "Load: docker cp file.urnsession <container>:$HOME/.urnetwork/"
+                echo "      docker exec -it <container> urnet-tools session load $HOME/.urnetwork/file.urnsession"
                 exit 1
                 ;;
         esac
