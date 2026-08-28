@@ -39,17 +39,18 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Change**:
 ```
-InitialContractTransferByteCount: 16 KiB → 2 MiB
+InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 ```
 - **Old**: 16384 bytes per contract
-- **New**: 2097152 bytes per contract (mib(2))
+- **New**: 2097152 bytes per contract (mib(2)) — fork default
 - **Ratio**: 128x increase
+- Per-profile: lowmem 256 KiB, balanced 256 KiB, performance+ 2 MiB (via `applyTier*` + `applyLowmodeSettings` override chain)
 
 **Effect**: Reduces contract renegotiation overhead during traffic ramp-up; faster throughput scaling.
 
 **How to Identify in New Upstream**:
 - Search for `InitialContractTransferByteCount` in `transfer_contract_manager.go`
-- Current value is `mib(2)` (in bytes)
+- Fork default is `mib(2)` (in bytes); per-profile values in `tuning.go`
 
 **Status**: ✅ Shipped in all releases; could be upstreamed if performance gains are universal
 
@@ -1156,12 +1157,12 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - New `proxyURLGiveUpRetryDelay(giveUpCount)` computes escalating delay: cycle 1=15m, 2=30m, 3=1h, 4=2h, 5=4h, 6=8h, 7=16h, 8+=24h (capped), with up to 20% jitter
 - `proxyFailureHistory` gains `giveUps` map tracking lifetime give-up cycles per address (not per-attempt), with same `Reset`/`Prune` lifecycle as `failures`
 - `ProxyURLState.Blacklist` persisted to `proxy_url.json`; `mergeProxyURLEntries` skips any address present in the blacklist, enforcing permanent eviction at the only add path
-- `evictProxyURLAddress` removes from cache, writes to blacklist, triggers hot-reload — called at cycle 10+ instead of scheduling another retry
+- `evictProxyURLAddress` removes from cache, writes to blacklist, triggers hot-reload — called at cycle 4+ instead of scheduling another retry
 - `currentDesiredProxyAddresses()` returns all addresses from file/internal + URL cache, used by both `globalProxyFailureHistory.Prune` and `globalProvenProxies.Prune` — fixes the bug where `keepAddrs` was built from live health registry `report.Bandwidth`, which drops give-up'd proxies during their wait window
 
 **11 new unit tests** covering: give-up counter, Reset/Prune for giveUps, delay schedule (monotonic increase + cap + jitter bounds), blacklist round-trip, blacklist enforcement on merge, eviction (removal + blacklist + reload trigger), blacklist surviving a fetch cycle, desired-address-set helper (file merge, internal config fallback, URL-cache-only address survives health absence).
 
-**Status**: ✅ Implemented (pending PR).
+**Status**: ✅ Shipped in v3.23.0-fix.30.8 (PR #485).
 
 ---
 
