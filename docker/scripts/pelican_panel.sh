@@ -85,6 +85,33 @@ func_report_identity() {
   fi
 }
 
+# === Proxy Setup ===
+# Detect proxy configuration for the panel provider. URL-sourced proxies
+# (PROXY_URL) are handled natively by the provider from environment.
+# File-based proxies (PROXY_FILE) must be a mounted volume; the provider
+# reads them via the env var fallback added in v30.8.
+func_check_proxy() {
+    # URL-sourced: provider reads PROXY_URL from environment automatically
+    if [ -n "${PROXY_URL:-}" ]; then
+        log "[INFO] PROXY_URL set; provider will fetch proxy lists from URL(s)"
+    fi
+
+    # File-based: validate the path exists and is non-empty before provider tries to load it
+    if [ -n "${PROXY_FILE:-}" ]; then
+        if [ -s "$PROXY_FILE" ]; then
+            log "[INFO] PROXY_FILE=$PROXY_FILE found; provider will load proxies from file"
+        elif [ -f "$PROXY_FILE" ]; then
+            log "[ERROR] PROXY_FILE=$PROXY_FILE exists but is empty (need one ip:port:user:pass per line)"
+            return 1
+        else
+            log "[ERROR] PROXY_FILE=$PROXY_FILE set but file not found"
+            return 1
+        fi
+    elif [ -z "${PROXY_URL:-}" ]; then
+        log "[WARN] No PROXY_URL or PROXY_FILE set — running with direct connection only"
+    fi
+}
+
 func_get_architecture() {
     case "$(uname -m)" in
       x86_64)  A_SYS_ARCH=amd64  ;;
@@ -141,11 +168,13 @@ func_start_provider_jwt(){
 if [ "$BUILD" = "jwt" ]; then
   func_get_architecture
   func_report_identity
+  func_check_proxy || exit 1
   func_start_provider_jwt
 else
   func_get_architecture
   func_report_identity
   func_check_credentials
+  func_check_proxy || exit 1
   func_do_login
   func_start_provider
 fi

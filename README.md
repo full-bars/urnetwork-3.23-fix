@@ -17,6 +17,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Initial contract size | 16 KiB | 128 KiB (lowmem), 256 KiB (balanced), 2 MiB (performance+) |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
+| Dead proxy handling | Retry forever (15min loop, no ceiling) | 24h daily retry, 14-day drop (file) or 65min cleanup (URL), persisted state |
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
 | Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
