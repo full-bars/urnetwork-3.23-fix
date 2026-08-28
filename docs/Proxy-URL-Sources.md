@@ -142,7 +142,7 @@ docker run -d \
 | :--- | :--- | :--- | :--- |
 | `--proxy_url=<url>` | `PROXY_URL` | — | The live source. Pass multiple times (or comma-separate the env var) for more than one source. |
 | `--proxy_url_refresh=<duration>` | `PROXY_URL_REFRESH` | `1h` | How often to fetch and add new entries. |
-| `--proxy_url_max=<n>` | `PROXY_URL_MAX` | unlimited | Caps total URL-sourced proxies. Once hit, new entries are skipped until cleanup or restart frees room — existing proxies are never evicted to make space. |
+| `--proxy_url_max=<n>` | `PROXY_URL_MAX` | `500` | Caps total URL-sourced proxies. `0` = unlimited. Once hit, new entries are skipped until cleanup or restart frees room — existing proxies are never evicted to make space. |
 | `--proxy_dead_cleanup_scope=url\|all\|none` | `PROXY_DEAD_CLEANUP_SCOPE` | `url` | Which proxies the **automatic** cleanup is allowed to remove. `url` (default) means only URL-sourced dead proxies are cleaned. `none` disables it entirely. `all` treats every source the same. Manual `proxy remove-dead` always works regardless. |
 | `--proxy_dead_cleanup_interval=<duration>` | `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | How often the automatic cleanup runs, when scope isn't `none`. |
 
