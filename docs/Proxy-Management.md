@@ -78,7 +78,7 @@ docker exec -it urfix urnet-tools proxy remove-dead
 > The tool will prompt you separately for each category, allowing you to selectively remove dead proxies while keeping inactive ones (in case they are just suffering a temporary network blip), or wipe all failing proxies at once.
 > 
 > [!TIP]
-> **As of v30.8**, proxies that fail continuously for 14 days are automatically dropped from the active pool and no longer consume goroutines or auth rate-limiter slots. You no longer need to manually remove long-dead proxies — the provider handles it. Use `proxy remove-dead` for immediate cleanup of known-bad entries.
+> **As of v30.8**, proxies that fail continuously are automatically cleaned up. File-sourced proxies that fail for 14 days are dropped from the active pool (persisted across reboots). URL-sourced proxies are cleaned up after 65 minutes of uptime. You no longer need to manually remove long-dead proxies — the provider handles it. Use `proxy remove-dead` for immediate cleanup of known-bad entries.
 
 ---
 

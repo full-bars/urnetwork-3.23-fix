@@ -19,7 +19,7 @@ urnetwork-3.23-fix/
 │   ├── proxy_state.go             # On-disk proxy state management (proxy.state)
 │   ├── proxy_id.go                # Stable monotonic proxy ID assignment (e.g., proxy[0])
 │   ├── proxy_health_log.go        # Durable state persistence for proxy health (disk writer)
-│   ├── proxy_slow_retry.go        # Slow-retry state: 24h daily gate, 14-day drop ceiling, persistence
+│   ├── proxy_slow_retry.go        # Slow-retry state: 24h daily gate, 14-day drop (file proxies), persistence
 │   ├── proxy_benchmark.go         # Opt-in staggered latency probing (TCP and SOCKS5)
 │   ├── proxy_match.go             # Pattern-based proxy removal (proxy remove --match)
 │   ├── contract_metrics.go        # Fleet-wide per-proxy contract history tracking

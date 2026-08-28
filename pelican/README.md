@@ -46,7 +46,7 @@ The provider needs a source of SOCKS5 proxies to route traffic through. There ar
 3. The provider fetches the lists at startup and auto-refreshes every `PROXY_URL_REFRESH` (default 1h)
 4. To change URLs: edit the var in the panel → Pelican restarts the container
 
-The list format is one proxy per line: `host:port:user:pass` or `socks5://host:port`.
+The list format is one proxy per line: `host:port:user:pass` (credentials required for file-based sources).
 
 ### File-based proxies
 
@@ -60,7 +60,7 @@ To update file-based proxies: edit the file on the host, then restart the server
 
 - URL-sourced proxies auto-refresh on the configured interval — no restart needed
 - File-based proxies require a container restart to pick up changes
-- At runtime: `docker exec <container> urnet-tools proxy refresh` forces an immediate URL re-fetch
+- At runtime: `docker exec <container> urnet-tools proxy refresh --force` forces an immediate URL re-fetch
 
 ## Updates
 

@@ -96,13 +96,19 @@ func_check_proxy() {
         log "[INFO] PROXY_URL set; provider will fetch proxy lists from URL(s)"
     fi
 
-    # File-based: validate the path exists before provider tries to load it
+    # File-based: validate the path exists and is non-empty before provider tries to load it
     if [ -n "${PROXY_FILE:-}" ]; then
-        if [ -f "$PROXY_FILE" ]; then
+        if [ -s "$PROXY_FILE" ]; then
             log "[INFO] PROXY_FILE=$PROXY_FILE found; provider will load proxies from file"
+        elif [ -f "$PROXY_FILE" ]; then
+            log "[ERROR] PROXY_FILE=$PROXY_FILE exists but is empty (need one ip:port:user:pass per line)"
+            return 1
         else
-            log "[WARN] PROXY_FILE=$PROXY_FILE set but file not found — provider will exit fatally"
+            log "[ERROR] PROXY_FILE=$PROXY_FILE set but file not found"
+            return 1
         fi
+    elif [ -z "${PROXY_URL:-}" ]; then
+        log "[WARN] No PROXY_URL or PROXY_FILE set — running with direct connection only"
     fi
 }
 
@@ -162,13 +168,13 @@ func_start_provider_jwt(){
 if [ "$BUILD" = "jwt" ]; then
   func_get_architecture
   func_report_identity
-  func_check_proxy
+  func_check_proxy || exit 1
   func_start_provider_jwt
 else
   func_get_architecture
   func_report_identity
   func_check_credentials
+  func_check_proxy || exit 1
   func_do_login
-  func_check_proxy
   func_start_provider
 fi
