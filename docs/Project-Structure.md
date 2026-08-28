@@ -12,7 +12,6 @@ urnetwork-3.23-fix/
 ├── provider/                     # Provider CLI binary
 │   ├── main.go                   # Entrypoint: auth / provide / auth-provide commands
 │   ├── proxy_health_log.go       # Per-proxy health state machine and dead-proxy detection
-│   ├── proxy_slow_retry.go       # Slow-retry state: 24h daily gate, 14-day drop ceiling, persistence
 │   ├── proxy_reload.go           # SIGHUP-triggered hot-reload of proxy list
 │   ├── proxy_state.go            # In-memory proxy registry with startup stagger
 │   ├── proxy_benchmark.go        # Optional per-proxy SOCKS5 latency probes
@@ -47,10 +46,6 @@ urnetwork-3.23-fix/
 ├── docker/                       # Docker startup scripts
 │   ├── scripts/                  # start_jwt.sh, start_stable.sh, start_nightly.sh, urnet-tools.sh
 │   └── ...                       # Selected by BUILD env var at container start
-│
-├── pelican/                      # Pelican game-server panel egg
-│   ├── egg-urnetwork-323fix.json # PLCN_v3 egg definition (BUILD, USER_AUTH, PASSWORD, AUTHCODE)
-│   └── README.md                 # Panel deployment guide, env vars, PELICAN-gated updates
 │
 ├── workers/                      # Cloudflare Worker sources (dl.fullbars.xyz + friends)
 │   ├── dl/                       # Script proxy + install.fullbars.xyz smart dispatcher/landing page
@@ -92,7 +87,6 @@ urnetwork-3.23-fix/
 │   ├── Proxy-Management.md
 │   ├── Proxy-URL-Sources.md
 │   ├── Traffic-Amplification.md
-│   ├── Adding-Proxies.md
 │   ├── Troubleshooting.md
 │   └── design/                   # Internal design docs (proxy health, hot-reload, bandwidth)
 │
