@@ -3207,11 +3207,6 @@ func provide(opts docopt.Opts) {
 
 	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
 	proxyFile, _ := opts.String("--proxy_file")
-	// Also accept PROXY_FILE env var (for Docker/Pelican where CLI flags
-	// cannot be set by the user — the env var is the only knob).
-	if proxyFile == "" {
-		proxyFile = os.Getenv("PROXY_FILE")
-	}
 	var allProxySettings []*connect.ProxySettings
 	if proxyFile != "" {
 		settings, err := readProxySettingsFromFile(proxyFile)
