@@ -50,7 +50,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB | 2 MiB |
+| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 128 KiB | 2 MiB | 2 MiB | 2 MiB | 2 MiB |
 | `ContractTransferByteSeqScale` | 4 | 3 | 4 | 4 | 3 | 2 | 3 |
 | `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* | dynamic* |
 | `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s | 60 s |
