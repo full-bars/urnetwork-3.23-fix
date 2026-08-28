@@ -141,13 +141,13 @@ docker run -d \
 | Flag | Env var | Default | What it controls |
 | :--- | :--- | :--- | :--- |
 | `--proxy_url=<url>` | `PROXY_URL` | — | The live source. Pass multiple times (or comma-separate the env var) for more than one source. |
-| `--proxy_url_refresh=<duration>` | `PROXY_URL_REFRESH` | `15m` | How often to fetch and add new entries. |
+| `--proxy_url_refresh=<duration>` | `PROXY_URL_REFRESH` | `1h` | How often to fetch and add new entries. |
 | `--proxy_url_max=<n>` | `PROXY_URL_MAX` | unlimited | Caps total URL-sourced proxies. Once hit, new entries are skipped until cleanup or restart frees room — existing proxies are never evicted to make space. |
-| `--proxy_dead_cleanup_scope=url\|all\|none` | `PROXY_DEAD_CLEANUP_SCOPE` | `none` | Which proxies the **automatic** daily cleanup is allowed to remove. `none` disables it entirely (manual `proxy remove-dead` still works regardless). |
-| `--proxy_dead_cleanup_interval=<duration>` | `PROXY_DEAD_CLEANUP_INTERVAL` | `24h` | How often the automatic cleanup runs, when scope isn't `none`. |
+| `--proxy_dead_cleanup_scope=url\|all\|none` | `PROXY_DEAD_CLEANUP_SCOPE` | `url` | Which proxies the **automatic** cleanup is allowed to remove. `url` (default) means only URL-sourced dead proxies are cleaned. `none` disables it entirely. `all` treats every source the same. Manual `proxy remove-dead` always works regardless. |
+| `--proxy_dead_cleanup_interval=<duration>` | `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | How often the automatic cleanup runs, when scope isn't `none`. |
 
 > [!TIP]
-> **If you're pulling from a free/public list:** set `--proxy_dead_cleanup_scope=url`. That way the provider keeps adding fresh entries every 15 minutes and quietly retires ones that never panned out once a day — but it will never touch proxies from your own hand-curated file.
+> **If you're pulling from a free/public list:** the default `url` scope is what you want — the provider keeps adding fresh entries on the refresh interval and quietly retires ones that never panned out, but it will never touch proxies from your own hand-curated file.
 
 ---
 
@@ -172,8 +172,8 @@ Every proxy is tagged internally with where it came from: `url`, `file`, or `int
 
 | Scope | Behavior |
 | :--- | :--- |
-| `none` (default) | Automatic cleanup never runs. You prune dead proxies yourself with `urnet-tools proxy remove-dead`. |
-| `url` | Automatic cleanup only ever removes dead proxies that came from a `--proxy_url` source. Your file/`proxy add` entries are never touched automatically. |
+| `none` | Automatic cleanup never runs. You prune dead proxies yourself with `urnet-tools proxy remove-dead`. |
+| `url` (default) | Automatic cleanup only ever removes dead proxies that came from a `--proxy_url` source. Your file/`proxy add` entries are never touched automatically. |
 | `all` | Automatic cleanup treats every source the same — equivalent to running `proxy remove-dead --all` once a day. |
 
 Manual `urnet-tools proxy remove-dead` is unaffected by this setting in every case — it always lets you choose interactively, regardless of source.
@@ -197,7 +197,7 @@ Each URL-sourced address now gets an **escalating per-address backoff** after it
 | 7th | 16h |
 | 8th+ | 24h (capped) |
 
-After **10 give-up cycles**, the address is **permanently evicted**: removed from the URL cache and written to a blacklist persisted in `proxy_url.json`. Blacklisted addresses are skipped at the only add path (`mergeProxyURLEntries`), so a hopeless proxy can never re-enter the auth lottery — even across provider restarts or if the source list keeps republishing it.
+After **4 give-up cycles**, the address is **permanently evicted**: removed from the URL cache and written to a blacklist persisted in `proxy_url.json`. Blacklisted addresses are skipped at the only add path (`mergeProxyURLEntries`), so a hopeless proxy can never re-enter the auth lottery — even across provider restarts or if the source list keeps republishing it.
 
 > [!NOTE]
 > Eviction is permanent and survives restarts. If a previously-blacklisted address genuinely comes back to life (e.g. the upstream fixes the password), remove it from the `Blacklist` map in `proxy_url.json` and restart, or it will keep being skipped.
@@ -243,4 +243,4 @@ The fetch cycle is skipped with a logged warning. Already-added proxies from tha
 `proxy clear` (which calls `proxy remove --all`) now wipes the entire `proxy_url.json` — cache, blacklist, and source URLs — alongside the internal config and `proxy.state`. After a clear, no URL-sourced proxies will be fetched unless a source is re-added via `urnet-tools proxy add-source <url>`. This ensures a clean slate when you want only the proxies you explicitly add.
 
 **Does this validate proxies before adding them?**
-No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 10 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
+No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 4 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
