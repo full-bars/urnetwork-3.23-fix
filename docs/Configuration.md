@@ -38,10 +38,10 @@ Quick jump:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PROXY_URL` | - | Live proxy list URL, fetched and merged on an interval. Comma-separate for multiple sources. See [Proxy URL Sources](Proxy-URL-Sources.md). |
-| `PROXY_URL_REFRESH` | `15m` | How often `PROXY_URL` is re-fetched to add new entries. |
+| `PROXY_URL_REFRESH` | `1h` | How often `PROXY_URL` is re-fetched to add new entries. |
 | `PROXY_URL_MAX` | `500` | Caps total proxies sourced from `PROXY_URL`. `0` = unlimited. |
-| `PROXY_DEAD_CLEANUP_SCOPE` | `url` | `none`, `url`, or `all`: which sources the automatic dead-proxy cleanup may touch. |
-| `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope is not `none` (shrinks under pressure when self-heal is on). |
+| `PROXY_DEAD_CLEANUP_SCOPE` | `url` | `none`, `url`, or `all`: which proxies the automatic dead-proxy cleanup may touch. Default `url` means only URL-sourced dead proxies are cleaned up automatically. |
+| `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope is not `none` (shrinks under pressure when self-heal is on). The reaper runs this often to sweep dead proxies from the allowed sources. |
 
 ### 🩹 Self-Healing & Resource Pressure
 

@@ -14,7 +14,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | | Upstream | This fork |
 | :--- | :--- | :--- |
 | Control-plane dial visibility | Debug level 2 (silent) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
-| Initial contract size | 16 KiB | Min 256 KiB (lowmem), 2 MiB (performance), tunable per profile |
+| Initial contract size | 16 KiB | 128 KiB (lowmem), 256 KiB (balanced), 2 MiB (performance+) |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
 | Dead proxy handling | Retry forever (15min loop, no ceiling) | 24h daily retry, 14-day drop ceiling with persisted state |
