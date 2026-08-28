@@ -16,6 +16,10 @@ Pelican panel support for the hardened provider image.
 | `USER_AUTH` | user-editable | account email/phone (stable + nightly) |
 | `PASSWORD` | admin-only | account password (stable + nightly) |
 | `AUTHCODE` | admin-only | auth code from ur.io (`BUILD=jwt`) |
+| `PROXY_URL` | user-editable | comma-separated URLs to proxy lists |
+| `PROXY_FILE` | user-editable | path to mounted proxy file (e.g. `/app/proxies.txt`) |
+| `PROXY_URL_REFRESH` | user-editable | re-fetch interval (default `1h`) |
+| `PROXY_URL_MAX` | user-editable | max proxies from URLs (default `500`) |
 | `PELICAN` | hidden, fixed `yes` | routes the entrypoint into panel mode |
 | `ENABLE_VNSTAT` | hidden, fixed `false` | see security note below |
 | `ENABLE_IP_CHECKER` | hidden, fixed `false` | diagnostic only |
@@ -27,6 +31,36 @@ Auth modes:
   (3 crashes ⇒ wipe session and re-auth).
 - `BUILD=jwt`: single-shot `auth-provide "$AUTHCODE" -f`. Generate the code at
   https://ur.io and paste it into the `Auth code` variable.
+
+## Proxies
+
+The provider needs a source of SOCKS5 proxies to route traffic through. There are two ways to add proxies in a Pelican deployment:
+
+### URL-sourced proxies (recommended)
+
+1. In the panel, go to **Startup** → edit `PROXY_URL`
+2. Paste one or more comma-separated URLs pointing to proxy lists:
+   ```
+   https://example.com/proxies.txt, https://another.io/socks5.txt
+   ```
+3. The provider fetches the lists at startup and auto-refreshes every `PROXY_URL_REFRESH` (default 1h)
+4. To change URLs: edit the var in the panel → Pelican restarts the container
+
+The list format is one proxy per line: `host:port:user:pass` or `socks5://host:port`.
+
+### File-based proxies
+
+1. Mount your proxy list as a volume: `-v /path/to/proxies.txt:/app/proxies.txt`
+2. Set `PROXY_FILE` to the container path (e.g. `/app/proxies.txt`)
+3. The provider reads the file at startup
+
+To update file-based proxies: edit the file on the host, then restart the server from the panel.
+
+### Hot-reload
+
+- URL-sourced proxies auto-refresh on the configured interval — no restart needed
+- File-based proxies require a container restart to pick up changes
+- At runtime: `docker exec <container> urnet-tools proxy refresh` forces an immediate URL re-fetch
 
 ## Updates
 
