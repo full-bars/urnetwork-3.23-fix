@@ -45,6 +45,9 @@ func DefaultDohSettings() *DohSettings {
 		MinCacheTtl:              30 * time.Second,
 		CacheMaxEntries:          4096,
 		MaxConcurrentResolutions: 64,
+		// staggered hedge: a slow/dead primary fires one redundant server per
+		// 750ms wave instead of all at once; a winning answer stops the rest.
+		DohServerStagger: 750 * time.Millisecond,
 		DnsResolverSettings:      DefaultDnsResolverSettings(),
 	}
 }
@@ -94,7 +97,13 @@ type DohSettings struct {
 	// MaxConcurrentResolutions bounds in-flight resolutions (DohCache.resolveSem) so a burst
 	// or flood of distinct names cannot fan out unbounded. 0 uses a sane default.
 	MaxConcurrentResolutions int
-	DnsResolverSettings      *DnsResolverSettings
+	// DohServerStagger delays launching each additional DoH server within a fan-out: the first
+	// server is queried immediately and each next one only if no answer has arrived within this
+	// interval, so a healthy primary answers before the redundant servers fire (saving tunnel
+	// bandwidth and parallel streams on the shared h2 connection). 0 fans out to all servers at
+	// once (the old behavior). A winning server's answer stops further launches regardless.
+	DohServerStagger time.Duration
+	DnsResolverSettings *DnsResolverSettings
 }
 
 // ResolverIp returns the network family string to pass to
@@ -652,17 +661,49 @@ func dohQueryWithClientResult(
 		return newDohQueryResult()
 	}
 	receiveResults := make(chan *dohQueryResult, queryCount)
-	for _, server := range dohServers {
-		for _, domain := range domains {
-			go HandleError(func() {
-				result := query(server, domain)
+	// stop launches the moment a winning answer arrives (fastest-record-wins):
+	// pending goroutines finish naturally, their results are discarded via select.
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopLaunching := func() { stopOnce.Do(func() { close(stop); queryCancel() }) }
+	defer stopLaunching()
+
+	stagger := settings.DohServerStagger
+	// launch all (server, domain) pairs, one server per stagger wave; a prior
+	// wave's answer (or any winning record) closes stop so later servers never fire.
+	launchCtx, launchCancel := context.WithCancel(queryCtx)
+	defer launchCancel()
+	go HandleError(func() {
+		for i := range dohServers {
+			if 0 < i && 0 < stagger {
 				select {
-				case receiveResults <- result:
-				case <-queryCtx.Done():
+				case <-time.After(stagger):
+				case <-stop:
+					return
+				case <-launchCtx.Done():
+					return
 				}
-			})
+			}
+			server := dohServers[i]
+			for _, domain := range domains {
+				select {
+				case <-stop:
+					return
+				case <-launchCtx.Done():
+					return
+				default:
+				}
+				go HandleError(func() {
+					result := query(server, domain)
+					select {
+					case receiveResults <- result:
+					case <-stop:
+					case <-launchCtx.Done():
+					}
+				})
+			}
 		}
-	}
+	})
 
 	endTime := time.Now().Add(settings.RequestTimeout)
 	mergedResult := newDohQueryResult()
@@ -690,6 +731,7 @@ func dohQueryWithClientResult(
 			// authoritative miss is not short-circuited — keep collecting so a filtering
 			// resolver's NXDOMAIN can't override a server that resolves the name.
 			if 0 < len(mergedResult.AddrTtls) {
+				stopLaunching()
 				return &dohQueryResult{
 					AddrTtls: mergedResult.AddrTtls,
 				}

@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"slices"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"testing"
 
@@ -114,4 +116,160 @@ func TestDohCache(t *testing.T) {
 		}
 	}
 
+}
+
+// TestDohStaggeredLaunch verifies P1-1 + P1-2: the fan-out launches the first
+// server immediately and only fires later servers after DohServerStagger, and a
+// winning answer stops further launches. fast server answers <1ms; slow server
+// sleeps 2s. With 500ms stagger the slow server must NOT be hit.
+func TestDohStaggeredLaunch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var fastHits, slowHits atomic.Int32
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fastHits.Add(1)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "1.1.1.1"}},
+		})
+	}))
+	defer fast.Close()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowHits.Add(1)
+		time.Sleep(2 * time.Second)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "2.2.2.2"}},
+		})
+	}))
+	defer slow.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 5 * time.Second
+	settings.DohServerStagger = 500 * time.Millisecond
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: fast.URL, Format: DohFormatJson},
+		{Url: slow.URL, Format: DohFormatJson},
+	}
+
+	testIp, _ := netip.ParseAddr("1.1.1.1")
+	ips := DohQuery(ctx, 4, "A", settings, "staggered.bringyour.com")
+	if len(ips) == 0 {
+		t.Fatal("staggered query returned no answers")
+	}
+	if _, ok := ips[testIp]; !ok {
+		t.Fatalf("staggered query answers %v missing winning ip %v", ips, testIp)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if slowHits.Load() != 0 {
+		t.Fatalf("slow server was hit %d times; staggered launch + stop-on-win should have prevented it", slowHits.Load())
+	}
+	if fastHits.Load() == 0 {
+		t.Fatal("fast server was never hit")
+	}
+}
+
+// TestDohStaggerDisabled preserves the old behavior: with DohServerStagger=0,
+// every server is launched at once (both fast and slow servers get hit).
+func TestDohStaggerDisabled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var fastHits, slowHits atomic.Int32
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fastHits.Add(1)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "1.1.1.1"}},
+		})
+	}))
+	defer fast.Close()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowHits.Add(1)
+		time.Sleep(2 * time.Second)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "2.2.2.2"}},
+		})
+	}))
+	defer slow.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 5 * time.Second
+	settings.DohServerStagger = 0
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: fast.URL, Format: DohFormatJson},
+		{Url: slow.URL, Format: DohFormatJson},
+	}
+
+	DohQuery(ctx, 4, "A", settings, "nostagger.bringyour.com")
+	if fastHits.Load() == 0 {
+		t.Fatal("fast server was never hit")
+	}
+	if slowHits.Load() == 0 {
+		t.Fatal("slow server was not launched with stagger disabled")
+	}
+}
+
+// TestDohSingleFlight verifies P1-3: concurrent identical queries coalesce onto
+// one resolution (single-flight). A burst of 16 concurrent identical queries
+// must hit the underlying DoH server exactly once.
+func TestDohSingleFlight(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "1.1.1.1"}},
+		})
+	}))
+	defer server.Close()
+
+	settings := DefaultDohSettings()
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: server.URL, Format: DohFormatJson},
+	}
+	dohCache := NewDohCache(settings)
+
+	const n = 16
+	var wg sync.WaitGroup
+	results := make([][]netip.Addr, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = dohCache.Query(ctx, "A", "coalesce.bringyour.com")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if len(r) == 0 {
+			t.Fatalf("caller %d got no answer", i)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 DoH server hit (single-flight), got %d", got)
+	}
 }
