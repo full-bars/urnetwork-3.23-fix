@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -187,8 +188,9 @@ func TestDohStaggerDisabled(t *testing.T) {
 
 	var fastHits, slowHits atomic.Int32
 
-	// both servers answer immediately so neither wins before the launcher loop
-	// completes — proving the all-at-once (no-delay) launch path
+	// both servers are dispatched at once (stagger=0); fast answers instantly,
+	// slow answers after a short sleep. the slow request is in flight before the
+	// winner cancels it, proving the all-at-once (no inter-launch delay) path.
 	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fastHits.Add(1)
 		json.NewEncoder(w).Encode(DohResponse{
@@ -200,6 +202,7 @@ func TestDohStaggerDisabled(t *testing.T) {
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slowHits.Add(1)
+		time.Sleep(300 * time.Millisecond)
 		json.NewEncoder(w).Encode(DohResponse{
 			Status: 0,
 			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "2.2.2.2"}},
@@ -219,7 +222,11 @@ func TestDohStaggerDisabled(t *testing.T) {
 		{Url: slow.URL, Format: DohFormatJson},
 	}
 
+	start := time.Now()
 	DohQuery(ctx, 4, "A", settings, "nostagger.bringyour.com")
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stagger disabled should launch all-at-once; took %v (expected <2s)", elapsed)
+	}
 	if fastHits.Load() == 0 {
 		t.Fatal("fast server was never hit")
 	}
@@ -576,4 +583,97 @@ func TestDohServeStale(t *testing.T) {
 	if got := cache.staleServeCount.Load(); got == 0 {
 		t.Fatal("staleServeCount should be > 0 after a served-stale lookup")
 	}
+}
+
+// TestDohMemoryBudget verifies the per-query memory reservation: with a budget
+// of exactly one query's worth, a second concurrent query must block until the
+// first releases, then both resolve (no deadlock, no silent failure).
+func TestDohMemoryBudget(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "1.1.1.1"}},
+		})
+	}))
+	defer server.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 2 * time.Second
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: server.URL, Format: DohFormatJson},
+	}
+	// budget exactly one concurrent query
+	settings.MemoryTarget = NewByteBudget(dohQueryReserveByteCount)
+	cache := NewDohCache(settings)
+
+	// two overlapping queries on the same name coalesce (single-flight), so use
+	// two distinct names to force two real reservations
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errc := make(chan error, 2)
+	for _, name := range []string{"a.bringyour.com", "b.bringyour.com"} {
+		go func(n string) {
+			defer wg.Done()
+			addrs, auth := cache.QueryResult(ctx, "A", n)
+			if len(addrs) != 1 || !auth {
+				errc <- fmt.Errorf("name %s: got addrs=%v auth=%v", n, addrs, auth)
+			}
+		}(name)
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestDohMemoryBudgetShed verifies that when the budget is full and the caller's
+// ctx ends, Acquire returns false and the query sheds (returns empty) instead of
+// blocking forever.
+func TestDohMemoryBudgetShed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// slow server so the first query holds the budget across the shed window
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		json.NewEncoder(w).Encode(DohResponse{
+			Status: 0,
+			Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 300, Data: "1.1.1.1"}},
+		})
+	}))
+	defer server.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 5 * time.Second
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: server.URL, Format: DohFormatJson},
+	}
+	settings.MemoryTarget = NewByteBudget(dohQueryReserveByteCount) // one slot
+	cache := NewDohCache(settings)
+
+	// hold the single slot with a slow query
+	go cache.QueryResult(ctx, "A", "hold.bringyour.com")
+
+	// the budget is full; a second query with an already-cancelled ctx must shed
+	shedCtx, shedCancel := context.WithCancel(context.Background())
+	shedCancel()
+	addrs, auth := cache.QueryResult(shedCtx, "A", "shed.bringyour.com")
+	if len(addrs) != 0 {
+		t.Fatalf("shed query must return empty (budget full + ctx done), got %v", addrs)
+	}
+	_ = auth
 }
