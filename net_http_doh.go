@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,6 +105,11 @@ type DohSettings struct {
 	// bandwidth and parallel streams on the shared h2 connection). 0 fans out to all servers at
 	// once (the old behavior). A winning server's answer stops further launches regardless.
 	DohServerStagger time.Duration
+	// ServerStatsSeed, when set, pre-loads the per-server success scores (url -> score, clamped
+	// to dohSeedMaxScore) at construction so the weighted fan-out order starts from the last
+	// session's experience instead of uniform-random. The cache's scores() exports the live
+	// view for the owner to persist and pass back here on restart.
+	ServerStatsSeed map[string]float64
 	DnsResolverSettings *DnsResolverSettings
 }
 
@@ -225,6 +232,10 @@ type DohCache struct {
 	// by stateLock.
 	inflight map[DohKey]*dohFlight
 
+	// stats ranks DoH servers by recent success so the fan-out order favors fast/recently
+	// healthy servers; shared by the remote + local clients (one DohCache view).
+	stats *serverStats
+
 	// bounds concurrent resolutions so a flood of distinct names can't fan out unbounded
 	resolveSem chan struct{}
 }
@@ -323,6 +334,9 @@ func NewDohCache(settings *DohSettings) *DohCache {
 		maxResolutions = 64
 	}
 
+	stats := newServerStats()
+	stats.seed(settings.ServerStatsSeed)
+
 	return &DohCache{
 		httpClient:            httpClientWithSettings(settings),
 		localHttpClient:       httpClientWithDialer(settings, settings.NetDialer().DialContext),
@@ -332,8 +346,17 @@ func NewDohCache(settings *DohSettings) *DohCache {
 		log:                   loggerOrDefault(settings.Log),
 		queryResultExpiration: map[DohKey]*DohResult{},
 		inflight:              map[DohKey]*dohFlight{},
+		stats:                 stats,
 		resolveSem:            make(chan struct{}, maxResolutions),
 	}
+}
+
+// ServerScores returns the per-server success scores driving the fan-out order,
+// for the owner to persist and pass back as ServerStatsSeed on the next
+// construction (the remote and local clients share one stats table, so this is
+// the cache's full view).
+func (self *DohCache) ServerScores() map[string]float64 {
+	return self.stats.scores()
 }
 
 // pruneCacheLocked prunes the result cache to its configured size bound and
@@ -447,7 +470,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	minCacheTtl := self.settings.MinCacheTtl
 
 	if self.settings.DnsResolverSettings.EnableRemoteDoh {
-		queryResult := dohQueryWithClientResult(ctx, self.httpClient, remoteDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
+		queryResult := dohQueryWithClientResult(ctx, self.httpClient, self.stats, remoteDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
 
 		for addr, ttlSeconds := range queryResult.AddrTtls {
 			addrExpirations[addr] = now.Add(max(time.Duration(ttlSeconds)*time.Second, minCacheTtl))
@@ -458,7 +481,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	}
 
 	if len(addrExpirations) == 0 && self.settings.DnsResolverSettings.EnableLocalDoh {
-		queryResult := dohQueryWithClientResult(ctx, self.localHttpClient, localDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
+		queryResult := dohQueryWithClientResult(ctx, self.localHttpClient, self.stats, localDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
 
 		for addr, ttlSeconds := range queryResult.AddrTtls {
 			addrExpirations[addr] = now.Add(max(time.Duration(ttlSeconds)*time.Second, minCacheTtl))
@@ -576,7 +599,7 @@ func DohQueryWithClient(
 	settings *DohSettings,
 	domains ...string,
 ) map[netip.Addr]int {
-	return dohQueryWithClientResult(ctx, httpClient, remoteDohServers(settings, ipVersion), ipVersion, recordType, settings, domains...).AddrTtls
+	return dohQueryWithClientResult(ctx, httpClient, nil, remoteDohServers(settings, ipVersion), ipVersion, recordType, settings, domains...).AddrTtls
 }
 
 func dohServersFor(ipv4 []DohServer, ipv6 []DohServer, ipVersion int) []DohServer {
@@ -614,6 +637,241 @@ func localDohServers(settings *DohSettings, ipVersion int) []DohServer {
 	return append(servers, dohServersFor(legacyDohServers(rs.LocalDohUrlsIpv4), legacyDohServers(rs.LocalDohUrlsIpv6), ipVersion)...)
 }
 
+// serverStats tracks each DoH server's recent success rate over trailing time
+// windows so the fan-out order favors servers that have resolved most recently
+// and most often. A dead server sinks to the exploration floor; a recovered one
+// climbs back as live successes accrue. P2-2 (ported from upstream).
+type serverStats struct {
+	lock  sync.Mutex
+	byUrl map[string]*serverStat
+}
+
+func newServerStats() *serverStats {
+	return &serverStats{byUrl: map[string]*serverStat{}}
+}
+
+// dohServerWindows are the trailing spans over which each server's successful
+// resolutions are counted (parallel index into serverStat.windows).
+var dohServerWindows = []time.Duration{
+	5 * time.Minute,
+	15 * time.Minute,
+	60 * time.Minute,
+}
+
+// dohServerWeightFloor keeps every server a small chance of being tried first
+// (exploration), so a server that recovers can climb back even after a streak
+// of failures.
+const dohServerWeightFloor = 0.05
+
+// dohSeedMaxScore clamps a persisted per-server score on seed: high enough to
+// make the last session's fastest server the clear first pick, low enough that
+// a few live successes on another server can overturn a stale ordering.
+const dohSeedMaxScore = 8.0
+
+// serverStat holds one tokenBucket per dohServerWindows span (parallel index),
+// counting the server's successful resolutions.
+type serverStat struct {
+	windows []tokenBucket
+}
+
+// tokenBucket is a sliding-window-counter approximation over a fixed span:
+// current counts events in the current interval; previous the interval before
+// it. The trailing-window estimate prorates previous by how much of it still
+// falls within the last span.
+type tokenBucket struct {
+	epoch    int64
+	current  float64
+	previous float64
+}
+
+// roll advances the bucket to the interval containing now: a single-interval
+// step shifts current->previous; a longer gap clears both (events fell out).
+func (self *tokenBucket) roll(span time.Duration, now time.Time) {
+	epoch := now.UnixNano() / int64(span)
+	switch {
+	case epoch == self.epoch:
+	case epoch == self.epoch+1:
+		self.previous = self.current
+		self.current = 0
+	default:
+		self.previous = 0
+		self.current = 0
+	}
+	self.epoch = epoch
+}
+
+func (self *tokenBucket) add(span time.Duration, now time.Time, n float64) {
+	self.roll(span, now)
+	self.current += n
+}
+
+// estimate returns the prorated event count over the trailing span ending at now.
+func (self *tokenBucket) estimate(span time.Duration, now time.Time) float64 {
+	self.roll(span, now)
+	elapsed := now.UnixNano() - self.epoch*int64(span)
+	frac := float64(int64(span)-elapsed) / float64(span)
+	return self.current + self.previous*frac
+}
+
+// record credits a server with a successful resolution (ok == it returned
+// records or an authoritative no-record answer); failures earn nothing and
+// simply let the buckets decay.
+func (self *serverStats) record(url string, ok bool) {
+	self.recordAt(url, ok, time.Now())
+}
+
+func (self *serverStats) recordAt(url string, ok bool, now time.Time) {
+	if self == nil || !ok {
+		return
+	}
+	self.lock.Lock()
+	defer self.lock.Unlock()
+
+	st := self.byUrl[url]
+	if st == nil {
+		st = &serverStat{windows: make([]tokenBucket, len(dohServerWindows))}
+		self.byUrl[url] = st
+	}
+	for k, span := range dohServerWindows {
+		st.windows[k].add(span, now, 1)
+	}
+}
+
+// seed pre-loads each server's windows with a persisted score (clamped to
+// dohSeedMaxScore), spread evenly across the windows so the summed score
+// matches and decays on the normal trailing-window schedule. Used at
+// construction to carry the fan-out ordering across a restart.
+func (self *serverStats) seed(scores map[string]float64) {
+	if self == nil || len(scores) == 0 {
+		return
+	}
+	now := time.Now()
+	self.lock.Lock()
+	defer self.lock.Unlock()
+	for url, score := range scores {
+		if score <= 0 {
+			continue
+		}
+		score = min(score, dohSeedMaxScore)
+		st := self.byUrl[url]
+		if st == nil {
+			st = &serverStat{windows: make([]tokenBucket, len(dohServerWindows))}
+			self.byUrl[url] = st
+		}
+		for k, span := range dohServerWindows {
+			st.windows[k].add(span, now, score/float64(len(dohServerWindows)))
+		}
+	}
+}
+
+// scores returns each known server's current summed trailing-window success
+// estimate (the fan-out order weights), for the owner to persist and pass back
+// as ServerStatsSeed on the next construction. Zero-score servers are omitted.
+func (self *serverStats) scores() map[string]float64 {
+	if self == nil {
+		return nil
+	}
+	now := time.Now()
+	self.lock.Lock()
+	defer self.lock.Unlock()
+	scores := map[string]float64{}
+	for url := range self.byUrl {
+		if score := self.scoreLocked(url, now); 0 < score {
+			scores[url] = score
+		}
+	}
+	return scores
+}
+
+// scoreLocked sums a server's trailing-window success estimates; untried = 0.
+func (self *serverStats) scoreLocked(url string, now time.Time) float64 {
+	st := self.byUrl[url]
+	if st == nil {
+		return 0
+	}
+	var score float64
+	for k, span := range dohServerWindows {
+		score += st.windows[k].estimate(span, now)
+	}
+	return score
+}
+
+// order returns urls in a weighted-random permutation: a server's weight is its
+// summed recent success score plus an exploration floor. Uses the
+// Efraimidis–Spirakis weighted-permutation method (key = u^(1/w); higher weight
+// -> earlier). A nil *serverStats yields a uniform-random shuffle.
+func (self *serverStats) order(urls []string) []string {
+	return self.orderAt(urls, time.Now())
+}
+
+func (self *serverStats) orderAt(urls []string, now time.Time) []string {
+	ordered := append([]string{}, urls...)
+	if len(ordered) <= 1 {
+		return ordered
+	}
+	if self == nil {
+		mathrand.Shuffle(len(ordered), func(i, j int) {
+			ordered[i], ordered[j] = ordered[j], ordered[i]
+		})
+		return ordered
+	}
+
+	type weighted struct {
+		url string
+		key float64
+	}
+	ws := make([]weighted, len(ordered))
+	self.lock.Lock()
+	for i, url := range ordered {
+		weight := dohServerWeightFloor + self.scoreLocked(url, now)
+		u := mathrand.Float64()
+		if u <= 0 {
+			u = math.SmallestNonzeroFloat64
+		}
+		ws[i] = weighted{url: url, key: math.Pow(u, 1/weight)}
+	}
+	self.lock.Unlock()
+
+	sort.Slice(ws, func(i, j int) bool {
+		return ws[i].key > ws[j].key
+	})
+	for i := range ws {
+		ordered[i] = ws[i].url
+	}
+	return ordered
+}
+
+// urlsForServers returns the server URLs in order, for the weighted-permutation
+// ordering step.
+func urlsForServers(servers []DohServer) []string {
+	urls := make([]string, len(servers))
+	for i, s := range servers {
+		urls[i] = s.Url
+	}
+	return urls
+}
+
+// serversByUrl reorders servers to match the given url order (the output of
+// serverStats.order), preserving each server's Format tag.
+func serversByUrl(servers []DohServer, orderedUrls []string) []DohServer {
+	byUrl := make(map[string]DohServer, len(servers))
+	for _, s := range servers {
+		byUrl[s.Url] = s
+	}
+	ordered := make([]DohServer, 0, len(orderedUrls))
+	for _, u := range orderedUrls {
+		if s, ok := byUrl[u]; ok {
+			ordered = append(ordered, s)
+		}
+	}
+	for _, s := range servers {
+		if _, ok := byUrl[s.Url]; !ok {
+			ordered = append(ordered, s)
+		}
+	}
+	return ordered
+}
+
 type dohQueryResult struct {
 	AddrTtls map[netip.Addr]int
 	Miss     bool
@@ -628,6 +886,7 @@ func newDohQueryResult() *dohQueryResult {
 func dohQueryWithClientResult(
 	ctx context.Context,
 	httpClient *http.Client,
+	stats *serverStats,
 	dohServers []DohServer,
 	ipVersion int,
 	recordType string,
@@ -665,16 +924,30 @@ func dohQueryWithClientResult(
 	// pending goroutines finish naturally, their results are discarded via select.
 	stop := make(chan struct{})
 	var stopOnce sync.Once
-	stopLaunching := func() { stopOnce.Do(func() { close(stop); queryCancel() }) }
+	// stopLaunching only stops the launcher from firing further servers once a
+	// winning answer arrives. In-flight queries are NOT cancelled: they run to
+	// completion (bounded by their own RequestTimeout) so they are scored
+	// correctly — cancelling them would mis-record a perfectly-good server as a
+	// failure and drop it from ServerScores(). The buffered receiveResults (size
+	// queryCount) means every outstanding send completes without blocking.
+	stopLaunching := func() { stopOnce.Do(func() { close(stop) }) }
 	defer stopLaunching()
 
+	// weighted-random fan-out order: fast/recently-successful servers tend to
+	// fire first; a dead server sinks to the exploration floor. stats may be nil
+	// (one-shot queries) -> uniform-random order via order().
+	orderedServers := dohServers
+	if len(dohServers) > 1 && stats != nil {
+		orderedServers = serversByUrl(dohServers, stats.order(urlsForServers(dohServers)))
+	}
+
 	stagger := settings.DohServerStagger
-	// launch all (server, domain) pairs, one server per stagger wave; a prior
-	// wave's answer (or any winning record) closes stop so later servers never fire.
+	// launch servers in weighted order, one per stagger wave; a prior wave's
+	// answer (or any winning record) closes stop so later servers never fire.
 	launchCtx, launchCancel := context.WithCancel(queryCtx)
 	defer launchCancel()
 	go HandleError(func() {
-		for i := range dohServers {
+		for i := range orderedServers {
 			if 0 < i && 0 < stagger {
 				select {
 				case <-time.After(stagger):
@@ -684,7 +957,6 @@ func dohQueryWithClientResult(
 					return
 				}
 			}
-			server := dohServers[i]
 			for _, domain := range domains {
 				select {
 				case <-stop:
@@ -693,8 +965,15 @@ func dohQueryWithClientResult(
 					return
 				default:
 				}
+				// capture the exact server for this goroutine: the loop variable is
+				// reused across iterations, so we must not close over it by reference
+				srv := orderedServers[i]
 				go HandleError(func() {
-					result := query(server, domain)
+					result := query(srv, domain)
+					// record server success for future fan-out ordering
+					if stats != nil {
+						stats.record(srv.Url, 0 < len(result.AddrTtls) || result.Miss)
+					}
 					select {
 					case receiveResults <- result:
 					case <-stop:
