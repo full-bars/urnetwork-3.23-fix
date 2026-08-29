@@ -184,7 +184,7 @@ func TestClientJWTStorePruneKeepsMaxBackups(t *testing.T) {
 	store := newClientJWTStore(path)
 
 	for i := 0; i < clientJWTMaxBackups+3; i++ {
-		store.snapshotLocked([]byte(`{"i":` + string(rune('0'+i%10)) + `}`), 1)
+		store.snapshotLocked([]byte(`{"i":`+string(rune('0'+i%10))+`}`), 1)
 		// Distinct timestamps so dedup doesn't collapse them.
 		time.Sleep(1100 * time.Millisecond)
 	}
