@@ -924,13 +924,13 @@ func dohQueryWithClientResult(
 	// pending goroutines finish naturally, their results are discarded via select.
 	stop := make(chan struct{})
 	var stopOnce sync.Once
-	// stopLaunching only stops the launcher from firing further servers once a
-	// winning answer arrives. In-flight queries are NOT cancelled: they run to
-	// completion (bounded by their own RequestTimeout) so they are scored
-	// correctly — cancelling them would mis-record a perfectly-good server as a
-	// failure and drop it from ServerScores(). The buffered receiveResults (size
-	// queryCount) means every outstanding send completes without blocking.
-	stopLaunching := func() { stopOnce.Do(func() { close(stop) }) }
+	// stopLaunching halts further launches AND cancels in-flight losers the
+	// moment a winning answer arrives (fastest-record-wins): a slow or dead
+	// server must not burn its full RequestTimeout after a winner is known.
+	// Cancelling queryCtx does not corrupt scoring: record() only credits
+	// successes (ok==true), and a cancelled loser returns an empty result
+	// (Miss=false) so it is simply not scored, keeping its prior score.
+	stopLaunching := func() { stopOnce.Do(func() { close(stop); queryCancel() }) }
 	defer stopLaunching()
 
 	// weighted-random fan-out order: fast/recently-successful servers tend to
@@ -1005,10 +1005,6 @@ func dohQueryWithClientResult(
 			if result.Miss {
 				mergedResult.Miss = true
 			}
-			// fastest-record-wins: return as soon as any server returns records rather than
-			// waiting for the rest, so a slow or dead server can't delay a successful lookup. an
-			// authoritative miss is not short-circuited — keep collecting so a filtering
-			// resolver's NXDOMAIN can't override a server that resolves the name.
 			if 0 < len(mergedResult.AddrTtls) {
 				stopLaunching()
 				return &dohQueryResult{

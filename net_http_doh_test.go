@@ -489,6 +489,10 @@ func TestDohStatsSeededOrdering(t *testing.T) {
 	settings.DnsResolverSettings.EnableLocalDoh = false
 	settings.DnsResolverSettings.EnableRemoteDns = false
 	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: fast.URL, Format: DohFormatJson},
+		{Url: slow.URL, Format: DohFormatJson},
+	}
 	// seed slow as the clear winner so it leads the fan-out
 	settings.ServerStatsSeed = map[string]float64{slow.URL: 8.0}
 
