@@ -312,10 +312,11 @@ func TestServerStatsTokenBucket(t *testing.T) {
 		t.Fatalf("after second add: want 5, got %v", got)
 	}
 
-	// advance half a span into the third window: previous (2) prorates by 0.5
+	// advance half a span from next: same epoch (101) so no roll; current=2,
+	// previous=3 (carried from the first add). estimate = 2 + 3*0.5 = 3.5.
 	half := next.Add(5 * time.Second)
 	got := b.estimate(span, half)
-	want := 2.0*0.5 + 0.0 // previous=2 prorated to 1.0, current=0
+	want := 2.0 + 3.0*0.5 // 3.5
 	if math.Abs(got-want) > 1e-9 {
 		t.Fatalf("half-span prorate: want %v, got %v", want, got)
 	}
@@ -363,10 +364,11 @@ func TestServerStatsOrderBias(t *testing.T) {
 	bad := "https://8.8.8.8/resolve"
 
 	s := newServerStats()
-	// credit the good server heavily across all windows
-	now := time.Now()
-	for k, span := range dohServerWindows {
-		s.byUrl[good].windows[k].add(span, now, 8)
+	// credit the good server heavily across all windows: use record() which
+	// lazily creates the serverStat entry (direct byUrl access would panic
+	// on a nil entry).
+	for i := 0; i < 8; i++ {
+		s.record(good, true)
 	}
 	// bad server is untried -> only the 0.05 exploration floor
 
