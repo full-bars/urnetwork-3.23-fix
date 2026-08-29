@@ -147,7 +147,7 @@ func (s *clientJWTStore) snapshotLocked(data []byte, count int) {
 		}
 	}
 
-	ts := time.Now().UTC().Format("20060102T150405Z")
+	ts := time.Now().UTC().Format("20060102T150405.000000Z")
 	bak := filepath.Join(dir, fmt.Sprintf("%s-%s.bak", base, ts))
 	// Atomically write via tmp+rename (same as flushLocked) so a crash
 	// mid-write — the exact scenario clientJWTSnapshotMinInterval guards

@@ -3757,6 +3757,11 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	return result.Result.ByClientJwt, nil
 }
 
+// renewClientJWTFn is the injectable renewal entry point. It defaults to the
+// real network-backed renewClientJWT but can be overridden in tests to exercise
+// the renew-on-expiry branch of provideAuth deterministically.
+var renewClientJWTFn = renewClientJWT
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -3824,7 +3829,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				// identities (and their server-side reliability reputation)
 				// survive even when the JWT has aged out of its 24h window.
 				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
-					renewedJwt, renewErr := renewClientJWT(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
 						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
 						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
