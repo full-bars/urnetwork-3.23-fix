@@ -517,3 +517,63 @@ func TestDohStatsSeededOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestDohServeStale verifies RFC 8767 serve-stale: once a record is cached and
+// its TTL expires, a live resolution failure still returns the stale address
+// (so client traffic survives a resolver outage) instead of an empty/SERVFAIL.
+func TestDohServeStale(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// resolver that returns 1.1.1.1 for the first call, then fails hard
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			json.NewEncoder(w).Encode(DohResponse{
+				Status: 0,
+				Answer: []DohAnswer{{Name: r.URL.Query().Get("name"), Type: 1, TTL: 1, Data: "1.1.1.1"}},
+			})
+			return
+		}
+		// second call: resolver is down
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 2 * time.Second
+	settings.MinCacheTtl = 0 // let the 1s TTL actually expire so we can test serve-stale
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: server.URL, Format: DohFormatJson},
+	}
+	cache := NewDohCache(settings)
+
+	// prime: fresh resolution caches 1.1.1.1 (TTL 1s)
+	addrs, authoritative := cache.QueryResult(ctx, "A", "stale.bringyour.com")
+	if !authoritative || len(addrs) != 1 {
+		t.Fatalf("prime query: want authoritative 1 addr, got auth=%v addrs=%v", authoritative, addrs)
+	}
+
+	// let the cached record expire (TTL 1s)
+	time.Sleep(1200 * time.Millisecond)
+
+	// live resolution now fails (resolver returns 500) -> must serve stale
+	staleAddrs, staleAuth := cache.QueryResult(ctx, "A", "stale.bringyour.com")
+	if len(staleAddrs) != 1 {
+		t.Fatalf("serve-stale: expected 1 stale address, got %v (auth=%v)", staleAddrs, staleAuth)
+	}
+	if staleAuth {
+		t.Fatal("serve-stale answer must be marked non-authoritative (auth=false)")
+	}
+	if staleAddrs[0].String() != "1.1.1.1" {
+		t.Fatalf("serve-stale returned wrong address: %v", staleAddrs)
+	}
+	if got := cache.staleServeCount.Load(); got == 0 {
+		t.Fatal("staleServeCount should be > 0 after a served-stale lookup")
+	}
+}

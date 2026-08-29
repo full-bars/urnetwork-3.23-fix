@@ -236,6 +236,11 @@ type DohCache struct {
 	// healthy servers; shared by the remote + local clients (one DohCache view).
 	stats *serverStats
 
+	// staleServeCount counts how many lookups were answered from a recently-expired
+	// cache entry (RFC 8767 serve-stale) because the live resolution failed; a
+	// provider can watch this to see resolver health degrading.
+	staleServeCount atomic.Uint64
+
 	// bounds concurrent resolutions so a flood of distinct names can't fan out unbounded
 	resolveSem chan struct{}
 }
@@ -418,7 +423,12 @@ func (self *DohCache) QueryResult(ctx context.Context, recordType string, domain
 				hitAddrs = r.Addrs()
 				return
 			}
-			delete(self.queryResultExpiration, q)
+			// expired but still within the serve-stale window: keep it so a
+			// failed live resolution can fall back to it (RFC 8767). only
+			// prune it once it ages out of dohStaleServeBound.
+			if !r.staleUsable(now) {
+				delete(self.queryResultExpiration, q)
+			}
 		}
 		// single-flight: lead a new resolution for this key, or join the one already running
 		if existing, ok := self.inflight[q]; ok {
@@ -458,6 +468,18 @@ func (self *DohCache) QueryResult(ctx context.Context, recordType string, domain
 		return nil, false
 	}
 	fl.addrs, fl.authoritative = self.resolve(ctx, q, now)
+	// serve-stale (RFC 8767): a live resolution that failed entirely (no
+	// addresses and not authoritative) should still serve a recently-expired
+	// cached record if we have one, so client traffic keeps flowing through a
+	// resolver outage / exit failover instead of returning SERVFAIL. An
+	// authoritative miss (NXDOMAIN/NODATA) is never served stale.
+	if len(fl.addrs) == 0 && !fl.authoritative {
+		if r := self.queryResultExpiration[q]; r != nil && r.staleUsable(now) {
+			fl.addrs = r.Addrs()
+			fl.authoritative = false
+			self.staleServeCount.Add(1)
+		}
+	}
 	return fl.addrs, fl.authoritative
 }
 
@@ -667,6 +689,15 @@ const dohServerWeightFloor = 0.05
 // make the last session's fastest server the clear first pick, low enough that
 // a few live successes on another server can overturn a stale ordering.
 const dohSeedMaxScore = 8.0
+
+// dohStaleServeBound is how long after a record's TTL a previously-resolved
+// address may still be served when a live resolution fails (RFC 8767
+// serve-stale). This keeps client traffic flowing through a tunnel during a
+// resolver outage / exit failover instead of hard-failing every lookup. Only
+// address records are served stale — an authoritative miss (NXDOMAIN/NODATA)
+// is never served stale, because serving a stale "this name exists" would be
+// wrong once the name is actually withdrawn.
+const dohStaleServeBound = 5 * time.Minute
 
 // serverStat holds one tokenBucket per dohServerWindows span (parallel index),
 // counting the server's successful resolutions.
@@ -1216,6 +1247,18 @@ func (self *DohResult) Valid(now time.Time, missExpiration time.Duration) bool {
 		}
 	}
 	return true
+}
+
+// staleUsable reports whether this (now-expired) result may still be served as
+// a stale answer: it must hold addresses (never a miss) and the records must
+// have expired within dohStaleServeBound. Used by serve-stale (RFC 8767) when a
+// live resolution fails, so a recently-cached address keeps working through a
+// resolver outage instead of returning SERVFAIL.
+func (self *DohResult) staleUsable(now time.Time) bool {
+	if len(self.AddrExpirations) == 0 {
+		return false
+	}
+	return self.Time.Add(dohStaleServeBound).After(now)
 }
 
 // Addrs returns the result's addresses as a slice; the order is unspecified
