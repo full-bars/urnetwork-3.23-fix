@@ -3804,9 +3804,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// are treated as compatible when the current account JWT DOES carry
 	// a network_id (assumed same network, minted under the same account).
 	// If the current JWT has no network_id claim, we always mint fresh
-	// since we can't verify safe reuse. The first successful reuse writes
-	// the current NetworkID into the store, so subsequent restarts get a
-	// clean match.
+	// since we can't verify safe reuse. The first successful reuse or
+	// renewal stamps the current NetworkID into the store, so subsequent
+	// restarts get a clean match and any later account/network swap is
+	// detected by the mismatch guard above rather than silently reusing
+	// a stale identity.
 	// Compute description early — needed for both the renewal fallback path
 	// (reuse an expired stored identity) and the fresh-mint path below.
 	description := providerDescription(nodeName)
@@ -3841,12 +3843,27 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
 				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
-			} else if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
-				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
+				// Self-heal: stamp the current network_id onto legacy
+				// entries (stored with NetworkID="") so a future
+				// account/network swap is detected by the mismatch guard
+				// above instead of silently reusing a stale identity. Only
+				// fires for entries whose NetworkID differs from the
+				// current one — after the first reuse they match, so this
+				// is a one-time write per proxy at startup, not per-auth.
+				if entry.NetworkID != currentNetworkId {
+					if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+						ByClientJWT: entry.ByClientJWT,
+						ClientID:    entry.ClientID,
+						NetworkID:   currentNetworkId,
+						MintedAt:    entry.MintedAt,
+					}); putErr != nil {
+						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", identityKey, putErr)
+					}
+				}
 				return entry.ByClientJWT, parsedId, true, nil
 			}
 		}

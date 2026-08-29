@@ -149,15 +149,24 @@ func (s *clientJWTStore) snapshotLocked(data []byte, count int) {
 
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	bak := filepath.Join(dir, fmt.Sprintf("%s-%s.bak", base, ts))
-	if err := os.WriteFile(bak, data, 0600); err != nil {
-		// Snapshot is best-effort; a failed backup must never break startup.
+	// Atomically write via tmp+rename (same as flushLocked) so a crash
+	// mid-write — the exact scenario clientJWTSnapshotMinInterval guards
+	// against — can't leave a truncated backup behind.
+	tmp := bak + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		tlog("⚠️ [jwt-store] snapshot to %s failed: %v\n", bak, err)
+		return
+	}
+	if err := os.Rename(tmp, bak); err != nil {
+		// Best-effort: drop the tmp half so it doesn't accumulate.
+		_ = os.Remove(tmp)
 		tlog("⚠️ [jwt-store] snapshot to %s failed: %v\n", bak, err)
 		return
 	}
 	if count > 0 {
 		tlog("📸 [jwt-store] snapshot saved to %s (%d entries)\n", bak, count)
 	} else {
-		tlog("📸 [jwt-store] snapshot saved to %s (corrupt/empty source)\n", bak)
+		tlog("📸 [jwt-store] snapshot saved to %s (empty store)\n", bak)
 	}
 	pruneOldBackupsLocked(dir, base)
 }
