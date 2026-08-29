@@ -3814,7 +3814,9 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
-			if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
+			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
 				// Stored client JWT expired: try renewal-with-same-client_id
 				// before falling through to fresh mint, so the operator's
 				// identities (and their server-side reliability reputation)
