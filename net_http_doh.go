@@ -235,6 +235,23 @@ func httpClientWithDialer(settings *DohSettings, dialContext DialContextFunction
 	return httpClient
 }
 
+// sharedDohCacheMu guards access to sharedDohCacheVal, a persistent DohCache
+// set by the provider at startup. When non-nil, lookupProxyTarget in net.go
+// resolves proxy target hostnames through it, gaining serve-stale, server
+// scoring, and lifecycle integration.
+var (
+	sharedDohCacheMu  sync.Mutex
+	sharedDohCacheVal *DohCache
+)
+
+// SetSharedDohCache registers a persistent DohCache for proxy target
+// resolution. Safe to call at startup before any proxy dials.
+func SetSharedDohCache(c *DohCache) {
+	sharedDohCacheMu.Lock()
+	sharedDohCacheVal = c
+	sharedDohCacheMu.Unlock()
+}
+
 type DohCache struct {
 	httpClient      *http.Client
 	localHttpClient *http.Client
@@ -371,6 +388,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 	stats := newServerStats()
 	stats.seed(settings.ServerStatsSeed)
 
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &DohCache{
 		httpClient:            httpClientWithSettings(settings),
 		localHttpClient:       httpClientWithDialer(settings, settings.NetDialer().DialContext),
@@ -383,8 +401,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 		stats:                 stats,
 		resolveSem:            make(chan struct{}, maxResolutions),
 		memoryTarget:          settings.MemoryTarget,
-		lifecycleCtx:          context.Background(),
-		lifecycleCancel:       func() {},
+		lifecycleCtx:          lifecycleCtx,
+		lifecycleCancel:       lifecycleCancel,
 	}
 }
 
@@ -842,6 +860,9 @@ func NewByteBudget(capacity int64) *ByteBudget {
 }
 
 func (self *ByteBudget) Acquire(ctx context.Context, bytes int64) bool {
+	if bytes > self.cap {
+		return false
+	}
 	for {
 		cur := self.used.Load()
 		if cur+bytes <= self.cap {

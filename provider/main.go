@@ -3287,6 +3287,13 @@ func provide(opts docopt.Opts) {
 		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
 
+	// Load persisted DoH server scores and start a warm-up probe so the
+	// server-scorer (P2-2) has signal before real DNS traffic arrives.
+	// Scores are saved periodically and on shutdown; the cache is closed
+	// via deferred cleanup.
+	_, closeDohCache := initPersistentDohCache(ctx)
+	defer closeDohCache()
+
 	// Load persisted slow-retry state so that a restart does not reset
 	// the 14-day drop clock for proxies that were already failing.
 	globalProxySlowRetryState = LoadProxySlowRetryState()
@@ -3757,6 +3764,11 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	return result.Result.ByClientJwt, nil
 }
 
+// renewClientJWTFn is the injectable renewal entry point. It defaults to the
+// real network-backed renewClientJWT but can be overridden in tests to exercise
+// the renew-on-expiry branch of provideAuth deterministically.
+var renewClientJWTFn = renewClientJWT
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -3795,24 +3807,75 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// default for credential reuse.
 	//
 	// Hot restart (reuse of persisted client JWTs across process restarts)
-	// is opt-in and defaults off: it's an experimental feature (not yet
-	// confirmed reliable across repeated restarts in live testing) and a
-	// fleet-wide behavior change, so operators choose it explicitly via
-	// `urnet-tools hot-restart on` (Docker: URNETWORK_HOT_RESTART=1) rather
-	// than inheriting it silently from an upgrade.
+	// has been ON by default since v3.23.0-fix.26 (URNETWORK_HOT_RESTART
+	// != "0"). Explicitly set URNETWORK_HOT_RESTART=0 to disable.
+	//
+	// Legacy entries (stored with NetworkID="") may lack the network_id
+	// field because they predate the field being added, or because the
+	// account JWT at the time of storage had no network_id claim. These
+	// are treated as compatible when the current account JWT DOES carry
+	// a network_id (assumed same network, minted under the same account).
+	// If the current JWT has no network_id claim, we always mint fresh
+	// since we can't verify safe reuse. The first successful reuse or
+	// renewal stamps the current NetworkID into the store, so subsequent
+	// restarts get a clean match and any later account/network swap is
+	// detected by the mismatch guard above rather than silently reusing
+	// a stale identity.
+	// Compute description early — needed for both the renewal fallback path
+	// (reuse an expired stored identity) and the fresh-mint path below.
+	description := providerDescription(nodeName)
+
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
-			if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
-				tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
+				// Stored client JWT expired: try renewal-with-same-client_id
+				// before falling through to fresh mint, so the operator's
+				// identities (and their server-side reliability reputation)
+				// survive even when the JWT has aged out of its 24h window.
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					if renewErr == nil {
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
+						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+							ByClientJWT: renewedJwt,
+							ClientID:    entry.ClientID,
+							NetworkID:   currentNetworkId,
+							MintedAt:    time.Now(),
+						}); putErr != nil {
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+						}
+						return renewedJwt, parsedId, true, nil
+					}
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
+				} else {
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
 				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
-			} else if !haveCurrentNetworkId || entry.NetworkID != currentNetworkId {
-				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
+				// Self-heal: stamp the current network_id onto legacy
+				// entries (stored with NetworkID="") so a future
+				// account/network swap is detected by the mismatch guard
+				// above instead of silently reusing a stale identity. Only
+				// fires for entries whose NetworkID differs from the
+				// current one — after the first reuse they match, so this
+				// is a one-time write per proxy at startup, not per-auth.
+				if entry.NetworkID != currentNetworkId {
+					if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+						ByClientJWT: entry.ByClientJWT,
+						ClientID:    entry.ClientID,
+						NetworkID:   currentNetworkId,
+						MintedAt:    entry.MintedAt,
+					}); putErr != nil {
+						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", identityKey, putErr)
+					}
+				}
 				return entry.ByClientJWT, parsedId, true, nil
 			}
 		}
@@ -3827,7 +3890,6 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// Final Description: "Identity [Version]" — computed by the shared helper
 	// so mint (here) and in-process renewal (runProxyJWTWatcher) always send
 	// the same string; the server UPDATEs the row's description on renewal.
-	description := providerDescription(nodeName)
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
