@@ -47,13 +47,18 @@ func loadDohScores() (map[string]float64, error) {
 }
 
 // saveDohScores writes the current server scores to disk as JSON,
-// atomically (tmp+rename), with 0600 permissions.
+// atomically (tmp+rename), with 0600 permissions. Creates the
+// ~/.urnetwork directory if it does not exist.
 func saveDohScores(scores map[string]float64) error {
 	if len(scores) == 0 {
 		return nil
 	}
 	p, err := dohScoresPath()
 	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	tmp := p + ".tmp"
@@ -76,11 +81,14 @@ func initPersistentDohCache(ctx context.Context) (*connect.DohCache, func()) {
 
 	// Load last session's scores so the fan-out starts already biased
 	// toward the servers that were fastest last session.
-	if scores, err := loadDohScores(); err == nil && len(scores) > 0 {
+	if scores, err := loadDohScores(); err != nil {
+		tlog("[doh] warning: could not load persisted server scores: %v\n", err)
+	} else if len(scores) > 0 {
 		settings.ServerStatsSeed = scores
 	}
 
 	cache := connect.NewDohCache(settings)
+	connect.SetSharedDohCache(cache)
 	cache.Warm()
 
 	// Periodic persistence goroutine — saves scores every 5m so a crash
@@ -102,14 +110,15 @@ func initPersistentDohCache(ctx context.Context) (*connect.DohCache, func()) {
 		}
 	}()
 
-	// Returns a deferred cleanup that saves final scores and shuts down
-	// in-flight queries.
+	// Returns a deferred cleanup that saves final scores, clears the shared
+	// cache reference, and shuts down in-flight queries.
 	close := func() {
 		if scores := cache.ServerScores(); len(scores) > 0 {
 			if err := saveDohScores(scores); err != nil {
 				tlog("[doh] warning: could not persist server scores on shutdown: %v\n", err)
 			}
 		}
+		connect.SetSharedDohCache(nil)
 		cache.Close()
 	}
 

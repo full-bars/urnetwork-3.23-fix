@@ -31,7 +31,25 @@ var dnsCache struct {
 
 const dnsCacheTTL = 60 * time.Second
 
+// lookupProxyTarget resolves a proxy target hostname to an IPv4 address.
+// When a shared DohCache has been registered (via SetSharedDohCache), DNS
+// resolution goes through the cache rather than net.DefaultResolver — gaining
+// serve-stale (RFC 8767) during resolver outages, server-scoring-based fan-out
+// ordering, and lifecycle integration.
 func lookupProxyTarget(host string) (string, bool) {
+	// Try the shared DohCache first (if one is registered).
+	sharedDohCacheMu.Lock()
+	c := sharedDohCacheVal
+	sharedDohCacheMu.Unlock()
+	if c != nil {
+		addrs := c.Query(context.Background(), "A", host)
+		if len(addrs) > 0 {
+			return addrs[0].String(), true
+		}
+		// Cache returned empty — fall through to the local resolver + stale
+		// cache path below.
+	}
+
 	dnsCache.mu.Lock()
 	defer dnsCache.mu.Unlock()
 	if dnsCache.m == nil {
