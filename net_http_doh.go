@@ -438,10 +438,11 @@ func (self *DohCache) Warm() {
 			default:
 			}
 			server := serversByUrl[url]
-			res := dohQueryWithClientResult(warmCtx, self.httpClient, self.stats,
+			// the side effect of feeding stats.record() is what we want; the
+			// result itself is discarded.
+			_ = dohQueryWithClientResult(warmCtx, self.httpClient, self.stats,
 				[]DohServer{server}, self.settings.IpVersion,
 				"A", self.settings, dohWarmDomain)
-			_ = res
 		}
 	}()
 }
@@ -459,10 +460,16 @@ func (self *DohCache) Close() {
 }
 
 // pruneCacheLocked prunes the result cache to its configured size bound and
-// drops expired entries. The caller must hold stateLock.
+// drops entries that are no longer reachable: expired AND no longer
+// serve-stale (beyond dohStaleServeBound). A successful resolve on any other
+// key calls this for the WHOLE cache, so the condition must match the hit
+// check in QueryResult: only drop entries that aren't currently serving
+// traffic (or eligible to) — otherwise an unrelated successful resolve
+// silently defeats serve-stale (RFC 8767) for every other key. The caller
+// must hold stateLock.
 func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
 	for key, result := range self.queryResultExpiration {
-		if !result.Valid(now, self.settings.MissExpiration) {
+		if !result.Valid(now, self.settings.MissExpiration) && !result.staleUsable(now) {
 			delete(self.queryResultExpiration, key)
 		}
 	}

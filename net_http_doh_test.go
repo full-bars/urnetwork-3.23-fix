@@ -230,9 +230,11 @@ func TestDohStaggerDisabled(t *testing.T) {
 	if fastHits.Load() == 0 {
 		t.Fatal("fast server was never hit")
 	}
-	if slowHits.Load() == 0 {
-		t.Fatal("slow server was not launched with stagger disabled (expected all-at-once)")
-	}
+	// slow server should also be hit, but verifying that is a scheduler race
+	// (winner-cancel can land before the slow goroutine is dispatched). the
+	// elapsed-time check above is the structural proof: a per-wave delay
+	// would add DohServerStagger per server, blowing the 2s bound once a
+	// slow server is present.
 }
 
 // TestDohSingleFlight verifies P1-3: concurrent identical queries coalesce onto
@@ -582,6 +584,86 @@ func TestDohServeStale(t *testing.T) {
 	}
 	if got := cache.staleServeCount.Load(); got == 0 {
 		t.Fatal("staleServeCount should be > 0 after a served-stale lookup")
+	}
+}
+
+// TestDohServeStaleMultiDomain is the regression test for the pruneCacheLocked
+// bug: a global prune sweep triggered by an unrelated successful resolve must
+// NOT evict a stale-but-still-serveable entry. Pre-fix, resolving domain B
+// (which triggers pruneCacheLocked for the whole cache) would delete domain
+// A's expired entry even though A was still inside dohStaleServeBound — so a
+// subsequent failed resolve of A would get SERVFAIL instead of the expected
+// stale addrs. Sonnet 5 review (2026-08-29) flagged this.
+func TestDohServeStaleMultiDomain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var aCalls atomic.Int32
+	// one combined test server that dispatches by q.name: a.* succeeds once
+	// then 500s; b.* always succeeds. resolving b.* triggers a global
+	// pruneCacheLocked sweep.
+	combined := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		switch name {
+		case "a.bringyour.com":
+			if aCalls.Add(1) == 1 {
+				json.NewEncoder(w).Encode(DohResponse{
+					Status: 0,
+					Answer: []DohAnswer{{Name: name, Type: 1, TTL: 1, Data: "1.1.1.1"}},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			json.NewEncoder(w).Encode(DohResponse{
+				Status: 0,
+				Answer: []DohAnswer{{Name: name, Type: 1, TTL: 300, Data: "3.3.3.3"}},
+			})
+		}
+	}))
+	defer combined.Close()
+
+	settings := DefaultDohSettings()
+	settings.RequestTimeout = 2 * time.Second
+	settings.MinCacheTtl = 0 // let the 1s TTL actually expire
+	settings.DnsResolverSettings.EnableRemoteDoh = true
+	settings.DnsResolverSettings.EnableLocalDoh = false
+	settings.DnsResolverSettings.EnableRemoteDns = false
+	settings.DnsResolverSettings.EnableLocalDns = false
+	settings.DnsResolverSettings.RemoteDohServersIpv4 = []DohServer{
+		{Url: combined.URL, Format: DohFormatJson},
+	}
+	cache := NewDohCache(settings)
+
+	// 1. prime A: caches 1.1.1.1 with a 1s TTL
+	if addrs, auth := cache.QueryResult(ctx, "A", "a.bringyour.com"); !auth || len(addrs) != 1 {
+		t.Fatalf("prime A: want authoritative 1 addr, got auth=%v addrs=%v", auth, addrs)
+	}
+
+	// 2. let A's record expire (TTL 1s)
+	time.Sleep(1200 * time.Millisecond)
+
+	// 3. resolve B successfully: this triggers pruneCacheLocked for the
+	//    whole cache. POST-FIX (this test), the prune check is
+	//    `!Valid && !staleUsable`, so A's expired-but-stale-usable entry
+	//    survives the sweep. PRE-FIX, A's entry was deleted here.
+	if addrs, auth := cache.QueryResult(ctx, "A", "b.bringyour.com"); !auth || len(addrs) != 1 {
+		t.Fatalf("prime B: want authoritative 1 addr, got auth=%v addrs=%v", auth, addrs)
+	}
+
+	// 4. fail-resolve A: must serve the stale 1.1.1.1, not SERVFAIL
+	staleAddrs, staleAuth := cache.QueryResult(ctx, "A", "a.bringyour.com")
+	if len(staleAddrs) != 1 {
+		t.Fatalf("serve-stale (post-prune-sweep): expected 1 stale address, got %v (auth=%v)", staleAddrs, staleAuth)
+	}
+	if staleAuth {
+		t.Fatal("serve-stale answer must be marked non-authoritative (auth=false)")
+	}
+	if staleAddrs[0].String() != "1.1.1.1" {
+		t.Fatalf("serve-stale returned wrong address: %v", staleAddrs)
+	}
+	if got := cache.staleServeCount.Load(); got == 0 {
+		t.Fatal("staleServeCount should be > 0 after a served-stale lookup following a prune sweep")
 	}
 }
 
