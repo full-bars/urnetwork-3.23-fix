@@ -595,7 +595,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			if rp.Unit == p.Unit && rp.User == p.User && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
 				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
 				// Clean up old backup files now that the update is
 				// confirmed successful.
