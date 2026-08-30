@@ -593,11 +593,13 @@ func (self *DohCache) QueryResult(ctx context.Context, recordType string, domain
 	// resolver outage / exit failover instead of returning SERVFAIL. An
 	// authoritative miss (NXDOMAIN/NODATA) is never served stale.
 	if len(fl.addrs) == 0 && !fl.authoritative {
+		self.stateLock.Lock()
 		if r := self.queryResultExpiration[q]; r != nil && r.staleUsable(now) {
 			fl.addrs = r.Addrs()
 			fl.authoritative = false
 			self.staleServeCount.Add(1)
 		}
+		self.stateLock.Unlock()
 	}
 	return fl.addrs, fl.authoritative
 }
