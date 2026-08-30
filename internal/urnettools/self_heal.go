@@ -20,43 +20,59 @@ import (
 //	urnet-tools self-heal status   report current state
 func cmdSelfHeal(args []string) error {
 	mode := "status"
+	rest := args
 	if len(args) > 0 {
-		mode = args[0]
+		switch args[0] {
+		case "on", "off", "status":
+			mode = args[0]
+			rest = args[1:]
+		case "-h", "--help":
+			usage()
+			return nil
+		default:
+			return fmt.Errorf("unknown self-heal sub-arg %q (on|off|status)", args[0])
+		}
 	}
 	switch mode {
-	case "-h", "--help":
-		usage()
-		return nil
 	case "on", "off":
-		return writeSelfHeal(mode)
+		return writeSelfHeal(mode, rest)
 	case "status":
-		return showSelfHeal()
+		return showSelfHeal(rest)
 	default:
 		return fmt.Errorf("unknown self-heal sub-arg %q (on|off|status)", mode)
 	}
 }
 
-// selfHealMarkerPath returns ~/.urnetwork/proxy_self_heal (the same file the
-// provider reads to decide whether the self-heal gate is on).
-func selfHealMarkerPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+// selfHealMarkerPath returns the provider's state dir + proxy_self_heal.
+// Routes through standard target resolution so the marker lands in the
+// correct provider's state dir, not the invoking user's $HOME (Opus H6).
+func selfHealMarkerPath(p Provider) (string, error) {
+	if p.StateDir == "" {
+		return "", fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	return filepath.Join(home, ".urnetwork", "proxy_self_heal"), nil
+	return filepath.Join(p.StateDir, "proxy_self_heal"), nil
 }
 
-func writeSelfHeal(state string) error {
-	path, err := selfHealMarkerPath()
+func writeSelfHeal(state string, targetArgs []string) error {
+	t, _, err := parseTargetFlags(targetArgs)
+	if err != nil {
+		return err
+	}
+	p, err := selectTarget(lifecycleCandidates(t), t)
+	if err != nil {
+		return err
+	}
+	path, err := selfHealMarkerPath(p)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(state+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(state+"\n"), 0o644); err != nil {
 		return err
 	}
+	_ = chownLikeStateOwner(p.StateDir, path)
 	if state == "on" {
 		fmt.Println("self-heal enabled (load gate + auto cleanup active)")
 	} else {
@@ -65,8 +81,16 @@ func writeSelfHeal(state string) error {
 	return nil
 }
 
-func showSelfHeal() error {
-	path, err := selfHealMarkerPath()
+func showSelfHeal(targetArgs []string) error {
+	t, _, err := parseTargetFlags(targetArgs)
+	if err != nil {
+		return err
+	}
+	p, err := selectTarget(lifecycleCandidates(t), t)
+	if err != nil {
+		return err
+	}
+	path, err := selfHealMarkerPath(p)
 	if err != nil {
 		return err
 	}
