@@ -38,7 +38,7 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
 	// Derive scope from the PROVIDER's unit, not the timer name.
 	// On a fresh box the timer doesn't exist yet, so isUserUnit(timer)
-	// always returns true — even for system-scoped providers (Opus H7).
+	// always returns true — even for system-scoped providers.
 	userScope := isUserUnit(p.Unit) && p.User != ""
 	switch interval {
 	case "off":
@@ -179,7 +179,7 @@ func renderSystemctlStatusLinux(p Provider) error {
 		return fmt.Errorf("provider %s has no owning unit (bare process)", providerLabel(p))
 	}
 	var args []string
-	if p.User != "" {
+	if isUserUnit(p.Unit) && p.User != "" {
 		args = append(systemctlUserArgs(p.User), "status", p.Unit)
 	} else {
 		args = []string{"status", p.Unit}

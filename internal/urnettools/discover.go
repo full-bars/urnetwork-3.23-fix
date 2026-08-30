@@ -143,7 +143,7 @@ var nonProviderSiblingSuffixes = []string{"hub", "update", "dashboard"}
 // isProviderArg reports whether an executable path/name is a known provider
 // binary. Matches on basename to be resilient to custom install paths, and
 // by PREFIX so suffixed unit names (urnetwork-native.service,
-// provider_beta-custom) are recognized too (opus5 F2). Excludes known
+// provider_beta-custom) are recognized too. Excludes known
 // non-provider siblings (see nonProviderSiblingSuffixes) so their units are
 // not mistaken for providers.
 func isProviderArg(arg string) bool {

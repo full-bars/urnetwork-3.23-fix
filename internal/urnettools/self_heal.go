@@ -45,7 +45,7 @@ func cmdSelfHeal(args []string) error {
 
 // selfHealMarkerPath returns the provider's state dir + proxy_self_heal.
 // Routes through standard target resolution so the marker lands in the
-// correct provider's state dir, not the invoking user's $HOME (Opus H6).
+// correct provider's state dir, not the invoking user's $HOME.
 func selfHealMarkerPath(p Provider) (string, error) {
 	if p.StateDir == "" {
 		return "", fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))

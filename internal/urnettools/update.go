@@ -75,7 +75,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// LENIENT target parse: update defines its own flags (--tag, --digest,
 	// --url, --include, --exclude, --all, --select) which the loop below
 	// consumes. Strict parsing here would reject them as unknown before
-	// the loop ever runs (opus5 F1: every update flag was dead). Leftover
+	// the loop ever runs. Leftover
 	// unknown --flags are rejected AFTER the loop instead.
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -278,7 +278,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 					// /proc unreadable (unprivileged cross-user) — cannot
 					// determine currency; do NOT skip. A redundant re-install
 					// is cheap (digest check short-circuits); a missed update
-					// leaves the provider stuck forever (Opus H11).
+					// leaves the provider stuck forever.
 					skip = false
 				}
 			} else {
@@ -650,6 +650,20 @@ func restartProvider(p Provider) error {
 				!strings.Contains(string(out), "Could not get properties") && !strings.Contains(string(out), "Failed to connect") {
 				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
 			}
+		} else if userScoped && p.User == "" {
+			// Unit looks user-scoped but no owning user was resolved (e.g.
+			// no passwd entry, or system unit with no User= directive).
+			// Try system scope as a fallback — it costs one failed systemctl
+			// at worst, and avoids the "neither branch matches" dead zone.
+			out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput()
+			if err == nil {
+				fmt.Printf("restarted %s (system fallback, user unknown)\n", p.Unit)
+				return nil
+			}
+			if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+				return fmt.Errorf("unit %s looks user-scoped but no owning user resolved; system restart failed: %v (%s)",
+					p.Unit, err, strings.TrimSpace(string(out)))
+			}
 		} else if !userScoped {
 			// Genuinely system-owned unit: restart via the system manager.
 			out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput()
@@ -665,7 +679,7 @@ func restartProvider(p Provider) error {
 	if p.User != "" && p.PID > 0 {
 		// No systemd ownership resolved: do NOT signal the process.
 		// Sending SIGINT to a bare process without a unit just kills it
-		// permanently — the provider won't restart (Opus H1). Return an
+		// permanently — the provider won't restart. Return an
 		// actionable error so the operator can restart manually.
 		return fmt.Errorf("no systemd unit resolved for %s — restart the provider manually (pid %d)", providerLabel(p), p.PID)
 	}

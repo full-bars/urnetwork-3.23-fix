@@ -222,7 +222,7 @@ func cmdDockerStatus(args []string) error {
 // delegation path (e.g. `urnet-docker exec urnet-tools proxy add ...`).
 // Target flags come BEFORE the command; everything from the first
 // positional onward is the in-container command and must pass through
-// verbatim, including its own --flags (opus5 F1: strict parsing rejected
+// verbatim, including its own --flags (strict parsing previously rejected
 // `--proxy_file=` before delegation).
 func cmdDockerExec(args []string) error {
 	// Split at the first non-flag token: target flags before it, command

@@ -104,7 +104,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	// batch flags (--all/--select/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
 	// (e.g. --force). Strict parsing here rejected those as unknown before
-	// the loop ran (opus5 F1: `proxy clear --all` was dead). Leftover
+	// the loop ran. Leftover
 	// unknown --flags are rejected after the loop, except for the
 	// pass-through subcommands.
 	t, rest, err := parseTargetFlagsLenient(rest)
@@ -129,7 +129,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			exclude = splitLabels(strings.TrimPrefix(a, "--exclude="))
 		case a == "--include" || a == "--exclude":
 			// Also accept the space-separated form (--include a,b), matching
-			// update's syntax (opus5 F1 note: the two commands disagreed).
+			// update's syntax.
 			if i+1 < len(rest) {
 				if a == "--include" {
 					include = splitLabels(rest[i+1])
@@ -144,7 +144,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			// Unknown --flag: pass through only for refresh/remove-dead
 			// (provider-binary flags like --force); reject elsewhere so a
 			// typo like --netwrok cannot be silently absorbed on a
-			// destructive op (review finding L2; opus5 F1).
+			// destructive op.
 			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" {
 				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
 			}

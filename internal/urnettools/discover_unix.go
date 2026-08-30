@@ -203,7 +203,7 @@ func attachUnits(procs []Provider) {
 // drives them with `systemctl --user`, which the SYSTEM-manager listing
 // below never shows. So this also enumerates per-user managers for users
 // that plausibly run a provider (a user unit that looks like a provider, or
-// a .urnetwork state dir), bounded to those users (opus5 F2).
+// a .urnetwork state dir), bounded to those users.
 func discoverSystemdUnits(running []Provider) []Provider {
 	out := discoverSystemUnits(running)
 	out = append(out, discoverUserUnits(running)...)
@@ -320,13 +320,14 @@ func discoverUserUnits(running []Provider) []Provider {
 				}
 			}
 		} else {
-			// Cross-user query goes through machined/loginctl, which can
-			// be unavailable on CI runners even though the local user
-			// manager works. Fall back to the caller's own manager when
-			// the -M form fails so a same-user provider is still found.
+			// Cross-user query goes through machined/loginctl. If -M
+			// fails (no machined, no lingering session — the norm for
+			// service accounts), skip this user entirely. The old code
+			// fell back to the current user's manager and labelled every
+			// unit with the wrong user, creating ghost providers.
 			b, err = exec.Command("systemctl", "--user", "-M", user+"@", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
 			if err != nil {
-				b, err = exec.Command("systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+				continue
 			}
 		}
 		if err != nil {

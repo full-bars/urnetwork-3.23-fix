@@ -154,7 +154,7 @@ func stateDirFor(env map[string]string) string {
 // reading its Go build info (stamped by -ldflags "-X main.Version=...").
 // This is safe: it reads the ELF header without executing the binary,
 // avoiding the local privilege escalation vector in the old exec-based
-// approach (Opus C1). Errors yield "".
+// approach. Errors yield "".
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""

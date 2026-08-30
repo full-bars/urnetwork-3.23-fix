@@ -63,19 +63,35 @@ func unitCommandArgs(p Provider, action string, extra ...string) []string {
 	return append(args, extra...)
 }
 
-// isUserUnit reports whether a unit name is user-level (no systemd system
-// unit file, or in the user's config dir). System units are the norm for
-// fleet deployments; user units are the legacy install model.
+// isUserUnit reports whether a unit name is user-level by asking systemd
+// directly (via `systemctl show -p LoadState`) instead of guessing from
+// filesystem paths. System units are the norm for fleet deployments; user
+// units are the legacy install model. Memoized per-unit for the process
+// lifetime to avoid repeated systemctl calls.
+var isUserUnitCache = map[string]bool{}
+
 func isUserUnit(unit string) bool {
-	// The legacy installer places units under ~/.config/systemd/user/.
-	// Heuristic: if it's NOT a system unit file, treat as user unit.
-	// Check both the admin dir and the vendor/package dir — units shipped
-	// by a package live under /usr/lib/systemd/system (free-review MEDIUM).
-	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
-		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
+	if cached, ok := isUserUnitCache[unit]; ok {
+		return cached
+	}
+	// Ask the system manager if it can load this unit.
+	out, err := exec.Command("systemctl", "show", unit, "-p", "LoadState", "--value").Output()
+	if err == nil {
+		ls := strings.TrimSpace(string(out))
+		// LoadState != "not-found" means the system manager knows this unit.
+		if ls != "not-found" && ls != "" {
+			isUserUnitCache[unit] = false
 			return false
 		}
 	}
+	// Fall back to the directory heuristic when systemctl is unavailable.
+	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
+		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
+			isUserUnitCache[unit] = false
+			return false
+		}
+	}
+	isUserUnitCache[unit] = true
 	return true
 }
 
@@ -378,7 +394,7 @@ func cmdHub(args []string, force, dryRun bool) error {
 	sub := args[0]
 	rest := args[1:]
 	// LENIENT target parse: `hub install` defines its own --tag= flag
-	// (opus5 F1: strict parsing rejected --tag= before cmdHubInstall saw
+	// strict parsing previously rejected --tag= before cmdHubInstall saw
 	// it). Unknown --flags are rejected per-subcommand below.
 	t, rest, err := parseTargetFlagsLenient(rest)
 	if err != nil {
