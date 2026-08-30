@@ -79,11 +79,11 @@ func discoverProcesses() []Provider {
 			}
 		}
 		p := Provider{
-			User:     user,
-			StateDir: stateDir,
-			Binary:   exe,
-			PID:      pid,
-			Running:  true,
+			User:          user,
+			StateDir:      stateDir,
+			Binary:        exe,
+			PID:           pid,
+			Running:       true,
 			BinaryDeleted: binaryDeleted,
 		}
 		// A provider may carry its own --state-dir flag; honor it.

@@ -49,8 +49,8 @@ func DefaultDohSettings() *DohSettings {
 		MaxConcurrentResolutions: 64,
 		// staggered hedge: a slow/dead primary fires one redundant server per
 		// 750ms wave instead of all at once; a winning answer stops the rest.
-		DohServerStagger: 750 * time.Millisecond,
-		DnsResolverSettings:      DefaultDnsResolverSettings(),
+		DohServerStagger:    750 * time.Millisecond,
+		DnsResolverSettings: DefaultDnsResolverSettings(),
 	}
 }
 
@@ -113,7 +113,7 @@ type DohSettings struct {
 	// MemoryTarget, when set, bounds resolution memory under load: each in-flight
 	// DoH query reserves dohQueryReserveByteCount from it and releases on return.
 	// nil = unbounded (the default; safe for typical provider memory).
-	MemoryTarget MemoryTarget
+	MemoryTarget        MemoryTarget
 	DnsResolverSettings *DnsResolverSettings
 }
 
@@ -286,9 +286,9 @@ type DohCache struct {
 	// lifecycleCtx is cancelled by Close(); in-flight DoH queries are derived
 	// from it so a Close aborts them (and the merged h2 connection) promptly
 	// instead of leaving goroutines parked until their own timeout.
-	lifecycleCtx       context.Context
-	lifecycleCancel    context.CancelFunc
-	closeOnce          sync.Once
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	closeOnce       sync.Once
 }
 
 // dohFlight is one in-flight resolution shared by every caller waiting on the same query. the
