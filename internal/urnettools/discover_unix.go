@@ -86,10 +86,24 @@ func discoverProcesses() []Provider {
 			Running:       true,
 			BinaryDeleted: binaryDeleted,
 		}
-		// A provider may carry its own --state-dir flag; honor it.
-		for i := 1; i < len(args)-1; i++ {
-			if args[i] == "--state-dir" {
-				p.StateDir = args[i+1]
+		// A provider may carry its own --state-dir flag; honor it. Both
+		// the space ("--state-dir <path>") and equals
+		// ("--state-dir=<path>") forms are accepted; the equals form
+		// is the standard Unix convention and was previously missed
+		// here, leaving state-dir-derived operations (set, fast-auth,
+		// report, session save/load, proxy health/traffic, and
+		// uninstall's RemoveAll) targeting the wrong directory.
+		for i := 1; i < len(args); i++ {
+			a := args[i]
+			if a == "--state-dir" {
+				if i+1 < len(args) {
+					p.StateDir = args[i+1]
+					break
+				}
+				continue
+			}
+			if v, ok := strings.CutPrefix(a, "--state-dir="); ok {
+				p.StateDir = v
 				break
 			}
 		}

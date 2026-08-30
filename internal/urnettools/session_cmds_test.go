@@ -12,24 +12,31 @@ import (
 const testPass = "correct horse battery staple"
 
 // TestSessionRoundTrip encrypts a set of identity files and decrypts them
-// back, asserting the openssl Salted__ header and that content survives.
+// back, asserting the v2 (AES-GCM) header and that content survives.
 func TestSessionRoundTrip(t *testing.T) {
 	files := map[string][]byte{
 		"jwt":               []byte("header.payload.sig"),
 		".client_jwts.json": []byte(`{"entries":1}`),
 		"proxy":             []byte("p1:p2"),
 	}
-	// Pin the salt so the output is deterministic and verifiable; restore the
-	// package var afterward so a later test in the same binary is unaffected.
-	origSalt := sessionRandSalt
-	sessionRandSalt = func() ([]byte, error) { return []byte("01234567"), nil }
-	t.Cleanup(func() { sessionRandSalt = origSalt })
+	// Pin randomness so the output is deterministic and verifiable;
+	// restore the package vars afterward so a later test in the same
+	// binary is unaffected.
+	origRand := sessionRand
+	sessionRand = func(n int) ([]byte, error) {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = byte(0x30 + (i % 10)) // '0'..'9' rolling
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { sessionRand = origRand })
 	bundle, err := tarAndEncrypt(files, testPass)
 	if err != nil {
 		t.Fatalf("tarAndEncrypt: %v", err)
 	}
-	if !strings.HasPrefix(string(bundle), "Salted__") {
-		t.Fatalf("bundle missing openssl Salted__ header")
+	if !strings.HasPrefix(string(bundle), string(sessionBundleV2Header)) {
+		t.Fatalf("bundle missing v2 header, got %q", bundle[:min(len(bundle), 16)])
 	}
 	got, err := decryptUntar(string(bundle), testPass)
 	if err != nil {
@@ -46,9 +53,15 @@ func TestSessionRoundTrip(t *testing.T) {
 // silently producing garbage.
 func TestSessionRoundTripWrongPass(t *testing.T) {
 	files := map[string][]byte{"jwt": []byte("header.payload.sig")}
-	origSalt := sessionRandSalt
-	sessionRandSalt = func() ([]byte, error) { return []byte("01234567"), nil }
-	t.Cleanup(func() { sessionRandSalt = origSalt })
+	origRand := sessionRand
+	sessionRand = func(n int) ([]byte, error) {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = byte(0x30 + (i % 10))
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { sessionRand = origRand })
 	bundle, err := tarAndEncrypt(files, testPass)
 	if err != nil {
 		t.Fatalf("tarAndEncrypt: %v", err)
@@ -200,14 +213,20 @@ func TestStageSessionFailClosedCorruptJWT(t *testing.T) {
 // than silently yielding garbage (the provider of the corrupt-bundle path).
 func TestDecryptTamperedRejected(t *testing.T) {
 	files := map[string][]byte{"jwt": []byte(jwtFor("net-a"))}
-	origSalt := sessionRandSalt
-	sessionRandSalt = func() ([]byte, error) { return []byte("01234567"), nil }
-	t.Cleanup(func() { sessionRandSalt = origSalt })
+	origRand := sessionRand
+	sessionRand = func(n int) ([]byte, error) {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = byte(0x30 + (i % 10))
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { sessionRand = origRand })
 	bundle, err := tarAndEncrypt(files, testPass)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// corrupt the ciphertext (bytes after the 16-byte Salted__+salt header)
+	// corrupt the ciphertext (after the v2 header + salt + nonce)
 	tampered := []byte(bundle)
 	tampered[len(tampered)-1] ^= 0xff
 	if _, err := decryptUntar(string(tampered), testPass); err == nil {
@@ -244,8 +263,8 @@ func TestSessionDryRunAccepted(t *testing.T) {
 }
 
 // TestDecryptShortOrMisalignedRejected covers the decryptUntar length guards:
-// a bundle shorter than the Salted__+salt header, and a non-block-multiple
-// ciphertext, must both be rejected (review MEDIUM).
+// a bundle shorter than any header, and a v1 non-block-multiple ciphertext,
+// must both be rejected (review MEDIUM).
 func TestDecryptShortOrMisalignedRejected(t *testing.T) {
 	for _, in := range []string{
 		"short",

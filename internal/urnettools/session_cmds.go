@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,12 +53,9 @@ var sessionFiles = []string{
 
 // sessionRandSalt is a package var so round-trip tests can pin the salt and
 // the derived ciphertext is deterministic (still verifies format + keying).
+// Backward-compat alias for sessionRand(8); new code should use sessionRand.
 var sessionRandSalt = func() ([]byte, error) {
-	s := make([]byte, 8)
-	if _, err := rand.Read(s); err != nil {
-		return nil, err
-	}
-	return s, nil
+	return sessionRand(8)
 }
 
 // tarAndEncrypt builds the session bundle from an ordered name->bytes map. It
@@ -69,7 +65,7 @@ var sessionRandSalt = func() ([]byte, error) {
 // "URNSv2\0\0" + salt + nonce + AES-256-GCM ciphertext (which already
 // includes the 16-byte tag at the tail).
 func tarAndEncrypt(files map[string][]byte, pass string) ([]byte, error) {
-	pt, err := buildTarGz(files)
+	pt, err := buildSessionInnerTar(files)
 	if err != nil {
 		return nil, err
 	}
@@ -127,9 +123,10 @@ const sessionLegacyPBKDF2Iters = 10000
 // as v2 by an attacker.
 var sessionBundleV2Header = []byte("URNSv2\x00\x00")
 
-// buildTarGz produces the inner gzip-compressed tar of sessionFiles from
-// files (only entries present in files are included, matching legacy).
-func buildTarGz(files map[string][]byte) ([]byte, error) {
+// buildSessionInnerTar produces the inner gzip-compressed tar of
+// sessionFiles from files (only entries present in files are included,
+// matching legacy).
+func buildSessionInnerTar(files map[string][]byte) ([]byte, error) {
 	var raw bytes.Buffer
 	gz := gzip.NewWriter(&raw)
 	tw := tar.NewWriter(gz)
@@ -189,7 +186,7 @@ func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 // decryptUntarV2 parses the v2 (AES-256-GCM, PBKDF2 600000) format and
 // returns the decrypted file map. v2 is authenticated: any tampering or
 // wrong passphrase fails GCM Open with a uniform error.
-func decryptUntarV2(raw, pass string) (map[string][]byte, error) {
+func decryptUntarV2(raw []byte, pass string) (map[string][]byte, error) {
 	const headerLen = len("URNSv2\x00\x00") // 8
 	const saltLen = 16
 	const nonceLen = 12
