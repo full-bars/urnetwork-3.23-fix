@@ -48,9 +48,9 @@ type updateConfig struct {
 // newStageDir creates a private 0700 staging directory for one update.
 // Stage on real disk, NOT /tmp (frequently a small tmpfs that the
 // multi-platform tarball overflows — the 2026-08-09 failure). Windows has
-// no /var/tmp; use the system temp dir there (free-review major). A
+// no /var/tmp; use the system temp dir there. A
 // predictable path could be pre-created by a local user who then swaps the
-// tarball between verify and extract (coderabbit critical).
+// tarball between verify and extract.
 func newStageDir() (string, error) {
 	parent := "/var/tmp"
 	if runtime.GOOS == "windows" {
@@ -233,7 +233,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	// Validate EVERY provider's preconditions before touching any of them —
 	// a single missing binary path must not abort after earlier providers
-	// were already updated (free-review major).
+	// were already updated.
 	for _, p := range chosen {
 		if p.Binary == "" {
 			return fmt.Errorf("provider %s has no resolvable binary path — nothing updated", providerLabel(p))
@@ -242,8 +242,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	// Create the private staging dir ONLY now — after dry-run, cancellation,
 	// and no-op paths. A dry run or declined confirm must not create (and
-	// then remove) a temp dir or fail on staging permissions (coderabbit
-	// minor).
+	// then remove) a temp dir or fail on staging permissions.
 	stageDir, serr := newStageDir()
 	if serr != nil {
 		return serr
@@ -291,7 +290,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 		if err := updateProviderWithRestart(p, cfg, stagedTool); err != nil {
 			// Continue the batch; report all failures at the end rather
-			// than aborting mid-fleet (free-review major).
+			// than aborting mid-fleet.
 			fmt.Fprintf(os.Stderr, "update %s failed: %v\n", providerLabel(p), err)
 			failures++
 		}
@@ -536,7 +535,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Structural sanity-check the staged binary WITHOUT executing it.
 	// Running a freshly downloaded artifact (e.g. `staged --version`) is
 	// code execution of a remote file — the same class of defect the hub
-	// path guards with isRecognizedExecutable (coderabbit critical). sha256
+	// path guards with isRecognizedExecutable. sha256
 	// already guarantees the artifact matches the requested tag, so an
 	// ELF/Mach-O/PE magic check is the right ceiling here: it confirms we
 	// extracted a real binary for this platform, not a script or corrupted
@@ -568,7 +567,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
 		} else if !os.IsNotExist(err) {
 			// Non-NotExist error (permissions, etc.) — treat as a real
-			// failure, not "already backed up" (free-review minor).
+			// failure, not "already backed up".
 			return fmt.Errorf("backup stat: %w", err)
 		}
 		if err := copyFile(p.Binary, backup); err != nil {
@@ -737,7 +736,7 @@ func verifySHA256(path, want string) error {
 //
 // Tar headers always use forward slashes regardless of host OS; using
 // filepath.Join here would produce backslashes on Windows and the
-// in-archive lookup would never match (free-review critical).
+// in-archive lookup would never match.
 func tarRelPath(goos, arch string) string {
 	if goos == "windows" {
 		return path.Join("windows", arch, "provider.exe")
@@ -822,7 +821,7 @@ func installBinary(src, dst, user string) error {
 // names even for repeated updates within the same second are NOT guaranteed
 // at second resolution, but the timestamp carries the wall clock so backups
 // never collide across seconds. Extracted as a pure
-// helper so tests call production logic (coderabbit).
+// helper so tests call production logic.
 func backupName(binary string, at time.Time) string {
 	return binary + ".bak-" + at.UTC().Format("20060102T150405.000000000Z")
 }
@@ -865,8 +864,7 @@ func copyFile(src, dst string) error {
 		return cerr
 	}
 	// Close flushes buffered data — a disk-full or I/O error here would
-	// otherwise be lost and the copy reported successful (free-review
-	// major: copyFile produces the backup AND the .new binary).
+	// otherwise be lost and the copy reported successful.
 	if cerr = out.Close(); cerr != nil {
 		return fmt.Errorf("close %s: %w", dst, cerr)
 	}

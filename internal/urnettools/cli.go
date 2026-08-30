@@ -325,8 +325,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	var rest []string
 	// Conflicting targeting flags are an error: matchProvider applies the
 	// FIRST set field and silently ignores the rest, so `--unit x --user y`
-	// would act on unit x while pretending to scope by user (free-review
-	// major). Only one selector may be set; a same-field repeat just
+	// would act on unit x while pretending to scope by user. Only one selector may be set; a same-field repeat just
 	// overwrites.
 	setField := func(flag, value string, field *string) error {
 		if value == "" {
@@ -724,7 +723,7 @@ func readProxyFileSource(p Provider) string {
 // Each prompt MUST read from this single reader: a second bufio.Reader over
 // the same fd would lose whatever the first already buffered, so piped
 // input (`echo y | urnet-tools update --all`) hangs on the second prompt
-// (free-review HIGH, mimo-v2.5).
+//.
 var stdinReader = bufio.NewReader(os.Stdin)
 
 // stdinIsInteractiveOverride, when non-nil, replaces the terminal check.

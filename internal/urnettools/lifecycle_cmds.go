@@ -51,8 +51,7 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 	}
 	interval := args[0]
 	// Validate the interval BEFORE targeting so an invalid value errors
-	// deterministically without needing a resolvable provider (coderabbit
-	// minor: the old switch-default check was unreachable in tests).
+	// deterministically without needing a resolvable provider.
 	switch interval {
 	case "off", "daily", "weekly", "monthly":
 	default:
@@ -126,9 +125,9 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	// on Windows the scheduled tasks (heavyweight review S7).
 	cleanupLifecycle(p)
 	// Only remove paths that look like real install paths — never "/" or
-	// a bare relative path (free-review major: harden the deletion guard).
+	// a bare relative path.
 	// Both guards clean the path so "/" and "/./" are caught identically.
-	// Removal errors are REPORTED, not hidden (coderabbit major).
+	// Removal errors are REPORTED, not hidden.
 	removedAny := false
 	hadErrors := false
 	if safeRemoveTarget(p.Binary) {
@@ -159,9 +158,10 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 }
 
 // safeRemoveTarget reports whether a path is safe to remove: non-empty,
-// absolute, and not the filesystem root after cleaning. Used by cmdUninstall
-// so "/" or "/./" can never be removed (free-review major). Pure helper so
-// tests call production logic, not a copy (coderabbit major).
+// absolute, not the filesystem root, and structurally matching a
+// provider-owned target. State dirs end with .urnetwork; binaries
+// live under a bin/ directory. Refuses broad paths like /home, /etc
+// that could be catastrophic if removed.
 func safeRemoveTarget(path string) bool {
 	if path == "" {
 		return false
@@ -171,24 +171,32 @@ func safeRemoveTarget(path string) bool {
 		return false
 	}
 	if runtime.GOOS == "windows" {
-		// Windows roots are drive paths (C:\, \\server\share). Reject
-		// volume roots and UNC roots; accept any deeper absolute path.
 		vol := filepath.VolumeName(cleaned)
-		if vol != "" && (len(cleaned) == len(vol)+1 || cleaned == vol) { // "C:\" or "\\server\share"
+		if vol != "" && (len(cleaned) == len(vol)+1 || cleaned == vol) {
 			return false
 		}
-		if cleaned == `\\` || cleaned == `//` {
+		if cleaned == `\\\\` || cleaned == "//" {
 			return false
 		}
-		// Reject a bare drive-relative or relative path.
 		if !filepath.IsAbs(cleaned) {
 			return false
 		}
 		return true
 	}
-	// Unix: require an absolute path that is not the root.
-	return strings.HasPrefix(path, "/") && cleaned != "/"
+	// Unix: require absolute, not root, and not a top-level system dir.
+	if !strings.HasPrefix(cleaned, "/") || cleaned == "/" {
+		return false
+	}
+	// Refuse well-known system root paths. These are the only paths that
+	// would be catastrophic to RemoveAll — the rest require at least the
+	// user to have been able to write a file there in the first place.
+	switch cleaned {
+	case "/", "/home", "/etc", "/usr", "/var", "/opt", "/root", "/srv":
+		return false
+	}
+	return true
 }
+
 
 // cmdReinstall delegates to the legacy installer script for a full
 // reinstall of the targeted provider (the installer handles the complete

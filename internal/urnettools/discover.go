@@ -4,9 +4,9 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
+	"time"
 	"strings"
 )
 
@@ -24,7 +24,7 @@ var knownBinaries = map[string]bool{
 // Usernames are returned (not home paths) because discoverUserUnits uses
 // them as `systemctl --user -M <user>@` selectors.
 func providerCandidateUsers() ([]string, error) {
-	b, err := exec.Command("getent", "passwd").Output()
+	b, err := execWithTimeout(5*time.Second, "getent", "passwd")
 	if err != nil {
 		return nil, err
 	}

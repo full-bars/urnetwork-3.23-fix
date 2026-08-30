@@ -99,7 +99,7 @@ func isUserUnit(unit string) bool {
 // the lifecycle args, list the systemd candidates, auto-narrow to a sole
 // accessible RUNNING target, print the narrowed note, and confirm it is a
 // systemd (non-docker) provider. One place to change instead of triplicating it
-// across the destructive lifecycle commands (free-review clean-up).
+// across the destructive lifecycle commands.
 func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
@@ -126,8 +126,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
-	// nothing (free-review HIGH: start/stop previously discarded it and
-	// executed for real).
+	// nothing.
 	if dryRun {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
@@ -307,8 +306,7 @@ func cmdLogs(args []string) error {
 		case err := <-waitCh:
 			// Exited BEFORE producing any output: report the real outcome
 			// instead of mislabeling it a machined/polkit hang — an empty
-			// journal exits 0 immediately and is legitimate (coderabbit
-			// follow-up, PR #10).
+			// journal exits 0 immediately and is legitimate.
 			_ = cmd.Process.Kill()
 			if err != nil {
 				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
@@ -363,7 +361,7 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
 // RAM profile (the same check the legacy show_logs does). User units are
 // queried in the owning user's session, not the system manager
-// (free-review major: RAMLOGS detection ignored user units).
+//.
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
@@ -570,8 +568,7 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 // Environment= line: it reads the existing file, keeps lines whose env key
 // differs, replaces same-key lines, and always re-emits exactly one
 // [Service] header. Pure (no I/O beyond the read) so tests can pin the
-// merge semantics without a real unit (coderabbit: tests must call
-// production logic).
+// merge semantics without a real unit.
 func mergeDropinEnvFile(path, envLine string) (string, error) {
 	newKey := envLine
 	if i := strings.IndexByte(envLine, '='); i > 0 {
@@ -623,7 +620,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		return err
 	}
 	// Exact-key removal, NOT substring: envKey "URNETWORK_PROFILE" must not
-	// drop a sibling "URNETWORK_PROFILE_EXTRA" line (free-review MAJOR).
+	// drop a sibling "URNETWORK_PROFILE_EXTRA" line.
 	var kept []string
 	for _, ln := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(ln)
@@ -666,7 +663,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
-// code execution of a remote file (coderabbit critical). Linux-only check;
+// code execution of a remote file. Linux-only check;
 // see isRecognizedExecutable for the platform-aware form.
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
@@ -733,8 +730,7 @@ func isPEExecutable(path string) bool {
 // isRecognizedExecutable is the platform-aware structural check for a
 // downloaded binary: ELF on linux, Mach-O on darwin, PE on windows. It
 // never executes the file — it only confirms the magic matches the platform
-// we are about to install for (coderabbit critical: the provider path
-// guards with this same ceiling). A wrong-format artifact (a shell script,
+// we are about to install for. A wrong-format artifact (a shell script,
 // a corrupt download, or a binary built for another OS) is refused before
 // it can be swapped into place.
 func isRecognizedExecutable(path string) bool {
@@ -766,20 +762,24 @@ func unitDropinDir(p Provider) (string, error) {
 // restartAfterDropin reloads systemd and restarts the provider's unit.
 func restartAfterDropin(p Provider) error {
 	// Same guard as unitCommand: an empty unit must be rejected before any
-	// systemctl invocation (coderabbit minor on the coverage pass).
+	// systemctl invocation.
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
 		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
-		_ = exec.Command("systemctl", argsReload...).Run()
+		if err := exec.Command("systemctl", argsReload...).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
+	}
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
 		// provider never actually restarted (Sonnet MEDIUM-2).
 		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
 		return exec.Command("systemctl", argsRestart...).Run()
 	}
-	_ = exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
+	}
 	return exec.Command("systemctl", "restart", p.Unit).Run()
 }
 
@@ -807,9 +807,7 @@ func cmdHubInstall(p Provider, rest []string) error {
 	}
 	// chmod FIRST (the sanity check needs the execute bit), then verify the
 	// file structurally WITHOUT executing it — running a freshly downloaded,
-	// unverified binary is code execution of a remote artifact (coderabbit
-	// critical; the provider-update path requires a digest for the same
-	// reason, but the hub asset has no published digest to check against).
+	// unverified binary is code execution of a remote artifact.
 	if err := os.Chmod(hubBin, 0o755); err != nil {
 		return err
 	}

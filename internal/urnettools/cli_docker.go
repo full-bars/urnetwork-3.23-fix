@@ -279,7 +279,7 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
 			// (nothing after it) would push split past len(args) and panic
-			// on the slice below (coderabbit critical).
+			// on the slice below.
 			if split+1 >= len(args) {
 				return nil, nil, fmt.Errorf("target flag %q requires a value (e.g. %q <name>)", args[split], args[split])
 			}
@@ -396,7 +396,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// recovery window as waitForLiveVersion below instead of a single
 		// check: a freshly started container takes a few seconds to boot its
 		// provider, and one immediate probe reported a false "could not
-		// confirm" (coderabbit follow-up, PR #10).
+		// confirm".
 		for i := 0; i < 60; i++ {
 			if containerProviderAlive(p.Unit) {
 				fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)

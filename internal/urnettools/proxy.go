@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"os/exec"
 	"strings"
 )
@@ -31,10 +32,15 @@ func providerSubcommand(p Provider, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Run with the provider's HOME so state lands in the right directory.
-	if p.User != "" {
-		if home := homeForUser(p.User); home != "" {
-			cmd.Env = append(os.Environ(), "HOME="+home)
-		}
+	// When homeForUser fails, derive from the state dir's parent.
+	home := homeForUser(p.User)
+	if home == "" && p.StateDir != "" {
+		home = filepath.Dir(p.StateDir)
+	}
+	if home != "" {
+		cmd.Env = append(os.Environ(), "HOME="+home)
+	} else {
+		cmd.Env = os.Environ()
 	}
 	// Also run as that user when we are root, so auth/network files are written
 	// owned by the provider user and remain readable by it (review HIGH).
@@ -269,7 +275,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
-		// silently dropped (free-review MEDIUM).
+		// silently dropped.
 		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
 			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
 		}
@@ -281,8 +287,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		case "health":
 			// State-file based; not a provider-binary delegation. Uses the
 			// already-parsed target (t) — re-parsing here would see an arg
-			// list with the target flags already stripped (free-review
-			// major: health/traffic/remove-dead lost targeting).
+			// list with the target flags already stripped.
 			return cmdProxyHealthTarget(p)
 		case "traffic":
 			return cmdProxyTrafficTarget(p)

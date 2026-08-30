@@ -63,7 +63,7 @@ func fetchLatestRelease() (*releaseInfo, error) {
 	// The release API digest field is "sha256:<hex>"; strip the prefix and
 	// match the exact asset name. A missing asset or missing digest is an
 	// ERROR, not a silent skip — an unverified download would be executed
-	// as the provider user (free-review critical).
+	// as the provider user.
 	wantName := "urnetwork-provider-" + rj.TagName + ".tar.gz"
 	info.ProviderDigest = digestForAsset(rj.Assets, wantName)
 	if info.ProviderDigest == "" {
