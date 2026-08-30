@@ -37,7 +37,7 @@ func RunDocker(args []string) error {
 			return nil
 		case "version":
 			fmt.Printf("urnet-tools %s\n", ToolVersion)
-			providers := Discover()
+			providers := DiscoverDocker()
 			if len(providers) == 0 {
 				fmt.Println("  no providers discovered")
 				return nil
@@ -49,10 +49,19 @@ func RunDocker(args []string) error {
 				}
 				stale := ""
 				if p.BinaryDeleted {
-					stale = " (disk binary stale \xe2\x80\x94 restart needed)"
+					stale = " (disk binary stale \u2014 restart needed)"
 				}
-				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
-					providerLabel(p), p.Version, status, p.PID, stale)
+				ver := p.Version
+				if ver == "" {
+					ver = "-"
+				}
+				pid := p.PID
+				pidStr := fmt.Sprintf("%d", pid)
+				if pid <= 0 {
+					pidStr = "-"
+				}
+				fmt.Printf("  %s: %s (%s, pid %s)%s\n",
+					providerLabel(p), ver, status, pidStr, stale)
 			}
 			return nil
 		}
