@@ -586,13 +586,14 @@ func TestProviderVersionFallbackToExec(t *testing.T) {
 	// Build a real binary with -trimpath and a known version. This is
 	// exactly how the production Makefile builds provider binaries, so
 	// this test exercises the same path the bug manifested in.
-	if os.Getenv("GO_BIN") == "" {
-		t.Skip("set GO_BIN to the go binary path to run this test")
-	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "fake-provider")
 	ver := "30.9.0-trimpath-regression"
-	cmd := exec.Command(os.Getenv("GO_BIN"), "build",
+	goBin := os.Getenv("GO_BIN")
+	if goBin == "" {
+		goBin = "go"
+	}
+	cmd := exec.Command(goBin, "build",
 		"-trimpath",
 		"-ldflags", "-X main.Version="+ver,
 		"-o", bin,
@@ -615,13 +616,14 @@ func TestProviderVersionFallbackToExec(t *testing.T) {
 // trimpath binary is built; the exec fallback would also work, but we
 // want to assert buildinfo is the primary path.)
 func TestProviderVersionBuildinfoPreferred(t *testing.T) {
-	if os.Getenv("GO_BIN") == "" {
-		t.Skip("set GO_BIN to the go binary path to run this test")
-	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "fake-provider-no-trimpath")
 	ver := "30.9.0-buildinfo"
-	cmd := exec.Command(os.Getenv("GO_BIN"), "build",
+	goBin := os.Getenv("GO_BIN")
+	if goBin == "" {
+		goBin = "go"
+	}
+	cmd := exec.Command(goBin, "build",
 		"-ldflags", "-X main.Version="+ver,
 		"-o", bin,
 		"../../cmd/urnet-tools")

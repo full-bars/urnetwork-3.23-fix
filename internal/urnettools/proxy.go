@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // providerSubcommand runs a provider-binary subcommand against the targeted
@@ -99,12 +98,7 @@ func checkReadableAsUser(path, user string) error {
 	}
 	sysUID := int64(-1)
 	sysGID := int64(-1)
-	if sys := fi.Sys(); sys != nil {
-		if s, ok := sys.(*syscall.Stat_t); ok {
-			sysUID = int64(s.Uid)
-			sysGID = int64(s.Gid)
-		}
-	}
+	sysUID, sysGID = statFileOwnership(fi)
 	if sysUID == int64(uid) && st.Perm()&0o4 != 0 {
 		return nil
 	}
@@ -254,8 +248,14 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return fmt.Errorf("proxy file not found: %s", file)
 		}
 		if len(chosen) > 0 {
-			if err := checkReadableAsUser(file, chosen[0].User); err != nil {
-				return err
+			// Validate readability for every provider's user in the batch.
+			// A shared file readable by all targeted users vs a file readable
+			// only by the first provider's user — the delegated binary would
+			// fail for every other user with a confusing error, so fail fast.
+			for _, p := range chosen {
+				if err := checkReadableAsUser(file, p.User); err != nil {
+					return fmt.Errorf("provider %s: %w", providerLabel(p), err)
+				}
 			}
 		}
 		opArgs = []string{"proxy", "add", "--proxy_file=" + file, "-f"}

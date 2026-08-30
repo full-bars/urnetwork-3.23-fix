@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // setAutoStart enables or disables login auto-start for the provider's
@@ -26,7 +27,7 @@ func setAutoStart(p Provider, on bool) error {
 		// loginctl enable-linger, a user manager for a non-login
 		// service account does not start at boot, and a user-scope
 		// systemctl enable reports success but the unit never runs.
-		if linger, err := exec.Command("loginctl", "show-user", p.User, "-p", "Linger", "--value").Output(); err == nil {
+		if linger, err := execWithTimeout(5*time.Second, "loginctl", "show-user", p.User, "-p", "Linger", "--value"); err == nil {
 			if strings.TrimSpace(string(linger)) != "yes" {
 				return fmt.Errorf("linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit", p.User, p.User)
 			}

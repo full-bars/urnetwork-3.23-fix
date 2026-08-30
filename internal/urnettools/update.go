@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -850,7 +849,7 @@ func copyFile(src, dst string) error {
 	// data=ordered the rename is ordered after data, so this is usually safe
 	// without Sync, but on other filesystems and on power loss the risk is a
 	// zero-length provider binary at the canonical path.
-	if err := syscall.Fsync(int(out.Fd())); err != nil {
+	if err := fsyncFile(out); err != nil {
 		out.Close()
 		return fmt.Errorf("fsync %s: %w", dst, err)
 	}
