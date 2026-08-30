@@ -63,7 +63,6 @@ Quick jump:
 | `URNETWORK_REPORT_URL` | - | HTTP URL of a bandwidth hub server. When set, the provider POSTs a JSON report with per-proxy metrics (Clients, TotalRx/Tx, BillableRx/Tx). See `hub/main.go` for the server. Can be changed at runtime without restart by writing to `~/.urnetwork/report_url` (or using `urnet-tools report <url>`). |
 | `URNETWORK_REPORT_INTERVAL` | `5m` | How often bandwidth reports are posted to `URNETWORK_REPORT_URL`. Accepts Go duration strings such as `30s` or `2m`. Minimum `10s`. The `5m` default keeps the hub's historical SQLite write volume modest across a large fleet; lower it where a more live dashboard matters. |
 | `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | Provider heartbeat cadence to the hub (minimum `5s`). Shortening it fleet-wide can thundering-herd the hub. |
-| `URNETWORK_ALERT_WEBHOOK` | - | HTTP POST endpoint for outage alerts. Fires on outage start and recovery. |
 | `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
 | `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |

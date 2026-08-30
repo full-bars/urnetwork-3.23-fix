@@ -300,57 +300,6 @@ volumes:
   urfix_vnstat:
 ```
 
-## 🚨 Outage Alerting
-
-Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification when the provider loses contact with the URnetwork backend and when it recovers. The provider posts a JSON payload:
-
-```json
-{
-  "event": "outage_start",
-  "node": "my-server-name (docker)",
-  "timestamp": "2026-05-27T23:48:34Z",
-  "message": "Backend unreachable - provider holding existing connections but not accepting new ones."
-}
-```
-
-`event` is either `outage_start` or `outage_clear`. The provider logs `[outage]` state transitions to stdout regardless of whether a webhook URL is set.
-
-Examples:
-
-```text
-URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
-URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
-URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
-```
-
-Example Docker Run:
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN \
-  -e URNETWORK_NODE_NAME=urfix \
-  -e HOST_HOSTNAME=$(hostname) \
-  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
-  -v urfix_config:/root/.urnetwork \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
-```
-
-Startup log:
-
-```text
-[outage] watcher active node=my-server-name (docker) webhook=configured
-```
 
 ## 💾 RAM Logging
 

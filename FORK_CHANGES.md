@@ -221,14 +221,6 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 - Exported `IsBackendDegraded()` — wrapper around `isBackendDegraded()`. Degraded is reported only when **both** conditions hold: a consecutive-failure counter (`consecutiveBackendFails`) has crossed `backendDegradedFailThreshold` (3), and the last failure was within `backendDegradedWindow` (2 min). The counter is incremented at every auth/connect failure (H1 and H3 paths) and every contract OOB error, and reset to 0 on every successful connect **and** every successful OOB result. Because any one success resets the count, isolated transient timeouts never accumulate — only broad, sustained failure (a real outage) drives the counter past the threshold.
 
 `provider/main.go`:
-- `runOutageWatcher(ctx, nodeName, webhookURL)` — background goroutine, always runs:
-  - Polls `connect.IsBackendDegraded()` every 30 seconds
-  - Logs `[outage] backend degraded` / `[outage] backend recovered` on state transitions
-  - Requires `startConfirm` (10) consecutive degraded polls — 5 minutes of continuous degradation — before firing `outage_start`. Any healthy poll in between resets the count. This is the primary false-alarm guard: detection latency is traded (~5 min) for a near-zero false-positive rate.
-  - Requires 2 consecutive healthy polls before firing `outage_clear` (prevents false clears mid-outage)
-  - If `URNETWORK_ALERT_WEBHOOK` is set: POSTs JSON `{event, node, timestamp, message}` via a shared `webhookClient` (5s timeout); webhook calls are in goroutines so delivery never blocks the poll loop
-  - Per-event 5-minute cooldown on webhook POSTs to prevent spam at the recovery boundary
-- `fireWebhook(url, nodeName, event, message)` — HTTP POST helper; drains response body before closing to avoid leaving server sockets in CLOSE_WAIT
 - `runHealthHeartbeat(ctx, startTime, profile)` — background goroutine, always runs:
   - Logs `[health] uptime=X profile=Y heap=ZMiB sys=WMiB connections=N` on a configurable interval (default 5 minutes)
   - Provides real-time visibility into active TCP/UDP proxy sessions (instrumented via `ip.go`)
@@ -240,7 +232,7 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 **How to Identify in New Upstream**:
 - If upstream renames `lastBackendFailNano` / `consecutiveBackendFails` or refactors the degraded-state machinery, update the `IsBackendDegraded()` export in `transport.go`
 - If upstream moves auth error handling out of `transport.go` (e.g., into a dedicated health module), check that both `lastBackendFailNano` and `consecutiveBackendFails` are still written at every auth and OOB failure path, and that the counter is reset to 0 at every success path (H1/H3 connect success and OOB success) — a missing reset would make the counter climb monotonically and produce false outages
-- `runOutageWatcher` and `runHealthHeartbeat` launch sites are in `provide()` — if the provide function is refactored, ensure these still launch with the correct `ctx`
+- `runHealthHeartbeat` launch site is in `provide()` — if the provide function is refactored, ensure it still launches with the correct `ctx`
 
 **Status**: ✅ Shipped in fix.14. Custom to this fork.
 
