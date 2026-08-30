@@ -604,18 +604,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		for _, rp := range providers {
 			if rp.Unit == p.Unit && rp.User == p.User && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
 				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
-				// Clean up old backup files now that the update is
-				// confirmed successful.
-				dir := filepath.Dir(p.Binary)
-				base := filepath.Base(p.Binary)
-				matches, _ := filepath.Glob(filepath.Join(dir, base+".bak-*"))
-				// Keep the most recent 2 backups.
-				sort.Strings(matches)
-				if len(matches) > 2 {
-					for _, old := range matches[:len(matches)-2] {
-						os.Remove(old)
-					}
-				}
+				pruneBackups(p.Binary, 2)
 				return nil
 			}
 		}

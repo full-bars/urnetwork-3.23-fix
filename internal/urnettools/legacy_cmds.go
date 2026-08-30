@@ -73,31 +73,44 @@ func unitCommandArgs(p Provider, action string, extra ...string) []string {
 // directly (via `systemctl show -p LoadState`) instead of guessing from
 // filesystem paths. System units are the norm for fleet deployments; user
 // units are the legacy install model. Memoized per-unit for the process
-// lifetime to avoid repeated systemctl calls.
-var isUserUnitCache = map[string]bool{}
+// lifetime to avoid repeated systemctl calls. The cache is mutex-guarded
+// because batch per-provider loops in this package are trivially
+// parallelizable and the discovery path can already call this concurrently.
+var (
+	isUserUnitCache   = map[string]bool{}
+	isUserUnitCacheMu sync.RWMutex
+)
 
 func isUserUnit(unit string) bool {
-	if cached, ok := isUserUnitCache[unit]; ok {
+	isUserUnitCacheMu.RLock()
+	cached, ok := isUserUnitCache[unit]
+	isUserUnitCacheMu.RUnlock()
+	if ok {
 		return cached
 	}
+	result := isUserUnitCompute(unit)
+	isUserUnitCacheMu.Lock()
+	isUserUnitCache[unit] = result
+	isUserUnitCacheMu.Unlock()
+	return result
+}
+
+func isUserUnitCompute(unit string) bool {
 	// Ask the system manager if it can load this unit.
 	out, err := exec.Command("systemctl", "show", unit, "-p", "LoadState", "--value").Output()
 	if err == nil {
 		ls := strings.TrimSpace(string(out))
 		// LoadState != "not-found" means the system manager knows this unit.
 		if ls != "not-found" && ls != "" {
-			isUserUnitCache[unit] = false
 			return false
 		}
 	}
 	// Fall back to the directory heuristic when systemctl is unavailable.
 	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
 		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
-			isUserUnitCache[unit] = false
 			return false
 		}
 	}
-	isUserUnitCache[unit] = true
 	return true
 }
 
@@ -383,7 +396,6 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
 // RAM profile (the same check the legacy show_logs does). User units are
 // queried in the owning user's session, not the system manager
-//.
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
@@ -791,8 +803,8 @@ func restartAfterDropin(p Provider) error {
 	if isUserUnit(p.Unit) && p.User != "" {
 		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
 		if err := exec.Command("systemctl", argsReload...).Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
-	}
+			fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
+		}
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
 		// provider never actually restarted (Sonnet MEDIUM-2).

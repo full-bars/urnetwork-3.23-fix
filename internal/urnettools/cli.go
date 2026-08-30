@@ -723,7 +723,6 @@ func readProxyFileSource(p Provider) string {
 // Each prompt MUST read from this single reader: a second bufio.Reader over
 // the same fd would lose whatever the first already buffered, so piped
 // input (`echo y | urnet-tools update --all`) hangs on the second prompt
-//.
 var stdinReader = bufio.NewReader(os.Stdin)
 
 // stdinIsInteractiveOverride, when non-nil, replaces the terminal check.

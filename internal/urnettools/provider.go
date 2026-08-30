@@ -6,11 +6,13 @@
 package urnettools
 
 import (
+	"context"
 	"debug/buildinfo"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -150,45 +152,77 @@ func stateDirFor(env map[string]string) string {
 	return ""
 }
 
-// providerVersion returns the version string from a provider binary by
-// reading its Go build info (stamped by -ldflags "-X main.Version=...").
-// This is safe: it reads the ELF header without executing the binary,
-// avoiding the local privilege escalation vector in the old exec-based
-// approach. Errors yield "".
+// providerVersion returns the version string from a provider binary.
+//
+// Primary path: parse the embedded Go build info. The version is normally
+// recorded under the "-ldflags" setting as "-X main.Version=<ver>", which
+// buildinfo exposes without executing the file.
+//
+// IMPORTANT: when the binary is built with -trimpath (this repo's Makefile
+// does so), Go strips -ldflags from buildinfo.Settings and Main.Version is
+// empty. The buildinfo-only path returns "" in that case, which silently
+// breaks update-skip and post-restart verification. We fall back to
+// running the binary with --version under a tight timeout as a last resort.
+// The discovery layer has already vetted the path (isProviderArg + ELF
+// magic), and the 3s timeout caps the blast radius of an untrusted binary.
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""
 	}
+	if v := providerVersionFromBuildinfo(binary); v != "" {
+		return v
+	}
+	return providerVersionFromExec(binary)
+}
+
+// providerVersionFromBuildinfo extracts the version from Go build info
+// without executing the binary. Returns "" when no version is recorded
+// (e.g. -trimpath builds).
+func providerVersionFromBuildinfo(binary string) string {
 	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
 		return ""
 	}
-	// The version is embedded in -ldflags as "-X main.Version=<ver>".
 	for _, s := range info.Settings {
-		if s.Key == "-ldflags" {
-			// Parse "main.Version=<ver>" from the ldflags string.
-			// The full value might be "-w -s -X main.Version=30.9" or similar.
-			prefix := "main.Version="
-			idx := strings.Index(s.Value, prefix)
-			if idx < 0 {
-				continue
-			}
-			v := s.Value[idx+len(prefix):]
-			// Trim at next space or end of string.
-			if sp := strings.IndexByte(v, ' '); sp >= 0 {
-				v = v[:sp]
-			}
-			v = strings.TrimSpace(v)
-			if v != "" {
-				return v
-			}
+		if s.Key != "-ldflags" {
+			continue
+		}
+		const prefix = "main.Version="
+		idx := strings.Index(s.Value, prefix)
+		if idx < 0 {
+			continue
+		}
+		v := s.Value[idx+len(prefix):]
+		if sp := strings.IndexByte(v, ' '); sp >= 0 {
+			v = v[:sp]
+		}
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
 		}
 	}
-	// Fallback: module version (usually "(devel)" for local builds).
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}
 	return ""
+}
+
+// providerVersionFromExec runs the binary with --version under a 3-second
+// timeout and returns the first non-empty line of stdout. Used as a fallback
+// when build info is unavailable (e.g. -trimpath builds). The 3s timeout
+// mirrors the original pre-buildinfo implementation.
+func providerVersionFromExec(binary string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	return line
 }
 
 // unitStateDir returns the state directory implied by a systemd unit's

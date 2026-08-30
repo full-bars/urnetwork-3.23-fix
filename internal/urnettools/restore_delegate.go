@@ -352,9 +352,10 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		return err
 	}
 	// When run as root, MkdirAll creates the dir owned by root. Fix
-	// ownership so the provider process can write its own state
-	// .
-	_ = chownLikeStateOwner(p.StateDir, p.StateDir)
+	// ownership so the provider process can write its own state.
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(p.StateDir, uid, gid)
+	}
 	// 0o644, matching the sibling override-writers: the provider often runs
 	// under a different user than the tool, so a 0600 file would be unreadable
 	// and the change would silently never take effect.
@@ -362,7 +363,9 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		return fmt.Errorf("write %s: %v", file, err)
 	}
 	// chown the written file so the provider can read/rewrite it.
-	_ = chownLikeStateOwner(p.StateDir, file)
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(file, uid, gid)
+	}
 	fmt.Printf("%s set to %s for %s — takes effect on next provider tick\n", key, value, providerLabel(p))
 	return nil
 }
@@ -393,11 +396,15 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
-	_ = chownLikeStateOwner(p.StateDir, p.StateDir)
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(p.StateDir, uid, gid)
+	}
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		return err
 	}
-	_ = chownLikeStateOwner(p.StateDir, file)
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(file, uid, gid)
+	}
 	fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
 	return nil
 }

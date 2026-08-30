@@ -5,12 +5,12 @@ package urnettools
 import (
 	"fmt"
 	"os"
-"os/user"
-	"time"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // discoverProcesses scans /proc for running provider processes across ALL

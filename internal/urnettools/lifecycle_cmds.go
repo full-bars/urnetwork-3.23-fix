@@ -157,11 +157,16 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	return nil
 }
 
-// safeRemoveTarget reports whether a path is safe to remove: non-empty,
-// absolute, not the filesystem root, and structurally matching a
-// provider-owned target. State dirs end with .urnetwork; binaries
-// live under a bin/ directory. Refuses broad paths like /home, /etc
-// that could be catastrophic if removed.
+// safeRemoveTarget reports whether a path is safe to remove. It refuses:
+// - empty / relative paths
+// - the filesystem root
+// - well-known top-level system dirs (/home, /etc, /usr, /var, /opt,
+//   /root, /srv) that would be catastrophic to RemoveAll
+//
+// What it does NOT check: the path's basename or parent structure. A
+// p.StateDir from --state-dir=<path> argv (parsed in discover_unix.go)
+// or a process with HOME=/ is NOT separately validated here — the
+// caller is responsible for not feeding such paths in.
 func safeRemoveTarget(path string) bool {
 	if path == "" {
 		return false
@@ -196,7 +201,6 @@ func safeRemoveTarget(path string) bool {
 	}
 	return true
 }
-
 
 // cmdReinstall delegates to the legacy installer script for a full
 // reinstall of the targeted provider (the installer handles the complete

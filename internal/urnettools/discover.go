@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 	"strings"
+	"time"
 )
 
 // knownBinaries are the binary basenames the tool recognizes as URnetwork

@@ -139,7 +139,6 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		// Build a NEW slice — filtering in place (chosen[:0]) would write
 		// through to the caller's backing array when chosen aliases
 		// providers (single-provider default path), mutating the input
-		//.
 		filtered := make([]Provider, 0, len(chosen))
 		for _, p := range chosen {
 			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] {

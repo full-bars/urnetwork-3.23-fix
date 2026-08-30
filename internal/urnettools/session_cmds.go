@@ -51,13 +51,6 @@ var sessionFiles = []string{
 	"proxy.state",
 }
 
-// sessionRandSalt is a package var so round-trip tests can pin the salt and
-// the derived ciphertext is deterministic (still verifies format + keying).
-// Backward-compat alias for sessionRand(8); new code should use sessionRand.
-var sessionRandSalt = func() ([]byte, error) {
-	return sessionRand(8)
-}
-
 // tarAndEncrypt builds the session bundle from an ordered name->bytes map. It
 // gzips a tar of the entries, then AES-256-GCM encrypts it with a key derived
 // by PBKDF2-HMAC-SHA256 at sessionPBKDF2Iters (current guidance: 600000)
