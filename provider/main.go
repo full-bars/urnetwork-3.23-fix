@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -41,8 +40,6 @@ import (
 
 const DefaultApiUrl = "https://api.bringyour.com"
 const DefaultConnectUrl = "wss://connect.bringyour.com"
-
-var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
 // proxyLaunchCount tracks how many proxy goroutines have passed the stagger
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
@@ -1011,124 +1008,6 @@ func auth(opts docopt.Opts) {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
-	}
-}
-
-// runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
-// state transitions. If URNETWORK_ALERT_WEBHOOK is set it also POSTs a JSON
-// payload so operators can receive push notifications.
-// "Start" requires startConfirm consecutive degraded polls (5 minutes at the
-// 30s poll interval) before firing, so a brief blip never raises a false alarm —
-// the backend must fail continuously with zero successful connects or OOB calls
-// for the whole window. "Clear" requires two consecutive healthy polls to avoid
-// premature all-clears during brief lulls mid-outage. A 5-minute per-event
-// cooldown prevents webhook spam if the backend flickers at a boundary.
-func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
-	const pollInterval = 30 * time.Second
-	const cooldown = 5 * time.Minute
-	const clearConfirm = 2
-	const startConfirm = 10 // 10 * 30s = 5 minutes of continuous degradation
-
-	degraded := false
-	degradedCount := 0
-	clearCount := 0
-	var lastStartFire, lastClearFire time.Time
-
-	webhookURL := resolveAlertWebhook(envWebhookURL)
-	if webhookURL != "" {
-		tlog("👀 [outage] watcher active node=%s webhook=configured\n", nodeName)
-	} else {
-		tlog("👀 [outage] watcher active node=%s\n", nodeName)
-	}
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		// Re-resolve every tick so writing ~/.urnetwork/alert_webhook can
-		// turn outage alerting on, off, or repoint it without a restart —
-		// same reasoning as the hub report URL in bandwidth_reporter.go.
-		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
-			webhookURL = resolved
-			if webhookURL != "" {
-				tlog("[outage] webhook updated node=%s webhook=configured\n", nodeName)
-			} else {
-				tlog("[outage] webhook disabled node=%s\n", nodeName)
-			}
-		}
-
-		if connect.IsBackendDegraded() {
-			clearCount = 0
-			if !degraded {
-				degradedCount++
-				if degradedCount >= startConfirm {
-					degraded = true
-					tlog("🚨 [outage] backend degraded — holding existing connections, not accepting new ones\n")
-					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
-						lastStartFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_start",
-							"Backend unreachable — provider holding existing connections but not accepting new ones.")
-					}
-				}
-			}
-		} else {
-			degradedCount = 0
-			if degraded {
-				clearCount++
-				if clearCount >= clearConfirm {
-					degraded = false
-					clearCount = 0
-					tlog("🚨 [outage] backend recovered\n")
-					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
-						lastClearFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
-					}
-				}
-			}
-		}
-	}
-}
-
-func fireWebhook(url, nodeName, event, message string) {
-	// Format the body per service. Discord requires "content" and Slack requires
-	// "text"; a generic {event,node,...} body is rejected by both (HTTP 400). Any
-	// other endpoint (ntfy, custom) gets the structured JSON it can parse.
-	var payload []byte
-	var err error
-	switch {
-	case strings.Contains(url, "discord.com"), strings.Contains(url, "discordapp.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"content": line})
-	case strings.Contains(url, "hooks.slack.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"text": line})
-	default:
-		payload, err = json.Marshal(map[string]string{
-			"event":     event,
-			"node":      nodeName,
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"message":   message,
-		})
-	}
-	if err != nil {
-		tlog("[webhook] marshal failed: %v\n", err)
-		return
-	}
-	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		tlog("📡 [webhook] delivery failed (%s): %v\n", event, err)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		tlog("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
 	}
 }
 
@@ -2612,7 +2491,6 @@ func provide(opts docopt.Opts) {
 
 	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
 
-	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
