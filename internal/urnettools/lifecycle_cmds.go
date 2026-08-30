@@ -231,7 +231,18 @@ func cmdReinstall(args []string, force, dryRun bool) error {
 			providerLabel(p), cfg.Tag, cfg.Digest)
 		return nil
 	}
-	return updateProvider(p, cfg)
+	stageDir, err := newStageDir()
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stageDir)
+	cfg.StageDir = stageDir
+	// Resolve tool asset for staged-restart escalation (best effort).
+	if toolAsset, terr := runningToolAssetName(); terr == nil {
+		cfg.ToolAsset = toolAsset
+		cfg.ToolDigest = digestForAsset(release.Assets, cfg.ToolAsset)
+	}
+	return updateProviderWithRestart(p, cfg, stageToolForEscalation(cfg))
 }
 
 // writeTimerUnitAtomic writes a timer unit file via temp+rename so a crash

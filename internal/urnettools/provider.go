@@ -6,12 +6,11 @@
 package urnettools
 
 import (
-	"context"
+	"debug/buildinfo"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -152,24 +151,44 @@ func stateDirFor(env map[string]string) string {
 }
 
 // providerVersion returns the version string from a provider binary by
-// running "<binary> --version" with a short timeout. Errors yield "".
-//
-// The timeout is essential: Discover() calls this for every matched process
-// synchronously, so a single hung provider binary would otherwise wedge
-// every command including read-only `providers` (review finding H1).
+// reading its Go build info (stamped by -ldflags "-X main.Version=...").
+// This is safe: it reads the ELF header without executing the binary,
+// avoiding the local privilege escalation vector in the old exec-based
+// approach (Opus C1). Errors yield "".
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "--version")
-	cmd.Env = append(os.Environ(), "URNETWORK_NO_DOWNLOAD_TARBALL=1")
-	out, err := cmd.Output()
+	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	// The version is embedded in -ldflags as "-X main.Version=<ver>".
+	for _, s := range info.Settings {
+		if s.Key == "-ldflags" {
+			// Parse "main.Version=<ver>" from the ldflags string.
+			// The full value might be "-w -s -X main.Version=30.9" or similar.
+			prefix := "main.Version="
+			idx := strings.Index(s.Value, prefix)
+			if idx < 0 {
+				continue
+			}
+			v := s.Value[idx+len(prefix):]
+			// Trim at next space or end of string.
+			if sp := strings.IndexByte(v, ' '); sp >= 0 {
+				v = v[:sp]
+			}
+			v = strings.TrimSpace(v)
+			if v != "" {
+				return v
+			}
+		}
+	}
+	// Fallback: module version (usually "(devel)" for local builds).
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return ""
 }
 
 // unitStateDir returns the state directory implied by a systemd unit's

@@ -275,7 +275,11 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 					_, isDeleted := strings.CutSuffix(exe, " (deleted)")
 					skip = !isDeleted
 				} else {
-					skip = true // /proc unavailable — trust the version
+					// /proc unreadable (unprivileged cross-user) — cannot
+					// determine currency; do NOT skip. A redundant re-install
+					// is cheap (digest check short-circuits); a missed update
+					// leaves the provider stuck forever (Opus H11).
+					skip = false
 				}
 			} else {
 				skip = true
@@ -659,15 +663,11 @@ func restartProvider(p Provider) error {
 		}
 	}
 	if p.User != "" && p.PID > 0 {
-		// No systemd ownership resolved: signal the process directly.
-		proc, err := os.FindProcess(p.PID)
-		if err == nil {
-			if err := proc.Signal(os.Interrupt); err == nil {
-				fmt.Printf("sent SIGINT to pid %d (provider will restart under its unit)\n", p.PID)
-				time.Sleep(2 * time.Second)
-				return nil
-			}
-		}
+		// No systemd ownership resolved: do NOT signal the process.
+		// Sending SIGINT to a bare process without a unit just kills it
+		// permanently — the provider won't restart (Opus H1). Return an
+		// actionable error so the operator can restart manually.
+		return fmt.Errorf("no systemd unit resolved for %s — restart the provider manually (pid %d)", providerLabel(p), p.PID)
 	}
 	return fmt.Errorf("could not restart provider %s — restart the owning unit manually", providerLabel(p))
 }
