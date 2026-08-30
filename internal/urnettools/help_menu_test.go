@@ -167,8 +167,8 @@ func TestVersionHelpIsRootIntercepted(t *testing.T) {
 				t.Fatalf("%s version --help returned error: %v", tc.name, err)
 			}
 		})
-		if strings.TrimSpace(out) != ToolVersion {
-			t.Errorf("%s version --help = %q, want %q", tc.name, strings.TrimSpace(out), ToolVersion)
+		if !strings.Contains(out, ToolVersion) {
+			t.Errorf("%s version --help = %q, want it to contain %q", tc.name, out, ToolVersion)
 		}
 	}
 }

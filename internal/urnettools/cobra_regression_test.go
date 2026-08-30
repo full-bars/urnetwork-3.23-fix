@@ -40,7 +40,7 @@ func TestRunSelfHealHelpNoError(t *testing.T) {
 // level (the aliases on the version command are dead in Cobra; the special case
 // in Run handles these).
 func TestRunVersionForms(t *testing.T) {
-	for _, arg := range []string{"version", "--version", "-v"} {
+	for _, arg := range []string{"--version", "-v"} {
 		out := captureStdout(t, func() {
 			if err := Run([]string{arg}); err != nil {
 				t.Errorf("Run([%s]) = %v, want nil", arg, err)
@@ -49,6 +49,15 @@ func TestRunVersionForms(t *testing.T) {
 		if strings.TrimSpace(out) != ToolVersion {
 			t.Errorf("Run([%s]) = %q, want %q", arg, strings.TrimSpace(out), ToolVersion)
 		}
+	}
+	// `version` subcommand shows tool version as first line (richer output).
+	out := captureStdout(t, func() {
+		if err := Run([]string{"version"}); err != nil {
+			t.Errorf("Run([version]) = %v, want nil", err)
+		}
+	})
+	if !strings.Contains(out, ToolVersion) {
+		t.Errorf("Run([version]) = %q, want it to contain %q", out, ToolVersion)
 	}
 }
 
@@ -80,7 +89,7 @@ func TestCobraUnknownCommandErrors(t *testing.T) {
 // still print the version, matching the pre-cobra dispatcher (which matched on
 // args[0] only) - Sonnet/Muse review finding.
 func TestRunVersionWithTrailingArg(t *testing.T) {
-	for _, arg := range []string{"-v", "--version", "version"} {
+	for _, arg := range []string{"-v", "--version"} {
 		out := captureStdout(t, func() {
 			if err := Run([]string{arg, "junk"}); err != nil {
 				t.Errorf("Run([%s junk]) = %v, want nil", arg, err)
@@ -89,5 +98,15 @@ func TestRunVersionWithTrailingArg(t *testing.T) {
 		if strings.TrimSpace(out) != ToolVersion {
 			t.Errorf("Run([%s junk]) = %q, want %q", arg, strings.TrimSpace(out), ToolVersion)
 		}
+	}
+	// `version` with trailing arg still produces richer output (just check
+	// it contains the tool version and doesn't error).
+	out := captureStdout(t, func() {
+		if err := Run([]string{"version", "junk"}); err != nil {
+			t.Errorf("Run([version junk]) = %v, want nil", err)
+		}
+	})
+	if !strings.Contains(out, ToolVersion) {
+		t.Errorf("Run([version junk]) = %q, want it to contain %q", out, ToolVersion)
 	}
 }

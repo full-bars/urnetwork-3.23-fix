@@ -278,7 +278,7 @@ func TestRunVersionCommand(t *testing.T) {
 	old := ToolVersion
 	defer func() { ToolVersion = old }()
 	ToolVersion = "test-version"
-	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
+	for _, args := range [][]string{{"--version"}, {"-v"}} {
 		// Capture stdout so we can pin the printed content, not just the
 		// nil error (Sonnet review finding: output must be verified).
 		oldOut := os.Stdout
@@ -303,6 +303,33 @@ func TestRunVersionCommand(t *testing.T) {
 		}
 		if got := strings.TrimSpace(buf.String()); got != "test-version" {
 			t.Errorf("Run(%v) printed %q, want %q", args, got, "test-version")
+		}
+	}
+	// `version` subcommand now shows richer output — just verify it contains
+	// the tool version and doesn't error.
+	{
+		oldOut := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		var buf bytes.Buffer
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(&buf, r)
+			close(done)
+		}()
+		runErr := Run([]string{"version"})
+		w.Close()
+		os.Stdout = oldOut
+		<-done
+		r.Close()
+		if runErr != nil {
+			t.Errorf("Run([version]) = %v, want nil", runErr)
+		}
+		if !strings.Contains(buf.String(), "test-version") {
+			t.Errorf("Run([version]) = %q, want it to contain %q", buf.String(), "test-version")
 		}
 	}
 }

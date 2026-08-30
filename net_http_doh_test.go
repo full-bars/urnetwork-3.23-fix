@@ -410,7 +410,7 @@ func TestServerStatsSeedRoundTrip(t *testing.T) {
 	s := newServerStats()
 	seed := map[string]float64{
 		"https://1.1.1.1/dns-query": 6.0,
-		"https://9.9.9.9/dns-query":  2.0,
+		"https://9.9.9.9/dns-query": 2.0,
 	}
 	s.seed(seed)
 
