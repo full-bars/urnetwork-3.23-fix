@@ -3322,6 +3322,9 @@ func provide(opts docopt.Opts) {
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
 	critLog("PROVIDER EXIT: normal shutdown (code=0)")
+	// Explicitly close the DoH cache before os.Exit(0) since defers do
+	// not run on os.Exit. idempotent — safe if already called by defer.
+	closeDohCache()
 	os.Exit(0)
 }
 

@@ -273,14 +273,12 @@ func TestProvideAuthReusesValidUnexpiredEntry(t *testing.T) {
 	})
 
 	t.Setenv("URNETWORK_HOT_RESTART", "1")
-	called := 0
 	origFn := renewClientJWTFn
 	defer func() { renewClientJWTFn = origFn }()
 	renewClientJWTFn = func(_ context.Context, _, _ string, _ connect.Id, _ string, _ *connect.ClientStrategy) (string, error) {
 		t.Fatal("renewal must NOT be called for a valid, unexpired entry")
 		return "", nil
 	}
-	_ = called
 
 	byJwt, id, reused, err := provideAuth(nil, nil, "", docopt.Opts{}, "node", "direct")
 	if err != nil {
