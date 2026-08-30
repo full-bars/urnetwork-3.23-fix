@@ -1343,12 +1343,12 @@ func runEarningWindows(ctx context.Context) {
 			// "direct-e2e": per-peer TLS tunnels THIS node terminates. Client
 			// traffic merely forwarded through us (transit hops) never opens
 			// such a session here — those appear on 🛰️ [relay] / 📈 [traffic].
-			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | opens since-start: pqe=%d clas=%d | 1h: pqe=%d clas=%d | 24h: pqe=%d clas=%d | 7d: pqe=%d clas=%d\n",
+			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | since-start: pqe=%d classical=%d | 1h: pqe=%d classical=%d | 24h: pqe=%d classical=%d | 7d: pqe=%d classical=%d\n",
 				c.ActivePQE, c.ActiveClas,
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
-			tlog("🔐 [pqe] all-time opens (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
+			tlog("🔐 [pqe] all-time (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
