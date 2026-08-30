@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +28,12 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
-	cmd := exec.Command(unitCommandArgs(p, action, extra...)[0], unitCommandArgs(p, action, extra...)[1:]...)
+	// Compute the argv once. unitCommandArgs consults isUserUnit (and
+	// therefore systemctl show) on every call, so the prior implementation
+	// triggered two independent filesystem-/systemd-aware evaluations for a
+	// single command — once for the exec name, once for the rest.
+	args := unitCommandArgs(p, action, extra...)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -245,12 +251,20 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	return fmt.Errorf("%s", b.String())
 }
 
-// cmdLogs streams logs for the provider: RAMLOGS-aware (reads /dev/shm)
-// when the unit has URNETWORK_RAMLOGS=1 / a RAM profile, else journald.
+// cmdLogs streams logs for the provider: RAMLOGS-aware (reads the provider's
+// own RAM buffer) when the unit has URNETWORK_RAMLOGS=1 / a RAM profile,
+// else journald. An optional trailing positional N (e.g. `logs --unit foo
+// 500`) sets the number of lines to seed the follow with; default is 250.
 func cmdLogs(args []string) error {
-	t, _, err := parseTargetFlags(args)
+	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
+	}
+	lines := 250
+	for _, a := range rest {
+		if n, err := strconv.Atoi(a); err == nil && n > 0 && n < 1000000 {
+			lines = n
+		}
 	}
 	providers := Discover()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -261,9 +275,17 @@ func cmdLogs(args []string) error {
 		printNarrowedNote(len(providers), p, "logs")
 	}
 	if providerUsesRamlogs(p) {
-		// Stream from the RAM buffer on the box.
-		fmt.Printf("Streaming from RAM disk (/dev/shm/urnetwork.log) — provider %s\n", providerLabel(p))
-		cmd := exec.Command("tail", "-n", "250", "-f", "/dev/shm/urnetwork.log")
+		// The RAM buffer is provider-scoped: each provider gets its own
+		// /dev/shm/<basename>.log so multi-provider boxes don't conflate
+		// outputs (audit M15). Fall back to the legacy shared path only
+		// when the per-provider buffer doesn't exist — that keeps the
+		// transition safe for boxes upgraded mid-flight.
+		ramPath := "/dev/shm/" + filepath.Base(p.Binary) + ".log"
+		if _, err := os.Stat(ramPath); err != nil {
+			ramPath = "/dev/shm/urnetwork.log"
+		}
+		fmt.Printf("Streaming from RAM disk (%s, %d lines) — provider %s\n", ramPath, lines, providerLabel(p))
+		cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", ramPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
