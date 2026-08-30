@@ -812,30 +812,54 @@ func cmdHubInstall(p Provider, rest []string) error {
 	if len(rest) > 0 {
 		tag = strings.TrimPrefix(rest[0], "--tag=")
 	}
+	rel := (*releaseInfo)(nil)
 	if tag == "" {
-		if rel, err := latestRelease(); err == nil {
-			tag = rel.Tag
-		} else {
+		var err error
+		rel, err = latestRelease()
+		if err != nil {
+			return err
+		}
+		tag = rel.Tag
+	} else {
+		var err error
+		rel, err = fetchReleaseByTag(tag)
+		if err != nil {
 			return err
 		}
 	}
 	arch := runtimeGOARCH()
-	url := fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-hub-%s-linux-%s", tag, tag, arch)
+	goos := runtime.GOOS
+	assetName := fmt.Sprintf("urnetwork-hub-%s-%s-%s", tag, goos, arch)
+	wantDigest := digestForAsset(rel.Assets, assetName)
+	if wantDigest == "" {
+		return fmt.Errorf("release %s: hub asset %s has no sha256 digest; refusing unverified download", tag, assetName)
+	}
+	url := fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, assetName)
 	binDir := filepath.Dir(p.Binary)
 	hubBin := filepath.Join(binDir, "urnetwork-hub")
 	fmt.Printf("Downloading hub %s -> %s\n", url, hubBin)
-	if err := downloadFile(url, hubBin); err != nil {
+	// Download to a staging path first; only rename into place after the
+	// digest is verified. This prevents a partial / tampered download from
+	// landing at the install path.
+	stage := hubBin + ".stage"
+	if err := downloadFile(url, stage); err != nil {
 		return fmt.Errorf("hub download: %w", err)
 	}
-	// chmod FIRST (the sanity check needs the execute bit), then verify the
-	// file structurally WITHOUT executing it — running a freshly downloaded,
-	// unverified binary is code execution of a remote artifact.
-	if err := os.Chmod(hubBin, 0o755); err != nil {
+	if err := verifySHA256(stage, wantDigest); err != nil {
+		os.Remove(stage)
+		return fmt.Errorf("hub digest: %w", err)
+	}
+	if err := os.Chmod(stage, 0o755); err != nil {
+		os.Remove(stage)
 		return err
 	}
-	if !isRecognizedExecutable(hubBin) {
-		os.Remove(hubBin)
-		return fmt.Errorf("hub download: %s is not a %s executable (corrupted or wrong asset)", hubBin, runtime.GOOS)
+	if !isRecognizedExecutable(stage) {
+		os.Remove(stage)
+		return fmt.Errorf("hub download: %s is not a %s executable (corrupted or wrong asset)", stage, goos)
+	}
+	if err := os.Rename(stage, hubBin); err != nil {
+		os.Remove(stage)
+		return err
 	}
 	// User-level systemd unit for the hub.
 	home := homeForUser(p.User)
