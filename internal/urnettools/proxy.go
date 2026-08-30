@@ -389,10 +389,21 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		return nil
 	}
 
+	var perProviderErrs []string
 	for _, p := range chosen {
 		if err := providerSubcommand(p, opArgs...); err != nil {
-			return err
+			// Continue past per-provider failures so a single bad
+			// provider can't strand the rest of the batch (audit M16:
+			// `proxy clear --all` previously stopped on the first
+			// failure and left downstream providers untouched with no
+			// summary). Surface the failure at the end so it is not
+			// silently swallowed.
+			perProviderErrs = append(perProviderErrs, fmt.Sprintf("%s: %v", providerLabel(p), err))
+			continue
 		}
+	}
+	if len(perProviderErrs) > 0 {
+		return fmt.Errorf("%d of %d provider(s) failed: %s", len(perProviderErrs), len(chosen), strings.Join(perProviderErrs, "; "))
 	}
 	return nil
 }
