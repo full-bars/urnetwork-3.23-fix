@@ -548,8 +548,18 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		return err
 	}
 	path := filepath.Join(dropDir, name)
-	content := mergeDropinEnvFile(path, envLine)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	content, err := mergeDropinEnvFile(path, envLine)
+	if err != nil {
+		return err
+	}
+	// Atomic write (temp + rename) so a crash never leaves a half-written
+	// drop-in that systemd refuses to load .
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	fmt.Printf("Wrote %s\n", path)
@@ -562,13 +572,19 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 // [Service] header. Pure (no I/O beyond the read) so tests can pin the
 // merge semantics without a real unit (coderabbit: tests must call
 // production logic).
-func mergeDropinEnvFile(path, envLine string) string {
+func mergeDropinEnvFile(path, envLine string) (string, error) {
 	newKey := envLine
 	if i := strings.IndexByte(envLine, '='); i > 0 {
 		newKey = envLine[:i]
 	}
 	var kept []string
-	if b, err := os.ReadFile(path); err == nil {
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		// Transient read error (EACCES, EIO, NFS) must not silently
+		// drop every existing override .
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if err == nil {
 		for _, ln := range strings.Split(string(b), "\n") {
 			trimmed := strings.TrimSpace(ln)
 			if trimmed == "" || trimmed == "[Service]" {
@@ -585,8 +601,9 @@ func mergeDropinEnvFile(path, envLine string) string {
 			kept = append(kept, trimmed)
 		}
 	}
-	kept = append(kept, fmt.Sprintf("Environment=%q", envLine))
-	return "[Service]\n" + strings.Join(kept, "\n") + "\n"
+	escaped := strings.ReplaceAll(envLine, "%", "%%")
+	kept = append(kept, fmt.Sprintf("Environment=%q", escaped))
+	return "[Service]\n" + strings.Join(kept, "\n") + "\n", nil
 }
 
 // removeDropinEnv removes a matching Environment line from a drop-in file
@@ -633,7 +650,12 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		fmt.Printf("Removed %s\n", path)
 	} else {
 		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			os.Remove(tmp)
 			return err
 		}
 		fmt.Printf("Updated %s (removed %s)\n", path, envKey)
@@ -823,42 +845,14 @@ WantedBy=default.target
 	return nil
 }
 
-// runtimeGOARCH mirrors runtime.GOARCH without importing runtime in helpers.
+// runtimeGOARCH returns the host architecture from the Go runtime.
+// The previous implementation read $GOARCH from the environment, which
+// could select the wrong architecture on cross-compile boxes or CI
+// jobs . runtime.GOARCH is always correct for the
+// running binary.
 func runtimeGOARCH() string {
-	return strings.ToLower(goarch())
+	return runtime.GOARCH
 }
-
-// goarch returns the build GOARCH (amd64/arm64) for asset naming.
-func goarch() string {
-	// runtime.GOARCH is the cleanest source; keep this as a tiny wrapper
-	// so tests can stub it if needed.
-	return goArchValue
-}
-
-// goArchValue is set at init from the runtime.
-var goArchValue = func() string {
-	switch os.Getenv("GOARCH") {
-	case "amd64", "arm64", "386", "arm":
-		return os.Getenv("GOARCH")
-	}
-	// Fall back to uname -m (best effort, avoids importing runtime).
-	out, err := exec.Command("uname", "-m").Output()
-	if err != nil {
-		return "amd64"
-	}
-	switch strings.TrimSpace(string(out)) {
-	case "x86_64":
-		return "amd64"
-	case "aarch64":
-		return "arm64"
-	case "armv7l":
-		return "arm"
-	case "i386", "i686":
-		return "386"
-	default:
-		return "amd64"
-	}
-}()
 
 // cmdTune implements the tuning profile commands (turbo/eco/lowmode/ramlogs/
 // auto/optimize) by writing URNETWORK_PROFILE / env drop-ins for the

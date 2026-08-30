@@ -137,7 +137,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		if p, ok := resolveDefaultProvider(providers); ok {
 			// Make it visible that a PERSISTED default (not an explicit flag)
 			// drove the selection — under root/automation this must not read as
-			// a plain single-provider auto-select (audit review finding).
+			// a plain single-provider auto-select.
 			fmt.Fprintf(os.Stderr, "using persisted default provider: %s\n", providerLabel(p))
 			return p, nil
 		}

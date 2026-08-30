@@ -248,7 +248,7 @@ func decodeJWTFromBytes(raw []byte) (netName, netID string, exp time.Time, err e
 // It requires an interactive terminal: a passphrase must never be scripted from
 // piped stdin, and a second bufio.Reader must not be opened over os.Stdin (the
 // package owns the single stdinReader). Refuse when not interactive rather than
-// block or read a buffered leftover (review finding HIGH).
+// block or read a buffered leftover.
 func readPassphrase(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	if !stdinIsInteractive() {
@@ -264,7 +264,7 @@ func readPassphrase(prompt string) (string, error) {
 
 // readYesNo prompts for a y/N answer and returns true only on an explicit yes.
 // Uses the shared confirmStdinRead so it honors the single-reader rule and
-// refuses cleanly on non-interactive stdin (review finding HIGH).
+// refuses cleanly on non-interactive stdin.
 func readYesNo(prompt string) bool {
 	line, err := confirmStdinRead(prompt)
 	if err != nil {
@@ -373,7 +373,7 @@ func cmdSessionSave(p Provider, outFile string) error {
 	}
 	// Refuse to clobber an existing destination silently (running as root,
 	// os.WriteFile truncates whatever path is named). Require an explicit yes
-	// to overwrite (review finding LOW).
+	// to overwrite.
 	if _, err := os.Stat(outFile); err == nil {
 		if !readYesNo("destination already exists — overwrite? (y/n):") {
 			return fmt.Errorf("aborted; %s already exists", outFile)
@@ -413,7 +413,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	// Read the current identity. Distinguish "no jwt" (fresh provider, no
 	// account to enforce against) from "jwt present but unreadable", which
 	// must fail closed rather than silently skip the same-account gate
-	// (review finding): a truncated/corrupt live jwt must not let a bundle
+	//: a truncated/corrupt live jwt must not let a bundle
 	// for a different network load as if no identity existed.
 	currentID := ""
 	jwtPath := filepath.Join(p.StateDir, "jwt")
@@ -436,7 +436,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	}
 
 	// Back up the live state before touching anything. Nanosecond suffix avoids
-	// two rapid loads colliding over one backup dir (review finding).
+	// two rapid loads colliding over one backup dir.
 	backupDir := filepath.Join(p.StateDir, ".session-backup-"+time.Now().Format("20060102-150405.000000000"))
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return "", err
@@ -516,7 +516,7 @@ func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) er
 	}
 	// Reinstate the audit + confirm gate the other destructive commands share:
 	// loading stages a full identity replacement. -n prints the plan and does
-	// nothing; -f skips the prompt (review finding MEDIUM).
+	// nothing; -f skips the prompt.
 	ok, err := confirmGate("load session into "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err

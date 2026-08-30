@@ -130,7 +130,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				exclude = splitLabels(strings.TrimPrefix(rest[i], "--exclude="))
 			} else if strings.HasPrefix(rest[i], "-") {
 				// Unknown --flag (typo like --netwrok): reject AFTER the
-				// command's own flags were consumed (review finding L2).
+				// command's own flags were consumed.
 				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
@@ -143,7 +143,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	if all {
 		// --all means every provider on the box, no ambiguity. It conflicts
 		// with an explicit target — error rather than silently discarding
-		// it (review finding M4).
+		// it.
 		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
 		}
@@ -427,10 +427,9 @@ func confirmVersion(tag string, providers []Provider) (bool, error) {
 	for _, p := range providers {
 		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
 	}
-	fmt.Print("Update to this version? [Y/n]: ")
-	line, err := stdinReader.ReadString('\n')
+	line, err := confirmStdinRead("Update to this version? [Y/n]: ")
 	if err != nil {
-		return false, fmt.Errorf("read confirmation: %w", err)
+		return false, err
 	}
 	line = strings.TrimSpace(strings.ToLower(line))
 	if line == "" || line == "y" || line == "yes" {
@@ -548,8 +547,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 
 	// Backup current binary with a nanosecond-timestamped name so repeated
-	// updates never collide (review finding M2; coderabbit minor: second
-	// precision let two updates in one second reuse the older backup).
+	// updates never collide.
 	//
 	// The running provider binary may have been deleted on disk already by a
 	// prior interrupted/partial update. Discover() reads /proc/<pid>/exe which,
@@ -557,6 +555,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// target whose on-disk file does not exist. There is then nothing to back
 	// up — skip it (warn) and install the fresh binary rather than failing the
 	// whole update on a phantom backup path.
+	// Prune old backups before creating a new one so disk pressure cannot
+	// cause the update to fail .
+	pruneBackups(p.Binary, 2)
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
 	} else {
@@ -575,6 +576,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		}
 		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 	}
+	// Prune old backups after the new one is written, regardless of
+	// update outcome .
+	defer pruneBackups(p.Binary, 2)
 
 	// Swap with ownership preserved for the provider user.
 	if err := installBinary(staged, p.Binary, p.User); err != nil {
@@ -781,7 +785,7 @@ func extractSingleFile(tarball, relPath, dst string) error {
 // The write goes to dst+".new" (same directory, so same filesystem) and is
 // os.Rename'd over dst — never O_TRUNC in place. The running provider may
 // still be executing from dst during an update; overwriting that inode in
-// place risks SIGBUS/SIGSEGV on demand-paging (review finding H2), while
+// place risks SIGBUS/SIGSEGV on demand-paging, while
 // rename(2) leaves the old inode serving already-open processes and only
 // new execve's see the new file.
 func installBinary(src, dst, user string) error {
@@ -817,10 +821,27 @@ func installBinary(src, dst, user string) error {
 // backupName returns the timestamped backup path for a binary — distinct
 // names even for repeated updates within the same second are NOT guaranteed
 // at second resolution, but the timestamp carries the wall clock so backups
-// never collide across seconds (review finding M2). Extracted as a pure
+// never collide across seconds. Extracted as a pure
 // helper so tests call production logic (coderabbit).
 func backupName(binary string, at time.Time) string {
 	return binary + ".bak-" + at.UTC().Format("20060102T150405.000000000Z")
+}
+
+// pruneBackups removes older .bak-* backups for a binary, keeping the
+// newest 'keep' entries. Best-effort: removal errors are logged but never
+// fail the caller. Called before writing a new backup (to free disk space)
+// and via defer after updateProvider returns (to handle success and failure
+// paths uniformly).
+func pruneBackups(binaryPath string, keep int) {
+	dir := filepath.Dir(binaryPath)
+	base := filepath.Base(binaryPath)
+	matches, _ := filepath.Glob(filepath.Join(dir, base+".bak-*"))
+	sort.Strings(matches)
+	if len(matches) > keep {
+		for _, old := range matches[:len(matches)-keep] {
+			os.Remove(old)
+		}
+	}
 }
 
 // copyFile copies src to dst preserving mode.

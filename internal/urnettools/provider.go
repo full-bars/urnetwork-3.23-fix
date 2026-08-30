@@ -198,7 +198,7 @@ func unitStateDir(user string) string {
 		return ""
 	}
 	// Resolve the real home via getent (matches homeForUser used by the
-	// update/reinstall paths — review finding M3 class); fall back to the
+	// update/reinstall paths); fall back to the
 	// /root and /home conventions only when getent fails (e.g. an
 	// ephemeral container without passwd entries).
 	if home := homeForUser(user); home != "" {

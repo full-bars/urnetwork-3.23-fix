@@ -117,11 +117,17 @@ func Discover() []Provider {
 	// stopped provider units; on macOS/Windows it is a no-op (those
 	// platforms have no systemd units to enumerate).
 	all = append(all, discoverStopped(all)...)
-	sort.Slice(all, func(i, j int) bool {
+	sort.SliceStable(all, func(i, j int) bool {
 		if all[i].User != all[j].User {
 			return all[i].User < all[j].User
 		}
-		return all[i].Unit < all[j].Unit
+		if all[i].Unit != all[j].Unit {
+			return all[i].Unit < all[j].Unit
+		}
+		if all[i].StateDir != all[j].StateDir {
+			return all[i].StateDir < all[j].StateDir
+		}
+		return all[i].PID < all[j].PID
 	})
 	return all
 }

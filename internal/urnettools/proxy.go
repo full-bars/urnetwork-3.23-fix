@@ -156,7 +156,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	var chosen []Provider
 	if all {
 		// --all conflicts with an explicit target — error rather than
-		// silently discarding it (review finding M4).
+		// silently discarding it.
 		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
 		}
