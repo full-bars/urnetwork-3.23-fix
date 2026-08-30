@@ -33,14 +33,6 @@ func cmdSelfHeal(args []string) error {
 			return fmt.Errorf("unknown self-heal sub-arg %q (on|off|status)", args[0])
 		}
 	}
-	// Reject unexpected positional arguments. Target flags (--unit, --user
-	// etc.) are handled by parseTargetFlags inside writeSelfHeal/showSelfHeal;
-	// anything else is a typo or stray argument.
-	for _, a := range rest {
-		if !strings.HasPrefix(a, "-") {
-			return fmt.Errorf("self-heal: unexpected argument %q", a)
-		}
-	}
 	switch mode {
 	case "on", "off":
 		return writeSelfHeal(mode, rest)
