@@ -28,11 +28,15 @@ import (
 // bundle. This port is pure Go (stdlib crypto) so it works on Windows, macOS,
 // and Linux without an external openssl binary.
 //
-// The bundle format is openssl-compatible AES-256-CBC: a gzip tar of the
-// identity files, encrypted with a key+iv derived by PBKDF2-HMAC-SHA256
-// (10000 iterations) from a user passphrase, prefixed with the 8-byte
-// "Salted__" marker and an 8-byte random salt — the same on-disk layout as
-// `openssl enc -aes-256-cbc -pbkdf2 -salt`.
+// Bundle format:
+//   v1 (legacy): "Salted__" + 8-byte salt + AES-256-CBC (PBKDF2-HMAC-SHA256,
+//                10000 iters) ciphertext — matches `openssl enc -aes-256-cbc
+//                -pbkdf2`. Only authenticated by gzip CRC + PKCS#7 padding;
+//                malleable. Still readable on load for backward compatibility.
+//   v2 (current): "URNSv2\0\0" + 16-byte salt + 12-byte nonce + AES-256-GCM
+//                ciphertext (PBKDF2-HMAC-SHA256, 600000 iters) + 16-byte tag.
+//                Authenticated, with an iteration count that meets current
+//                brute-force guidance.
 
 // sessionFiles are the state-dir files that make up an identity session
 // bundle. Mirror of the legacy do_session collection list.
@@ -47,21 +51,75 @@ var sessionFiles = []string{
 	"proxy.state",
 }
 
-// sessionRandSalt is a package var so round-trip tests can pin the salt and
-// the derived ciphertext is deterministic (still verifies format + keying).
-var sessionRandSalt = func() ([]byte, error) {
-	s := make([]byte, 8)
-	if _, err := rand.Read(s); err != nil {
+// tarAndEncrypt builds the session bundle from an ordered name->bytes map. It
+// gzips a tar of the entries, then AES-256-GCM encrypts it with a key derived
+// by PBKDF2-HMAC-SHA256 at sessionPBKDF2Iters (current guidance: 600000)
+// from a user passphrase, returning the v2 blob. The header is
+// "URNSv2\0\0" + salt + nonce + AES-256-GCM ciphertext (which already
+// includes the 16-byte tag at the tail).
+func tarAndEncrypt(files map[string][]byte, pass string) ([]byte, error) {
+	pt, err := buildSessionInnerTar(files)
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
+	salt, err := sessionRand(16)
+	if err != nil {
+		return nil, err
+	}
+	key, err := deriveKey(pass, salt, sessionPBKDF2Iters, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := sessionRand(12)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	ct := aead.Seal(nil, nonce, pt, sessionBundleV2Header)
+	out := make([]byte, 0, len(sessionBundleV2Header)+len(salt)+len(nonce)+len(ct))
+	out = append(out, sessionBundleV2Header...)
+	out = append(out, salt...)
+	out = append(out, nonce...)
+	out = append(out, ct...)
+	return out, nil
 }
 
-// tarAndEncrypt builds the session bundle from an ordered name->bytes map. It
-// gzips a tar of the entries, then AES-256-CBC encrypts it with a key+iv from
-// the passphrase and a fresh salt, returning the openssl-format blob
-// ("Salted__" + salt + ciphertext).
-func tarAndEncrypt(files map[string][]byte, pass string) ([]byte, error) {
+// deriveKey derives a key of the requested length from the passphrase and
+// salt via PBKDF2-HMAC-SHA256. iters must meet current brute-force guidance
+// (>= 600000) for new bundles; legacy load paths use a small count for the
+// v1 round-trip test only.
+func deriveKey(pass string, salt []byte, iters, keyLen int) ([]byte, error) {
+	return pbkdf2.Key(sha256.New, pass, salt, iters, keyLen)
+}
+
+// sessionPBKDF2Iters is the iteration count used for new v2 bundles.
+// 600000 matches the 2023+ PBKDF2-HMAC-SHA256 guidance (OWASP). The
+// iteration cost is paid once at save/load time on a single CPU — the
+// security property it buys is offline brute-force resistance on a stolen
+// bundle, where the attacker has all the time they want.
+const sessionPBKDF2Iters = 600000
+
+// sessionLegacyPBKDF2Iters is used only to verify legacy v1 openssl-style
+// bundles. The legacy scheme was deliberately weak; we do not lower our
+// new-bundle cost to match.
+const sessionLegacyPBKDF2Iters = 10000
+
+// sessionBundleV2Header marks the start of a v2 bundle and is also the
+// associated-data input to AES-GCM, so a v1 bundle cannot be reinterpreted
+// as v2 by an attacker.
+var sessionBundleV2Header = []byte("URNSv2\x00\x00")
+
+// buildSessionInnerTar produces the inner gzip-compressed tar of
+// sessionFiles from files (only entries present in files are included,
+// matching legacy).
+func buildSessionInnerTar(files map[string][]byte) ([]byte, error) {
 	var raw bytes.Buffer
 	gz := gzip.NewWriter(&raw)
 	tw := tar.NewWriter(gz)
@@ -84,56 +142,88 @@ func tarAndEncrypt(files map[string][]byte, pass string) ([]byte, error) {
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
-
-	salt, err := sessionRandSalt()
-	if err != nil {
-		return nil, err
-	}
-	key, err := deriveKeyIV(pass, salt)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key[:32])
-	if err != nil {
-		return nil, err
-	}
-	// PKCS#7 pad to a full block.
-	pt := raw.Bytes()
-	pad := aes.BlockSize - (len(pt) % aes.BlockSize)
-	pt = append(pt, bytes.Repeat([]byte{byte(pad)}, pad)...)
-
-	out := make([]byte, 0, 16+len(pt))
-	out = append(out, []byte("Salted__")...)
-	out = append(out, salt...)
-	ct := make([]byte, len(pt))
-	cipher.NewCBCEncrypter(block, key[32:48]).CryptBlocks(ct, pt)
-	out = append(out, ct...)
-	return out, nil
+	return raw.Bytes(), nil
 }
 
-// deriveKeyIV derives the 48-byte AES-256-CBC key+iv from the passphrase and
-// salt via PBKDF2-HMAC-SHA256 with 10000 iterations, matching an openssl
-// -pbkdf2 run. Returns key[0:32] + iv[0:16] as a 48-byte slice.
-func deriveKeyIV(pass string, salt []byte) ([]byte, error) {
-	return pbkdf2.Key(sha256.New, pass, salt, 10000, 48)
+// sessionRand returns n random bytes. Package var so tests can pin output.
+var sessionRand = func(n int) ([]byte, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
-// decryptUntar reverses tarAndEncrypt: it verifies the openssl header, derives
-// the key+iv from the passphrase and the embedded salt, AES-256-CBC decrypts,
-// removes PKCS#7 padding, and expands the gzip tar into a name->bytes map.
-// Returns an error on a wrong passphrase or corrupt bundle (bogus ciphertext
-// fails padding/header, not silently).
+// decryptUntar reverses tarAndEncrypt: it auto-detects the bundle version,
+// derives the key, decrypts, and expands the gzip tar into a name->bytes
+// map. v1 (legacy openssl "Salted__" + AES-256-CBC) is still accepted for
+// backward compatibility; v2 is the AES-256-GCM authenticated format.
+// Returns an error on a wrong passphrase or corrupt bundle — GCM makes a
+// wrong-pass failure a single, deterministic rejection rather than the
+// ambiguous "bad padding OR wrong key" that CBC allowed.
 func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 	raw := []byte(bundle)
+	if len(raw) < len(sessionBundleV2Header) {
+		return nil, errors.New("not a session bundle (too short)")
+	}
+	switch {
+	case string(raw[:len(sessionBundleV2Header)]) == string(sessionBundleV2Header):
+		return decryptUntarV2(raw, pass)
+	case string(raw[:8]) == "Salted__":
+		return decryptUntarV1(raw, pass)
+	default:
+		return nil, errors.New("not a recognized session bundle header")
+	}
+}
+
+// decryptUntarV2 parses the v2 (AES-256-GCM, PBKDF2 600000) format and
+// returns the decrypted file map. v2 is authenticated: any tampering or
+// wrong passphrase fails GCM Open with a uniform error.
+func decryptUntarV2(raw []byte, pass string) (map[string][]byte, error) {
+	const headerLen = len("URNSv2\x00\x00") // 8
+	const saltLen = 16
+	const nonceLen = 12
+	const tagLen = 16
+	minLen := headerLen + saltLen + nonceLen + tagLen
+	if len(raw) < minLen {
+		return nil, errors.New("corrupt v2 bundle: too short")
+	}
+	salt := raw[headerLen : headerLen+saltLen]
+	nonce := raw[headerLen+saltLen : headerLen+saltLen+nonceLen]
+	ct := raw[headerLen+saltLen+nonceLen:]
+	key, err := deriveKey(pass, salt, sessionPBKDF2Iters, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	pt, err := aead.Open(nil, nonce, ct, sessionBundleV2Header)
+	if err != nil {
+		return nil, errors.New("invalid passphrase or corrupt bundle (authentication failed)")
+	}
+	return untarGz(pt)
+}
+
+// decryptUntarV1 parses the legacy openssl "Salted__" + AES-256-CBC bundle
+// (PBKDF2 10000). Still accepted so old bundles migrate forward — the
+// operator runs session save again to upgrade. The output is NOT
+// authenticated; callers should re-encrypt promptly.
+func decryptUntarV1(raw []byte, pass string) (map[string][]byte, error) {
 	if len(raw) < 16 || string(raw[:8]) != "Salted__" {
 		return nil, errors.New("not an openssl 'Salted__' session bundle")
 	}
 	salt := raw[8:16]
 	ct := raw[16:]
 	if len(ct) == 0 || len(ct)%aes.BlockSize != 0 {
-		return nil, errors.New("corrupt bundle: bad ciphertext length")
+		return nil, errors.New("corrupt v1 bundle: bad ciphertext length")
 	}
-	key, err := deriveKeyIV(pass, salt)
+	key, err := deriveKey(pass, salt, sessionLegacyPBKDF2Iters, 48)
 	if err != nil {
 		return nil, err
 	}
@@ -143,9 +233,8 @@ func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 	}
 	pt := make([]byte, len(ct))
 	cipher.NewCBCDecrypter(block, key[32:48]).CryptBlocks(pt, ct)
-	// Remove PKCS#7 padding (validate the pad byte).
 	if len(pt) == 0 {
-		return nil, errors.New("corrupt bundle: empty plaintext")
+		return nil, errors.New("corrupt v1 bundle: empty plaintext")
 	}
 	pad := int(pt[len(pt)-1])
 	if pad == 0 || pad > aes.BlockSize || pad > len(pt) {
@@ -157,7 +246,13 @@ func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 		}
 	}
 	pt = pt[:len(pt)-pad]
+	return untarGz(pt)
+}
 
+// untarGz decompresses the inner gzip tar and returns a name->bytes map.
+// It bounds the entry size via io.LimitReader so a crafted bundle cannot
+// OOM the tool on read.
+func untarGz(pt []byte) (map[string][]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(pt))
 	if err != nil {
 		return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
@@ -173,7 +268,18 @@ func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 		if err != nil {
 			return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
 		}
-		data, err := io.ReadAll(tr)
+		// Cap each entry's size — a corrupted bundle with a misleading
+		// Content-Length-equivalent in the tar header cannot exhaust
+		// memory. 64 MiB is well above any session file's real size.
+		const maxEntry = 64 << 20
+		// Cap the total decompressed archive at 256 MiB (4+ entries of
+		// maxEntry size) so a bundle with many members is still bounded.
+		const maxTotal = 256 << 20
+		if int64(len(files))*maxEntry > maxTotal {
+			return nil, fmt.Errorf("session archive too large: > %d entries", maxTotal/maxEntry)
+		}
+		lr := io.LimitReader(tr, maxEntry)
+		data, err := io.ReadAll(lr)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +354,7 @@ func decodeJWTFromBytes(raw []byte) (netName, netID string, exp time.Time, err e
 // It requires an interactive terminal: a passphrase must never be scripted from
 // piped stdin, and a second bufio.Reader must not be opened over os.Stdin (the
 // package owns the single stdinReader). Refuse when not interactive rather than
-// block or read a buffered leftover (review finding HIGH).
+// block or read a buffered leftover.
 func readPassphrase(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	if !stdinIsInteractive() {
@@ -264,7 +370,7 @@ func readPassphrase(prompt string) (string, error) {
 
 // readYesNo prompts for a y/N answer and returns true only on an explicit yes.
 // Uses the shared confirmStdinRead so it honors the single-reader rule and
-// refuses cleanly on non-interactive stdin (review finding HIGH).
+// refuses cleanly on non-interactive stdin.
 func readYesNo(prompt string) bool {
 	line, err := confirmStdinRead(prompt)
 	if err != nil {
@@ -373,7 +479,7 @@ func cmdSessionSave(p Provider, outFile string) error {
 	}
 	// Refuse to clobber an existing destination silently (running as root,
 	// os.WriteFile truncates whatever path is named). Require an explicit yes
-	// to overwrite (review finding LOW).
+	// to overwrite.
 	if _, err := os.Stat(outFile); err == nil {
 		if !readYesNo("destination already exists — overwrite? (y/n):") {
 			return fmt.Errorf("aborted; %s already exists", outFile)
@@ -413,7 +519,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	// Read the current identity. Distinguish "no jwt" (fresh provider, no
 	// account to enforce against) from "jwt present but unreadable", which
 	// must fail closed rather than silently skip the same-account gate
-	// (review finding): a truncated/corrupt live jwt must not let a bundle
+	//: a truncated/corrupt live jwt must not let a bundle
 	// for a different network load as if no identity existed.
 	currentID := ""
 	jwtPath := filepath.Join(p.StateDir, "jwt")
@@ -436,7 +542,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	}
 
 	// Back up the live state before touching anything. Nanosecond suffix avoids
-	// two rapid loads colliding over one backup dir (review finding).
+	// two rapid loads colliding over one backup dir.
 	backupDir := filepath.Join(p.StateDir, ".session-backup-"+time.Now().Format("20060102-150405.000000000"))
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return "", err
@@ -516,7 +622,7 @@ func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) er
 	}
 	// Reinstate the audit + confirm gate the other destructive commands share:
 	// loading stages a full identity replacement. -n prints the plan and does
-	// nothing; -f skips the prompt (review finding MEDIUM).
+	// nothing; -f skips the prompt.
 	ok, err := confirmGate("load session into "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err

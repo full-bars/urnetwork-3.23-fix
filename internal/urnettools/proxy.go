@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -31,10 +32,15 @@ func providerSubcommand(p Provider, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Run with the provider's HOME so state lands in the right directory.
-	if p.User != "" {
-		if home := homeForUser(p.User); home != "" {
-			cmd.Env = append(os.Environ(), "HOME="+home)
-		}
+	// When homeForUser fails, derive from the state dir's parent.
+	home := homeForUser(p.User)
+	if home == "" && p.StateDir != "" {
+		home = filepath.Dir(p.StateDir)
+	}
+	if home != "" {
+		cmd.Env = append(os.Environ(), "HOME="+home)
+	} else {
+		cmd.Env = os.Environ()
 	}
 	// Also run as that user when we are root, so auth/network files are written
 	// owned by the provider user and remain readable by it (review HIGH).
@@ -56,6 +62,59 @@ func homeForUser(user string) string {
 		return fields[5]
 	}
 	return ""
+}
+
+// checkReadableAsUser verifies that the named user can open the file for
+// reading. proxy add delegates to the provider binary via dropPrivilegesTo,
+// so a file readable only by root or another user would fail inside the
+// provider with a confusing permission error — check first. We compare the
+// file's mode/owner to the user's uid/gid directly rather than spawning
+// su/sudo: that resolves to a clear message and avoids needing the
+// provider to be root for an explicit access(2) syscall. When we are not
+// root, the caller's uid already determines read access — the caller is
+// about to exec the provider as itself, so the stat is sufficient and we
+// trust the existing access check.
+func checkReadableAsUser(path, user string) error {
+	if user == "" {
+		return nil // nothing to check against; the caller will inherit
+	}
+	if os.Geteuid() != 0 {
+		// Not root: the caller IS the provider user, the existing stat
+		// (which succeeded) is the access check.
+		return nil
+	}
+	uid, gid, err := lookupUserIDs(user)
+	if err != nil {
+		return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	st := fi.Mode()
+	// World-readable covers it. If not, check owner / group bits.
+	if st.Perm()&0o4 != 0 {
+		return nil
+	}
+	sysUID := int64(-1)
+	sysGID := int64(-1)
+	sysUID, sysGID = statFileOwnership(fi)
+	if sysUID == int64(uid) && st.Perm()&0o4 != 0 {
+		return nil
+	}
+	if sysUID != int64(uid) && st.Perm()&0o4 == 0 &&
+		(sysGID != int64(gid) || st.Perm()&0o40 == 0) {
+		return fmt.Errorf("proxy file %s is not readable by user %s", path, user)
+	}
+	// Group-bit match.
+	if sysGID == int64(gid) && st.Perm()&0o40 != 0 {
+		return nil
+	}
+	// Owner match with owner-read.
+	if sysUID == int64(uid) && st.Perm()&0o400 != 0 {
+		return nil
+	}
+	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", path, user, sysUID, st.Perm())
 }
 
 // cmdProxy dispatches proxy sub-operations to the targeted provider(s).
@@ -104,7 +163,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	// batch flags (--all/--select/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
 	// (e.g. --force). Strict parsing here rejected those as unknown before
-	// the loop ran (opus5 F1: `proxy clear --all` was dead). Leftover
+	// the loop ran. Leftover
 	// unknown --flags are rejected after the loop, except for the
 	// pass-through subcommands.
 	t, rest, err := parseTargetFlagsLenient(rest)
@@ -129,7 +188,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			exclude = splitLabels(strings.TrimPrefix(a, "--exclude="))
 		case a == "--include" || a == "--exclude":
 			// Also accept the space-separated form (--include a,b), matching
-			// update's syntax (opus5 F1 note: the two commands disagreed).
+			// update's syntax.
 			if i+1 < len(rest) {
 				if a == "--include" {
 					include = splitLabels(rest[i+1])
@@ -144,7 +203,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			// Unknown --flag: pass through only for refresh/remove-dead
 			// (provider-binary flags like --force); reject elsewhere so a
 			// typo like --netwrok cannot be silently absorbed on a
-			// destructive op (review finding L2; opus5 F1).
+			// destructive op.
 			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" {
 				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
 			}
@@ -156,7 +215,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	var chosen []Provider
 	if all {
 		// --all conflicts with an explicit target — error rather than
-		// silently discarding it (review finding M4).
+		// silently discarding it.
 		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
 		}
@@ -179,8 +238,25 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return fmt.Errorf("proxy add requires a proxy file path")
 		}
 		file := positionals[0]
+		// Stat the file as the tool's user (existence check), then verify
+		// the targeted provider user can actually read it: `proxy add` is
+		// delegated to providerSubcommand → dropPrivilegesTo(p.User, cmd),
+		// so the path must be accessible under the provider's uid/gid.
+		// Checking only as the caller is racy (TOCTOU) AND lets root pass
+		// files (e.g. /root/proxies.txt) that the provider user cannot open.
 		if _, err := os.Stat(file); err != nil {
 			return fmt.Errorf("proxy file not found: %s", file)
+		}
+		if len(chosen) > 0 {
+			// Validate readability for every provider's user in the batch.
+			// A shared file readable by all targeted users vs a file readable
+			// only by the first provider's user — the delegated binary would
+			// fail for every other user with a confusing error, so fail fast.
+			for _, p := range chosen {
+				if err := checkReadableAsUser(file, p.User); err != nil {
+					return fmt.Errorf("provider %s: %w", providerLabel(p), err)
+				}
+			}
 		}
 		opArgs = []string{"proxy", "add", "--proxy_file=" + file, "-f"}
 	case "clear":
@@ -269,7 +345,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
-		// silently dropped (free-review MEDIUM).
+		// silently dropped.
 		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
 			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
 		}
@@ -281,8 +357,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		case "health":
 			// State-file based; not a provider-binary delegation. Uses the
 			// already-parsed target (t) — re-parsing here would see an arg
-			// list with the target flags already stripped (free-review
-			// major: health/traffic/remove-dead lost targeting).
+			// list with the target flags already stripped.
 			return cmdProxyHealthTarget(p)
 		case "traffic":
 			return cmdProxyTrafficTarget(p)
@@ -314,10 +389,21 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		return nil
 	}
 
+	var perProviderErrs []string
 	for _, p := range chosen {
 		if err := providerSubcommand(p, opArgs...); err != nil {
-			return err
+			// Continue past per-provider failures so a single bad
+			// provider can't strand the rest of the batch (audit M16:
+			// `proxy clear --all` previously stopped on the first
+			// failure and left downstream providers untouched with no
+			// summary). Surface the failure at the end so it is not
+			// silently swallowed.
+			perProviderErrs = append(perProviderErrs, fmt.Sprintf("%s: %v", providerLabel(p), err))
+			continue
 		}
+	}
+	if len(perProviderErrs) > 0 {
+		return fmt.Errorf("%d of %d provider(s) failed: %s", len(perProviderErrs), len(chosen), strings.Join(perProviderErrs, "; "))
 	}
 	return nil
 }

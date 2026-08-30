@@ -218,7 +218,8 @@ func TestRunDockerUnknownCommand(t *testing.T) {
 // binary (deterministic "no containers" without a real daemon), every
 // targeting docker command must refuse cleanly.
 func TestRunDockerNoContainers(t *testing.T) {
-	t.Setenv("URNET_DOCKER_BIN", "urnet-tools-test-no-such-binary-9f3a")
+	setDockerTestBin("urnet-tools-test-no-such-binary-9f3a")
+	t.Cleanup(func() { setDockerTestBin("") })
 
 	if err := RunDocker([]string{"providers"}); err != nil {
 		t.Errorf("RunDocker([providers]) = %v, want nil (prints \"no provider containers found\")", err)
@@ -258,8 +259,8 @@ func TestRunDockerNoContainers(t *testing.T) {
 	// containers errors as no-matching-provider (more precise than the
 	// no-target "no providers found").
 	err = RunDocker([]string{"exec", "--unit", "x", "--", "urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"})
-	if err == nil || !strings.Contains(err.Error(), "matches no running provider") {
-		t.Errorf("RunDocker([exec --unit x -- cmd...]) = %v, want \"matches no running provider\"", err)
+	if err == nil || !strings.Contains(err.Error(), "matches no provider") {
+		t.Errorf("RunDocker([exec --unit x -- cmd...]) = %v, want \"matches no provider\"", err)
 	}
 	// Unknown flag BEFORE the command must error loudly (was silently
 	// dropped before the -- separator fix), with a hint to use --.

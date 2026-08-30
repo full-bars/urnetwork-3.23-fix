@@ -33,7 +33,7 @@ Performance & Tuning:
   eco <on|off>            ECO MODE GC-tuned for low-RAM systems
   lowmode <on|off>        LOW-MEMORY reduced buffers for max RAM savings
   ramlogs <on|off>        RAM LOGS zero disk I/O logging
-  hot-restart <on|off>    reuse client_ids across restarts
+  hot-restart <on|off>    restart provider (hot-restart is a config toggle)
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
   fast-auth [on|off]      Bypass auth rate limiter without restart
@@ -361,7 +361,7 @@ func newOptimizeCmd() *cobra.Command {
 }
 
 func newHotRestartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hot-restart", "reuse client_ids across restarts", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hot-restart", "restart provider (hot-restart is a config toggle)", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotRestart(rest, force, dryRun)
 		})

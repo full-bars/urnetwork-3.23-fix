@@ -4,10 +4,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // knownBinaries are the binary basenames the tool recognizes as URnetwork
@@ -24,7 +24,7 @@ var knownBinaries = map[string]bool{
 // Usernames are returned (not home paths) because discoverUserUnits uses
 // them as `systemctl --user -M <user>@` selectors.
 func providerCandidateUsers() ([]string, error) {
-	b, err := exec.Command("getent", "passwd").Output()
+	b, err := execWithTimeout(5*time.Second, "getent", "passwd")
 	if err != nil {
 		return nil, err
 	}
@@ -117,11 +117,17 @@ func Discover() []Provider {
 	// stopped provider units; on macOS/Windows it is a no-op (those
 	// platforms have no systemd units to enumerate).
 	all = append(all, discoverStopped(all)...)
-	sort.Slice(all, func(i, j int) bool {
+	sort.SliceStable(all, func(i, j int) bool {
 		if all[i].User != all[j].User {
 			return all[i].User < all[j].User
 		}
-		return all[i].Unit < all[j].Unit
+		if all[i].Unit != all[j].Unit {
+			return all[i].Unit < all[j].Unit
+		}
+		if all[i].StateDir != all[j].StateDir {
+			return all[i].StateDir < all[j].StateDir
+		}
+		return all[i].PID < all[j].PID
 	})
 	return all
 }
@@ -143,9 +149,12 @@ var nonProviderSiblingSuffixes = []string{"hub", "update", "dashboard"}
 // isProviderArg reports whether an executable path/name is a known provider
 // binary. Matches on basename to be resilient to custom install paths, and
 // by PREFIX so suffixed unit names (urnetwork-native.service,
-// provider_beta-custom) are recognized too (opus5 F2). Excludes known
+// provider_beta-custom) are recognized too. Excludes known
 // non-provider siblings (see nonProviderSiblingSuffixes) so their units are
 // not mistaken for providers.
+// NOTE: a bare "provider" binary is NOT corroborated by state-dir or unit
+// here — that happens downstream in Process() when homeForUser/state-dir
+// argv fail; this is a deliberate design choice for custom install paths.
 func isProviderArg(arg string) bool {
 	base := filepath.Base(arg)
 	// Strip a trailing .exe (Windows) defensively.

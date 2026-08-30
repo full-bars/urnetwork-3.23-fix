@@ -25,10 +25,13 @@ type dockerContainer struct {
 	StateDir string
 }
 
-// dockerCLI returns the docker binary name (overridable via env for tests).
+// dockerCLI returns the docker binary name. Tests override by setting
+// testDockerBin in a _test.go file with build tag urnettools_test_seams.
+var testDockerBin string
+
 func dockerCLI() string {
-	if v := os.Getenv("URNET_DOCKER_BIN"); v != "" {
-		return v
+	if testDockerBin != "" {
+		return testDockerBin
 	}
 	return "docker"
 }
@@ -126,7 +129,7 @@ func dockerProvider(c dockerContainer) (Provider, error) {
 		return Provider{}, err
 	}
 	// The temp file holds a live network credential — always remove it,
-	// success or failure (free-review HIGH, both passes).
+	// success or failure.
 	defer os.Remove(tmp)
 	net, id, exp, err := decodeJWT(tmp)
 	if err != nil {

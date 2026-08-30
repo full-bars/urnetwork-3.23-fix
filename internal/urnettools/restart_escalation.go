@@ -72,6 +72,11 @@ var sudoAvailableFn = func() bool {
 
 // runStagedRestartFn executes `sudo -n <tool> __do-restart --unit U
 // [--user X]` using the freshly staged binary. Var seam for tests.
+// SAFETY: the staging dir is 0700 MkdirTemp under /var/tmp (sticky bit
+// prevents replacement), so the binary sudo runs is owned by the runner
+// (root under sudo). This safety depends on newStageDir's permissions
+// never being relaxed — if the staging dir becomes world-writable, a
+// local attacker could swap the staged binary for arbitrary code as root.
 var runStagedRestartFn = func(stagedTool string, p Provider) error {
 	if runtime.GOOS != "linux" || p.Unit == "" {
 		return fmt.Errorf("staged restart not applicable")

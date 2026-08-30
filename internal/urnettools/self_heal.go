@@ -20,42 +20,87 @@ import (
 //	urnet-tools self-heal status   report current state
 func cmdSelfHeal(args []string) error {
 	mode := "status"
+	rest := args
 	if len(args) > 0 {
-		mode = args[0]
+		switch args[0] {
+		case "on", "off", "status":
+			mode = args[0]
+			rest = args[1:]
+		case "-h", "--help":
+			usage()
+			return nil
+		default:
+			return fmt.Errorf("unknown self-heal sub-arg %q (on|off|status)", args[0])
+		}
 	}
 	switch mode {
-	case "-h", "--help":
-		usage()
-		return nil
 	case "on", "off":
-		return writeSelfHeal(mode)
+		return writeSelfHeal(mode, rest)
 	case "status":
-		return showSelfHeal()
+		return showSelfHeal(rest)
 	default:
 		return fmt.Errorf("unknown self-heal sub-arg %q (on|off|status)", mode)
 	}
 }
 
-// selfHealMarkerPath returns ~/.urnetwork/proxy_self_heal (the same file the
-// provider reads to decide whether the self-heal gate is on).
-func selfHealMarkerPath() (string, error) {
-	home, err := os.UserHomeDir()
+// selfHealMarkerPath returns the provider's state dir + proxy_self_heal.
+// Routes through standard target resolution so the marker lands in the
+// correct provider's state dir, not the invoking user's $HOME.
+func selfHealMarkerPath(p Provider) (string, error) {
+	if p.StateDir == "" {
+		return "", fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	return filepath.Join(p.StateDir, "proxy_self_heal"), nil
+}
+
+// selfHealPath returns the marker path, falling back to the legacy
+// $HOME/.urnetwork/proxy_self_heal when no target flags are given.
+// This preserves the pre-H6 behavior: `self-heal status` works without
+// any provider discovered on the box. Provider-scoped self-heal requires
+// an explicit target.
+func selfHealPath(targetArgs []string) (string, error) {
+	if len(targetArgs) == 0 {
+		home := os.Getenv("HOME")
+		if home == "" {
+			home = os.Getenv("USERPROFILE")
+		}
+		if home == "" {
+			return "", fmt.Errorf("cannot resolve self-heal marker path: $HOME is not set")
+		}
+		return filepath.Join(home, ".urnetwork", "proxy_self_heal"), nil
+	}
+	t, _, err := parseTargetFlags(targetArgs)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".urnetwork", "proxy_self_heal"), nil
+	p, err := selectTarget(lifecycleCandidates(t), t)
+	if err != nil {
+		return "", err
+	}
+	return selfHealMarkerPath(p)
 }
 
-func writeSelfHeal(state string) error {
-	path, err := selfHealMarkerPath()
+func writeSelfHeal(state string, targetArgs []string) error {
+	path, err := selfHealPath(targetArgs)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(state+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(state+"\n"), 0o644); err != nil {
 		return err
+	}
+	// When a target was given, chown to the provider's user. For the
+	// legacy path (no target, no provider discovery) the file stays
+	// owned by the caller — that's the pre-H6 behavior.
+	if len(targetArgs) > 0 {
+		t, _, err := parseTargetFlags(targetArgs)
+		if err == nil {
+			if p, err := selectTarget(lifecycleCandidates(t), t); err == nil {
+				_ = chownLikeStateOwner(p.StateDir, path)
+			}
+		}
 	}
 	if state == "on" {
 		fmt.Println("self-heal enabled (load gate + auto cleanup active)")
@@ -65,8 +110,11 @@ func writeSelfHeal(state string) error {
 	return nil
 }
 
-func showSelfHeal() error {
-	path, err := selfHealMarkerPath()
+func showSelfHeal(targetArgs []string) error {
+	path, err := selfHealPath(targetArgs)
+	if err != nil {
+		return err
+	}
 	if err != nil {
 		return err
 	}

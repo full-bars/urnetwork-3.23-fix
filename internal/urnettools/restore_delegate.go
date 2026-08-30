@@ -127,7 +127,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	// token from what remains. This matches cmdSet and means a target flag
 	// placed before the action (e.g. `fast-auth --unit myunit on`) is handled
 	// instead of the action silently dropping and the command erroring
-	// misleadingly (review finding).
+	// misleadingly.
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	case "on", "off":
 		// Mirrors the audit-trail + confirm convention used by hub set/off and
 		// the tune commands: even -f prints the target line to stderr; without
-		// -f the operator must type an explicit yes (review finding HIGH).
+		// -f the operator must type an explicit yes.
 		ok, err := confirmGate("fast-auth "+sub+" "+providerLabel(p), p, force, dryRun)
 		if err != nil {
 			return err
@@ -351,11 +351,20 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
+	// When run as root, MkdirAll creates the dir owned by root. Fix
+	// ownership so the provider process can write its own state.
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(p.StateDir, uid, gid)
+	}
 	// 0o644, matching the sibling override-writers: the provider often runs
 	// under a different user than the tool, so a 0600 file would be unreadable
 	// and the change would silently never take effect.
 	if err := os.WriteFile(file, []byte(value), 0o644); err != nil {
 		return fmt.Errorf("write %s: %v", file, err)
+	}
+	// chown the written file so the provider can read/rewrite it.
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(file, uid, gid)
 	}
 	fmt.Printf("%s set to %s for %s — takes effect on next provider tick\n", key, value, providerLabel(p))
 	return nil
@@ -387,8 +396,14 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(p.StateDir, uid, gid)
+	}
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		return err
+	}
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = os.Chown(file, uid, gid)
 	}
 	fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
 	return nil

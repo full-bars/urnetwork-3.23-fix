@@ -257,7 +257,7 @@ func TestWriteTimerCalendarMissingHome(t *testing.T) {
 		t.Skip("bogus test user unexpectedly resolves via getent on this box")
 	}
 	p := Provider{User: bogus}
-	err := writeTimerCalendar("urnet-tools-test-fake-unit-9f3a.timer", p, "daily")
+	err := writeTimerCalendar("urnet-tools-test-fake-unit-9f3a.timer", p, "daily", true)
 	if err == nil {
 		t.Fatal("writeTimerCalendar with unresolvable home must error")
 	}

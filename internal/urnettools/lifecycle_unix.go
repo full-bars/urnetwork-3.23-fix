@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // setAutoStart enables or disables login auto-start for the provider's
@@ -22,6 +23,20 @@ func setAutoStart(p Provider, on bool) error {
 		action = "enable"
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
+		// When enabling a user unit, ensure the user session manager starts
+		// at boot. Without loginctl enable-linger, a non-login service
+		// account's user manager does not start at boot, and systemctl
+		// enable reports success but the unit never runs. The linger check
+		// is only relevant on the enable path — disabling does not need it.
+		if on {
+			if linger, err := execWithTimeout(5*time.Second, "loginctl", "show-user", p.User, "-p", "Linger", "--value"); err == nil {
+				if strings.TrimSpace(string(linger)) != "yes" {
+					return fmt.Errorf("linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit", p.User, p.User)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "setAutoStart: warning: cannot check linger for %s: %v\n", p.User, err)
+			}
+		}
 		args := append(systemctlUserArgs(p.User), action, p.Unit)
 		return exec.Command("systemctl", args...).Run()
 	}
@@ -36,6 +51,10 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 		return fmt.Errorf("provider %s has no owning unit", providerLabel(p))
 	}
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
+	// Derive scope from the PROVIDER's unit, not the timer name.
+	// On a fresh box the timer doesn't exist yet, so isUserUnit(timer)
+	// always returns true — even for system-scoped providers.
+	userScope := isUserUnit(p.Unit) && p.User != ""
 	switch interval {
 	case "off":
 		// The deterministic part is the FILE removal — a disabled-but-present
@@ -43,21 +62,24 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 		// on a CI runner) is logged, not propagated: the caller cares that the
 		// timer is gone, and it is. The systemd manager state resolves on the
 		// next daemon-reload even when disable could not reach it now.
-		if isUserUnit(timer) && p.User != "" {
+		// Stop and disable the existing timer. If systemctl fails, do NOT
+		// remove the timer file — a failed disable leaves the timer active
+		// and removing the file would orphan a running timer.
+		if userScope {
 			args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
 			if err := exec.Command("systemctl", args...).Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
+				return fmt.Errorf("auto-update off: disable %s: %w", timer, err)
 			}
 		} else if err := exec.Command("systemctl", "disable", "--now", timer).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
+			return fmt.Errorf("auto-update off: disable %s: %w", timer, err)
 		}
-		return removeTimerFile(p, timer)
+		return removeTimerFile(p, timer, userScope)
 	case "daily":
-		return writeTimerCalendar(timer, p, "daily")
+		return writeTimerCalendar(timer, p, "daily", userScope)
 	case "weekly":
-		return writeTimerCalendar(timer, p, "Sun *-*-* 00:00:00 UTC")
+		return writeTimerCalendar(timer, p, "Sun *-*-* 00:00:00 UTC", userScope)
 	case "monthly":
-		return writeTimerCalendar(timer, p, "monthly")
+		return writeTimerCalendar(timer, p, "monthly", userScope)
 	}
 	return fmt.Errorf("invalid interval %q", interval)
 }
@@ -65,9 +87,9 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 // removeTimerFile deletes the timer unit file for a provider, mirroring the
 // shell wrapper's `rm -f` on auto-update off (Provider_Install_Linux.sh).
 // A missing file is not an error.
-func removeTimerFile(p Provider, timer string) error {
+func removeTimerFile(p Provider, timer string, userScope bool) error {
 	var path string
-	if isUserUnit(timer) && p.User != "" {
+	if userScope {
 		home := homeForUser(p.User)
 		if home == "" {
 			return fmt.Errorf("cannot resolve home for user %s", p.User)
@@ -87,10 +109,10 @@ func removeTimerFile(p Provider, timer string) error {
 // shell installer, may be the first thing to set auto-update), it is CREATED
 // with the same [Unit]/[Timer]/[Install] shape the shell wrapper writes at
 // install time (Provider_Install_Linux.sh:685).
-func writeTimerCalendar(timer string, p Provider, calendar string) error {
+func writeTimerCalendar(timer string, p Provider, calendar string, userScope bool) error {
 	// Locate the timer unit file (system or user).
 	var path string
-	if isUserUnit(timer) && p.User != "" {
+	if userScope {
 		home := homeForUser(p.User)
 		if home == "" {
 			return fmt.Errorf("cannot resolve home for user %s", p.User)
@@ -105,7 +127,7 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 		// template. Write to a temp file and rename so a crash mid-write
 		// never leaves a half-written unit (the shared progress.md
 		// atomicity rule applied to unit files too).
-		tmpl := fmt.Sprintf("[Unit]\nDescription=Run URnetwork Update\n\n[Timer]\nOnCalendar=%s\nPersistent=true\n\n[Install]\nWantedBy=default.target\n", calendar)
+		tmpl := fmt.Sprintf("[Unit]\nDescription=Run URnetwork Update\n\n[Timer]\nOnCalendar=%s\nPersistent=true\nUnit=%s.service\n\n[Install]\nWantedBy=default.target\n", calendar, strings.TrimSuffix(timer, "-update.timer"))
 		if err := writeTimerUnitAtomic(path, tmpl); err != nil {
 			return fmt.Errorf("create timer %s: %w", timer, err)
 		}
@@ -136,7 +158,7 @@ func writeTimerCalendar(timer string, p Provider, calendar string) error {
 // enableTimer runs daemon-reload + enable --now for a timer unit, choosing
 // the user or system manager from the provider's unit placement.
 func enableTimer(p Provider, timer string) error {
-	if isUserUnit(timer) && p.User != "" {
+	if isUserUnit(p.Unit) && p.User != "" {
 		args := append(systemctlUserArgs(p.User), "daemon-reload")
 		_ = exec.Command("systemctl", args...).Run()
 		args = append(systemctlUserArgs(p.User), "enable", "--now", timer)
@@ -154,7 +176,7 @@ func cleanupLifecycle(p Provider) {
 		return
 	}
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
-	if isUserUnit(timer) && p.User != "" {
+	if isUserUnit(p.Unit) && p.User != "" {
 		args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
 		_ = exec.Command("systemctl", args...).Run()
 		return
@@ -175,7 +197,7 @@ func renderSystemctlStatusLinux(p Provider) error {
 		return fmt.Errorf("provider %s has no owning unit (bare process)", providerLabel(p))
 	}
 	var args []string
-	if p.User != "" {
+	if isUserUnit(p.Unit) && p.User != "" {
 		args = append(systemctlUserArgs(p.User), "status", p.Unit)
 	} else {
 		args = []string{"status", p.Unit}

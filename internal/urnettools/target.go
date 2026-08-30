@@ -119,7 +119,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		case 1:
 			return matches[0], nil
 		case 0:
-			return Provider{}, fmt.Errorf("target %s matches no running provider", t)
+			return Provider{}, fmt.Errorf("target %s matches no provider (the pool includes stopped units; use status or providers to list them)", t)
 		default:
 			return Provider{}, fmt.Errorf("target %s is ambiguous (%d matches); use a more specific target", t, len(matches))
 		}
@@ -137,7 +137,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		if p, ok := resolveDefaultProvider(providers); ok {
 			// Make it visible that a PERSISTED default (not an explicit flag)
 			// drove the selection — under root/automation this must not read as
-			// a plain single-provider auto-select (audit review finding).
+			// a plain single-provider auto-select.
 			fmt.Fprintf(os.Stderr, "using persisted default provider: %s\n", providerLabel(p))
 			return p, nil
 		}

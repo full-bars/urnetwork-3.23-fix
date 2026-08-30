@@ -211,7 +211,8 @@ func TestRemoveDropinEnvMissingFile(t *testing.T) {
 // dockerCLI stubbed to a nonexistent binary), containerIDByName must return
 // "" rather than panicking or propagating the exec error.
 func TestContainerIDByNameNoDocker(t *testing.T) {
-	t.Setenv("URNET_DOCKER_BIN", "urnet-tools-test-no-such-binary-9f3a")
+	setDockerTestBin("urnet-tools-test-no-such-binary-9f3a")
+	t.Cleanup(func() { setDockerTestBin("") })
 	got := containerIDByName("whatever")
 	if got != "" {
 		t.Errorf("containerIDByName with no docker binary = %q, want empty", got)

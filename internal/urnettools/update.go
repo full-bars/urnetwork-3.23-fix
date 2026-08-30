@@ -48,9 +48,9 @@ type updateConfig struct {
 // newStageDir creates a private 0700 staging directory for one update.
 // Stage on real disk, NOT /tmp (frequently a small tmpfs that the
 // multi-platform tarball overflows — the 2026-08-09 failure). Windows has
-// no /var/tmp; use the system temp dir there (free-review major). A
+// no /var/tmp; use the system temp dir there. A
 // predictable path could be pre-created by a local user who then swaps the
-// tarball between verify and extract (coderabbit critical).
+// tarball between verify and extract.
 func newStageDir() (string, error) {
 	parent := "/var/tmp"
 	if runtime.GOOS == "windows" {
@@ -75,7 +75,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// LENIENT target parse: update defines its own flags (--tag, --digest,
 	// --url, --include, --exclude, --all, --select) which the loop below
 	// consumes. Strict parsing here would reject them as unknown before
-	// the loop ever runs (opus5 F1: every update flag was dead). Leftover
+	// the loop ever runs. Leftover
 	// unknown --flags are rejected AFTER the loop instead.
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -130,7 +130,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				exclude = splitLabels(strings.TrimPrefix(rest[i], "--exclude="))
 			} else if strings.HasPrefix(rest[i], "-") {
 				// Unknown --flag (typo like --netwrok): reject AFTER the
-				// command's own flags were consumed (review finding L2).
+				// command's own flags were consumed.
 				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
@@ -143,7 +143,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	if all {
 		// --all means every provider on the box, no ambiguity. It conflicts
 		// with an explicit target — error rather than silently discarding
-		// it (review finding M4).
+		// it.
 		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
 		}
@@ -233,7 +233,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	// Validate EVERY provider's preconditions before touching any of them —
 	// a single missing binary path must not abort after earlier providers
-	// were already updated (free-review major).
+	// were already updated.
 	for _, p := range chosen {
 		if p.Binary == "" {
 			return fmt.Errorf("provider %s has no resolvable binary path — nothing updated", providerLabel(p))
@@ -242,8 +242,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	// Create the private staging dir ONLY now — after dry-run, cancellation,
 	// and no-op paths. A dry run or declined confirm must not create (and
-	// then remove) a temp dir or fail on staging permissions (coderabbit
-	// minor).
+	// then remove) a temp dir or fail on staging permissions.
 	stageDir, serr := newStageDir()
 	if serr != nil {
 		return serr
@@ -275,7 +274,11 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 					_, isDeleted := strings.CutSuffix(exe, " (deleted)")
 					skip = !isDeleted
 				} else {
-					skip = true // /proc unavailable — trust the version
+					// /proc unreadable (unprivileged cross-user) — cannot
+					// determine currency; do NOT skip. A redundant re-install
+					// is cheap (digest check short-circuits); a missed update
+					// leaves the provider stuck forever.
+					skip = false
 				}
 			} else {
 				skip = true
@@ -287,7 +290,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 		if err := updateProviderWithRestart(p, cfg, stagedTool); err != nil {
 			// Continue the batch; report all failures at the end rather
-			// than aborting mid-fleet (free-review major).
+			// than aborting mid-fleet.
 			fmt.Fprintf(os.Stderr, "update %s failed: %v\n", providerLabel(p), err)
 			failures++
 		}
@@ -423,10 +426,9 @@ func confirmVersion(tag string, providers []Provider) (bool, error) {
 	for _, p := range providers {
 		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
 	}
-	fmt.Print("Update to this version? [Y/n]: ")
-	line, err := stdinReader.ReadString('\n')
+	line, err := confirmStdinRead("Update to this version? [Y/n]: ")
 	if err != nil {
-		return false, fmt.Errorf("read confirmation: %w", err)
+		return false, err
 	}
 	line = strings.TrimSpace(strings.ToLower(line))
 	if line == "" || line == "y" || line == "yes" {
@@ -533,7 +535,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Structural sanity-check the staged binary WITHOUT executing it.
 	// Running a freshly downloaded artifact (e.g. `staged --version`) is
 	// code execution of a remote file — the same class of defect the hub
-	// path guards with isRecognizedExecutable (coderabbit critical). sha256
+	// path guards with isRecognizedExecutable. sha256
 	// already guarantees the artifact matches the requested tag, so an
 	// ELF/Mach-O/PE magic check is the right ceiling here: it confirms we
 	// extracted a real binary for this platform, not a script or corrupted
@@ -544,8 +546,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 
 	// Backup current binary with a nanosecond-timestamped name so repeated
-	// updates never collide (review finding M2; coderabbit minor: second
-	// precision let two updates in one second reuse the older backup).
+	// updates never collide.
 	//
 	// The running provider binary may have been deleted on disk already by a
 	// prior interrupted/partial update. Discover() reads /proc/<pid>/exe which,
@@ -553,6 +554,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// target whose on-disk file does not exist. There is then nothing to back
 	// up — skip it (warn) and install the fresh binary rather than failing the
 	// whole update on a phantom backup path.
+	// Prune old backups before creating a new one so disk pressure cannot
+	// cause the update to fail .
+	pruneBackups(p.Binary, 2)
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
 	} else {
@@ -563,7 +567,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			return fmt.Errorf("backup %s already exists — refusing to overwrite; retry", backup)
 		} else if !os.IsNotExist(err) {
 			// Non-NotExist error (permissions, etc.) — treat as a real
-			// failure, not "already backed up" (free-review minor).
+			// failure, not "already backed up".
 			return fmt.Errorf("backup stat: %w", err)
 		}
 		if err := copyFile(p.Binary, backup); err != nil {
@@ -571,6 +575,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		}
 		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 	}
+	// Prune old backups after the new one is written, regardless of
+	// update outcome .
+	defer pruneBackups(p.Binary, 2)
 
 	// Swap with ownership preserved for the provider user.
 	if err := installBinary(staged, p.Binary, p.User); err != nil {
@@ -597,18 +604,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		for _, rp := range providers {
 			if rp.Unit == p.Unit && rp.User == p.User && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
 				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
-				// Clean up old backup files now that the update is
-				// confirmed successful.
-				dir := filepath.Dir(p.Binary)
-				base := filepath.Base(p.Binary)
-				matches, _ := filepath.Glob(filepath.Join(dir, base+".bak-*"))
-				// Keep the most recent 2 backups.
-				sort.Strings(matches)
-				if len(matches) > 2 {
-					for _, old := range matches[:len(matches)-2] {
-						os.Remove(old)
-					}
-				}
+				pruneBackups(p.Binary, 2)
 				return nil
 			}
 		}
@@ -646,6 +642,20 @@ func restartProvider(p Provider) error {
 				!strings.Contains(string(out), "Could not get properties") && !strings.Contains(string(out), "Failed to connect") {
 				return fmt.Errorf("systemctl --user restart %s: %v (%s)", p.Unit, err, strings.TrimSpace(string(out)))
 			}
+		} else if userScoped && p.User == "" {
+			// Unit looks user-scoped but no owning user was resolved (e.g.
+			// no passwd entry, or system unit with no User= directive).
+			// Try system scope as a fallback — it costs one failed systemctl
+			// at worst, and avoids the "neither branch matches" dead zone.
+			out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput()
+			if err == nil {
+				fmt.Printf("restarted %s (system fallback, user unknown)\n", p.Unit)
+				return nil
+			}
+			if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "No such") {
+				return fmt.Errorf("unit %s looks user-scoped but no owning user resolved; system restart failed: %v (%s)",
+					p.Unit, err, strings.TrimSpace(string(out)))
+			}
 		} else if !userScoped {
 			// Genuinely system-owned unit: restart via the system manager.
 			out, err := exec.Command("systemctl", "restart", p.Unit).CombinedOutput()
@@ -659,15 +669,11 @@ func restartProvider(p Provider) error {
 		}
 	}
 	if p.User != "" && p.PID > 0 {
-		// No systemd ownership resolved: signal the process directly.
-		proc, err := os.FindProcess(p.PID)
-		if err == nil {
-			if err := proc.Signal(os.Interrupt); err == nil {
-				fmt.Printf("sent SIGINT to pid %d (provider will restart under its unit)\n", p.PID)
-				time.Sleep(2 * time.Second)
-				return nil
-			}
-		}
+		// No systemd ownership resolved: do NOT signal the process.
+		// Sending SIGINT to a bare process without a unit just kills it
+		// permanently — the provider won't restart. Return an
+		// actionable error so the operator can restart manually.
+		return fmt.Errorf("no systemd unit resolved for %s — restart the provider manually (pid %d)", providerLabel(p), p.PID)
 	}
 	return fmt.Errorf("could not restart provider %s — restart the owning unit manually", providerLabel(p))
 }
@@ -719,7 +725,7 @@ func verifySHA256(path, want string) error {
 //
 // Tar headers always use forward slashes regardless of host OS; using
 // filepath.Join here would produce backslashes on Windows and the
-// in-archive lookup would never match (free-review critical).
+// in-archive lookup would never match.
 func tarRelPath(goos, arch string) string {
 	if goos == "windows" {
 		return path.Join("windows", arch, "provider.exe")
@@ -767,7 +773,7 @@ func extractSingleFile(tarball, relPath, dst string) error {
 // The write goes to dst+".new" (same directory, so same filesystem) and is
 // os.Rename'd over dst — never O_TRUNC in place. The running provider may
 // still be executing from dst during an update; overwriting that inode in
-// place risks SIGBUS/SIGSEGV on demand-paging (review finding H2), while
+// place risks SIGBUS/SIGSEGV on demand-paging, while
 // rename(2) leaves the old inode serving already-open processes and only
 // new execve's see the new file.
 func installBinary(src, dst, user string) error {
@@ -779,23 +785,24 @@ func installBinary(src, dst, user string) error {
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
-		// Resolve uid/gid via id(1) — portable without cgo.
-		uidOut, err := exec.Command("id", "-u", user).Output()
+		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
-			return fmt.Errorf("resolve uid for %s: %w", user, err)
+			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
-		gidOut, err := exec.Command("id", "-g", user).Output()
-		if err != nil {
-			return fmt.Errorf("resolve gid for %s: %w", user, err)
-		}
-		uid := strings.TrimSpace(string(uidOut))
-		gid := strings.TrimSpace(string(gidOut))
-		if err := exec.Command("chown", uid+":"+gid, newPath).Run(); err != nil {
+		if err := os.Chown(newPath, uid, gid); err != nil {
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
 	}
 	if err := os.Rename(newPath, dst); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
+	}
+	// Sync the parent directory so the rename survives a crash before
+	// the directory's own metadata is committed. Without this, a power
+	// loss after rename but before the dir entry is persisted can lose
+	// the new binary path.
+	if dir, err := os.Open(filepath.Dir(dst)); err == nil {
+		dir.Sync()
+		dir.Close()
 	}
 	return nil
 }
@@ -803,10 +810,27 @@ func installBinary(src, dst, user string) error {
 // backupName returns the timestamped backup path for a binary — distinct
 // names even for repeated updates within the same second are NOT guaranteed
 // at second resolution, but the timestamp carries the wall clock so backups
-// never collide across seconds (review finding M2). Extracted as a pure
-// helper so tests call production logic (coderabbit).
+// never collide across seconds. Extracted as a pure
+// helper so tests call production logic.
 func backupName(binary string, at time.Time) string {
 	return binary + ".bak-" + at.UTC().Format("20060102T150405.000000000Z")
+}
+
+// pruneBackups removes older .bak-* backups for a binary, keeping the
+// newest 'keep' entries. Best-effort: removal errors are logged but never
+// fail the caller. Called before writing a new backup (to free disk space)
+// and via defer after updateProvider returns (to handle success and failure
+// paths uniformly).
+func pruneBackups(binaryPath string, keep int) {
+	dir := filepath.Dir(binaryPath)
+	base := filepath.Base(binaryPath)
+	matches, _ := filepath.Glob(filepath.Join(dir, base+".bak-*"))
+	sort.Strings(matches)
+	if len(matches) > keep {
+		for _, old := range matches[:len(matches)-keep] {
+			os.Remove(old)
+		}
+	}
 }
 
 // copyFile copies src to dst preserving mode.
@@ -829,9 +853,16 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return cerr
 	}
+	// Fsync the file contents (data durability) before close. On ext4
+	// data=ordered the rename is ordered after data, so this is usually safe
+	// without Sync, but on other filesystems and on power loss the risk is a
+	// zero-length provider binary at the canonical path.
+	if err := fsyncFile(out); err != nil {
+		out.Close()
+		return fmt.Errorf("fsync %s: %w", dst, err)
+	}
 	// Close flushes buffered data — a disk-full or I/O error here would
-	// otherwise be lost and the copy reported successful (free-review
-	// major: copyFile produces the backup AND the .new binary).
+	// otherwise be lost and the copy reported successful.
 	if cerr = out.Close(); cerr != nil {
 		return fmt.Errorf("close %s: %w", dst, cerr)
 	}
@@ -972,10 +1003,10 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	// Windows-safe swap: rename the running executable ASIDE first, then
 	// install the staged binary at the freed path. On Windows you cannot
 	// rename a .new over a running .exe (the kernel locks the image section),
-	// but you CAN rename the running executable itself to a .old name — the
+	// but you CAN rename the running executable itself to a .bak-* name — the
 	// standard self-update pattern. On failure the original is restored from
-	// .old; on success .old is left for removal after process exit (the next
-	// invocation cleans stale .old files).
+	// .bak-*; on success the backup is left for removal after process exit
+	// (the next invocation cleans stale .bak-* files).
 	if err := os.Rename(exePath, backup); err != nil {
 		return fmt.Errorf("move current tool aside: %w", err)
 	}

@@ -161,8 +161,7 @@ func writeReportURL(p Provider, url string) error {
 // (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
 // auth usage and did nothing (gauntlet finding BUG-4). A confirmation gate
 // mirrors cmdRestart: restarting a provider is a production action and must
-// not happen without --force or an explicit "yes" (Sonnet review finding —
-// the original fix restarted unconditionally).
+// not happen without --force or an explicit "yes".
 func cmdHotRestart(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -193,7 +192,7 @@ func cmdHotRestart(args []string, force, dryRun bool) error {
 // (summary, report, hot-restart) BEFORE any targeting runs: those commands
 // delegate to the provider binary, so without this guard `--help` would be
 // forwarded and the operation would actually run (the help-never-executes
-// invariant, review finding C1 class). Returns errHelpShown when help was
+// Returns errHelpShown when help was
 // printed; the caller must NOT proceed.
 func parseDelegationArgs(args []string) ([]string, error) {
 	for _, a := range args {
@@ -312,7 +311,7 @@ func parseTargetFlagsLenient(args []string) (Target, []string, error) {
 // remaining positional args. Unknown -x flags are left in place (subcommands
 // may define their own).
 //
-// Unknown --flags are REJECTED (review finding L2) — a typo like --netwrok
+// Unknown --flags are REJECTED — a typo like --netwrok
 // or --dryrun must not be silently absorbed, because on a single-provider
 // box the command would then proceed as a real action with no notice.
 func parseTargetFlags(args []string) (Target, []string, error) {
@@ -326,8 +325,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	var rest []string
 	// Conflicting targeting flags are an error: matchProvider applies the
 	// FIRST set field and silently ignores the rest, so `--unit x --user y`
-	// would act on unit x while pretending to scope by user (free-review
-	// major). Only one selector may be set; a same-field repeat just
+	// would act on unit x while pretending to scope by user. Only one selector may be set; a same-field repeat just
 	// overwrites.
 	setField := func(flag, value string, field *string) error {
 		if value == "" {
@@ -414,9 +412,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 		default:
 			// Reject unknown flags instead of silently dropping them — a
 			// typo like --netwrok or --dryrun would otherwise be absorbed
-			// and the command proceeds as if un-targeted (review finding
-			// L2; on a single-provider box that means a real action with
-			// no dry-run notice).
+			// and the command proceeds as if un-targeted.
 			if strict && strings.HasPrefix(args[i], "--") {
 				return t, nil, fmt.Errorf("unknown flag %q", args[i])
 			}
@@ -639,10 +635,14 @@ func printProxyStatus(p Provider) {
 
 // clamp truncates s to at most max runes, appending "..." if truncated.
 func clamp(s string, max int) string {
-	if len(s) <= max {
+	if max < 3 {
+		panic("clamp: max < 3")
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 // readProxyHealth reads the proxy_health.state snapshot and returns
@@ -727,7 +727,6 @@ func readProxyFileSource(p Provider) string {
 // Each prompt MUST read from this single reader: a second bufio.Reader over
 // the same fd would lose whatever the first already buffered, so piped
 // input (`echo y | urnet-tools update --all`) hangs on the second prompt
-// (free-review HIGH, mimo-v2.5).
 var stdinReader = bufio.NewReader(os.Stdin)
 
 // stdinIsInteractiveOverride, when non-nil, replaces the terminal check.
@@ -745,7 +744,7 @@ var stdinIsInteractiveOverride func() bool
 // (gauntlet finding BUG-14: self-update blocked on read(0) for minutes).
 // Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
 // misclassifies /dev/zero and other char devices as terminals (CodeRabbit
-// review finding).
+
 func stdinIsInteractive() bool {
 	if stdinIsInteractiveOverride != nil {
 		return stdinIsInteractiveOverride()
@@ -774,7 +773,7 @@ func confirmStdinRead(prompt string) (string, error) {
 // piped stdout) — even with -f/--force, which only bypasses the interactive
 // prompt. Scripted/cron runs are the primary -f users and the most likely to
 // be replayed unattended; a printed "about to touch: X, Y" line in the log
-// is the audit trail for the incident class (review finding M1).
+// is the audit trail for the incident class.
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {

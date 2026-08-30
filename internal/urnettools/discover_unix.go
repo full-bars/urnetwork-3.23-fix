@@ -5,12 +5,12 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // discoverProcesses scans /proc for running provider processes across ALL
@@ -86,17 +86,31 @@ func discoverProcesses() []Provider {
 			Running:       true,
 			BinaryDeleted: binaryDeleted,
 		}
-		// A provider may carry its own --state-dir flag; honor it.
-		for i := 1; i < len(args)-1; i++ {
-			if args[i] == "--state-dir" {
-				p.StateDir = args[i+1]
+		// A provider may carry its own --state-dir flag; honor it. Both
+		// the space ("--state-dir <path>") and equals
+		// ("--state-dir=<path>") forms are accepted; the equals form
+		// is the standard Unix convention and was previously missed
+		// here, leaving state-dir-derived operations (set, fast-auth,
+		// report, session save/load, proxy health/traffic, and
+		// uninstall's RemoveAll) targeting the wrong directory.
+		for i := 1; i < len(args); i++ {
+			a := args[i]
+			if a == "--state-dir" {
+				if i+1 < len(args) {
+					p.StateDir = args[i+1]
+					break
+				}
+				continue
+			}
+			if v, ok := strings.CutPrefix(a, "--state-dir="); ok {
+				p.StateDir = v
 				break
 			}
 		}
 		if p.StateDir == "" {
 			// No state dir resolvable (HOME unset). Skip the JWT read
 			// entirely rather than falling through to a relative "jwt"
-			// path in the invoker's CWD (review finding L1).
+			// path in the invoker's CWD.
 			out = append(out, p)
 			continue
 		}
@@ -203,7 +217,7 @@ func attachUnits(procs []Provider) {
 // drives them with `systemctl --user`, which the SYSTEM-manager listing
 // below never shows. So this also enumerates per-user managers for users
 // that plausibly run a provider (a user unit that looks like a provider, or
-// a .urnetwork state dir), bounded to those users (opus5 F2).
+// a .urnetwork state dir), bounded to those users.
 func discoverSystemdUnits(running []Provider) []Provider {
 	out := discoverSystemUnits(running)
 	out = append(out, discoverUserUnits(running)...)
@@ -215,22 +229,20 @@ func discoverSystemUnits(running []Provider) []Provider {
 	// --plain strips the leading "●"/space state column so fields[0] is the
 	// unit name; without it a loaded-failed unit parses as "●" and is never
 	// matched (CI unix-lifecycle: fake unit installed but undiscoverable).
-	cmd := exec.Command("systemctl", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
-	out, err := cmd.Output()
+	out, err := execWithTimeout(5*time.Second, "systemctl", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 	if err != nil {
 		return nil // no systemd (container/other init) — process scan is enough
 	}
 	// list-units --all misses never-started units that exist on disk;
 	// list-unit-files scans the unit paths and sees them. Merge both so a
 	// freshly-installed (stopped) provider is discoverable.
-	if fb, ferr := exec.Command("systemctl", "--plain", "list-unit-files", "--no-legend", "--no-pager").Output(); ferr == nil {
+	if fb, ferr := execWithTimeout(5*time.Second, "systemctl", "--plain", "list-unit-files", "--no-legend", "--no-pager"); ferr == nil {
 		out = append(out, '\n')
 		out = append(out, fb...)
 	}
 	// unitUser maps unit name -> User= value, resolved on demand.
 	unitUser := func(unit string) string {
-		c := exec.Command("systemctl", "show", unit, "-p", "User", "--value")
-		b, err := c.Output()
+		b, err := execWithTimeout(5*time.Second, "systemctl", "show", unit, "-p", "User", "--value")
 		if err != nil {
 			return ""
 		}
@@ -309,24 +321,25 @@ func discoverUserUnits(running []Provider) []Provider {
 		if user == current {
 			// --plain strips the leading "●"/space state column so
 			// fields[0] is the unit name (see discoverSystemUnits).
-			b, err = exec.Command("systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+			b, err = execWithTimeout(5*time.Second, "systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 			if err == nil {
 				// list-units --all misses never-started units that exist
 				// on disk (a fresh fake/stopped provider); list-unit-files
 				// scans the unit paths and sees them. Merge both.
-				if fb, ferr := exec.Command("systemctl", "--user", "--plain", "list-unit-files", "--no-legend", "--no-pager").Output(); ferr == nil {
+				if fb, ferr := execWithTimeout(5*time.Second, "systemctl", "--user", "--plain", "list-unit-files", "--no-legend", "--no-pager"); ferr == nil {
 					b = append(b, '\n')
 					b = append(b, fb...)
 				}
 			}
 		} else {
-			// Cross-user query goes through machined/loginctl, which can
-			// be unavailable on CI runners even though the local user
-			// manager works. Fall back to the caller's own manager when
-			// the -M form fails so a same-user provider is still found.
-			b, err = exec.Command("systemctl", "--user", "-M", user+"@", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+			// Cross-user query goes through machined/loginctl. If -M
+			// fails (no machined, no lingering session — the norm for
+			// service accounts), skip this user entirely. The old code
+			// fell back to the current user's manager and labelled every
+			// unit with the wrong user, creating ghost providers.
+			b, err = execWithTimeout(10*time.Second, "systemctl", "--user", "-M", user+"@", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 			if err != nil {
-				b, err = exec.Command("systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+				continue
 			}
 		}
 		if err != nil {

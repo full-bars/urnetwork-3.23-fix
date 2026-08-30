@@ -167,7 +167,10 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 	}
 	// Call the PRODUCTION merge helper — not a copy of its logic
 	// (coderabbit major: reimplemented tests cannot detect regressions).
-	got := mergeDropinEnvFile(path, "URNETWORK_PROFILE=turbo-v4")
+	got, err := mergeDropinEnvFile(path, "URNETWORK_PROFILE=turbo-v4")
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The old URNETWORK_PROFILE=eco should be gone.
 	if strings.Contains(got, "eco") {
 		t.Errorf("same-key replace failed: old value 'eco' still present: %s", got)

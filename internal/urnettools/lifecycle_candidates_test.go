@@ -220,7 +220,7 @@ func TestLifecycleCmds_ExplicitUnknownTargetStillPlainNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown explicit target must error")
 	}
-	if !strings.Contains(err.Error(), "matches no running provider") {
+	if !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected error shape: %v", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestLifecycleCandidates_DockerCLIAbsentExplicitTargetCleanFallthrough(t *te
 	if err == nil {
 		t.Fatal("unknown target must still error")
 	}
-	if !strings.Contains(err.Error(), "matches no running provider") {
+	if !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected error shape: %v", err)
 	}
 }

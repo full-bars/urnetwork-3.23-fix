@@ -7,6 +7,7 @@ package urnettools
 
 import (
 	"context"
+	"debug/buildinfo"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -151,25 +152,77 @@ func stateDirFor(env map[string]string) string {
 	return ""
 }
 
-// providerVersion returns the version string from a provider binary by
-// running "<binary> --version" with a short timeout. Errors yield "".
+// providerVersion returns the version string from a provider binary.
 //
-// The timeout is essential: Discover() calls this for every matched process
-// synchronously, so a single hung provider binary would otherwise wedge
-// every command including read-only `providers` (review finding H1).
+// Primary path: parse the embedded Go build info. The version is normally
+// recorded under the "-ldflags" setting as "-X main.Version=<ver>", which
+// buildinfo exposes without executing the file.
+//
+// IMPORTANT: when the binary is built with -trimpath (this repo's Makefile
+// does so), Go strips -ldflags from buildinfo.Settings and Main.Version is
+// empty. The buildinfo-only path returns "" in that case, which silently
+// breaks update-skip and post-restart verification. We fall back to
+// running the binary with --version under a tight timeout as a last resort.
+// The discovery layer has already vetted the path (isProviderArg + ELF
+// magic), and the 3s timeout caps the blast radius of an untrusted binary.
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "--version")
-	cmd.Env = append(os.Environ(), "URNETWORK_NO_DOWNLOAD_TARBALL=1")
-	out, err := cmd.Output()
+	if v := providerVersionFromBuildinfo(binary); v != "" {
+		return v
+	}
+	return providerVersionFromExec(binary)
+}
+
+// providerVersionFromBuildinfo extracts the version from Go build info
+// without executing the binary. Returns "" when no version is recorded
+// (e.g. -trimpath builds).
+func providerVersionFromBuildinfo(binary string) string {
+	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	for _, s := range info.Settings {
+		if s.Key != "-ldflags" {
+			continue
+		}
+		const prefix = "main.Version="
+		idx := strings.Index(s.Value, prefix)
+		if idx < 0 {
+			continue
+		}
+		v := s.Value[idx+len(prefix):]
+		if sp := strings.IndexByte(v, ' '); sp >= 0 {
+			v = v[:sp]
+		}
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return ""
+}
+
+// providerVersionFromExec runs the binary with --version under a 3-second
+// timeout and returns the first non-empty line of stdout. Used as a fallback
+// when build info is unavailable (e.g. -trimpath builds). The 3s timeout
+// mirrors the original pre-buildinfo implementation.
+func providerVersionFromExec(binary string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	return line
 }
 
 // unitStateDir returns the state directory implied by a systemd unit's
@@ -179,7 +232,7 @@ func unitStateDir(user string) string {
 		return ""
 	}
 	// Resolve the real home via getent (matches homeForUser used by the
-	// update/reinstall paths — review finding M3 class); fall back to the
+	// update/reinstall paths); fall back to the
 	// /root and /home conventions only when getent fails (e.g. an
 	// ephemeral container without passwd entries).
 	if home := homeForUser(user); home != "" {

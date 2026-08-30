@@ -10,7 +10,7 @@ import (
 // chownLikeStateOwner chowns path to the owner of stateDir when the caller is a
 // different user (cross-user session load: the provider's uid must be able to
 // read what the tool staged under a root run). No-op when ownership already
-// matches (review finding HIGH).
+// matches.
 func chownLikeStateOwner(stateDir, path string) error {
 	fi, err := os.Stat(stateDir)
 	if err != nil {
