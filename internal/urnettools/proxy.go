@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // providerSubcommand runs a provider-binary subcommand against the targeted
@@ -62,6 +63,64 @@ func homeForUser(user string) string {
 		return fields[5]
 	}
 	return ""
+}
+
+// checkReadableAsUser verifies that the named user can open the file for
+// reading. proxy add delegates to the provider binary via dropPrivilegesTo,
+// so a file readable only by root or another user would fail inside the
+// provider with a confusing permission error — check first. We compare the
+// file's mode/owner to the user's uid/gid directly rather than spawning
+// su/sudo: that resolves to a clear message and avoids needing the
+// provider to be root for an explicit access(2) syscall. When we are not
+// root, the caller's uid already determines read access — the caller is
+// about to exec the provider as itself, so the stat is sufficient and we
+// trust the existing access check.
+func checkReadableAsUser(path, user string) error {
+	if user == "" {
+		return nil // nothing to check against; the caller will inherit
+	}
+	if os.Geteuid() != 0 {
+		// Not root: the caller IS the provider user, the existing stat
+		// (which succeeded) is the access check.
+		return nil
+	}
+	uid, gid, err := lookupUserIDs(user)
+	if err != nil {
+		return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	st := fi.Mode()
+	// World-readable covers it. If not, check owner / group bits.
+	if st.Perm()&0o4 != 0 {
+		return nil
+	}
+	sysUID := int64(-1)
+	sysGID := int64(-1)
+	if sys := fi.Sys(); sys != nil {
+		if s, ok := sys.(*syscall.Stat_t); ok {
+			sysUID = int64(s.Uid)
+			sysGID = int64(s.Gid)
+		}
+	}
+	if sysUID == int64(uid) && st.Perm()&0o4 != 0 {
+		return nil
+	}
+	if sysUID != int64(uid) && st.Perm()&0o4 == 0 &&
+		(sysGID != int64(gid) || st.Perm()&0o40 == 0) {
+		return fmt.Errorf("proxy file %s is not readable by user %s", path, user)
+	}
+	// Group-bit match.
+	if sysGID == int64(gid) && st.Perm()&0o40 != 0 {
+		return nil
+	}
+	// Owner match with owner-read.
+	if sysUID == int64(uid) && st.Perm()&0o400 != 0 {
+		return nil
+	}
+	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", path, user, sysUID, st.Perm())
 }
 
 // cmdProxy dispatches proxy sub-operations to the targeted provider(s).
@@ -185,8 +244,19 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return fmt.Errorf("proxy add requires a proxy file path")
 		}
 		file := positionals[0]
+		// Stat the file as the tool's user (existence check), then verify
+		// the targeted provider user can actually read it: `proxy add` is
+		// delegated to providerSubcommand → dropPrivilegesTo(p.User, cmd),
+		// so the path must be accessible under the provider's uid/gid.
+		// Checking only as the caller is racy (TOCTOU) AND lets root pass
+		// files (e.g. /root/proxies.txt) that the provider user cannot open.
 		if _, err := os.Stat(file); err != nil {
 			return fmt.Errorf("proxy file not found: %s", file)
+		}
+		if len(chosen) > 0 {
+			if err := checkReadableAsUser(file, chosen[0].User); err != nil {
+				return err
+			}
 		}
 		opArgs = []string{"proxy", "add", "--proxy_file=" + file, "-f"}
 	case "clear":
