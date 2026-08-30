@@ -97,7 +97,7 @@ func paceMonitor(ctx context.Context) {
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
 				if err := writeReloadTrigger(reloadPath); err != nil {
-					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+					tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 				}
 			}
 			return
@@ -111,7 +111,7 @@ func paceMonitor(ctx context.Context) {
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
 				if err := writeReloadTrigger(reloadPath); err != nil {
-					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+					tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 				}
 			}
 			return
@@ -125,7 +125,7 @@ func paceMonitor(ctx context.Context) {
 			proxyWarmupDone.Store(true)
 			if reloadPath, err := proxyReloadPath(); err == nil {
 				if err := writeReloadTrigger(reloadPath); err != nil {
-					tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+					tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 				}
 			}
 			return // warmup complete — stop repeating
@@ -1268,7 +1268,7 @@ func runLifetimeCollector(ctx context.Context) {
 		// All-time rollup line (only once there is something to show).
 		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
 		if a1|a2|a3|a4|a5|a6|a7 != 0 {
-			tlog("♾️ [lifetime] all-time: pqe_opens=%d clas_opens=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+			tlog("♾️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
 				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
 		}
 
@@ -1566,7 +1566,7 @@ func runBillableRateWriter(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			tlog("[billable_rate] writer stopped\n")
+			tlog("[billable_rate] writer stopped (shutdown)\n")
 			return
 		case <-ticker.C:
 		}
@@ -1625,11 +1625,11 @@ func writeRate(rate uint64) {
 	tmp := path + ".tmp"
 	content := strconv.FormatUint(rate, 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
-		tlog("[billable_rate] warn: write failed: %v\n", err)
+		tlog("[billable_rate] warn: failed to write billable rate file (~/.urnetwork/health/billable_rate): %v\n", err)
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		tlog("[billable_rate] warn: rename failed: %v\n", err)
+		tlog("[billable_rate] warn: failed to finalize billable rate file (rename tmp -> billable_rate): %v\n", err)
 	}
 }
 
@@ -1714,10 +1714,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			uint64(len(report.Recovered)),
 			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
 		if len(report.Dead) > 0 {
-			tlog("[health][proxies] dead: %s\n", capProxyList(report.Dead, proxyHealthListCap))
+			tlog("[health][proxies] unreachable (dead): %s\n", capProxyList(report.Dead, proxyHealthListCap))
 		}
 		if len(report.Degraded) > 0 {
-			tlog("[health][proxies] degraded: %s\n", capProxyList(report.Degraded, proxyHealthListCap))
+			tlog("[health][proxies] failing (degraded): %s\n", capProxyList(report.Degraded, proxyHealthListCap))
 		}
 
 		// Reset midnight checkpoints when the day rolls over.
@@ -2347,7 +2347,7 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 		reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
 
 		if reaped > 0 {
-			tlog("[reaper] cancelled %d degraded proxies (keeping best %d of %d)\n",
+			tlog("[proxy-quality] dropped %d under-performing proxies (kept best %d of %d)\n",
 				reaped, keep, len(scored))
 		}
 	}
@@ -2470,7 +2470,7 @@ func provide(opts docopt.Opts) {
 				if connect.ProxyHealthCount() > 0 {
 					_, dead, degraded, _, connecting := connect.ProxyHealthSnapshot()
 					down := len(dead) + len(degraded)
-					tlog("[pulse] waking stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
+					tlog("[hourly-maintenance] reconnecting stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
 						down, len(dead), len(degraded), len(connecting))
 				}
 				connect.TriggerPulse()
@@ -2821,13 +2821,13 @@ func provide(opts docopt.Opts) {
 					}
 					slowDelay := proxyAuthSlowRetryDelay(authFailures - maxAuthFailures + 1)
 					if proxySettings != nil {
-						tlog("[proxy][init] proxy[%d] (%s) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[proxy][init] proxy[%d] (%s) auth still failing after %d attempts (%s); retrying in %s\n",
 							proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(slowDelay))
 					} else if isNative {
-						tlog("[proxy][init] proxy[0] (direct) auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[proxy][init] proxy[0] (direct) auth still failing after %d attempts (%s); retrying in %s\n",
 							authFailures, cause, formatDuration(slowDelay))
 					} else {
-						tlog("[init] auth still failing after %d attempts (%s); not giving up, next retry in %s\n",
+						tlog("[init] auth still failing after %d attempts (%s); retrying in %s\n",
 							authFailures, cause, formatDuration(slowDelay))
 					}
 					select {
@@ -2895,7 +2895,7 @@ func provide(opts docopt.Opts) {
 							if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
 								time.AfterFunc(delay, func() {
 									if err := writeReloadTrigger(reloadPath); err != nil {
-										tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+										tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 									}
 								})
 							}
@@ -5452,7 +5452,7 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 	// Automatically trigger a hot-reload so running providers pick up the changes
 	if reloadPath, err := proxyReloadPath(); err == nil {
 		if err := writeReloadTrigger(reloadPath); err != nil {
-			tlog("[proxy] warn: reload trigger write failed: %v\n", err)
+			tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 		}
 	}
 }
