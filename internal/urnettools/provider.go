@@ -41,6 +41,13 @@ type Provider struct {
 	// Version is the provider binary version ("" if undetermined).
 	Version string
 
+	// BinaryDeleted is true when the running process's on-disk binary was
+	// deleted (detected via /proc/<pid>/exe "(deleted)" suffix). Captured
+	// before the suffix is stripped from Binary, so the update path can
+	// detect a stale process whose binary has been swapped out by a prior
+	// partial update.
+	BinaryDeleted bool
+
 	// IdentityRestricted is true when the provider's JWT could not be read
 	// because the invoking user lacks permission on the state dir (another
 	// account's provider seen via unit/process discovery). Network and

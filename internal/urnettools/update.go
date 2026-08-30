@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -261,7 +262,26 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	failures := 0
 	for _, p := range chosen {
-		if p.Version == cfg.Tag {
+		// Version check: p.Version is the on-disk binary's version, which may
+		// differ from the running process. If BinaryDeleted is true, a prior
+		// update swapped the binary on disk but the old process is still
+		// running from a deleted inode — the version is stale, so do NOT skip.
+		// Also re-check /proc/<pid>/exe for the (deleted) marker on Linux
+		// (the discovery sample may have been taken before the swap).
+		skip := false
+		if p.Version == cfg.Tag && !p.BinaryDeleted {
+			if runtime.GOOS == "linux" && p.PID > 0 {
+				if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", p.PID)); err == nil {
+					_, isDeleted := strings.CutSuffix(exe, " (deleted)")
+					skip = !isDeleted
+				} else {
+					skip = true // /proc unavailable — trust the version
+				}
+			} else {
+				skip = true
+			}
+		}
+		if skip {
 			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
 			continue
 		}
@@ -562,7 +582,38 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// plain restartProvider by default; the update flow temporarily routes
 	// it through the staged-tool escalation ladder
 	// (updateProviderWithRestart).
-	return restartForUpdate(p)
+	if err := restartForUpdate(p); err != nil {
+		return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+	}
+
+	// Verify the restart took effect: wait for the process to be on the
+	// new version. The on-disk binary IS the new version (we just swapped
+	// it), so we re-discover and check that the running PID changed and
+	// the new process reports the expected version.
+	oldPID := p.PID
+	for i := 0; i < 15; i++ { // up to ~30s
+		time.Sleep(2 * time.Second)
+		providers := Discover()
+		for _, rp := range providers {
+			if rp.Unit == p.Unit && rp.User == p.User && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
+				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
+				// Clean up old backup files now that the update is
+				// confirmed successful.
+				dir := filepath.Dir(p.Binary)
+				base := filepath.Base(p.Binary)
+				matches, _ := filepath.Glob(filepath.Join(dir, base+".bak-*"))
+				// Keep the most recent 2 backups.
+				sort.Strings(matches)
+				if len(matches) > 2 {
+					for _, old := range matches[:len(matches)-2] {
+						os.Remove(old)
+					}
+				}
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
 }
 
 // restartProvider restarts the systemd unit (system or user level) that owns

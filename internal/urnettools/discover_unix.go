@@ -45,11 +45,14 @@ func discoverProcesses() []Provider {
 			exe = args[0] // fall back to argv[0]
 		}
 		// A running binary whose on-disk file was deleted (e.g. a prior
-		// interrupted update) resolves to a "<path> (deleted)" target. Strip
-		// the kernel's " (deleted)" marker so Provider.Binary stays the
-		// canonical executable path; otherwise installBinary/backup later
+		// interrupted update) resolves to a "<path> (deleted)" target. Record
+		// this BEFORE stripping the suffix so the update path can detect a
+		// stale process whose binary was swapped out by a prior partial update.
+		// Then strip the kernel's " (deleted)" marker so Provider.Binary stays
+		// the canonical executable path; otherwise installBinary/backup later
 		// write to a literal "... (deleted)" path and the service's real
 		// binary stays missing (CodeRabbit Major).
+		_, binaryDeleted := strings.CutSuffix(exe, " (deleted)")
 		exe = strings.TrimSuffix(exe, " (deleted)")
 		env := readEnviron(pid)
 		user := env["USER"]
@@ -81,6 +84,7 @@ func discoverProcesses() []Provider {
 			Binary:   exe,
 			PID:      pid,
 			Running:  true,
+			BinaryDeleted: binaryDeleted,
 		}
 		// A provider may carry its own --state-dir flag; honor it.
 		for i := 1; i < len(args)-1; i++ {

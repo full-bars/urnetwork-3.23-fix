@@ -32,8 +32,28 @@ func RunDocker(args []string) error {
 	// `-v junk` still prints the version (Sonnet/Muse review).
 	if len(args) >= 1 {
 		switch args[0] {
-		case "version", "--version", "-v":
+		case "-v", "--version":
 			fmt.Println(ToolVersion)
+			return nil
+		case "version":
+			fmt.Printf("urnet-tools %s\n", ToolVersion)
+			providers := Discover()
+			if len(providers) == 0 {
+				fmt.Println("  no providers discovered")
+				return nil
+			}
+			for _, p := range providers {
+				status := "running"
+				if !p.Running {
+					status = "stopped"
+				}
+				stale := ""
+				if p.BinaryDeleted {
+					stale = " (disk binary stale \xe2\x80\x94 restart needed)"
+				}
+				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
+					providerLabel(p), p.Version, status, p.PID, stale)
+			}
 			return nil
 		}
 	}
