@@ -119,7 +119,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		case 1:
 			return matches[0], nil
 		case 0:
-			return Provider{}, fmt.Errorf("target %s matches no running provider", t)
+			return Provider{}, fmt.Errorf("target %s matches no provider (the pool includes stopped units; use status or providers to list them)", t)
 		default:
 			return Provider{}, fmt.Errorf("target %s is ambiguous (%d matches); use a more specific target", t, len(matches))
 		}

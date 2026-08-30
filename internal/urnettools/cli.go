@@ -635,10 +635,14 @@ func printProxyStatus(p Provider) {
 
 // clamp truncates s to at most max runes, appending "..." if truncated.
 func clamp(s string, max int) string {
-	if len(s) <= max {
+	if max < 3 {
+		panic("clamp: max < 3")
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 // readProxyHealth reads the proxy_health.state snapshot and returns

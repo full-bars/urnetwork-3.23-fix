@@ -152,6 +152,9 @@ var nonProviderSiblingSuffixes = []string{"hub", "update", "dashboard"}
 // provider_beta-custom) are recognized too. Excludes known
 // non-provider siblings (see nonProviderSiblingSuffixes) so their units are
 // not mistaken for providers.
+// NOTE: a bare "provider" binary is NOT corroborated by state-dir or unit
+// here — that happens downstream in Process() when homeForUser/state-dir
+// argv fail; this is a deliberate design choice for custom install paths.
 func isProviderArg(arg string) bool {
 	base := filepath.Base(arg)
 	// Strip a trailing .exe (Windows) defensively.

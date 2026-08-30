@@ -26,7 +26,8 @@ func TestDockerUpdateDispatchViaShim(t *testing.T) {
 	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("URNET_DOCKER_BIN", shim)
+	setDockerTestBin(shim)
+	t.Cleanup(func() { setDockerTestBin("") })
 	t.Setenv("DOCKER_SHIM_LOG", log)
 
 	readLog := func() string { b, _ := os.ReadFile(log); return string(b) }

@@ -33,7 +33,7 @@ Performance & Tuning:
   eco <on|off>            ECO MODE GC-tuned for low-RAM systems
   lowmode <on|off>        LOW-MEMORY reduced buffers for max RAM savings
   ramlogs <on|off>        RAM LOGS zero disk I/O logging
-  hot-restart <on|off>    reuse client_ids across restarts
+  hot-restart <on|off>    restart provider (hot-restart is a config toggle)
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
   fast-auth [on|off]      Bypass auth rate limiter without restart

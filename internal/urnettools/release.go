@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -35,16 +36,33 @@ type releaseJSON struct {
 	Assets  []releaseAsset `json:"assets"`
 }
 
+// githubAuthHeader returns an Authorization header value when GITHUB_TOKEN
+// is set; otherwise ("", ""). Used to raise the unauthenticated rate limit
+// from 60 to 5000 requests/hour so auto-update timers on a fleet don't hit 403.
+func githubAuthHeader() (string, string) {
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		return "Authorization", "Bearer " + tok
+	}
+	return "", ""
+}
+
 // fetchLatestRelease queries the fork's GitHub releases/latest endpoint and
 // returns the tag + tarball sha256 digest for the provider asset.
 func fetchLatestRelease() (*releaseInfo, error) {
 	const api = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(api)
+	req, _ := http.NewRequest("GET", api, nil)
+	if k, v := githubAuthHeader(); k != "" {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest release: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == 429 {
+		return nil, fmt.Errorf("fetch latest release: rate-limited (status %d); set GITHUB_TOKEN for 5000 req/h quota", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch latest release: status %d", resp.StatusCode)
 	}
@@ -91,11 +109,18 @@ func digestForAsset(assets []releaseAsset, wantName string) string {
 func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 	api := fmt.Sprintf("https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/%s", tag)
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(api)
+	req, _ := http.NewRequest("GET", api, nil)
+	if k, v := githubAuthHeader(); k != "" {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release %s: %w", tag, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == 429 {
+		return nil, fmt.Errorf("fetch release %s: rate-limited (status %d); set GITHUB_TOKEN for 5000 req/h quota", tag, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch release %s: status %d", tag, resp.StatusCode)
 	}

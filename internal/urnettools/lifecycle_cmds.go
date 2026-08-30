@@ -158,10 +158,10 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 }
 
 // safeRemoveTarget reports whether a path is safe to remove. It refuses:
-// - empty / relative paths
-// - the filesystem root
-// - well-known top-level system dirs (/home, /etc, /usr, /var, /opt,
-//   /root, /srv) that would be catastrophic to RemoveAll
+//   - empty / relative paths
+//   - the filesystem root
+//   - well-known top-level system dirs (/home, /etc, /usr, /var, /opt,
+//     /root, /srv) that would be catastrophic to RemoveAll
 //
 // What it does NOT check: the path's basename or parent structure. A
 // p.StateDir from --state-dir=<path> argv (parsed in discover_unix.go)

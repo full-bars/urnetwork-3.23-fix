@@ -1050,7 +1050,7 @@ func optimizeLinux() error {
 	for _, args := range [][]string{
 		{"-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728"},
 		{"-w", "fs.file-max=1000000"},
-		{"-w", "net.ipv4.ip_local_port_range=1024 65535"},
+		{"-w", "net.ipv4.ip_local_port_range=10240 65535"},
 		{"-w", "net.ipv4.tcp_fin_timeout=15"},
 	} {
 		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
@@ -1066,6 +1066,22 @@ func optimizeLinux() error {
 			}
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
 		}
+	}
+	// Persist settings across reboot. Writing /etc/sysctl.d/ on a fleet of
+	// production boxes is a one-shot per box; non-fatal if it fails (the
+	// live sysctl -w applied the settings for this boot).
+	sysctlConf := "/etc/sysctl.d/99-urnetwork.conf"
+	conf := `# URnetwork golden-fleet kernel limits — applied by urnet-tools optimize
+# Ephemeral port pool: lower bound raised from the kernel default (32768)
+# so outbound proxy connections don't collide with well-known service ports.
+net.ipv4.ip_local_port_range = 10240 65535
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+fs.file-max = 1000000
+net.ipv4.tcp_fin_timeout = 15
+`
+	if err := os.WriteFile(sysctlConf, []byte(conf), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: write %s: %v (settings are live but will not survive reboot)\n", sysctlConf, err)
 	}
 	fmt.Println("optimize: done")
 	return nil

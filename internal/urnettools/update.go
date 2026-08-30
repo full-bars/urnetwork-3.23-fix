@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -785,18 +786,11 @@ func installBinary(src, dst, user string) error {
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
-		// Resolve uid/gid via id(1) — portable without cgo.
-		uidOut, err := exec.Command("id", "-u", user).Output()
+		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
-			return fmt.Errorf("resolve uid for %s: %w", user, err)
+			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
-		gidOut, err := exec.Command("id", "-g", user).Output()
-		if err != nil {
-			return fmt.Errorf("resolve gid for %s: %w", user, err)
-		}
-		uid := strings.TrimSpace(string(uidOut))
-		gid := strings.TrimSpace(string(gidOut))
-		if err := exec.Command("chown", uid+":"+gid, newPath).Run(); err != nil {
+		if err := os.Chown(newPath, uid, gid); err != nil {
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
 	}
@@ -851,6 +845,14 @@ func copyFile(src, dst string) error {
 	if cerr != nil {
 		out.Close()
 		return cerr
+	}
+	// Fsync the file contents (data durability) before close. On ext4
+	// data=ordered the rename is ordered after data, so this is usually safe
+	// without Sync, but on other filesystems and on power loss the risk is a
+	// zero-length provider binary at the canonical path.
+	if err := syscall.Fsync(int(out.Fd())); err != nil {
+		out.Close()
+		return fmt.Errorf("fsync %s: %w", dst, err)
 	}
 	// Close flushes buffered data — a disk-full or I/O error here would
 	// otherwise be lost and the copy reported successful.
@@ -994,10 +996,10 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	// Windows-safe swap: rename the running executable ASIDE first, then
 	// install the staged binary at the freed path. On Windows you cannot
 	// rename a .new over a running .exe (the kernel locks the image section),
-	// but you CAN rename the running executable itself to a .old name — the
+	// but you CAN rename the running executable itself to a .bak-* name — the
 	// standard self-update pattern. On failure the original is restored from
-	// .old; on success .old is left for removal after process exit (the next
-	// invocation cleans stale .old files).
+	// .bak-*; on success the backup is left for removal after process exit
+	// (the next invocation cleans stale .bak-* files).
 	if err := os.Rename(exePath, backup); err != nil {
 		return fmt.Errorf("move current tool aside: %w", err)
 	}

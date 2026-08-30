@@ -22,6 +22,17 @@ func setAutoStart(p Provider, on bool) error {
 		action = "enable"
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
+		// Ensure the user session manager starts at boot. Without
+		// loginctl enable-linger, a user manager for a non-login
+		// service account does not start at boot, and a user-scope
+		// systemctl enable reports success but the unit never runs.
+		if linger, err := exec.Command("loginctl", "show-user", p.User, "-p", "Linger", "--value").Output(); err == nil {
+			if strings.TrimSpace(string(linger)) != "yes" {
+				return fmt.Errorf("linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit", p.User, p.User)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "setAutoStart: warning: cannot check linger for %s: %v\n", p.User, err)
+		}
 		args := append(systemctlUserArgs(p.User), action, p.Unit)
 		return exec.Command("systemctl", args...).Run()
 	}
