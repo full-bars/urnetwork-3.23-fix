@@ -850,10 +850,17 @@ func cmdHubInstall(p Provider, rest []string) error {
 	binDir := filepath.Dir(p.Binary)
 	hubBin := filepath.Join(binDir, "urnetwork-hub")
 	fmt.Printf("Downloading hub %s -> %s\n", url, hubBin)
-	// Download to a staging path first; only rename into place after the
-	// digest is verified. This prevents a partial / tampered download from
-	// landing at the install path.
-	stage := hubBin + ".stage"
+	// Download to an exclusive staging temp file to prevent a pre-existing
+	// symlink from redirecting the download to an attacker-chosen path.
+	// os.CreateTemp with the 0o644 mode creates a new file (O_CREATE|O_EXCL),
+	// rejecting any file that already exists — including a symlink planted by
+	// a provider-scoped attacker.
+	stageF, err := os.CreateTemp(binDir, "urnetwork-hub-*.stage")
+	if err != nil {
+		return fmt.Errorf("hub staging: %w", err)
+	}
+	stage := stageF.Name()
+	stageF.Close()
 	if err := downloadFile(url, stage); err != nil {
 		return fmt.Errorf("hub download: %w", err)
 	}

@@ -636,14 +636,13 @@ func TestProviderVersionBuildinfoPreferred(t *testing.T) {
 	}
 }
 
-
 // TestCheckReadableAsUser verifies the proxy file permission check works
 // correctly across various mode/owner combinations. The function checks
 // that the named user can open the file; it's used in `proxy add` to fail
 // fast before delegating to a provider binary that would hit an opaque
 // permission error.
 func TestCheckReadableAsUser(t *testing.T) {
-// Must be owned by current process user for root-run comparisons.
+	// Must be owned by current process user for root-run comparisons.
 	tmp := t.TempDir()
 
 	t.Run("nil_user_OK", func(t *testing.T) {

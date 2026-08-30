@@ -272,6 +272,12 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 		// Content-Length-equivalent in the tar header cannot exhaust
 		// memory. 64 MiB is well above any session file's real size.
 		const maxEntry = 64 << 20
+		// Cap the total decompressed archive at 256 MiB (4+ entries of
+		// maxEntry size) so a bundle with many members is still bounded.
+		const maxTotal = 256 << 20
+		if int64(len(files))*maxEntry > maxTotal {
+			return nil, fmt.Errorf("session archive too large: > %d entries", maxTotal/maxEntry)
+		}
 		lr := io.LimitReader(tr, maxEntry)
 		data, err := io.ReadAll(lr)
 		if err != nil {

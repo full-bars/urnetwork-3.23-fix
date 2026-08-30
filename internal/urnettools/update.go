@@ -796,6 +796,14 @@ func installBinary(src, dst, user string) error {
 	if err := os.Rename(newPath, dst); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
+	// Sync the parent directory so the rename survives a crash before
+	// the directory's own metadata is committed. Without this, a power
+	// loss after rename but before the dir entry is persisted can lose
+	// the new binary path.
+	if dir, err := os.Open(filepath.Dir(dst)); err == nil {
+		dir.Sync()
+		dir.Close()
+	}
 	return nil
 }
 

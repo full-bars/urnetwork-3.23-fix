@@ -361,7 +361,7 @@ func newOptimizeCmd() *cobra.Command {
 }
 
 func newHotRestartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hot-restart", "reuse client_ids across restarts", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hot-restart", "restart provider (hot-restart is a config toggle)", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotRestart(rest, force, dryRun)
 		})
