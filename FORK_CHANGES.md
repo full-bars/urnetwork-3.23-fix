@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.8
+**Current Version**: v3.23.0-fix.30.9
 
 ---
 
@@ -3102,3 +3102,89 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 4. Trap cleanup: Ensures temp files are cleaned up on all exit paths.
 
 **Impact**: Update verification is more reliable; fewer false positives/negatives during provider updates.
+---
+
+## 146. urnet-tools Security Audit Remediation (PR #499)
+
+**Purpose**: Remediate privilege-escalation and safety findings from a comprehensive security review of the urnet-tools management utility. The tool runs with sudo, so a discovered binary being executed, or a root-owned state directory a provider must read, were real escalation vectors.
+
+**Files Modified**: `internal/urnettools/*.go` (many), plus new `exec_timeout.go`, `fsync_unix.go`, `fsync_other.go`, `provider_recover_nonlinux.go`, `docker_test_seam.go`.
+
+**Change**:
+- **No executing discovered binaries**: version strings now come from `debug/buildinfo.ReadFile` (ELF header) with an exec fallback under a 3s timeout. Removes the local privilege-escalation vector where a discovered binary was run to read `--version`.
+- **State dir / file ownership**: `set`, `fast-auth`, `self-heal` chown created files to the provider user via `chownLikeStateOwner`; fixed a self-referential no-op so state dirs are actually owned by the provider.
+- **Subprocess timeouts**: every discovery and systemctl call bounded (5s/10s) via `execWithTimeout`; fixes hangs from hung `getent`/`systemctl`/`-M` machined queries.
+- **Uninstall path guard**: `uninstall` refuses well-known system directories; no longer removes arbitrary absolute paths.
+- **Hub install verification**: download verifies release digest before install; uses an exclusive temp file (os.CreateTemp) so a pre-planted symlink cannot redirect the download.
+- **restart safety**: bare processes are no longer SIGINT'd (which killed them); restart scope resolved via `systemctl show` instead of filesystem guesswork; ghost providers (fabricated on `-M` failure) eliminated.
+- **update confirm non-TTY**: the confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Architecture detection**: uses `runtime.GOARCH`, not the overridable `$GOARCH` env var.
+- **Drop-in writes atomic**: transient read errors no longer wipe operator overrides; temp+rename; `%` escaped to `%%` for systemd.
+- **Session bundles**: AES-256-GCM + PBKDF2-HMAC-SHA256 (600k iters) replacing unauthenticated CBC/PBKDF2 10k; v1 reader kept for migration.
+- **Port range fix**: `optimize` ephemeral port lower bound raised 1024 → 10240 and persisted to `/etc/sysctl.d/`.
+- **installBinary**: `os.Chown` + `lookupUserIDs` instead of shelling to `id`/`chown` via `$PATH`; fsync before/after rename.
+- **Cross-platform build**: added non-Linux stubs for `lookupUserIDs` and `fsyncFile` so Windows/macOS build cleanly.
+- **Loginctl linger check**: `setAutoStart` checks linger on the enable path only, and returns an error if `systemctl disable --now` fails (instead of orphaning a timer).
+
+**Impact**: Removing the exec-based version read and the root-owned state dir closes the two critical privilege-escalation findings. Rebuild and redeploy provider nodes and update `urnet-tools` to pick up the fixes.
+
+---
+
+## 147. urnet-tools Reliable, Verifiable Updates (PR #497)
+
+**Purpose**: Make provider updates trustworthy — the restart was assumed successful and a running process with a swapped-out on-disk binary was trusted as current.
+
+**Files Modified**: `internal/urnettools/update.go`, `internal/urnettools/discover_unix.go`.
+
+**Change**:
+- **Post-restart verification**: the update restart is checked after it runs instead of assumed.
+- **Stale-binary detection**: a running process whose on-disk binary was replaced (via `/proc/<pid>/exe` "(deleted)") is flagged for a redundant reinstall.
+- **Provider version in status**: `urnet-tools status` shows each provider's actual running version.
+- **Reinstall fixed**: the reinstall path no longer fails silently with a missing staging directory.
+
+**Impact**: Update-fleet failure modes are now visible and recoverable instead of silently stuck.
+
+---
+
+## 148. Production DNS-over-HTTPS Upgrade (PR #495, #496)
+
+**Purpose**: Mature the fork's DNS-over-HTTPS resolver from a stopgap to the upstream production implementation with a persistent, scored cache.
+
+**Files Modified**: `provider/net_http_doh.go`, `provider/net_http_doh_test.go`, `provider/doh_cache.go` (new).
+
+**Change**:
+- **Persistent cache (#496)**: cached resolutions and per-server scores persist across restarts via server-score persistence and a warm probe.
+- **Upstream P1-P3 (#495)**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
+- **Bounded DNS resolution**: per-dial context threaded into the lookup path; DNS resolution capped at 3s (a critical finding).
+- **Concurrency fix**: `stateLock` restored around the stale-cache read (concurrent map race).
+
+**Impact**: Faster, more resilient DNS across reboots; no unbounded resolution latency on a proxy-heavy node.
+
+---
+
+## 149. Client JWT Hot-Restart v2 (PR #494)
+
+**Purpose**: A provider restarts with a working identity instead of re-authenticating from scratch, eliminating the cold re-auth storm and downtime on restart.
+
+**Files Modified**: `provider/client_jwt_hotrestart.go`, `provider/client_jwt_hotrestart_test.go` (new).
+
+**Change**:
+- **Renew before restart**: expired client JWTs are renewed on startup.
+- **Snapshot before restart**: identities are snapshotted before the restart and reused.
+- **Network compatibility check**: identity reuse is gated on the target network matching.
+
+**Impact**: Faster, more reliable provider restarts with preserved client identity.
+
+---
+
+## 150. Removed Unreliable Outage Watcher (parity)
+
+**Purpose**: Remove the alert-webhook outage watcher that produced false outage signals, restoring parity with meso-miner.
+
+**Files Modified**: `provider/*` (outage watcher removed), docs (stale `URNETWORK_ALERT_WEBHOOK` references removed).
+
+**Change**:
+- Removed the outage watcher feature and its webhook signaling.
+- Removed stale `URNETWORK_ALERT_WEBHOOK` references from docs.
+
+**Impact**: No false outage alerts; fewer moving parts on the provider.
