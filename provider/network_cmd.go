@@ -42,6 +42,12 @@ func chooseNetworkCmd(opts docopt.Opts) {
 	// Preset path: `provider choose_network main|beta`. Leaves the
 	// explicit-URL path untouched below.
 	if preset, ok := networkPresets[apiUrl]; ok {
+		// If the user also supplied a connect_url, reject — presets are
+		// self-contained and silently discarding the second arg is confusing.
+		if _, urlErr := opts.String("<connect_url>"); urlErr == nil {
+			fmt.Printf("preset %q includes its own connect_url — pass only the preset name, or use two explicit URLs\n", apiUrl)
+			os.Exit(1)
+		}
 		apiUrl, connectUrl := preset[0], preset[1]
 		if err := writeNetworkConfig(apiUrl, connectUrl); err != nil {
 			fmt.Printf("network not saved: %s\n", err)
