@@ -410,6 +410,12 @@ func (self *ClientSettings) MinimumMessageLenLimit() ByteCount {
 }
 
 // note all callbacks are wrapped to check for nil and recover from errors
+// SendBuffer returns the client's send buffer for direct access (e.g. flow
+// teardown drain). Callers must not hold the returned pointer across locks.
+func (self *Client) SendBuffer() *SendBuffer {
+	return self.sendBuffer
+}
+
 type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -1565,6 +1571,16 @@ type SendBuffer struct {
 	sendSequences              map[sendSequenceId]*SendSequence
 	sendSequencesByDestination map[TransferPath]map[*SendSequence]bool
 	sendSequenceDestinations   map[*SendSequence]map[TransferPath]bool
+}
+
+// ForEachSendSequence calls fn for every active SendSequence under the lock.
+// The callback must not call back into the SendBuffer.
+func (self *SendBuffer) ForEachSendSequence(fn func(*SendSequence)) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	for _, seq := range self.sendSequences {
+		fn(seq)
+	}
 }
 
 func NewSendBuffer(ctx context.Context,
@@ -3394,6 +3410,22 @@ func (self *SendSequence) closeContractMultiRouteWriter() {
 		self.client.RouteManager().CloseMultiRouteWriter(self.contractMultiRouteWriter)
 		self.contractMultiRouteWriter = nil
 		self.contractMultiRouteWriterDestination = TransferPath{}
+	}
+}
+
+// DrainRetained drops every retained item from the resend queue, fires its
+// ackCallback with an error, and returns the buffer to the pool. Called when
+// the owning flow is torn down (rstFlow) so retained TCP-return bytes are
+// released promptly instead of waiting for the backstop ceiling.
+func (self *SendSequence) DrainRetained() {
+	all := self.resendQueue.Clear()
+	for _, item := range all {
+		if item.retainAfterAckTimeout {
+			safeAck(item.ackCallback, errors.New("Flow torn down."))
+			MessagePoolReturn(item.transferFrameBytes)
+		} else {
+			self.resendQueue.Add(item)
+		}
 	}
 }
 

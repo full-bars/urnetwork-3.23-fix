@@ -844,6 +844,13 @@ func (self *RemoteUserNatMultiClient) rstFlow(ipPath *IpPath, client *multiClien
 				ipPath: ipPath,
 			}, 0)
 		}
+		// drain retained TCP-return items for this client's sequences so they
+		// are released promptly instead of waiting for the backstop ceiling.
+		if sb := client.client.SendBuffer(); sb != nil {
+			sb.ForEachSendSequence(func(seq *SendSequence) {
+				seq.DrainRetained()
+			})
+		}
 	}
 	// rst to source
 	if packet, ok := ipOosRst(ipPath.Reverse()); ok {
