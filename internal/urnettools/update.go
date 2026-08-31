@@ -616,10 +616,19 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			// compare of paths, so a drive-letter case or separator
 			// mismatch between derivations would fail to match.
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
-				// Version of the image the RUNNING process is executing.
-				procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
-				if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
-					fmt.Printf("verified %s running %s (pid %d; /proc/%d/exe matches)\n", providerLabel(p), cfg.Tag, rp.PID, rp.PID)
+				// On Linux, verify the RUNNING process's image via /proc/<pid>/exe
+				// (the binary the process actually loaded, not the on-disk copy).
+				// On other platforms, /proc doesn't exist — fall back to the on-disk
+				// binary version check (weaker but non-failing).
+				if runtime.GOOS == "linux" {
+					procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
+					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
+						fmt.Printf("verified %s running %s (pid %d; /proc/%d/exe matches)\n", providerLabel(p), cfg.Tag, rp.PID, rp.PID)
+						pruneBackups(p.Binary, 2)
+						return nil
+					}
+				} else if rp.Version == cfg.Tag {
+					fmt.Printf("verified %s running %s (pid %d; version match)\n", providerLabel(p), cfg.Tag, rp.PID)
 					pruneBackups(p.Binary, 2)
 					return nil
 				}
