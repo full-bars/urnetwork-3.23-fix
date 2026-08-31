@@ -2346,13 +2346,13 @@ func (self *SendSequence) Run() {
 				if self.sendBufferSettings.forceAckTimeoutForTest != nil && self.sendBufferSettings.forceAckTimeoutForTest(self.id()) {
 					itemAckTimeout = 0
 				}
-				if itemAckTimeout <= 0 {
+				if itemAckTimeout <= 0 && !item.retainAfterAckTimeout {
 					// message took too long to ack
 					// close the sequence
 					self.log.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
 					return
 				}
-				if itemAckTimeout < timeout {
+				if !item.retainAfterAckTimeout && itemAckTimeout < timeout {
 					timeout = itemAckTimeout
 				}
 
@@ -2436,7 +2436,7 @@ func (self *SendSequence) Run() {
 					item.sendCount,
 					self.sendBufferSettings.MaxResendInterval,
 				)
-				if itemAckTimeout <= itemResendTimeout {
+				if !item.retainAfterAckTimeout && itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
 					item.resendTime = sendTime.Add(itemResendTimeout)
