@@ -618,8 +618,12 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
 				// On Linux, verify the RUNNING process's image via /proc/<pid>/exe
 				// (the binary the process actually loaded, not the on-disk copy).
-				// On other platforms, /proc doesn't exist — fall back to the on-disk
-				// binary version check (weaker but non-failing).
+				// On other platforms, /proc doesn't exist and discover_*.go don't
+				// populate rp.Version for running processes — so fall back to
+				// checking the ON-DISK binary version (rp.Binary, which we just
+				// swapped) as best-effort. Combined with the PID-change guard this
+				// is a reasonable signal on platforms without /proc, though it can
+				// neither prove nor disprove the running image.
 				if runtime.GOOS == "linux" {
 					procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
 					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
@@ -627,8 +631,8 @@ func updateProvider(p Provider, cfg updateConfig) error {
 						pruneBackups(p.Binary, 2)
 						return nil
 					}
-				} else if rp.Version == cfg.Tag {
-					fmt.Printf("verified %s running %s (pid %d; version match)\n", providerLabel(p), cfg.Tag, rp.PID)
+				} else if providerVersion(rp.Binary) == cfg.Tag {
+					fmt.Printf("verified %s on-disk %s (pid %d; no /proc, on-disk version match)\n", providerLabel(p), cfg.Tag, rp.PID)
 					pruneBackups(p.Binary, 2)
 					return nil
 				}
