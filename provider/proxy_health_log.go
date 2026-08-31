@@ -14,9 +14,12 @@ import (
 )
 
 // usageHistoryMaxBytes bounds the accumulated usage history file before it
-// rotates to <name>.1. At ~90 bytes/row and hourly snapshots this is years
-// of history; the cap guards against a runaway writer.
-const usageHistoryMaxBytes = 64 << 20 // 64 MiB
+// rotates to <name>.1. At ~90 bytes/row and hourly snapshots, 512 MiB is
+// ~60+ years of history. The cap guards against a runaway writer. NOTE:
+// the LIFETIME metric (running max over the file) is approximate if the
+// file rotates — old rows beyond the cap are lost, so lifetime may not
+// reflect very early data. Compaction is intentionally not implemented.
+const usageHistoryMaxBytes = 512 << 20 // 512 MiB
 
 // usageHistoryPath is the persistent JSONL history of aggregate usage
 // snapshots. One JSON object per line:

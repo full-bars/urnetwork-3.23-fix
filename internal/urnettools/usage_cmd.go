@@ -117,7 +117,7 @@ func cmdUsageCards(targetArgs []string) error {
 // stacked bar (billable vs control), total, and the billable:control ratio.
 func renderUsageCard(title string, a usageAggregates) {
 	// Fixed content width (inside the box borders).
-	const cw = 38
+	const cw = 39
 	fmt.Printf("┌─ %-39s┐\n", title)
 	fmt.Printf("│  BILLABLE  %s │\n", padRight(fmtBytes(a.Billable()), cw-11))
 	pctCtl := pct(a.Control(), a.Total())
@@ -125,7 +125,7 @@ func renderUsageCard(title string, a usageAggregates) {
 	fmt.Printf("│  %s │\n", ratioBar(a.Billable(), a.Control()))
 	fmt.Printf("│  TOTAL     %s │\n", padRight(fmtBytes(a.Total()), cw-11))
 	fmt.Printf("│  ratio     %s │\n", padRight(ratioStr(a.Billable(), a.Control()), cw-11))
-	fmt.Printf("└%s┘\n", strings.Repeat("─", 42))
+	fmt.Printf("└%s┘\n", strings.Repeat("─", 41))
 	fmt.Println()
 }
 
