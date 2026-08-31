@@ -1516,6 +1516,11 @@ type SendBufferSettings struct {
 	// MaxResendCount caps the number of times a packet is retransmitted before
 	// being dropped from the resend queue. 0 means unlimited (legacy behavior).
 	MaxResendCount int
+
+	// Test seams: called from sendSequenceLoop to force ack-timeout or
+	// resend behavior for retained-item tests. nil in production.
+	forceAckTimeoutForTest func(sendSequenceId) bool
+	forceResendForTest     func(sendSequenceId) bool
 }
 
 type sendSequenceId struct {
@@ -2197,6 +2202,17 @@ func resendBackoff(scaledRtt time.Duration, sendCount int, maxResendInterval tim
 	return scaledRtt
 }
 
+func (self *SendSequence) id() sendSequenceId {
+	return sendSequenceId{
+		Destination:       self.destination,
+		IntermediaryIds:   self.intermediaryIds,
+		CompanionContract: self.companionContract,
+		ForceStream:       self.forceStream,
+		EncryptionRole:    self.encryptionRole,
+		EncryptionCompanion: self.encryptionCompanion,
+	}
+}
+
 func (self *SendSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2313,6 +2329,9 @@ func (self *SendSequence) Run() {
 				}
 
 				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
+				if self.sendBufferSettings.forceAckTimeoutForTest != nil && self.sendBufferSettings.forceAckTimeoutForTest(self.id()) {
+					itemAckTimeout = 0
+				}
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
 					// close the sequence
@@ -2323,6 +2342,9 @@ func (self *SendSequence) Run() {
 					timeout = itemAckTimeout
 				}
 
+				if self.sendBufferSettings.forceResendForTest != nil && self.sendBufferSettings.forceResendForTest(self.id()) {
+					item.resendTime = sendTime
+				}
 				if sendTime.Before(item.resendTime) {
 					itemResendTimeout := item.resendTime.Sub(sendTime)
 					if itemResendTimeout < timeout {
