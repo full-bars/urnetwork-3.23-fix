@@ -299,6 +299,34 @@ func DefaultTransferOpts() TransferOptions {
 	}
 }
 
+// decodeTransferOptions applies a variadic option list onto a base
+// TransferOptions, returning the result. ctx may be replaced by a transferCtx
+// option. Extracted from sendWithTimeoutDetailed so option decoding can be
+// unit-tested directly — a missing case for a new option type previously
+// shipped silently (the retain option dropped by the switch, see the
+// transferOptionsSetRetainAfterAckTimeout case).
+func decodeTransferOptions(base TransferOptions, opts []any, ctx *context.Context) TransferOptions {
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case TransferOptions:
+			base = v
+		case transferOptionsSetAck:
+			base.Ack = v.Ack
+		case transferOptionsSetForceStream:
+			base.ForceStream = v.ForceStream
+		case transferOptionsSetCompanionContract:
+			base.CompanionContract = v.CompanionContract
+		case transferOptionsSetRetainAfterAckTimeout:
+			base.RetainAfterAckTimeout = v.RetainAfterAckTimeout
+		case transferCtx:
+			if ctx != nil {
+				*ctx = v.Ctx
+			}
+		}
+	}
+	return base
+}
+
 type transferOptionsSetAck struct {
 	Ack bool
 }
@@ -825,22 +853,7 @@ func (self *Client) sendWithTimeoutDetailed(
 	}
 
 	ctx := self.ctx
-	var transferOpts TransferOptions
-	transferOpts = self.settings.DefaultTransferOpts
-	for _, opt := range opts {
-		switch v := opt.(type) {
-		case TransferOptions:
-			transferOpts = v
-		case transferOptionsSetAck:
-			transferOpts.Ack = v.Ack
-		case transferOptionsSetForceStream:
-			transferOpts.ForceStream = v.ForceStream
-		case transferOptionsSetCompanionContract:
-			transferOpts.CompanionContract = v.CompanionContract
-		case transferCtx:
-			ctx = v.Ctx
-		}
-	}
+	transferOpts := decodeTransferOptions(self.settings.DefaultTransferOpts, opts, &ctx)
 
 	messageByteCount := ByteCount(len(frame.MessageBytes))
 	sendPack := &SendPack{
@@ -1537,10 +1550,9 @@ type SendBufferSettings struct {
 	// being dropped from the resend queue. 0 means unlimited (legacy behavior).
 	MaxResendCount int
 
-	// Test seams: called from sendSequenceLoop to force ack-timeout or
-	// resend behavior for retained-item tests. nil in production.
+	// Test seams: called from sendSequenceLoop to force ack-timeout behavior
+	// for retained-item tests. nil in production.
 	forceAckTimeoutForTest func(sendSequenceId) bool
-	forceResendForTest     func(sendSequenceId) bool
 }
 
 type sendSequenceId struct {
@@ -1571,16 +1583,6 @@ type SendBuffer struct {
 	sendSequences              map[sendSequenceId]*SendSequence
 	sendSequencesByDestination map[TransferPath]map[*SendSequence]bool
 	sendSequenceDestinations   map[*SendSequence]map[TransferPath]bool
-}
-
-// ForEachSendSequence calls fn for every active SendSequence under the lock.
-// The callback must not call back into the SendBuffer.
-func (self *SendBuffer) ForEachSendSequence(fn func(*SendSequence)) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	for _, seq := range self.sendSequences {
-		fn(seq)
-	}
 }
 
 func NewSendBuffer(ctx context.Context,
@@ -1918,6 +1920,13 @@ type SendSequence struct {
 	sendItems          []*sendItem
 	nextSequenceNumber uint64
 
+	// retainedByteCount is the aggregate bytes of currently-queued retained
+	// items (those with retainAfterAckTimeout). Bounded to a fraction of
+	// ResendQueueMaxByteCount at admission so retained bytes from one dead
+	// flow cannot consume the whole send window and stall unrelated traffic
+	// on this sequence (R-5).
+	retainedByteCount ByteCount
+
 	idleCondition *IdleCondition
 
 	rttWindow *RttWindow
@@ -2234,11 +2243,11 @@ func resendBackoff(scaledRtt time.Duration, sendCount int, maxResendInterval tim
 
 func (self *SendSequence) id() sendSequenceId {
 	return sendSequenceId{
-		Destination:       self.destination,
-		IntermediaryIds:   self.intermediaryIds,
-		CompanionContract: self.companionContract,
-		ForceStream:       self.forceStream,
-		EncryptionRole:    self.encryptionRole,
+		Destination:         self.destination,
+		IntermediaryIds:     self.intermediaryIds,
+		CompanionContract:   self.companionContract,
+		ForceStream:         self.forceStream,
+		EncryptionRole:      self.encryptionRole,
 		EncryptionCompanion: self.encryptionCompanion,
 	}
 }
@@ -2275,6 +2284,7 @@ func (self *SendSequence) Run() {
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
+		self.retainedByteCount = 0
 
 		// flush queued contracts (used ids were closed above). Keyed by
 		// (EncryptionRole, EncryptionCompanion) so this exit-flush doesn't discard
@@ -2362,6 +2372,13 @@ func (self *SendSequence) Run() {
 				// even without a flow-teardown signal. Prevents indefinite queue
 				// occupancy on dead flows where the signal never arrives.
 				if item.retainAfterAckTimeout && !sendTime.Before(item.backstopDeadline) {
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[s]%s->%s...%s s(%s) retain backstop expired, dropping retained item %x (sendCount=%d)\n",
+							self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, item.messageId, item.sendCount)
+					}
+					self.resendQueue.stateLock.Lock()
+					self.retainedByteCount -= item.MessageByteCount()
+					self.resendQueue.stateLock.Unlock()
 					self.resendQueue.RemoveByMessageId(item.messageId)
 					safeAck(item.ackCallback, errors.New("Retain backstop expired."))
 					MessagePoolReturn(item.transferFrameBytes)
@@ -2373,8 +2390,6 @@ func (self *SendSequence) Run() {
 					itemAckTimeout = 0
 				}
 				if itemAckTimeout <= 0 && !item.retainAfterAckTimeout {
-					// message took too long to ack
-					// close the sequence
 					self.log.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
 					return
 				}
@@ -2382,9 +2397,6 @@ func (self *SendSequence) Run() {
 					timeout = itemAckTimeout
 				}
 
-				if self.sendBufferSettings.forceResendForTest != nil && self.sendBufferSettings.forceResendForTest(self.id()) {
-					item.resendTime = sendTime
-				}
 				if sendTime.Before(item.resendTime) {
 					itemResendTimeout := item.resendTime.Sub(sendTime)
 					if itemResendTimeout < timeout {
@@ -2983,19 +2995,36 @@ func (self *SendSequence) sendWithSetContract(
 			sequenceNumber:   sequenceNumber,
 			messageByteCount: messageByteCount,
 		},
-		contractId:         contractId,
-		sendTime:           sendTime,
-		resendTime:         sendTime.Add(self.rttWindow.ScaledRtt()),
-		sendCount:          1,
-		head:               head,
-		hasContractFrame:   (contractFrame != nil),
-		transferFrameBytes: transferFrameBytes,
-		ackCallback:        ackCallback,
-		forceUnwrapped:     forceUnwrapped,
+		contractId:            contractId,
+		sendTime:              sendTime,
+		resendTime:            sendTime.Add(self.rttWindow.ScaledRtt()),
+		sendCount:             1,
+		head:                  head,
+		hasContractFrame:      (contractFrame != nil),
+		transferFrameBytes:    transferFrameBytes,
+		ackCallback:           ackCallback,
+		forceUnwrapped:        forceUnwrapped,
 		retainAfterAckTimeout: retainAfterAckTimeout,
 	}
 	if retainAfterAckTimeout {
 		item.backstopDeadline = sendTime.Add(self.sendBufferSettings.AckTimeout * 10)
+	}
+	// R-5 cap: bound the aggregate retained bytes on this sequence so a dead
+	// flow's retained returns cannot consume the whole send window and stall
+	// unrelated traffic sharing the sequence. If admitting this retained item
+	// would exceed 25% of the queue ceiling, drop the retention for THIS item
+	// (it falls back to the ordinary ack-timeout drop). The cap is read under
+	// the resendQueue lock to stay consistent with the concurrent Run() loop.
+	if retainAfterAckTimeout {
+		self.resendQueue.stateLock.Lock()
+		cap := ByteCount(float64(self.sendBufferSettings.ResendQueueMaxByteCount) * 0.25)
+		if self.retainedByteCount+messageByteCount > cap {
+			item.retainAfterAckTimeout = false
+			item.backstopDeadline = time.Time{}
+		} else {
+			self.retainedByteCount += messageByteCount
+		}
+		self.resendQueue.stateLock.Unlock()
 	}
 
 	c := func() error {
@@ -3180,6 +3209,13 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		removed := self.resendQueue.RemoveByMessageId(implicitItem.messageId)
 		if removed == nil {
 			panic(errors.New("Missing item"))
+		}
+		// A retained item acknowledged here leaves the queue permanently —
+		// release its share of the R-5 retained-byte budget.
+		if removed.retainAfterAckTimeout {
+			self.resendQueue.stateLock.Lock()
+			self.retainedByteCount -= removed.MessageByteCount()
+			self.resendQueue.stateLock.Unlock()
 		}
 
 		self.ackItem(implicitItem)
@@ -3410,22 +3446,6 @@ func (self *SendSequence) closeContractMultiRouteWriter() {
 		self.client.RouteManager().CloseMultiRouteWriter(self.contractMultiRouteWriter)
 		self.contractMultiRouteWriter = nil
 		self.contractMultiRouteWriterDestination = TransferPath{}
-	}
-}
-
-// DrainRetained drops every retained item from the resend queue, fires its
-// ackCallback with an error, and returns the buffer to the pool. Called when
-// the owning flow is torn down (rstFlow) so retained TCP-return bytes are
-// released promptly instead of waiting for the backstop ceiling.
-func (self *SendSequence) DrainRetained() {
-	all := self.resendQueue.Clear()
-	for _, item := range all {
-		if item.retainAfterAckTimeout {
-			safeAck(item.ackCallback, errors.New("Flow torn down."))
-			MessagePoolReturn(item.transferFrameBytes)
-		} else {
-			self.resendQueue.Add(item)
-		}
 	}
 }
 

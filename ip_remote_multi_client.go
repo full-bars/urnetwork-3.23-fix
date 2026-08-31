@@ -844,13 +844,6 @@ func (self *RemoteUserNatMultiClient) rstFlow(ipPath *IpPath, client *multiClien
 				ipPath: ipPath,
 			}, 0)
 		}
-		// drain retained TCP-return items for this client's sequences so they
-		// are released promptly instead of waiting for the backstop ceiling.
-		if sb := client.client.SendBuffer(); sb != nil {
-			sb.ForEachSendSequence(func(seq *SendSequence) {
-				seq.DrainRetained()
-			})
-		}
 	}
 	// rst to source
 	if packet, ok := ipOosRst(ipPath.Reverse()); ok {
@@ -3207,11 +3200,6 @@ func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, 
 		}
 		if !ack {
 			opts = append(opts, NoAck())
-		}
-		// TCP socket returns are the only recoverable copy; retain past ack
-		// deadline so the resend queue keeps retrying instead of dropping.
-		if parsedPacket.ipPath.Protocol == IpProtocolTcp {
-			opts = append(opts, RetainAfterAckTimeout())
 		}
 		success, err := self.client.SendMultiHopWithTimeoutDetailed(
 			frame,

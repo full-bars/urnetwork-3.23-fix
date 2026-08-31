@@ -4,8 +4,8 @@
 // the caller's $HOME and has no awareness of other providers on the box),
 // this implementation discovers every running provider across all users,
 // identifies each by its JWT network name, and requires an explicit target
-// whenever the box runs more than one provider. See
-// /home/user/ur/URN-TOOLS-GO-DESIGN.md for the full design.
+// whenever the box runs more than one provider. See the urnet-tools Go
+// design document for the full design.
 package main
 
 import (
