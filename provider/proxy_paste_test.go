@@ -40,6 +40,14 @@ func TestNormalizeProxyLine(t *testing.T) {
 		{"comment line", "# this is a comment", ""},
 		{"bare hostname no port", "1.2.3.4", ""},
 		{"invalid port", "1.2.3.4:abc", ""},
+		// Port range validation: 1-65535 valid; 0 and >65535 rejected.
+		{"port 0 rejected", "1.2.3.4:0", ""},
+		{"port min valid", "1.2.3.4:1", "1.2.3.4:1::"},
+		{"port 65535 valid", "1.2.3.4:65535", "1.2.3.4:65535::"},
+		{"port 65536 rejected", "1.2.3.4:65536", ""},
+		{"port 99999 rejected", "1.2.3.4:99999", ""},
+		{"ipv6 port 0 rejected", "[::1]:0", ""},
+		{"ipv6 port 65535 valid", "[::1]:65535", "[::1]:65535::"},
 
 		// IPv6 — hosts with colons are returned BRACKETED (net.SplitHostPort
 		// rejects unbracketed IPv6: "too many colons in address")

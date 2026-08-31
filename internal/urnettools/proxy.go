@@ -386,6 +386,11 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		if err != nil {
 			return err
 		}
+		if dryRun {
+			fmt.Printf("[dry-run] would paste proxies on %s (reads stdin/%s then proxy add + refresh)\n",
+				providerLabel(p), strings.Join(positionals, " "))
+			return nil
+		}
 		// Pass through all args (positionals + flags like --file=<path>)
 		pasteArgs := []string{"proxy", "paste"}
 		pasteArgs = append(pasteArgs, positionals...)

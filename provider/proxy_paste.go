@@ -126,7 +126,7 @@ func normalizeHostPort(s string) string {
 			return ""
 		}
 		port := rest[1:]
-		if port == "" || !regexp.MustCompile(`^\d+$`).MatchString(port) {
+		if !validPort(port) {
 			return ""
 		}
 		return "[" + host + "]:" + port
@@ -141,7 +141,7 @@ func normalizeHostPort(s string) string {
 		return ""
 	}
 	port := parts[len(parts)-1]
-	if port == "" || !regexp.MustCompile(`^\d+$`).MatchString(port) {
+	if !validPort(port) {
 		return ""
 	}
 	host := strings.Join(parts[:len(parts)-1], ":")
@@ -154,6 +154,26 @@ func normalizeHostPort(s string) string {
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
+}
+
+// validPort reports whether s is a decimal TCP/UDP port in the valid range
+// 1-65535. Port 0 is not a routable destination and >65535 is out of range —
+// both would produce a proxy that can never connect.
+func validPort(s string) bool {
+	if s == "" || len(s) > 5 {
+		return false
+	}
+	if !regexp.MustCompile(`^\d+$`).MatchString(s) {
+		return false
+	}
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+		if n > 65535 {
+			return false
+		}
+	}
+	return n >= 1 && n <= 65535
 }
 
 // isSourceURL returns true if the line is an HTTP/HTTPS URL (proxy source).
@@ -252,6 +272,16 @@ func parseProxyList(content string) []string {
 }
 
 func proxyPaste(opts docopt.Opts) {
+	// Reject paste for file-backed providers: when the provider runs with
+	// --proxy_file=/PROXY_FILE=<X> (Workflow A), it loads proxies from that
+	// external file on start, so a pasted entry written to the internal
+	// proxyConfig.Servers would be lost on the next reload. Pasting is only
+	// meaningful for the internal-config (Workflow B) model.
+	if state, err := readProxyState(); err == nil && state.Source != "" {
+		fmt.Fprintf(os.Stderr, "this provider is file-backed (--proxy_file=%s); paste writes the internal config and would be lost on reload — add the entries to that file instead (or use 'proxy add --proxy_file=...'), or re-run the provider without a file source to paste.\n", state.Source)
+		os.Exit(1)
+	}
+
 	// Determine input source
 	var rawLines []string
 
@@ -367,19 +397,20 @@ func proxyPaste(opts docopt.Opts) {
 		os.Exit(1)
 	}
 
-	// proxy refresh --force
-	// proxyRefresh requires an interactive confirm("Proceed?") whenever the
-	// reload would add/remove proxies — --force only bypasses the warmup gate,
-	// NOT the prompt (main.go proxyRefresh). Without stdin wired, the child
-	// reads /dev/null, confirm() gets EOF -> false, prints "Aborted." and
-	// returns exit 0 — the reload trigger is never written and the running
-	// provider never sees the new proxies. Pipe the confirmation.
+	// Apply the additions immediately WITHOUT a destructive confirm. The
+	// full `proxy refresh --force` path prompts "Remove them anyway?" /
+	// "Are you sure?" when its reconcile sees removals — piping "y\ny\n"
+	// would auto-confirm a destructive removal, which paste must never do
+	// (paste is additive-only). Writing the reload trigger directly applies
+	// the just-added proxies without any confirm path. writeReloadTrigger is
+	// the same mechanism proxyRefresh uses when its reload path is reached.
 	fmt.Println("refreshing...")
-	refreshCmd := exec.Command(bin, "proxy", "refresh", "--force")
-	refreshCmd.Stdin = strings.NewReader("y\ny\n")
-	refreshCmd.Stdout = os.Stdout
-	refreshCmd.Stderr = os.Stderr
-	if err := refreshCmd.Run(); err != nil {
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := writeReloadTrigger(reloadPath); err != nil {
 		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
 		os.Exit(1)
 	}
