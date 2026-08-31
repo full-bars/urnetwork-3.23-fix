@@ -72,7 +72,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 		restartCum         uint64 // cumulative at the restart point (baseline for post-restart segment)
 		restartBill        uint64
 		hasRestart         bool
-		crossBucketRestart bool   // restart happened at a bucket boundary (not within the bucket)
+		crossBucketRestart bool // restart happened at a bucket boundary (not within the bucket)
 		hasData            bool
 	}
 	byID := map[int64]*bucketInfo{}
@@ -136,7 +136,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 		} else if curCum < prevCum {
 			// Same-bucket restart: cumulative dropped within this bucket.
 			bd.hasRestart = true
-			bd.restartCum = curCum    // restart trigger snapshot (baseline for post-restart segment)
+			bd.restartCum = curCum // restart trigger snapshot (baseline for post-restart segment)
 			bd.restartBill = curBill
 			bd.maxCumPostRestart = curCum
 			bd.maxBillPostRestart = curBill

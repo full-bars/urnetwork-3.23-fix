@@ -101,8 +101,8 @@ func TestDeltaBucketsRestartWithinBucket(t *testing.T) {
 	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	snaps := []usageSnapshot{
 		// day0: steady traffic, then restart (cum drops), then post-restart traffic.
-		{TS: day0, RX: 1000, TX: 2000, BillableRX: 900, BillableTX: 1800},                 // cum=3000
-		{TS: day0.Add(time.Hour), RX: 200, TX: 300, BillableRX: 180, BillableTX: 270},     // cum=500 (restart!)
+		{TS: day0, RX: 1000, TX: 2000, BillableRX: 900, BillableTX: 1800},                   // cum=3000
+		{TS: day0.Add(time.Hour), RX: 200, TX: 300, BillableRX: 180, BillableTX: 270},       // cum=500 (restart!)
 		{TS: day0.Add(2 * time.Hour), RX: 1200, TX: 800, BillableRX: 1100, BillableTX: 700}, // cum=2000 (post-restart)
 		// day1: steady.
 		{TS: day1, RX: 2500, TX: 1500, BillableRX: 2400, BillableTX: 1400}, // cum=4000
@@ -138,8 +138,8 @@ func TestDeltaBucketsRestartAcrossBuckets(t *testing.T) {
 	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	snaps := []usageSnapshot{
-		{TS: day0, RX: 3000, TX: 2000, BillableRX: 2800, BillableTX: 1800}, // cum=5000
-		{TS: day1, RX: 100, TX: 50, BillableRX: 90, BillableTX: 40},         // cum=150 (restart between buckets)
+		{TS: day0, RX: 3000, TX: 2000, BillableRX: 2800, BillableTX: 1800},              // cum=5000
+		{TS: day1, RX: 100, TX: 50, BillableRX: 90, BillableTX: 40},                     // cum=150 (restart between buckets)
 		{TS: day1.Add(time.Hour), RX: 1100, TX: 950, BillableRX: 1000, BillableTX: 850}, // cum=2050
 	}
 	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
