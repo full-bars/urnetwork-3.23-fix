@@ -165,15 +165,34 @@ func isLockStale(data []byte) bool {
 	if err != nil {
 		return true
 	}
-	if time.Since(time.Unix(ts, 0)) > proxyLockStaleAge {
-		return true
-	}
+
+	// Liveness is the authoritative signal (finding #13): a lock held by a
+	// LIVE process is never stale, however old, because a legitimately slow
+	// reload (>5min on a large fleet) must not be stolen by a second
+	// acquirer. Only treat as stale when the holder is conclusively gone.
 	process, err := os.FindProcess(pid)
-	if err != nil {
-		return true
+	if err == nil {
+		err = process.Signal(syscall.Signal(0))
 	}
-	err = process.Signal(syscall.Signal(0))
-	return err != nil
+	if err == nil {
+		// Holder alive and working — NOT stale.
+		return false
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrProcessDone) ||
+			strings.Contains(err.Error(), "no such process") ||
+			strings.Contains(err.Error(), "process already finished") {
+			// Holder conclusively gone — stale.
+			return true
+		}
+		// Inconclusive (e.g. EPERM: another user's live process we can't
+		// signal). Use age as the tiebreaker; very old + unverifiable = stale.
+		return time.Since(time.Unix(ts, 0)) > proxyLockStaleAge
+	}
+
+	// Shouldn't reach here; safe default: not stale (don't steal a lock we
+	// can't prove abandoned).
+	return false
 }
 
 // ProxyReloader manages hot-reload of proxy goroutines. It is driven by the
