@@ -605,16 +605,19 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// match (running PID changed, image not deleted, /proc/<pid>/exe build
 	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
+	// NOTE: returns nil (exits) on the first matching provider — the full 15
+	// iterations only run when no match is ever found.
 	for i := 0; i < 15; i++ { // up to ~30s
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			// StateDir identity check: both sides come from the same
-			// discovery logic (unitStateDir on unix, windowsStateDir on
-			// Windows), so string equality is consistent per platform.
-			// Platform risk: on Windows this is a case-sensitive string
-			// compare of paths, so a drive-letter case or separator
-			// mismatch between derivations would fail to match.
+// StateDir identity check: both sides come from the same discovery
+			// logic (unitStateDir on unix, windowsStateDir on Windows), so
+			// string equality is consistent per platform. Platform risk: on
+			// Windows this is a case-sensitive string compare of paths, so a
+			// drive-letter case or separator mismatch between derivations
+			// would fail to match (same physical dir under a different
+			// spelling = symlink/~ expansion/container mapping = no match).
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
 				// Version of the image the RUNNING process is executing.
 				procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)

@@ -90,10 +90,12 @@ func cmdChooseNetwork(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools choose-network — set the network the provider connects to
 
 Usage: urnet-tools choose-network <api_url> <connect_url> [target]
+       urnet-tools choose-network main|beta [target]
        urnet-tools choose-network --reset [target]
 
 Saves an API URL (http/https) and connect URL (ws/wss) as the provider's
-chosen network. --reset clears the saved network and reverts to the main
+chosen network. A preset name (main or beta) selects the built-in network
+without typing URLs. --reset clears the saved network and reverts to the main
 network. Delegates to the provider binary and streams its output.
 `)
 		return nil

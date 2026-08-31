@@ -733,7 +733,7 @@ Usage:
     provider proxy trim <count> [--preview]
     provider logs [-n <lines>]
     provider print-network-id <file>
-    provider choose_network <api_url> <connect_url>
+    provider choose_network <api_url> [<connect_url>]
     provider choose_network --reset
 
 Options:
@@ -745,7 +745,8 @@ Options:
                                      By default, existing values will not be overwritten.
     --api_url=<api_url>              Specify a custom API URL to use.
     --connect_url=<connect_url>      Specify a custom connect URL to use.
-    <api_url>                        API URL to save as the chosen network (http:// or https://).
+    <api_url>                        API URL to save as the chosen network (http:// or https://),
+                                     or a preset: main | beta.
     <connect_url>                    Connect URL to save as the chosen network (ws:// or wss://).
     --reset                          With choose_network, clear the saved network and revert to the main network.
     --user_auth=<user_auth>	         Login with a username.
