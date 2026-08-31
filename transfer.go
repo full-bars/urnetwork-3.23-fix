@@ -2342,6 +2342,16 @@ func (self *SendSequence) Run() {
 					break
 				}
 
+				// Backstop: retained items past their deadline are force-dropped
+				// even without a flow-teardown signal. Prevents indefinite queue
+				// occupancy on dead flows where the signal never arrives.
+				if item.retainAfterAckTimeout && !sendTime.Before(item.backstopDeadline) {
+					self.resendQueue.RemoveByMessageId(item.messageId)
+					safeAck(item.ackCallback, errors.New("Retain backstop expired."))
+					MessagePoolReturn(item.transferFrameBytes)
+					continue
+				}
+
 				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
 				if self.sendBufferSettings.forceAckTimeoutForTest != nil && self.sendBufferSettings.forceAckTimeoutForTest(self.id()) {
 					itemAckTimeout = 0
@@ -2952,6 +2962,9 @@ func (self *SendSequence) sendWithSetContract(
 		forceUnwrapped:     forceUnwrapped,
 		retainAfterAckTimeout: retainAfterAckTimeout,
 	}
+	if retainAfterAckTimeout {
+		item.backstopDeadline = sendTime.Add(self.sendBufferSettings.AckTimeout * 10)
+	}
 
 	c := func() error {
 		return self.writeMaybeWrappedBytes(item.transferFrameBytes, path, item.forceUnwrapped)
@@ -3424,6 +3437,11 @@ type sendItem struct {
 	// resend queue; dropping them at the ack deadline would lose the bytes
 	// permanently.
 	retainAfterAckTimeout bool
+	// backstopDeadline is the absolute time after which a retained item is
+	// force-dropped even without a flow-teardown signal. Set to sendTime +
+	// 10*AckTimeout at creation. Prevents indefinite queue occupancy on dead
+	// flows where the teardown signal never arrives.
+	backstopDeadline time.Time
 
 	// messageType protocol.MessageType
 }
