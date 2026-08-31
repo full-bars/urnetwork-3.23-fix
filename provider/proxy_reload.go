@@ -255,7 +255,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 
 	lastSeq, _ := readReloadSeq(reloadPath)
 
-	go func() {
+	go connect.HandleError(func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -276,7 +276,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				r.reload()
 			}
 		}
-	}()
+	})
 }
 
 // reload diffs the proxy source against the currently running set and applies

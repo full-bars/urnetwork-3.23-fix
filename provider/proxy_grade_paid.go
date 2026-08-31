@@ -277,6 +277,16 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// the next tick re-collects (Opus review MEDIUM-1).
 			return
 		}
+		// Take the cross-process lock too so a concurrent CLI proxy removal
+		// (separate process) can't be clobbered by this apply phase writing
+		// back state for proxies that were just removed (finding #11).
+		lockRelease, lockErr := acquireProxyLockWithRetry()
+		if lockErr != nil {
+			tlog("[proxy][grade] warning: apply could not acquire proxy lock, skipping this apply: %v\n", lockErr)
+			return
+		}
+		defer lockRelease()
+
 		proxyStateMu.Lock()
 		defer proxyStateMu.Unlock()
 
