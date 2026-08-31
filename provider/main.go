@@ -1883,6 +1883,24 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			}
 		}
 
+		// Prune per-proxy bookkeeping for addresses that left the health
+		// snapshot (hot-reload removal, degraded reaper, URL-proxy churn under
+		// AIMD shed, `proxy remove`). Without this, prevTick/midnightCheckpoint
+		// each leak one entry per departed address for the life of the process
+		// (finding #7) — the same prune runLifetimeCollector and
+		// runBillableRateWriter already do. Live map keys are exactly the
+		// report.Bandwidth set.
+		live := make(map[string]struct{}, len(report.Bandwidth))
+		for key := range report.Bandwidth {
+			live[key] = struct{}{}
+		}
+		for key := range prevTick {
+			if _, ok := live[key]; !ok {
+				delete(prevTick, key)
+				delete(midnightCheckpoint, key)
+			}
+		}
+
 		// peak tracking: update high water marks and freeze elapsed at the time of the peak
 		if totalRx > peakRx {
 			peakRx = totalRx
