@@ -778,6 +778,7 @@ Usage:
     provider proxy summary
     provider proxy trim <count> [--preview]
     provider direct <on|off>
+    provider proxy paste [--file=<file>]
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> [<connect_url>]
@@ -833,6 +834,8 @@ Options:
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
                                      With no pattern, 'proxy exclude' lists active patterns.
+    --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
+                                     proxy (any common format) or an http(s) URL to fetch as a proxy source.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -868,6 +871,8 @@ Options:
 			}
 		} else if addSource, _ := opts.Bool("add-source"); addSource {
 			proxyAddSource(opts)
+		} else if paste, _ := opts.Bool("paste"); paste {
+			proxyPaste(opts)
 		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
 			proxyRemoveSource(opts)
 		} else if exclude, _ := opts.Bool("exclude"); exclude {
