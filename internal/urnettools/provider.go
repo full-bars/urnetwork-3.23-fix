@@ -217,6 +217,10 @@ func providerVersionFromBuildinfo(binary string) string {
 // this check, any local user can escalate to root on fleet nodes where
 // the operator runs sudo urnet-tools.
 func providerVersionFromExec(binary string) string {
+	// Defense-in-depth: refuse to execute anything that does not look like a
+	// provider binary. Discovery already gates this via isProviderArg before
+	// setting p.Binary, but re-checking here makes the exec safe even if it is
+	// ever called with an unvetted path.
 	if !isRecognizedExecutable(binary) {
 		return ""
 	}
