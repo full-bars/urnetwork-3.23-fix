@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -184,33 +183,6 @@ func readPSI(resource string) (avg60 float64, err error) {
 	}
 	_, avg60, err = parsePSISome(string(b))
 	return avg60, err
-}
-
-// readFDFrac returns the fraction of the FD budget the process is using
-// (open FDs / RLIMIT_NOFILE), or -1 if it cannot be determined. It counts
-// the entries in /proc/self/fd (symlinks to open descriptors) and divides by
-// the soft RLIMIT_NOFILE. This is a proxy's most load-bearing resource —
-// open sockets — and had no pressure signal (finding #5).
-func readFDFrac() float64 {
-	var rLimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
-		return -1
-	}
-	limit := rLimit.Cur
-	if limit == 0 {
-		return -1
-	}
-	// Count open FDs as entries in /proc/self/fd.
-	fdDir, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		return -1
-	}
-	open := len(fdDir)
-	frac := float64(open) / float64(limit)
-	if frac > 1 {
-		frac = 1
-	}
-	return frac
 }
 
 // readMemAvailFrac returns the available memory fraction the provider can see,
