@@ -63,13 +63,15 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 	bucketIDs := make([]int64, len(sorted))
 	bucketOf := func(t time.Time) int64 { return truncate(t).Unix() }
 	cumToBucket := map[int64]pair{}
-	var lastBillable, lastTotal uint64
 	for i, s := range sorted {
 		id := bucketOf(s.TS)
 		cur, ok := cumToBucket[id]
-		if !ok || s.RX+s.TX >= cur.tot {
-			// keep the max within the bucket (latest cumulative in bucket)
-			cur = pair{t: s.TS, b: s.BillableRX + s.BillableTX, tot: s.RX + s.TX}
+		curTotal := s.RX + s.TX
+		if !ok || curTotal >= cur.tot {
+			// keep the max within the bucket (latest cumulative in bucket).
+			// On restart (cumulative drop), still update so the bucket's
+			// value reflects the post-restart process, not stale pre-restart data.
+			cur = pair{t: s.TS, b: s.BillableRX + s.BillableTX, tot: curTotal}
 		}
 		cumToBucket[id] = cur
 		bucketIDs[i] = id
@@ -86,10 +88,15 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 
 	out := make([]dayBucket, 0, len(ids))
 	prevB, prevT := uint64(0), uint64(0)
-	_ = lastBillable
-	_ = lastTotal
 	for _, id := range ids {
 		cur := cumToBucket[id]
+		// Restart boundary: if the bucket's cumulative is less than the
+		// previous bucket's, the provider restarted between them. Reset
+		// the baseline instead of using satSub (which would return 0 and
+		// lose the pre-restart traffic for this bucket).
+		if cur.tot < prevT {
+			prevB, prevT = 0, 0
+		}
 		out = append(out, dayBucket{
 			day:      time.Unix(id, 0).UTC(),
 			billable: satSub(cur.b, prevB),

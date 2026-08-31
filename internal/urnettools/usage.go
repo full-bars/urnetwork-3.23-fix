@@ -80,15 +80,19 @@ func usageLifetime(snaps []usageSnapshot) usageAggregates {
 
 // Since snapshots are cumulative-per-process, "since X" (e.g. last 24h) is not
 // a simple sum — delta between the newest snapshot and the one before the
-// window start gives the bytes moved in the window. usageWindow returns that
-// delta-based window aggregate.
+// window start gives the bytes moved in the window. However, if a provider
+// restart occurred between the base and reference snapshots, the cumulative
+// counters reset toward zero and a naive two-point delta undercounts (or
+// returns 0 via satSub). usageWindow walks all snapshots in the window,
+// detects restart boundaries (cumulative drops), and sums each segment
+// independently to handle restarts correctly.
 func usageWindow(snaps []usageSnapshot, window time.Duration, now time.Time) usageAggregates {
 	if len(snaps) == 0 {
 		return usageAggregates{}
 	}
-	// Reference snapshot: the newest one (live values).
-	ref := snaps[len(snaps)-1]
-	// Find the newest snapshot older than the window start.
+	// Collect snapshots within the window (including one before the window
+	// for the base reference).
+	var inWindow []usageSnapshot
 	var base *usageSnapshot
 	for i := len(snaps) - 1; i >= 0; i-- {
 		if snaps[i].TS.Before(now.Add(-window)) {
@@ -100,12 +104,51 @@ func usageWindow(snaps []usageSnapshot, window time.Duration, now time.Time) usa
 		// Window predates all history — treat history start as base (0).
 		base = &usageSnapshot{}
 	}
-	return usageAggregates{
-		BillableRX: satSub(ref.BillableRX, base.BillableRX),
-		BillableTX: satSub(ref.BillableTX, base.BillableTX),
-		TotalRX:    satSub(ref.RX, base.RX),
-		TotalTX:    satSub(ref.TX, base.TX),
+	// Collect snapshots from base onward (inclusive).
+	for i := 0; i < len(snaps); i++ {
+		if !snaps[i].TS.Before(base.TS) {
+			inWindow = snaps[i:]
+			break
+		}
 	}
+	if len(inWindow) == 0 {
+		return usageAggregates{}
+	}
+
+	// Walk the snapshots and sum deltas, resetting on restart boundaries.
+	// A restart is detected when the total cumulative drops between
+	// adjacent snapshots (newer < older means counters reset).
+	var result usageAggregates
+	segBase := usageAggregates{
+		TotalRX: base.RX, TotalTX: base.TX,
+		BillableRX: base.BillableRX, BillableTX: base.BillableTX,
+	}
+	for i := 1; i < len(inWindow); i++ {
+		cur := inWindow[i]
+		prev := inWindow[i-1]
+		curTotal := cur.RX + cur.TX
+		prevTotal := prev.RX + prev.TX
+		if curTotal < prevTotal {
+			// Restart detected: add the contribution of the previous segment
+			// (its max was prevTotal, since cumulative only grows within a process).
+			result.TotalRX += satSub(prev.RX, segBase.TotalRX)
+			result.TotalTX += satSub(prev.TX, segBase.TotalTX)
+			result.BillableRX += satSub(prev.BillableRX, segBase.BillableRX)
+			result.BillableTX += satSub(prev.BillableTX, segBase.BillableTX)
+			// Reset segment base to the post-restart snapshot.
+			segBase = usageAggregates{
+				TotalRX: cur.RX, TotalTX: cur.TX,
+				BillableRX: cur.BillableRX, BillableTX: cur.BillableTX,
+			}
+		}
+	}
+	// Add the final segment's contribution (from segBase to the last snapshot).
+	last := inWindow[len(inWindow)-1]
+	result.TotalRX += satSub(last.RX, segBase.TotalRX)
+	result.TotalTX += satSub(last.TX, segBase.TotalTX)
+	result.BillableRX += satSub(last.BillableRX, segBase.BillableRX)
+	result.BillableTX += satSub(last.BillableTX, segBase.BillableTX)
+	return result
 }
 
 func satSub(a, b uint64) uint64 {
