@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -12,6 +13,8 @@ import (
 
 const dohScoresFilename = ".doh_scores"
 const dohScoresSaveInterval = 5 * time.Minute
+
+var dohScoresMu sync.Mutex
 
 // dohScoresPath returns the path to the persisted server-score file.
 func dohScoresPath() (string, error) {
@@ -53,6 +56,8 @@ func saveDohScores(scores map[string]float64) error {
 	if len(scores) == 0 {
 		return nil
 	}
+	dohScoresMu.Lock()
+	defer dohScoresMu.Unlock()
 	p, err := dohScoresPath()
 	if err != nil {
 		return err
