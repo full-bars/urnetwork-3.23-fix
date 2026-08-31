@@ -623,6 +623,8 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// match (running PID changed, image not deleted, /proc/<pid>/exe build
 	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
+	// NOTE: returns nil (exits) on the first matching provider — the full 15
+	// iterations only run when no match is ever found.
 	for i := 0; i < 15; i++ { // up to ~30s
 		time.Sleep(2 * time.Second)
 		providers := Discover()
