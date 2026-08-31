@@ -285,6 +285,10 @@ type TransferOptions struct {
 	CompanionContract bool
 	// force contract streams, even when there are zero intermediaries
 	ForceStream bool
+	// RetainAfterAckTimeout transfers the only recoverable copy to Transfer.
+	// Its serialized resend item remains owned until peer Ack or lifecycle
+	// cancellation instead of becoming a silent loss at the ordinary deadline.
+	RetainAfterAckTimeout bool
 }
 
 func DefaultTransferOpts() TransferOptions {
@@ -322,6 +326,16 @@ type transferOptionsSetForceStream struct {
 func ForceStream() transferOptionsSetForceStream {
 	return transferOptionsSetForceStream{
 		ForceStream: true,
+	}
+}
+
+type transferOptionsSetRetainAfterAckTimeout struct {
+	RetainAfterAckTimeout bool
+}
+
+func RetainAfterAckTimeout() transferOptionsSetRetainAfterAckTimeout {
+	return transferOptionsSetRetainAfterAckTimeout{
+		RetainAfterAckTimeout: true,
 	}
 }
 
@@ -2476,7 +2490,7 @@ func (self *SendSequence) Run() {
 
 				// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 				if self.updateContract(sendPack.MessageByteCount) {
-					self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack, sendPack.ForceUnwrapped)
+					self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack, sendPack.ForceUnwrapped, sendPack.RetainAfterAckTimeout)
 					// ignore the error since there will be a retry
 				} else {
 					// no contract
@@ -2595,7 +2609,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				forceUnwrapped := self.session != nil && self.session.Cipher() == nil
 				self.sendWithSetContract(nil, func(error) {
 					self.setContractAcked(nextSendContract, true)
-				}, true, true, forceUnwrapped)
+				}, true, true, forceUnwrapped, false)
 
 				// FIXME
 				self.log.Infof("[s]%s->%s...%s s(%s) contract set %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
@@ -2774,8 +2788,9 @@ func (self *SendSequence) send(
 	ackCallback AckFunction,
 	ack bool,
 	forceUnwrapped bool,
+	retainAfterAckTimeout bool,
 ) {
-	self.sendWithSetContract(frame, ackCallback, ack, false, forceUnwrapped)
+	self.sendWithSetContract(frame, ackCallback, ack, false, forceUnwrapped, retainAfterAckTimeout)
 }
 
 // sendWithSetContract builds and writes one transfer frame for a message
@@ -2789,6 +2804,7 @@ func (self *SendSequence) sendWithSetContract(
 	ack bool,
 	setContract bool,
 	forceUnwrapped bool,
+	retainAfterAckTimeout bool,
 ) {
 	sendTime := time.Now()
 	messageId := NewId()
@@ -2934,6 +2950,7 @@ func (self *SendSequence) sendWithSetContract(
 		transferFrameBytes: transferFrameBytes,
 		ackCallback:        ackCallback,
 		forceUnwrapped:     forceUnwrapped,
+		retainAfterAckTimeout: retainAfterAckTimeout,
 	}
 
 	c := func() error {
@@ -3402,6 +3419,11 @@ type sendItem struct {
 	// outer wrap is skipped even if the per-peer cipher becomes available
 	// between the initial send and a retransmit.
 	forceUnwrapped bool
+	// retainAfterAckTimeout keeps this item resending past the ack deadline.
+	// Set for provider TCP return bytes whose only recoverable copy is in the
+	// resend queue; dropping them at the ack deadline would lose the bytes
+	// permanently.
+	retainAfterAckTimeout bool
 
 	// messageType protocol.MessageType
 }
