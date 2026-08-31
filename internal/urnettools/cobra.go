@@ -157,6 +157,7 @@ func buildRootCmd() *cobra.Command {
 		newChooseNetworkCmd(),
 		newProxyCmd(),
 		newDirectCmd(),
+		newUsageCmd(),
 		newReportCmd(),
 		newHubCmd(),
 		newReinstallCmd(),

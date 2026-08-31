@@ -1,15 +1,88 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urnetwork/connect"
 )
+
+// usageHistoryMaxBytes bounds the accumulated usage history file before it
+// rotates to <name>.1. At ~90 bytes/row and hourly snapshots this is years
+// of history; the cap guards against a runaway writer.
+const usageHistoryMaxBytes = 64 << 20 // 64 MiB
+
+// usageHistoryPath is the persistent JSONL history of aggregate usage
+// snapshots. One JSON object per line:
+//
+//	{"ts":"2026-08-31T05:00:00Z","rx":...,"tx":...,"billable_rx":...,"billable_tx":...}
+//
+// rx/tx are the cumulative TOTAL bytes across all proxies since the process
+// started (they reset on provider restart); billable_* are the cumulative
+// billable bytes. Lifetime across restarts is the running max over the file;
+// "since start" is the latest snapshot's values.
+func usageHistoryPath(dir string) string {
+	return filepath.Join(dir, "usage_history.jsonl")
+}
+
+// usageHistoryLastHour tracks the last hour bucket we appended, so the health
+// heartbeat (which fires far more often than hourly) only wires one snapshot
+// per hour. Package-level so provider restarts within the same hour don't
+// double-append startup rows.
+var (
+	usageHistoryMu       sync.Mutex
+	usageHistoryLastHour int64 // UTC hour magnitude: unix/3600
+)
+
+// writeUsageHistory appends an aggregate usage snapshot if we haven't written
+// one for the current UTC hour bucket. Called from the health heartbeat with
+// the freshly-built ProxyHealthReport.
+func writeUsageHistory(dir string, r connect.ProxyHealthReport, now time.Time) {
+	var billableRx, billableTx, totalRx, totalTx uint64
+	for _, bw := range r.Bandwidth {
+		billableRx += bw.BillableRx.Load()
+		billableTx += bw.BillableTx.Load()
+		totalRx += bw.TotalRx.Load()
+		totalTx += bw.TotalTx.Load()
+	}
+
+	hour := now.Unix() / 3600
+	usageHistoryMu.Lock()
+	defer usageHistoryMu.Unlock()
+	if usageHistoryLastHour == hour {
+		return // already appended this hour
+	}
+	usageHistoryLastHour = hour
+
+	row := struct {
+		TS         time.Time `json:"ts"`
+		RX         uint64    `json:"rx"`
+		TX         uint64    `json:"tx"`
+		BillableRX uint64    `json:"billable_rx"`
+		BillableTX uint64    `json:"billable_tx"`
+	}{
+		TS: now.UTC(), RX: totalRx, TX: totalTx, BillableRX: billableRx, BillableTX: billableTx,
+	}
+	b, err := json.Marshal(row)
+	if err != nil {
+		return
+	}
+
+	path := usageHistoryPath(dir)
+	rotateIfNeeded(path, usageHistoryMaxBytes)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
 
 // proxyHealthListCap bounds the stdout/combined-log detail lines. It does NOT
 // apply to the persistent files, which always carry the complete list.

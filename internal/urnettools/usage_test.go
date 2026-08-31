@@ -1,0 +1,94 @@
+package urnettools
+
+import (
+	"testing"
+	"time"
+)
+
+// TestUsageLifetime verifies lifetime is the running max across cumulative
+// snapshots (survives restarts).
+func TestUsageLifetime(t *testing.T) {
+	snaps := []usageSnapshot{
+		{TS: time.Now().Add(-3 * time.Hour), RX: 100, TX: 90, BillableRX: 95, BillableTX: 85},
+		{TS: time.Now().Add(-2 * time.Hour), RX: 500, TX: 400, BillableRX: 480, BillableTX: 380},
+		{TS: time.Now().Add(-time.Hour), RX: 200, TX: 150, BillableRX: 190, BillableTX: 140}, // mid lower
+		{TS: time.Now(), RX: 700, TX: 600, BillableRX: 660, BillableTX: 560},
+	}
+	lt := usageLifetime(snaps)
+	if lt.Total() != 1300 { // max RX+TX = 700+600
+		t.Fatalf("lifetime total = %d, want 1300", lt.Total())
+	}
+	if lt.Billable() != 1220 { // 660+560
+		t.Fatalf("lifetime billable = %d, want 1220", lt.Billable())
+	}
+	if lt.Control() != 80 {
+		t.Fatalf("lifetime control = %d, want 80", lt.Control())
+	}
+}
+
+// TestUsageWindow verifies the delta-based window math.
+func TestUsageWindow(t *testing.T) {
+	now := time.Now()
+	snaps := []usageSnapshot{
+		{TS: now.Add(-10 * 24 * time.Hour), RX: 1000, TX: 900, BillableRX: 950, BillableTX: 850}, // >7d ago → 7d base
+		{TS: now.Add(-26 * time.Hour), RX: 2000, TX: 1800, BillableRX: 1900, BillableTX: 1700},
+		{TS: now.Add(-2 * time.Hour), RX: 3000, TX: 2700, BillableRX: 2850, BillableTX: 2550},
+	}
+	// 24h window: reference=3000/2700 (newest), base=newest < 24h ago = 2000/1800
+	// (the -26h snapshot). Delta = (3000+2700)-(2000+1800) = 1900.
+	w := usageWindow(snaps, 24*time.Hour, now)
+	if w.Total() != 1900 {
+		t.Fatalf("24h window total = %d, want 1900", w.Total())
+	}
+	if w.Billable() != 1800 { // (2850+2550)-(1900+1700)=5400-3600=1800
+		t.Fatalf("24h window billable = %d, want 1800", w.Billable())
+	}
+	// 7d window: base is newest < 7d ago = 1000/900 (the -10d snapshot).
+	w7 := usageWindow(snaps, 7*24*time.Hour, now)
+	if w7.Total() != 3800 { // (3000+2700)-(1000+900)=5700-1900=3800
+		t.Fatalf("7d window total = %d, want 3800", w7.Total())
+	}
+}
+
+// TestUsageWindowPredatesHistory: window before any snapshot → full life.
+func TestUsageWindowNoBase(t *testing.T) {
+	now := time.Now()
+	snaps := []usageSnapshot{
+		{TS: now.Add(-2 * time.Hour), RX: 300, TX: 200, BillableRX: 280, BillableTX: 190},
+	}
+	w := usageWindow(snaps, 24*time.Hour, now)
+	if w.Total() != 500 {
+		t.Fatalf("total = %d, want 500", w.Total())
+	}
+}
+
+// TestDeltaBuckets: cumulative snapshots become per-bucket deltas.
+func TestDeltaBuckets(t *testing.T) {
+	now := time.Now()
+	// Two day buckets: day0 (older) and day1 (newer).
+	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	snaps := []usageSnapshot{
+		{TS: day0, RX: 1000, TX: 900, BillableRX: 950, BillableTX: 850},                  // day0
+		{TS: day0.Add(time.Hour), RX: 1200, TX: 1000, BillableRX: 1150, BillableTX: 950}, // day0 late
+		{TS: day1, RX: 2000, TX: 1800, BillableRX: 1900, BillableTX: 1700},               // day1
+	}
+	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}, 10, now)
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	// day0 moved: 1200+1000-0 = 2200 total (first bucket, base 0).
+	if buckets[0].total != 2200 {
+		t.Fatalf("day0 total = %d, want 2200", buckets[0].total)
+	}
+	if buckets[0].billable != 2100 {
+		t.Fatalf("day0 billable = %d, want 2100", buckets[0].billable)
+	}
+	// day1 moved: 2000+1800 - (1200+1000) = 1600 total.
+	if buckets[1].total != 1600 {
+		t.Fatalf("day1 total = %d, want 1600", buckets[1].total)
+	}
+}
