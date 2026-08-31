@@ -212,6 +212,13 @@ func providerVersionFromBuildinfo(binary string) string {
 // when build info is unavailable (e.g. -trimpath builds). The 3s timeout
 // mirrors the original pre-buildinfo implementation.
 func providerVersionFromExec(binary string) string {
+	// Defense-in-depth: refuse to execute anything that does not look like a
+	// provider binary. Discovery already gates this via isProviderArg before
+	// setting p.Binary, but re-checking here makes the exec safe even if it is
+	// ever called with an unvetted path (S-1 hardening).
+	if !isProviderArg(binary) {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binary, "--version").Output()

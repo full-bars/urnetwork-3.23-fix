@@ -611,7 +611,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-// StateDir identity check: both sides come from the same discovery
+			// StateDir identity check: both sides come from the same discovery
 			// logic (unitStateDir on unix, windowsStateDir on Windows), so
 			// string equality is consistent per platform. Platform risk: on
 			// Windows this is a case-sensitive string compare of paths, so a
