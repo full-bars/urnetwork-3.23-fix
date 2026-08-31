@@ -2617,9 +2617,14 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				// up the open pack is queued unpinned and wraps normally,
 				// re-sealed per write like any other frame.
 				forceUnwrapped := self.session != nil && self.session.Cipher() == nil
-				self.sendWithSetContract(nil, func(error) {
-					self.setContractAcked(nextSendContract, true)
-				}, true, true, forceUnwrapped, false)
+				self.sendWithSetContract(
+					nil,
+					self.contractOpenAckCallback(nextSendContract),
+					true,
+					true,
+					forceUnwrapped,
+					false,
+				)
 
 				// FIXME
 				self.log.Infof("[s]%s->%s...%s s(%s) contract set %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
@@ -2786,6 +2791,17 @@ func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
 func (self *SendSequence) setContractAcked(nextSendContract *sequenceContract, ack bool) {
 	if self.sendContract == nextSendContract {
 		self.sendContractAcked = ack
+	}
+}
+
+// A failed terminal disposition must not promote an opening contract. The
+// current-contract guard also prevents a late callback from mutating its
+// replacement.
+func (self *SendSequence) contractOpenAckCallback(
+	nextSendContract *sequenceContract,
+) AckFunction {
+	return func(err error) {
+		self.setContractAcked(nextSendContract, err == nil)
 	}
 }
 
