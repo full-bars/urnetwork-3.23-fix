@@ -438,12 +438,6 @@ func (self *ClientSettings) MinimumMessageLenLimit() ByteCount {
 }
 
 // note all callbacks are wrapped to check for nil and recover from errors
-// SendBuffer returns the client's send buffer for direct access (e.g. flow
-// teardown drain). Callers must not hold the returned pointer across locks.
-func (self *Client) SendBuffer() *SendBuffer {
-	return self.sendBuffer
-}
-
 type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
