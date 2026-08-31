@@ -3061,6 +3061,13 @@ func (self *RemoteUserNatProvider) Receive(
 	opts := []any{
 		CompanionContract(),
 	}
+	// TCP socket returns are the only recoverable copy of consumed bytes;
+	// retain them past the ack deadline so the resend queue keeps retrying
+	// instead of silently dropping at timeout. UDP and synthesized controls
+	// are regenerable by the peer and need no such lease.
+	if ipPath.Protocol == IpProtocolTcp {
+		opts = append(opts, RetainAfterAckTimeout())
+	}
 	// note udp is sent with ack because because otherwise the delivery reliability will mulitply with the egress
 	c := func() bool {
 		// ack := make(chan error)

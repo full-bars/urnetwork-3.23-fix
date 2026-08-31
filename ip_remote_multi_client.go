@@ -3201,6 +3201,11 @@ func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, 
 		if !ack {
 			opts = append(opts, NoAck())
 		}
+		// TCP socket returns are the only recoverable copy; retain past ack
+		// deadline so the resend queue keeps retrying instead of dropping.
+		if parsedPacket.ipPath.Protocol == IpProtocolTcp {
+			opts = append(opts, RetainAfterAckTimeout())
+		}
 		success, err := self.client.SendMultiHopWithTimeoutDetailed(
 			frame,
 			self.args.Destination,
