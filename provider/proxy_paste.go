@@ -326,6 +326,8 @@ func proxyPaste(opts docopt.Opts) {
 	seen := map[string]bool{}
 	var allNormalized []string
 	var totalSkipped, totalRejected int
+	var rejectedLines []string // first N rejected lines for diagnostics
+	const maxRejectedShow = 10
 
 	// Process direct proxy lines
 	for _, line := range directLines {
@@ -338,6 +340,9 @@ func proxyPaste(opts docopt.Opts) {
 			}
 		} else {
 			totalRejected++
+			if len(rejectedLines) < maxRejectedShow {
+				rejectedLines = append(rejectedLines, strings.TrimSpace(line))
+			}
 		}
 	}
 
@@ -365,6 +370,9 @@ func proxyPaste(opts docopt.Opts) {
 
 	if len(allNormalized) == 0 {
 		fmt.Printf("no valid proxies found (%d skipped, %d rejected)\n", totalSkipped, totalRejected)
+		for _, rl := range rejectedLines {
+			fmt.Fprintf(os.Stderr, "  rejected: %s\n", rl)
+		}
 		return
 	}
 
@@ -381,6 +389,15 @@ func proxyPaste(opts docopt.Opts) {
 
 	fmt.Printf("\nadding %d proxies (%d dupes skipped, %d rejected)\n",
 		len(allNormalized), totalSkipped, totalRejected)
+	if len(rejectedLines) > 0 {
+		fmt.Fprintln(os.Stderr, "rejected lines:")
+		for _, rl := range rejectedLines {
+			fmt.Fprintf(os.Stderr, "  %s\n", rl)
+		}
+		if totalRejected > maxRejectedShow {
+			fmt.Fprintf(os.Stderr, "  ... and %d more\n", totalRejected-maxRejectedShow)
+		}
+	}
 
 	// Find our own binary path
 	bin, err := os.Executable()
