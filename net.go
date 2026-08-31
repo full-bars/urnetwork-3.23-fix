@@ -31,6 +31,13 @@ var dnsCache struct {
 
 const dnsCacheTTL = 60 * time.Second
 
+// dnsCacheMaxEntries bounds the CONNECT-target DNS cache. Keys are arbitrary
+// client-requested hostnames (any host a proxy user asks to reach), so an
+// untrusted or botted client population could otherwise grow this map without
+// bound for the life of the process (finding #4). On insert overflow we evict
+// expired entries first, then arbitrary ones to get back under the cap.
+const dnsCacheMaxEntries = 4096
+
 // proxyDNSResolveTimeout bounds the DoH resolution on each proxy dial so
 // a slow/dead resolver can't block SOCKS5 CONNECT for longer than this.
 // Shorter than RequestTimeout (15s) so the semaphore admission gate in
@@ -99,8 +106,39 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 	if cached, ok := dnsCache.m[host]; !ok || time.Now().After(cached.expiry) {
 		dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
 	}
+	// Bound the map against unbounded client-requested hostname growth (#4).
+	pruneDNSCacheLocked(time.Now())
 	dnsCache.mu.Unlock()
 	return ip, true
+}
+
+// pruneDNSCacheLocked bounds the CONNECT-target DNS cache. Caller holds
+// dnsCache.mu. Recovers if an entry is beyond the freshness window (what a
+// periodic sweep would do) and, if the map is still over the cap, evicts
+// expired entries then arbitrary ones to keep it bounded against unbounded
+// client-requested hostname growth (finding #4).
+func pruneDNSCacheLocked(now time.Time) {
+	if len(dnsCache.m) <= dnsCacheMaxEntries {
+		return
+	}
+	// First drop any expired entries.
+	for k, e := range dnsCache.m {
+		if !now.Before(e.expiry) {
+			delete(dnsCache.m, k)
+		}
+		if len(dnsCache.m) <= dnsCacheMaxEntries {
+			return
+		}
+	}
+	// Still over the cap (mostly-fresh map): evict arbitrary entries to get
+	// back under. Order doesn't matter materially here — a 60s TTL means any
+	// evicted entry is cheaply re-resolved.
+	for k := range dnsCache.m {
+		if len(dnsCache.m) <= dnsCacheMaxEntries {
+			return
+		}
+		delete(dnsCache.m, k)
+	}
 }
 
 func DefaultConnectSettings() *ConnectSettings {

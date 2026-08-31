@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -41,6 +42,10 @@ const (
 	// loadavg per core (fallback sensor where PSI is unavailable).
 	loadRampLo = 1.0
 	loadRampHi = 3.0
+
+	// Disk/IO PSI (same ramp as mem/cpu: some avg60 percent).
+	ioRampLo = 10.0
+	ioRampHi = 60.0
 
 	// Self-signals: the provider's own runaway growth. LA1 melted down at
 	// ~31k goroutines on 1.6GB.
@@ -73,10 +78,12 @@ func setPressure(v float64)    { globalPressure.Store(math.Float64bits(v)) }
 type pressureSample struct {
 	PSIMem       float64 // /proc/pressure/memory some avg60 (percent)
 	PSICPU       float64 // /proc/pressure/cpu some avg60 (percent)
+	PSIIO        float64 // /proc/pressure/io some avg60 (percent); 0 = unavailable
 	MemAvailFrac float64 // MemAvailable/MemTotal; 0 = unknown
 	LoadPerCore  float64 // loadavg1 / NumCPU; 0 = unknown
 	Goroutines   int
 	HeapFrac     float64 // heap in use / max-memory soft limit; 0 = no limit set
+	FDFrac       float64 // open FDs / RLIMIT_NOFILE; 0 = unavailable
 	SensorErrs   map[string]error
 }
 
@@ -103,8 +110,15 @@ func computePressure(s pressureSample) (float64, map[string]float64) {
 	comps := map[string]float64{
 		"psi_mem": normalizeRamp(s.PSIMem, psiRampLo, psiRampHi),
 		"psi_cpu": normalizeRamp(s.PSICPU, psiRampLo, psiRampHi),
+		"psi_io":  normalizeRamp(s.PSIIO, ioRampLo, ioRampHi),
 		"load":    normalizeRamp(s.LoadPerCore, loadRampLo, loadRampHi),
 		"goro":    normalizeRamp(float64(s.Goroutines), goroutineRampLo, goroutineRampHi),
+	}
+	if s.FDFrac > 0 {
+		// FDFrac is the fraction of RLIMIT_NOFILE currently USED. Map it so
+		// 50% used = score 0, 90% used = score 1 — approaching FD exhaustion
+		// (a proxy's load-bearing resource) raises pressure (finding #5).
+		comps["fd"] = normalizeRamp(s.FDFrac, 0.5, 0.9)
 	}
 	if s.MemAvailFrac > 0 {
 		comps["mem"] = normalizeRamp(s.MemAvailFrac, memAvailRampLo, memAvailRampHi)
@@ -172,6 +186,33 @@ func readPSI(resource string) (avg60 float64, err error) {
 	return avg60, err
 }
 
+// readFDFrac returns the fraction of the FD budget the process is using
+// (open FDs / RLIMIT_NOFILE), or -1 if it cannot be determined. It counts
+// the entries in /proc/self/fd (symlinks to open descriptors) and divides by
+// the soft RLIMIT_NOFILE. This is a proxy's most load-bearing resource —
+// open sockets — and had no pressure signal (finding #5).
+func readFDFrac() float64 {
+	var rLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+		return -1
+	}
+	limit := rLimit.Cur
+	if limit == 0 {
+		return -1
+	}
+	// Count open FDs as entries in /proc/self/fd.
+	fdDir, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return -1
+	}
+	open := len(fdDir)
+	frac := float64(open) / float64(limit)
+	if frac > 1 {
+		frac = 1
+	}
+	return frac
+}
+
 // readMemAvailFrac returns the available memory fraction the provider can see,
 // taking the tighter of host MemAvailable and cgroup headroom against the
 // effective RAM. Host-only MemAvailable misleads inside Docker, where
@@ -219,6 +260,18 @@ func collectPressureSample() pressureSample {
 		s.PSICPU = v
 	} else {
 		s.SensorErrs["psi_cpu"] = err
+	}
+	// I/O pressure (disk-bound host). Same PSI source family as mem/cpu, so
+	// it fails silently on the same old-kernel / non-Linux cases.
+	if v, err := readPSI("io"); err == nil {
+		s.PSIIO = v
+	} else {
+		s.SensorErrs["psi_io"] = err
+	}
+	if v := readFDFrac(); v >= 0 {
+		s.FDFrac = v
+	} else {
+		s.SensorErrs["fd"] = fmt.Errorf("cannot read FD usage")
 	}
 	if v, err := readMemAvailFrac(); err == nil {
 		s.MemAvailFrac = v
@@ -506,7 +559,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// Log the active sensor set once at startup.
 	first := collectPressureSample()
 	active := []string{"goro"}
-	for _, name := range []string{"psi_mem", "psi_cpu", "mem", "load"} {
+	for _, name := range []string{"psi_mem", "psi_cpu", "psi_io", "mem", "load", "fd"} {
 		if _, bad := first.SensorErrs[name]; !bad {
 			active = append(active, name)
 		}
@@ -587,6 +640,14 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 				gcState.lastTightenAction, gcState.lastHeapFrac, gcState.currentGOGC)
 		}
 
+		// MemoryBudget actuator (#6): scale the per-connection memory-dominant
+		// settings (queue caps, receive windows, socket buffers) down proportionally
+		// to live pressure, so NEW connections/sequences opened while under pressure
+		// get smaller buffers before we have to shed proxies/pool. Settings sample
+		// the budget at construction time, so this affects future objects only —
+		// exactly the "shrink before you have to kill" semantic.
+		applyPressureMemoryBudget(smoothed)
+
 		writePressureStatus(smoothed, comps, &gcState)
 		if r := pressureRegime(smoothed); r != lastRegime {
 			tlog("[proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
@@ -595,9 +656,41 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	}
 }
 
+// memoryBudgetActuateThreshold is the smoothed-pressure score above which we
+// begin shrinking the per-connection memory budget. Below it we keep the
+// process at its full (unscaled) budget so normal operation isn't affected.
+const memoryBudgetActuateThreshold = 0.5
+
+// applyPressureMemoryBudget wires the never-called SetMemoryBudget actuator
+// (#6) to live pressure. When smoothed pressure crosses the threshold, it sets
+// a process memory budget below the referenceMemoryBudgetByteCount so future
+// Default*Settings constructions (connection queues, receive windows, socket
+// buffers) scale DOWN, shrinking buffers for newly-opened objects before we
+// have to shed proxies or pool. On calm it restores the full budget (0 =
+// unscaled). Only affects objects constructed after the call.
+func applyPressureMemoryBudget(smoothed float64) {
+	if smoothed < memoryBudgetActuateThreshold {
+		if connect.MemoryBudget() != 0 {
+			connect.SetMemoryBudget(0) // back to unscaled defaults
+		}
+		return
+	}
+	// Scale the budget down linearly from reference (64MiB) toward a floor as
+	// pressure rises 0.5 -> 1.0. A smaller budget makes MemoryScaledByteCount
+	// shrink queue/window caps. Floor at 24MiB keeps a working minimum.
+	const ref = 64 << 20 // referenceMemoryBudgetByteCount
+	const floor = 24 << 20
+	frac := (smoothed - memoryBudgetActuateThreshold) / (1 - memoryBudgetActuateThreshold)
+	budget := connect.ByteCount(ref - int64(frac*float64(ref-floor)))
+	if budget < floor {
+		budget = floor
+	}
+	connect.SetMemoryBudget(budget)
+}
+
 func formatComponents(comps map[string]float64) string {
 	parts := make([]string, 0, len(comps))
-	for _, k := range []string{"psi_mem", "psi_cpu", "mem", "load", "goro", "heap"} {
+	for _, k := range []string{"psi_mem", "psi_cpu", "psi_io", "mem", "load", "goro", "heap", "fd"} {
 		if v, ok := comps[k]; ok {
 			parts = append(parts, fmt.Sprintf("%s=%.2f", k, v))
 		}
