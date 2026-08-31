@@ -17,7 +17,7 @@ All notable changes to this project are documented here.
 - **urnet-tools security audit remediation (PR #499)**: version strings are read from Go build info / ELF header instead of executing discovered binaries (removes a privilege-escalation vector); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
 - **Reliable provider updates (PR #497)**: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
 - **restart safety (PR #499)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
-- **Bounded DNS resolution (Opus remediation, upstream)**: DNS lookups capped at 3s and abort on the winning server.
+- **Bounded DNS resolution (upstream)**: DNS lookups capped at 3s and abort on the winning server.
 
 ### Fixed
 - **Uninstall path guard (PR #499)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
