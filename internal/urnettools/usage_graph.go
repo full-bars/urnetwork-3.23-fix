@@ -42,67 +42,165 @@ type dayBucket struct {
 	total    uint64
 }
 
-// bucketSnapshots converts cumulative-per-process snapshots into per-bucket
+// deltaBuckets converts cumulative-per-process snapshots into per-bucket
 // deltas (billable bytes moved within each bucket). Because each snapshot is
-// cumulative since process start, a bucket's value is (newest snapshot in
-// bucket) - (last snapshot before bucket start).
+// cumulative since process start, a bucket's value is the sum of deltas
+// across all snapshots in that bucket. Restart boundaries (cumulative drops)
+// are detected within and between buckets — each segment is summed
+// independently so no bytes are lost when a restart falls inside a bucket.
 func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBuckets int, now time.Time) []dayBucket {
 	if len(snaps) == 0 {
 		return nil
 	}
-	type pair struct {
-		t      time.Time
-		b, tot uint64
-	}
-	// Sort by ts ascending (reader already does, but be safe).
 	sorted := make([]usageSnapshot, len(snaps))
 	copy(sorted, snaps)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
 
-	// Map each snapshot to its bucket.
-	bucketIDs := make([]int64, len(sorted))
 	bucketOf := func(t time.Time) int64 { return truncate(t).Unix() }
-	cumToBucket := map[int64]pair{}
-	for i, s := range sorted {
+
+	// Per-bucket data: track max cumulative and billable for pre-restart
+	// and post-restart segments. Also track the previous bucket's final max
+	// so cross-bucket deltas use the correct baseline.
+	type bucketInfo struct {
+		d                  time.Time
+		maxCumPreRestart   uint64
+		maxBillPreRestart  uint64
+		maxCumPostRestart  uint64
+		maxBillPostRestart uint64
+		restartCum         uint64 // cumulative at the restart point (baseline for post-restart segment)
+		restartBill        uint64
+		hasRestart         bool
+		crossBucketRestart bool   // restart happened at a bucket boundary (not within the bucket)
+		hasData            bool
+	}
+	byID := map[int64]*bucketInfo{}
+
+	// prevMax tracks the previous bucket's final cumulative max for
+	// computing cross-bucket deltas. Reset to 0 on cross-bucket restarts.
+	var prevMaxCum, prevMaxBill uint64
+	var prevBucketID int64
+	var prevCum uint64 // previous snapshot's cumulative (for restart detection)
+	first := true
+
+	for _, s := range sorted {
 		id := bucketOf(s.TS)
-		cur, ok := cumToBucket[id]
-		curTotal := s.RX + s.TX
-		if !ok || curTotal >= cur.tot {
-			// keep the max within the bucket (latest cumulative in bucket).
-			// On restart (cumulative drop), still update so the bucket's
-			// value reflects the post-restart process, not stale pre-restart data.
-			cur = pair{t: s.TS, b: s.BillableRX + s.BillableTX, tot: curTotal}
+		curCum := s.RX + s.TX
+		curBill := s.BillableRX + s.BillableTX
+
+		bd, ok := byID[id]
+		if !ok {
+			d := time.Unix(id, 0).UTC()
+			bd = &bucketInfo{d: d}
+			byID[id] = bd
 		}
-		cumToBucket[id] = cur
-		bucketIDs[i] = id
+
+		if first {
+			bd.maxCumPreRestart = curCum
+			bd.maxBillPreRestart = curBill
+			bd.maxCumPostRestart = curCum
+			bd.maxBillPostRestart = curBill
+			bd.hasData = true
+			prevCum = curCum
+			first = false
+		} else if id != prevBucketID {
+			// Bucket boundary: capture previous bucket's final max for
+			// cross-bucket delta computation. Do NOT accumulate into the
+			// old bucket here — per-segment deltas within a bucket are
+			// summed in the output phase.
+			if old, ok := byID[prevBucketID]; ok {
+				if !old.hasRestart {
+					prevMaxCum = old.maxCumPreRestart
+					prevMaxBill = old.maxBillPreRestart
+				}
+				// else: prevMaxCum already set from the restart case.
+			}
+			// Detect cross-bucket restart.
+			if curCum < prevCum {
+				bd.hasRestart = true
+				bd.crossBucketRestart = true
+				bd.maxCumPreRestart = prevCum
+				bd.maxBillPreRestart = 0 // cross-bucket: segment 1 contribution is 0
+				bd.maxCumPostRestart = curCum
+				bd.maxBillPostRestart = curBill
+				prevMaxCum = 0
+				prevMaxBill = 0
+			} else {
+				bd.maxCumPreRestart = curCum
+				bd.maxBillPreRestart = curBill
+				bd.maxCumPostRestart = curCum
+				bd.maxBillPostRestart = curBill
+			}
+			bd.hasData = true
+		} else if curCum < prevCum {
+			// Same-bucket restart: cumulative dropped within this bucket.
+			bd.hasRestart = true
+			bd.restartCum = curCum    // restart trigger snapshot (baseline for post-restart segment)
+			bd.restartBill = curBill
+			bd.maxCumPostRestart = curCum
+			bd.maxBillPostRestart = curBill
+		} else if bd.hasRestart {
+			// Post-restart growth: update the post-restart max.
+			bd.maxCumPostRestart = curCum
+			bd.maxBillPostRestart = curBill
+		} else {
+			// Normal growth within the same bucket.
+			bd.maxCumPreRestart = curCum
+			bd.maxBillPreRestart = curBill
+		}
+
+		prevCum = curCum
+		prevBucketID = id
 	}
 
-	// Determine the reference (newest) cumulative at each bucket boundary.
-	// For a bucket, its "billable moved" = bucketMax - previousBucketMax.
-	// Build ordered bucket list.
+	// Flush the last bucket's final max.
+	if old, ok := byID[prevBucketID]; ok && !first {
+		if !old.hasRestart {
+			prevMaxCum = old.maxCumPreRestart
+			prevMaxBill = old.maxBillPreRestart
+		}
+	}
+
+	// Reset for the output phase: each bucket's delta is computed
+	// sequentially from the previous bucket's max, starting at 0.
+	prevMaxCum = 0
+	prevMaxBill = 0
+
+	// Build ordered bucket list and compute per-bucket deltas.
 	var ids []int64
-	for id := range cumToBucket {
+	for id := range byID {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
 	out := make([]dayBucket, 0, len(ids))
-	prevB, prevT := uint64(0), uint64(0)
 	for _, id := range ids {
-		cur := cumToBucket[id]
-		// Restart boundary: if the bucket's cumulative is less than the
-		// previous bucket's, the provider restarted between them. Reset
-		// the baseline instead of using satSub (which would return 0 and
-		// lose the pre-restart traffic for this bucket).
-		if cur.tot < prevT {
-			prevB, prevT = 0, 0
+		bd := byID[id]
+		var total, billable uint64
+		if bd.hasRestart {
+			// Two independent segments.
+			// Segment 1 delta = maxPreRestart - prevMax.
+			total = satSub(bd.maxCumPreRestart, prevMaxCum)
+			billable = satSub(bd.maxBillPreRestart, prevMaxBill)
+			// Segment 2: same-bucket restart uses restartCum as baseline
+			// (restart snapshot is old-process traffic); cross-bucket
+			// restart adds full cumulative (new process from ~0).
+			if bd.crossBucketRestart {
+				total += bd.maxCumPostRestart
+				billable += bd.maxBillPostRestart
+			} else {
+				total += satSub(bd.maxCumPostRestart, bd.restartCum)
+				billable += satSub(bd.maxBillPostRestart, bd.restartBill)
+			}
+			prevMaxCum = bd.maxCumPostRestart
+			prevMaxBill = bd.maxBillPostRestart
+		} else {
+			// Simple delta from previous bucket's max.
+			total = satSub(bd.maxCumPreRestart, prevMaxCum)
+			billable = satSub(bd.maxBillPreRestart, prevMaxBill)
+			prevMaxCum = bd.maxCumPreRestart
+			prevMaxBill = bd.maxBillPreRestart
 		}
-		out = append(out, dayBucket{
-			day:      time.Unix(id, 0).UTC(),
-			billable: satSub(cur.b, prevB),
-			total:    satSub(cur.tot, prevT),
-		})
-		prevB, prevT = cur.b, cur.tot
+		out = append(out, dayBucket{day: bd.d, billable: billable, total: total})
 	}
 	_ = now
 	return out
@@ -148,7 +246,6 @@ func renderHourGraph(snaps []usageSnapshot) {
 	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
 		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, time.UTC)
 	}, 24, now)
-	// Keep last 24 buckets ending near now.
 	if len(buckets) > 24 {
 		buckets = buckets[len(buckets)-24:]
 	}

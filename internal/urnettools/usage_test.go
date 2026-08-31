@@ -92,3 +92,70 @@ func TestDeltaBuckets(t *testing.T) {
 		t.Fatalf("day1 total = %d, want 1600", buckets[1].total)
 	}
 }
+
+// TestDeltaBucketsRestartWithinBucket: a restart (cumulative drop) inside a
+// single bucket must NOT lose the pre-restart bytes.
+func TestDeltaBucketsRestartWithinBucket(t *testing.T) {
+	now := time.Now()
+	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	snaps := []usageSnapshot{
+		// day0: steady traffic, then restart (cum drops), then post-restart traffic.
+		{TS: day0, RX: 1000, TX: 2000, BillableRX: 900, BillableTX: 1800},                 // cum=3000
+		{TS: day0.Add(time.Hour), RX: 200, TX: 300, BillableRX: 180, BillableTX: 270},     // cum=500 (restart!)
+		{TS: day0.Add(2 * time.Hour), RX: 1200, TX: 800, BillableRX: 1100, BillableTX: 700}, // cum=2000 (post-restart)
+		// day1: steady.
+		{TS: day1, RX: 2500, TX: 1500, BillableRX: 2400, BillableTX: 1400}, // cum=4000
+	}
+	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}, 10, now)
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	// day0: pre-restart 3000 + post-restart 1500 (500 baseline→2000) = 4500 total.
+	if buckets[0].total != 4500 {
+		t.Fatalf("day0 total = %d, want 4500", buckets[0].total)
+	}
+	// day0 billable: 2700 + (1800-450)=1350 = 4050
+	if buckets[0].billable != 4050 {
+		t.Fatalf("day0 billable = %d, want 4050", buckets[0].billable)
+	}
+	// day1: 4000 - 2000 = 2000 (delta from last snapshot of day0).
+	if buckets[1].total != 2000 {
+		t.Fatalf("day1 total = %d, want 2000", buckets[1].total)
+	}
+	if buckets[1].billable != 2000 { // (2400+1400)-(1100+700) = 3800-1800
+		t.Fatalf("day1 billable = %d, want 2000", buckets[1].billable)
+	}
+}
+
+// TestDeltaBucketsRestartAcrossBuckets: a restart between buckets must reset
+// the baseline so the new bucket counts only post-restart traffic.
+func TestDeltaBucketsRestartAcrossBuckets(t *testing.T) {
+	now := time.Now()
+	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	snaps := []usageSnapshot{
+		{TS: day0, RX: 3000, TX: 2000, BillableRX: 2800, BillableTX: 1800}, // cum=5000
+		{TS: day1, RX: 100, TX: 50, BillableRX: 90, BillableTX: 40},         // cum=150 (restart between buckets)
+		{TS: day1.Add(time.Hour), RX: 1100, TX: 950, BillableRX: 1000, BillableTX: 850}, // cum=2050
+	}
+	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}, 10, now)
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	// day0: 5000 (first snapshot, baseline 0).
+	if buckets[0].total != 5000 {
+		t.Fatalf("day0 total = %d, want 5000", buckets[0].total)
+	}
+	// day1: first snapshot is a restart → delta from restart is 150, then 2050-150=1900.
+	// Total: 150+1900 = 2050.
+	if buckets[1].total != 2050 {
+		t.Fatalf("day1 total = %d, want 2050", buckets[1].total)
+	}
+}
