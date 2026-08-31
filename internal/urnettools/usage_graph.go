@@ -27,10 +27,12 @@ func cmdUsageGraph(targetArgs []string, view string) error {
 		renderHourGraph(snaps)
 	case "month":
 		renderMonthGraph(snaps)
-	default:
+	case "":
 		renderDayGraph(snaps)
 		renderHourGraph(snaps)
 		renderMonthGraph(snaps)
+	default:
+		return fmt.Errorf("unknown view %q — valid views: day, hour, month", view)
 	}
 	return nil
 }

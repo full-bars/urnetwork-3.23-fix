@@ -56,20 +56,23 @@ func cmdUsage(args []string) error {
 		return cmdUsageCards(nil)
 	}
 
-	sub := args[0]
-	switch sub {
-	case "graphs", "graph":
-		var view string
-		if len(args) >= 2 {
-			view = args[1]
+	// Scan for the subcommand (graph/graphs) regardless of flag position.
+	// "usage --unit X graph day" should route to graph, not cards.
+	for i, a := range args {
+		switch a {
+		case "graphs", "graph":
+			var view string
+			if i+1 < len(args) {
+				view = args[i+1]
+			}
+			return cmdUsageGraph(args[i:], view)
+		case "-h", "--help":
+			return fmt.Errorf("usage: show aggregate usage (billable vs control)\n\n  urnet-tools usage\n  urnet-tools usage graphs\n  urnet-tools usage graph day|hour|month")
 		}
-		return cmdUsageGraph(args[0:], view)
-	case "-h", "--help":
-		return fmt.Errorf("usage: show aggregate usage (billable vs control)\n\n  urnet-tools usage\n  urnet-tools usage graphs\n  urnet-tools usage graph day|hour|month")
-	default:
-		// Treat as target flags and show cards (e.g. `usage --unit X`).
-		return cmdUsageCards(args)
 	}
+
+	// No subcommand found — treat all args as target flags and show cards.
+	return cmdUsageCards(args)
 }
 
 // cmdUsageCards renders the summary cards for a targeted provider.
