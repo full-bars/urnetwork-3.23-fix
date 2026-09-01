@@ -57,3 +57,5 @@
 "[sb]ack miss sequence does not exist %s\n"
 "drop remote user nat provider s packet ->%s = %s\n"
 "drop remote user nat provider s packet ->%s\n"
+"[ip]client skip bad IpPacketFromProvider frame: %s\n"
+"[ip]provider skip bad IpPacketToProvider frame: %s\n"
