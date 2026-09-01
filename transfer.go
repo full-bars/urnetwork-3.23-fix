@@ -2351,7 +2351,7 @@ func (self *SendSequence) Run() {
 		sendTime := time.Now()
 		var timeout time.Duration
 
-		if self.resendQueue.Len() == 0 {
+		if self.resendQueue.IsEmpty() {
 			timeout = self.sendBufferSettings.IdleTimeout
 		} else {
 			timeout = self.sendBufferSettings.AckTimeout
@@ -2491,7 +2491,7 @@ func (self *SendSequence) Run() {
 				return
 			case <-ackSnapshot.ackNotify:
 			case <-idleTimer.C:
-				if 0 == self.resendQueue.Len() {
+				if self.resendQueue.IsEmpty() {
 					done := false
 					func() {
 						self.packMutex.Lock()
@@ -2533,7 +2533,7 @@ func (self *SendSequence) Run() {
 					return
 				}
 			case <-idleTimer.C:
-				if 0 == self.resendQueue.Len() {
+				if self.resendQueue.IsEmpty() {
 					done := false
 					func() {
 						self.packMutex.Lock()

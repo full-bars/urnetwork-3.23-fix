@@ -143,6 +143,12 @@ func (self *transferQueue[T]) Clear() []T {
 	return items
 }
 
+func (self *transferQueue[T]) IsEmpty() bool {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return len(self.orderedItems) == 0
+}
+
 func (self *transferQueue[T]) QueueSize() (int, ByteCount) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
