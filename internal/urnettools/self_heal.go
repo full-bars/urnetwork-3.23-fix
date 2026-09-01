@@ -98,24 +98,35 @@ func selfHealPathProvider(targetArgs []string) (*Provider, error) {
 }
 
 func writeSelfHeal(state string, targetArgs []string) error {
-	p, _ := selfHealPathProvider(targetArgs)
-	markerPath, err := selfHealPath(targetArgs)
-	if err != nil {
-		return err
+	// Resolve provider once (not twice via selfHealPathProvider + selfHealPath).
+	// When no target is given, p is nil and we fall through to the plain
+	// os.WriteFile path.
+	p, perr := selfHealPathProvider(targetArgs)
+	if perr != nil {
+		return perr
 	}
-	if err := os.MkdirAll(filepath.Dir(markerPath), 0o700); err != nil {
-		return err
-	}
-	// When a target was given and the path is inside StateDir, use
-	// writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks (C2).
-	if p != nil && p.StateDir != "" && strings.HasPrefix(markerPath, p.StateDir) {
-		rel, rerr := filepath.Rel(p.StateDir, markerPath)
-		if rerr == nil {
-			if err := writeStateFile(p.StateDir, rel, []byte(state+"\n"), 0o644); err != nil {
-				return err
-			}
+
+	// The marker is always proxy_self_heal inside the state dir.
+	const markerName = "proxy_self_heal"
+
+	if p != nil && p.StateDir != "" {
+		// Use writeStateFile for O_NOFOLLOW protection (C2 fix).
+		if err := writeStateFile(p.StateDir, markerName, []byte(state+"\n"), 0o644); err != nil {
+			return err
 		}
 	} else {
+		// Legacy path: no target, no provider discovery.
+		home := os.Getenv("HOME")
+		if home == "" {
+			home = os.Getenv("USERPROFILE")
+		}
+		if home == "" {
+			return fmt.Errorf("cannot resolve self-heal marker path: $HOME is not set")
+		}
+		markerPath := filepath.Join(home, ".urnetwork", markerName)
+		if err := os.MkdirAll(filepath.Dir(markerPath), 0o700); err != nil {
+			return err
+		}
 		if err := os.WriteFile(markerPath, []byte(state+"\n"), 0o644); err != nil {
 			return err
 		}
@@ -124,7 +135,7 @@ func writeSelfHeal(state string, targetArgs []string) error {
 	// legacy path (no target, no provider discovery) the file stays
 	// owned by the caller — that's the pre-H6 behavior.
 	if p != nil {
-		_ = chownLikeStateOwner(p.StateDir, markerPath)
+		_ = chownLikeStateOwner(p.StateDir, filepath.Join(p.StateDir, markerName))
 	}
 	if state == "on" {
 		fmt.Println("self-heal enabled (load gate + auto cleanup active)")
