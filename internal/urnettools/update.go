@@ -798,7 +798,7 @@ func extractSingleFile(tarball, relPath, dst string) error {
 func installBinary(src, dst, user string) error {
 	// M1 fix: use unpredictable temp name instead of predictable dst+".new"
 	// to prevent symlink-planting attacks by a lower-privileged user.
-	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "urnetwork-*.new-*")
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "urnetwork-new-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
