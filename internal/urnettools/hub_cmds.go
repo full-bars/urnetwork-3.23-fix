@@ -377,17 +377,19 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 
 // hubYesNo prompts for an explicit y/N on stderr and returns true only on yes.
 func hubYesNo(prompt string) bool {
+	// M6 fix: route through confirmStdinRead instead of raw os.Stdin.Read.
+	// The old code bypassed the shared stdinReader, risking buffered input
+	// desync and leaving unconsumed bytes that the next prompt would eat.
 	if !stdinIsInteractive() {
 		fmt.Fprintln(os.Stderr, "stdin is not a terminal; re-run with --force or --preview")
 		return false
 	}
-	fmt.Fprintf(os.Stderr, "%s ", prompt)
-	b := make([]byte, 1)
-	n, _ := os.Stdin.Read(b)
-	if n == 0 {
+	line, err := confirmStdinRead(prompt + " ")
+	if err != nil {
 		return false
 	}
-	return b[0] == 'y' || b[0] == 'Y'
+	line = strings.TrimSpace(line)
+	return strings.EqualFold(line, "y") || strings.EqualFold(line, "yes")
 }
 
 func confirmFingerprint(fp string) bool {

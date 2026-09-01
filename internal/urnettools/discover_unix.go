@@ -5,7 +5,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/user"
+	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -107,6 +107,20 @@ func discoverProcesses() []Provider {
 				break
 			}
 		}
+		// H3 fix: validate --state-dir from foreign process argv. An attacker
+		// can launch `exec -a provider ./x --state-dir=/home/victim` and the
+		// tool would pick up that state-dir, leading to root RemoveAll into
+		// an attacker-controlled path. Validate the path is under the
+		// resolved process owner's home directory.
+		if p.StateDir != "" && p.User != "" {
+			if u, uerr := osuser.Lookup(p.User); uerr == nil {
+				home := u.HomeDir
+				if home != "" && !strings.HasPrefix(filepath.Clean(p.StateDir), filepath.Clean(home)+string(filepath.Separator)) {
+					// Not under user's home — reject the foreign state-dir.
+					p.StateDir = ""
+				}
+			}
+		}
 		if p.StateDir == "" {
 			// No state dir resolvable (HOME unset). Skip the JWT read
 			// entirely rather than falling through to a relative "jwt"
@@ -136,7 +150,7 @@ func processOwner(pid int) (username, home string) {
 	if !ok {
 		return "", ""
 	}
-	u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+	u, err := osuser.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
 	if err != nil {
 		return "", ""
 	}
@@ -352,10 +366,10 @@ func discoverUserUnits(running []Provider) []Provider {
 
 // currentUserName returns the invoking user's login name, used to decide
 // whether a user-manager query needs -M <user>@ (cross-user) or can use the
-// local session bus. os/user.Current() is authoritative; USER/LOGNAME are a
+// local session bus. os/osuser.Current() is authoritative; USER/LOGNAME are a
 // fallback for stripped environments (non-login CI shells often lack them).
 func currentUserName() string {
-	if u, err := user.Current(); err == nil && u.Username != "" {
+	if u, err := osuser.Current(); err == nil && u.Username != "" {
 		return u.Username
 	}
 	if u := os.Getenv("USER"); u != "" {

@@ -822,7 +822,17 @@ func cmdHubInstall(p Provider, rest []string) error {
 	// The hub binary asset follows the provider release pattern.
 	tag := ""
 	if len(rest) > 0 {
-		tag = strings.TrimPrefix(rest[0], "--tag=")
+		// M4 fix: explicitly parse --tag=<v> or --tag <v>, reject unrecognized positionals.
+		if strings.HasPrefix(rest[0], "--tag=") {
+			tag = strings.TrimPrefix(rest[0], "--tag=")
+		} else if rest[0] == "--tag" && len(rest) > 1 {
+			tag = rest[1]
+		} else {
+			return fmt.Errorf("hub install: unrecognized argument %q (expected --tag=<version>)", rest[0])
+		}
+		if tag == "" {
+			return fmt.Errorf("hub install: --tag requires a non-empty value")
+		}
 	}
 	rel := (*releaseInfo)(nil)
 	if tag == "" {
