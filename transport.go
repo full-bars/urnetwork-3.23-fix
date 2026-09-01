@@ -713,6 +713,11 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 
 			success = true
+			// G-H2 fix: set a per-websocket read limit to prevent
+			// unbounded allocations from a malicious or misconfigured
+			// peer sending multi-gigabyte frames. 1MB is well above
+			// normal transfer frame sizes (IP packets up to ~64KB).
+			ws.SetReadLimit(1024 * 1024)
 			return ws, nil
 		}
 

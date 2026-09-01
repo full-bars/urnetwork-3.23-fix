@@ -3385,6 +3385,11 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 		return success
 	case SecurityPolicyResultDrop:
 		if self.LocalSecurityBypass() {
+			// G-M7 fix: nil guard — localUserNat can be nil in
+			// headless/minimal-relay configs.
+			if self.localUserNat == nil {
+				return false
+			}
 			return self.localUserNat.SendPacket(source, provideMode, packet, timeout)
 		} else {
 			return false
@@ -3437,7 +3442,10 @@ func (self *RemoteUserNatClient) Shuffle() {
 
 func (self *RemoteUserNatClient) Close() {
 	// self.client.RemoveReceiveCallback(self.clientCallbackId)
-	self.localUserNat.Close()
+	// G-M7 fix: nil guard for headless/minimal-relay configs.
+	if self.localUserNat != nil {
+		self.localUserNat.Close()
+	}
 	self.localUserNatUnsub()
 	self.clientUnsub()
 	if self.closeCallback != nil {
