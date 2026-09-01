@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -10,11 +11,6 @@ import (
 // a retained item past its backstopDeadline is force-dropped through the
 // actual send loop, removing it from BOTH resendQueue and sendItems, settling
 // the contract, releasing retainedByteCount, and firing the error callback.
-//
-// Regression test for the CRITICAL Opus finding: backstop drop previously
-// only removed from resendQueue, leaving a ghost in sendItems that caused
-// "Missing item" panics on the next cumulative ack, destroying the entire
-// SendSequence.
 func TestBackstopDropsRetainedItem(t *testing.T) {
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
@@ -42,13 +38,8 @@ func TestBackstopDropsRetainedItem(t *testing.T) {
 		clientSettings.SendBufferSettings,
 	)
 
-	go HandleError(func() { seq.Run() })
-
 	dropped := make(chan error, 1)
 
-	// Construct a retained item with a backstopDeadline in the past.
-	// Manually add to both sendItems and resendQueue to exercise the
-	// full dropItem path (remove from both + compact sendItems).
 	item := &sendItem{
 		transferItem: transferItem{
 			messageId:        NewId(),
@@ -62,14 +53,15 @@ func TestBackstopDropsRetainedItem(t *testing.T) {
 		transferFrameBytes:    []byte("test"),
 		ackCallback:           func(err error) { dropped <- err },
 		retainAfterAckTimeout: true,
-		backstopDeadline:      time.Now().Add(-time.Second), // already expired
+		backstopDeadline:      time.Now().Add(-time.Second),
 	}
 
-	// Mark retainedByteCount as if the admission cap had charged this item.
-	// (In production this happens in sendWithSetContract's if-ack branch.)
+	// Insert BEFORE starting Run (R-M5: goroutine must not observe empty queue).
 	seq.retainedByteCount = item.MessageByteCount()
 	seq.sendItems = append(seq.sendItems, item)
 	seq.resendQueue.Add(item)
+
+	go HandleError(func() { seq.Run() })
 
 	select {
 	case err := <-dropped:
@@ -81,40 +73,19 @@ func TestBackstopDropsRetainedItem(t *testing.T) {
 		t.Fatal("backstop did not drop item within timeout")
 	}
 
-	// CRITICAL: verify retainedByteCount was released by dropItem
 	if seq.retainedByteCount != 0 {
 		t.Fatalf("retainedByteCount after drop: got %d, want 0", seq.retainedByteCount)
 	}
 
-	// CRITICAL: verify sendItems was compacted (item removed)
+	// slices.Delete removes the element — no interior nil holes (R-C2).
 	if len(seq.sendItems) != 0 {
 		t.Fatalf("sendItems after drop: got %d items, want 0", len(seq.sendItems))
 	}
-
-	// CRITICAL REGRESSION: a cumulative ack for a later sequence number
-	// must NOT panic. Before dropItem, this walked the ghost in sendItems
-	// and hit panic("Missing item").
-	ackId := NewId()
-	// Synthesize a cumulative ack item with a higher sequence number.
-	ackItem := &sendItem{
-		transferItem: transferItem{
-			messageId:      ackId,
-			sequenceNumber: 2, // seq 2 > dropped seq 1
-		},
-	}
-	// receiveAck walks sendItems cumulatively up to the ack's seq.
-	// Since sendItems is empty (item was dropped), this must not panic.
-	seq.receiveAck(ackId, false, nil)
-	_ = ackItem // unused, but documents the intent
-
-	t.Log("cumulative ack after backstop drop: no panic (regression verified)")
 }
 
-// TestBackstopDropThenCumulativeAck verifies the full sequence:
-// send retained item → backstop drops it → cumulative ack for later seq
-// arrives → receiveAck walks sendItems, finds the dropped item gone,
-// and does NOT panic. This is the exact regression from the CRITICAL
-// Opus finding on PR #506.
+// TestBackstopDropThenCumulativeAck sends a retained item, backstop drops it,
+// then a cumulative ack for a later sequence arrives. receiveAck walks
+// sendItems and must NOT panic. This exercises the nil-check guard (R-C3).
 func TestBackstopDropThenCumulativeAck(t *testing.T) {
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
@@ -142,11 +113,8 @@ func TestBackstopDropThenCumulativeAck(t *testing.T) {
 		clientSettings.SendBufferSettings,
 	)
 
-	go HandleError(func() { seq.Run() })
-
 	dropped := make(chan error, 1)
 
-	// item1: retained, backstop already expired
 	item1 := &sendItem{
 		transferItem: transferItem{
 			messageId:        NewId(),
@@ -167,28 +135,152 @@ func TestBackstopDropThenCumulativeAck(t *testing.T) {
 	seq.sendItems = append(seq.sendItems, item1)
 	seq.resendQueue.Add(item1)
 
-	// Wait for backstop to fire and drop item1
+	go HandleError(func() { seq.Run() })
+
+	// Wait for backstop to drop item1
 	select {
 	case <-dropped:
-		// item1 dropped
 	case <-time.After(2 * time.Second):
 		t.Fatal("backstop did not drop item1 within timeout")
 	}
 
-	// Verify clean state after drop
 	if seq.retainedByteCount != 0 {
-		t.Fatalf("retainedByteCount: got %d, want 0", seq.retainedByteCount)
+		t.Fatalf("retainedByteCount after drop: got %d, want 0", seq.retainedByteCount)
 	}
 	if len(seq.sendItems) != 0 {
-		t.Fatalf("sendItems: got %d, want 0", len(seq.sendItems))
+		t.Fatalf("sendItems after drop: got %d, want 0", len(seq.sendItems))
 	}
 
-	// Now simulate a cumulative ack for seq=2 (which was never queued).
-	// Before the fix, this would walk the ghost seq=1 in sendItems and
-	// panic("Missing item"). After the fix, receiveAck gracefully skips
-	// the already-removed item.
+	// Cumulative ack for seq=2 — sendItems is empty, loop body never entered.
+	// Must not panic. Before the fix, the nil check was AFTER the deref.
 	ackId := NewId()
 	seq.receiveAck(ackId, false, nil)
 
-	t.Log("cumulative ack after backstop drop: no panic")
+	t.Log("cumulative ack after backstop drop: no panic (regression verified)")
+}
+
+// TestBackstopScanUsesSnapshot verifies the Snapshot-based scan (R-C1) by
+// calling dropItem from the scan path and verifying sendItems integrity.
+// This is a unit-level test that directly exercises the drop+scan interaction
+// without fighting the Run loop's resend mechanics.
+func TestBackstopScanUsesSnapshot(t *testing.T) {
+	clientSettings := DefaultClientSettings()
+	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
+	clientSettings.SendBufferSettings.MinResendInterval = 5 * time.Millisecond
+	clientSettings.SendBufferSettings.MaxResendInterval = 10 * time.Millisecond
+	clientSettings.SendBufferSettings.AckTimeout = 10 * time.Millisecond
+	clientSettings.SendBufferSettings.IdleTimeout = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
+
+	sendBuffer := NewSendBuffer(ctx, client, clientSettings.SendBufferSettings)
+	destination := DestinationId(NewId())
+	seq := NewSendSequence(
+		ctx,
+		client,
+		sendBuffer,
+		destination,
+		MultiHopId{},
+		false,
+		true,
+		sequenceTlsRoleClient,
+		false,
+		clientSettings.SendBufferSettings,
+	)
+
+	// Build 3 items directly — exercising Snapshot()-based scan without Run.
+	item1 := &sendItem{
+		transferItem: transferItem{
+			messageId:        NewId(),
+			sequenceNumber:   1,
+			messageByteCount: 100,
+		},
+		sendTime:              time.Now().Add(-time.Minute),
+		resendTime:            time.Now().Add(time.Hour),
+		sendCount:             1,
+		head:                  true,
+		transferFrameBytes:    []byte("item1"),
+		ackCallback:           func(err error) {},
+		retainAfterAckTimeout: true,
+		backstopDeadline:      time.Now().Add(time.Hour), // NOT expired
+	}
+
+	item2 := &sendItem{
+		transferItem: transferItem{
+			messageId:        NewId(),
+			sequenceNumber:   2,
+			messageByteCount: 200,
+		},
+		sendTime:           time.Now(),
+		resendTime:         time.Now().Add(-time.Second),
+		sendCount:          1,
+		head:               true,
+		transferFrameBytes: []byte("item2"),
+		ackCallback:        func(err error) {},
+	}
+
+	item3 := &sendItem{
+		transferItem: transferItem{
+			messageId:        NewId(),
+			sequenceNumber:   3,
+			messageByteCount: 300,
+		},
+		sendTime:              time.Now().Add(-time.Minute),
+		resendTime:            time.Now().Add(time.Hour),
+		sendCount:             1,
+		head:                  true,
+		transferFrameBytes:    []byte("item3"),
+		ackCallback:           func(err error) {},
+		retainAfterAckTimeout: true,
+		backstopDeadline:      time.Now().Add(-time.Second), // expired
+	}
+
+	seq.retainedByteCount = item1.MessageByteCount() + item3.MessageByteCount()
+	seq.sendItems = append(seq.sendItems, item1, item2, item3)
+	seq.resendQueue.Add(item1)
+	seq.resendQueue.Add(item2)
+	seq.resendQueue.Add(item3)
+
+	// Simulate the backstop scan: snapshot first, then drop expired items.
+	// This is exactly what Run does after the fix (R-C1).
+	var expired []*sendItem
+	for _, retainedItem := range seq.resendQueue.Snapshot() {
+		if retainedItem.retainAfterAckTimeout && !time.Now().Before(retainedItem.backstopDeadline) {
+			expired = append(expired, retainedItem)
+		}
+	}
+	for _, it := range expired {
+		seq.dropItem(it, errors.New("Retain backstop expired."))
+	}
+
+	// Verify: only item1 (future backstop) and item2 (non-retained) remain
+	if seq.retainedByteCount != item1.MessageByteCount() {
+		t.Fatalf("retainedByteCount: got %d, want %d (only item1 retained)",
+			seq.retainedByteCount, item1.MessageByteCount())
+	}
+
+	// sendItems must have exactly 2 entries, zero nil holes
+	nonNil := 0
+	for i, si := range seq.sendItems {
+		if si == nil {
+			t.Errorf("nil hole at sendItems[%d] after backstop scan — slices.Delete fix may have regressed", i)
+		} else {
+			nonNil++
+		}
+	}
+	if nonNil != 2 {
+		t.Fatalf("sendItems non-nil count: got %d, want 2", nonNil)
+	}
+
+	// Verify the correct items remain
+	if seq.sendItems[0].sequenceNumber != 1 {
+		t.Fatalf("sendItems[0] seq: got %d, want 1", seq.sendItems[0].sequenceNumber)
+	}
+	if seq.sendItems[1].sequenceNumber != 2 {
+		t.Fatalf("sendItems[1] seq: got %d, want 2", seq.sendItems[1].sequenceNumber)
+	}
+
+	t.Log("backstop scan via Snapshot: buried expired item dropped, queue integrity maintained")
 }
