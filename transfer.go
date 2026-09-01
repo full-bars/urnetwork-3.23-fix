@@ -2461,7 +2461,14 @@ func (self *SendSequence) Run() {
 		// so retained items buried behind not-yet-due items are never
 		// examined. This separate scan ensures every retained item past its
 		// backstopDeadline is dropped, regardless of queue position.
-		for _, retainedItem := range self.resendQueue.orderedItems {
+		//
+		// Snapshot first, mutate second: dropItem calls heap.Remove which
+		// reorders orderedItems via Swap and writes nil into the vacated
+		// slot. Ranging over orderedItems while mutating it causes nil
+		// derefs, double-drops, and missed items. The snapshot is taken
+		// under stateLock via Snapshot(), so the iteration sees a consistent
+		// view while dropItem takes its own lock per removal.
+		for _, retainedItem := range self.resendQueue.Snapshot() {
 			if retainedItem.retainAfterAckTimeout && !sendTime.Before(retainedItem.backstopDeadline) {
 				if v := self.log.V(1); v.Enabled() {
 					v.Infof("[s]%s->%s...%s s(%s) retain backstop expired (scan), dropping retained item %x (sendCount=%d)\n",
@@ -3183,6 +3190,16 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 	i := 0
 	for ; i < len(self.sendItems); i += 1 {
 		implicitItem := self.sendItems[i]
+		// Nil check BEFORE any field access: dropItem uses slices.Delete
+		// which removes the element, so this should not normally see nil.
+		// But a defensive check here prevents a panic if any code path
+		// leaves a hole — the old nil+compact approach did exactly that.
+		if implicitItem == nil {
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[s]ack %d <> slot %d (nil, skip) %s->%s...%s s(%s)\n", item.sequenceNumber, i, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			}
+			continue
+		}
 		if item.sequenceNumber < implicitItem.sequenceNumber {
 			if v := self.log.V(2); v.Enabled() {
 				v.Infof("[s]ack %d <> %d/%d (stop) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber-1, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
@@ -3194,19 +3211,6 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		var b ByteCount
 		if self.log.V(2).Enabled() {
 			a, b = self.resendQueue.QueueSize()
-		}
-
-		// self.ackedSequenceNumbers[implicitItem.sequenceNumber] = true
-		// Item may have been removed from resendQueue by a backstop drop
-		// (via dropItem) before this cumulative ack arrived. In that case
-		// the slot in sendItems is already nil (or gone) and the contract
-		// + callback were already settled. Skip gracefully — the panic on
-		// nil was the CRITICAL bug fixed by dropItem.
-		if implicitItem == nil {
-			if v := self.log.V(2); v.Enabled() {
-				v.Infof("[s]ack %d <> %d (skip nil slot, already dropped) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
-			}
-			continue
 		}
 		removed := self.resendQueue.RemoveByMessageId(implicitItem.messageId)
 		if removed == nil {
@@ -3272,22 +3276,23 @@ func (self *SendSequence) ackItem(item *sendItem) {
 // This prevents the sendItems desync that caused "Missing item" panics
 // when a backstop-dropped item was later walked by a cumulative ack.
 func (self *SendSequence) dropItem(item *sendItem, err error) {
-	self.resendQueue.RemoveByMessageId(item.messageId)
+	// Idempotent: if the item is already gone from the queue, the
+	// contract/callback/retained-byte-count were already settled by the
+	// first drop. Bail out to avoid double-ack, double-pool-return, and
+	// negative retainedByteCount.
+	if self.resendQueue.RemoveByMessageId(item.messageId) == nil {
+		return
+	}
 
-	// compact sendItems: find and nil the slot, then shrink the slice
+	// Remove from sendItems via slices.Delete (not nil+compact-trailing)
+	// so there are never interior nil holes. The old nil+compact approach
+	// only removed trailing nils, leaving interior holes that caused nil
+	// derefs in the cumulative-ack walk and the resend loop.
 	for i, si := range self.sendItems {
 		if si == item {
-			self.sendItems[i] = nil
+			self.sendItems = slices.Delete(self.sendItems, i, i+1)
 			break
 		}
-	}
-	// compact trailing nils
-	j := len(self.sendItems)
-	for j > 0 && self.sendItems[j-1] == nil {
-		j--
-	}
-	if j < len(self.sendItems) {
-		self.sendItems = self.sendItems[:j]
 	}
 
 	// release retained byte budget
