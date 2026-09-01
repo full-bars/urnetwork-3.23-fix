@@ -265,7 +265,9 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 	// regardless of size, breaking real session bundles (7-8 files).
 	const maxEntry = 64 << 20
 	const maxTotal = 256 << 20
+	const maxEntries = 4096
 	var totalBytes int64
+	var entryCount int
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -274,13 +276,25 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 		if err != nil {
 			return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
 		}
-		// Cap each entry's size — a corrupted bundle with a misleading
-		// Content-Length-equivalent in the tar header cannot exhaust
-		// memory. 64 MiB is well above any session file's real size.
-		lr := io.LimitReader(tr, maxEntry)
+		// Cap each entry's size and REJECT an oversized one rather than
+		// silently truncating it (a corrupted bundle with a misleading
+		// header size must not decrypt to a different file than authored).
+		// Read maxEntry+1 so we can distinguish "exactly maxEntry" from
+		// "ran past it"; the header's declared size is not trusted.
+		lr := io.LimitReader(tr, maxEntry+1)
 		data, err := io.ReadAll(lr)
 		if err != nil {
 			return nil, err
+		}
+		if len(data) > maxEntry {
+			return nil, fmt.Errorf("session archive entry %q exceeds %d bytes", hdr.Name, maxEntry)
+		}
+		// Bound the number of entries so a zip-bomb archive with many tiny
+		// files cannot exhaust memory via map growth (defense in depth on
+		// the legacy unauthenticated v1 bundle format).
+		entryCount++
+		if entryCount > maxEntries {
+			return nil, fmt.Errorf("session archive has too many entries: > %d", maxEntries)
 		}
 		totalBytes += int64(len(data))
 		if totalBytes > maxTotal {
@@ -569,7 +583,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 			}
 			return "", fmt.Errorf("backup %s: %v", name, err) // unreadable/perm: fail, do not silently skip (MEDIUM)
 		}
-		if err := os.WriteFile(filepath.Join(backupDir, name), b, 0o600); err != nil {
+		if err := writeStateFile(backupDir, name, b, 0o600); err != nil {
 			return "", fmt.Errorf("backup %s: %v", name, err)
 		}
 		if err := chownLikeStateOwner(p.StateDir, filepath.Join(backupDir, name)); err != nil {
@@ -591,7 +605,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	}
 	for _, name := range sessionFiles {
 		if data, ok := files[name]; ok {
-			if err := os.WriteFile(filepath.Join(stagingDir, name), data, 0o600); err != nil {
+			if err := writeStateFile(stagingDir, name, data, 0o600); err != nil {
 				return "", err
 			}
 			if err := chownLikeStateOwner(p.StateDir, filepath.Join(stagingDir, name)); err != nil {
@@ -600,7 +614,7 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 		}
 	}
 	pending := filepath.Join(p.StateDir, ".session-pending")
-	if err := os.WriteFile(pending, []byte{}, 0o600); err != nil {
+	if err := writeStateFile(p.StateDir, ".session-pending", []byte{}, 0o600); err != nil {
 		return "", err
 	}
 	if err := chownLikeStateOwner(p.StateDir, pending); err != nil {

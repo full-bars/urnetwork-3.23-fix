@@ -591,8 +591,10 @@ func cmdHubInit(p Provider, password string) error {
 		if len(password) < 8 {
 			return fmt.Errorf("hub password must be at least 8 characters (got %d)", len(password))
 		}
+		// writeStateFile uses O_NOFOLLOW so a symlink at the target is
+		// rejected rather than followed (C2 symlink-attack protection).
 		passPath := filepath.Join(dir, "hub.password")
-		if err := os.WriteFile(passPath, []byte(password), 0o600); err != nil {
+		if err := writeStateFile(dir, "hub.password", []byte(password), 0o600); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(dir, passPath); err != nil {
@@ -605,7 +607,7 @@ func cmdHubInit(p Provider, password string) error {
 			return err
 		}
 		tmp := filepath.Join(dir, "hub.salt.tmp")
-		if err := os.WriteFile(tmp, []byte(hex.EncodeToString(salt)), 0o600); err != nil {
+		if err := writeStateFile(dir, "hub.salt.tmp", []byte(hex.EncodeToString(salt)), 0o600); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(dir, tmp); err != nil {
@@ -628,7 +630,9 @@ func cmdHubInit(p Provider, password string) error {
 		return err
 	}
 	tlsConf := filepath.Join(dropDir, "tls.conf")
-	if err := os.WriteFile(tlsConf, []byte("[Service]\nEnvironment=\"URNETWORK_HUB_TLS_ADDR=:8443\"\n"), 0o644); err != nil {
+	// writeStateFile rejects a symlink at the target (O_NOFOLLOW), so a
+	// compromised drop-in dir cannot redirect the write to an arbitrary file.
+	if err := writeStateFile(dropDir, "tls.conf", []byte("[Service]\nEnvironment=\"URNETWORK_HUB_TLS_ADDR=:8443\"\n"), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("Wrote %s\n", tlsConf)
