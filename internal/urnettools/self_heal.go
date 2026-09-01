@@ -80,27 +80,51 @@ func selfHealPath(targetArgs []string) (string, error) {
 	return selfHealMarkerPath(p)
 }
 
+// selfHealPathProvider resolves the target provider from targetArgs.
+// Returns nil when no target is given (legacy path).
+func selfHealPathProvider(targetArgs []string) (*Provider, error) {
+	if len(targetArgs) == 0 {
+		return nil, nil
+	}
+	t, _, err := parseTargetFlags(targetArgs)
+	if err != nil {
+		return nil, err
+	}
+	p, err := selectTarget(lifecycleCandidates(t), t)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func writeSelfHeal(state string, targetArgs []string) error {
-	path, err := selfHealPath(targetArgs)
+	p, _ := selfHealPathProvider(targetArgs)
+	markerPath, err := selfHealPath(targetArgs)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(state+"\n"), 0o644); err != nil {
-		return err
+	// When a target was given and the path is inside StateDir, use
+	// writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks (C2).
+	if p != nil && p.StateDir != "" && strings.HasPrefix(markerPath, p.StateDir) {
+		rel, rerr := filepath.Rel(p.StateDir, markerPath)
+		if rerr == nil {
+			if err := writeStateFile(p.StateDir, rel, []byte(state+"\n"), 0o644); err != nil {
+				return err
+			}
+		}
+	} else {
+		if err := os.WriteFile(markerPath, []byte(state+"\n"), 0o644); err != nil {
+			return err
+		}
 	}
 	// When a target was given, chown to the provider's user. For the
 	// legacy path (no target, no provider discovery) the file stays
 	// owned by the caller — that's the pre-H6 behavior.
-	if len(targetArgs) > 0 {
-		t, _, err := parseTargetFlags(targetArgs)
-		if err == nil {
-			if p, err := selectTarget(lifecycleCandidates(t), t); err == nil {
-				_ = chownLikeStateOwner(p.StateDir, path)
-			}
-		}
+	if p != nil {
+		_ = chownLikeStateOwner(p.StateDir, markerPath)
 	}
 	if state == "on" {
 		fmt.Println("self-heal enabled (load gate + auto cleanup active)")
@@ -111,14 +135,11 @@ func writeSelfHeal(state string, targetArgs []string) error {
 }
 
 func showSelfHeal(targetArgs []string) error {
-	path, err := selfHealPath(targetArgs)
+	markerPath, err := selfHealPath(targetArgs)
 	if err != nil {
 		return err
 	}
-	if err != nil {
-		return err
-	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(markerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)")

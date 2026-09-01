@@ -250,8 +250,8 @@ func decryptUntarV1(raw []byte, pass string) (map[string][]byte, error) {
 }
 
 // untarGz decompresses the inner gzip tar and returns a name->bytes map.
-// It bounds the entry size via io.LimitReader so a crafted bundle cannot
-// OOM the tool on read.
+// It bounds entry size and total decompressed bytes so a crafted bundle
+// cannot OOM the tool on read.
 func untarGz(pt []byte) (map[string][]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(pt))
 	if err != nil {
@@ -260,6 +260,12 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	files := map[string][]byte{}
+	// H1 fix: track actual decompressed bytes, not entry count × maxEntry.
+	// The old formula `len(files)*maxEntry > maxTotal` capped at 5 entries
+	// regardless of size, breaking real session bundles (7-8 files).
+	const maxEntry = 64 << 20
+	const maxTotal = 256 << 20
+	var totalBytes int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -271,17 +277,14 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 		// Cap each entry's size — a corrupted bundle with a misleading
 		// Content-Length-equivalent in the tar header cannot exhaust
 		// memory. 64 MiB is well above any session file's real size.
-		const maxEntry = 64 << 20
-		// Cap the total decompressed archive at 256 MiB (4+ entries of
-		// maxEntry size) so a bundle with many members is still bounded.
-		const maxTotal = 256 << 20
-		if int64(len(files))*maxEntry > maxTotal {
-			return nil, fmt.Errorf("session archive too large: > %d entries", maxTotal/maxEntry)
-		}
 		lr := io.LimitReader(tr, maxEntry)
 		data, err := io.ReadAll(lr)
 		if err != nil {
 			return nil, err
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxTotal {
+			return nil, fmt.Errorf("session archive too large: > %d bytes decompressed", maxTotal)
 		}
 		files[hdr.Name] = data
 	}
@@ -448,7 +451,8 @@ Examples:
 	}
 	switch action {
 	case "save":
-		return cmdSessionSave(p, file)
+		// M5 fix: thread dryRun and force into cmdSessionSave.
+		return cmdSessionSave(p, file, dryRun, force)
 	case "load":
 		return cmdSessionLoad(p, file, force, dryRun, allowDiff)
 	default:
@@ -457,8 +461,13 @@ Examples:
 }
 
 // cmdSessionSave encrypts the provider's identity files into outFile.
-func cmdSessionSave(p Provider, outFile string) error {
+func cmdSessionSave(p Provider, outFile string, dryRun, force bool) error {
 	fmt.Fprintln(os.Stderr, "WARNING: this bundle contains full identity and reputation credentials for this provider. Treat it like a password.")
+	if dryRun {
+		files := collectSessionFiles(p.StateDir)
+		fmt.Printf("[dry-run] would save %d session files from %s to %s\n", len(files), p.StateDir, outFile)
+		return nil
+	}
 	pass, err := readPassphrase("Enter encryption passphrase (will not echo): ")
 	if err != nil {
 		return err
@@ -479,10 +488,12 @@ func cmdSessionSave(p Provider, outFile string) error {
 	}
 	// Refuse to clobber an existing destination silently (running as root,
 	// os.WriteFile truncates whatever path is named). Require an explicit yes
-	// to overwrite.
-	if _, err := os.Stat(outFile); err == nil {
-		if !readYesNo("destination already exists — overwrite? (y/n):") {
-			return fmt.Errorf("aborted; %s already exists", outFile)
+	// to overwrite, unless --force is set.
+	if !force {
+		if _, err := os.Stat(outFile); err == nil {
+			if !readYesNo("destination already exists — overwrite? (y/n):") {
+				return fmt.Errorf("aborted; %s already exists", outFile)
+			}
 		}
 	}
 	bundle, err := tarAndEncrypt(files, pass)

@@ -926,6 +926,22 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 	}
 	mode := args[0]
 	rest := args[1:]
+
+	// H4 fix: validate mode against per-profile allowlist before doing anything.
+	// Without this, `urnet-tools turbo v8x` silently disables turbo (typo → opposite action).
+	switch profile {
+	case "turbo":
+		if mode != "v4" && mode != "v8" && mode != "off" {
+			return fmt.Errorf("turbo mode must be v4, v8, or off — got %q", mode)
+		}
+	case "ramlogs", "eco", "lowmode", "auto":
+		if mode != "on" && mode != "off" {
+			return fmt.Errorf("%s mode must be on or off — got %q", profile, mode)
+		}
+	default:
+		return fmt.Errorf("unknown profile %q", profile)
+	}
+
 	t, _, err := parseTargetFlags(rest)
 	if err != nil {
 		return err

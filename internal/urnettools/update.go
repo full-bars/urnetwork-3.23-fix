@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -770,26 +771,39 @@ func extractSingleFile(tarball, relPath, dst string) error {
 // installBinary copies src to dst preserving ownership for the given user,
 // then atomically renames into place.
 //
-// The write goes to dst+".new" (same directory, so same filesystem) and is
-// os.Rename'd over dst — never O_TRUNC in place. The running provider may
-// still be executing from dst during an update; overwriting that inode in
-// place risks SIGBUS/SIGSEGV on demand-paging, while
-// rename(2) leaves the old inode serving already-open processes and only
-// new execve's see the new file.
+// installBinary stages a new binary from src to dst using an unpredictable
+// temp name (os.CreateTemp) to prevent symlink-planting attacks. The write
+// goes to a temp file (same filesystem) and is os.Rename'd over dst — never
+// O_TRUNC in place. The running provider may still be executing from dst
+// during an update; overwriting that inode in place risks SIGBUS/SIGSEGV on
+// demand-paging, while rename(2) leaves the old inode serving already-open
+// processes and only new execve's see the new file.
 func installBinary(src, dst, user string) error {
-	newPath := dst + ".new"
+	// M1 fix: use unpredictable temp name instead of predictable dst+".new"
+	// to prevent symlink-planting attacks by a lower-privileged user.
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "urnetwork-*.new-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	newPath := tmpFile.Name()
+	tmpFile.Close() // close before copyFile reopens for writing
+
 	if err := copyFile(src, newPath); err != nil {
+		os.Remove(newPath)
 		return err
 	}
 	if err := os.Chmod(newPath, 0o755); err != nil {
+		os.Remove(newPath)
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
+			os.Remove(newPath)
 			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
 		if err := os.Chown(newPath, uid, gid); err != nil {
+			os.Remove(newPath)
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
 	}
@@ -917,7 +931,8 @@ func runningToolAssetName() (string, error) {
 
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
-	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, asset)
+	// M3 fix: escape tag in download URL to prevent path traversal.
+	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", url.PathEscape(tag), asset)
 }
 
 // selfUpdateTool updates the running tool binary (urnet-tools or

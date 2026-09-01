@@ -305,13 +305,33 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 
 	// TOFU must shout on identity CHANGE, not just on first trust: if a
 	// different hub/CA is already trusted, require an explicit typed yes even
-	// under --force (review MEDIUM).
+	// under --force (review MEDIUM). Check BOTH hub_ca.pem and hub.pin —
+	// the node may have been originally trusted via pin-only (H5 fix).
+	identityChanged := false
+	var oldFp string
 	if existing, err := os.ReadFile(caFile); err == nil {
-		if oldFp, ferr := pemFingerprint(string(existing)); ferr == nil && oldFp != "" && oldFp != fp {
-			fmt.Fprintf(os.Stderr, "WARNING: hub identity changed (was %s, now %s)\n", oldFp, fp)
-			if !explicitYes("type 'yes' to replace the changed hub trust: ") {
-				return fmt.Errorf("aborted; hub identity changed")
+		if f, ferr := pemFingerprint(string(existing)); ferr == nil && f != "" {
+			oldFp = f
+			if f != fp {
+				identityChanged = true
 			}
+		}
+	}
+	if !identityChanged {
+		if existing, err := os.ReadFile(pinFile); err == nil {
+			pinFp := strings.TrimSpace(string(existing))
+			if pinFp != "" && pinFp != fp {
+				identityChanged = true
+				if oldFp == "" {
+					oldFp = pinFp
+				}
+			}
+		}
+	}
+	if identityChanged {
+		fmt.Fprintf(os.Stderr, "WARNING: hub identity changed (was %s, now %s)\n", oldFp, fp)
+		if !explicitYes("type 'yes' to replace the changed hub trust: ") {
+			return fmt.Errorf("aborted; hub identity changed")
 		}
 	}
 
@@ -371,11 +391,17 @@ func hubYesNo(prompt string) bool {
 }
 
 func confirmFingerprint(fp string) bool {
+	// H5 fix: show the actual fingerprint in the prompt instead of discarding it.
+	if fp != "" {
+		return hubYesNo(fmt.Sprintf("Accept this hub fingerprint? %s (y/n)", fp))
+	}
 	return hubYesNo("Accept this hub fingerprint? (y/n)")
 }
 
 func acceptFingerprintPrompt() bool {
-	return confirmFingerprint("")
+	// acceptFingerprintPrompt is called when we don't have the fingerprint
+	// to display — caller should use confirmFingerprint directly when possible.
+	return hubYesNo("Accept this hub fingerprint? (y/n)")
 }
 
 // cmdHubTest verifies TLS to the hub at url (or the configured report URL),
