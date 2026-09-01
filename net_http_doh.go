@@ -486,6 +486,7 @@ func (self *DohCache) Close() {
 // silently defeats serve-stale (RFC 8767) for every other key. The caller
 // must hold stateLock.
 func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
+	// Phase 1: delete expired + stale entries (O(n))
 	for key, result := range self.queryResultExpiration {
 		if !result.Valid(now, self.settings.MissExpiration) && !result.staleUsable(now) {
 			delete(self.queryResultExpiration, key)
@@ -493,21 +494,26 @@ func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
 	}
 
 	maxEntries := self.settings.CacheMaxEntries
-	for maxEntries < len(self.queryResultExpiration)+reserve {
-		var oldestKey DohKey
-		var oldestTime time.Time
-		found := false
-		for key, result := range self.queryResultExpiration {
-			if !found || result.Time.Before(oldestTime) {
-				oldestKey = key
-				oldestTime = result.Time
-				found = true
-			}
-		}
-		if !found {
-			return
-		}
-		delete(self.queryResultExpiration, oldestKey)
+	excess := len(self.queryResultExpiration) + reserve - maxEntries
+	if excess <= 0 {
+		return
+	}
+
+	// Phase 2: collect remaining entries, sort by time, evict oldest.
+	// O(n log n) instead of the previous O(n²) repeated full-scan loop.
+	type timedEntry struct {
+		key  DohKey
+		time time.Time
+	}
+	entries := make([]timedEntry, 0, len(self.queryResultExpiration))
+	for key, result := range self.queryResultExpiration {
+		entries = append(entries, timedEntry{key, result.Time})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].time.Before(entries[j].time)
+	})
+	for i := 0; i < excess && i < len(entries); i++ {
+		delete(self.queryResultExpiration, entries[i].key)
 	}
 }
 
