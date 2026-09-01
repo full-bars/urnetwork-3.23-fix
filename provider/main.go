@@ -731,6 +731,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
+    provider direct <on|off>
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> <connect_url>
@@ -862,6 +863,8 @@ Options:
 		printNetworkIdCmd(opts)
 	} else if chooseNetwork, _ := opts.Bool("choose_network"); chooseNetwork {
 		chooseNetworkCmd(opts)
+	} else if direct_, _ := opts.Bool("direct"); direct_ {
+		cmdDirect(opts)
 	}
 }
 
@@ -3144,20 +3147,35 @@ func provide(opts docopt.Opts) {
 		return false
 	})
 
-	// ALWAYS start the native [direct] connection as proxy[0].
-	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
-	wg.Add(1)
-	nativeCtx, nativeCancel := context.WithCancel(ctx)
-	// We don't add nativeCancel to the proxyCancelMap so it is immune to hot-reload deletions.
-	go connect.HandleError(func() {
-		defer wg.Done()
-		defer nativeCancel()
-		defer connect.UnregisterProxy(0)
+	// Start the native [direct] connection as proxy[0] unless the operator
+	// has explicitly disabled it. Precedence (highest to lowest):
+	//   1. Runtime toggle file ~/.urnetwork/direct (set via `provider direct off|on`)
+	//   2. DISABLE_DIRECT_IP=1 env var (startup-only default)
+	// The toggle file always wins — `provider direct on` re-enables direct
+	// even if the env var was set, and vice versa.
+	noDirect := !isDirectEnabled()
+	if !noDirect {
+		// ALWAYS start the native [direct] connection as proxy[0].
+		// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
+		wg.Add(1)
+		nativeCtx, nativeCancel := context.WithCancel(ctx)
+		// Register nativeCancel in the reloader's cancelMap under the special
+		// key "direct" so reload() can hot-toggle it via `provider direct off|on`.
+		proxyCancelMu.Lock()
+		proxyCancelMap[directProxyKey] = nativeCancel
+		proxyCancelMu.Unlock()
+		go connect.HandleError(func() {
+			defer wg.Done()
+			defer nativeCancel()
+			defer connect.UnregisterProxy(0)
 
-		// Register it early so it shows up in health reports immediately as [direct]
-		connect.RegisterProxy(0, "direct")
-		provideWithProxy(nativeCtx, nil, true, false)
-	})
+			// Register it early so it shows up in health reports immediately as [direct]
+			connect.RegisterProxy(0, "direct")
+			provideWithProxy(nativeCtx, nil, true, false)
+		})
+	} else {
+		tlog("[no-direct] providing on direct/local IP is disabled; using proxy list only\n")
+	}
 
 	// Persist the initial state snapshot now that all IDs are resolved.
 	proxyState.NextID = currentProxyIDCounter()

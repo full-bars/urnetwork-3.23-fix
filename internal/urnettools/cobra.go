@@ -57,6 +57,7 @@ Proxy Management:
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
+  direct [on|off]         Toggle providing on the machine's direct/local IP
 
 Hub Management:
   hub init                        Initialize hub and generate CA certificate
@@ -155,6 +156,7 @@ func buildRootCmd() *cobra.Command {
 		newAuthCmd(),
 		newChooseNetworkCmd(),
 		newProxyCmd(),
+		newDirectCmd(),
 		newReportCmd(),
 		newHubCmd(),
 		newReinstallCmd(),
