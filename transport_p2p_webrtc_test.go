@@ -48,40 +48,74 @@ func TestWebRtc(t *testing.T) {
 	b := make([]byte, 1024*1024)
 	mathrand.Read(b)
 
-	received := make(chan []byte)
+	received := make(chan []byte, 2)
+	sendErr := make(chan error, 2)
+	recvErr := make(chan error, 2)
 
+	// send/receive take an error-returning conn and report result on the
+	// provided channels. Avoids panic-ing inside a goroutine (which would
+	// crash the whole `go test` process under the CI retry harness) and
+	// serializes per-direction traffic so the same conn is never read and
+	// written concurrently — a concurrent read+write+Close on one p2pConn
+	// races the underlying SCTP data channel into "file already closed".
 	send := func(conn net.Conn) {
-		_, err := conn.Write(b)
+		n, err := conn.Write(b)
 		if err != nil {
-			panic(err)
+			sendErr <- fmt.Errorf("write %d: %w", n, err)
+			return
 		}
+		sendErr <- nil
 	}
 	receive := func(conn net.Conn) {
 		b2 := make([]byte, len(b))
-		_, err := io.ReadFull(conn, b2)
+		n, err := io.ReadFull(conn, b2)
 		if err != nil {
-			panic(err)
+			recvErr <- fmt.Errorf("read %d: %w", n, err)
+			return
 		}
+		recvErr <- nil
+		b2 = b2[:n]
 		select {
 		case <-ctx.Done():
-		case received <- b2:
+			recvErr <- ctx.Err()
+		default:
+			received <- b2
 		}
 	}
 
+	// A->B: write on connA, read on connB
 	go send(connA)
-	go receive(connA)
-	go send(connB)
 	go receive(connB)
-
-	for range 2 {
-		select {
-		case <-ctx.Done():
-			panic("Timeout.")
-		case b2 := <-received:
-			assert.Equal(t, b, b2)
+	if e := <-sendErr; e != nil {
+		t.Fatalf("A->B send: %v", e)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("timeout A->B recv")
+	case e := <-recvErr:
+		if e != nil {
+			t.Fatalf("A->B recv: %v", e)
 		}
+	case b2 := <-received:
+		assert.Equal(t, b, b2)
 	}
 
+	// B->A: write on connB, read on connA (reverse direction)
+	go send(connB)
+	go receive(connA)
+	if e := <-sendErr; e != nil {
+		t.Fatalf("B->A send: %v", e)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("timeout B->A recv")
+	case e := <-recvErr:
+		if e != nil {
+			t.Fatalf("B->A recv: %v", e)
+		}
+	case b2 := <-received:
+		assert.Equal(t, b, b2)
+	}
 }
 
 // TestWebRtcMessageRoundTrip verifies the P2P transport's native message
