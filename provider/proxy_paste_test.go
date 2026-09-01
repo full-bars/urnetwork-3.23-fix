@@ -229,6 +229,11 @@ func TestRedactProxyLine(t *testing.T) {
 	if got := redactProxyLine("1.2.3.4:1080 user:p:ass"); strings.Contains(got, "p:ass") {
 		t.Errorf("password survived redaction: %q", got)
 	}
+	// Regression: a bare trailing '@' (user:pass@ with no host suffix) must
+	// not leak the credential — return a placeholder instead.
+	if got := redactProxyLine("user:secretpass@"); strings.Contains(got, "secretpass") {
+		t.Errorf("redactProxyLine trailing @ leaked credential: %q", got)
+	}
 }
 
 // TestSanitizeURLForDisplay: a source URL bearing an API token in the query
@@ -242,6 +247,20 @@ func TestSanitizeURLForDisplay(t *testing.T) {
 	}
 	if strings.Contains(out, "?") {
 		t.Errorf("sanitizeURLForDisplay kept query string: %q", out)
+	}
+	// Regression: a sensitive fragment must be cleared.
+	out = sanitizeURLForDisplay("https://api.provider.com/list#token=SECRET")
+	if strings.Contains(out, "SECRET") {
+		t.Errorf("sanitizeURLForDisplay leaked fragment: %q", out)
+	}
+	if strings.Contains(out, "#") {
+		t.Errorf("sanitizeURLForDisplay kept fragment: %q", out)
+	}
+	// Regression: malformed URL (parse failure) must return the safe
+	// placeholder, not echo the raw input.
+	bad := sanitizeURLForDisplay("ht!tp://[::1")
+	if bad != "<invalid source URL>" {
+		t.Errorf("sanitizeURLForDisplay malformed = %q, want placeholder", bad)
 	}
 }
 

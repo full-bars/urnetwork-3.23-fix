@@ -313,8 +313,14 @@ func parseProxyListLineByLine(lines []string) []string {
 // (or a {user}:{pass} tail) and show only the host:port-ish residue.
 func redactProxyLine(line string) string {
 	s := strings.TrimSpace(line)
-	// user:pass@host:port → keep the part after the last '@'
-	if at := strings.LastIndex(s, "@"); at >= 0 && at < len(s)-1 {
+	// user:pass@host:port → keep the part after the last '@'.
+	// A bare trailing '@' means the line is `user:pass@` with no host —
+	// there is no suffix to keep, so return a redaction placeholder
+	// rather than leaking the credential verbatim.
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		if at == len(s)-1 {
+			return "<redacted>"
+		}
 		s = s[at+1:]
 	}
 	// host:port user:pass (space-separated) → keep only the first token; the
@@ -525,10 +531,14 @@ func readLines(r io.Reader) []string {
 func sanitizeURLForDisplay(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		// Don't echo the raw input — it may carry userinfo or a sensitive
+		// fragment that the caller pasted. Return a safe placeholder.
+		return "<invalid source URL>"
 	}
 	u.User = nil
 	u.RawQuery = ""
 	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
 	return u.String()
 }
