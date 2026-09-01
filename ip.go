@@ -3472,16 +3472,28 @@ func (self *RemoteUserNatClient) LocalSecurityBypass() bool {
 type pathTable struct {
 	destinations []MultiHopId
 
-	// TODO clean up entries that haven't been used in some time
-	paths4 map[Ip4Path]MultiHopId
-	paths6 map[Ip6Path]MultiHopId
+	// G-H1 fix: entries were unbounded — one per 5-tuple, never evicted.
+	// A long-lived relay accumulates entries for every ephemeral source
+	// port it has ever seen. Added mutex for concurrent access safety,
+	// lastUsed timestamps for LRU eviction, and maxEntries cap.
+	mu        sync.Mutex
+	paths4    map[Ip4Path]pathTableEntry
+	paths6    map[Ip6Path]pathTableEntry
+	lastClean time.Time
+}
+
+const pathTableMaxEntries = 4096
+
+type pathTableEntry struct {
+	destination MultiHopId
+	lastUsed    time.Time
 }
 
 func newPathTable(destinations []MultiHopId) *pathTable {
 	return &pathTable{
 		destinations: destinations,
-		paths4:       map[Ip4Path]MultiHopId{},
-		paths6:       map[Ip6Path]MultiHopId{},
+		paths4:       map[Ip4Path]pathTableEntry{},
+		paths6:       map[Ip6Path]pathTableEntry{},
 	}
 }
 
@@ -3509,28 +3521,95 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 	if err != nil {
 		return MultiHopId{}, err
 	}
+
+	now := time.Now()
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	// Periodic cleanup: evict entries unused for >5 minutes.
+	if now.Sub(self.lastClean) > 30*time.Second {
+		self.evictStale(now)
+		self.lastClean = now
+	}
+
 	switch ipPath.Version {
 	case 4:
 		ip4Path := ipPath.ToIp4Path()
-		if destination, ok := self.paths4[ip4Path]; ok {
-			return destination, nil
+		if entry, ok := self.paths4[ip4Path]; ok {
+			entry.lastUsed = now
+			self.paths4[ip4Path] = entry
+			return entry.destination, nil
+		}
+		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
+			self.evictOldest()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
-		self.paths4[ip4Path] = destination
+		self.paths4[ip4Path] = pathTableEntry{destination: destination, lastUsed: now}
 		return destination, nil
 	case 6:
 		ip6Path := ipPath.ToIp6Path()
-		if destination, ok := self.paths6[ip6Path]; ok {
-			return destination, nil
+		if entry, ok := self.paths6[ip6Path]; ok {
+			entry.lastUsed = now
+			self.paths6[ip6Path] = entry
+			return entry.destination, nil
+		}
+		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
+			self.evictOldest()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
-		self.paths6[ip6Path] = destination
+		self.paths6[ip6Path] = pathTableEntry{destination: destination, lastUsed: now}
 		return destination, nil
 	default:
-		// no support for this version
 		return MultiHopId{}, fmt.Errorf("No support for ip version %d", ipPath.Version)
+	}
+}
+
+// evictStale removes entries not used in the last 5 minutes.
+func (self *pathTable) evictStale(now time.Time) {
+	cutoff := now.Add(-5 * time.Minute)
+	for k, v := range self.paths4 {
+		if v.lastUsed.Before(cutoff) {
+			delete(self.paths4, k)
+		}
+	}
+	for k, v := range self.paths6 {
+		if v.lastUsed.Before(cutoff) {
+			delete(self.paths6, k)
+		}
+	}
+}
+
+// evictOldest removes the single oldest entry across both maps.
+func (self *pathTable) evictOldest() {
+	var oldestTime time.Time
+	var oldestKey4 Ip4Path
+	var oldestKey6 Ip6Path
+	var isIPv4 bool
+	first := true
+	for k, v := range self.paths4 {
+		if first || v.lastUsed.Before(oldestTime) {
+			oldestTime = v.lastUsed
+			oldestKey4 = k
+			isIPv4 = true
+			first = false
+		}
+	}
+	for k, v := range self.paths6 {
+		if first || v.lastUsed.Before(oldestTime) {
+			oldestTime = v.lastUsed
+			oldestKey6 = k
+			isIPv4 = false
+			first = false
+		}
+	}
+	if !first {
+		if isIPv4 {
+			delete(self.paths4, oldestKey4)
+		} else {
+			delete(self.paths6, oldestKey6)
+		}
 	}
 }
 
