@@ -2265,6 +2265,22 @@ func (self *SendSequence) Run() {
 
 		// drain the buffer
 		for _, item := range self.resendQueue.Clear() {
+			if item.retainAfterAckTimeout {
+				// R-H1: retained item dropped on sequence teardown — log
+				// distinct from normal backstop expiry so telemetry can
+				// measure how often this path fires vs backstop drops.
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) retain dropped on sequence exit (lifetime=%s, backstop_remaining=%s, msg=%x)\n",
+						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+						time.Since(item.sendTime), time.Until(item.backstopDeadline), item.messageId)
+				}
+				if self.sendBufferSettings.RetentionEventCallback != nil {
+					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+							"retain_seq_exit lifetime=%s backstop_remaining=%s msg=%x sendCount=%d",
+							time.Since(item.sendTime), time.Until(item.backstopDeadline),
+							item.messageId, item.sendCount))
+				}
+			}
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
