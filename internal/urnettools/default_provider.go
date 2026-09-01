@@ -74,7 +74,8 @@ func writeDefaultProvider(t Target) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	// M7 fix: atomic write with fsync for crash safety.
+	if err := writeFileAtomic(path, b, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

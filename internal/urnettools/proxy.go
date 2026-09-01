@@ -87,34 +87,62 @@ func checkReadableAsUser(path, user string) error {
 	if err != nil {
 		return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 	}
-	fi, err := os.Stat(path)
+	// M8 fix: walk the parent chain checking execute (search) permission
+	// for the target uid. The old code only checked the file's own mode
+	// bits, which passes for world-readable files inside non-traversable
+	// directories (e.g. 0644 file inside 0700 /root).
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
+		return err
 	}
-	st := fi.Mode()
-	// World-readable covers it. If not, check owner / group bits.
-	if st.Perm()&0o4 != 0 {
+	dir := filepath.Dir(abs)
+	for {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", dir, err)
+		}
+		sysUID, sysGID := statFileOwnership(fi)
+		perm := fi.Mode().Perm()
+		// Check if user can traverse this directory
+		canTraverse := false
+		if perm&0o1 != 0 {
+			canTraverse = true // world-execute
+		} else if sysGID == int64(gid) && perm&0o10 != 0 {
+			canTraverse = true // group-execute
+		} else if sysUID == int64(uid) && perm&0o100 != 0 {
+			canTraverse = true // owner-execute
+		}
+		if !canTraverse {
+			return fmt.Errorf("proxy file %s is not reachable by user %s: no execute permission on %s", path, user, dir)
+		}
+		if dir == "/" || dir == "." {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	// Now check the file itself
+	fi, err := os.Lstat(abs)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", abs, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("proxy file %s is a symlink (refusing to follow)", abs)
+	}
+	st := fi.Mode().Perm()
+	sysUID, sysGID := statFileOwnership(fi)
+	// World-readable covers it
+	if st&0o4 != 0 {
 		return nil
 	}
-	sysUID := int64(-1)
-	sysGID := int64(-1)
-	sysUID, sysGID = statFileOwnership(fi)
-	if sysUID == int64(uid) && st.Perm()&0o4 != 0 {
+	// Group match
+	if sysGID == int64(gid) && st&0o40 != 0 {
 		return nil
 	}
-	if sysUID != int64(uid) && st.Perm()&0o4 == 0 &&
-		(sysGID != int64(gid) || st.Perm()&0o40 == 0) {
-		return fmt.Errorf("proxy file %s is not readable by user %s", path, user)
-	}
-	// Group-bit match.
-	if sysGID == int64(gid) && st.Perm()&0o40 != 0 {
+	// Owner match
+	if sysUID == int64(uid) && st&0o400 != 0 {
 		return nil
 	}
-	// Owner match with owner-read.
-	if sysUID == int64(uid) && st.Perm()&0o400 != 0 {
-		return nil
-	}
-	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", path, user, sysUID, st.Perm())
+	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", abs, user, sysUID, fi.Mode().Perm())
 }
 
 // cmdProxy dispatches proxy sub-operations to the targeted provider(s).

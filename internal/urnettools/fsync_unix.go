@@ -3,7 +3,9 @@
 package urnettools
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -23,4 +25,33 @@ func statFileOwnership(fi os.FileInfo) (uid, gid int64) {
 // a Handle, not an int, so this is a no-op on non-Unix.
 func fsyncFile(f *os.File) error {
 	return syscall.Fsync(int(f.Fd()))
+}
+
+// writeFileAtomic writes data to path atomically using an unpredictable
+// temp name (os.CreateTemp) + fsync + rename. Prevents:
+// - Concurrent writers clobbering each other's fixed-name .tmp file (M7)
+// - Half-written files visible to live readers on crash
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", path, err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := fsyncFile(tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	tmpFile.Close()
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

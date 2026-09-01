@@ -584,14 +584,8 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 	if err != nil {
 		return err
 	}
-	// Atomic write (temp + rename) so a crash never leaves a half-written
-	// drop-in that systemd refuses to load .
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	// M7 fix: atomic write with unpredictable temp name + fsync (writeFileAtomic).
+	if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("Wrote %s\n", path)
@@ -681,12 +675,8 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		fmt.Printf("Removed %s\n", path)
 	} else {
 		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-		tmp := path + ".tmp"
-		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-			return err
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			os.Remove(tmp)
+		// M7 fix: atomic write with unpredictable temp name + fsync.
+		if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("Updated %s (removed %s)\n", path, envKey)

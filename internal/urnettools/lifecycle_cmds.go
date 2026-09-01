@@ -267,9 +267,6 @@ func writeTimerUnitAtomic(path string, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// M7 fix: unpredictable temp name + fsync for crash safety.
+	return writeFileAtomic(path, []byte(content), 0o644)
 }

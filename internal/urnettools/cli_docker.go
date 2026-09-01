@@ -894,9 +894,13 @@ func cmdDockerProxy(args []string) error {
 			return fmt.Errorf("proxy add requires exactly one proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
 		}
 		hostFile := rest2[0]
-		// Unique in-container path so concurrent proxy ops cannot collide
-		// (DeepSeek SF4).
-		inPath := fmt.Sprintf("/tmp/urnet-proxies-%d.txt", os.Getpid())
+		// M9 fix: use mktemp inside the container for an unpredictable
+		// path. The old PID-based name was trivially guessable.
+		mktempOut, err := exec.Command(dockerCLI(), "exec", container, "mktemp", "/tmp/urnet-proxies-XXXXXX.txt").Output()
+		if err != nil {
+			return fmt.Errorf("mktemp in container: %w", err)
+		}
+		inPath := strings.TrimSpace(string(mktempOut))
 		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
 			return fmt.Errorf("copy %s into container: %w", hostFile, err)
 		}
