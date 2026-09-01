@@ -2276,9 +2276,9 @@ func (self *SendSequence) Run() {
 				}
 				if self.sendBufferSettings.RetentionEventCallback != nil {
 					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
-							"retain_seq_exit lifetime=%s backstop_remaining=%s msg=%x sendCount=%d",
-							time.Since(item.sendTime), time.Until(item.backstopDeadline),
-							item.messageId, item.sendCount))
+						"retain_seq_exit lifetime=%s backstop_remaining=%s msg=%x sendCount=%d",
+						time.Since(item.sendTime), time.Until(item.backstopDeadline),
+						item.messageId, item.sendCount))
 				}
 			}
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
