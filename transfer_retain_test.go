@@ -65,3 +65,35 @@ func TestDecodeTransferOptionsDefaults(t *testing.T) {
 		t.Fatalf("decode clobbered unrelated options: %+v", got)
 	}
 }
+
+// TestDecodeTransferOptionsRetainOrderDependent verifies that passing a full
+// TransferOptions AFTER RetainAfterAckTimeout() clobbers the retain flag.
+// This is the order-dependent behavior the Opus review flagged as untested.
+// The case "TransferOptions: base = v" overwrites base entirely.
+func TestDecodeTransferOptionsRetainOrderDependent(t *testing.T) {
+	ctx := context.Background()
+	// RetainAfterAckTimeout() sets the flag, then a full TransferOptions
+	// with RetainAfterAckTimeout=false overwrites it.
+	got := decodeTransferOptions(
+		DefaultTransferOpts(),
+		[]any{RetainAfterAckTimeout(), TransferOptions{RetainAfterAckTimeout: false}},
+		&ctx,
+	)
+	if got.RetainAfterAckTimeout {
+		t.Fatal("full TransferOptions after RetainAfterAckTimeout() should clobber the retain flag")
+	}
+}
+
+// TestDecodeTransferOptionsRetainThroughFullOptions verifies that embedding
+// the retain flag in a full TransferOptions also works (the non-clobber case).
+func TestDecodeTransferOptionsRetainThroughFullOptions(t *testing.T) {
+	ctx := context.Background()
+	got := decodeTransferOptions(
+		DefaultTransferOpts(),
+		[]any{TransferOptions{RetainAfterAckTimeout: true}},
+		&ctx,
+	)
+	if !got.RetainAfterAckTimeout {
+		t.Fatal("full TransferOptions with RetainAfterAckTimeout=true should set the flag")
+	}
+}
