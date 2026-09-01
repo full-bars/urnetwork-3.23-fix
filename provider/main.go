@@ -2609,7 +2609,10 @@ func provide(opts docopt.Opts) {
 			}
 		}
 	}
-	go paceMonitor(ctx)
+	// Wrapped in connect.HandleError so a panic in paceMonitor degrades to
+	// "that one loop dies" instead of taking the whole provider process down,
+	// consistent with every other fleet background loop (#12 fault isolation).
+	go connect.HandleError(func() { paceMonitor(ctx) })
 
 	// Declared here (rather than next to the startup loop below) so
 	// provideWithProxy can close over them directly: on a permanent give-up,
