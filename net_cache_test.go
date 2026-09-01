@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -28,7 +29,12 @@ func TestPruneDNSCacheEvictsExpired(t *testing.T) {
 	dnsCache.mu.Lock()
 	dnsCache.m = make(map[string]dnsCacheEntry, dnsCacheMaxEntries+8)
 	for i := 0; i < dnsCacheMaxEntries; i++ {
-		k := "fresh" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('0'+i%10))
+		// Collision-free keys. The old `rune` composition produced only 3380
+		// distinct keys for 4096 iterations (a pattern space of 26*26*10),
+		// so the map never exceeded dnsCacheMaxEntries and pruneDNSCacheLocked
+		// early-returned at the `<= cap` guard — the expired-eviction branch
+		// below was never exercised and the test passed vacuously.
+		k := fmt.Sprintf("fresh%04d", i)
 		dnsCache.m[k] = dnsCacheEntry{ip: "9.9.9.9", expiry: now.Add(time.Hour)}
 	}
 	// Add 8 expired.
