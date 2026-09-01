@@ -676,6 +676,13 @@ func applyStagedSession() {
 }
 
 func main() {
+	// G-M2: sanitize PATH when running as root to prevent hijacking
+	// of exec.Command bare names (systemctl, docker, etc.) via
+	// attacker-writable directories earlier in root's PATH.
+	if os.Getuid() == 0 {
+		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
 
