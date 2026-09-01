@@ -51,7 +51,7 @@ var globalPoolMetrics = &PoolMetrics{
 	LastResetTime:    time.Now(),
 }
 
-var sizeDistMu sync.Mutex
+var sizeDistMu sync.RWMutex
 
 var initSizeDistOnce sync.Once
 
@@ -68,11 +68,18 @@ func initSizeDist() {
 // Unknown sizes fall back to a locked lazy-create (cold path, rare in practice).
 func addSizeDistribution(size int) {
 	initSizeDistOnce.Do(initSizeDist)
-	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+	// Fast path (5 known pool sizes): read the pre-populated entry under a
+	// read lock. RLock is required — the map is WRITTEN by the cold path and
+	// the snapshot iterator, so an unlocked read races a concurrent map write
+	// and crashes the process (`fatal: concurrent map read and map write`).
+	sizeDistMu.RLock()
+	counter, ok := globalPoolMetrics.SizeDistribution[size]
+	sizeDistMu.RUnlock()
+	if ok {
 		counter.Add(1)
 		return
 	}
-	// Cold path: unknown pool size — create entry under lock.
+	// Cold path: unknown pool size — create entry under write lock.
 	sizeDistMu.Lock()
 	defer sizeDistMu.Unlock()
 	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
@@ -752,11 +759,14 @@ func EnhancedMetrics() map[string]any {
 	gcPauses := sampleGCPauses()
 
 	sizeDistribution := map[string]uint64{}
-	sizeDistMu.Lock()
+	// RLock: the snapshot only reads this map; a read lock still excludes the
+	// cold-path writer (which takes Lock), so the iteration never races a map
+	// write, while letting concurrent fast-path readers proceed.
+	sizeDistMu.RLock()
 	for size, count := range globalPoolMetrics.SizeDistribution {
 		sizeDistribution[fmt.Sprintf("%d", size)] = count.Load()
 	}
-	sizeDistMu.Unlock()
+	sizeDistMu.RUnlock()
 
 	return map[string]any{
 		"hits":              globalPoolMetrics.Hits.Load(),
