@@ -56,6 +56,8 @@ var sizeDistMu sync.Mutex
 var initSizeDistOnce sync.Once
 
 func initSizeDist() {
+	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
 	for _, size := range []int{2048, 4096, 16384, 32768, 65536} {
 		globalPoolMetrics.SizeDistribution[size] = &atomic.Uint64{}
 	}
