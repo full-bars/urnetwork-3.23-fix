@@ -616,13 +616,13 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 // identity directory.
 var sessionFilesAllowlist = map[string]bool{
 	".client_jwts.json": true,
-	"jwt":                true,
-	"jwt_last_refresh":   true,
-	".provider.key":      true,
-	".provider.cert":     true,
-	"proxy":              true,
-	"proxy_url.json":     true,
-	"proxy.state":        true,
+	"jwt":               true,
+	"jwt_last_refresh":  true,
+	".provider.key":     true,
+	".provider.cert":    true,
+	"proxy":             true,
+	"proxy_url.json":    true,
+	"proxy.state":       true,
 }
 
 func isSessionFile(name string) bool {
