@@ -5,7 +5,9 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -149,8 +151,15 @@ func normalizeHostPort(s string) string {
 		return ""
 	}
 	// If the host itself contains a colon (IPv6 like ::1 with exactly 3
-	// segments: ["", "", "1"] + port), it needs brackets to be dialable.
+	// segments: ["", "", "1"] + port), it needs brackets to be dialable. Only
+	// bracket when the colon-host is actually a valid IPv6 literal — otherwise
+	// a malformed input like host:1.2.3.4 (cred-free @-form with a colon-ish
+	// remainder, or plain garbage) would be accepted as a pseudo-IPv6 and
+	// produce an address that will simply never dial.
 	if strings.Contains(host, ":") {
+		if net.ParseIP(host) == nil {
+			return ""
+		}
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
@@ -256,11 +265,37 @@ func parseProxyList(content string) []string {
 		}
 	}
 	if totalNonEmpty > 0 && commaCount > totalNonEmpty/2 {
-		if csvResult := parseCSVProxyList(content); len(csvResult) > 0 {
+		csvResult := parseCSVProxyList(content)
+		if len(csvResult) > 0 {
+			// The comma heuristic can misfire on TXT lists whose credentials
+			// happen to contain a comma — the CSV parser then mangles those
+			// lines and (worse) the old code returned csvResult unconditionally,
+			// silently dropping the mangled entries. Union with the line-by-line
+			// parser and keep whichever recovers more, so a legitimate TXT list
+			// never loses entries to the heuristic. The dedup map below is only
+			// seeded from the CSV pass first so true-CSV wins the tie.
+			txtResult := parseProxyListLineByLine(lines)
+			seen := make(map[string]struct{}, len(txtResult)+len(csvResult))
+			for _, l := range csvResult {
+				seen[l] = struct{}{}
+			}
+			for _, l := range txtResult {
+				if _, dup := seen[l]; dup {
+					continue
+				}
+				seen[l] = struct{}{}
+				csvResult = append(csvResult, l)
+			}
 			return csvResult
 		}
 	}
 
+	// Line-by-line (txt format)
+	return parseProxyListLineByLine(lines)
+}
+
+// parseProxyListLineByLine parses txt content one line at a time.
+func parseProxyListLineByLine(lines []string) []string {
 	// Line-by-line (txt format)
 	var result []string
 	for _, line := range lines {
@@ -269,6 +304,38 @@ func parseProxyList(content string) []string {
 		}
 	}
 	return result
+}
+
+// redactProxyLine strips credential material from a rejected line for safe
+// operator diagnostics. Rejected input is exactly the class most likely to
+// contain a live password (malformed credential syntax); echoing it verbatim
+// leaks it into scrollback/logs. Best-effort: strip a {user}:{pass}@ prefix
+// (or a {user}:{pass} tail) and show only the host:port-ish residue.
+func redactProxyLine(line string) string {
+	s := strings.TrimSpace(line)
+	// user:pass@host:port → keep the part after the last '@'
+	if at := strings.LastIndex(s, "@"); at >= 0 && at < len(s)-1 {
+		s = s[at+1:]
+	}
+	// host:port user:pass (space-separated) → keep only the first token; the
+	// second token is the credential we're hiding.
+	if parts := strings.Fields(s); len(parts) == 2 {
+		s = parts[0]
+	}
+	// host:port:user:pass → keep the addr (first two colon-separated fields).
+	// Don't split on a third colon, since the tail is the credential we're hiding.
+	if parts := strings.SplitN(s, ":", 3); len(parts) >= 2 && validColonForm(s) {
+		s = parts[0] + ":" + parts[1]
+	}
+	return s
+}
+
+// validColonForm reports whether s looks like host:port[:cred] for redaction
+// purposes (vs a bare hostname or an already-credential-stripped host:port).
+func validColonForm(s string) bool {
+	parts := strings.Split(s, ":")
+	// host:port (2 fields) needs no further redaction; host:port:cred has 3+.
+	return len(parts) >= 3
 }
 
 func proxyPaste(opts docopt.Opts) {
@@ -348,7 +415,7 @@ func proxyPaste(opts docopt.Opts) {
 
 	// Fetch and parse URL sources
 	for _, url := range sourceURLs {
-		fmt.Printf("fetching %s ... ", url)
+		fmt.Printf("fetching %s ... ", sanitizeURLForDisplay(url))
 		content, err := fetchURL(url)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
@@ -371,7 +438,7 @@ func proxyPaste(opts docopt.Opts) {
 	if len(allNormalized) == 0 {
 		fmt.Printf("no valid proxies found (%d skipped, %d rejected)\n", totalSkipped, totalRejected)
 		for _, rl := range rejectedLines {
-			fmt.Fprintf(os.Stderr, "  rejected: %s\n", rl)
+			fmt.Fprintf(os.Stderr, "  rejected: %s\n", redactProxyLine(rl))
 		}
 		return
 	}
@@ -392,7 +459,7 @@ func proxyPaste(opts docopt.Opts) {
 	if len(rejectedLines) > 0 {
 		fmt.Fprintln(os.Stderr, "rejected lines:")
 		for _, rl := range rejectedLines {
-			fmt.Fprintf(os.Stderr, "  %s\n", rl)
+			fmt.Fprintf(os.Stderr, "  %s\n", redactProxyLine(rl))
 		}
 		if totalRejected > maxRejectedShow {
 			fmt.Fprintf(os.Stderr, "  ... and %d more\n", totalRejected-maxRejectedShow)
@@ -436,8 +503,32 @@ func proxyPaste(opts docopt.Opts) {
 func readLines(r io.Reader) []string {
 	var lines []string
 	scanner := bufio.NewScanner(r)
+	// Bump the token buffer well past the 64KB default — a single long line
+	// (e.g. an accidentally-unwrapped CSV blob or a list pasted without
+	// newlines) would otherwise hit bufio.ErrTooLong, silently abort the scan,
+	// and drop that line plus everything after it with no diagnostic.
+	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: readLines failed partway: %v (input may be truncated)\n", err)
+	}
 	return lines
+}
+
+// sanitizeURLForDisplay strips credential material (userinfo) and the query
+// string from a URL before echoing it, so an API token or auth key embedded as
+// a query parameter (common for proxy-list providers) never lands in operator
+// scrollback or logs. It returns the original string unmodified if the URL
+// doesn't parse, since that case won't be fetched anyway.
+func sanitizeURLForDisplay(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	return u.String()
 }

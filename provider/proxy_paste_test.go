@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -197,5 +198,60 @@ func TestDedupDirectWins(t *testing.T) {
 	}
 	if len(normalized) != 1 || normalized[0] != "1.2.3.4:1080::" {
 		t.Errorf("expected exactly 1.2.3.4:1080:: after dedup, got %v", normalized)
+	}
+}
+
+// TestParseProxyListHeuristicUnion: a TXT list whose credentials contain commas
+// must NOT lose entries to the >50%-comma CSV heuristic. Regression for the
+// silent data-drop bug (3 valid lines → only 1 recovered).
+func TestParseProxyListHeuristicUnion(t *testing.T) {
+	in := "1.2.3.4:1080:user1,name:pass1\n5.6.7.8:1080:user2,name:pass2\n9.10.11.12:1080::\n"
+	got := parseProxyList(in)
+	if len(got) != 3 {
+		t.Errorf("parseProxyList dropped entries: got %d, want 3: %v", len(got), got)
+	}
+}
+
+// TestRedactProxyLine: rejected-line diagnostics must not leak credentials.
+func TestRedactProxyLine(t *testing.T) {
+	for _, in := range []string{
+		"user:p:ass@1.2.3.4:1080",
+		"1.2.3.4:1080 user:p:ass",
+	} {
+		out := redactProxyLine(in)
+		if out == in {
+			t.Errorf("redactProxyLine(%q) = %q: unchanged, credential leaked", in, out)
+		}
+	}
+	if got := redactProxyLine("user:p:ass@1.2.3.4:1080"); strings.Contains(got, "p:ass") {
+		t.Errorf("password survived redaction: %q", got)
+	}
+	if got := redactProxyLine("1.2.3.4:1080 user:p:ass"); strings.Contains(got, "p:ass") {
+		t.Errorf("password survived redaction: %q", got)
+	}
+}
+
+// TestSanitizeURLForDisplay: a source URL bearing an API token in the query
+// must not echo the token to the status line.
+func TestSanitizeURLForDisplay(t *testing.T) {
+	out := sanitizeURLForDisplay("https://user:pass@api.provider.com/list?key=SECRET&x=1")
+	for _, leak := range []string{"SECRET", "pass"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("sanitizeURLForDisplay leaked %q: %q", leak, out)
+		}
+	}
+	if strings.Contains(out, "?") {
+		t.Errorf("sanitizeURLForDisplay kept query string: %q", out)
+	}
+}
+
+// TestNormalizeProxyLinePseudoIPv6: a colon-containing non-IPv6 host must be
+// rejected, not bracketed into a never-dialable pseudo-IPv6 address.
+func TestNormalizeProxyLinePseudoIPv6(t *testing.T) {
+	if got := normalizeProxyLine("host:1.2.3.4:1080"); got != "" {
+		t.Errorf("normalizeProxyLine pseudo-IPv6 = %q, want empty", got)
+	}
+	if got := normalizeProxyLine("user@host:1.2.3.4:1080"); got != "" {
+		t.Errorf("normalizeProxyLine cred-free pseudo-IPv6 = %q, want empty", got)
 	}
 }
