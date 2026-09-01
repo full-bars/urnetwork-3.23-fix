@@ -803,9 +803,20 @@ func installBinary(src, dst, user string) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	newPath := tmpFile.Name()
-	tmpFile.Close() // close before copyFile reopens for writing
-
-	if err := copyFile(src, newPath); err != nil {
+	// Keep the fd open and write through it — closing then reopening by
+	// path leaves a TOCTOU window where an attacker can swap the file for
+	// a symlink. Writing through the held fd writes to the real inode.
+	if err := copyFileToFd(src, tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := fsyncFile(tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
 		os.Remove(newPath)
 		return err
 	}
@@ -825,6 +836,7 @@ func installBinary(src, dst, user string) error {
 		}
 	}
 	if err := os.Rename(newPath, dst); err != nil {
+		os.Remove(newPath)
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
 	// Sync the parent directory so the rename survives a crash before
@@ -896,6 +908,22 @@ func copyFile(src, dst string) error {
 	// otherwise be lost and the copy reported successful.
 	if cerr = out.Close(); cerr != nil {
 		return fmt.Errorf("close %s: %w", dst, cerr)
+	}
+	return nil
+}
+
+// copyFileToFd copies src into an already-open file descriptor. This avoids
+// the TOCTOU between close and reopen that copyFile(src, dst) has when dst
+// was created with os.CreateTemp — an attacker can swap the file for a
+// symlink in the window between close and the OpenFile reopen.
+func copyFileToFd(src string, out *os.File) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
 	}
 	return nil
 }

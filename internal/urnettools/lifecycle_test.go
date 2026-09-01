@@ -8,26 +8,6 @@ import (
 	"testing"
 )
 
-// TestIsUserUnit: system unit files exist under /etc/systemd/system; user
-// units (legacy installs) do not. On a dev box neither exists, so the
-// heuristic returns user=true — acceptable, callers pass real units.
-func TestIsUserUnit(t *testing.T) {
-	// isUserUnit checks if a unit name is a user-level systemd unit.
-	// On this system, the real urnetwork-native.service could be either
-	// system or user. We verify the function returns a definite bool
-	// and doesn't panic — but more importantly, we test that a known
-	// system path is correctly identified as NOT a user unit.
-	got := isUserUnit("urnetwork-native.service")
-	// The function must return exactly true or false (it does — it's a bool).
-	// We can't predict the result without knowing the system state,
-	// but we CAN test that the function handles edge cases:
-	_ = got
-	// Empty string should not panic
-	_ = isUserUnit("")
-	// A clearly non-existent unit should still return a definite bool
-	_ = isUserUnit("definitely-not-a-real-unit-xyz.service")
-}
-
 // TestOptimizeLinuxRootCheck: optimizeLinux must refuse non-root with an
 // actionable error when sudo is unavailable before touching sysctl.
 func TestOptimizeLinuxRootCheck(t *testing.T) {
