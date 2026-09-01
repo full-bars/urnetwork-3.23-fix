@@ -1543,6 +1543,11 @@ type SendBufferSettings struct {
 	// MaxResendCount caps the number of times a packet is retransmitted before
 	// being dropped from the resend queue. 0 means unlimited (legacy behavior).
 	MaxResendCount int
+
+	// RetentionEventCallback is called when a retained item is acked or
+	// backstop-dropped. The provider wires this to the persistent health
+	// event log so retention telemetry survives restarts.
+	RetentionEventCallback func(event string)
 }
 
 type sendSequenceId struct {
@@ -2354,8 +2359,15 @@ func (self *SendSequence) Run() {
 				// settle contract bytes, release retained budget, and fire callback.
 				if item.retainAfterAckTimeout && !sendTime.Before(item.backstopDeadline) {
 					if v := self.log.V(1); v.Enabled() {
-						v.Infof("[s]%s->%s...%s s(%s) retain backstop expired, dropping retained item %x (sendCount=%d)\n",
-							self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, item.messageId, item.sendCount)
+						v.Infof("[s]%s->%s...%s s(%s) retain backstop expired, dropping retained item %x (sendCount=%d, lifetime=%s, overshoot=%s)\n",
+							self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, item.messageId, item.sendCount,
+							sendTime.Sub(item.sendTime), sendTime.Sub(item.backstopDeadline))
+					}
+					if self.sendBufferSettings.RetentionEventCallback != nil {
+						self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+							"retain_drop lifetime=%s overshoot=%s msg=%x sendCount=%d",
+							sendTime.Sub(item.sendTime), sendTime.Sub(item.backstopDeadline),
+							item.messageId, item.sendCount))
 					}
 					self.dropItem(item, errors.New("Retain backstop expired."))
 					continue
@@ -2471,8 +2483,15 @@ func (self *SendSequence) Run() {
 		for _, retainedItem := range self.resendQueue.Snapshot() {
 			if retainedItem.retainAfterAckTimeout && !sendTime.Before(retainedItem.backstopDeadline) {
 				if v := self.log.V(1); v.Enabled() {
-					v.Infof("[s]%s->%s...%s s(%s) retain backstop expired (scan), dropping retained item %x (sendCount=%d)\n",
-						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, retainedItem.messageId, retainedItem.sendCount)
+					v.Infof("[s]%s->%s...%s s(%s) retain backstop expired (scan), dropping retained item %x (sendCount=%d, lifetime=%s, overshoot=%s)\n",
+						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, retainedItem.messageId, retainedItem.sendCount,
+						sendTime.Sub(retainedItem.sendTime), sendTime.Sub(retainedItem.backstopDeadline))
+				}
+				if self.sendBufferSettings.RetentionEventCallback != nil {
+					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+						"retain_drop lifetime=%s overshoot=%s msg=%x sendCount=%d",
+						sendTime.Sub(retainedItem.sendTime), sendTime.Sub(retainedItem.backstopDeadline),
+						retainedItem.messageId, retainedItem.sendCount))
 				}
 				self.dropItem(retainedItem, errors.New("Retain backstop expired."))
 			}
@@ -3226,6 +3245,18 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		// release its share of the R-5 retained-byte budget.
 		if removed.retainAfterAckTimeout {
 			self.retainedByteCount -= removed.MessageByteCount()
+			if v := self.log.V(1); v.Enabled() {
+				v.Infof("[s]%s->%s...%s s(%s) retain acked — retention saved %x (%dB held %s past ack timeout, sendCount=%d)\n",
+					self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+					removed.messageId, removed.messageByteCount, time.Now().Sub(removed.sendTime.Add(self.sendBufferSettings.AckTimeout)),
+					removed.sendCount)
+			}
+			if self.sendBufferSettings.RetentionEventCallback != nil {
+				self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+					"retain_ack held=%s msg=%x bytes=%d sendCount=%d",
+					time.Now().Sub(removed.sendTime.Add(self.sendBufferSettings.AckTimeout)),
+					removed.messageId, removed.messageByteCount, removed.sendCount))
+			}
 		}
 
 		self.ackItem(implicitItem)

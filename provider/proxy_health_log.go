@@ -227,3 +227,20 @@ func rotateIfNeeded(path string, maxBytes int64) {
 	}
 	_ = os.Rename(path, path+".1")
 }
+
+// appendRetentionEvent appends a retention telemetry line to the health event log.
+func appendRetentionEvent(event string) {
+	dir, ok := proxyHealthDir()
+	if !ok {
+		return
+	}
+	path := filepath.Join(dir, "proxy_health.log")
+	rotateIfNeeded(path, proxyHealthLogMaxBytes)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	fmt.Fprintf(f, "| %s | %-9s | %-16s | %-21s | %s |\n", ts, "RETAIN", "-", "", event)
+}
