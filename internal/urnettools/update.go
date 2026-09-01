@@ -629,12 +629,13 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			// StateDir identity check: both sides come from the same
-			// discovery logic (unitStateDir on unix, windowsStateDir on
-			// Windows), so string equality is consistent per platform.
-			// Platform risk: on Windows this is a case-sensitive string
-			// compare of paths, so a drive-letter case or separator
-			// mismatch between derivations would fail to match.
+			// StateDir identity check: both sides come from the same discovery
+			// logic (unitStateDir on unix, windowsStateDir on Windows), so
+			// string equality is consistent per platform. Platform risk: on
+			// Windows this is a case-sensitive string compare of paths, so a
+			// drive-letter case or separator mismatch between derivations
+			// would fail to match (same physical dir under a different
+			// spelling = symlink/~ expansion/container mapping = no match).
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
 				// On Linux, verify the RUNNING process's image via /proc/<pid>/exe
 				// (the binary the process actually loaded, not the on-disk copy).
