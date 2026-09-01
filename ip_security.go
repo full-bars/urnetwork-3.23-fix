@@ -178,13 +178,21 @@ func (self *disableSecurityPolicy) Inspect(provideMode protocol.ProvideMode, ipP
 	return SecurityPolicyResultAllow, nil
 }
 
+// cgnat4 is RFC 6598 carrier-grade NAT 100.64.0.0/10, used as internal
+// address space on hosting providers and Tailscale's default range.
+var cgnat4 = net.IPNet{
+	IP:   net.IPv4(100, 64, 0, 0),
+	Mask: net.CIDRMask(10, 32),
+}
+
 func isPublicUnicast(ip net.IP) bool {
 	switch {
 	case ip.IsPrivate(),
 		ip.IsLoopback(),
 		ip.IsLinkLocalUnicast(),
 		ip.IsMulticast(),
-		ip.IsUnspecified():
+		ip.IsUnspecified(),
+		cgnat4.Contains(ip):
 		return false
 	default:
 		return true
