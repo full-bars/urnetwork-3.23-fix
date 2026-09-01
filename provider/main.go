@@ -611,6 +611,24 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
+// sessionFilesAllowlist mirrors internal/urnettools/session_cmds.go's
+// sessionFiles. Only these files are promoted from staging to the live
+// identity directory.
+var sessionFilesAllowlist = map[string]bool{
+	".client_jwts.json": true,
+	"jwt":                true,
+	"jwt_last_refresh":   true,
+	".provider.key":      true,
+	".provider.cert":     true,
+	"proxy":              true,
+	"proxy_url.json":     true,
+	"proxy.state":        true,
+}
+
+func isSessionFile(name string) bool {
+	return sessionFilesAllowlist[name]
+}
+
 // applyStagedSession atomically swaps in identity and proxy-list files
 // from ~/.urnetwork/.session-staging/ if a .session-pending marker exists.
 // This is the provider-side counterpart to `urnet-tools session load`:
@@ -638,6 +656,14 @@ func applyStagedSession() {
 		return
 	}
 	for _, e := range entries {
+		// G-M11 fix: only promote files in the session allowlist.
+		// The writer side (session_cmds.go) carefully iterates this
+		// list; the reader side must match to prevent stray files
+		// (older tool versions, manual copies) from landing in the
+		// live identity directory.
+		if !isSessionFile(e.Name()) {
+			continue
+		}
 		src := filepath.Join(stagingDir, e.Name())
 		dst := filepath.Join(urNetworkDir, e.Name())
 		if err := os.Rename(src, dst); err != nil {
