@@ -104,7 +104,7 @@ docker run -d \
 **Key env vars:**
 - `URNETWORK_PROFILE=auto` — Auto-tunes based on available RAM (balanced, lowmem, etc.)
 - `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
-- `URNETWORK_AUTH_CODE` — Your JWT token (single-use on first run; saved to volume)
+- `URNETWORK_AUTH_CODE` — Auth code is exchanged for your JWT token, obtained from https://ur.io (single-use on first run; saved to volume)
 - `PROXY_URL` — Optional live proxy list URL (comma-separated for multiple), additive with the mounted `proxy.txt`. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
 - `UR_API_URL` / `UR_CONNECT_URL` — Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
 
