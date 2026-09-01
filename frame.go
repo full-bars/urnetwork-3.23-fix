@@ -135,7 +135,16 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
 			}
 			return v, nil
 		}
-		message = v
+		if err := ProtoUnmarshal(frame.GetMessageBytes(), v); err != nil {
+			return nil, err
+		}
+		// G-C1 fix: validate IpPacket is present — a peer sending an
+		// empty message unmarshals cleanly with IpPacket == nil, and
+		// every call site dereferences it without checking.
+		if v.IpPacket == nil {
+			return nil, fmt.Errorf("IpPacketToProvider: missing IpPacket")
+		}
+		return v, nil
 	case protocol.MessageType_IpIpPacketFromProvider:
 		v := &protocol.IpPacketFromProvider{}
 		if frame.Raw {
@@ -144,7 +153,13 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
 			}
 			return v, nil
 		}
-		message = v
+		if err := ProtoUnmarshal(frame.GetMessageBytes(), v); err != nil {
+			return nil, err
+		}
+		if v.IpPacket == nil {
+			return nil, fmt.Errorf("IpPacketFromProvider: missing IpPacket")
+		}
+		return v, nil
 	case protocol.MessageType_IpIpPing:
 		v := &protocol.IpPing{}
 		if frame.Raw {

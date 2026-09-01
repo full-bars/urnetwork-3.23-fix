@@ -3106,7 +3106,11 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 		case protocol.MessageType_IpIpPacketToProvider:
 			ipPacketToProvider_, err := FromFrame(frame)
 			if err != nil {
-				panic(err)
+				// G-C2 fix: log and skip instead of panic on peer-supplied
+				// frame decode failure. A peer sending garbage frames should
+				// not crash the provider.
+				self.client.log.V(1).Infof("[ip]provider skip bad IpPacketToProvider frame: %s\n", err)
+				continue
 			}
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 			if self.bw != nil {
@@ -3403,7 +3407,10 @@ func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*pr
 		case protocol.MessageType_IpIpPacketFromProvider:
 			ipPacketFromProvider_, err := FromFrame(frame)
 			if err != nil {
-				panic(err)
+				// G-C2 fix: log and skip instead of panic on peer-supplied
+				// frame decode failure.
+				self.client.log.V(1).Infof("[ip]client skip bad IpPacketFromProvider frame: %s\n", err)
+				continue
 			}
 			ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
