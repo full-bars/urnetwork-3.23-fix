@@ -64,10 +64,22 @@ func initSizeDist() {
 }
 
 // addSizeDistribution increments the per-size buffer counter for size.
-// Lock-free after init — the map is never written after sync.Once.
+// Lock-free fast path for the 5 known pool sizes (pre-populated by initSizeDist).
+// Unknown sizes fall back to a locked lazy-create (cold path, rare in practice).
 func addSizeDistribution(size int) {
 	initSizeDistOnce.Do(initSizeDist)
 	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+		return
+	}
+	// Cold path: unknown pool size — create entry under lock.
+	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+	} else {
+		counter = &atomic.Uint64{}
+		globalPoolMetrics.SizeDistribution[size] = counter
 		counter.Add(1)
 	}
 }
