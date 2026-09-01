@@ -1,4 +1,4 @@
-# Sanctioned Tier-2 unguarded V(n).Inf* format strings (56).
+# Sanctioned Tier-2 unguarded V(n).Inf* format strings (58).
 # Per-connection/per-handshake sites deliberately left unguarded (Task 17).
 # A Tier-2 sweep PR must regenerate this file.
 "[f]drop = %s"
