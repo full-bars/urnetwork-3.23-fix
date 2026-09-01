@@ -347,7 +347,8 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 		}
 		// 0644 + chown: the CA/pin is public material and must be readable by
 		// the provider when the tool ran as root (review HIGH).
-		if err := os.WriteFile(pinFile, []byte(fp), 0o644); err != nil {
+		// Route through writeStateFile for O_NOFOLLOW protection (C2 fix).
+		if err := writeStateFile(hubDir, "hub.pin", []byte(fp), 0o644); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(hubDir, pinFile); err != nil {
@@ -356,13 +357,13 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 		_ = os.Remove(caFile)
 		fmt.Printf("Pinned hub fingerprint to %s\n", pinFile)
 	} else {
-		if !force && !acceptFingerprintPrompt() {
+		if !force && !confirmFingerprint(fp) {
 			return fmt.Errorf("aborted by user")
 		}
 		if err := os.MkdirAll(hubDir, 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(caFile, []byte(caPEM), 0o644); err != nil {
+		if err := writeStateFile(hubDir, "hub_ca.pem", []byte(caPEM), 0o644); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(hubDir, caFile); err != nil {

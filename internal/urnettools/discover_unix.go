@@ -136,7 +136,12 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		p.Version = providerVersion(p.Binary)
+		// S-C1 fix: use buildinfo-only version resolution for discovered
+		// processes. providerVersionFromExec execs the binary as root —
+		// a local user can plant a real ELF via `exec -a urnetwork-provider
+		// ./malicious` and the magic-byte check passes. Discovery must never
+		// exec a foreign binary. Accept empty version for -trimpath builds.
+		p.Version = providerVersionFromBuildinfo(p.Binary)
 		out = append(out, p)
 	}
 	return out
