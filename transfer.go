@@ -3064,7 +3064,14 @@ func (self *SendSequence) sendWithSetContract(
 		// and stall unrelated traffic sharing the sequence. If admitting this
 		// retained item would exceed 25% of the queue ceiling, drop the
 		// retention for THIS item (it falls back to the ordinary ack-timeout
-		// drop). Charged here alongside queue insertion — inseparable from
+		// drop). NOTE: an unacked non-retained item past AckTimeout exits the
+		// ENTIRE SendSequence (itemAckTimeout <= 0 && !retainAfterAckTimeout
+		// -> return), not just this item — under exactly the congested/dead-flow
+		// conditions this cap protects against, a cap-denied retained item can
+		// cascade into tearing down the whole sequence. This is intended (the
+		// cap exists to shed a wedged flow), but the consequence is broader
+		// than the per-item framing here suggests.
+		// Charged here alongside queue insertion — inseparable from
 		// the Add so the invariant "charge ⇔ in queue" cannot desync.
 		if item.retainAfterAckTimeout {
 			retainCapByteCount := ByteCount(float64(self.sendBufferSettings.ResendQueueMaxByteCount) * 0.25)
