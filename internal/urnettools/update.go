@@ -139,6 +139,16 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 
+	// Validate tag unconditionally — even when --digest is also supplied,
+	// so the tag cannot contain path traversal (../../) that reaches
+	// os.RemoveAll on a derived path. Before this fix, --tag+--digest
+	// skipped fetchReleaseByTag (and its validateTag call) entirely.
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
+		}
+	}
+
 	providers := Discover()
 	var chosen []Provider
 	if all {
@@ -358,6 +368,13 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q for self-update (--tag/--digest/--url)", args[i])
+		}
+	}
+
+	// Validate tag unconditionally (same reason as cmdUpdate).
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
 		}
 	}
 

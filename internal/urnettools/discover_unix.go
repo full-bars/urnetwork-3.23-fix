@@ -112,10 +112,17 @@ func discoverProcesses() []Provider {
 		// tool would pick up that state-dir, leading to root RemoveAll into
 		// an attacker-controlled path. Validate the path is under the
 		// resolved process owner's home directory.
-		if p.StateDir != "" && p.User != "" {
-			if u, uerr := osuser.Lookup(p.User); uerr == nil {
-				home := u.HomeDir
-				if home != "" && !strings.HasPrefix(filepath.Clean(p.StateDir), filepath.Clean(home)+string(filepath.Separator)) {
+		//
+		// Use processOwner (kernel uid via /proc/<pid>) instead of
+		// osuser.Lookup(p.User) — the USER/LOGNAME env vars come from the
+		// target process itself and are fully attacker-controlled. Also add
+		// a separator guard so /var/lib/ur doesn't match /var/lib/urnetwork-evil.
+		if p.StateDir != "" && p.PID > 0 {
+			if _, home := processOwner(p.PID); home != "" {
+				cleanHome := filepath.Clean(home)
+				cleanState := filepath.Clean(p.StateDir)
+				// Exact match (state dir IS the home) or proper prefix with separator
+				if cleanState != cleanHome && !strings.HasPrefix(cleanState, cleanHome+string(filepath.Separator)) {
 					// Not under user's home — reject the foreign state-dir.
 					p.StateDir = ""
 				}
