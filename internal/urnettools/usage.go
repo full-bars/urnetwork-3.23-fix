@@ -61,21 +61,44 @@ func readUsageHistory(stateDir string) []usageSnapshot {
 	return snaps
 }
 
-// usageLifetime returns the lifetime (across-restart) usage: because rx/tx are
-// cumulative per process and reset on restart, the lifetime total is the
-// running maximum of Total()/Billable() over the file. A single-snapshot file
-// (or no file) still reports the latest/live sums.
+// usageLifetime returns the lifetime (across-restart) usage. Segment-summed
+// instead of a running max: the provider's reported totals are the SUM of
+// currently-registered proxies' bandwidth (proxy_health_log.go), so a proxy
+// exiting (trim, hot-reload, reaper eviction) makes the cumulative total DROP
+// — not just on a process restart. A running max of Total() silently discards
+// all post-drop growth that never re-exceeds the pre-drop peak. Segment-sum
+// recovers it: the first segment's baseline is ZERO (bytes since the first
+// recorded snapshot); whenever any field drops we flush the prior segment's
+// contribution and restart the baseline at the post-drop snapshot.
 func usageLifetime(snaps []usageSnapshot) usageAggregates {
-	var a usageAggregates
-	for _, s := range snaps {
-		if s.RX+s.TX > a.TotalRX+a.TotalTX {
-			a.TotalRX, a.TotalTX = s.RX, s.TX
-		}
-		if s.BillableRX+s.BillableTX > a.BillableRX+a.BillableTX {
-			a.BillableRX, a.BillableTX = s.BillableRX, s.BillableTX
+	var result usageAggregates
+	if len(snaps) == 0 {
+		return result
+	}
+	segBase := usageAggregates{} // baseline for the first segment = 0
+	for i := 1; i < len(snaps); i++ {
+		cur, prev := snaps[i], snaps[i-1]
+		if cur.RX < prev.RX || cur.TX < prev.TX ||
+			cur.BillableRX < prev.BillableRX || cur.BillableTX < prev.BillableTX {
+			// Drop: the previous segment ran segBase -> prev. Flush it.
+			result.TotalRX += satSub(prev.RX, segBase.TotalRX)
+			result.TotalTX += satSub(prev.TX, segBase.TotalTX)
+			result.BillableRX += satSub(prev.BillableRX, segBase.BillableRX)
+			result.BillableTX += satSub(prev.BillableTX, segBase.BillableTX)
+			// New baseline = the post-drop snapshot.
+			segBase = usageAggregates{
+				TotalRX: cur.RX, TotalTX: cur.TX,
+				BillableRX: cur.BillableRX, BillableTX: cur.BillableTX,
+			}
 		}
 	}
-	return a
+	// Final segment: segBase -> last.
+	last := snaps[len(snaps)-1]
+	result.TotalRX += satSub(last.RX, segBase.TotalRX)
+	result.TotalTX += satSub(last.TX, segBase.TotalTX)
+	result.BillableRX += satSub(last.BillableRX, segBase.BillableRX)
+	result.BillableTX += satSub(last.BillableTX, segBase.BillableTX)
+	return result
 }
 
 // Since snapshots are cumulative-per-process, "since X" (e.g. last 24h) is not
@@ -116,8 +139,12 @@ func usageWindow(snaps []usageSnapshot, window time.Duration, now time.Time) usa
 	}
 
 	// Walk the snapshots and sum deltas, resetting on restart boundaries.
-	// A restart is detected when the total cumulative drops between
-	// adjacent snapshots (newer < older means counters reset).
+	// A boundary is detected when ANY cumulative field drops between adjacent
+	// snapshots (newer < older means a counter reset, or a proxy's bytes being
+	// removed from the aggregate), not just when the combined RX+TX sum drops
+	// — an asymmetric dip (e.g. heavy-RX proxy removed while TX keeps growing)
+	// can keep the combined sum rising while a real RX field dropped, and a
+	// combined-sum-only check would miss it and silently discard those bytes.
 	var result usageAggregates
 	segBase := usageAggregates{
 		TotalRX: base.RX, TotalTX: base.TX,
@@ -126,9 +153,8 @@ func usageWindow(snaps []usageSnapshot, window time.Duration, now time.Time) usa
 	for i := 1; i < len(inWindow); i++ {
 		cur := inWindow[i]
 		prev := inWindow[i-1]
-		curTotal := cur.RX + cur.TX
-		prevTotal := prev.RX + prev.TX
-		if curTotal < prevTotal {
+		if cur.RX < prev.RX || cur.TX < prev.TX ||
+			cur.BillableRX < prev.BillableRX || cur.BillableTX < prev.BillableTX {
 			// Restart detected: add the contribution of the previous segment
 			// (its max was prevTotal, since cumulative only grows within a process).
 			result.TotalRX += satSub(prev.RX, segBase.TotalRX)

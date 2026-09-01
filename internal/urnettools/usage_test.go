@@ -5,24 +5,68 @@ import (
 	"time"
 )
 
-// TestUsageLifetime verifies lifetime is the running max across cumulative
-// snapshots (survives restarts).
+// TestUsageLifetime verifies lifetime is segment-summed across cumulative
+// snapshots, so post-drop growth that never re-exceeds a pre-drop peak (from
+// proxy churn or a restart) is NOT lost to a naive running max.
 func TestUsageLifetime(t *testing.T) {
 	snaps := []usageSnapshot{
 		{TS: time.Now().Add(-3 * time.Hour), RX: 100, TX: 90, BillableRX: 95, BillableTX: 85},
 		{TS: time.Now().Add(-2 * time.Hour), RX: 500, TX: 400, BillableRX: 480, BillableTX: 380},
-		{TS: time.Now().Add(-time.Hour), RX: 200, TX: 150, BillableRX: 190, BillableTX: 140}, // mid lower
+		{TS: time.Now().Add(-time.Hour), RX: 200, TX: 150, BillableRX: 190, BillableTX: 140}, // mid lower (proxy removed)
 		{TS: time.Now(), RX: 700, TX: 600, BillableRX: 660, BillableTX: 560},
 	}
+	// Segment-sum: [0→{500,400}] flushed at the drop = RX+500 TX+400; then
+	// [{200,150}→{700,600}] = RX+500 TX+450. Totals RX=1000 TX=850 → 1850.
+	// Billable: [0→{480,380}]=+480/+380; [{190,140}→{660,560}]=+470/+420 → 1750.
 	lt := usageLifetime(snaps)
-	if lt.Total() != 1300 { // max RX+TX = 700+600
-		t.Fatalf("lifetime total = %d, want 1300", lt.Total())
+	if lt.Total() != 1850 {
+		t.Fatalf("lifetime total = %d, want 1850", lt.Total())
 	}
-	if lt.Billable() != 1220 { // 660+560
-		t.Fatalf("lifetime billable = %d, want 1220", lt.Billable())
+	if lt.Billable() != 1750 {
+		t.Fatalf("lifetime billable = %d, want 1750", lt.Billable())
 	}
-	if lt.Control() != 80 {
-		t.Fatalf("lifetime control = %d, want 80", lt.Control())
+	if lt.Control() != 100 {
+		t.Fatalf("lifetime control = %d, want 100", lt.Control())
+	}
+}
+
+// TestUsageLifetimeAsymmetricDip is the H1 regression: a running-max would
+// drop all post-dip growth that never re-exceeds the peak (44% undercount in
+// the review); segment-sum must recover the pre-dip AND post-dip bytes.
+func TestUsageLifetimeAsymmetricDip(t *testing.T) {
+	base := time.Now()
+	snaps := []usageSnapshot{
+		{TS: base.Add(-3 * time.Hour), RX: 1000, TX: 0},
+		{TS: base.Add(-2 * time.Hour), RX: 100, TX: 0}, // RX dropped (heavy-RX proxy removed)
+		{TS: base.Add(-time.Hour), RX: 900, TX: 0},     // +800 growth, still < 1000 peak
+	}
+	lt := usageLifetime(snaps)
+	// True bytes moved = 1000 (initial growth) + (900-100)=800 = 1800.
+	if lt.Total() != 1800 {
+		t.Fatalf("asymmetric-dip lifetime total = %d, want 1800 (running max would give 1000)", lt.Total())
+	}
+}
+
+// TestUsageWindowAsymmetricMask is the H2 regression for usageWindow: when RX
+// dips (heavy-RX proxy removed) but TX grows so the COMBINED sum keeps rising,
+// a combined-sum-only restart check sees no drop and satSub floors the dipped
+// RX field to 0 — the pre-drop RX peak is silently lost. Per-field detection
+// must flag the RX dip as a segment boundary and preserve the peak.
+// NOTE: a single-aggregate snapshot cannot reconstruct bytes of a REMOVED
+// proxy plus ongoing TX (inherently lossy); this asserts the fix's provable
+// improvement — the pre-drop RX peak (1000) is counted instead of being
+// floored to the post-drop low (pre-fix combined-sum yields 900, losing it).
+func TestUsageWindowAsymmetricMask(t *testing.T) {
+	now := time.Now()
+	snaps := []usageSnapshot{
+		{TS: now.Add(-3 * time.Hour), RX: 500, TX: 0},
+		{TS: now.Add(-2 * time.Hour), RX: 1000, TX: 0}, // RX peak (+500)
+		{TS: now.Add(-time.Hour), RX: 200, TX: 900},    // RX dropped, TX soars → combined still rising
+	}
+	w := usageWindow(snaps, 24*time.Hour, now)
+	// Segment: [0→{1000,0}] flushed at the RX drop = +1000 RX.
+	if w.Total() != 1000 {
+		t.Fatalf("asymmetric-mask window total = %d, want 1000 (pre-drop RX peak; combined-sum floor would give 900)", w.Total())
 	}
 }
 

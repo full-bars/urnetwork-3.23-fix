@@ -81,7 +81,11 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 	// computing cross-bucket deltas. Reset to 0 on cross-bucket restarts.
 	var prevMaxCum, prevMaxBill uint64
 	var prevBucketID int64
-	var prevCum uint64 // previous snapshot's cumulative (for restart detection)
+	var prevCum uint64 // previous snapshot's cumulative (combined, for max tracking)
+	// Per-field previous snapshot values for restart detection: an asymmetric
+	// dip (one field dropping while the combined sum still rises) must be
+	// caught, or per-field deltas later floor to 0 and lose real bytes.
+	var prevRX, prevTX, prevBillRX, prevBillTX uint64
 	first := true
 
 	for _, s := range sorted {
@@ -103,6 +107,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 			bd.maxBillPostRestart = curBill
 			bd.hasData = true
 			prevCum = curCum
+			prevRX, prevTX, prevBillRX, prevBillTX = s.RX, s.TX, s.BillableRX, s.BillableTX
 			first = false
 		} else if id != prevBucketID {
 			// Bucket boundary: capture previous bucket's final max for
@@ -116,8 +121,8 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 				}
 				// else: prevMaxCum already set from the restart case.
 			}
-			// Detect cross-bucket restart.
-			if curCum < prevCum {
+			// Detect cross-bucket restart (any field drops between adjacent snapshots).
+			if s.RX < prevRX || s.TX < prevTX || s.BillableRX < prevBillRX || s.BillableTX < prevBillTX {
 				bd.hasRestart = true
 				bd.crossBucketRestart = true
 				bd.maxCumPreRestart = prevCum
@@ -133,8 +138,8 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 				bd.maxBillPostRestart = curBill
 			}
 			bd.hasData = true
-		} else if curCum < prevCum {
-			// Same-bucket restart: cumulative dropped within this bucket.
+		} else if s.RX < prevRX || s.TX < prevTX || s.BillableRX < prevBillRX || s.BillableTX < prevBillTX {
+			// Same-bucket restart: a cumulative field dropped within this bucket.
 			bd.hasRestart = true
 			bd.restartCum = curCum // restart trigger snapshot (baseline for post-restart segment)
 			bd.restartBill = curBill
@@ -151,6 +156,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 		}
 
 		prevCum = curCum
+		prevRX, prevTX, prevBillRX, prevBillTX = s.RX, s.TX, s.BillableRX, s.BillableTX
 		prevBucketID = id
 	}
 
