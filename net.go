@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+	"golang.org/x/sync/singleflight"
 )
 
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
@@ -25,8 +26,10 @@ type dnsCacheEntry struct {
 // every proxy. TTL is 60 seconds — long enough to absorb burst dials from
 // 2000+ concurrent warmup goroutines, short enough to pick up DNS changes.
 var dnsCache struct {
-	mu sync.Mutex
-	m  map[string]dnsCacheEntry
+	mu  sync.Mutex
+	m   map[string]dnsCacheEntry
+	sg  singleflight.Group
+	neg map[string]time.Time // negative cache: host -> expiry
 }
 
 const dnsCacheTTL = 60 * time.Second
@@ -80,6 +83,14 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 	if dnsCache.m == nil {
 		dnsCache.m = make(map[string]dnsCacheEntry)
 	}
+	// Check negative cache first — avoid re-resolving hosts we recently
+	// failed to resolve (finding #4).
+	if dnsCache.neg != nil {
+		if negExpiry, negOK := dnsCache.neg[host]; negOK && time.Now().Before(negExpiry) {
+			dnsCache.mu.Unlock()
+			return "", false
+		}
+	}
 	e, ok := dnsCache.m[host]
 	if ok && time.Now().Before(e.expiry) {
 		ip := e.ip
@@ -87,20 +98,43 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		return ip, true
 	}
 	dnsCache.mu.Unlock()
-	ips, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip4", host)
-	if err != nil || len(ips) == 0 {
+
+	// Use singleflight to coalesce concurrent lookups for the same host.
+	// Without this, 2000 warmup goroutines that all miss the cache each
+	// issue their own LookupNetIP (finding #3 — resolver stampede).
+	result, err, _ := dnsCache.sg.Do(host, func() (any, error) {
+		ips, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip4", host)
+		if err != nil {
+			return nil, fmt.Errorf("dns: %w", err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("dns: no addresses for %s", host)
+		}
+		return ips[0].String(), nil
+	})
+
+	if err != nil {
+		// Lookup failed — check stale cache, then negative cache.
 		dnsCache.mu.Lock()
 		stale, staleOK := dnsCache.m[host]
-		dnsCache.mu.Unlock()
-		if staleOK {
-			// Stale entry is better than nothing — return it if the lookup
-			// failed, so a transient resolver blip doesn't cause every proxy
-			// dial to fall back to the hostname.
-			return stale.ip, true
+		if staleOK && time.Now().Before(stale.expiry.Add(5*dnsCacheTTL)) {
+			// Serve stale even past expiry, bounded to 5x TTL (RFC 8767).
+			ip := stale.ip
+			dnsCache.mu.Unlock()
+			return ip, true
 		}
+		// Cache the negative result for 10s to avoid hammering the resolver
+		// for the same nonexistent hostname (finding #4).
+		if dnsCache.neg == nil {
+			dnsCache.neg = make(map[string]time.Time)
+		}
+		dnsCache.neg[host] = time.Now().Add(10 * time.Second)
+		dnsCache.mu.Unlock()
 		return "", false
 	}
-	ip := ips[0].String()
+
+	ip := result.(string)
+
 	// Re-acquire to store the fresh result; re-check for a concurrent
 	// writer's fresher entry so we don't clobber it.
 	dnsCache.mu.Lock()
@@ -108,6 +142,10 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		ip = e2.ip
 		dnsCache.mu.Unlock()
 		return ip, true
+	}
+	// Clear negative cache entry on success.
+	if dnsCache.neg != nil {
+		delete(dnsCache.neg, host)
 	}
 	dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
 	// Bound the map against unbounded client-requested hostname growth (#4).
@@ -123,27 +161,67 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 // periodic sweep would do) and, if the map is still over the cap, evicts
 // expired entries then arbitrary ones to keep it bounded against unbounded
 // client-requested hostname growth (finding #4).
+// negPruneCap is the maximum size of the negative DNS cache.
+const negPruneCap = 1024
+
 func pruneDNSCacheLocked(now time.Time) {
-	if len(dnsCache.m) <= dnsCacheMaxEntries {
+	const targetPercent = 90
+	target := dnsCacheMaxEntries * targetPercent / 100
+
+	if len(dnsCache.m) <= target {
 		return
 	}
-	// First drop any expired entries.
+
+	// Phase 1: drop expired entries first (cheap, free).
 	for k, e := range dnsCache.m {
 		if !now.Before(e.expiry) {
 			delete(dnsCache.m, k)
 		}
-		if len(dnsCache.m) <= dnsCacheMaxEntries {
-			return
-		}
 	}
-	// Still over the cap (mostly-fresh map): evict arbitrary entries to get
-	// back under. Order doesn't matter materially here — a 60s TTL means any
-	// evicted entry is cheaply re-resolved.
-	for k := range dnsCache.m {
-		if len(dnsCache.m) <= dnsCacheMaxEntries {
-			return
+	if len(dnsCache.m) <= target {
+		return
+	}
+
+	// Phase 2: collect (key, expiry) pairs, partial-sort to find
+	// nearest-to-expiry, then delete — O(n) total instead of O(n²).
+	// NOTE: toEvict is computed from the post-Phase-1 map size. The pairs
+	// snapshot below is a copy; deletions during Phase 2 iteration affect the
+	// map but not the slice, so toEvict remains correct.
+	toEvict := len(dnsCache.m) - target
+	type kv struct {
+		key    string
+		expiry time.Time
+	}
+	pairs := make([]kv, 0, len(dnsCache.m))
+	for k, e := range dnsCache.m {
+		pairs = append(pairs, kv{k, e.expiry})
+	}
+	// Partial selection: find the toEvict nearest-to-expiry entries.
+	// Simple insertion sort for small eviction counts is fine.
+	for i := 0; i < toEvict && i < len(pairs); i++ {
+		minIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].expiry.Before(pairs[minIdx].expiry) {
+				minIdx = j
+			}
 		}
-		delete(dnsCache.m, k)
+		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
+		delete(dnsCache.m, pairs[i].key)
+	}
+
+	// Prune the negative cache: drop expired entries, then cap.
+	if len(dnsCache.neg) > 0 {
+		for k, exp := range dnsCache.neg {
+			if now.After(exp) {
+				delete(dnsCache.neg, k)
+			}
+		}
+		for len(dnsCache.neg) > negPruneCap {
+			for k := range dnsCache.neg {
+				delete(dnsCache.neg, k)
+				break
+			}
+		}
 	}
 }
 

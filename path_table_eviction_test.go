@@ -10,12 +10,18 @@ import (
 // the 4096 cap could break an ACTIVE flow by ejecting its route. The design
 // answer: lastUsed is refreshed on every SelectDestination hit, so a route
 // that is actively carrying traffic is never the least-recently-used entry.
-// This test proves evictOldest removes only the oldest (idle) entry while a
+// This test proves evictOldestBatch removes only the oldest (idle) entry while a
 // recently-used one survives, and evictStale removes only genuinely-stale
 // entries (>5min idle).
 func TestPathTableEvictionKeepsActiveFlow(t *testing.T) {
 	pt := newPathTable([]MultiHopId{MultiHopId{}})
 	now := time.Now()
+
+	// Fill the table to the cap so eviction triggers.
+	for i := 0; i < pathTableMaxEntries-2; i++ {
+		pt.paths4[Ip4Path{Protocol: IpProtocolTcp, SourcePort: i, DestinationPort: 100 + i}] =
+			pathTableEntry{lastUsed: now.Add(-2 * time.Minute)}
+	}
 
 	// Two IPv4 flows: one "active" (recently used), one "idle" (old).
 	activeKey := Ip4Path{Protocol: IpProtocolTcp, SourcePort: 1, DestinationPort: 81}
@@ -23,13 +29,13 @@ func TestPathTableEvictionKeepsActiveFlow(t *testing.T) {
 	pt.paths4[idleKey] = pathTableEntry{lastUsed: now.Add(-10 * time.Minute)}
 	pt.paths4[activeKey] = pathTableEntry{lastUsed: now.Add(-1 * time.Second)}
 
-	// evictOldest must pick the idle entry, not the active one.
-	pt.evictOldest()
+	// evictOldestBatch must pick the idle entry, not the active one.
+	pt.evictOldestBatch()
 	if _, ok := pt.paths4[activeKey]; !ok {
-		t.Fatal("evictOldest evicted the ACTIVE flow entry; active flows must be protected")
+		t.Fatal("evictOldestBatch evicted the ACTIVE flow entry; active flows must be protected")
 	}
 	if _, ok := pt.paths4[idleKey]; ok {
-		t.Fatal("evictOldest did not evict the idle (least-recently-used) entry")
+		t.Fatal("evictOldestBatch did not evict the idle (least-recently-used) entry")
 	}
 
 	// evictStale with a 5-minute cutoff must remove only the stale entry.
