@@ -3556,7 +3556,7 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 			return entry.destination, nil
 		}
 		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
-			self.evictOldest()
+			self.evictOldestBatch()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
@@ -3570,7 +3570,7 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 			return entry.destination, nil
 		}
 		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
-			self.evictOldest()
+			self.evictOldestBatch()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
@@ -3582,6 +3582,11 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 }
 
 // evictStale removes entries not used in the last 5 minutes.
+// IMPORTANT: the 5-minute cutoff must stay <= DefaultTcpBufferSettings.IdleTimeout
+// and DefaultUdpBufferSettings.IdleTimeout (both 300s). If those settings are
+// raised above this value, evictStale will evict entries for flows that are
+// still active, causing mid-connection reroutes (finding #1 from Opus review).
+// TODO: derive this from the settings instead of hardcoding.
 func (self *pathTable) evictStale(now time.Time) {
 	cutoff := now.Add(-5 * time.Minute)
 	for k, v := range self.paths4 {
@@ -3596,35 +3601,63 @@ func (self *pathTable) evictStale(now time.Time) {
 	}
 }
 
-// evictOldest removes the single oldest entry across both maps.
-func (self *pathTable) evictOldest() {
-	var oldestTime time.Time
-	var oldestKey4 Ip4Path
-	var oldestKey6 Ip6Path
-	var isIPv4 bool
-	first := true
+// evictOldestBatch evicts entries oldest-first down to 90% of the cap.
+// It prefers evicting entries older than minEvictAge (60s) to avoid
+// rerouting live flows. If no entry is old enough, it evicts the absolute
+// oldest regardless of age (pressure-release valve). Uses a single-pass
+// collect + partial-sort for O(n) total instead of O(n²).
+func (self *pathTable) evictOldestBatch() {
+	const minEvictAge = 60 * time.Second
+	const targetPercent = 90
+	target := pathTableMaxEntries * targetPercent / 100
+
+	total := len(self.paths4) + len(self.paths6)
+	if total <= target {
+		return
+	}
+
+	toEvict := total - target
+
+	// Collect all entries with their keys and timestamps.
+	type pathEntry struct {
+		key4     Ip4Path
+		key6     Ip6Path
+		lastUsed time.Time
+		isIPv4   bool
+	}
+	pairs := make([]pathEntry, 0, total)
 	for k, v := range self.paths4 {
-		if first || v.lastUsed.Before(oldestTime) {
-			oldestTime = v.lastUsed
-			oldestKey4 = k
-			isIPv4 = true
-			first = false
-		}
+		pairs = append(pairs, pathEntry{key4: k, lastUsed: v.lastUsed, isIPv4: true})
 	}
 	for k, v := range self.paths6 {
-		if first || v.lastUsed.Before(oldestTime) {
-			oldestTime = v.lastUsed
-			oldestKey6 = k
-			isIPv4 = false
-			first = false
-		}
+		pairs = append(pairs, pathEntry{key6: k, lastUsed: v.lastUsed, isIPv4: false})
 	}
-	if !first {
-		if isIPv4 {
-			delete(self.paths4, oldestKey4)
-		} else {
-			delete(self.paths6, oldestKey6)
+
+	// Partial selection sort: find the toEvict oldest entries.
+	// Two passes: first prefer entries older than minEvictAge,
+	// then fill remaining slots with the absolute oldest.
+	var evicted int
+	for i := 0; i < toEvict && i < len(pairs); i++ {
+		minIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].lastUsed.Before(pairs[minIdx].lastUsed) {
+				minIdx = j
+			}
 		}
+		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
+
+		// If this entry is younger than minEvictAge and we're below the
+		// hard cap, stop — allow the table to grow rather than reroute.
+		if time.Since(pairs[i].lastUsed) < minEvictAge && total-evicted < pathTableMaxEntries {
+			break
+		}
+
+		if pairs[i].isIPv4 {
+			delete(self.paths4, pairs[i].key4)
+		} else {
+			delete(self.paths6, pairs[i].key6)
+		}
+		evicted++
 	}
 }
 
