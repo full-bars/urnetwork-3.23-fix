@@ -16,6 +16,11 @@ import (
 // networkPresets maps shorthand names to (api_url, connect_url) pairs so
 // users don't have to memorize backend URLs. "beta" matches the beta
 // testnet endpoints used fleet-wide (see provider/README.md, FORK_CHANGES.md).
+//
+// NOTE: api.beta-test.net is corroborated by fleet docs and test fixtures.
+// connect.beta-test.net is NOT independently verified — the connect host
+// was carried from the initial preset definition. Confirm against the
+// beta fleet before using in production.
 var networkPresets = map[string][2]string{
 	"main": {"https://api.bringyour.com", "wss://connect.bringyour.com"},
 	"beta": {"https://api.beta-test.net", "wss://connect.beta-test.net"},

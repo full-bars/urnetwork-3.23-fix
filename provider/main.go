@@ -2002,6 +2002,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			writeProxyHealthState(dir, report, now)
 			writeProxyHealthEvents(dir, report, now)
 			writeProxyTrafficState(dir, report, now)
+			writeUsageHistory(dir, report, now)
 		}
 	}
 }
