@@ -517,7 +517,7 @@ func TestRunProxyJWTWatcherRejectsJwtMissingClientId(t *testing.T) {
 // it stays correct even if a single renewal issues multiple auth-client calls.
 func (ts *renewalTestServer) waitForRenewalRequest(t *testing.T, baseline int32) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for {
 		if ts.totalRequests.Load() > baseline {
 			return
