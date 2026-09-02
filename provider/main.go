@@ -664,6 +664,15 @@ func applyStagedSession() {
 		if !isSessionFile(e.Name()) {
 			continue
 		}
+		// CR: only promote REGULAR files. An allowlisted symlink or
+		// directory in staging must not be promoted — later reads of
+		// ~/.urnetwork/jwt could follow a symlink to an attacker-controlled
+		// target. os.ReadDir's DirEntry.Type() reports the file type without
+		// following symlinks.
+		if info, err := e.Info(); err != nil || !info.Mode().IsRegular() {
+			tlog("[session] skip staged %s: not a regular file\n", e.Name())
+			continue
+		}
 		src := filepath.Join(stagingDir, e.Name())
 		dst := filepath.Join(urNetworkDir, e.Name())
 		if err := os.Rename(src, dst); err != nil {

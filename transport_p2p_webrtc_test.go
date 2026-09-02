@@ -89,13 +89,16 @@ func TestWebRtc(t *testing.T) {
 	if e := <-sendErr; e != nil {
 		t.Fatalf("A->B send: %v", e)
 	}
+	// Read the receive result, then ALWAYS wait for the payload: receive
+	// signals recvErr before received, so a select on both can consume the
+	// error and skip the assertion, leaving the payload for the NEXT
+	// direction to pick up (cross-direction contamination).
+	if e := <-recvErr; e != nil {
+		t.Fatalf("A->B recv: %v", e)
+	}
 	select {
 	case <-ctx.Done():
-		t.Fatal("timeout A->B recv")
-	case e := <-recvErr:
-		if e != nil {
-			t.Fatalf("A->B recv: %v", e)
-		}
+		t.Fatal("timeout A->B payload")
 	case b2 := <-received:
 		assert.Equal(t, b, b2)
 	}
@@ -106,13 +109,12 @@ func TestWebRtc(t *testing.T) {
 	if e := <-sendErr; e != nil {
 		t.Fatalf("B->A send: %v", e)
 	}
+	if e := <-recvErr; e != nil {
+		t.Fatalf("B->A recv: %v", e)
+	}
 	select {
 	case <-ctx.Done():
-		t.Fatal("timeout B->A recv")
-	case e := <-recvErr:
-		if e != nil {
-			t.Fatalf("B->A recv: %v", e)
-		}
+		t.Fatal("timeout B->A payload")
 	case b2 := <-received:
 		assert.Equal(t, b, b2)
 	}

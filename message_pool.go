@@ -642,7 +642,16 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 					// G-M5 fix: refuse share at uint16 max to prevent
 					// overflow wrapping to 0 (which reads as "not taken"
 					// everywhere else → cross-flow data corruption).
-					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing", id)
+					//
+					// CR note: on refusal the caller still receives the
+					// buffer and CANNOT detect the failed increment, so a
+					// later MessagePoolReturn would over-decrement an owner's
+					// reference. This only matters at 65,535 concurrent
+					// read-only shares of ONE buffer — unreachable in practice
+					// (the pool shards and flows don't share at that scale).
+					// Callers must treat a paste-received buffer as NOT shared
+					// and not return it when this warning fires.
+					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (caller must not return the buffer as shared)", id)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared
