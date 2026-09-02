@@ -11,11 +11,17 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/docopt/docopt-go"
 )
+
+// canonicalProxyRe matches the already-canonical host:port:user:pass form.
+// Compiled once at package load (hoisted out of normalizeProxyLine, which runs
+// per pasted line — a large list otherwise pays a compile per entry).
+var canonicalProxyRe = regexp.MustCompile(`^(.*:\d+):([^:]*):([^:]*)$`)
 
 // normalizeProxyLine parses a single line of proxy input in common SOCKS5
 // formats and returns the urnetwork canonical form: host:port:user:pass
@@ -70,8 +76,7 @@ func normalizeProxyLine(line string) string {
 	}
 
 	// Format 2: host:port:user:pass (already canonical)
-	r := regexp.MustCompile(`^(.*:\d+):([^:]*):([^:]*)$`)
-	if groups := r.FindStringSubmatch(line); groups != nil {
+	if groups := canonicalProxyRe.FindStringSubmatch(line); groups != nil {
 		addr := normalizeHostPort(groups[1])
 		if addr == "" {
 			return ""
@@ -176,15 +181,9 @@ func validPort(s string) bool {
 	if s == "" || len(s) > 5 {
 		return false
 	}
-	if !regexp.MustCompile(`^\d+$`).MatchString(s) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
 		return false
-	}
-	n := 0
-	for _, c := range s {
-		n = n*10 + int(c-'0')
-		if n > 65535 {
-			return false
-		}
 	}
 	return n >= 1 && n <= 65535
 }
@@ -460,9 +459,16 @@ func proxyPaste(opts docopt.Opts) {
 	}
 	defer os.Remove(tmpFile.Name())
 	for _, line := range allNormalized {
-		fmt.Fprintln(tmpFile, line)
+		if _, err := fmt.Fprintln(tmpFile, line); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			shmLogFatal(81, "could not write temp file: %v", err)
+		}
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpFile.Name())
+		shmLogFatal(81, "could not finalize temp file: %v", err)
+	}
 
 	// os.Exit and shmLogFatal bypass deferred calls, so the temp file holding
 	// plaintext proxy credentials would be left on disk on any error path

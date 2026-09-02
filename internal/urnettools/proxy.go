@@ -35,7 +35,9 @@ func providerSubcommand(p Provider, args ...string) error {
 	// which reads its proxy list from stdin — without this the child sees
 	// /dev/null, readLines gets EOF, and paste always reports "no input
 	// received". Other subcommands must not inherit stdin.
-	if len(args) > 0 && args[0] == "paste" {
+	// The paste dispatch builds args as ["proxy", "paste", ...], so args[1]
+	// is the subcommand name here (args[0] is always "proxy").
+	if len(args) > 0 && args[0] == "paste" || len(args) > 1 && args[0] == "proxy" && args[1] == "paste" {
 		cmd.Stdin = os.Stdin
 	}
 	// Run with the provider's HOME so state lands in the right directory.
