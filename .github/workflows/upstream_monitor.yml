@@ -108,16 +108,20 @@ jobs:
                 Diff:
                                 ${COMPACT_DIFF}"
 
-                # Tier 1: opencode-go gateway (via opencode CLI)
+                # Tier 1: opencode-go gateway (via opencode CLI) - mimo-v2.5-free, then nemotron-3-ultra-free, then openrouter free fallback
                 if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                  OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
-                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
-                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                    echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
-                  else
-                    echo "[WARN] opencode-go failed, falling back to DeepSeek"
-                  fi
+                  for OC_MODEL in opencode/mimo-v2.5-free opencode/nemotron-3-ultra-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free; do
+                    OC_OUTPUT=$(timeout 120 opencode run --model "$OC_MODEL" --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                      break
+                    else
+                      echo "[WARN] $OC_MODEL failed, trying next"
+                    fi
+                  done
+                  echo "[WARN] opencode-go models exhausted, falling back to DeepSeek"
                 fi
 
                 # Tier 2: DeepSeek API
@@ -367,16 +371,20 @@ jobs:
                                 ${COMPACT_DIFF}"
 
                 if [ -n "$COMPACT_DIFF" ]; then
-                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  # Tier 1: opencode-go gateway (via opencode CLI) - mimo-v2.5-free, then nemotron-3-ultra-free, then openrouter free fallback
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
-                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
-                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
-                    else
-                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
-                    fi
+                    for OC_MODEL in opencode/mimo-v2.5-free opencode/nemotron-3-ultra-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free; do
+                      OC_OUTPUT=$(timeout 120 opencode run --model "$OC_MODEL" --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                      RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                        break
+                      else
+                        echo "[WARN] $OC_MODEL failed, trying next"
+                      fi
+                    done
+                    echo "[WARN] opencode-go models exhausted, falling back to DeepSeek"
                   fi
 
                   # Tier 2: DeepSeek API
@@ -722,16 +730,20 @@ jobs:
                         ${COMPACT_DIFF}"
 
             if [ -n "$COMPACT_DIFF" ]; then
-              # Tier 1: opencode-go gateway (via opencode CLI)
+              # Tier 1: opencode-go gateway (via opencode CLI) - mimo-v2.5-free, then nemotron-3-ultra-free, then openrouter free fallback
               if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
-                if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
-                  AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                  echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
-                else
-                  echo "[WARN] opencode-go failed, falling back to DeepSeek"
-                fi
+                for OC_MODEL in opencode/mimo-v2.5-free opencode/nemotron-3-ultra-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free; do
+                  OC_OUTPUT=$(timeout 120 opencode run --model "$OC_MODEL" --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                  RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                  if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                    AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                    echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                    break
+                  else
+                    echo "[WARN] $OC_MODEL failed, trying next"
+                  fi
+                done
+                echo "[WARN] opencode-go models exhausted, falling back to DeepSeek"
               fi
 
               # Tier 2: DeepSeek API
@@ -933,16 +945,20 @@ jobs:
                                 ${COMPACT_DIFF}"
 
                 if [ -n "$COMPACT_DIFF" ]; then
-                  # Tier 1: opencode-go gateway (via opencode CLI)
+                  # Tier 1: opencode-go gateway (via opencode CLI) - mimo-v2.5-free, then nemotron-3-ultra-free, then openrouter free fallback
                   if [ -z "$AI_SUMMARY" ] && [ -n "$OPENCODE_API_KEY" ] && command -v opencode >/dev/null 2>&1; then
-                    OC_OUTPUT=$(timeout 120 opencode run --model opencode-go/deepseek-v4-flash --dir /tmp --format json "$PROMPT" 2>&1 || true)
-                    RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
-                    if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
-                      AI_SUMMARY="${RAW_SUMMARY:0:3800}"
-                      echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
-                    else
-                      echo "[WARN] opencode-go failed, falling back to DeepSeek"
-                    fi
+                    for OC_MODEL in opencode/mimo-v2.5-free opencode/nemotron-3-ultra-free openrouter/nvidia/nemotron-3-ultra-550b-a55b:free; do
+                      OC_OUTPUT=$(timeout 120 opencode run --model "$OC_MODEL" --dir /tmp --format json "$PROMPT" 2>&1 || true)
+                      RAW_SUMMARY=$(echo "$OC_OUTPUT" | jq -r 'select(.type=="text") | .part.text' 2>/dev/null)
+                      if [ ${#RAW_SUMMARY} -ge 400 ] && printf '%s' "$RAW_SUMMARY" | grep -qE '\[(MUST PORT|WATCH|NO ACTION)\]'; then
+                        AI_SUMMARY="${RAW_SUMMARY:0:3800}"
+                        echo "[SUCCESS] Generated AI summary via opencode-go (${#RAW_SUMMARY} chars)"
+                        break
+                      else
+                        echo "[WARN] $OC_MODEL failed, trying next"
+                      fi
+                    done
+                    echo "[WARN] opencode-go models exhausted, falling back to DeepSeek"
                   fi
 
                   # Tier 2: DeepSeek API
