@@ -425,14 +425,14 @@ func (r *ProxyReloader) reload() {
 			defer close(done) // first defer = runs last (LIFO); closes LOCAL, not field
 			defer r.wg.Done()
 			defer directCancel()
-			defer connect.UnregisterProxy(0)
-			// Clean up cancelMap entry on exit so the reaper and
-			// reload don't see a stale entry (finding #4).
+			// Delete cancelMap AFTER UnregisterProxy so stale-unregister
+			// can't nuke a fresh direct's registration (flash review #3).
 			defer func() {
 				r.cancelMapMu.Lock()
 				delete(r.cancelMap, directProxyKey)
 				r.cancelMapMu.Unlock()
 			}()
+			defer connect.UnregisterProxy(0)
 			connect.RegisterProxy(0, "direct")
 			r.spawnProxy(directCtx, nil, true, false)
 		})

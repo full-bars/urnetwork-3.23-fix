@@ -3271,6 +3271,15 @@ func provide(opts docopt.Opts) {
 		go connect.HandleError(func() {
 			defer wg.Done()
 			defer nativeCancel()
+			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
+			// can't nuke a fresh direct's registration, and so the reloader's
+			// running[] snapshot doesn't leave direct permanently "running" after
+			// the goroutine exits (DeepSeek HIGH).
+			defer func() {
+				proxyCancelMu.Lock()
+				delete(proxyCancelMap, directProxyKey)
+				proxyCancelMu.Unlock()
+			}()
 			defer connect.UnregisterProxy(0)
 
 			// Register it early so it shows up in health reports immediately as [direct]
