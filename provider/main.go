@@ -2175,8 +2175,8 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 			case <-ticker.C:
 				continue
 			}
-			}
-			if err == nil {
+		}
+		if err == nil {
 			byJwt := strings.TrimSpace(string(byJwtBytes))
 
 			lastRefreshTime := readLastRefreshTime()

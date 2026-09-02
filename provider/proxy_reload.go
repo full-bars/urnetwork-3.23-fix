@@ -412,7 +412,7 @@ func (r *ProxyReloader) reload() {
 		}
 		connect.UnregisterProxy(0)
 		tlog("[direct] native [direct] transport stopped (disable)\n")
-		} else if !directRunning && directShouldRun {
+	} else if !directRunning && directShouldRun {
 		// Enable direct: start the goroutine.
 		r.wg.Add(1)
 		done := make(chan struct{}) // local — goroutine closes this, not the field
@@ -437,7 +437,7 @@ func (r *ProxyReloader) reload() {
 			r.spawnProxy(directCtx, nil, true, false)
 		})
 		tlog("[direct] native [direct] transport started (enable)\n")
-		}
+	}
 
 	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
 		len(running), len(desiredSet), lockWait.Round(time.Millisecond))
