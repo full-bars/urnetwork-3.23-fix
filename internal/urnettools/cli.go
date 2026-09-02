@@ -23,7 +23,7 @@ var ToolVersion = "dev"
 
 func Run(args []string) error {
 	// A nil slice must stay nil-free: SetArgs(nil) makes Cobra fall back to
-	// os.Args[1:], so Run(nil) would execute the caller's real argv (review LOW).
+	// os.Args[1:], so Run(nil) would execute the caller's real argv.
 	if args == nil {
 		args = []string{}
 	}

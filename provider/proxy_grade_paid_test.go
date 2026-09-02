@@ -176,7 +176,7 @@ func TestPaidProxyGrader_SkipsFreshGrade(t *testing.T) {
 	}
 }
 
-// TestPaidProxyGrader_GradesFileProxyWithStaleURLTag pins the review HIGH
+// TestPaidProxyGrader_GradesFileProxyWithStaleURLTag pins the
 // finding: an address in the file/internal desired set is served as a file
 // proxy (file wins in mergeProxyURLCache) and MUST be graded here even if
 // its state entry carries a stale first-seen "url" tag. The desired set is
@@ -220,7 +220,7 @@ func TestPaidProxyGrader_GradesFileProxyWithStaleURLTag(t *testing.T) {
 	}
 }
 
-// TestPaidProxyGrader_SkipsMissingEntry pins the review MEDIUM finding: a
+// TestPaidProxyGrader_SkipsMissingEntry pins the case that a
 // proxy with NO ProxyEntry (never launched, or removed between collect and
 // apply) must not be graded and must not get a ghost entry created.
 func TestPaidProxyGrader_SkipsMissingEntry(t *testing.T) {

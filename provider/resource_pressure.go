@@ -293,8 +293,8 @@ func pressureRegime(score float64) int {
 // ---------------------------------------------------------------------------
 // Adaptive GC governor (consolidated single writer)
 // ---------------------------------------------------------------------------
-// One controller owns debug.SetGCPercent for the whole process (the "one owner"
-// rule from the design review). It is fed by both memory signals and tightens to
+// One controller owns debug.SetGCPercent for the whole process (a "one owner"
+// rule). It is fed by both memory signals and tightens to
 // the tighter of the two: the process heap fraction (this process vs its own
 // limit) and host available RAM in MiB (the former eco monitor's signal, kept in
 // absolute MiB so small memory-fragile boxes keep the exact protection the eco
@@ -967,7 +967,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		next := aimdStep(target, cacheSize, effectivePressure, resolveProxyURLMax(configuredMax))
 		// An operator trim cap overrides the AIMD operating point: never grow
 		// the URL pool target above the running-proxy cap (they fight otherwise,
-		// burning fetch/probe work on proxies that can never launch - review MEDIUM).
+		// burning fetch/probe work on proxies that can never launch).
 		if tc, _ := readTrimTarget(); tc > 0 && next > tc {
 			next = tc
 		}

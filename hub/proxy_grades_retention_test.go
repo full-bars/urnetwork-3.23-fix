@@ -10,7 +10,7 @@ import (
 
 // Regression-test additions:
 // 1. pruneProxyGrades retention — the proxy_grades table was never pruned
-//    (free-review MEDIUM: the ROW_NUMBER subquery in handleProxiesBest scans
+//    (the ROW_NUMBER subquery in handleProxiesBest scans
 //    the whole table on every call, so unbounded growth is a perf regression
 //    on long-lived hubs).
 // 2. deleteFromDB must clear a node's grades.

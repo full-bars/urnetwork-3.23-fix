@@ -105,7 +105,7 @@ func toLower(s string) string {
 
 // TestProbeTargetsAccessors_ReturnCopies: the accessors must hand out copies,
 // not the package-owned tables — a caller that mutates its slice must not
-// change what the next caller (or a concurrent sampler) sees (review #1).
+// change what the next caller (or a concurrent sampler) sees.
 func TestProbeTargetsAccessors_ReturnCopies(t *testing.T) {
 	hosts := ProbeHostNames()
 	if len(hosts) == 0 {

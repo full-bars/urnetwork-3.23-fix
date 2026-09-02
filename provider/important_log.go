@@ -42,7 +42,7 @@ var importantLogMarkers = []string{
 	// Sibling paid-grader + table-probe lines from #344/#343 also belong
 	// in the important buffer — same low-volume/high-value class. They
 	// were added to the [proxy][grade] namespace by this PR, so curate
-	// them here (NIT-16).
+	// them here.
 	"[proxy][grade] paid",
 	"[proxy][grade] graded",
 }

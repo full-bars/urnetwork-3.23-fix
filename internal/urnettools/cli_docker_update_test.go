@@ -81,7 +81,7 @@ func TestHasSelfUpdateArg(t *testing.T) {
 
 // A bare container name that matches nothing must be a loud error, never a
 // silent fall-through to the lone-container auto-select (which would update a
-// DIFFERENT container than the one named) — ox-alpha H1, PR #465.
+// DIFFERENT container than the one named).
 func TestUpdateTargetFromArgs_UnmatchedBareNameErrors(t *testing.T) {
 	providers := []Provider{{User: "docker:ps", Unit: "ps"}}
 	_, _, err := updateTargetFromArgs([]string{"prod2"}, providers)
@@ -99,7 +99,7 @@ func TestUpdateTargetFromArgs_UnmatchedBareNameErrors(t *testing.T) {
 }
 
 // A self-update pin value must never be treated as a container name, even if
-// it coincidentally equals one — ox-alpha L2, PR #465.
+// it coincidentally equals one.
 func TestUpdateTargetFromArgs_SelfUpdateValueNotContainer(t *testing.T) {
 	providers := []Provider{{User: "docker:v1", Unit: "v1"}}
 	tt, _, err := updateTargetFromArgs([]string{"--tag", "v1"}, providers)

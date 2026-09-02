@@ -146,7 +146,7 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 	if !strings.Contains(got, "URNETWORK_RAMLOGS=1") {
 		t.Errorf("different key 'URNETWORK_RAMLOGS' was dropped: %s", got)
 	}
-	// Exactly one [Service] header (free-review LOW: duplicate header bug).
+	// Exactly one [Service] header (a duplicate header would be a bug).
 	if n := strings.Count(got, "[Service]"); n != 1 {
 		t.Errorf("expected exactly one [Service] header, got %d:\n%s", n, got)
 	}

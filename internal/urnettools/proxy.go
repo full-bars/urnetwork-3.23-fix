@@ -52,7 +52,7 @@ func providerSubcommand(p Provider, args ...string) error {
 		cmd.Env = os.Environ()
 	}
 	// Also run as that user when we are root, so auth/network files are written
-	// owned by the provider user and remain readable by it (review HIGH).
+	// owned by the provider user and remain readable by it.
 	dropPrivilegesTo(p.User, cmd)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("provider %s: %v", providerLabel(p), err)

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Final-review HIGH regression: the tier field is attacker-influenced
+// Regression: the tier field is attacker-influenced
 // (any authenticated node's report body) and is rendered unescaped into the
 // dashboard innerHTML. It must be allowlisted to exactly A-F on ingest —
 // a crafted tier value must never reach proxy_grades.

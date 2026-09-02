@@ -303,7 +303,7 @@ func newDefaultCmd() *cobra.Command {
 
 func newSessionCmd() *cobra.Command {
 	// cmdSession owns its rich help (save|load <file>, --allow-different-account);
-	// building raw here lets that help fire instead of Cobra's stub (review MEDIUM).
+	// building raw here lets that help fire instead of Cobra's stub.
 	return &cobra.Command{
 		Use:                "session",
 		Short:              "export/import identity + proxy state",
@@ -515,7 +515,7 @@ func newAutoStartCmd() *cobra.Command {
 }
 
 func newSelfHealCmd() *cobra.Command {
-	// cmdSelfHeal has its own -h handling; building raw preserves it (review MEDIUM).
+	// cmdSelfHeal has its own -h handling; building raw preserves it.
 	return &cobra.Command{
 		Use:                "self-heal",
 		Short:              "self heal",

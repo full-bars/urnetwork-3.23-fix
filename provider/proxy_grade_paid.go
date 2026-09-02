@@ -179,7 +179,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// The desired set IS the ownership definition: anything in
 			// the file/internal set is served as a file proxy (file wins
 			// in mergeProxyURLCache), so it is graded here even if a
-			// stale first-seen tag says "url" (independent review HIGH finding).
+			// stale first-seen tag says "url").
 			if !entry.LastGraded.IsZero() && now.Sub(entry.LastGraded) < paidStaleAfter {
 				continue // fresh grade; ride the paid stale window
 			}
@@ -198,7 +198,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// only for a bounded time (findings 2c/4b). A NEVER-graded
 			// proxy (LastGraded zero) is always force-probed: earn-skip
 			// must never prevent the FIRST grade, or an earning proxy with
-			// no grade stays ungraded forever (review CRITICAL).
+			// no grade stays ungraded forever.
 			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Address, paidEarnWindow)
 			forceProbeDue := entry.LastGraded.IsZero() || now.Sub(entry.LastGraded) >= paidForceProbeCeiling
 			if earnedRecently && !forceProbeDue {
@@ -259,7 +259,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// Capture the probe-completion time once, so every entry's LastGraded
 	// reflects when its probe finished (not when the apply phase happened
 	// to run under the lock) — the delta is small, but under load the
-	// apply can be delayed by lock contention (review nit).
+	// apply can be delayed by lock contention.
 	probeDone := time.Now()
 
 	// Apply the grades atomically. Only the grade fields are touched:
@@ -318,7 +318,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		for _, r := range results {
 			entry, ok := state.Proxies[r.addr]
 			if !ok {
-				continue // removed by a concurrent writer; do not resurrect (independent review MEDIUM)
+				continue // removed by a concurrent writer; do not resurrect
 			}
 			if entry.LastGraded.After(r.snapshotGradedAt) {
 				continue // refreshed by a concurrent pass; do not clobber
@@ -362,7 +362,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			if r.table.Decidable {
 				oldTier := ""
 				oldScore := entry.Score
-				wasGraded := entry.Graded // capture BEFORE the write below (HIGH-1)
+				wasGraded := entry.Graded // capture BEFORE the write below
 				if entry.Graded {
 					oldTier = proxyGradeTier(entry.Score)
 				}

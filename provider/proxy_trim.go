@@ -99,7 +99,7 @@ type trimRank struct {
 // buildTrimGradeResolver returns a per-address A-F grade resolver backed by the
 // existing proxyGradeFor unifier, which reads the grade from the correct store
 // for each proxy (paid/file ProxyEntry wins, else the URL cache ProxyURLEntry)
-// (review findings). nil urlState degrades to the paid store only.
+// nil urlState degrades to the paid store only.
 func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState) func(addr string) (float64, bool) {
 	return func(addr string) (float64, bool) {
 		g, ok := proxyGradeFor(addr, state, urlState)
@@ -216,7 +216,7 @@ func runningProxyTraffic() map[string]uint64 {
 
 // runningProxyAddresses returns the currently RUNNING addresses from the health
 // surface (bandwidth + connecting), so --preview reports the running pool rather
-// than the larger desired set in proxy.state (review finding MEDIUM).
+// than the larger desired set in proxy.state).
 func runningProxyAddresses() []string {
 	_, _, _, bandwidth, connecting := connect.ProxyHealthSnapshot()
 	seen := map[string]bool{}
@@ -279,7 +279,7 @@ func proxyTrim(opts docopt.Opts) {
 			return
 		}
 		// Clearing works even while the provider is stopped (a bad cap must be
-		// removable), so the running check must NOT gate this path (review LOW).
+		// removable), so the running check must NOT gate this path.
 		if err := writeTrimTarget(0); err != nil {
 			shmLogFatal(71, "could not clear proxy trim cap: %v", err)
 		}

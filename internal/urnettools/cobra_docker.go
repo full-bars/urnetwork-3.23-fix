@@ -314,7 +314,7 @@ func newDockerSessionCmd() *cobra.Command {
 func newDockerExecCmd() *cobra.Command {
 	// MUST NOT use newCobraCmd: its broad hasHelpFlag intercepts '--help' AFTER
 	// the '--' separator, which belongs to the container command being run
-	// (review CRITICAL - help-after-sep must be forwarded). splitExecArgs decides
+	// splitExecArgs decides
 	// what is help; delegate straight through.
 	return &cobra.Command{
 		Use:                "exec [target] [--] <cmd...>",

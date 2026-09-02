@@ -514,7 +514,7 @@ func completeSmtpNegotiationCommand(line []byte) (smtpCommand, bool) {
 		// Constrain the argument to a real EHLO/HELO shape: a domain or an
 		// [addr-literal], e.g. "mail.example.com" or "[1.2.3.4]". Unbounded
 		// arbitrary printable text (up to 510 bytes) would make 587 a
-		// newly-reachable arbitrary-ASCII relay channel (review finding).
+		// newly-reachable arbitrary-ASCII relay channel.
 		if !validSmtpHeloArgument(argument) {
 			return 0, false
 		}

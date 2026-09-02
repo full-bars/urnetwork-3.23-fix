@@ -242,7 +242,7 @@ func cmdDockerExec(args []string) error {
 	pre, rest, err := splitExecArgs(args)
 	if err == errHelpShown {
 		// Print the usage on pre-separator help — exiting silently on
-		// `exec --unit x --help` reads as a no-op, not documentation.
+		// `exec --unit x --help` prints usage rather than delegating.
 		usageDocker()
 		return nil
 	}
@@ -378,7 +378,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	// swap the on-disk binary is already the new version, so capturing the
 	// baseline here (post-swap) would make the difference check below
 	// unsatisfiable — every real update would falsely fail and force an
-	// unplanned container cycle (ox-alpha C1, PR #465). Read it first so
+	// unplanned container cycle. Read it first so
 	// waitForLiveVersion can detect the bump to the new release.
 	beforeVer := strings.TrimSpace(containerLiveVersion(p.Unit))
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
@@ -417,7 +417,6 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	// No-op: the in-container update finished but the live version is
 	// unchanged (the container already ran the target release). Report it and
 	// stop — do not bounce a healthy production container or fail hard
-	// (ox-alpha M2, PR #465).
 	if cur := strings.TrimSpace(containerLiveVersion(p.Unit)); cur == beforeVer {
 		fmt.Printf("%s is already at %s (no change).\n", p.Unit, cur)
 		return nil
@@ -541,7 +540,7 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 	// Host self-update pinning (--tag/--digest/--url) means the user asked to
 	// update the HOST tool. Its value may coincidentally equal a container
 	// name; never treat it as a container target, and return empty so
-	// cmdDockerUpdate routes to the host self-update (ox-alpha L2, PR #465).
+	// cmdDockerUpdate routes to the host self-update.
 	if hasSelfUpdateArg(args) {
 		return Target{}, nil, nil
 	}
@@ -567,8 +566,7 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		}
 		// A bare container name was given but matches nothing. Refuse instead
 		// of silently falling through to the lone-container auto-select, which
-		// would update a DIFFERENT container than the one named (ox-alpha H1,
-		// PR #465).
+		// would update a DIFFERENT container than the one named.
 		names := make([]string, 0, len(providers))
 		for _, p := range providers {
 			names = append(names, p.Unit)

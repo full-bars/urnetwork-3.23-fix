@@ -291,7 +291,7 @@ func TestApplyPaidProbeBudget_Basic(t *testing.T) {
 
 func TestApplyPaidProbeBudget_TieBreakByAddr(t *testing.T) {
 	// Equal staleness (all never-graded) must be ordered by address, NOT by the
-	// randomized source-map iteration order . Otherwise the
+	// randomized source-map iteration order. Otherwise the
 	// budget cut picks an arbitrary subset and a deferred proxy can starve
 	// across ticks.
 	targets := []gradeTarget{

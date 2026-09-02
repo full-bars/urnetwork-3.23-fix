@@ -64,8 +64,7 @@ var errBinaryAppeared = fmt.Errorf("provider binary reappeared during recovery; 
 // `go test` step compile it on every platform (os.Lstat/os.Rename are
 // cross-platform; the RENAME_NOREPLACE atomic fast path is Linux-only and is
 // not used here). This narrows the stale-vs-fresh TOCTOU to a single
-// lstat+rename — an accepted residual per the design review
-// — and if an updater wins the race, recovery yields rather than overwrite a
+// lstat+rename — an accepted residual. If an updater wins the race, recovery yields rather than overwrite a
 // freshly-installed binary with the deleted-inode image.
 func installRecovered(tmp, binary string) error {
 	if _, err := os.Lstat(binary); err == nil {

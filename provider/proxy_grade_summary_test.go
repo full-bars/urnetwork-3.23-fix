@@ -163,7 +163,7 @@ func TestCollectProxyGradeSummary_Stale(t *testing.T) {
 }
 
 // TestGradeSummaryStaleAfter_PerSource pins the per-source stale-window
-// decision (independent review finding): URL-tagged entries must be
+// decision: URL-tagged entries must be
 // judged against the URL reaper's window (reaperStaleThreshold), and
 // paid/file/internal entries against the paid window — the summary's
 // stale ratio must agree with whoever owns the entry's refresh cadence.
@@ -283,7 +283,7 @@ func TestEmitProxyGradeDelta(t *testing.T) {
 
 	// Same tier: no delta.
 	emitProxyGradeDelta("1.1.1.1:1080", "A", "A", 0.9, 0.91, true)
-	// Not previously graded: no delta. This is the HIGH-1 shape: the
+	// Not previously graded: no delta. This is the shape where the
 	// first-ever grade of a proxy must be suppressed (oldGraded=false) —
 	// the production call sites now capture wasGraded BEFORE setting
 	// entry.Graded=true, so this is the value they actually pass.
@@ -326,7 +326,7 @@ func TestGradeSummaryScoresLineP95Edge(t *testing.T) {
 	if !contains(got, "p95 1.00") {
 		t.Fatalf("p95 edge: %q", got)
 	}
-	// LOW-8: the stale denominator is len(scores) for graded proxies.
+	// The stale denominator is len(scores) for graded proxies.
 	if !contains(got, "stale grades: 0/20") {
 		t.Fatalf("stale denominator: %q", got)
 	}
@@ -385,7 +385,7 @@ func TestCountdownLine(t *testing.T) {
 	}
 }
 
-// TestRunProxyGradeSummaryOnceSkipsOnUnreadableState is the HIGH-2
+// TestRunProxyGradeSummaryOnceSkipsOnUnreadableState pins the
 // regression: when the summary cannot build a real snapshot (here, the
 // proxy.state path is a directory so ReadFile errors), the round must be
 // skipped entirely — no "all-zero fleet collapsed" lines, and the delta
@@ -419,7 +419,7 @@ func TestRunProxyGradeSummaryOnceSkipsOnUnreadableState(t *testing.T) {
 }
 
 // TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure is the LOAD-BEARING
-// HIGH-2 regression . The unreadable-state test
+// regression. The unreadable-state test
 // above is masked by the tracked==0 skip (both fire on the same scenario),
 // so it cannot prove the !ok guard is what prevents the phantom snapshot.
 // This test injects a collector that returns ok=false WITH tracked>0 —
@@ -445,7 +445,7 @@ func TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure(t *testing.T) {
 	orig := collectGradeSummaryFn
 	collectGradeSummaryFn = func() (gradeSummary, bool) {
 		// A partial snapshot with real proxies, but a failed round:
-		// tracked>0 AND ok=false — the HIGH-2 discriminator.
+		// tracked>0 AND ok=false — the invalidity discriminator.
 		return gradeSummary{
 			tracked: 1, running: 1,
 			tiers:   map[string]int{"A": 1},
@@ -466,7 +466,7 @@ func TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure(t *testing.T) {
 	}
 }
 
-// TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff is the MEDIUM-6
+// TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff is the
 // regression: proxy_probe.json {"enabled": false} must silence the
 // summary too, not just the stage-1 probe.
 func TestRunProxyGradeSummaryOnceSkipsWhenKillSwitchOff(t *testing.T) {

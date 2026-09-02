@@ -823,7 +823,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// bypass"): with enabled:false the operator has turned stage-1 off
 		// because the table probes themselves are the problem (egress abuse
 		// detection), and the reaper must not keep running them on the stale
-		// cadence (self-review finding).
+		// cadence.
 		if c.wasProbeOK && res == probeAPIReachable && probeCfg.Enabled && refreshBudget > 0 {
 			entry.table = probeTableThroughProxy(ctx, c.addr, c.entry.User, c.entry.Password, "", 0, probeCfg)
 			entry.tableProbed = true
@@ -877,7 +877,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 					if r.table.Decidable {
 						oldTier := ""
 						oldScore := entry.Score
-						wasGraded := entry.Graded // capture BEFORE the write below (HIGH-1)
+						wasGraded := entry.Graded // capture BEFORE the write below
 						if entry.Graded {
 							oldTier = proxyGradeTier(entry.Score)
 						}
@@ -1163,9 +1163,9 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			fetchAndMergeProxyURLs(ctx, urls, resolveEffectiveProxyURLMax(maxTotal, selfHealEnabled), apiHost, apiPort)
 			// Publish the next-fetch estimate for the grade summary
 			// countdown, mirroring shouldFetchNow's stretch math exactly
-			// (reuse cacheSize read above — LOW-10) and anchored to
-			// lastFetch, the same reference shouldFetchNow measures against
-			// (it was anchored to a post-fetch now).
+			// (reuse cacheSize read above) and anchored to
+			// lastFetch (set at fetch start), the same reference shouldFetchNow
+			// measures against.
 			effectiveNext := activeInterval
 			if cacheSize >= 50 {
 				effectiveNext = time.Duration(float64(activeInterval) * fetchStretch(currentPressure()))
