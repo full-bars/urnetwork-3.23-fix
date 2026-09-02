@@ -31,11 +31,13 @@ func providerSubcommand(p Provider, args ...string) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Wire stdin through so interactive subcommands work. `proxy paste` reads
-	// its proxy list from stdin — without this the child sees /dev/null,
-	// readLines gets EOF, and paste always reports "no input received".
-	// Harmless for non-interactive subcommands (they never read stdin).
-	cmd.Stdin = os.Stdin
+	// Wire stdin through ONLY for the interactive `proxy paste` subcommand,
+	// which reads its proxy list from stdin — without this the child sees
+	// /dev/null, readLines gets EOF, and paste always reports "no input
+	// received". Other subcommands must not inherit stdin.
+	if len(args) > 0 && args[0] == "paste" {
+		cmd.Stdin = os.Stdin
+	}
 	// Run with the provider's HOME so state lands in the right directory.
 	// When homeForUser fails, derive from the state dir's parent.
 	home := homeForUser(p.User)

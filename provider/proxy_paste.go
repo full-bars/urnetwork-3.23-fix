@@ -62,7 +62,11 @@ func normalizeProxyLine(line string) string {
 			}
 			return fmt.Sprintf("%s:%s:%s", addrPart, user, pass)
 		}
-		return fmt.Sprintf("%s::", addrPart)
+		// Single-token credential (key@host:port): the key is an API token
+		// that authenticates the proxy, so dropping it silently would yield
+		// a proxy that never authenticates. Store it in the user field,
+		// matching the documented Format 1 behaviour.
+		return fmt.Sprintf("%s:%s:", addrPart, credPart)
 	}
 
 	// Format 2: host:port:user:pass (already canonical)
@@ -460,6 +464,15 @@ func proxyPaste(opts docopt.Opts) {
 	}
 	tmpFile.Close()
 
+	// os.Exit and shmLogFatal bypass deferred calls, so the temp file holding
+	// plaintext proxy credentials would be left on disk on any error path
+	// below. Remove it explicitly at each exit point.
+	removeTempFile := func() {
+		if tmpFile != nil {
+			os.Remove(tmpFile.Name())
+		}
+	}
+
 	fmt.Printf("\nadding %d proxies (%d dupes skipped, %d rejected)\n",
 		len(allNormalized), totalSkipped, totalRejected)
 	if len(rejectedLines) > 0 {
@@ -475,6 +488,7 @@ func proxyPaste(opts docopt.Opts) {
 	// Find our own binary path
 	bin, err := os.Executable()
 	if err != nil {
+		removeTempFile()
 		shmLogFatal(82, "cannot determine executable path: %v", err)
 	}
 
@@ -483,6 +497,7 @@ func proxyPaste(opts docopt.Opts) {
 	addCmd.Stdout = os.Stdout
 	addCmd.Stderr = os.Stderr
 	if err := addCmd.Run(); err != nil {
+		removeTempFile()
 		fmt.Fprintf(os.Stderr, "proxy add failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -497,10 +512,12 @@ func proxyPaste(opts docopt.Opts) {
 	fmt.Println("refreshing...")
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
+		removeTempFile()
 		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
 		os.Exit(1)
 	}
 	if err := writeReloadTrigger(reloadPath); err != nil {
+		removeTempFile()
 		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
 		os.Exit(1)
 	}
