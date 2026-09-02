@@ -64,27 +64,42 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		// cache path below.
 	}
 
+	// Fast path under the lock: serve from a fresh cache entry.
 	dnsCache.mu.Lock()
-	defer dnsCache.mu.Unlock()
 	if dnsCache.m == nil {
 		dnsCache.m = make(map[string]dnsCacheEntry)
 	}
 	e, ok := dnsCache.m[host]
 	if ok && time.Now().Before(e.expiry) {
+		dnsCache.mu.Unlock()
 		return e.ip, true
 	}
+	dnsCache.mu.Unlock()
+
+	// Slow path OUTSIDE the lock: the resolver does network I/O (up to
+	// proxyDNSResolveTimeout) and must not serialize every concurrent proxy
+	// dial behind dnsCache.mu. Resolve, then re-check the cache under the
+	// lock (double-checked lookup) so a concurrent resolver for the same
+	// host that finished first isn't clobbered.
 	ips, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip4", host)
 	if err != nil || len(ips) == 0 {
-		if ok {
-			// Stale entry is better than nothing — return it if the
-			// lookup failed, so a transient resolver blip doesn't
-			// cause every proxy dial to fall back to the hostname.
-			return e.ip, true
+		dnsCache.mu.Lock()
+		stale, staleOK := dnsCache.m[host]
+		dnsCache.mu.Unlock()
+		if staleOK {
+			// Stale entry is better than nothing — return it if the lookup
+			// failed, so a transient resolver blip doesn't cause every proxy
+			// dial to fall back to the hostname.
+			return stale.ip, true
 		}
 		return "", false
 	}
 	ip := ips[0].String()
-	dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	dnsCache.mu.Lock()
+	if cached, ok := dnsCache.m[host]; !ok || time.Now().After(cached.expiry) {
+		dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	}
+	dnsCache.mu.Unlock()
 	return ip, true
 }
 

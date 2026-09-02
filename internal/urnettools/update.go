@@ -594,18 +594,48 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 
 	// Verify the restart took effect: wait for the process to be on the
-	// new version. The on-disk binary IS the new version (we just swapped
-	// it), so we re-discover and check that the running PID changed and
-	// the new process reports the expected version.
+	// new version. We must check the RUNNING process's image, not the
+	// on-disk binary (which we just swapped — reading its version is
+	// tautological and proves nothing about what the process executes).
+	// /proc/<PID>/exe resolves to the image the running process actually
+	// loaded; compare its embedded version against cfg.Tag, and require the
+	// on-disk binary is not deleted/stale.
+	// Verification loop: bounded at 15 iterations (~30s), one Discover() per
+	// iteration; no extra early-break needed because the first successful
+	// match (running PID changed, image not deleted, /proc/<pid>/exe build
+	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
 	for i := 0; i < 15; i++ { // up to ~30s
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
-				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
-				pruneBackups(p.Binary, 2)
-				return nil
+			// StateDir identity check: both sides come from the same
+			// discovery logic (unitStateDir on unix, windowsStateDir on
+			// Windows), so string equality is consistent per platform.
+			// Platform risk: on Windows this is a case-sensitive string
+			// compare of paths, so a drive-letter case or separator
+			// mismatch between derivations would fail to match.
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
+				// On Linux, verify the RUNNING process's image via /proc/<pid>/exe
+				// (the binary the process actually loaded, not the on-disk copy).
+				// On other platforms, /proc doesn't exist and discover_*.go don't
+				// populate rp.Version for running processes — so fall back to
+				// checking the ON-DISK binary version (rp.Binary, which we just
+				// swapped) as best-effort. Combined with the PID-change guard this
+				// is a reasonable signal on platforms without /proc, though it can
+				// neither prove nor disprove the running image.
+				if runtime.GOOS == "linux" {
+					procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
+					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
+						fmt.Printf("verified %s running %s (pid %d; /proc/%d/exe matches)\n", providerLabel(p), cfg.Tag, rp.PID, rp.PID)
+						pruneBackups(p.Binary, 2)
+						return nil
+					}
+				} else if providerVersion(rp.Binary) == cfg.Tag {
+					fmt.Printf("verified %s on-disk %s (pid %d; no /proc, on-disk version match)\n", providerLabel(p), cfg.Tag, rp.PID)
+					pruneBackups(p.Binary, 2)
+					return nil
+				}
 			}
 		}
 	}
