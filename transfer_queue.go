@@ -2,6 +2,7 @@ package connect
 
 import (
 	"container/heap"
+	"slices"
 	"sync"
 )
 
@@ -141,6 +142,21 @@ func (self *transferQueue[T]) Clear() []T {
 	clear(self.sequenceNumberItems)
 	self.updateByteCountWithLock(-self.byteCount)
 	return items
+}
+
+func (self *transferQueue[T]) IsEmpty() bool {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return len(self.orderedItems) == 0
+}
+
+// Snapshot returns a defensive copy of the ordered items under the lock.
+// Callers can iterate the copy without holding stateLock, avoiding races
+// with concurrent Add/Remove operations.
+func (self *transferQueue[T]) Snapshot() []T {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return slices.Clone(self.orderedItems)
 }
 
 func (self *transferQueue[T]) QueueSize() (int, ByteCount) {

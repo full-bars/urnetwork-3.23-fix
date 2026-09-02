@@ -285,6 +285,10 @@ type TransferOptions struct {
 	CompanionContract bool
 	// force contract streams, even when there are zero intermediaries
 	ForceStream bool
+	// RetainAfterAckTimeout transfers the only recoverable copy to Transfer.
+	// Its serialized resend item remains owned until peer Ack or lifecycle
+	// cancellation instead of becoming a silent loss at the ordinary deadline.
+	RetainAfterAckTimeout bool
 }
 
 func DefaultTransferOpts() TransferOptions {
@@ -293,6 +297,34 @@ func DefaultTransferOpts() TransferOptions {
 		CompanionContract: false,
 		ForceStream:       false,
 	}
+}
+
+// decodeTransferOptions applies a variadic option list onto a base
+// TransferOptions, returning the result. ctx may be replaced by a transferCtx
+// option. Extracted from sendWithTimeoutDetailed so option decoding can be
+// unit-tested directly — a missing case for a new option type previously
+// shipped silently (the retain option dropped by the switch, see the
+// transferOptionsSetRetainAfterAckTimeout case).
+func decodeTransferOptions(base TransferOptions, opts []any, ctx *context.Context) TransferOptions {
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case TransferOptions:
+			base = v
+		case transferOptionsSetAck:
+			base.Ack = v.Ack
+		case transferOptionsSetForceStream:
+			base.ForceStream = v.ForceStream
+		case transferOptionsSetCompanionContract:
+			base.CompanionContract = v.CompanionContract
+		case transferOptionsSetRetainAfterAckTimeout:
+			base.RetainAfterAckTimeout = v.RetainAfterAckTimeout
+		case transferCtx:
+			if ctx != nil {
+				*ctx = v.Ctx
+			}
+		}
+	}
+	return base
 }
 
 type transferOptionsSetAck struct {
@@ -322,6 +354,16 @@ type transferOptionsSetForceStream struct {
 func ForceStream() transferOptionsSetForceStream {
 	return transferOptionsSetForceStream{
 		ForceStream: true,
+	}
+}
+
+type transferOptionsSetRetainAfterAckTimeout struct {
+	RetainAfterAckTimeout bool
+}
+
+func RetainAfterAckTimeout() transferOptionsSetRetainAfterAckTimeout {
+	return transferOptionsSetRetainAfterAckTimeout{
+		RetainAfterAckTimeout: true,
 	}
 }
 
@@ -805,22 +847,7 @@ func (self *Client) sendWithTimeoutDetailed(
 	}
 
 	ctx := self.ctx
-	var transferOpts TransferOptions
-	transferOpts = self.settings.DefaultTransferOpts
-	for _, opt := range opts {
-		switch v := opt.(type) {
-		case TransferOptions:
-			transferOpts = v
-		case transferOptionsSetAck:
-			transferOpts.Ack = v.Ack
-		case transferOptionsSetForceStream:
-			transferOpts.ForceStream = v.ForceStream
-		case transferOptionsSetCompanionContract:
-			transferOpts.CompanionContract = v.CompanionContract
-		case transferCtx:
-			ctx = v.Ctx
-		}
-	}
+	transferOpts := decodeTransferOptions(self.settings.DefaultTransferOpts, opts, &ctx)
 
 	messageByteCount := ByteCount(len(frame.MessageBytes))
 	sendPack := &SendPack{
@@ -1516,6 +1543,11 @@ type SendBufferSettings struct {
 	// MaxResendCount caps the number of times a packet is retransmitted before
 	// being dropped from the resend queue. 0 means unlimited (legacy behavior).
 	MaxResendCount int
+
+	// RetentionEventCallback is called when a retained item is acked or
+	// backstop-dropped. The provider wires this to the persistent health
+	// event log so retention telemetry survives restarts.
+	RetentionEventCallback func(event string)
 }
 
 type sendSequenceId struct {
@@ -1883,6 +1915,13 @@ type SendSequence struct {
 	sendItems          []*sendItem
 	nextSequenceNumber uint64
 
+	// retainedByteCount is the aggregate bytes of currently-queued retained
+	// items (those with retainAfterAckTimeout). Bounded to a fraction of
+	// ResendQueueMaxByteCount at admission so retained bytes from one dead
+	// flow cannot consume the whole send window and stall unrelated traffic
+	// on this sequence (R-5).
+	retainedByteCount ByteCount
+
 	idleCondition *IdleCondition
 
 	rttWindow *RttWindow
@@ -2226,9 +2265,26 @@ func (self *SendSequence) Run() {
 
 		// drain the buffer
 		for _, item := range self.resendQueue.Clear() {
+			if item.retainAfterAckTimeout {
+				// R-H1: retained item dropped on sequence teardown — log
+				// distinct from normal backstop expiry so telemetry can
+				// measure how often this path fires vs backstop drops.
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) retain dropped on sequence exit (lifetime=%s, backstop_remaining=%s, msg=%x)\n",
+						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+						time.Since(item.sendTime), time.Until(item.backstopDeadline), item.messageId)
+				}
+				if self.sendBufferSettings.RetentionEventCallback != nil {
+					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+						"retain_seq_exit lifetime=%s backstop_remaining=%s msg=%x sendCount=%d",
+						time.Since(item.sendTime), time.Until(item.backstopDeadline),
+						item.messageId, item.sendCount))
+				}
+			}
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
+		self.retainedByteCount = 0
 
 		// flush queued contracts (used ids were closed above). Keyed by
 		// (EncryptionRole, EncryptionCompanion) so this exit-flush doesn't discard
@@ -2301,7 +2357,7 @@ func (self *SendSequence) Run() {
 		sendTime := time.Now()
 		var timeout time.Duration
 
-		if self.resendQueue.Len() == 0 {
+		if self.resendQueue.IsEmpty() {
 			timeout = self.sendBufferSettings.IdleTimeout
 		} else {
 			timeout = self.sendBufferSettings.AckTimeout
@@ -2312,14 +2368,33 @@ func (self *SendSequence) Run() {
 					break
 				}
 
+				// Backstop: retained items past their deadline are force-dropped
+				// even without a flow-teardown signal. Prevents indefinite queue
+				// occupancy on dead flows where the signal never arrives.
+				// Uses dropItem to remove from both resendQueue and sendItems,
+				// settle contract bytes, release retained budget, and fire callback.
+				if item.retainAfterAckTimeout && !sendTime.Before(item.backstopDeadline) {
+					if v := self.log.V(1); v.Enabled() {
+						v.Infof("[s]%s->%s...%s s(%s) retain backstop expired, dropping retained item %x (sendCount=%d, lifetime=%s, overshoot=%s)\n",
+							self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, item.messageId, item.sendCount,
+							sendTime.Sub(item.sendTime), sendTime.Sub(item.backstopDeadline))
+					}
+					if self.sendBufferSettings.RetentionEventCallback != nil {
+						self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+							"retain_drop lifetime=%s overshoot=%s msg=%x sendCount=%d",
+							sendTime.Sub(item.sendTime), sendTime.Sub(item.backstopDeadline),
+							item.messageId, item.sendCount))
+					}
+					self.dropItem(item, errors.New("Retain backstop expired."))
+					continue
+				}
+
 				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
-				if itemAckTimeout <= 0 {
-					// message took too long to ack
-					// close the sequence
+				if itemAckTimeout <= 0 && !item.retainAfterAckTimeout {
 					self.log.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
 					return
 				}
-				if itemAckTimeout < timeout {
+				if !item.retainAfterAckTimeout && itemAckTimeout < timeout {
 					timeout = itemAckTimeout
 				}
 
@@ -2400,12 +2475,41 @@ func (self *SendSequence) Run() {
 					item.sendCount,
 					self.sendBufferSettings.MaxResendInterval,
 				)
-				if itemAckTimeout <= itemResendTimeout {
+				if !item.retainAfterAckTimeout && itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
 					item.resendTime = sendTime.Add(itemResendTimeout)
 				}
 				self.resendQueue.Add(item)
+			}
+		}
+
+		// Scan ALL retained items for expired backstops. The inner loop
+		// above only checks the head-of-queue item (ordered by resendTime),
+		// so retained items buried behind not-yet-due items are never
+		// examined. This separate scan ensures every retained item past its
+		// backstopDeadline is dropped, regardless of queue position.
+		//
+		// Snapshot first, mutate second: dropItem calls heap.Remove which
+		// reorders orderedItems via Swap and writes nil into the vacated
+		// slot. Ranging over orderedItems while mutating it causes nil
+		// derefs, double-drops, and missed items. The snapshot is taken
+		// under stateLock via Snapshot(), so the iteration sees a consistent
+		// view while dropItem takes its own lock per removal.
+		for _, retainedItem := range self.resendQueue.Snapshot() {
+			if retainedItem.retainAfterAckTimeout && !sendTime.Before(retainedItem.backstopDeadline) {
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) retain backstop expired (scan), dropping retained item %x (sendCount=%d, lifetime=%s, overshoot=%s)\n",
+						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, retainedItem.messageId, retainedItem.sendCount,
+						sendTime.Sub(retainedItem.sendTime), sendTime.Sub(retainedItem.backstopDeadline))
+				}
+				if self.sendBufferSettings.RetentionEventCallback != nil {
+					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+						"retain_drop lifetime=%s overshoot=%s msg=%x sendCount=%d",
+						sendTime.Sub(retainedItem.sendTime), sendTime.Sub(retainedItem.backstopDeadline),
+						retainedItem.messageId, retainedItem.sendCount))
+				}
+				self.dropItem(retainedItem, errors.New("Retain backstop expired."))
 			}
 		}
 
@@ -2423,7 +2527,7 @@ func (self *SendSequence) Run() {
 				return
 			case <-ackSnapshot.ackNotify:
 			case <-idleTimer.C:
-				if 0 == self.resendQueue.Len() {
+				if self.resendQueue.IsEmpty() {
 					done := false
 					func() {
 						self.packMutex.Lock()
@@ -2454,7 +2558,7 @@ func (self *SendSequence) Run() {
 
 				// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 				if self.updateContract(sendPack.MessageByteCount) {
-					self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack, sendPack.ForceUnwrapped)
+					self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack, sendPack.ForceUnwrapped, sendPack.RetainAfterAckTimeout)
 					// ignore the error since there will be a retry
 				} else {
 					// no contract
@@ -2465,7 +2569,7 @@ func (self *SendSequence) Run() {
 					return
 				}
 			case <-idleTimer.C:
-				if 0 == self.resendQueue.Len() {
+				if self.resendQueue.IsEmpty() {
 					done := false
 					func() {
 						self.packMutex.Lock()
@@ -2571,9 +2675,14 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				// up the open pack is queued unpinned and wraps normally,
 				// re-sealed per write like any other frame.
 				forceUnwrapped := self.session != nil && self.session.Cipher() == nil
-				self.sendWithSetContract(nil, func(error) {
-					self.setContractAcked(nextSendContract, true)
-				}, true, true, forceUnwrapped)
+				self.sendWithSetContract(
+					nil,
+					self.contractOpenAckCallback(nextSendContract),
+					true,
+					true,
+					forceUnwrapped,
+					false,
+				)
 
 				// FIXME
 				self.log.Infof("[s]%s->%s...%s s(%s) contract set %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
@@ -2743,6 +2852,17 @@ func (self *SendSequence) setContractAcked(nextSendContract *sequenceContract, a
 	}
 }
 
+// A failed terminal disposition must not promote an opening contract. The
+// current-contract guard also prevents a late callback from mutating its
+// replacement.
+func (self *SendSequence) contractOpenAckCallback(
+	nextSendContract *sequenceContract,
+) AckFunction {
+	return func(err error) {
+		self.setContractAcked(nextSendContract, err == nil)
+	}
+}
+
 // send writes one transfer frame carrying `frame` to the sequence's
 // destination (see sendWithSetContract). `ackCallback` fires with nil once
 // the item is acked, or with an error when the item is dropped or the
@@ -2752,8 +2872,9 @@ func (self *SendSequence) send(
 	ackCallback AckFunction,
 	ack bool,
 	forceUnwrapped bool,
+	retainAfterAckTimeout bool,
 ) {
-	self.sendWithSetContract(frame, ackCallback, ack, false, forceUnwrapped)
+	self.sendWithSetContract(frame, ackCallback, ack, false, forceUnwrapped, retainAfterAckTimeout)
 }
 
 // sendWithSetContract builds and writes one transfer frame for a message
@@ -2767,6 +2888,7 @@ func (self *SendSequence) sendWithSetContract(
 	ack bool,
 	setContract bool,
 	forceUnwrapped bool,
+	retainAfterAckTimeout bool,
 ) {
 	sendTime := time.Now()
 	messageId := NewId()
@@ -2903,15 +3025,19 @@ func (self *SendSequence) sendWithSetContract(
 			sequenceNumber:   sequenceNumber,
 			messageByteCount: messageByteCount,
 		},
-		contractId:         contractId,
-		sendTime:           sendTime,
-		resendTime:         sendTime.Add(self.rttWindow.ScaledRtt()),
-		sendCount:          1,
-		head:               head,
-		hasContractFrame:   (contractFrame != nil),
-		transferFrameBytes: transferFrameBytes,
-		ackCallback:        ackCallback,
-		forceUnwrapped:     forceUnwrapped,
+		contractId:            contractId,
+		sendTime:              sendTime,
+		resendTime:            sendTime.Add(self.rttWindow.ScaledRtt()),
+		sendCount:             1,
+		head:                  head,
+		hasContractFrame:      (contractFrame != nil),
+		transferFrameBytes:    transferFrameBytes,
+		ackCallback:           ackCallback,
+		forceUnwrapped:        forceUnwrapped,
+		retainAfterAckTimeout: retainAfterAckTimeout,
+	}
+	if retainAfterAckTimeout {
+		item.backstopDeadline = sendTime.Add(self.sendBufferSettings.AckTimeout * 10)
 	}
 
 	c := func() error {
@@ -2933,6 +3059,29 @@ func (self *SendSequence) sendWithSetContract(
 	}
 
 	if ack {
+		// R-5 cap: bound the aggregate retained bytes on this sequence so a
+		// dead flow's retained returns cannot consume the whole send window
+		// and stall unrelated traffic sharing the sequence. If admitting this
+		// retained item would exceed 25% of the queue ceiling, drop the
+		// retention for THIS item (it falls back to the ordinary ack-timeout
+		// drop). NOTE: an unacked non-retained item past AckTimeout exits the
+		// ENTIRE SendSequence (itemAckTimeout <= 0 && !retainAfterAckTimeout
+		// -> return), not just this item — under exactly the congested/dead-flow
+		// conditions this cap protects against, a cap-denied retained item can
+		// cascade into tearing down the whole sequence. This is intended (the
+		// cap exists to shed a wedged flow), but the consequence is broader
+		// than the per-item framing here suggests.
+		// Charged here alongside queue insertion — inseparable from
+		// the Add so the invariant "charge ⇔ in queue" cannot desync.
+		if item.retainAfterAckTimeout {
+			retainCapByteCount := ByteCount(float64(self.sendBufferSettings.ResendQueueMaxByteCount) * 0.25)
+			if self.retainedByteCount+messageByteCount > retainCapByteCount {
+				item.retainAfterAckTimeout = false
+				item.backstopDeadline = time.Time{}
+			} else {
+				self.retainedByteCount += messageByteCount
+			}
+		}
 		self.sendItems = append(self.sendItems, item)
 		self.resendQueue.Add(item)
 		// ignore the write error since the item will be resent
@@ -3062,7 +3211,11 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		}
 		removed := self.resendQueue.RemoveByMessageId(messageId)
 		if removed == nil {
-			panic(errors.New("Missing item"))
+			// Already dropped by backstop — nothing to retransmit.
+			if v := self.log.V(1); v.Enabled() {
+				v.Infof("[s]ack selective %s->%s...%s s(%s) item already dropped\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			}
+			return
 		}
 		item.resendTime = time.Now().Add(self.sendBufferSettings.SelectiveAckTimeout)
 		item.sendTime = time.Now()
@@ -3079,6 +3232,16 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 	i := 0
 	for ; i < len(self.sendItems); i += 1 {
 		implicitItem := self.sendItems[i]
+		// Nil check BEFORE any field access: dropItem uses slices.Delete
+		// which removes the element, so this should not normally see nil.
+		// But a defensive check here prevents a panic if any code path
+		// leaves a hole — the old nil+compact approach did exactly that.
+		if implicitItem == nil {
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[s]ack %d <> slot %d (nil, skip) %s->%s...%s s(%s)\n", item.sequenceNumber, i, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			}
+			continue
+		}
 		if item.sequenceNumber < implicitItem.sequenceNumber {
 			if v := self.log.V(2); v.Enabled() {
 				v.Infof("[s]ack %d <> %d/%d (stop) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber-1, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
@@ -3091,11 +3254,32 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		if self.log.V(2).Enabled() {
 			a, b = self.resendQueue.QueueSize()
 		}
-
-		// self.ackedSequenceNumbers[implicitItem.sequenceNumber] = true
 		removed := self.resendQueue.RemoveByMessageId(implicitItem.messageId)
 		if removed == nil {
-			panic(errors.New("Missing item"))
+			// Already dropped by backstop (dropItem removed from resendQueue).
+			// Contract, callback, and retained byte count already settled.
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[s]ack %d <> %d (already removed) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			}
+			self.sendItems[i] = nil
+			continue
+		}
+		// A retained item acknowledged here leaves the queue permanently —
+		// release its share of the R-5 retained-byte budget.
+		if removed.retainAfterAckTimeout {
+			self.retainedByteCount -= removed.MessageByteCount()
+			if v := self.log.V(1); v.Enabled() {
+				v.Infof("[s]%s->%s...%s s(%s) retain acked — retention saved %x (%dB held %s past ack timeout, sendCount=%d)\n",
+					self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+					removed.messageId, removed.messageByteCount, time.Now().Sub(removed.sendTime.Add(self.sendBufferSettings.AckTimeout)),
+					removed.sendCount)
+			}
+			if self.sendBufferSettings.RetentionEventCallback != nil {
+				self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+					"retain_ack held=%s msg=%x bytes=%d sendCount=%d",
+					time.Now().Sub(removed.sendTime.Add(self.sendBufferSettings.AckTimeout)),
+					removed.messageId, removed.messageByteCount, removed.sendCount))
+			}
 		}
 
 		self.ackItem(implicitItem)
@@ -3136,6 +3320,67 @@ func (self *SendSequence) ackItem(item *sendItem) {
 	// for _, frame := range item.frames {
 	// 	MessagePoolReturn(frame.MessageBytes)
 	// }
+	item.messagePoolReturn()
+}
+
+// dropItem is the single code path for removing an item from the queue
+// mid-sequence (backstop drop, etc.). It removes the item from both
+// resendQueue and sendItems, settles its contract, releases any retained
+// byte count, fires the error callback, and returns the frame to the pool.
+// This prevents the sendItems desync that caused "Missing item" panics
+// when a backstop-dropped item was later walked by a cumulative ack.
+func (self *SendSequence) dropItem(item *sendItem, err error) {
+	// Idempotent: if the item is already gone from the queue, the
+	// contract/callback/retained-byte-count were already settled by the
+	// first drop. Bail out to avoid double-ack, double-pool-return, and
+	// negative retainedByteCount.
+	if self.resendQueue.RemoveByMessageId(item.messageId) == nil {
+		return
+	}
+
+	// Remove from sendItems via slices.Delete (not nil+compact-trailing)
+	// so there are never interior nil holes. The old nil+compact approach
+	// only removed trailing nils, leaving interior holes that caused nil
+	// derefs in the cumulative-ack walk and the resend loop.
+	for i, si := range self.sendItems {
+		if si == item {
+			self.sendItems = slices.Delete(self.sendItems, i, i+1)
+			break
+		}
+	}
+
+	// release retained byte budget
+	if item.retainAfterAckTimeout {
+		self.retainedByteCount -= item.MessageByteCount()
+	}
+
+	// settle contract bytes (moves unacked → acked, closes fully-settled
+	// non-current contracts) and fire the error callback + pool-return
+	self.ackItemWithErr(item, err)
+}
+
+// ackItemWithErr settles an item's contract and fires its callback with an
+// error, then returns the frame to the pool. Unlike ackItem (nil callback),
+// this is used for error-path disposals where the caller provides the reason.
+func (self *SendSequence) ackItemWithErr(item *sendItem, err error) {
+	if item.contractId != nil {
+		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
+			itemSendContract.ack(item.messageByteCount)
+			if itemSendContract.contractStatsEntry != nil {
+				itemSendContract.contractStatsEntry.updateUsedByteCount(itemSendContract.ackedByteCount)
+			}
+			// not current and closed
+			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
+				self.client.ContractManager().CloseContract(
+					itemSendContract.contractId,
+					itemSendContract.ackedByteCount,
+					itemSendContract.unackedByteCount,
+				)
+				delete(self.openSendContracts, itemSendContract.contractId)
+			}
+		}
+	}
+	safeAck(item.ackCallback, err)
 	item.messagePoolReturn()
 }
 
@@ -3380,6 +3625,16 @@ type sendItem struct {
 	// outer wrap is skipped even if the per-peer cipher becomes available
 	// between the initial send and a retransmit.
 	forceUnwrapped bool
+	// retainAfterAckTimeout keeps this item resending past the ack deadline.
+	// Set for provider TCP return bytes whose only recoverable copy is in the
+	// resend queue; dropping them at the ack deadline would lose the bytes
+	// permanently.
+	retainAfterAckTimeout bool
+	// backstopDeadline is the absolute time after which a retained item is
+	// force-dropped even without a flow-teardown signal. Set to sendTime +
+	// 10*AckTimeout at creation. Prevents indefinite queue occupancy on dead
+	// flows where the teardown signal never arrives.
+	backstopDeadline time.Time
 
 	// messageType protocol.MessageType
 }
@@ -4152,7 +4407,7 @@ func (self *ReceiveSequence) Run() {
 				}
 			}
 		case <-idleTimer.C:
-			if 0 == self.receiveQueue.Len() {
+			if self.receiveQueue.IsEmpty() {
 				done := false
 				func() {
 					self.packMutex.Lock()

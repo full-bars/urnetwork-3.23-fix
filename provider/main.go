@@ -306,6 +306,10 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	clientSettings.SendBufferSettings.SequenceBufferSize = 64
 	clientSettings.ReceiveBufferSettings.SequenceBufferSize = 64
 
+	// Retention telemetry: wire retained-item ack/drop events to the
+	// persistent health event log so retention data survives restarts.
+	clientSettings.SendBufferSettings.RetentionEventCallback = appendRetentionEvent
+
 	// WebRTC per-peer DataChannel buffer
 	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize) * 2
 
