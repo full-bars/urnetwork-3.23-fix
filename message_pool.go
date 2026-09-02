@@ -51,20 +51,44 @@ var globalPoolMetrics = &PoolMetrics{
 	LastResetTime:    time.Now(),
 }
 
-var sizeDistMu sync.Mutex
+var sizeDistMu sync.RWMutex
 
-// addSizeDistribution increments the per-size buffer counter for size,
-// creating the entry on first use. The map is guarded so concurrent first-use
-// from different goroutines cannot race.
-func addSizeDistribution(size int) {
+var initSizeDistOnce sync.Once
+
+func initSizeDist() {
 	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	for _, size := range []int{2048, 4096, 16384, 32768, 65536} {
+		globalPoolMetrics.SizeDistribution[size] = &atomic.Uint64{}
+	}
+}
+
+// addSizeDistribution increments the per-size buffer counter for size.
+// Lock-free fast path for the 5 known pool sizes (pre-populated by initSizeDist).
+// Unknown sizes fall back to a locked lazy-create (cold path, rare in practice).
+func addSizeDistribution(size int) {
+	initSizeDistOnce.Do(initSizeDist)
+	// Fast path (5 known pool sizes): read the pre-populated entry under a
+	// read lock. RLock is required — the map is WRITTEN by the cold path and
+	// the snapshot iterator, so an unlocked read races a concurrent map write
+	// and crashes the process (`fatal: concurrent map read and map write`).
+	sizeDistMu.RLock()
 	counter, ok := globalPoolMetrics.SizeDistribution[size]
-	if !ok {
+	sizeDistMu.RUnlock()
+	if ok {
+		counter.Add(1)
+		return
+	}
+	// Cold path: unknown pool size — create entry under write lock.
+	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+	} else {
 		counter = &atomic.Uint64{}
 		globalPoolMetrics.SizeDistribution[size] = counter
+		counter.Add(1)
 	}
-	sizeDistMu.Unlock()
-	counter.Add(1)
 }
 
 // new byte allocations in the connect package use pooled message buffers,
@@ -614,6 +638,20 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
 					DefaultLogger().Warningf("[mp]share message[%d] not taken", id)
+				} else if count == ^uint16(0) {
+					// G-M5 fix: refuse share at uint16 max to prevent
+					// overflow wrapping to 0 (which reads as "not taken"
+					// everywhere else → cross-flow data corruption).
+					//
+					// CR note: on refusal the caller still receives the
+					// buffer and CANNOT detect the failed increment, so a
+					// later MessagePoolReturn would over-decrement an owner's
+					// reference. This only matters at 65,535 concurrent
+					// read-only shares of ONE buffer — unreachable in practice
+					// (the pool shards and flows don't share at that scale).
+					// Callers must treat a paste-received buffer as NOT shared
+					// and not return it when this warning fires.
+					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (caller must not return the buffer as shared)", id)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared
@@ -730,11 +768,14 @@ func EnhancedMetrics() map[string]any {
 	gcPauses := sampleGCPauses()
 
 	sizeDistribution := map[string]uint64{}
-	sizeDistMu.Lock()
+	// RLock: the snapshot only reads this map; a read lock still excludes the
+	// cold-path writer (which takes Lock), so the iteration never races a map
+	// write, while letting concurrent fast-path readers proceed.
+	sizeDistMu.RLock()
 	for size, count := range globalPoolMetrics.SizeDistribution {
 		sizeDistribution[fmt.Sprintf("%d", size)] = count.Load()
 	}
-	sizeDistMu.Unlock()
+	sizeDistMu.RUnlock()
 
 	return map[string]any{
 		"hits":              globalPoolMetrics.Hits.Load(),

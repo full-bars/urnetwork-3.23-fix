@@ -611,6 +611,24 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
+// sessionFilesAllowlist mirrors internal/urnettools/session_cmds.go's
+// sessionFiles. Only these files are promoted from staging to the live
+// identity directory.
+var sessionFilesAllowlist = map[string]bool{
+	".client_jwts.json": true,
+	"jwt":               true,
+	"jwt_last_refresh":  true,
+	".provider.key":     true,
+	".provider.cert":    true,
+	"proxy":             true,
+	"proxy_url.json":    true,
+	"proxy.state":       true,
+}
+
+func isSessionFile(name string) bool {
+	return sessionFilesAllowlist[name]
+}
+
 // applyStagedSession atomically swaps in identity and proxy-list files
 // from ~/.urnetwork/.session-staging/ if a .session-pending marker exists.
 // This is the provider-side counterpart to `urnet-tools session load`:
@@ -638,6 +656,23 @@ func applyStagedSession() {
 		return
 	}
 	for _, e := range entries {
+		// G-M11 fix: only promote files in the session allowlist.
+		// The writer side (session_cmds.go) carefully iterates this
+		// list; the reader side must match to prevent stray files
+		// (older tool versions, manual copies) from landing in the
+		// live identity directory.
+		if !isSessionFile(e.Name()) {
+			continue
+		}
+		// CR: only promote REGULAR files. An allowlisted symlink or
+		// directory in staging must not be promoted — later reads of
+		// ~/.urnetwork/jwt could follow a symlink to an attacker-controlled
+		// target. os.ReadDir's DirEntry.Type() reports the file type without
+		// following symlinks.
+		if info, err := e.Info(); err != nil || !info.Mode().IsRegular() {
+			tlog("[session] skip staged %s: not a regular file\n", e.Name())
+			continue
+		}
 		src := filepath.Join(stagingDir, e.Name())
 		dst := filepath.Join(urNetworkDir, e.Name())
 		if err := os.Rename(src, dst); err != nil {
@@ -650,6 +685,13 @@ func applyStagedSession() {
 }
 
 func main() {
+	// G-M2: sanitize PATH when running as root to prevent hijacking
+	// of exec.Command bare names (systemctl, docker, etc.) via
+	// attacker-writable directories earlier in root's PATH.
+	if os.Getuid() == 0 {
+		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
 
@@ -731,6 +773,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
+    provider direct <on|off>
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> <connect_url>
@@ -862,6 +905,8 @@ Options:
 		printNetworkIdCmd(opts)
 	} else if chooseNetwork, _ := opts.Bool("choose_network"); chooseNetwork {
 		chooseNetworkCmd(opts)
+	} else if direct_, _ := opts.Bool("direct"); direct_ {
+		cmdDirect(opts)
 	}
 }
 
@@ -3144,20 +3189,35 @@ func provide(opts docopt.Opts) {
 		return false
 	})
 
-	// ALWAYS start the native [direct] connection as proxy[0].
-	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
-	wg.Add(1)
-	nativeCtx, nativeCancel := context.WithCancel(ctx)
-	// We don't add nativeCancel to the proxyCancelMap so it is immune to hot-reload deletions.
-	go connect.HandleError(func() {
-		defer wg.Done()
-		defer nativeCancel()
-		defer connect.UnregisterProxy(0)
+	// Start the native [direct] connection as proxy[0] unless the operator
+	// has explicitly disabled it. Precedence (highest to lowest):
+	//   1. Runtime toggle file ~/.urnetwork/direct (set via `provider direct off|on`)
+	//   2. DISABLE_DIRECT_IP=1 env var (startup-only default)
+	// The toggle file always wins — `provider direct on` re-enables direct
+	// even if the env var was set, and vice versa.
+	noDirect := !isDirectEnabled()
+	if !noDirect {
+		// ALWAYS start the native [direct] connection as proxy[0].
+		// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
+		wg.Add(1)
+		nativeCtx, nativeCancel := context.WithCancel(ctx)
+		// Register nativeCancel in the reloader's cancelMap under the special
+		// key "direct" so reload() can hot-toggle it via `provider direct off|on`.
+		proxyCancelMu.Lock()
+		proxyCancelMap[directProxyKey] = nativeCancel
+		proxyCancelMu.Unlock()
+		go connect.HandleError(func() {
+			defer wg.Done()
+			defer nativeCancel()
+			defer connect.UnregisterProxy(0)
 
-		// Register it early so it shows up in health reports immediately as [direct]
-		connect.RegisterProxy(0, "direct")
-		provideWithProxy(nativeCtx, nil, true, false)
-	})
+			// Register it early so it shows up in health reports immediately as [direct]
+			connect.RegisterProxy(0, "direct")
+			provideWithProxy(nativeCtx, nil, true, false)
+		})
+	} else {
+		tlog("[no-direct] providing on direct/local IP is disabled; using proxy list only\n")
+	}
 
 	// Persist the initial state snapshot now that all IDs are resolved.
 	proxyState.NextID = currentProxyIDCounter()

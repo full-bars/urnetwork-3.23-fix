@@ -129,6 +129,11 @@ func TestReload_AddedProxies_NoPerProxyEnumeration(t *testing.T) {
 // as gradual as a cold start.
 func TestReload_AddedProxies_UseJitteredBackoffPacer(t *testing.T) {
 	withTempHome(t)
+	// This test verifies the URL-source stagger timing only. Disable the
+	// native [direct] transport so it does not add a 7th spawn to the count
+	// (reload() spawns direct as an extra proxy when enabled). DISABLE_DIRECT_IP
+	// is the startup default toggle; the direct-feature commit added this path.
+	t.Setenv("DISABLE_DIRECT_IP", "1")
 
 	urlCache := map[string]ProxyURLEntry{}
 	for i := range 6 {
