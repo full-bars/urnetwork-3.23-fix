@@ -65,10 +65,11 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	// Sync the parent directory so the rename survives a crash before the
-	// directory entry is committed (fsync after rename).
-	if dir, err := os.Open(dir); err == nil {
-		dir.Sync()
-		dir.Close()
+	// directory entry is committed (fsync after rename). Use a distinct name
+	// for the handle to avoid shadowing the dir path variable.
+	if dirFh, err := os.Open(dir); err == nil {
+		dirFh.Sync()
+		dirFh.Close()
 	}
 	return nil
 }
