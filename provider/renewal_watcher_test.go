@@ -501,7 +501,7 @@ func TestRunProxyJWTWatcherRejectsJwtMissingClientId(t *testing.T) {
 	<-done
 }
 
-// TestRunProxyJWTWatcherRetriesOnStorePutFailure pins the HIGH-2 finding: a
+// TestRunProxyJWTWatcherRetriesOnStorePutFailure pins the finding: a
 // renewal whose store write fails must NOT reset the 401 counter, so the next
 // 401 re-triggers renewal instead of silently accepting the in-memory swap.
 //

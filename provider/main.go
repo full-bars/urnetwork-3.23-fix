@@ -1240,7 +1240,7 @@ func runLifetimeCollector(ctx context.Context) {
 	// departedBaselines remembers the last billable counter reading of
 	// proxies that left the health snapshot, so a proxy returning within
 	// tombstoneProxyBaselineTTL resumes against its old baseline instead
-	// of re-counting its whole history as fresh delta (ox-alpha MED).
+	// of re-counting its whole history as fresh delta.
 	type departedBaseline struct {
 		baseline uint64
 		left     time.Time
@@ -1266,7 +1266,7 @@ func runLifetimeCollector(ctx context.Context) {
 		// snapshot (moved to departedBaselines with a timestamp) rather
 		// than deleted: a proxy that returns within tombstoneTTL with an
 		// intact counter resumes against its old baseline — no double-
-		// counting of its history (ox-alpha review MED). If it returns
+		// counting of its history. If it returns
 		// RESET below baseline, that gap contributes zero and the
 		// baseline re-anchors. Tombstones expire after tombstoneTTL so
 		// the map stays bounded; a proxy returning after expiry is
@@ -1334,7 +1334,7 @@ func runLifetimeCollector(ctx context.Context) {
 			if elapsed < 1 {
 				elapsed = 1
 			}
-			// Per-proxy reset guards on the rate sums (ox-alpha MED):
+			// Per-proxy reset guards on the rate sums:
 			// an aggregate-only guard lets a churned proxy's return dump
 			// its whole counter into one tick's rate.
 			var rxDelta, txDelta uint64
@@ -2764,7 +2764,7 @@ func provide(opts docopt.Opts) {
 					// reason.
 					cfg := resolveProxyTableProbeConfig()
 					if score, ok := cachedProxyURLScore(proxySettings.Address); ok && cfg.Enabled && score < cfg.PassBar {
-						// QUALITY rejection (review #2): the recorded score is below
+						// QUALITY rejection: the recorded score is below
 						// the bar AND the kill switch is ON. This is a filter, not a
 						// failure of auth or reachability — it must not count in
 						// authFailures, RecordFailure, or RecordGiveUp, and must never
@@ -2967,7 +2967,7 @@ func provide(opts docopt.Opts) {
 					proxyCancelMu.Unlock()
 
 					if errors.Is(err, errProxyURLBelowBar) {
-						// Quality rejection (review #2): the proxy was filtered
+						// Quality rejection: the proxy was filtered
 						// by its recorded stage-1 score, not by auth or
 						// reachability failure. No give-up accounting, no
 						// eviction, no backoff — the next fetch cycle re-grades
@@ -3387,7 +3387,7 @@ func provide(opts docopt.Opts) {
 	// Enforce an operator trim cap immediately at startup. The initial launch
 	// loop spawns every entry in the source, so without this the first reload
 	// reconciler tick (up to an hour later) would be the first time the cap
-	// binds (review finding HIGH).
+	// binds.
 	reloader.reload()
 
 	go connect.HandleError(func() {

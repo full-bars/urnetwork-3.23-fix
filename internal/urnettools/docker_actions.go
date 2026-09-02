@@ -80,7 +80,7 @@ func containerFollowFile(name, path string, n int) error {
 // containerFileNonEmpty reports whether a file exists and has content inside
 // a container, via `docker exec <name> test -s <path>`. Cheap existence
 // check: avoids cat-ing a multi-MB RAMLOG purely to test emptiness before
-// streaming it (review round).
+// streaming it.
 func containerFileNonEmpty(name, path string) bool {
 	cmd := exec.Command(dockerCLI(), "exec", name, "test", "-s", path)
 	return cmd.Run() == nil

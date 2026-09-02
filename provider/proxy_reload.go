@@ -483,7 +483,7 @@ func (r *ProxyReloader) reload() {
 		trimURLState, _ := readProxyURLState()
 		gradeFor := buildTrimGradeResolver(r.state, trimURLState)
 		// Union count of everything about to be cancelled, so the addition
-		// budget is not under-sized by double-counting (review MEDIUM).
+		// budget is not under-sized by double-counting.
 		removedSet := make(map[string]bool, len(removed))
 		for _, a := range removed {
 			removedSet[a] = true
@@ -512,7 +512,7 @@ func (r *ProxyReloader) reload() {
 					removedSet[addr] = true
 					shedCount++
 					// Do NOT delete from desiredSet: pruning against a trim-mutated
-					// set erases grade/health history (review HIGH). Mark a short
+					// set erases grade/health history. Mark a short
 					// give-up backoff instead so the launch gate keeps it down and
 					// it does not relaunch next cycle.
 					globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(shedBackoff))

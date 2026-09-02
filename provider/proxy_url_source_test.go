@@ -31,7 +31,7 @@ func withTempHome(t *testing.T) string {
 	// The per-address earn tracker is also process-global and its state is
 	// load-bearing for the paid-grader earn-skip tests: a test that seeds
 	// earning state must not influence the next test's expected probe/skip
-	// behavior. Fresh tracker per test (independent review finding).
+	// behavior. Fresh tracker per test.
 	globalPerProxyEarnTracker = newPerProxyEarnTracker()
 	t.Cleanup(func() { globalPerProxyEarnTracker = newPerProxyEarnTracker() })
 	return dir

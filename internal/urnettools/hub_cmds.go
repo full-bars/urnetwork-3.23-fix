@@ -204,7 +204,7 @@ func fetchHubCA(baseURL, token string) (caPEM, fingerprint string, err error) {
 	if r.CAPEM != "" {
 		caPEM := strings.ReplaceAll(r.CAPEM, `\n`, "\n")
 		// Reject a mismatched (fingerprint, ca_pem) pair: the fingerprint shown
-		// for confirmation must match the CA actually persisted (review HIGH).
+		// for confirmation must match the CA actually persisted.
 		if r.CAFingerprint != "" {
 			if computed, ferr := pemFingerprint(caPEM); ferr == nil && computed != r.CAFingerprint {
 				return "", "", fmt.Errorf("hub CA fingerprint mismatch: reported %s does not match the served CA certificate", r.CAFingerprint)
@@ -283,7 +283,7 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 	if caPEM != "" {
 		// The fingerprint that identifies the material must be derived from the
 		// CA certificate itself, and the cert must parse as a real CA before it
-		// is trusted (review MEDIUM: a PRIVATE KEY or a leaf must not pass).
+		// is trusted (a PRIVATE KEY or a leaf must not pass).
 		if _, ferr := parseCA(caPEM); ferr != nil {
 			return ferr
 		}
@@ -305,7 +305,7 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 
 	// TOFU must shout on identity CHANGE, not just on first trust: if a
 	// different hub/CA is already trusted, require an explicit typed yes even
-	// under --force (review MEDIUM). Check BOTH hub_ca.pem and hub.pin —
+	// under --force. Check BOTH hub_ca.pem and hub.pin —
 	// the node may have been originally trusted via pin-only (H5 fix).
 	identityChanged := false
 	var oldFp string
@@ -346,7 +346,7 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 			return err
 		}
 		// 0644 + chown: the CA/pin is public material and must be readable by
-		// the provider when the tool ran as root (review HIGH).
+		// the provider when the tool ran as root.
 		// Route through writeStateFile for O_NOFOLLOW protection (C2 fix).
 		if err := writeStateFile(hubDir, "hub.pin", []byte(fp), 0o644); err != nil {
 			return err
@@ -486,8 +486,7 @@ func certPEMBlock(pemBlob string) (*pem.Block, error) {
 }
 
 // parseCA validates that a PEM blob is a certificate that is a CA and returns
-// it. Rejects a private key, a plain leaf cert, or unparseable data (review
-// MEDIUM: a non-CA or a private-key PEM must not be trusted as hub_ca.pem).
+// it. Rejects a private key, a plain leaf cert, or unparseable data (a non-CA or a private-key PEM must not be trusted as hub_ca.pem).
 func parseCA(pemBlob string) (*x509.Certificate, error) {
 	block, err := certPEMBlock(pemBlob)
 	if err != nil {
@@ -508,7 +507,6 @@ func parseCA(pemBlob string) (*x509.Certificate, error) {
 
 // explicitYes requires the literal word 'yes' (explicit and typed). Used for the
 // hub-identity-change TOFU case where a single y/EOF must not be accepted
-// (review MEDIUM).
 func explicitYes(prompt string) bool {
 	line, err := confirmStdinRead(prompt)
 	if err != nil {
@@ -595,7 +593,7 @@ func cmdHubInit(p Provider, password string) error {
 			return err
 		}
 		// The hub derives its CA from password + salt; a missing/stale salt
-		// makes the password unusable (review HIGH). Write it atomically.
+		// makes the password unusable. Write it atomically.
 		salt := make([]byte, 32)
 		if _, err := rand.Read(salt); err != nil {
 			return err

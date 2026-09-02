@@ -27,7 +27,7 @@ import (
 
 // stripDryRunFlag extracts -n/--dry-run from args. Used by the delegation
 // commands (auth/choose-network) that must honour dry-run rather than forward
-// it to a provider binary that rejects it (review MEDIUM).
+// it to a provider binary that rejects it.
 func stripDryRunFlag(args []string) (bool, []string) {
 	dry := false
 	var rest []string
@@ -179,7 +179,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 
 // validateSetValue rejects values the provider would silently discard (it keeps
 // the startup default for an unparseable/out-of-range value), so the command
-// never reports an effect that provably cannot take place (review MEDIUM).
+// never reports an effect that provably cannot take place.
 func validateSetValue(key, value string) error {
 	switch key {
 	case "report-interval", "proxy-url-refresh", "cleanup-interval":

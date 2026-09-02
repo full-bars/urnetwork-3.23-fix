@@ -97,7 +97,7 @@ func socks5ConnectV4(ip net.IP, port uint16) []byte {
 // sub-negotiation succeeded. A server that selects 0x02 without complete
 // credentials being supplied, or any method we never offered (e.g. 0x01
 // GSSAPI), is not a usable proxy — proceeding into CONNECT without finishing
-// that method's negotiation would be a blind guess (review #3). RFC 1929
+// that method's negotiation would be a blind guess. RFC 1929
 // bounds each credential at 255 bytes; longer credentials would truncate
 // silently on the wire and make a working proxy look dead, so reject them
 // outright.
@@ -155,7 +155,7 @@ func socks5Greet(conn net.Conn, user, password string) bool {
 // domain reply is shorter than 10 bytes (so io.ReadFull would block until
 // the deadline) and an IPv6 reply is longer — either would misclassify a
 // healthy proxy. Truncated, wrong-version, non-zero-RSV, or unsupported-ATYP
-// replies are never an answer (review #9/10).
+// replies are never an answer.
 func readSocks5ConnectReply(conn net.Conn) bool {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
@@ -270,7 +270,7 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 	// Offer no-auth, plus username/password when we have BOTH creds.
 	// socks5Greet validates the server's method selection (0x00, or 0x02 with
 	// complete credentials) and runs the RFC 1929 sub-negotiation; a server
-	// that picks a method we never offered is not a usable proxy (review #3).
+	// that picks a method we never offered is not a usable proxy.
 	if !socks5Greet(conn, user, password) {
 		return probeDead
 	}
@@ -295,7 +295,7 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 	// REP = 0x00 with a fully-consumed, well-formed reply means success. The
 	// reply is parsed by ATYP (IPv4/domain/IPv6), not by a fixed length, so
 	// a short domain reply or an IPv6 BND.ADDR is handled correctly
-	// (review #9/10). Anything else — truncated, wrong version, REP != 0x00 —
+	// Anything else — truncated, wrong version, REP != 0x00 —
 	// means the API CONNECT failed: the proxy speaks SOCKS5 but cannot reach
 	// the API, which is socks5-only.
 	if !readSocks5ConnectReply(conn) {

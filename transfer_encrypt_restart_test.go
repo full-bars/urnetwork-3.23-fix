@@ -7,7 +7,7 @@ import (
 )
 
 // TestRestartHandshakeRetriesFailedEpoch verifies the fix for the stuck-epoch
-// review HIGH: a FAILED epoch (handshakeErr set, e.g. the handshakeTimeoutWatcher
+// a FAILED epoch (handshakeErr set, e.g. the handshakeTimeoutWatcher
 // firing after TlsTimeout against a departed peer) is dead, not in flight, and
 // restartHandshake must rebuild it. Previously the guard only checked whether
 // an epoch object existed and was not yet established, so a failed epoch was

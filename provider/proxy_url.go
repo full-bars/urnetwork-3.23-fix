@@ -343,7 +343,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 				// it, independent of Decidable — a kill-switch-disabled
 				// admission carries Qualified=true with Decidable=false
 				// (stage 1 never ran), and must still be ProbeOK=true
-				// (self-review finding). The Decidable && !Socks5Only gate
+				// The Decidable && !Socks5Only gate
 				// applies only to the persisted Score/Graded/Failed.
 				entry.ProbeOK = g.Qualified
 				applyProxyGradeToEntry(&entry, g, time.Now())

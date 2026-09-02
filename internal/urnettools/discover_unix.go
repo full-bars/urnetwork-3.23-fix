@@ -223,7 +223,7 @@ func attachUnits(procs []Provider) {
 		// .../system.slice/urnetwork-native.service. Only accept names that
 		// look like a provider unit (isProviderUnit) — on a GH runner the
 		// provider inherits the runner's cgroup, and an unfiltered name would
-		// make hot-restart systemctl-restart the wrong unit (review S3).
+		// make hot-restart systemctl-restart the wrong unit.
 		if idx := strings.LastIndex(s, ".service"); idx >= 0 {
 			start := strings.LastIndex(s[:idx], "/")
 			if start >= 0 {

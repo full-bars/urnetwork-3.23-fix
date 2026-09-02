@@ -19,7 +19,7 @@ import (
 
 // Coverage-gap tests for the stage-1 quality probe, written during review of
 // feat/proxy-quality-probe. These now assert the FIXED behavior: the
-// characterization tests that originally pinned the review findings have
+// characterization tests that originally pinned the findings have
 // been inverted per the review's own instruction ("each with a test already
 // written to invert"), so a regression that reintroduces any finding fails
 // these tests.
@@ -189,7 +189,7 @@ func TestReview_ProbeSocks5Connect_AuthRequiredNoCredsFails(t *testing.T) {
 	}
 }
 
-// REGRESSION (review #9/10). A CONNECT reply with ATYP=3 (domain) is
+// REGRESSION: a CONNECT reply with ATYP=3 (domain) is
 // SHORTER than the fixed 10-byte IPv4 shape. The reply is parsed by ATYP, so
 // a short domain BND.ADDR is still a success.
 func TestReview_ProbeSocks5Connect_DomainReplyAccepted(t *testing.T) {
@@ -214,7 +214,7 @@ func TestReview_ProbeSocks5Connect_DomainReplyAccepted(t *testing.T) {
 	}
 }
 
-// REGRESSION (review #9/10). A CONNECT reply with ATYP=4 (IPv6) is LONGER
+// REGRESSION: a CONNECT reply with ATYP=4 (IPv6) is LONGER
 // than the fixed 10-byte IPv4 shape: the 16-byte BND.ADDR plus port must all
 // be consumed before REP 0x00 counts.
 func TestReview_ProbeSocks5Connect_IPv6ReplyAccepted(t *testing.T) {
@@ -241,7 +241,7 @@ func TestReview_ProbeSocks5Connect_IPv6ReplyAccepted(t *testing.T) {
 	}
 }
 
-// REGRESSION (review #9/10). A reply whose header declares an ATYP but stops
+// REGRESSION: a reply whose header declares an ATYP but stops
 // before the declared address is not an answer: the full payload must be
 // consumed before REP 0x00 counts.
 func TestReview_ProbeSocks5Connect_TruncatedDomainReplyRejected(t *testing.T) {
@@ -920,7 +920,7 @@ func TestReview_NoRankAddrKeepsOldCapBehavior(t *testing.T) {
 	}
 }
 
-// REGRESSION (self-review). The kill switch disables the reaper's stage-1
+// REGRESSION: the kill switch disables the reaper's stage-1
 // grade refresh: with enabled=false, the stale re-probe of a once-good entry
 // still runs liveness (stage 0) but must NOT run the table probe — otherwise
 // the operator's "turn stage-1 off" (e.g. because the probes trip egress
@@ -1007,7 +1007,7 @@ func TestReview_ReaperRefreshesStaleGrade(t *testing.T) {
 	}
 }
 
-// REGRESSION (independent review, CRITICAL). A once-good proxy
+// REGRESSION: a once-good proxy
 // (ProbeOK=true) that later turns hostile (starts MITM-intercepting TLS)
 // must be demoted by the stale re-probe path — the wasProbeOK apply switch
 // must handle probeTLSFailed exactly like probeDead/probeSocks5Only, or
@@ -1302,7 +1302,7 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 	// Restore the process-global DNS cache before the test exits: Go runs
 	// all tests in a package in one process, and these injected failures
 	// would otherwise leak into every later probeTableThroughProxy call for
-	// up to probeDNSFailTTL (review #5). Restore the success entries we
+	// up to probeDNSFailTTL). Restore the success entries we
 	// removed and drop the fail entries we added.
 	t.Cleanup(func() {
 		probeDNSCache.Lock()

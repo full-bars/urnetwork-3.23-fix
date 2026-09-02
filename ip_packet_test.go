@@ -1318,7 +1318,8 @@ func TestSeqNumIncrementAcrossDataPackets(t *testing.T) {
 
 func TestSynAckWithTimestamp(t *testing.T) {
 	// Timestamp option (kind 8, len 10) layout: MSS(4) + TS(10) padded to 16
-	// option bytes -> header 36 bytes, data offset 9 words (no test covered enableTimestamp=true).
+	// option bytes -> header 36 bytes, data offset 9 words; this test
+	// sets enableTimestamp=true and verifies the timestamp option.
 	cs := &ConnectionState{
 		ipVersion:             4,
 		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
@@ -1449,7 +1450,7 @@ func TestPureAckWithTimestamp(t *testing.T) {
 func TestDataPacketsTimestampSegmentation(t *testing.T) {
 	// With timestamps on an IPv6 flow, a full read (ReadBufferByteCount
 	// accounts for the TS option) must NOT split into a runt tail segment
-	// . 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
+	// 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
 	cs := &ConnectionState{
 		ipVersion:       6,
 		sourceIp:        net.ParseIP("2001:db8::1"),

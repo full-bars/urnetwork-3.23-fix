@@ -19,7 +19,7 @@ import (
 )
 
 // TestDispatchHelpIsSafe: --help on EVERY command must print help and do
-// nothing stateful. This is the regression test for review finding C1 — the
+// nothing stateful. This is the regression test for the
 // legacy `--help`-executes-clear bug class. We exercise the dispatch layer
 // by checking that parseGlobalFlags handles -h/--help on the commands that
 // route through it (start/stop/logs/status/providers were the gap).
@@ -30,7 +30,7 @@ import (
 // TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
 // the provider binary, so -h/--help must short-circuit in parseDelegationArgs
 // (help printed, nothing delegated) — the C1 invariant for pass-through
-// commands (free-review gap: no test pinned this).
+// commands (no test had pinned this).
 func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 	for _, args := range [][]string{{"-h"}, {"--help"}, {"--unit", "urnetwork-native.service", "-h"}} {
 		rest, err := parseDelegationArgs(args)
@@ -52,7 +52,7 @@ func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 }
 
 // TestParseTargetFlagsRejectsUnknownFlags: a typo'd --flag must error, not
-// silently drop (review finding L2).
+// silently drop.
 func TestParseTargetFlagsRejectsUnknownFlags(t *testing.T) {
 	_, _, err := parseTargetFlags([]string{"--netwrok", "foo"})
 	if err == nil {
@@ -80,8 +80,8 @@ func TestParseTargetFlagsLenientPreserves(t *testing.T) {
 }
 
 // TestParseTargetFlagsConflictingRejected: --unit + --network together must
-// error (matchProvider would silently apply the first set field). Pins the
-// free-review major on conflicting targeting flags.
+// error (matchProvider would silently apply the first set field) on
+// conflicting targeting flags.
 func TestParseTargetFlagsConflictingRejected(t *testing.T) {
 	_, _, err := parseTargetFlags([]string{"--unit", "urnetwork-native.service", "--network", "tacogonzalez3000"})
 	if err == nil {
@@ -128,7 +128,7 @@ func TestVerifySHA256Match(t *testing.T) {
 }
 
 // TestInstallBinaryAtomic: installBinary must write to dst+.new and rename
-// (never O_TRUNC the destination in place — review finding H2). Verify the
+// (never O_TRUNC the destination in place). Verify the
 // resulting file is correct and no .new remnant remains.
 func TestInstallBinaryAtomic(t *testing.T) {
 	dir := t.TempDir()
@@ -157,7 +157,7 @@ func TestInstallBinaryAtomic(t *testing.T) {
 }
 
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
-// updates never collide (review finding M2). Calls the PRODUCTION backupName
+// updates never collide. Calls the PRODUCTION backupName
 // helper — a local copy would pass even if the real format changed
 func TestBackupNameTimestamped(t *testing.T) {
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
@@ -175,8 +175,8 @@ func TestBackupNameTimestamped(t *testing.T) {
 
 // TestUpdateProviderRefusesEmptyDigest: updateProvider must refuse to run
 // when no sha256 digest is available — the staged binary would be executed
-// (version check + install) with no integrity verification. Pins the
-// free-review critical on unverified downloads.
+// (version check + install) with no integrity verification, rather than
+// refusing an unverified download.
 func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
 	dir := t.TempDir()
 	cfg := updateConfig{
@@ -197,7 +197,7 @@ func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
 	}
 }
 
-// TestUpdateProviderRefusesNonELFStagedBinary pins the MEDIUM-1 fix: the
+// TestUpdateProviderRefusesNonELFStagedBinary pins the fix: the
 // provider update path must sanity-check the extracted binary
 // STRUCTURALLY (isELFExecutable), never by executing it. A staged file
 // that is not an ELF executable must abort the install — even when the

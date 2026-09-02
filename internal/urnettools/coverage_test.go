@@ -87,7 +87,7 @@ func TestUnitStateDirHomeForUserFallback(t *testing.T) {
 }
 
 // TestIsUserUnitVendorDir covers the /usr/lib + /lib systemd system dirs
-// (free-review MEDIUM): a unit shipped by a package (not a fleet install)
+// A unit shipped by a package (not a fleet install)
 // lives there and must be classified as a system unit, not a user unit.
 // systemd-journald.service ships with the systemd core package on any
 // real systemd Linux box; skip if this environment lacks it entirely.
@@ -149,7 +149,7 @@ func TestJournalctlArgsUserVsSystem(t *testing.T) {
 }
 
 // TestTarRelPath covers the forward-slash-always tar path construction
-// (free-review critical): using filepath.Join here would emit backslashes
+// Using filepath.Join here would emit backslashes
 // on a Windows host and the in-archive lookup would never match, since
 // tar headers always use forward slashes regardless of the host OS.
 func TestTarRelPath(t *testing.T) {
@@ -199,8 +199,7 @@ func TestOptimizeForDispatch(t *testing.T) {
 // fetchLatestRelease and fetchReleaseByTag: a present asset with a
 // "sha256:"-prefixed digest resolves to the bare hex digest; a missing
 // asset or an asset with an empty digest both resolve to "" so the caller
-// refuses the download rather than silently skipping verification
-// (free-review critical).
+// refuses the download rather than silently skipping verification.
 func TestDigestForAsset(t *testing.T) {
 	assets := []releaseAsset{
 		{Name: "urnetwork-provider-v1.0.0.tar.gz", Digest: "sha256:abc123"},
@@ -245,11 +244,10 @@ func TestRestartProviderWithUnitFailsGracefully(t *testing.T) {
 	}
 }
 
-// TestWriteTimerCalendarMissingHome covers the guard added alongside this
-// review: writeTimerCalendar must error cleanly when getent can't resolve
+// TestWriteTimerCalendarMissingHome covers the guard: writeTimerCalendar must error cleanly when getent can't resolve
 // the target user's home, rather than silently falling back to a
 // CWD-relative ".config/systemd/user/<timer>" path (the same class of bug
-// fixed elsewhere as "review finding M3").
+// fixed elsewhere).
 func TestWriteTimerCalendarMissingHome(t *testing.T) {
 	bogus := "urnet-tools-test-nonexistent-user-9f3a"
 	if _, err := exec.Command("getent", "passwd", bogus).Output(); err == nil {

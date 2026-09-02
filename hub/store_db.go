@@ -321,7 +321,7 @@ func proxyTotals(proxies []proxyReport) (totalRX, totalTX, billRX, billTX uint64
 // provider's proxyGradeTier produces (A-F). The hub allowlists tier on
 // ingest because the field is attacker-influenced (any authenticated
 // node's report body) and is rendered unescaped into dashboard HTML later
-// (final-review HIGH); anything outside A-F is rejected rather than stored.
+// anything outside A-F is rejected rather than stored.
 func validGradeTier(tier string) bool {
 	switch tier {
 	case "A", "B", "C", "D", "F":
@@ -423,7 +423,7 @@ func (s *store) persist(state *nodeState) error {
 		// attacker-influenced (any authenticated node's report body) and is
 		// rendered unescaped into the dashboard innerHTML later, so it is
 		// allowlisted to exactly the letters proxyGradeTier produces
-		// (final-review HIGH: the round-1 check only rejected the empty
+		// (the round-1 check only rejected the empty
 		// string, leaving a stored-XSS path for a crafted tier value).
 		if !p.Graded || !validGradeTier(p.Tier) || p.Address == "" {
 			continue
@@ -436,7 +436,7 @@ func (s *store) persist(state *nodeState) error {
 		if failed == nil {
 			// Normalize to an empty JSON array so stored values are
 			// consistently "[]" rather than a mix of "null" (json.Marshal
-			// of nil) and the column default "[]" (free-review LOW).
+			// of nil) and the column default "[]".
 			failed = []string{}
 		}
 		failedJSON, err := json.Marshal(failed)
@@ -967,7 +967,7 @@ func (s *store) pruneProxyDaily() (int64, error) {
 // window. Grades change on a 1-3h cadence and the best-proxies join only
 // surfaces the latest hour per (node, proxy), so keeping a week of hourly
 // history is generous while bounding the table the ROW_NUMBER subquery
-// scans on every /api/proxies/best call (free-review MEDIUM: the table was
+// scans on every /api/proxies/best call (the table was
 // previously never pruned).
 func (s *store) pruneProxyGrades() (int64, error) {
 	if s.db == nil {

@@ -78,7 +78,7 @@ type rankedProxyCandidate struct {
 // non-socks5-only grades rank A=4..F=0 by letter; everything else (socks5-only,
 // undecidable, ungraded) ranks -1. Used by BOTH the funnel's candidate
 // ranking (collectRankedCandidates) and the merge's candidate-rank closure so
-// the two can never drift (self-review finding).
+// the two can never drift.
 func rankFromGrade(g proxyURLGrade) int {
 	if g.Decidable && !g.Socks5Only {
 		return proxyTierRank(proxyGradeTier(g.Score))
