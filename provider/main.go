@@ -2163,7 +2163,20 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 
 	for {
 		byJwtBytes, err := os.ReadFile(jwtPath)
-		if err == nil {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				// Log non-NotExist errors (permission denied, truncated file, etc.)
+				// so operators can diagnose why the refresher is stuck.
+				tlog("[auth] warn: could not read jwt file for refresh: %v\n", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+			}
+			if err == nil {
 			byJwt := strings.TrimSpace(string(byJwtBytes))
 
 			lastRefreshTime := readLastRefreshTime()
@@ -2958,6 +2971,12 @@ func provide(opts docopt.Opts) {
 						// the entry and the merge re-admits it if it clears the
 						// bar.
 						tlog("[proxy][init] proxy[%d] (%s) rejected by stage-1 quality gate: %v. Not counted as a failure; re-graded next fetch cycle.\n",
+							proxySettings.Index, proxySettings.Address, err)
+					} else if errors.Is(err, context.Canceled) || proxyCtx.Err() != nil {
+						// Context cancellation (trim, reaper, reload, drain) is NOT an
+						// auth failure. Do not record give-up — it would permanently
+						// evict a healthy proxy after enough operational cycles.
+						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %v\n",
 							proxySettings.Index, proxySettings.Address, err)
 					} else {
 						giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
@@ -3906,7 +3925,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 			returnErr = fmt.Errorf("client limit exceeded: %s", authClientResult.Result.Error.Message)
 			return
 		}
-		returnErr = fmt.Errorf("%w: %s", ErrTokenInvalid, authClientResult.Result.Error.Message)
+		// Do NOT wrap in ErrTokenInvalid: that sentinel triggers shmLogFatal(78)
+		// which kills the entire provider process. Auth-client rejections (bad
+		// device spec, unrecognized description, temporary server error) should
+		// retry via the normal backoff path, not crash all 120 nodes.
+		returnErr = fmt.Errorf("auth-client rejected: %s", authClientResult.Result.Error.Message)
 		return
 	}
 

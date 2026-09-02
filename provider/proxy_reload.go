@@ -217,6 +217,7 @@ type ProxyReloader struct {
 	// spawnProxy starts a proxy goroutine's work (the provideWithProxy closure).
 	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool)
 
+	directDone      chan struct{}                 // closed when direct goroutine exits; nil when not running
 	drainingProxies map[string]context.CancelFunc // proxies draining active sessions
 	drainMu         sync.Mutex
 }
@@ -313,7 +314,7 @@ func (r *ProxyReloader) reload() {
 	defer r.mu.Unlock()
 
 	lockAcqStart := time.Now()
-	lockRelease, err := acquireProxyLock()
+	lockRelease, err := acquireProxyLockWithRetry()
 	if err != nil {
 		tlog("[proxy] reload skipped: %v (waited %v)\n", err, time.Since(reloadStart).Round(time.Millisecond))
 		return
@@ -392,31 +393,51 @@ func (r *ProxyReloader) reload() {
 		directShouldRun = os.Getenv("DISABLE_DIRECT_IP") != "1"
 	}
 	if directRunning && !directShouldRun {
-		// Disable direct: cancel the goroutine.
+		// Disable direct: cancel the goroutine and wait for it to exit
+		// with a bounded timeout so we don't wedge the reload path.
 		r.cancelMapMu.Lock()
 		if cancel, ok := r.cancelMap[directProxyKey]; ok {
 			cancel()
-			delete(r.cancelMap, directProxyKey)
 		}
 		r.cancelMapMu.Unlock()
+		// Snapshot directDone before the select to avoid reading a stale field
+		// if another reload replaces it between now and the goroutine exit.
+		done := r.directDone
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				tlog("[direct] warn: goroutine exit timed out after 10s, proceeding\n")
+			}
+		}
 		connect.UnregisterProxy(0)
 		tlog("[direct] native [direct] transport stopped (disable)\n")
-	} else if !directRunning && directShouldRun {
+		} else if !directRunning && directShouldRun {
 		// Enable direct: start the goroutine.
 		r.wg.Add(1)
+		done := make(chan struct{}) // local — goroutine closes this, not the field
+		r.directDone = done
 		directCtx, directCancel := context.WithCancel(r.parentCtx)
 		r.cancelMapMu.Lock()
 		r.cancelMap[directProxyKey] = directCancel
 		r.cancelMapMu.Unlock()
 		go connect.HandleError(func() {
+			defer close(done) // first defer = runs last (LIFO); closes LOCAL, not field
 			defer r.wg.Done()
 			defer directCancel()
 			defer connect.UnregisterProxy(0)
+			// Clean up cancelMap entry on exit so the reaper and
+			// reload don't see a stale entry (finding #4).
+			defer func() {
+				r.cancelMapMu.Lock()
+				delete(r.cancelMap, directProxyKey)
+				r.cancelMapMu.Unlock()
+			}()
 			connect.RegisterProxy(0, "direct")
 			r.spawnProxy(directCtx, nil, true, false)
 		})
 		tlog("[direct] native [direct] transport started (enable)\n")
-	}
+		}
 
 	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
 		len(running), len(desiredSet), lockWait.Round(time.Millisecond))
@@ -468,14 +489,24 @@ func (r *ProxyReloader) reload() {
 			removedSet[a] = true
 		}
 		shedCount := 0
-		if len(running) > trimCap {
-			rlist := make([]string, 0, len(running))
-			for a := range running {
-				if !removedSet[a] {
-					rlist = append(rlist, a)
-				}
+		// Count running proxies excluding direct (managed by the hot-toggle
+		// block above, not the trim logic). Including it would cause direct
+		// to be shed as the worst-graded proxy on every reload when the cap
+		// binds, creating a restart flap (finding #3).
+		runningNonDirect := 0
+		rlist := make([]string, 0, len(running))
+		for a := range running {
+			if a == directProxyKey {
+				continue
 			}
-			for _, addr := range selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, rlist, len(running)-trimCap) {
+			runningNonDirect++
+			if !removedSet[a] {
+				rlist = append(rlist, a)
+			}
+		}
+		if runningNonDirect > trimCap {
+			// trimCap applies to non-direct proxies only.
+			for _, addr := range selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, rlist, runningNonDirect-trimCap) {
 				if _, ok := running[addr]; ok && !removedSet[addr] {
 					removed = append(removed, addr)
 					removedSet[addr] = true
@@ -488,7 +519,7 @@ func (r *ProxyReloader) reload() {
 				}
 			}
 		}
-		budget := trimCap - (len(running) - len(removedSet))
+		budget := trimCap - (runningNonDirect - len(removedSet))
 		if budget < 0 {
 			budget = 0
 		}
@@ -517,7 +548,7 @@ func (r *ProxyReloader) reload() {
 			added = kept
 		}
 		if shedCount > 0 || dropped > 0 {
-			tlog("[proxy][trim] cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\\n", trimCap, shedCount, dropped, len(running)-shedCount)
+			tlog("[proxy][trim] cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		}
 	}
 
