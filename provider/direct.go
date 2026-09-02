@@ -121,7 +121,7 @@ func clearDirectToggle() error {
 // cmdDirect implements `provider direct <on|off>`: toggles the runtime
 // direct-IP toggle and triggers a reload of a running provider.
 func cmdDirect(opts docopt.Opts) {
-	arg, _ := opts.String("<on|off>")
+	arg, _ := opts.String("<state>")
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "on":
 		if err := writeDirectEnabled(true); err != nil {
@@ -134,7 +134,7 @@ func cmdDirect(opts docopt.Opts) {
 		}
 		fmt.Println("direct: providing on direct/local IP is now DISABLED (proxies only)")
 	default:
-		fmt.Fprintf(os.Stderr, "Usage: provider direct <on|off>\n")
+		fmt.Fprintf(os.Stderr, "Usage: provider direct <state> (on|off)\n")
 		os.Exit(2)
 	}
 

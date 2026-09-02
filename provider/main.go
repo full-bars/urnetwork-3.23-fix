@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"runtime/debug"
@@ -688,12 +689,59 @@ func applyStagedSession() {
 	tlog("[session] staged session applied\n")
 }
 
+// sanitizeRootPath rewrites PATH when running as root. Instead of replacing
+// PATH with a fixed FHS list (which drops reachable entries on NixOS and
+// similar where systemctl lives under /run/current-system/sw/bin), it keeps
+// only existing absolute directories that are not group- or world-writable
+// (an attacker writable earlier in root's PATH could hijack exec.Command bare
+// names), then appends the safe FHS defaults. Missing/relative/attacker-
+// writable entries are dropped.
+func sanitizeRootPath() {
+	seen := map[string]bool{}
+	var filtered []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		abs := dir
+		if !filepath.IsAbs(dir) {
+			continue // relative entries are ambiguous for a root child exec
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.IsDir() {
+			continue // missing or not a dir
+		}
+		mode := info.Mode()
+		// Drop group/world-writable dirs (attacker-jump targets), keep the rest.
+		if mode.Perm()&0o022 != 0 {
+			continue
+		}
+		if strings.Contains(abs, "..") {
+			continue
+		}
+		key := filepath.Clean(abs)
+		if !seen[key] {
+			seen[key] = true
+			filtered = append(filtered, key)
+		}
+	}
+	// Append safe FHS defaults (dedup).
+	for _, dir := range []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		if !seen[filepath.Clean(dir)] {
+			seen[filepath.Clean(dir)] = true
+			filtered = append(filtered, dir)
+		}
+	}
+	os.Setenv("PATH", strings.Join(filtered, string(os.PathListSeparator)))
+}
+
 func main() {
 	// G-M2: sanitize PATH when running as root to prevent hijacking
-	// of exec.Command bare names (systemctl, docker, etc.) via
-	// attacker-writable directories earlier in root's PATH.
+	// of exec.Command bare names (systemctl, docker, etc.) via attacker-writable
+	// directories earlier in root's PATH. Filter rather than replace so
+	// reachable entries (e.g. NixOS /run/current-system/sw/bin) survive.
 	if os.Getuid() == 0 {
-		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		sanitizeRootPath()
 	}
 
 	profile := os.Getenv("URNETWORK_PROFILE")
@@ -777,7 +825,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
-    provider direct <on|off>
+    provider direct <state>
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> [<connect_url>]
@@ -3274,10 +3322,14 @@ func provide(opts docopt.Opts) {
 			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
 			// can't nuke a fresh direct's registration, and so the reloader's
 			// running[] snapshot doesn't leave direct permanently "running" after
-			// the goroutine exits (DeepSeek HIGH).
+			// the goroutine exits. Only delete if the entry is still THIS
+			// goroutine's cancel func — if reload() has since registered a new
+			// direct under the same key, leave it intact (compare-and-delete).
 			defer func() {
 				proxyCancelMu.Lock()
-				delete(proxyCancelMap, directProxyKey)
+				if cur, ok := proxyCancelMap[directProxyKey]; ok && reflect.ValueOf(cur).Pointer() == reflect.ValueOf(nativeCancel).Pointer() {
+					delete(proxyCancelMap, directProxyKey)
+				}
 				proxyCancelMu.Unlock()
 			}()
 			defer connect.UnregisterProxy(0)
