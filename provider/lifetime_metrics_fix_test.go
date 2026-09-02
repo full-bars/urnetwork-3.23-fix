@@ -8,7 +8,7 @@ import (
 // first tick's re-anchor loop runs over a populated proxy set (bw) while the
 // the prev-less baseline maps are still empty, so it MUST create the slot via
 // u64At — a bare map index dereference would be a nil *uint64 panic that
-// crashes the provider process (Sonnet CRITICAL, 2026-08-27). This exercises
+// crashes the provider process. This exercises
 // exactly that mechanism: u64At on an empty map returns an assignable slot the
 // assignment can write without panicking.
 func TestU64AtCreateIfAbsent(t *testing.T) {

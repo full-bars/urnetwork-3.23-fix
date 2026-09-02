@@ -356,7 +356,7 @@ func TestRunDockerUpdateHelp(t *testing.T) {
 
 // TestRunDockerUpdateFlagValueTarget: update with the --flag=value target form
 // (e.g. --unit=NAME) must take the in-container branch, not fall through to the
-// host self-update (Sonnet HIGH on #453 - hasAnyTargetFlag must match both forms).
+// host self-update (hasAnyTargetFlag must match both forms).
 func TestRunDockerUpdateFlagValueTarget(t *testing.T) {
 	err := RunDocker([]string{"update", "--unit=nonexistent-update-test-xyz"})
 	if err == nil {

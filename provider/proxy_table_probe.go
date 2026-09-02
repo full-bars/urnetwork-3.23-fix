@@ -473,7 +473,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		if !attempted {
 			// Box-side failure (limiter denial / caller deadline): no evidence
 			// about the proxy. Excluded from Total exactly like an unresolved
-			// host — positive-evidence-only (Opus review CRITICAL-1, proven:
+			// host — positive-evidence-only (proven:
 			// a limiter denial previously produced a decidable F on ZERO dials).
 			baseUnresolved++
 			continue
@@ -620,8 +620,7 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 // Walking seed+1, seed+2, ... at the base width collects genuinely new hosts
 // (draining the table in order), stopping at `count`. This is what makes the
 // adaptive growth block overlap-free — a call at a DIFFERENT width would
-// break the stride tiling and collide with the base ~20% of the time (Sonnet
-// review MEDIUM B).
+// break the stride tiling and collide with the base ~20% of the time.
 func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -998,8 +997,7 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 	// The live SOCKS5 check is the final gate. Credentials are passed
 	// through so a credentialed proxy (which stage 1 graded WITH creds,
 	// finding H3) is not convicted by a credential-less handshake — under
-	// socks5Greet a server selecting 0x02 without creds fails immediately
-	// (Opus review finding 4).
+	// socks5Greet a server selecting 0x02 without creds fails immediately.
 	if user == "" && password == "" {
 		return probeProxySocks5(ctx, address, proxyProbeTimeout)
 	}

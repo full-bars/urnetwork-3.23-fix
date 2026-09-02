@@ -51,7 +51,7 @@ func discoverProcesses() []Provider {
 		// Then strip the kernel's " (deleted)" marker so Provider.Binary stays
 		// the canonical executable path; otherwise installBinary/backup later
 		// write to a literal "... (deleted)" path and the service's real
-		// binary stays missing (CodeRabbit Major).
+		// binary stays missing.
 		_, binaryDeleted := strings.CutSuffix(exe, " (deleted)")
 		exe = strings.TrimSuffix(exe, " (deleted)")
 		env := readEnviron(pid)

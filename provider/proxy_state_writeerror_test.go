@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Coverage-gap tests (Sonnet round-3 review): writeProxyStateTo was 53%
+// Coverage-gap tests: writeProxyStateTo was 53%
 // covered — only the happy path (MkdirAll ok, Marshal ok, CreateTemp ok,
 // Write ok, Close ok, Rename ok) was exercised anywhere in the suite. These
 // drive two of its real, reachable error returns black-box, without any

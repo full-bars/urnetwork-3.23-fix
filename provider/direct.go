@@ -13,7 +13,7 @@ import (
 // transport goroutine is registered, so reload() can hot-toggle it.
 const directProxyKey = "direct"
 
-// direct.go implements the operator `provider direct <on|off>` runtime toggle:
+// direct.go implements the operator `provider direct <state>` runtime toggle:
 // controls whether the provider launches a direct (local-IP) transport in
 // addition to proxies from --proxy_file / --proxy_url. Persisted so it survives
 // restarts and reloads. Read by provide() at startup and by reload() to
@@ -101,7 +101,7 @@ func writeDirectEnabled(enabled bool) error {
 	}
 	// TODO: add chownLikeStateOwner(dir, tmpPath) when provider gains access
 	// to the urnettools chown utilities — preserves ownership across
-	// sudo/cli → provider transitions (finding #7 from Opus review).
+	// sudo/cli → provider transitions.
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("renaming toggle file: %w", err)
@@ -118,7 +118,7 @@ func clearDirectToggle() error {
 	return os.Remove(path)
 }
 
-// cmdDirect implements `provider direct <on|off>`: toggles the runtime
+// cmdDirect implements `provider direct <state>`: toggles the runtime
 // direct-IP toggle and triggers a reload of a running provider.
 func cmdDirect(opts docopt.Opts) {
 	arg, _ := opts.String("<state>")

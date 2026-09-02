@@ -86,7 +86,7 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	lm.BillableBytes = persisted.BillableBytes
 	// Anchor the flush throttle to the last real save (not boot time), so a
 	// quick restart doesn't delay the first persistence of new deltas by a
-	// full throttle window after an already-stale file (Sonnet review LOW).
+	// full throttle window after an already-stale file.
 	if savedAt, perr := time.Parse(time.RFC3339, persisted.SavedAt); perr == nil {
 		lm.lastFlush = savedAt
 	}

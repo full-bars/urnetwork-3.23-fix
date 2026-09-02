@@ -31,7 +31,7 @@ func TestRestartProviderNoResolution(t *testing.T) {
 func TestRestartProviderPIDSignalFailure(t *testing.T) {
 	// Use a REAL dead PID: fork a child that exits immediately and reap it,
 	// then signal its (now-reaped) PID. A guessed PID like 999999 could
-	// theoretically collide on a huge-pid-max system (coderabbit major).
+	// theoretically collide on a huge-pid-max system.
 	dead := exec.Command("true")
 	if err := dead.Start(); err != nil {
 		t.Skipf("cannot spawn helper process: %v", err)
@@ -74,7 +74,7 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	}
 	p := Provider{StateDir: dir}
 	// Capture stdout so the printed snapshot is asserted, not just the
-	// nil error (coderabbit minor: assert the snapshot output).
+	// nil error (assert the snapshot output).
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -138,8 +138,7 @@ func TestCmdAutoUpdateRequiresInterval(t *testing.T) {
 // TestCmdAutoUpdateInvalidInterval: an interval outside the known set must
 // be rejected by cmdAutoUpdate BEFORE targeting (validation moved ahead of
 // selectTarget so this is testable without a live provider — the old test
-// asserted a map literal against itself and could never fail; coderabbit
-// minor).
+// asserted a map literal against itself and could never fail.
 func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	err := cmdAutoUpdate([]string{"yearly"}, false, false)
 	if err == nil {

@@ -129,7 +129,7 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Call the PRODUCTION merge helper — not a copy of its logic
-	// (coderabbit major: reimplemented tests cannot detect regressions).
+	// (reimplemented tests cannot detect regressions).
 	got, err := mergeDropinEnvFile(path, "URNETWORK_PROFILE=turbo-v4")
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
 
 // TestCmdUninstallPathGuards: cmdUninstall must not remove "/" or paths with
 // degenerate basenames (. or /). Calls the PRODUCTION safeRemoveTarget guard
-// (coderabbit major: reimplemented tests cannot detect regressions).
+// (reimplemented tests cannot detect regressions).
 func TestCmdUninstallPathGuards(t *testing.T) {
 	// These must be REJECTED (guard returns false). "/" and "/./" are
 	// Unix-root forms; on Windows the root is a drive path, so those are
@@ -207,7 +207,7 @@ func TestCmdUninstallPathGuards(t *testing.T) {
 
 // TestUnitCommandArgv: unitCommandArgs must produce the correct argv for
 // both system and user units. Calls the PRODUCTION argv builder directly
-// (coderabbit major: reimplemented tests cannot detect regressions).
+// (reimplemented tests cannot detect regressions).
 func TestUnitCommandArgv(t *testing.T) {
 	// A fake unit name that won't exist on any box -> isUserUnit = true.
 	userUnit := "urnet-tools-test-fake-unit-argv.service"

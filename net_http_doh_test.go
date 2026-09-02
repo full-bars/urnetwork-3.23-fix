@@ -595,7 +595,7 @@ func TestDohServeStale(t *testing.T) {
 // (which triggers pruneCacheLocked for the whole cache) would delete domain
 // A's expired entry even though A was still inside dohStaleServeBound — so a
 // subsequent failed resolve of A would get SERVFAIL instead of the expected
-// stale addrs. Sonnet 5 review (2026-08-29) flagged this.
+// stale addrs.
 func TestDohServeStaleMultiDomain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -159,7 +159,6 @@ func TestInstallBinaryAtomic(t *testing.T) {
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
 // updates never collide (review finding M2). Calls the PRODUCTION backupName
 // helper — a local copy would pass even if the real format changed
-// (coderabbit trivial finding).
 func TestBackupNameTimestamped(t *testing.T) {
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
 	b := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 1, 0, time.UTC))
@@ -263,7 +262,7 @@ func TestRunVersionCommand(t *testing.T) {
 	ToolVersion = "test-version"
 	for _, args := range [][]string{{"--version"}, {"-v"}} {
 		// Capture stdout so we can pin the printed content, not just the
-		// nil error (Sonnet review finding: output must be verified).
+		// nil error (output must be verified).
 		oldOut := os.Stdout
 		r, w, err := os.Pipe()
 		if err != nil {
@@ -344,7 +343,7 @@ func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
 func TestCmdReportWritesOverrideFile(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir, User: "testuser"}
-	// Call the PRODUCTION write helper (coderabbit: tests must call
+	// Call the PRODUCTION write helper (tests must call
 	// production logic, not reimplement it). Reverting the write (or its
 	// 0644 mode) must fail this test.
 	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
@@ -364,7 +363,7 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 	}
 	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
 	// norm: root tool + urnetwork-beta service). 0600 would silently break
-	// reporting cross-user (Sonnet review finding).
+	// reporting cross-user.
 	// Windows has no POSIX permissions; Go reports 0666 there. Only assert
 	// the 0644 readable-by-provider-user mode on Unix.
 	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
@@ -411,7 +410,7 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
 	}
 	// The confirm gate must exist: a non-force restart with no stdin (EOF)
-	// must be refused, not silently restart (Sonnet review finding). Test
+	// must be refused, not silently restart. Test
 	// confirmGate directly — deterministic, no discovery dependency (CI has
 	// no provider; Run(["hot-restart"]) would error at discovery before the
 	// gate, which is env-dependent). cmdHotRestart calls this same gate.

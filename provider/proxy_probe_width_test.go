@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-// Coverage-gap tests (Sonnet round-3 review): proxyTableProbeConfig.probeWidth
+// Coverage-gap tests: proxyTableProbeConfig.probeWidth
 // was 0% covered — nothing drove it directly, only indirectly through
 // resolveProxyTableProbeConfig's own clamping. probeWidth is the "wider of
 // SampleWidth and MaxSampleWidth" helper the adaptive path uses to size the

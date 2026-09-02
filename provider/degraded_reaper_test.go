@@ -299,7 +299,7 @@ func TestDegradedReaper_LargeScale(t *testing.T) {
 
 	// Identity check, not just count: every reaped address must score no
 	// higher than every kept address, otherwise a best performer got killed
-	// and a worse one survived — the exact regression CodeRabbit flagged.
+	// and a worse one survived.
 	maxReapedScore := scored[len(toReap)-1].score
 	minKeptScore := scored[len(toReap)].score
 	if maxReapedScore > minKeptScore {
@@ -425,8 +425,7 @@ func TestReapProxies_SkipsProxyThatRecoveredSinceDecision(t *testing.T) {
 	var cancelMu sync.Mutex
 
 	// Simulate "recovered:1" having reconnected in the gap between the
-	// scoring pass and this cancel pass — exactly the race CodeRabbit
-	// flagged. isStillDegraded must be re-checked right before cancelling,
+	// scoring pass and this cancel pass. isStillDegraded must be re-checked right before cancelling,
 	// not assumed from the (by-then-stale) toReap decision.
 	isStillDegraded := func(addr string) bool {
 		return addr != "recovered:1"

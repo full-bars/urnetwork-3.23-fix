@@ -6,7 +6,7 @@ import (
 )
 
 // TestPathTableEvictionKeepsActiveFlow is the regression test for the
-// pathTable LRU eviction design (G-H1). CodeRabbit flagged that eviction at
+// pathTable LRU eviction design. Eviction at
 // the 4096 cap could break an ACTIVE flow by ejecting its route. The design
 // answer: lastUsed is refreshed on every SelectDestination hit, so a route
 // that is actively carrying traffic is never the least-recently-used entry.

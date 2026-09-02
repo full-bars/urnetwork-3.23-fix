@@ -156,7 +156,7 @@ func TestSetDryRunNoWrite(t *testing.T) {
 	}
 }
 
-// TestFastAuthInvalidRejected pins the CodeRabbit finding: an invalid
+// TestFastAuthInvalidRejected pins the invariant: an invalid
 // fast-auth value must error, not silently enable the bypass, for both the
 // standalone command and `set fast-auth <value>`.
 func TestFastAuthInvalidRejected(t *testing.T) {

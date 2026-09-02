@@ -87,7 +87,7 @@ func TestCobraUnknownCommandErrors(t *testing.T) {
 
 // TestRunVersionWithTrailingArg: `-v`/`--version`/`version` with trailing args
 // still print the version, matching the pre-cobra dispatcher (which matched on
-// args[0] only) - Sonnet/Muse review finding.
+// args[0] only).
 func TestRunVersionWithTrailingArg(t *testing.T) {
 	for _, arg := range []string{"-v", "--version"} {
 		out := captureStdout(t, func() {

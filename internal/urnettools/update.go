@@ -578,7 +578,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// up — skip it (warn) and install the fresh binary rather than failing the
 	// whole update on a phantom backup path.
 	// Prune old backups before creating a new one so disk pressure cannot
-	// cause the update to fail .
+	// cause the update to fail.
 	pruneBackups(p.Binary, 2)
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
@@ -599,7 +599,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		fmt.Printf("backed up %s -> %s\n", p.Binary, backup)
 	}
 	// Prune old backups after the new one is written, regardless of
-	// update outcome .
+	// update outcome.
 	defer pruneBackups(p.Binary, 2)
 
 	// Swap with ownership preserved for the provider user.

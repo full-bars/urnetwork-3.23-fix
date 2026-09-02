@@ -826,6 +826,7 @@ Usage:
     provider proxy summary
     provider proxy trim <count> [--preview]
     provider direct <state>
+    provider proxy paste [--file=<file>]
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> [<connect_url>]
@@ -881,6 +882,8 @@ Options:
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
                                      With no pattern, 'proxy exclude' lists active patterns.
+    --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
+                                     proxy (any common format) or an http(s) URL to fetch as a proxy source.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -916,6 +919,8 @@ Options:
 			}
 		} else if addSource, _ := opts.Bool("add-source"); addSource {
 			proxyAddSource(opts)
+		} else if paste, _ := opts.Bool("paste"); paste {
+			proxyPaste(opts)
 		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
 			proxyRemoveSource(opts)
 		} else if exclude, _ := opts.Bool("exclude"); exclude {
@@ -1407,8 +1412,7 @@ func runLifetimeCollector(ctx context.Context) {
 			// active branch does the same): on the FIRST tick prevRxPerProxy is
 			// empty while bw is populated with every known proxy, so a bare
 			// index dereference panics (nil *uint64) and — with the collector
-			// launched as a bare `go` — crashes the whole provider process
-			// (Sonnet CRITICAL, 2026-08-27).
+			// launched as a bare `go` — crashes the whole provider process.
 			for key, b := range bw {
 				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
 				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
@@ -1806,8 +1810,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
 		// newly confirmed dead). report.Dead is the COMPLETE currently-
 		// dead list rebuilt every tick — counting it here would inflate
-		// the persisted counter on every tick a proxy stays dead
-		// (Sonnet review HIGH).
+		// the persisted counter on every tick a proxy stays dead.
 		lifetimeStore.Add(0, 0, 0, 0,
 			uint64(len(report.Recovered)),
 			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
@@ -2941,7 +2944,7 @@ func provide(opts docopt.Opts) {
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
-							// the proxy list (Opus HIGH-2 fix).
+							// the proxy list.
 							proxyCancelMu.Lock()
 							delete(proxyCancelMap, proxySettings.Address)
 							proxyCancelMu.Unlock()
@@ -3322,9 +3325,7 @@ func provide(opts docopt.Opts) {
 			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
 			// can't nuke a fresh direct's registration, and so the reloader's
 			// running[] snapshot doesn't leave direct permanently "running" after
-			// the goroutine exits. Only delete if the entry is still THIS
-			// goroutine's cancel func — if reload() has since registered a new
-			// direct under the same key, leave it intact (compare-and-delete).
+			// the goroutine exits.
 			defer func() {
 				proxyCancelMu.Lock()
 				if cur, ok := proxyCancelMap[directProxyKey]; ok && reflect.ValueOf(cur).Pointer() == reflect.ValueOf(nativeCancel).Pointer() {

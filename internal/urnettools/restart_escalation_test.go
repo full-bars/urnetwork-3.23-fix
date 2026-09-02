@@ -235,7 +235,7 @@ func TestDoRestartCmd_RefusesDockerTarget(t *testing.T) {
 }
 
 // A narrowly-scoped sudoers grant for __do-restart must NOT become a
-// generic "restart any unit as root" primitive (Sonnet review MEDIUM): the
+// generic "restart any unit as root" primitive: the
 // unit has to match a provider Discover() actually sees.
 func TestDoRestartCmd_RejectsUndiscoveredUnit(t *testing.T) {
 	orig := discoverForRestart
@@ -277,7 +277,7 @@ func TestDoRestartCmd_DiscoveredUnitReachesUnitCommand(t *testing.T) {
 
 // A --user flag that disagrees with the discovered record must be REJECTED,
 // never silently routed to the flagged account's session via machined
-// (Sonnet review round 2: unit-name-only validation let the restart target a
+// unit-name-only validation let the restart target a
 // different user's identically-named unit).
 func TestDoRestartCmd_MismatchedUserRejected(t *testing.T) {
 	discovered := Provider{Unit: "urnetwork.service", User: "user-a"}
@@ -308,7 +308,6 @@ func TestDoRestartCmd_MismatchedUserRejected(t *testing.T) {
 
 // Duplicate units across accounts must never be resolved by silent
 // first-match: without --user the selection is ambiguous and refused
-// (Sonnet review round 3).
 func TestDoRestartCmd_AmbiguousDuplicateUnitsRefused(t *testing.T) {
 	a := Provider{Unit: "urnetwork.service", User: "user-a"}
 	b := Provider{Unit: "urnetwork.service", User: "user-b"}
@@ -332,7 +331,7 @@ func TestDoRestartCmd_AmbiguousDuplicateUnitsRefused(t *testing.T) {
 	}
 }
 
-// --- staging helper (Sonnet review HIGH regression pins) ---
+// --- staging helper (regression pins) ---
 
 // TestStageToolForEscalation_ChmodsExecutable proves the staged binary gets
 // execute bits: downloadFile writes 0644 and execve fails with EACCES on a
@@ -407,7 +406,7 @@ func TestStageToolForEscalation_BadDigestReturnsEmpty(t *testing.T) {
 	}
 }
 
-// Documents the deliberately broad auth markers (Sonnet review LOW): a
+// Documents the deliberately broad auth markers: a
 // generic "access denied" string DOES classify as auth-class today. The
 // blast radius of a false positive is only the guidance path, so breadth
 // beats missing real polkit denials — pin that decision.

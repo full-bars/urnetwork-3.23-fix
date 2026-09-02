@@ -217,8 +217,7 @@ func TestCollectProxyGradeSummary_StaleBySource(t *testing.T) {
 	}
 }
 
-// TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag pins the
-// coderabbit finding: an address whose first-seen provenance tag says
+// TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag pins the invariant: an address whose first-seen provenance tag says
 // "url" but which IS in the current paid/file desired set is served as a
 // file proxy (file wins in mergeProxyURLCache) and graded by the paid
 // grader — the summary must bucket it by the PAID owner (ProxyEntry
@@ -312,7 +311,7 @@ func TestEmitProxyGradeDelta(t *testing.T) {
 	}
 }
 
-// TestGradeSummaryScoresLineP95Edge is the coderabbit p95 regression:
+// TestGradeSummaryScoresLineP95Edge is the p95 regression:
 // with exactly n%20==0 scores (the off-by-one case), scoresLine must not
 // panic and must return a sane p95, not the max by accident.
 func TestGradeSummaryScoresLineP95Edge(t *testing.T) {
@@ -420,7 +419,7 @@ func TestRunProxyGradeSummaryOnceSkipsOnUnreadableState(t *testing.T) {
 }
 
 // TestRunProxyGradeSummaryOnceSkipsOnCollectorFailure is the LOAD-BEARING
-// HIGH-2 regression (Sonnet round-2 Finding A). The unreadable-state test
+// HIGH-2 regression . The unreadable-state test
 // above is masked by the tracked==0 skip (both fire on the same scenario),
 // so it cannot prove the !ok guard is what prevents the phantom snapshot.
 // This test injects a collector that returns ok=false WITH tracked>0 —

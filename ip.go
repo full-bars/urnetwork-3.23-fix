@@ -224,7 +224,7 @@ func parseTcpOptions(tcp *parsedTcp) {
 					// (e.g. 1) would otherwise force near-single-byte
 					// segments for the life of the connection. Clamping
 					// (not discarding) keeps honoring the peer's stated
-					// limit when it is merely small (Opus review MED-3).
+					// limit when it is merely small.
 					tcp.enableMss = true
 					tcp.mss = uint32(max(mss, 536))
 				}
@@ -2080,7 +2080,7 @@ func (self *TcpSequence) Run() {
 	if packetErr != nil {
 		// SynAck failed (e.g. an MTU too small for the headers). Log it —
 		// the client will retry its SYN on its own timeout, but a silent
-		// return here leaves no trace (Opus LOW-3).
+		// return here leaves no trace.
 		self.log.V(1).Infof("[init]synack error = %s\n", packetErr)
 		return
 	}
@@ -2691,7 +2691,7 @@ var tcpTimestampEpoch = time.Now()
 // Returns a millisecond timestamp for RFC 7323 packets. TCP compares these
 // values modulo 32 bits, so process-relative monotonic time is enough. The
 // value can wrap through zero after ~49 days of uptime, which is harmless —
-// the ==0 sentinel only applies to peer values (Opus NIT).
+// the ==0 sentinel only applies to peer values.
 func (self *ConnectionState) timestampValue() uint32 {
 	if self.timestampValueForTest != nil {
 		return self.timestampValueForTest()
@@ -2788,7 +2788,7 @@ func (self *ConnectionState) SynAck(mtu int) ([]byte, error) {
 // the RFC 7323 timestamp option (NOP-NOP-TSval-TSecr) when negotiated, else
 // empty. RFC 7323 §3.2 requires TSopt on EVERY non-RST segment once
 // negotiated — omitting it on pure ACKs and FIN-ACKs breaks PAWS/RTT sampling
-// and can stall connection close on strict stacks (Opus review MED-2).
+// and can stall connection close on strict stacks.
 func (self *ConnectionState) tcpOptionsBytes() []byte {
 	if !self.enableTimestamp {
 		return nil
@@ -2907,8 +2907,7 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 		// 6691 data-only semantics). But at the MTU boundary our outgoing
 		// timestamp option makes the wire segment larger than the peer's
 		// path MTU budget, risking fragmentation/drop. Subtract our option
-		// bytes from the data budget when clamping (CodeRabbit review
-		// finding; conservative at the boundary). Floor at 1 so a tiny
+		// bytes from the data budget when clamping (conservative at the boundary). Floor at 1 so a tiny
 		// option overhead can never force a zero/negative payload.
 		optionByteCount := headerByteCount - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
 		packetByteCount = min(packetByteCount, max(1, int(self.peerMss)-optionByteCount))
@@ -3585,7 +3584,7 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 // IMPORTANT: the 5-minute cutoff must stay <= DefaultTcpBufferSettings.IdleTimeout
 // and DefaultUdpBufferSettings.IdleTimeout (both 300s). If those settings are
 // raised above this value, evictStale will evict entries for flows that are
-// still active, causing mid-connection reroutes (finding #1 from Opus review).
+// still active, causing mid-connection reroutes.
 // TODO: derive this from the settings instead of hardcoding.
 func (self *pathTable) evictStale(now time.Time) {
 	cutoff := now.Add(-5 * time.Minute)

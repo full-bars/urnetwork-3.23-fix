@@ -14,8 +14,8 @@ import (
 )
 
 // TestStdinReaderSharedAcrossPrompts pins the invariant that every
-// interactive prompt reads from the SAME bufio.Reader (free-review HIGH,
-// mimo-v2.5): a second bufio.Reader over the same input would silently
+// interactive prompt reads from the SAME bufio.Reader: a second
+// bufio.Reader over the same input would silently
 // drop whatever the first already buffered, hanging piped scripts like
 // `echo y | urnet-tools update --all`. We swap the package-level
 // stdinReader for the duration of the test and confirm two sequential
@@ -115,8 +115,7 @@ func TestIsUserUnitVendorDir(t *testing.T) {
 	}
 }
 
-// TestJournalctlArgsUserVsSystem covers the argv construction split (free
-// review + coderabbit passes): system units use "-fu <unit>"; user units
+// TestJournalctlArgsUserVsSystem covers the argv construction split: system units use "-fu <unit>"; user units
 // TestJournalctlArgsUserVsSystem ensures user-level units for the current user
 // use "--user -u <unit> -f" (no root needed), while cross-user units scope via
 // "-M <user>@ --user-unit <unit> -f", and system units use "-fu <unit>".

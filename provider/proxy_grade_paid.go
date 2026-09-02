@@ -124,8 +124,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				// in this same union), or a tracked-but-not-desired entry is
 				// dialed every tick and discarded at apply before LastGraded
 				// advances — a permanent never-graded budget squatter that can
-				// starve real paid targets of all 200 slots (Opus review HIGH-1,
-				// proven with a two-tick harness).
+				// starve real paid targets of all 200 slots, proven with a two-tick harness.
 				//
 				// Membership IS the gradability condition WHEN the union is
 				// trustworthy (file read fine or no source file). When the
@@ -191,8 +190,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// per-address earn tracker (positive billable delta within
 			// paidEarnWindow), NEVER the raw cumulative counter: a
 			// cumulative-only check would let a proxy that earned once
-			// early then died look "earning" forever and never be re-probed
-			// (Sonnet review finding 2c).
+			// early then died look "earning" forever and never be re-probed.
 			//
 			// Hard ceiling: even an actively-earning proxy is force-probed
 			// at least once per paidForceProbeCeiling (24h) so the fail-fast
@@ -274,7 +272,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// probes bailed early, so persisting now would mark up to
 			// maxPaidProbesPerTick proxies Pending / advance their clocks for
 			// "we were shutting down" rather than evidence. Leave state alone;
-			// the next tick re-collects (Opus review MEDIUM-1).
+			// the next tick re-collects.
 			return
 		}
 		// Take the cross-process lock too so a concurrent CLI proxy removal
@@ -297,8 +295,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		}
 		// Re-read the CURRENT settings so a concurrent reload that changed an
 		// address's credentials (or removed it) between collect and apply
-		// cannot have a stale-creds probe result persisted (coderabbit
-		// review). On mismatch the result is skipped entirely — no grade, no
+		// cannot have a stale-creds probe result persisted. On mismatch the result is skipped entirely — no grade, no
 		// LastGraded advance — so the next sweep probes with current settings.
 		//
 		// This apply-time set is built the way the COLLECT side builds it
@@ -308,8 +305,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// addresses. A single-source either/or here would let such an
 		// address be collected + dialed every pass yet fail this lookup and
 		// hit continue: never graded, LastGraded never advancing, and the
-		// paid-budget sort keeping its never-graded flag first forever
-		// (Sonnet review CRITICAL).
+		// paid-budget sort keeping its never-graded flag first forever.
 		current := map[string]connect.ProxySettings{}
 		desiredSet, fileOK := paidDesiredSet(state)
 		for addr, s := range desiredSet {
@@ -424,7 +420,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 // apply phase (which results are gradable), and the summary (whose ownership
 // bucketing must agree with the writer). A previous either/or construction in
 // the summary let internal-config addresses under a set state.Source be
-// reported ungraded with the wrong staleness window (Opus review MEDIUM-2);
+// reported ungraded with the wrong staleness window;
 // centralizing guarantees the three sites cannot drift again. File-read errors
 // are logged and skipped: apply proceeds with the internal config, mirroring
 // the collect side.
@@ -487,7 +483,7 @@ func applyPaidProbeBudget(targets []gradeTarget, budget int) []gradeTarget {
 		if targets[i].snapshotGradedAt.IsZero() != targets[j].snapshotGradedAt.IsZero() {
 			return targets[i].snapshotGradedAt.IsZero()
 		}
-		// Deterministic tie-break for equal staleness (coderabbit review): the
+		// Deterministic tie-break for equal staleness: the
 		// input comes from state.Proxies map iteration, whose order is
 		// intentionally randomized in Go. Without this, equal-staleness targets
 		// keep a random stable order and the budget cut below picks an arbitrary
