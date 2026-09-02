@@ -210,7 +210,17 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 		}
 		out = append(out, dayBucket{day: bd.d, billable: billable, total: total})
 	}
-	_ = now
+	// Drop a trailing bucket that is the CURRENT, incomplete period (its
+	// window has not elapsed yet); rendering it as a full bar overstates the
+	// range. The bucket key id == truncate(now) means it is the present period.
+	if len(out) > 0 && !truncate(now).IsZero() && out[len(out)-1].day.Equal(truncate(now)) {
+		out = out[:len(out)-1]
+	}
+	// Honor the requested number of buckets: keep only the most recent N.
+	if nBuckets > 0 && len(out) > nBuckets {
+		out = out[len(out)-nBuckets:]
+	}
+	// now / nBuckets are consumed above; the graph titles no longer overstate.
 	return out
 }
 

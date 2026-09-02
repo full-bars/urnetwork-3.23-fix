@@ -60,12 +60,18 @@ func cmdUsage(args []string) error {
 	// "usage --unit X graph day" should route to graph, not cards.
 	for i, a := range args {
 		switch a {
-		case "graphs", "graph":
+		case "graphs":
+			// `usage graphs` = all three views; never treat a following
+			// token (e.g. --unit) as a view.
+			return cmdUsageGraph(args[:i], "")
+		case "graph":
+			// `usage graph <view>`: consume exactly one non-flag token as
+			// the view; flags before/after still route to target parsing.
 			var view string
-			if i+1 < len(args) {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				view = args[i+1]
 			}
-			return cmdUsageGraph(args[i:], view)
+			return cmdUsageGraph(args[:i], view)
 		case "-h", "--help":
 			return fmt.Errorf("usage: show aggregate usage (billable vs control)\n\n  urnet-tools usage\n  urnet-tools usage graphs\n  urnet-tools usage graph day|hour|month")
 		}
@@ -142,9 +148,12 @@ func padRight(s string, w int) string {
 func ratioBar(billable, control uint64) string {
 	total := billable + control
 	if total == 0 {
-		return strings.Repeat(" ", 30)
+		return strings.Repeat(" ", 38)
 	}
-	const w = 30
+	// Content width: the card box is 43 chars wide; the bar row is
+	// `│  %s │` (3 + bar + 2), so the bar must be 38 to align with the
+	// BILLABLE/CONTROL/TOTAL value columns (was 30 -> 8 cells short).
+	const w = 38
 	b := int(float64(billable) / float64(total) * w)
 	if b > w {
 		b = w

@@ -39,13 +39,16 @@ func (a usageAggregates) Control() uint64 {
 
 // readUsageHistory parses the provider's usage_history.jsonl into snapshots,
 // oldest-first, skipping malformed lines. A missing file yields an empty slice.
+// Streams from the file handle (no os.ReadFile + string copy) so a large
+// capped history file does not peak at ~2x its size in memory (CR Major).
 func readUsageHistory(stateDir string) []usageSnapshot {
-	b, err := os.ReadFile(filepath.Join(stateDir, "usage_history.jsonl"))
+	f, err := os.Open(filepath.Join(stateDir, "usage_history.jsonl"))
 	if err != nil {
 		return nil
 	}
+	defer f.Close()
 	var snaps []usageSnapshot
-	sc := bufio.NewScanner(strings.NewReader(string(b)))
+	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

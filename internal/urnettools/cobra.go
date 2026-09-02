@@ -58,6 +58,7 @@ Proxy Management:
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
   direct [on|off]         Toggle providing on the machine's direct/local IP
+  usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
 Hub Management:
   hub init                        Initialize hub and generate CA certificate

@@ -27,9 +27,10 @@ const usageHistoryMaxBytes = 512 << 20 // 512 MiB
 //	{"ts":"2026-08-31T05:00:00Z","rx":...,"tx":...,"billable_rx":...,"billable_tx":...}
 //
 // rx/tx are the cumulative TOTAL bytes across all proxies since the process
-// started (they reset on provider restart); billable_* are the cumulative
-// billable bytes. Lifetime across restarts is the running max over the file;
-// "since start" is the latest snapshot's values.
+// started; billable_* are the cumulative billable bytes. The totals can dip on
+// ordinary proxy churn (a removed proxy's bytes leave the aggregate sum), not
+// just on a provider restart. Lifetime is computed by segment-summing the
+// history (usageLifetime); "since start" is the latest snapshot's values.
 func usageHistoryPath(dir string) string {
 	return filepath.Join(dir, "usage_history.jsonl")
 }
