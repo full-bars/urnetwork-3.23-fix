@@ -276,19 +276,24 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		// differ from the running process. If BinaryDeleted is true, a prior
 		// update swapped the binary on disk but the old process is still
 		// running from a deleted inode — the version is stale, so do NOT skip.
-		// Also re-check /proc/<pid>/exe for the (deleted) marker on Linux
-		// (the discovery sample may have been taken before the swap).
+		// Also re-check the running image for the (deleted) marker (Linux
+		// /proc/<pid>/exe semantics) — the discovery sample may have been
+		// taken before the swap. runningImagePath is platform-specific: on
+		// Windows it queries the process image path, which never carries the
+		// deleted marker, so an up-to-date running process is skipped there
+		// too.
 		skip := false
 		if p.Version == cfg.Tag && !p.BinaryDeleted {
-			if runtime.GOOS == "linux" && p.PID > 0 {
-				if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", p.PID)); err == nil {
+			if p.PID > 0 {
+				if exe, err := runningImagePath(p.PID); err == nil {
 					_, isDeleted := strings.CutSuffix(exe, " (deleted)")
 					skip = !isDeleted
 				} else {
-					// /proc unreadable (unprivileged cross-user) — cannot
-					// determine currency; do NOT skip. A redundant re-install
-					// is cheap (digest check short-circuits); a missed update
-					// leaves the provider stuck forever.
+					// Running image unresolvable (unprivileged cross-user on
+					// Linux, unsupported platform) — cannot determine
+					// currency; do NOT skip. A redundant re-install is cheap
+					// (digest check short-circuits); a missed update leaves
+					// the provider stuck forever.
 					skip = false
 				}
 			} else {
@@ -623,36 +628,32 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// match (running PID changed, image not deleted, /proc/<pid>/exe build
 	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
+	// NOTE: returns nil (exits) on the first matching provider — the full 15
+	// iterations only run when no match is ever found.
 	for i := 0; i < 15; i++ { // up to ~30s
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			// StateDir identity check: both sides come from the same
-			// discovery logic (unitStateDir on unix, windowsStateDir on
-			// Windows), so string equality is consistent per platform.
-			// Platform risk: on Windows this is a case-sensitive string
-			// compare of paths, so a drive-letter case or separator
-			// mismatch between derivations would fail to match.
+			// StateDir identity check: both sides come from the same discovery
+			// logic (unitStateDir on unix, windowsStateDir on Windows), so
+			// string equality is consistent per platform. Platform risk: on
+			// Windows this is a case-sensitive string compare of paths, so a
+			// drive-letter case or separator mismatch between derivations
+			// would fail to match (same physical dir under a different
+			// spelling = symlink/~ expansion/container mapping = no match).
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
-				// On Linux, verify the RUNNING process's image via /proc/<pid>/exe
-				// (the binary the process actually loaded, not the on-disk copy).
-				// On other platforms, /proc doesn't exist and discover_*.go don't
-				// populate rp.Version for running processes — so fall back to
-				// checking the ON-DISK binary version (rp.Binary, which we just
-				// swapped) as best-effort. Combined with the PID-change guard this
-				// is a reasonable signal on platforms without /proc, though it can
-				// neither prove nor disprove the running image.
-				if runtime.GOOS == "linux" {
-					procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
+				// Version of the image the RUNNING process is executing, resolved by
+				// the platform-specific runningImagePath (Linux /proc/<pid>/exe,
+				// Windows QueryFullProcessImageName — /proc does not exist on Windows,
+				// where the resolver previously returned an unusable path and restart
+				// verification could never succeed).
+				procExe, perr := runningImagePath(rp.PID)
+				if perr == nil {
 					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
-						fmt.Printf("verified %s running %s (pid %d; /proc/%d/exe matches)\n", providerLabel(p), cfg.Tag, rp.PID, rp.PID)
+						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, procExe)
 						pruneBackups(p.Binary, 2)
 						return nil
 					}
-				} else if providerVersion(rp.Binary) == cfg.Tag {
-					fmt.Printf("verified %s on-disk %s (pid %d; no /proc, on-disk version match)\n", providerLabel(p), cfg.Tag, rp.PID)
-					pruneBackups(p.Binary, 2)
-					return nil
 				}
 			}
 		}
