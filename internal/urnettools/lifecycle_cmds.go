@@ -90,7 +90,9 @@ func autoUpdateLabel(p Provider) string {
 // cmdUninstall removes the provider: stops/disables the unit, removes the
 // install dir and state. Destructive gate applies.
 func cmdUninstall(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	// H2 fix: use guardLifecycleArgs to reject leftover positionals
+	// (e.g. `urnet-tools uninstall ps -f` would drop 'ps' and act on default).
+	t, err := guardLifecycleArgs("uninstall", args)
 	if err != nil {
 		return err
 	}
@@ -206,7 +208,8 @@ func safeRemoveTarget(path string) bool {
 // reinstall of the targeted provider (the installer handles the complete
 // flow; the Go tool resolves which provider/user to target).
 func cmdReinstall(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	// H2 fix: use guardLifecycleArgs to reject leftover positionals.
+	t, err := guardLifecycleArgs("reinstall", args)
 	if err != nil {
 		return err
 	}
@@ -264,9 +267,6 @@ func writeTimerUnitAtomic(path string, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// M7 fix: unpredictable temp name + fsync for crash safety.
+	return writeFileAtomic(path, []byte(content), 0o644)
 }

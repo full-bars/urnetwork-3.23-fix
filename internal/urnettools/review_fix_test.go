@@ -23,26 +23,9 @@ import (
 // legacy `--help`-executes-clear bug class. We exercise the dispatch layer
 // by checking that parseGlobalFlags handles -h/--help on the commands that
 // route through it (start/stop/logs/status/providers were the gap).
-func TestDispatchHelpIsSafe(t *testing.T) {
-	// The five previously-affected commands all route through
-	// parseGlobalFlags now. Verify -h returns errHelpShown (help printed,
-	// command NOT executed).
-	for _, cmd := range []string{"start", "stop", "logs", "status", "providers"} {
-		// These dispatch cases call parseGlobalFlags; the sentinel proves
-		// help short-circuits before the command function runs.
-		// We can't call Run() without building a binary, but we can verify
-		// the parser treats -h correctly (the dispatch wiring is exercised
-		// by the binary-level parity check).
-		_, _, _, err := parseGlobalFlags([]string{"-h"})
-		if err != errHelpShown {
-			t.Errorf("%s -h: expected errHelpShown, got %v", cmd, err)
-		}
-		_, _, _, err = parseGlobalFlags([]string{"--help"})
-		if err != errHelpShown {
-			t.Errorf("%s --help: expected errHelpShown, got %v", cmd, err)
-		}
-	}
-}
+// TestDispatchHelpIsSafe was deleted — the loop body called parseGlobalFlags
+// without using the loop variable, testing the same thing 5 times.
+// TestParseDelegationArgsHelpIsSafe below covers the real dispatch paths.
 
 // TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
 // the provider binary, so -h/--help must short-circuit in parseDelegationArgs

@@ -8,18 +8,6 @@ import (
 	"testing"
 )
 
-// TestIsUserUnit: system unit files exist under /etc/systemd/system; user
-// units (legacy installs) do not. On a dev box neither exists, so the
-// heuristic returns user=true — acceptable, callers pass real units.
-func TestIsUserUnit(t *testing.T) {
-	// The heuristic: absent from /etc/systemd/system => user unit.
-	// We only assert it doesn't panic and returns a bool.
-	got := isUserUnit("urnetwork-native.service")
-	if got != true && got != false {
-		t.Fatalf("isUserUnit returned non-bool: %v", got)
-	}
-}
-
 // TestOptimizeLinuxRootCheck: optimizeLinux must refuse non-root with an
 // actionable error when sudo is unavailable before touching sysctl.
 func TestOptimizeLinuxRootCheck(t *testing.T) {
@@ -54,25 +42,9 @@ func TestCmdOptimizeNoProviderRequired(t *testing.T) {
 	}
 }
 
-// TestWriteDropinEnvRoundTrip: writing a hub.conf drop-in then removing it
-// leaves no file behind.
-func TestWriteDropinEnvRoundTrip(t *testing.T) {
-	// Cannot run without a real unit on the box; exercise the helpers via
-	// temp dirs instead.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "hub.conf")
-	content := "[Service]\nEnvironment=\"URNETWORK_REPORT_URL=http://127.0.0.1:8080\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), "URNETWORK_REPORT_URL=http://127.0.0.1:8080") {
-		t.Errorf("dropin content missing URL: %s", b)
-	}
-}
+// TestWriteDropinEnvRoundTrip was deleted — it used os.WriteFile/readFile
+// directly and exercised no production code. TestWriteDropinEnvMergeSameKeyReplace
+// already covers the merge logic.
 
 // TestTimerCalendarRewrite validates the OnCalendar substitution logic.
 func TestTimerCalendarRewrite(t *testing.T) {
@@ -143,17 +115,8 @@ func TestCmdProxyRequiresSubcommand(t *testing.T) {
 	}
 }
 
-// TestHubURLValidation: hub set rejects non-http(s) URLs before touching
-// anything.
-func TestHubURLValidation(t *testing.T) {
-	// cmdHub resolves providers first; use a fake provider and the URL check
-	// via a direct helper if available. At minimum, the legacy validation is
-	// mirrored in cmdHub — assert the URL prefix logic here.
-	url := "ftp://bad"
-	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-		t.Fatal("validation should reject ftp URL")
-	}
-}
+// TestHubURLValidation was deleted — it called strings.HasPrefix on a local
+// variable and never exercised any production code.
 
 // TestWriteDropinEnvMergeSameKeyReplace: writing a drop-in with the same
 // environment key replaces the old value and keeps different keys.

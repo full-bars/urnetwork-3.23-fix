@@ -162,9 +162,9 @@ func stateDirFor(env map[string]string) string {
 // does so), Go strips -ldflags from buildinfo.Settings and Main.Version is
 // empty. The buildinfo-only path returns "" in that case, which silently
 // breaks update-skip and post-restart verification. We fall back to
-// running the binary with --version under a tight timeout as a last resort.
-// The discovery layer has already vetted the path (isProviderArg + ELF
-// magic), and the 3s timeout caps the blast radius of an untrusted binary.
+// running the binary with --version under a tight timeout, gated behind
+// isRecognizedExecutable (ELF/Mach-O/PE magic check) to prevent executing
+// arbitrary attacker-chosen binaries.
 func providerVersion(binary string) string {
 	if binary == "" {
 		return ""
@@ -211,7 +211,15 @@ func providerVersionFromBuildinfo(binary string) string {
 // timeout and returns the first non-empty line of stdout. Used as a fallback
 // when build info is unavailable (e.g. -trimpath builds). The 3s timeout
 // mirrors the original pre-buildinfo implementation.
+//
+// SECURITY: gated behind isRecognizedExecutable to prevent executing
+// arbitrary attacker-chosen binaries via exec -a argv[0] trick. Without
+// this check, any local user can escalate to root on fleet nodes where
+// the operator runs sudo urnet-tools.
 func providerVersionFromExec(binary string) string {
+	if !isRecognizedExecutable(binary) {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binary, "--version").Output()

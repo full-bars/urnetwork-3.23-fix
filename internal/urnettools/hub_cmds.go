@@ -305,13 +305,33 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 
 	// TOFU must shout on identity CHANGE, not just on first trust: if a
 	// different hub/CA is already trusted, require an explicit typed yes even
-	// under --force (review MEDIUM).
+	// under --force (review MEDIUM). Check BOTH hub_ca.pem and hub.pin —
+	// the node may have been originally trusted via pin-only (H5 fix).
+	identityChanged := false
+	var oldFp string
 	if existing, err := os.ReadFile(caFile); err == nil {
-		if oldFp, ferr := pemFingerprint(string(existing)); ferr == nil && oldFp != "" && oldFp != fp {
-			fmt.Fprintf(os.Stderr, "WARNING: hub identity changed (was %s, now %s)\n", oldFp, fp)
-			if !explicitYes("type 'yes' to replace the changed hub trust: ") {
-				return fmt.Errorf("aborted; hub identity changed")
+		if f, ferr := pemFingerprint(string(existing)); ferr == nil && f != "" {
+			oldFp = f
+			if f != fp {
+				identityChanged = true
 			}
+		}
+	}
+	if !identityChanged {
+		if existing, err := os.ReadFile(pinFile); err == nil {
+			pinFp := strings.TrimSpace(string(existing))
+			if pinFp != "" && pinFp != fp {
+				identityChanged = true
+				if oldFp == "" {
+					oldFp = pinFp
+				}
+			}
+		}
+	}
+	if identityChanged {
+		fmt.Fprintf(os.Stderr, "WARNING: hub identity changed (was %s, now %s)\n", oldFp, fp)
+		if !explicitYes("type 'yes' to replace the changed hub trust: ") {
+			return fmt.Errorf("aborted; hub identity changed")
 		}
 	}
 
@@ -327,7 +347,8 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 		}
 		// 0644 + chown: the CA/pin is public material and must be readable by
 		// the provider when the tool ran as root (review HIGH).
-		if err := os.WriteFile(pinFile, []byte(fp), 0o644); err != nil {
+		// Route through writeStateFile for O_NOFOLLOW protection (C2 fix).
+		if err := writeStateFile(hubDir, "hub.pin", []byte(fp), 0o644); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(hubDir, pinFile); err != nil {
@@ -336,13 +357,13 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 		_ = os.Remove(caFile)
 		fmt.Printf("Pinned hub fingerprint to %s\n", pinFile)
 	} else {
-		if !force && !acceptFingerprintPrompt() {
+		if !force && !confirmFingerprint(fp) {
 			return fmt.Errorf("aborted by user")
 		}
 		if err := os.MkdirAll(hubDir, 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(caFile, []byte(caPEM), 0o644); err != nil {
+		if err := writeStateFile(hubDir, "hub_ca.pem", []byte(caPEM), 0o644); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(hubDir, caFile); err != nil {
@@ -357,25 +378,27 @@ func cmdHubLink(p Provider, url, token string, force bool) error {
 
 // hubYesNo prompts for an explicit y/N on stderr and returns true only on yes.
 func hubYesNo(prompt string) bool {
+	// M6 fix: route through confirmStdinRead instead of raw os.Stdin.Read.
+	// The old code bypassed the shared stdinReader, risking buffered input
+	// desync and leaving unconsumed bytes that the next prompt would eat.
 	if !stdinIsInteractive() {
 		fmt.Fprintln(os.Stderr, "stdin is not a terminal; re-run with --force or --preview")
 		return false
 	}
-	fmt.Fprintf(os.Stderr, "%s ", prompt)
-	b := make([]byte, 1)
-	n, _ := os.Stdin.Read(b)
-	if n == 0 {
+	line, err := confirmStdinRead(prompt + " ")
+	if err != nil {
 		return false
 	}
-	return b[0] == 'y' || b[0] == 'Y'
+	line = strings.TrimSpace(line)
+	return strings.EqualFold(line, "y") || strings.EqualFold(line, "yes")
 }
 
 func confirmFingerprint(fp string) bool {
+	// H5 fix: show the actual fingerprint in the prompt instead of discarding it.
+	if fp != "" {
+		return hubYesNo(fmt.Sprintf("Accept this hub fingerprint? %s (y/n)", fp))
+	}
 	return hubYesNo("Accept this hub fingerprint? (y/n)")
-}
-
-func acceptFingerprintPrompt() bool {
-	return confirmFingerprint("")
 }
 
 // cmdHubTest verifies TLS to the hub at url (or the configured report URL),
@@ -562,8 +585,10 @@ func cmdHubInit(p Provider, password string) error {
 		if len(password) < 8 {
 			return fmt.Errorf("hub password must be at least 8 characters (got %d)", len(password))
 		}
+		// writeStateFile uses O_NOFOLLOW so a symlink at the target is
+		// rejected rather than followed (C2 symlink-attack protection).
 		passPath := filepath.Join(dir, "hub.password")
-		if err := os.WriteFile(passPath, []byte(password), 0o600); err != nil {
+		if err := writeStateFile(dir, "hub.password", []byte(password), 0o600); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(dir, passPath); err != nil {
@@ -576,7 +601,7 @@ func cmdHubInit(p Provider, password string) error {
 			return err
 		}
 		tmp := filepath.Join(dir, "hub.salt.tmp")
-		if err := os.WriteFile(tmp, []byte(hex.EncodeToString(salt)), 0o600); err != nil {
+		if err := writeStateFile(dir, "hub.salt.tmp", []byte(hex.EncodeToString(salt)), 0o600); err != nil {
 			return err
 		}
 		if err := chownLikeStateOwner(dir, tmp); err != nil {
@@ -599,7 +624,9 @@ func cmdHubInit(p Provider, password string) error {
 		return err
 	}
 	tlsConf := filepath.Join(dropDir, "tls.conf")
-	if err := os.WriteFile(tlsConf, []byte("[Service]\nEnvironment=\"URNETWORK_HUB_TLS_ADDR=:8443\"\n"), 0o644); err != nil {
+	// writeStateFile rejects a symlink at the target (O_NOFOLLOW), so a
+	// compromised drop-in dir cannot redirect the write to an arbitrary file.
+	if err := writeStateFile(dropDir, "tls.conf", []byte("[Service]\nEnvironment=\"URNETWORK_HUB_TLS_ADDR=:8443\"\n"), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("Wrote %s\n", tlsConf)

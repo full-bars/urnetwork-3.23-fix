@@ -5,7 +5,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/user"
+	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -107,6 +107,29 @@ func discoverProcesses() []Provider {
 				break
 			}
 		}
+		// H3 fix: validate --state-dir from foreign process argv. An attacker
+		// can launch `exec -a provider ./x --state-dir=/home/victim` and the
+		// tool would pick up that state-dir, leading to root RemoveAll into
+		// an attacker-controlled path. Validate the path is under the
+		// resolved process owner's home directory.
+		//
+		// Use processOwner (kernel uid via /proc/<pid>) instead of
+		// osuser.Lookup(p.User) — the USER/LOGNAME env vars come from the
+		// target process itself and are fully attacker-controlled. Also add
+		// a separator guard so /var/lib/ur doesn't match /var/lib/urnetwork-evil.
+		if p.StateDir != "" && p.PID > 0 {
+			if _, home := processOwner(p.PID); home != "" {
+				cleanHome := filepath.Clean(home)
+				cleanState := filepath.Clean(p.StateDir)
+				// Reject the state-dir if it is the owner's HOME itself (an
+				// uninstall RemoveAll would wipe the entire home dir) OR not
+				// under the home at all.
+				if cleanState == cleanHome || !strings.HasPrefix(cleanState, cleanHome+string(filepath.Separator)) {
+					// Invalid or dangerous state-dir (exact home, outside home).
+					p.StateDir = ""
+				}
+			}
+		}
 		if p.StateDir == "" {
 			// No state dir resolvable (HOME unset). Skip the JWT read
 			// entirely rather than falling through to a relative "jwt"
@@ -115,7 +138,12 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		p.Version = providerVersion(p.Binary)
+		// S-C1 fix: use buildinfo-only version resolution for discovered
+		// processes. providerVersionFromExec execs the binary as root —
+		// a local user can plant a real ELF via `exec -a urnetwork-provider
+		// ./malicious` and the magic-byte check passes. Discovery must never
+		// exec a foreign binary. Accept empty version for -trimpath builds.
+		p.Version = providerVersionFromBuildinfo(p.Binary)
 		out = append(out, p)
 	}
 	return out
@@ -136,7 +164,7 @@ func processOwner(pid int) (username, home string) {
 	if !ok {
 		return "", ""
 	}
-	u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+	u, err := osuser.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
 	if err != nil {
 		return "", ""
 	}
@@ -352,10 +380,10 @@ func discoverUserUnits(running []Provider) []Provider {
 
 // currentUserName returns the invoking user's login name, used to decide
 // whether a user-manager query needs -M <user>@ (cross-user) or can use the
-// local session bus. os/user.Current() is authoritative; USER/LOGNAME are a
+// local session bus. os/osuser.Current() is authoritative; USER/LOGNAME are a
 // fallback for stripped environments (non-login CI shells often lack them).
 func currentUserName() string {
-	if u, err := user.Current(); err == nil && u.Username != "" {
+	if u, err := osuser.Current(); err == nil && u.Username != "" {
 		return u.Username
 	}
 	if u := os.Getenv("USER"); u != "" {

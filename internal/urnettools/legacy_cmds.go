@@ -584,14 +584,8 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 	if err != nil {
 		return err
 	}
-	// Atomic write (temp + rename) so a crash never leaves a half-written
-	// drop-in that systemd refuses to load .
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	// M7 fix: atomic write with unpredictable temp name + fsync (writeFileAtomic).
+	if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("Wrote %s\n", path)
@@ -681,12 +675,8 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		fmt.Printf("Removed %s\n", path)
 	} else {
 		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-		tmp := path + ".tmp"
-		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-			return err
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			os.Remove(tmp)
+		// M7 fix: atomic write with unpredictable temp name + fsync.
+		if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("Updated %s (removed %s)\n", path, envKey)
@@ -822,7 +812,25 @@ func cmdHubInstall(p Provider, rest []string) error {
 	// The hub binary asset follows the provider release pattern.
 	tag := ""
 	if len(rest) > 0 {
-		tag = strings.TrimPrefix(rest[0], "--tag=")
+		// M4 fix: explicitly parse --tag=<v> or --tag <v>, reject unrecognized positionals.
+		if strings.HasPrefix(rest[0], "--tag=") {
+			tag = strings.TrimPrefix(rest[0], "--tag=")
+			// Reject leftover positionals after --tag=<v> (CR: silent drop).
+			if len(rest) > 1 {
+				return fmt.Errorf("hub install: unrecognized argument %q (expected --tag=<version> only)", rest[1])
+			}
+		} else if rest[0] == "--tag" && len(rest) > 1 {
+			tag = rest[1]
+			// --tag <v> consumes exactly two args; anything after is an error.
+			if len(rest) > 2 {
+				return fmt.Errorf("hub install: unrecognized argument %q (expected --tag <version> only)", rest[2])
+			}
+		} else {
+			return fmt.Errorf("hub install: unrecognized argument %q (expected --tag=<version>)", rest[0])
+		}
+		if tag == "" {
+			return fmt.Errorf("hub install: --tag requires a non-empty value")
+		}
 	}
 	rel := (*releaseInfo)(nil)
 	if tag == "" {
@@ -926,6 +934,22 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 	}
 	mode := args[0]
 	rest := args[1:]
+
+	// H4 fix: validate mode against per-profile allowlist before doing anything.
+	// Without this, `urnet-tools turbo v8x` silently disables turbo (typo → opposite action).
+	switch profile {
+	case "turbo":
+		if mode != "v4" && mode != "v8" && mode != "off" {
+			return fmt.Errorf("turbo mode must be v4, v8, or off — got %q", mode)
+		}
+	case "ramlogs", "eco", "lowmode", "auto":
+		if mode != "on" && mode != "off" {
+			return fmt.Errorf("%s mode must be on or off — got %q", profile, mode)
+		}
+	default:
+		return fmt.Errorf("unknown profile %q", profile)
+	}
+
 	t, _, err := parseTargetFlags(rest)
 	if err != nil {
 		return err

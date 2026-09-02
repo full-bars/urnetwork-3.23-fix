@@ -4,10 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// validateTag checks that a release tag contains only safe characters.
+// Prevents path-traversal attacks via crafted --tag values like
+// "../../other-org/other-repo/releases/latest".
+func validateTag(tag string) error {
+	if !regexp.MustCompile(`^[A-Za-z0-9._+-]+$`).MatchString(tag) {
+		return fmt.Errorf("invalid tag %q: only alphanumerics, dots, underscores, hyphens, and plus signs allowed", tag)
+	}
+	return nil
+}
 
 // releaseInfo describes the latest release fetched from GitHub.
 type releaseInfo struct {
@@ -51,7 +63,10 @@ func githubAuthHeader() (string, string) {
 func fetchLatestRelease() (*releaseInfo, error) {
 	const api = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, _ := http.NewRequest("GET", api, nil)
+	req, err := http.NewRequest("GET", api, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch release: %w", err)
+	}
 	if k, v := githubAuthHeader(); k != "" {
 		req.Header.Set(k, v)
 	}
@@ -107,9 +122,16 @@ func digestForAsset(assets []releaseAsset, wantName string) string {
 // user passes --tag without --digest so the update is always verified
 // against the release API's recorded digest.
 func fetchReleaseByTag(tag string) (*releaseInfo, error) {
-	api := fmt.Sprintf("https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/%s", tag)
+	// M3 fix: validate tag format and escape for URL to prevent path traversal.
+	if err := validateTag(tag); err != nil {
+		return nil, err
+	}
+	api := fmt.Sprintf("https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/%s", url.PathEscape(tag))
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, _ := http.NewRequest("GET", api, nil)
+	req, err := http.NewRequest("GET", api, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch release %s: %w", tag, err)
+	}
 	if k, v := githubAuthHeader(); k != "" {
 		req.Header.Set(k, v)
 	}

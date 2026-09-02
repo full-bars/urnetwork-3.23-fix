@@ -611,6 +611,32 @@ func TestProviderVersionFallbackToExec(t *testing.T) {
 	_ = got
 }
 
+// TestProviderVersionDoesNotExecuteNonELF verifies the C1 security fix:
+// providerVersionFromExec must NOT execute files that fail the
+// isRecognizedExecutable check (ELF/Mach-O/PE magic). Before the fix,
+// any file passed to providerVersion was executed via `--version`.
+func TestProviderVersionDoesNotExecuteNonELF(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a shell script named like a provider — it should NOT be executed.
+	sentinel := filepath.Join(tmp, "executed.sentinel")
+	script := filepath.Join(tmp, "fake-provider")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \""+sentinel+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := providerVersion(script)
+	if got != "" {
+		t.Errorf("providerVersion executed a non-ELF file! got %q — the C1 security fix may be bypassed", got)
+	}
+	// The strongest signal is a non-execution SIDE EFFECT: the guard must
+	// prevent the script from running at all, not merely hide its output.
+	// If it ran, the sentinel file would exist.
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("providerVersion executed the non-ELF script (sentinel file exists) — C1 security fix bypassed")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat sentinel: %v", err)
+	}
+}
+
 // TestProviderVersionBuildinfoPreferred asserts the buildinfo path still
 // wins for binaries that do record -ldflags. (Skipped unless a non-
 // trimpath binary is built; the exec fallback would also work, but we
@@ -654,14 +680,15 @@ func TestCheckReadableAsUser(t *testing.T) {
 	})
 
 	t.Run("not_root_skips", func(t *testing.T) {
+		// When os.Geteuid() != 0 the function returns nil unconditionally
+		// (the caller IS the provider user). This is the actual non-root path.
 		f := filepath.Join(tmp, "nonroot-skips")
 		os.WriteFile(f, []byte("x"), 0o000)
-		// When os.Geteuid() != 0 the check returns nil unconditionally.
-		// Overriding is hard; just verify the function shape works by
-		// using the nil-user path. The geteuid guard is tested in the
-		// end-to-end test below.
-		if err := checkReadableAsUser(f, ""); err != nil {
-			t.Errorf("empty user should skip, got %v", err)
+		if os.Geteuid() == 0 {
+			t.Skip("running as root; non-root path cannot be exercised")
+		}
+		if err := checkReadableAsUser(f, "nobody"); err != nil {
+			t.Errorf("non-root should skip check, got %v", err)
 		}
 	})
 

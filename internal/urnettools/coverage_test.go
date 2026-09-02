@@ -242,7 +242,7 @@ func TestRestartProviderWithUnitFailsGracefully(t *testing.T) {
 	err := restartProvider(p)
 	// Should error (systemctl will fail for the fake unit), not panic.
 	if err == nil {
-		t.Log("restartProvider returned nil — systemctl may have succeeded unexpectedly")
+		t.Fatal("restartProvider with fake unit must return an error")
 	}
 }
 

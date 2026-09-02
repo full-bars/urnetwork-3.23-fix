@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -135,6 +136,16 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
 			}
+		}
+	}
+
+	// Validate tag unconditionally — even when --digest is also supplied,
+	// so the tag cannot contain path traversal (../../) that reaches
+	// os.RemoveAll on a derived path. Before this fix, --tag+--digest
+	// skipped fetchReleaseByTag (and its validateTag call) entirely.
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
 		}
 	}
 
@@ -357,6 +368,13 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q for self-update (--tag/--digest/--url)", args[i])
+		}
+	}
+
+	// Validate tag unconditionally (same reason as cmdUpdate).
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
 		}
 	}
 
@@ -800,30 +818,64 @@ func extractSingleFile(tarball, relPath, dst string) error {
 // installBinary copies src to dst preserving ownership for the given user,
 // then atomically renames into place.
 //
-// The write goes to dst+".new" (same directory, so same filesystem) and is
-// os.Rename'd over dst — never O_TRUNC in place. The running provider may
-// still be executing from dst during an update; overwriting that inode in
-// place risks SIGBUS/SIGSEGV on demand-paging, while
-// rename(2) leaves the old inode serving already-open processes and only
-// new execve's see the new file.
+// installBinary stages a new binary from src to dst using an unpredictable
+// temp name (os.CreateTemp) to prevent symlink-planting attacks. The write
+// goes to a temp file (same filesystem) and is os.Rename'd over dst — never
+// O_TRUNC in place. The running provider may still be executing from dst
+// during an update; overwriting that inode in place risks SIGBUS/SIGSEGV on
+// demand-paging, while rename(2) leaves the old inode serving already-open
+// processes and only new execve's see the new file.
 func installBinary(src, dst, user string) error {
-	newPath := dst + ".new"
-	if err := copyFile(src, newPath); err != nil {
+	// M1 fix: use unpredictable temp name instead of predictable dst+".new"
+	// to prevent symlink-planting attacks by a lower-privileged user.
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "urnetwork-new-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	newPath := tmpFile.Name()
+	// Keep the fd open and write through it — closing then reopening by
+	// path leaves a TOCTOU window where an attacker can swap the file for
+	// a symlink. Writing through the held fd writes to the real inode.
+	if err := copyFileToFd(src, tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
 		return err
 	}
-	if err := os.Chmod(newPath, 0o755); err != nil {
+	if err := fsyncFile(tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
+		return err
+	}
+	// Apply mode/ownership through the HELD descriptor, not by path: a
+	// lower-privileged writer in the temp dir can swap newPath for a
+	// symlink between tmpFile.Close() and a path-based os.Chmod/os.Chown,
+	// and those would follow it to an arbitrary target (update.go CRITICAL).
+	// fchmod/fchown on the open fd act on the real inode we wrote.
+	if err := tmpFile.Chmod(0o755); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
+			tmpFile.Close()
+			os.Remove(newPath)
 			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
-		if err := os.Chown(newPath, uid, gid); err != nil {
+		if err := tmpFile.Chown(uid, gid); err != nil {
+			tmpFile.Close()
+			os.Remove(newPath)
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
 	}
+	// Close only after all metadata is applied via the fd.
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(newPath)
+		return err
+	}
 	if err := os.Rename(newPath, dst); err != nil {
+		os.Remove(newPath)
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
 	// Sync the parent directory so the rename survives a crash before
@@ -899,6 +951,22 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
+// copyFileToFd copies src into an already-open file descriptor. This avoids
+// the TOCTOU between close and reopen that copyFile(src, dst) has when dst
+// was created with os.CreateTemp — an attacker can swap the file for a
+// symlink in the window between close and the OpenFile reopen.
+func copyFileToFd(src string, out *os.File) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return nil
+}
+
 // toolAssetName returns the release asset name for a tool binary:
 // <base>-<os>-<arch> (e.g. urnet-tools-linux-amd64). Release assets are
 // bare binaries — never a .exe suffix, even on Windows.
@@ -947,7 +1015,8 @@ func runningToolAssetName() (string, error) {
 
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
-	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, asset)
+	// M3 fix: escape tag in download URL to prevent path traversal.
+	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", url.PathEscape(tag), asset)
 }
 
 // selfUpdateTool updates the running tool binary (urnet-tools or

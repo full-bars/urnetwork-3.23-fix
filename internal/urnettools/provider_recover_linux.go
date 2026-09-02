@@ -102,7 +102,9 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	// the provider's own read/exec of its binary. Not fatal on failure.
 	if os.Geteuid() == 0 && user != "" {
 		if uid, gid, err := lookupUserIDs(user); err == nil {
-			if cerr := os.Chown(binary, uid, gid); cerr != nil {
+			// Lchown (not os.Chown) so a symlink the attacker planted at
+			// `binary` is not followed to an arbitrary target (C2-class).
+			if cerr := chownStateFile(binary, uid, gid); cerr != nil {
 				// Not fatal, but surface it: a root-owned recovered binary can
 				// make the provider's own read/exec fail (mimo review NIT).
 				fmt.Fprintf(os.Stderr, "note: recovered binary %s is root-owned (chown to %s failed: %v) — provider may fail to exec it\n", binary, user, cerr)

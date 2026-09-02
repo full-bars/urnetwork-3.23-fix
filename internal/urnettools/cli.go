@@ -142,15 +142,12 @@ func cmdReport(args []string) error {
 // Provider struct (no live process needed). The provider's bandwidth
 // reporter re-reads this file every tick.
 func writeReportURL(p Provider, url string) error {
-	path := filepath.Join(p.StateDir, "report_url")
-	// 0o644, not 0o600: urnet-tools frequently runs as a different user than
-	// the provider (root tool + urnetwork-beta service — the fleet norm this
-	// codebase supports via -M <user>@ and HOME= overrides). A 0600 file
-	// owned by the tool's user would be unreadable by the provider process,
-	// so the change would silently never take effect (Sonnet review
-	// finding). The sibling override-writers use 0o644 for this reason.
-	if err := os.WriteFile(path, []byte(url+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write %s: %v", path, err)
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks (C2).
+	if err := writeStateFile(p.StateDir, "report_url", []byte(url+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write report_url: %v", err)
 	}
 	return nil
 }
