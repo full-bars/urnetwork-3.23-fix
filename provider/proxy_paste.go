@@ -10,9 +10,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/docopt/docopt-go"
@@ -478,6 +480,35 @@ func proxyPaste(opts docopt.Opts) {
 			os.Remove(tmpFile.Name())
 		}
 	}
+
+	// An external kill (operator Ctrl+C, systemd/orchestration SIGTERM) mid-paste
+	// would otherwise leave the plaintext temp file on disk — os.Exit & shmLogFatal
+	// bypass the deferred Remove, and there's no signal handler to catch it. Register
+	// a handler for the window the file is alive: remove the file, then restore the
+	// default disposition and re-raise the signal so the process exits with the
+	// conventional status. signal.Notify suppresses the default terminate, so we must
+	// signal.Reset(sig) first or the re-raised signal would just be caught again.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	signalHandled := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigCh:
+			removeTempFile()
+			fmt.Fprintln(os.Stderr, "\ninterrupted; removed proxy-paste temp file")
+			signal.Stop(sigCh)
+			signal.Reset(sig)
+			if sig, ok := sig.(syscall.Signal); ok {
+				syscall.Kill(os.Getpid(), sig)
+			}
+			os.Exit(1)
+		case <-signalHandled:
+		}
+	}()
+	defer func() {
+		signal.Stop(sigCh)
+		close(signalHandled)
+	}()
 
 	fmt.Printf("\nadding %d proxies (%d dupes skipped, %d rejected)\n",
 		len(allNormalized), totalSkipped, totalRejected)
