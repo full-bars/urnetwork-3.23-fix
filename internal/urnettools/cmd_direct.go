@@ -126,10 +126,9 @@ func cmdDirectStatus(t Target) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("direct: on for %s (default — no override file)\n", providerLabel(p))
-		} else {
-			fmt.Printf("direct: on for %s (default)\n", providerLabel(p))
+			return nil
 		}
-		return nil
+		return fmt.Errorf("direct: could not read toggle file %s: %v", togglePath, err)
 	}
 	s := string(b)
 	if s == "off\n" || s == "off" {

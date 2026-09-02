@@ -338,14 +338,6 @@ func (r *ProxyReloader) reload() {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
 
-	// Check emptiness AFTER merging the URL cache — a URL-only deployment
-	// (no --proxy_file, no internal proxies) has desired == 0 but a
-	// non-empty desiredSet, and must not be treated as a source-read error.
-	if len(desiredSet) == 0 {
-		tlog("[proxy] reload skipped: 0 proxies found in source\n")
-		return
-	}
-
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
 	// provide()'s initial startup loop writes the cancel map before StartWatcher is called,
 	// so it is exempt from this ordering — no concurrent reload() can run at that point.
@@ -357,28 +349,38 @@ func (r *ProxyReloader) reload() {
 	}
 	r.cancelMapMu.Unlock()
 
-	// Hot-toggle the native [direct] transport based on the runtime
-	// toggle (~/.urnetwork/direct). `provider direct off|on` writes the file
-	// and triggers a reload; this block applies the change to the running set.
+	// Hot-toggle the native [direct] transport BEFORE the proxy emptiness
+	// check. A direct-only deployment (no proxies configured) has
+	// desiredSet == 0 but must still apply the toggle — otherwise
+	// `provider direct on` is a no-op when no proxies exist.
 	directRunning := running[directProxyKey]
-	// Same precedence as startup: toggle file wins, then env var.
-	directShouldRun := true
-	if directOn, fileExists := readDirectOverride(); fileExists {
-		directShouldRun = directOn
+	var directOn bool
+	if v, fileExists := readDirectOverride(); fileExists {
+		directOn = v
 	} else {
-		directShouldRun = os.Getenv("DISABLE_DIRECT_IP") != "1"
+		directOn = os.Getenv("DISABLE_DIRECT_IP") != "1"
 	}
-	if directRunning && !directShouldRun {
-		// Disable direct: cancel the goroutine.
+	if directRunning && !directOn {
+		// Disable direct: cancel the goroutine and wait for it to exit
+		// before removing from the cancel map, so a concurrent
+		// re-enable cannot see stale state.
 		r.cancelMapMu.Lock()
+		var done chan struct{}
 		if cancel, ok := r.cancelMap[directProxyKey]; ok {
-			cancel()
+			done = make(chan struct{})
+			go func() {
+				cancel()
+				close(done)
+			}()
 			delete(r.cancelMap, directProxyKey)
 		}
 		r.cancelMapMu.Unlock()
+		if done != nil {
+			<-done
+		}
 		connect.UnregisterProxy(0)
 		tlog("[direct] native [direct] transport stopped (disable)\n")
-	} else if !directRunning && directShouldRun {
+	} else if !directRunning && directOn {
 		// Enable direct: start the goroutine.
 		r.wg.Add(1)
 		directCtx, directCancel := context.WithCancel(r.parentCtx)
@@ -393,6 +395,14 @@ func (r *ProxyReloader) reload() {
 			r.spawnProxy(directCtx, nil, true, false)
 		})
 		tlog("[direct] native [direct] transport started (enable)\n")
+	}
+
+	// Check emptiness AFTER merging the URL cache and toggling direct.
+	// A URL-only deployment (no --proxy_file, no internal proxies) has
+	// desired == 0 but a non-empty desiredSet from URL sources.
+	if len(desiredSet) == 0 {
+		tlog("[proxy] reload skipped: 0 proxies found in source\n")
+		return
 	}
 
 	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
