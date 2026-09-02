@@ -362,14 +362,6 @@ func (r *ProxyReloader) reload() {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
 
-	// Check emptiness AFTER merging the URL cache — a URL-only deployment
-	// (no --proxy_file, no internal proxies) has desired == 0 but a
-	// non-empty desiredSet, and must not be treated as a source-read error.
-	if len(desiredSet) == 0 {
-		tlog("[proxy] reload skipped: 0 proxies found in source\n")
-		return
-	}
-
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
 	// provide()'s initial startup loop writes the cancel map before StartWatcher is called,
 	// so it is exempt from this ordering — no concurrent reload() can run at that point.
@@ -437,6 +429,14 @@ func (r *ProxyReloader) reload() {
 			r.spawnProxy(directCtx, nil, true, false)
 		})
 		tlog("[direct] native [direct] transport started (enable)\n")
+	}
+
+	// Check emptiness AFTER merging the URL cache — a URL-only deployment
+	// (no --proxy_file, no internal proxies) has desired == 0 but a
+	// non-empty desiredSet, and must not be treated as a source-read error.
+	if len(desiredSet) == 0 {
+		tlog("[proxy] reload skipped: 0 proxies found in source\n")
+		return
 	}
 
 	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
