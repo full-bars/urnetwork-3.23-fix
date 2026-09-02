@@ -99,6 +99,14 @@ func acquireProxyLockAt(path string) (func(), error) {
 
 const proxyLockStaleAge = 5 * time.Minute
 
+// proxyLockMaxAge is the outer bound: even if the holder appears alive
+// (Signal(0) succeeds), a lock older than this is unconditionally stale.
+// This prevents a PID-reuse scenario (OS reissues the same PID to an
+// unrelated process) from wedging the proxy lock forever. 1 hour is
+// generous enough for the largest fleet reloads while bounding worst-case
+// staleness under PID reuse.
+const proxyLockMaxAge = 1 * time.Hour
+
 // writeReloadTriggerDebounce is the minimum interval between consecutive
 // trigger writes. Callers inside fetch/reaper loops may fire hundreds of
 // times per cycle; this ensures the watcher only picks up one trigger
@@ -165,15 +173,30 @@ func isLockStale(data []byte) bool {
 	if err != nil {
 		return true
 	}
-	if time.Since(time.Unix(ts, 0)) > proxyLockStaleAge {
-		return true
-	}
+
+	// Liveness is the authoritative signal (finding #13): a lock held by a
+	// LIVE process is never stale, however old, because a legitimately slow
+	// reload (>5min on a large fleet) must not be stolen by a second
+	// acquirer. Only treat as stale when the holder is conclusively gone.
 	process, err := os.FindProcess(pid)
-	if err != nil {
+	if err == nil {
+		err = process.Signal(syscall.Signal(0))
+	}
+	if err == nil {
+		// Holder alive and working — stale ONLY if the lock is
+		// unreasonably old (PID-reuse bound; proxyLockMaxAge).
+		// This prevents a reused PID from wedging the lock forever.
+		return time.Since(time.Unix(ts, 0)) > proxyLockMaxAge
+	}
+	if errors.Is(err, os.ErrProcessDone) ||
+		strings.Contains(err.Error(), "no such process") ||
+		strings.Contains(err.Error(), "process already finished") {
+		// Holder conclusively gone — stale.
 		return true
 	}
-	err = process.Signal(syscall.Signal(0))
-	return err != nil
+	// Inconclusive (e.g. EPERM: another user's live process we can't
+	// signal). Use age as the tiebreaker; very old + unverifiable = stale.
+	return time.Since(time.Unix(ts, 0)) > proxyLockStaleAge
 }
 
 // ProxyReloader manages hot-reload of proxy goroutines. It is driven by the
@@ -255,7 +278,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 
 	lastSeq, _ := readReloadSeq(reloadPath)
 
-	go func() {
+	go connect.HandleError(func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -276,7 +299,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				r.reload()
 			}
 		}
-	}()
+	})
 }
 
 // reload diffs the proxy source against the currently running set and applies

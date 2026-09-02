@@ -968,7 +968,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							// }
 
 							if len(message) <= 16 {
-								self.log.Infof("[ts]send message must be >16 bytes (%s)\n", len(message))
+								self.log.Infof("[ts]send message must be >16 bytes (%d)\n", len(message))
 								MessagePoolReturn(message)
 							} else if write(message) != nil {
 								return

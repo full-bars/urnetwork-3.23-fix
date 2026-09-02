@@ -31,6 +31,13 @@ var dnsCache struct {
 
 const dnsCacheTTL = 60 * time.Second
 
+// dnsCacheMaxEntries bounds the CONNECT-target DNS cache. Keys are arbitrary
+// client-requested hostnames (any host a proxy user asks to reach), so an
+// untrusted or botted client population could otherwise grow this map without
+// bound for the life of the process (finding #4). On insert overflow we evict
+// expired entries first, then arbitrary ones to get back under the cap.
+const dnsCacheMaxEntries = 4096
+
 // proxyDNSResolveTimeout bounds the DoH resolution on each proxy dial so
 // a slow/dead resolver can't block SOCKS5 CONNECT for longer than this.
 // Shorter than RequestTimeout (15s) so the semaphore admission gate in
@@ -64,23 +71,22 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		// cache path below.
 	}
 
-	// Fast path under the lock: serve from a fresh cache entry.
+	// Do NOT hold dnsCache.mu across the blocking LookupNetIP below: the
+	// cache-miss path is a multi-hundred-ms network round-trip, and holding
+	// the global lock across it would serialize every cache-miss proxy dial
+	// behind one mutex (and pile prune work on top). Read under the lock,
+	// release, resolve, then re-acquire to store.
 	dnsCache.mu.Lock()
 	if dnsCache.m == nil {
 		dnsCache.m = make(map[string]dnsCacheEntry)
 	}
 	e, ok := dnsCache.m[host]
 	if ok && time.Now().Before(e.expiry) {
+		ip := e.ip
 		dnsCache.mu.Unlock()
-		return e.ip, true
+		return ip, true
 	}
 	dnsCache.mu.Unlock()
-
-	// Slow path OUTSIDE the lock: the resolver does network I/O (up to
-	// proxyDNSResolveTimeout) and must not serialize every concurrent proxy
-	// dial behind dnsCache.mu. Resolve, then re-check the cache under the
-	// lock (double-checked lookup) so a concurrent resolver for the same
-	// host that finished first isn't clobbered.
 	ips, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip4", host)
 	if err != nil || len(ips) == 0 {
 		dnsCache.mu.Lock()
@@ -95,12 +101,50 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		return "", false
 	}
 	ip := ips[0].String()
+	// Re-acquire to store the fresh result; re-check for a concurrent
+	// writer's fresher entry so we don't clobber it.
 	dnsCache.mu.Lock()
-	if cached, ok := dnsCache.m[host]; !ok || time.Now().After(cached.expiry) {
-		dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	if e2, ok2 := dnsCache.m[host]; ok2 && time.Now().Before(e2.expiry) {
+		ip = e2.ip
+		dnsCache.mu.Unlock()
+		return ip, true
 	}
+	dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	// Bound the map against unbounded client-requested hostname growth (#4).
+	// We hold dnsCache.mu here, so pruning under the same lock is safe and
+	// does not contend with concurrent readers.
+	pruneDNSCacheLocked(time.Now())
 	dnsCache.mu.Unlock()
 	return ip, true
+}
+
+// pruneDNSCacheLocked bounds the CONNECT-target DNS cache. Caller holds
+// dnsCache.mu. Recovers if an entry is beyond the freshness window (what a
+// periodic sweep would do) and, if the map is still over the cap, evicts
+// expired entries then arbitrary ones to keep it bounded against unbounded
+// client-requested hostname growth (finding #4).
+func pruneDNSCacheLocked(now time.Time) {
+	if len(dnsCache.m) <= dnsCacheMaxEntries {
+		return
+	}
+	// First drop any expired entries.
+	for k, e := range dnsCache.m {
+		if !now.Before(e.expiry) {
+			delete(dnsCache.m, k)
+		}
+		if len(dnsCache.m) <= dnsCacheMaxEntries {
+			return
+		}
+	}
+	// Still over the cap (mostly-fresh map): evict arbitrary entries to get
+	// back under. Order doesn't matter materially here — a 60s TTL means any
+	// evicted entry is cheaply re-resolved.
+	for k := range dnsCache.m {
+		if len(dnsCache.m) <= dnsCacheMaxEntries {
+			return
+		}
+		delete(dnsCache.m, k)
+	}
 }
 
 func DefaultConnectSettings() *ConnectSettings {

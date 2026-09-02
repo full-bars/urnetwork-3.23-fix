@@ -1883,6 +1883,24 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			}
 		}
 
+		// Prune per-proxy bookkeeping for addresses that left the health
+		// snapshot (hot-reload removal, degraded reaper, URL-proxy churn under
+		// AIMD shed, `proxy remove`). Without this, prevTick/midnightCheckpoint
+		// each leak one entry per departed address for the life of the process
+		// (finding #7) — the same prune runLifetimeCollector and
+		// runBillableRateWriter already do. Live map keys are exactly the
+		// report.Bandwidth set.
+		live := make(map[string]struct{}, len(report.Bandwidth))
+		for key := range report.Bandwidth {
+			live[key] = struct{}{}
+		}
+		for key := range prevTick {
+			if _, ok := live[key]; !ok {
+				delete(prevTick, key)
+				delete(midnightCheckpoint, key)
+			}
+		}
+
 		// peak tracking: update high water marks and freeze elapsed at the time of the peak
 		if totalRx > peakRx {
 			peakRx = totalRx
@@ -1940,6 +1958,18 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// Entries absent from liveHealth are removed (not marked dead) — they are
 		// either deregistered via hot-reload or stale from a prior run.
 		go func() {
+			// Take the cross-process lock too, so a concurrent CLI run
+			// (`provider proxy remove --all` in another process) can't clobber
+			// this read-modify-write and silently resurrect proxies the CLI
+			// just removed. proxyStateMu alone only serializes in-process
+			// writers (finding #11).
+			lockRelease, lockErr := acquireProxyLockWithRetry()
+			if lockErr != nil {
+				tlog("[proxy] warn: health snapshot could not acquire proxy lock, skipping this tick: %v\n", lockErr)
+				return
+			}
+			defer lockRelease()
+
 			proxyStateMu.Lock()
 			defer proxyStateMu.Unlock()
 			state, err := readProxyState()
@@ -2540,14 +2570,18 @@ func provide(opts docopt.Opts) {
 
 	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
 
-	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
-	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	go runJWTRefresher(ctx, apiUrl)
-	go runEarningWindows(ctx)
-	go runLifetimeCollector(ctx)
-	go runProfitHeartbeat(ctx)
-	go runBillableRateWriter(ctx)
+	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
+	go connect.HandleError(func() {
+		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() {
+		runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
+	go connect.HandleError(func() { runEarningWindows(ctx) })
+	go connect.HandleError(func() { runLifetimeCollector(ctx) })
+	go connect.HandleError(func() { runProfitHeartbeat(ctx) })
+	go connect.HandleError(func() { runBillableRateWriter(ctx) })
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
@@ -2575,7 +2609,10 @@ func provide(opts docopt.Opts) {
 			}
 		}
 	}
-	go paceMonitor(ctx)
+	// Wrapped in connect.HandleError so a panic in paceMonitor degrades to
+	// "that one loop dies" instead of taking the whole provider process down,
+	// consistent with every other fleet background loop (#12 fault isolation).
+	go connect.HandleError(func() { paceMonitor(ctx) })
 
 	// Declared here (rather than next to the startup loop below) so
 	// provideWithProxy can close over them directly: on a permanent give-up,
@@ -3320,21 +3357,23 @@ func provide(opts docopt.Opts) {
 	// binds (review finding HIGH).
 	reloader.reload()
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
-	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
+	go connect.HandleError(func() {
+		runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
+	})
+	go connect.HandleError(func() { runURLProxyReaper(ctx, apiProbeHost, apiProbePort) })
 	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
 	// non-URL proxies read-only on the 1-3h stale sweep (design note).
-	go runPaidProxyGrader(ctx, apiProbeHost, apiProbePort)
+	go connect.HandleError(func() { runPaidProxyGrader(ctx, apiProbeHost, apiProbePort) })
 	// Periodic A-F grade summary of the RUNNING proxy set (design 2026-08-09):
 	// running/per-source/changes/scores lines (important + disk + grades.log)
 	// and a ramlog-only next-probe countdown. Pure-read, never probes.
-	go runProxyGradeSummary(ctx)
-	go pruneURLProxyBlacklist(ctx)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
-	go runPressureMonitor(ctx, selfHealEnabled)
-	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
-	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
-	go runReloadReconciler(ctx)
+	go connect.HandleError(func() { runProxyGradeSummary(ctx) })
+	go connect.HandleError(func() { pruneURLProxyBlacklist(ctx) })
+	go connect.HandleError(func() { runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled) })
+	go connect.HandleError(func() { runPressureMonitor(ctx, selfHealEnabled) })
+	go connect.HandleError(func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) })
+	go connect.HandleError(func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) })
+	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
 		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors\n", profileAddr)
@@ -4155,6 +4194,16 @@ func proxyRemove(opts docopt.Opts) {
 
 	if all, _ := opts.Bool("--all"); all {
 		clear(proxyConfig.Servers)
+		// Take the cross-process lock so a concurrent daemon health-snapshot
+		// write can't clobber this reset and silently revive the removed
+		// proxies (finding #11). Proxy config write above is process-local;
+		// this serializes the proxy.state reset against the daemon.
+		stateLockRelease, stateLockErr := acquireProxyLockWithRetry()
+		if stateLockErr != nil {
+			tlog("[proxy] warning: could not acquire proxy lock for state reset: %v\n", stateLockErr)
+			writeProxyConfig(proxyConfig)
+			return
+		}
 		// Reset proxy.state so the next run starts ID assignment from 0.
 		// Without this, the monotonic counter resumes above whatever IDs were
 		// saved from previous runs, producing confusingly high and mixed IDs
@@ -4166,6 +4215,7 @@ func proxyRemove(opts docopt.Opts) {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
 			}
 		}
+		stateLockRelease()
 		// Also clear the URL cache and source URLs so previously-fetched free
 		// proxies don't reappear after a restart. The user wants only the
 		// proxies they explicitly added; URL sources must be re-added if
