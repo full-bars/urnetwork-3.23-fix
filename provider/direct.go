@@ -45,6 +45,11 @@ func readDirectOverride() (bool, bool) {
 		if os.IsNotExist(err) {
 			return true, false
 		}
+		// Distinguish permission errors from other failures: a permission
+		// mismatch means the toggle file exists but the provider can't read
+		// it (e.g. root-owned file, unprivileged provider). Log it so the
+		// operator knows the toggle is silently ignored (finding #7).
+		tlog("[direct] warn: could not read toggle file: %v\n", err)
 		return true, false
 	}
 	s := strings.ToLower(strings.TrimSpace(string(b)))
@@ -70,14 +75,38 @@ func writeDirectEnabled(enabled bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	val := "on"
 	if !enabled {
 		val = "off"
 	}
-	return os.WriteFile(path, []byte(val+"\n"), 0o600)
+	// Atomic write: temp file + rename to avoid a reload reading a
+	// partially-written file (which parses as "on" = spurious enable).
+	tmp, err := os.CreateTemp(dir, "direct-tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp toggle file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(val + "\n"); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("writing temp toggle file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing temp toggle file: %w", err)
+	}
+	// TODO: add chownLikeStateOwner(dir, tmpPath) when provider gains access
+	// to the urnettools chown utilities — preserves ownership across
+	// sudo/cli → provider transitions (finding #7 from Opus review).
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("renaming toggle file: %w", err)
+	}
+	return nil
 }
 
 // clearDirectToggle removes the control file, restoring the default (on).
