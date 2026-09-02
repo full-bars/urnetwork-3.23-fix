@@ -191,6 +191,12 @@ type ProxyReloader struct {
 	parentCtx   context.Context
 	wg          *sync.WaitGroup
 
+	// directDone is closed when the native [direct] transport goroutine has
+	// fully exited. It is created when direct is enabled and waited on when
+	// disabling, so a disable actually waits for goroutine exit (cancel()
+	// itself returns instantly and is not a synchronization point).
+	directDone chan struct{}
+
 	// spawnProxy starts a proxy goroutine's work (the provideWithProxy closure).
 	spawnProxy func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool)
 
@@ -354,12 +360,7 @@ func (r *ProxyReloader) reload() {
 	// desiredSet == 0 but must still apply the toggle — otherwise
 	// `provider direct on` is a no-op when no proxies exist.
 	directRunning := running[directProxyKey]
-	var directOn bool
-	if v, fileExists := readDirectOverride(); fileExists {
-		directOn = v
-	} else {
-		directOn = os.Getenv("DISABLE_DIRECT_IP") != "1"
-	}
+	directOn := isDirectEnabled()
 	if directRunning && !directOn {
 		// Disable direct: cancel the goroutine and wait for it to exit
 		// before removing from the cancel map, so a concurrent
@@ -367,11 +368,8 @@ func (r *ProxyReloader) reload() {
 		r.cancelMapMu.Lock()
 		var done chan struct{}
 		if cancel, ok := r.cancelMap[directProxyKey]; ok {
-			done = make(chan struct{})
-			go func() {
-				cancel()
-				close(done)
-			}()
+			done = r.directDone
+			cancel()
 			delete(r.cancelMap, directProxyKey)
 		}
 		r.cancelMapMu.Unlock()
@@ -384,10 +382,13 @@ func (r *ProxyReloader) reload() {
 		// Enable direct: start the goroutine.
 		r.wg.Add(1)
 		directCtx, directCancel := context.WithCancel(r.parentCtx)
+		directDone := make(chan struct{})
 		r.cancelMapMu.Lock()
 		r.cancelMap[directProxyKey] = directCancel
+		r.directDone = directDone
 		r.cancelMapMu.Unlock()
 		go connect.HandleError(func() {
+			defer close(directDone)
 			defer r.wg.Done()
 			defer directCancel()
 			defer connect.UnregisterProxy(0)

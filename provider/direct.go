@@ -45,6 +45,7 @@ func readDirectOverride() (bool, bool) {
 		if os.IsNotExist(err) {
 			return true, false
 		}
+		tlog("[direct] warning: could not read toggle file %s (treating as default on): %v\n", path, err)
 		return true, false
 	}
 	s := strings.ToLower(strings.TrimSpace(string(b)))

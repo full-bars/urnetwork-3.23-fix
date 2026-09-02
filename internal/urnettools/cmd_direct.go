@@ -93,12 +93,17 @@ func cmdDirectToggle(args []string, force, dryRun bool) error {
 	if err := os.WriteFile(togglePath, []byte(val), 0600); err != nil {
 		return fmt.Errorf("could not write direct toggle for %s: %v", providerLabel(p), err)
 	}
+	if err := chownLikeStateOwner(p.StateDir, togglePath); err != nil {
+		fmt.Fprintf(os.Stderr, "[direct] warn: could not fix toggle ownership for %s: %v\n", providerLabel(p), err)
+	}
 
 	if p.Running {
 		// Trigger a reload so the running provider picks up the change immediately.
 		reloadPath := filepath.Join(home, ".urnetwork", "proxy.reload")
 		if err := writeReloadTrigger(reloadPath); err != nil {
 			fmt.Fprintf(os.Stderr, "[direct] warn: could not signal provider reload: %v\n", err)
+		} else if err := chownLikeStateOwner(p.StateDir, reloadPath); err != nil {
+			fmt.Fprintf(os.Stderr, "[direct] warn: could not fix reload trigger ownership for %s: %v\n", providerLabel(p), err)
 		}
 	}
 
