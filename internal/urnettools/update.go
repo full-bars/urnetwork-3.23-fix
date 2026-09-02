@@ -642,7 +642,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			// would fail to match (same physical dir under a different
 			// spelling = symlink/~ expansion/container mapping = no match).
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
-			// Version of the image the RUNNING process is executing, resolved by
+				// Version of the image the RUNNING process is executing, resolved by
 				// the platform-specific runningImagePath (Linux /proc/<pid>/exe,
 				// Windows QueryFullProcessImageName — /proc does not exist on Windows,
 				// where the resolver previously returned an unusable path and restart
