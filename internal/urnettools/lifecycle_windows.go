@@ -63,7 +63,7 @@ func removeLegacyStartupLnk() error {
 
 // deleteTaskIfExists removes a scheduled task if it exists. schtasks
 // /delete /f on a MISSING task errors (0x80070002), so check first; a
-// missing task is a clean no-op (DeepSeek SF4).
+// missing task is a clean no-op.
 func deleteTaskIfExists(taskName string) error {
 	if err := runSchtasks("/query", "/tn", taskName); err != nil {
 		// Not found = fine (no-op).

@@ -47,7 +47,7 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 	// If the provider process exits mid-copy, /proc/<pid>/exe yields a
 	// TRUNCATED image. fstat the open handle for its real size and require a
 	// full read; a short, non-zero copy would otherwise pass the n==0 check and
-	// install a corrupt executable (nemotron review #4).
+	// install a corrupt executable.
 	want := int64(-1)
 	if fi, serr := in.Stat(); serr == nil {
 		want = fi.Size()
@@ -55,7 +55,7 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 
 	// Unique temp sibling in the same directory (atomic rename must stay on
 	// one filesystem). CreateTemp keeps the name collision-free even if two
-	// providerSubcommand calls race for the same provider (mimo review LOW);
+	// providerSubcommand calls race for the same provider;
 	// OpenFile(O_TRUNC) on a PID-derived name could truncate a peer's in-flight
 	// copy. Mode 0600 until the final Chmod(0o755) below.
 	tmp := ""
@@ -106,7 +106,7 @@ func recoverDeletedBinary(binary string, pid int, user string) error {
 			// `binary` is not followed to an arbitrary target (C2-class).
 			if cerr := chownStateFile(binary, uid, gid); cerr != nil {
 				// Not fatal, but surface it: a root-owned recovered binary can
-				// make the provider's own read/exec fail (mimo review NIT).
+				// make the provider's own read/exec fail.
 				fmt.Fprintf(os.Stderr, "note: recovered binary %s is root-owned (chown to %s failed: %v) — provider may fail to exec it\n", binary, user, cerr)
 			}
 		}

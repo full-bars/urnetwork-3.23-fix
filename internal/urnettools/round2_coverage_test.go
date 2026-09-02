@@ -114,9 +114,9 @@ func TestInstallBinaryMissingSource(t *testing.T) {
 
 // TestRestartAfterDropinSystemUnitPropagatesError exercises the system-unit
 // branch of restartAfterDropin against a unit that cannot exist, pinning
-// the Sonnet MEDIUM-2 fix: systemctl's failure must reach the caller.
+// systemctl's failure must reach the caller.
 // A fake unit name reliably errors on any Linux host, so err==nil is a
-// hard failure — NOT a pass-through log (Sonnet final-gate HIGH: the
+// hard failure — NOT a pass-through log (the
 // t.Log form would stay green if the fix were reverted to
 // `_ = ...Run(); return nil`).
 func TestRestartAfterDropinSystemUnitPropagatesError(t *testing.T) {

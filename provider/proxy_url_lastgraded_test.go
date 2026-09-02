@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// URL-store last_graded honesty (Sonnet-5 MEDIUM, folded into this PR):
+// URL-store last_graded honesty:
 // ProxyURLEntry gains a real LastGraded field, stamped ONLY when a genuine
 // stage-1 grade lands. The old proxyGradeFor borrowed LastProbe, which is
 // also bumped by liveness-only re-checks (fetch re-encounters, reaper

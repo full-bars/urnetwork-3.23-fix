@@ -1436,7 +1436,7 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		// Report the open only when this epoch actually won promotion (self.epoch
 		// == e). A stale/losing epoch that verifies identity first must not consume
 		// the per-session once-guard or log "e2e session up" for a handshake that
-		// will be superseded (Sonnet MEDIUM #455).
+		// will be superseded.
 		promoted := false
 		self.stateLock.Lock()
 		if self.epoch == e {

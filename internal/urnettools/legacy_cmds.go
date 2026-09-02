@@ -228,7 +228,7 @@ func hasExplicitTarget(t Target) bool {
 // and any container that matches is then refused by guardSystemdProvider
 // with an actionable "use urnet-docker" error — instead of the old plain
 // not-found. This makes guardSystemdProvider reachable on the lifecycle
-// paths (Sonnet HIGH, meso-miner PR #10/#12) without widening any
+// paths without widening any
 // automatic-selection surface.
 func lifecycleCandidates(t Target) []Provider {
 	providers := discoverSystemdFn()
@@ -606,7 +606,7 @@ func mergeDropinEnvFile(path, envLine string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		// Transient read error (EACCES, EIO, NFS) must not silently
-		// drop every existing override .
+		// drop every existing override.
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	if err == nil {
@@ -797,7 +797,7 @@ func restartAfterDropin(p Provider) error {
 		}
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
-		// provider never actually restarted (Sonnet MEDIUM-2).
+		// provider never actually restarted.
 		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
 		return exec.Command("systemctl", argsRestart...).Run()
 	}

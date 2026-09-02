@@ -124,7 +124,7 @@ func TestPaidProxyGrader_ProbesQuietProxy(t *testing.T) {
 // TestPaidProxyGrader_ForceProbeCeiling pins the hard ceiling: a proxy that
 // HAS been earning recently but whose last REAL probe is older than
 // paidForceProbeCeiling must still be probed — "earning" cannot suppress
-// the fail-fast path indefinitely (Sonnet findings 2c/4b).
+// the fail-fast path indefinitely.
 func TestPaidProxyGrader_ForceProbeCeiling(t *testing.T) {
 	home := withTempHome(t)
 	writePaidGradeProbeOverride(t, true)
@@ -293,8 +293,7 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 	}
 }
 
-// TestPaidProxyGrader_ProbesAfterEmptyHealthSet pins the coderabbit
-// finding end-to-end: when the health set empties (ProxyHealthCount==0),
+// TestPaidProxyGrader_ProbesAfterEmptyHealthSet pins the invariant end-to-end: when the health set empties (ProxyHealthCount==0),
 // runEarningWindows clears the earn tracker via Update(nil) so a proxy
 // re-added afterwards cannot be earn-skipped from STALE earning state —
 // the required probe must fire. The grader must treat a cleared tracker

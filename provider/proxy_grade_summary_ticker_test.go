@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Coverage-gap tests (Sonnet round-3 review): runProxyGradeSummary's ticker
+// Coverage-gap tests: runProxyGradeSummary's ticker
 // loop was 0% covered — every existing summary test drives
 // runProxyGradeSummaryOnce directly. Same technique as the paid-grader ticker
 // tests: an already-cancelled (or cancelled-mid-run) context must make the

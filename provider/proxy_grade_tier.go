@@ -142,8 +142,7 @@ func mustReadProxyURLState() *ProxyURLState {
 	if err != nil {
 		// A corrupt or unreadable proxy_url.json must not look identical to
 		// a fresh install: log it, or every cached address is treated as new
-		// and re-probed on every cycle with no signal to the operator
-		// (coderabbit review).
+		// and re-probed on every cycle with no signal to the operator.
 		tlog("[proxy][url] warning: could not read proxy_url.json for cached-address snapshot: %v (probing all addresses this cycle)\n", err)
 		return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
 	}

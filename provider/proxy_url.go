@@ -330,7 +330,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 				// first), so once a candidate fails to outrank the lowest
 				// cached entry, every later candidate is at most its rank
 				// and cannot evict either — stop scanning instead of
-				// re-scanning the whole cache per line (coderabbit review).
+				// re-scanning the whole cache per line.
 				break
 			}
 			delete(state.Cache, evictAddr)
@@ -354,7 +354,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 	}
 	// One aggregate line per merge call (per fetch cycle), not one per
 	// evicted address — the important buffer must not become a per-proxy
-	// stream on a large cache (coderabbit review).
+	// stream on a large cache.
 	if evictions > 0 {
 		importantLogf("[proxy][url] cap eviction: %d entries evicted for higher-ranked candidates this cycle\n", evictions)
 	}
@@ -365,7 +365,7 @@ func mergeProxyURLEntries(state *ProxyURLState, lines []string, apiOKCount int, 
 // Score/Graded/Failed fields, gated on a genuine decidable verdict that is
 // not socks5-only (C1/C2: an empty or cancelled pass leaves the prior grade
 // intact). Shared by the merge insert path and the fetch cache-update loop so
-// the persist rule cannot drift (coderabbit review).
+// the persist rule cannot drift.
 func applyProxyGradeToEntry(entry *ProxyURLEntry, g proxyURLGrade, gradedAt time.Time) {
 	if g.Decidable && !g.Socks5Only {
 		entry.Score = g.Score

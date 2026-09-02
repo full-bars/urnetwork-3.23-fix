@@ -948,14 +948,13 @@ func TestReview_ReaperKillSwitchSkipsGradeRefresh(t *testing.T) {
 	// Stage-0 liveness = exactly 1 CONNECT (the API CONNECT through the
 	// proxy). Stage-1 would add sample_width more; with the kill switch off
 	// there must be none. Pin BOTH bounds so a candidate-selection regression
-	// (stale entry never probed at all) still fails the test (coderabbit
-	// review).
+	// (stale entry never probed at all) still fails the test.
 	if n := connects.Load(); n != 1 {
 		t.Fatalf("kill switch off must run stage-0 only: %d CONNECTs, want exactly 1", n)
 	}
 }
 
-// REGRESSION (Opus review test gap). The POSITIVE counterpart to the
+// REGRESSION. The POSITIVE counterpart to the
 // kill-switch test: with stage-1 ENABLED, the reaper's stale sweep of a
 // once-good entry must actually run the table probe and PERSIST the
 // refreshed grade. Before this test, deleting the table-probe call,
@@ -1132,7 +1131,7 @@ func TestReview_ReaperBlacklistsTLSFailedAfterThree(t *testing.T) {
 	}
 }
 
-// REGRESSION (Opus review, MEDIUM #3). The 32/cycle grade-refresh budget
+// REGRESSION. The 32/cycle grade-refresh budget
 // must land on the OLDEST grades, and a budget loser (stage-0 liveness
 // passed, table probe skipped) must NOT get its LastProbe re-stamped —
 // otherwise a once-good herd (all entries born with synchronized LastProbe
@@ -1200,7 +1199,7 @@ func TestReview_ReaperRefreshBudgetOldestFirst(t *testing.T) {
 	}
 }
 
-// REGRESSION (Opus review, MEDIUM #2). An address listed in TWO sources in
+// REGRESSION. An address listed in TWO sources in
 // the same fetch cycle must be table-probed ONCE, not once per source —
 // the same scraped IPs circulate across free lists, and per-source probing
 // defeats the new-only filter's own efficiency goal. The live `probed`
@@ -1283,7 +1282,7 @@ func TestReview_PartialResolverDoesNotConvict(t *testing.T) {
 	// it must still be decidable (quorum measured against resolvable, not
 	// intended). Deleting from m matters: resolveProbeTarget consults the
 	// success cache FIRST, so a fail entry alone is never consulted while
-	// the host still sits in m (Opus review finding 2 — the old injection
+	// the host still sits in m (the old injection
 	// was inert and the test could not fail on regression).
 	blocked := 0
 	injected := make([]string, 0, cfg.SampleWidth/2)

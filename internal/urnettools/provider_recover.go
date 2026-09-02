@@ -38,9 +38,9 @@ func ensureBinaryRecoverable(p Provider) (string, bool, error) {
 	if err := recoverDeletedBinary(p.Binary, p.PID, p.User); err != nil {
 		// %w (not %v) so a caller can errors.Is on errBinaryAppeared and tell
 		// "a concurrent updater won the race" apart from a genuine recovery
-		// failure (mimo review MEDIUM). The root hint is Linux-only: root can
+		// failure. The root hint is Linux-only: root can
 		// read another account's /proc there, but it cannot enable recovery on
-		// macOS/Windows (nemotron review #3).
+		// macOS/Windows.
 		hint := "restart the unit, or reinstall"
 		if runtime.GOOS == "linux" {
 			hint = "rerun as root to allow recovery, or restart the unit"
@@ -64,7 +64,7 @@ var errBinaryAppeared = fmt.Errorf("provider binary reappeared during recovery; 
 // `go test` step compile it on every platform (os.Lstat/os.Rename are
 // cross-platform; the RENAME_NOREPLACE atomic fast path is Linux-only and is
 // not used here). This narrows the stale-vs-fresh TOCTOU to a single
-// lstat+rename — an accepted residual per the design review, Sonnet, and mimo
+// lstat+rename — an accepted residual per the design review
 // — and if an updater wins the race, recovery yields rather than overwrite a
 // freshly-installed binary with the deleted-inode image.
 func installRecovered(tmp, binary string) error {

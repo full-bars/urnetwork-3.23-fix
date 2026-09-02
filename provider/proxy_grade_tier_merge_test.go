@@ -162,7 +162,7 @@ func TestMergeProxyURLEntries_CachedATierSurvives(t *testing.T) {
 // (fetchAndMergeProxyURLs) feeds mergeProxyURLEntries rank-sorted input,
 // best first. If a future caller ever feeds raw lines, admissible
 // high-tier candidates could be silently dropped at cap with no test or
-// assertion firing (Opus review test gap).
+// assertion firing.
 func TestCollectRankedCandidates_RankSortedDescending(t *testing.T) {
 	fetched := [][]string{
 		{"f:1080", "a:1080", "ungraded:1080", "c:1080", "b:1080", "d:1080"},
@@ -194,7 +194,7 @@ func TestCollectRankedCandidates_RankSortedDescending(t *testing.T) {
 // TestMergeProxyURLEntries_MaxTotalZeroUnlimited pins that maxTotal == 0
 // (unlimited) never enters the eviction block even with a non-nil rank
 // function: every candidate is added and no cached entry is evicted, no
-// matter how low its tier is (Opus review test gap).
+// matter how low its tier is.
 func TestMergeProxyURLEntries_MaxTotalZeroUnlimited(t *testing.T) {
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
 		"1.1.1.1:1080": {Graded: true, Score: 0.3},  // F
@@ -223,7 +223,6 @@ func TestMergeProxyURLEntries_MaxTotalZeroUnlimited(t *testing.T) {
 // candidate carries a grade by construction), so this combination is
 // unreachable in production; the test pins the current behavior so any
 // future fix that makes the combination impossible has a regression signal
-// (Opus review test gap).
 func TestMergeProxyURLEntries_UngradedJustAddedIsNextEvictionTarget(t *testing.T) {
 	state := &ProxyURLState{Cache: map[string]ProxyURLEntry{
 		"1.1.1.1:1080": {},                          // ungraded, rank -1

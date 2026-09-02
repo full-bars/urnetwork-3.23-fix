@@ -418,7 +418,7 @@ func (r *ProxyReloader) reload() {
 			defer r.wg.Done()
 			defer directCancel()
 			// Delete cancelMap AFTER UnregisterProxy so stale-unregister
-			// can't nuke a fresh direct's registration (flash review #3).
+			// can't nuke a fresh direct's registration.
 			defer func() {
 				r.cancelMapMu.Lock()
 				delete(r.cancelMap, directProxyKey)

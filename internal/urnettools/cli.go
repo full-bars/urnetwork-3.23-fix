@@ -28,7 +28,7 @@ func Run(args []string) error {
 		args = []string{}
 	}
 	// Match on args[0] regardless of trailing args, as the old dispatcher did:
-	// `-v junk` still prints the version (Sonnet/Muse review).
+	// `-v junk` still prints the version.
 	if len(args) >= 1 {
 		switch args[0] {
 		case "-v", "--version":
@@ -740,8 +740,7 @@ var stdinIsInteractiveOverride func() bool
 // must use -f/--force (or --yes); refusing with a clear message beats hanging
 // (gauntlet finding BUG-14: self-update blocked on read(0) for minutes).
 // Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
-// misclassifies /dev/zero and other char devices as terminals (CodeRabbit
-
+// misclassifies /dev/zero and other char devices as terminals.
 func stdinIsInteractive() bool {
 	if stdinIsInteractiveOverride != nil {
 		return stdinIsInteractiveOverride()

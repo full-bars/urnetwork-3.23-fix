@@ -38,7 +38,7 @@ import (
 // helps; anything else (no such unit, timeout, ...) propagates unchanged.
 // The substring match is deliberately broad: the input here is always
 // restartProvider's own systemctl error text, so a rare false positive only
-// routes to the harmless guidance path (Sonnet review LOW).
+// routes to the harmless guidance path.
 func isAuthRestartFailure(err error) bool {
 	if err == nil {
 		return false
@@ -155,7 +155,7 @@ func printRestartElevationGuidance(p Provider) {
 // into the update staging dir so the restart ladder can execute it via
 // passwordless sudo. The file is explicitly chmod'd executable:
 // downloadFile writes 0644, and execve fails with EACCES on a file with no
-// execute bits even for root (Sonnet review HIGH — without this the entire
+// execute bits even for root — without this the entire
 // escalation leg could never fire in production). Best effort: returns ""
 // when the release has no tool asset or download/verify/chmod fails; the
 // ladder then skips escalation and prints guidance.
@@ -194,7 +194,7 @@ var discoverForRestart = Discover
 // invoked it. Two scoping guards keep even a narrowly-scoped sudoers grant
 // from becoming a generic "restart any unit as root" primitive: the docker
 // namespace guard, and a requirement that the unit matches a provider
-// Discover() actually sees (Sonnet review MEDIUM).
+// Discover() actually sees.
 func newDoRestartCmd() *cobra.Command {
 	var unit, user string
 	cmd := &cobra.Command{
@@ -216,7 +216,7 @@ func newDoRestartCmd() *cobra.Command {
 			// records, never override them. A --user that disagrees with the
 			// discovered record would otherwise route the restart into a
 			// different account's session via machined (-M user@) while
-			// passing a unit-name-only check (Sonnet review round 2). When
+			// passing a unit-name-only check. When
 			// more than one record matches (duplicate unit names across
 			// accounts), selection is REFUSED rather than picking a winner
 			// — this command is the last line of defense behind scoped

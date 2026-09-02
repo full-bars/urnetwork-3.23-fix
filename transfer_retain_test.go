@@ -68,7 +68,7 @@ func TestDecodeTransferOptionsDefaults(t *testing.T) {
 
 // TestDecodeTransferOptionsRetainOrderDependent verifies that passing a full
 // TransferOptions AFTER RetainAfterAckTimeout() clobbers the retain flag.
-// This is the order-dependent behavior the Opus review flagged as untested.
+// This order-dependent behavior was previously untested.
 // The case "TransferOptions: base = v" overwrites base entirely.
 func TestDecodeTransferOptionsRetainOrderDependent(t *testing.T) {
 	ctx := context.Background()

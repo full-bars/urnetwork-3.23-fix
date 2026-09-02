@@ -97,7 +97,7 @@ func TestSelectTargetOrSoleAccessibleNarrowsToOwnUser(t *testing.T) {
 // TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped: a provider that is the
 // caller's own AND the sole accessible candidate must still NOT be auto-targeted
 // when it is stopped — the sole-accessible path drives destructive stop/restart
-// and must never pick a non-running provider (Sonnet backlog #1a).
+// and must never pick a non-running provider.
 func TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can reach every provider; narrowing only applies unprivileged")
@@ -121,8 +121,7 @@ func TestSelectTargetOrSoleAccessibleDoesNotNarrowStopped(t *testing.T) {
 	}
 
 	// Read-only callers (logs/status/summary) pass requireRunning=false and
-	// MUST still reach a stopped provider for diagnostics (Sonnet backlog #1a
-	// second pass).
+	// MUST still reach a stopped provider for diagnostics.
 	got, narrowed2, err2 := selectTargetOrSoleAccessible(providers, Target{}, false)
 	if err2 != nil {
 		t.Fatalf("read-only selection of a stopped provider should succeed: %v", err2)

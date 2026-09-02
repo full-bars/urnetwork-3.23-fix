@@ -29,7 +29,7 @@ func parseLogLineCount(rest []string) (int, error) {
 
 func RunDocker(args []string) error {
 	// Match on args[0] regardless of trailing args, as the old dispatcher did:
-	// `-v junk` still prints the version (Sonnet/Muse review).
+	// `-v junk` still prints the version.
 	if len(args) >= 1 {
 		switch args[0] {
 		case "-v", "--version":
@@ -231,7 +231,7 @@ func cmdDockerStatus(args []string) error {
 // delegation path (e.g. `urnet-docker exec urnet-tools proxy add ...`).
 // Target flags come BEFORE the command; everything from the first
 // positional onward is the in-container command and must pass through
-// verbatim, including its own --flags (strict parsing previously rejected
+// verbatim, including its own --flags (strict parsing rejected
 // `--proxy_file=` before delegation).
 func cmdDockerExec(args []string) error {
 	// Split at the first non-flag token: target flags before it, command
@@ -242,8 +242,7 @@ func cmdDockerExec(args []string) error {
 	pre, rest, err := splitExecArgs(args)
 	if err == errHelpShown {
 		// Print the usage on pre-separator help — exiting silently on
-		// `exec --unit x --help` reads as a no-op, not documentation
-		// (Sonnet final review MEDIUM).
+		// `exec --unit x --help` reads as a no-op, not documentation.
 		usageDocker()
 		return nil
 	}
@@ -330,7 +329,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// Host self-update pinning options (--tag/--digest/--url) say the
 		// user asked to update the HOST tool, not a container. Route those
 		// to the host self-update so the options take effect, never to the
-		// lone-container auto-select below (CodeRabbit PR #465).
+		// lone-container auto-select below.
 		if hasSelfUpdateArg(args) {
 			return cmdSelfUpdate(args, force, dryRun)
 		}
@@ -585,7 +584,7 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 // hasAnyTargetFlag reports whether args contain an explicit targeting flag, in
 // either the bare (`--unit x`) or the `--flag=value` form. Without this, the
 // `--flag=value` form would miss the in-container gate and fall through to the
-// host self-update (Sonnet HIGH on #453).
+// host self-update.
 func hasAnyTargetFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--unit" || a == "--user" || a == "--network" || a == "--network-id" || a == "--state-dir" {
@@ -889,7 +888,7 @@ func cmdDockerProxy(args []string) error {
 	case "add":
 		// Exactly one positional: the host proxy file. A leading flag (e.g.
 		// --force) would be misread as a filename, so reject anything that is
-		// not a single non-flag argument (DeepSeek MF2 + SF3).
+		// not a single non-flag argument.
 		if len(rest2) != 1 || strings.HasPrefix(rest2[0], "-") {
 			return fmt.Errorf("proxy add requires exactly one proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
 		}
@@ -923,7 +922,7 @@ func cmdDockerProxy(args []string) error {
 		return containerExecByName(container, "urnet-tools", "proxy", "add", "--proxy_file="+inPath)
 	case "clear":
 		// Forward remaining args (e.g. --force) so clear is scriptable from
-		// CI/cron on a non-TTY (DeepSeek MF1).
+		// CI/cron on a non-TTY.
 		inner := append([]string{"urnet-tools", "proxy", "clear"}, rest2...)
 		return containerExecByName(container, inner...)
 	case "remove":

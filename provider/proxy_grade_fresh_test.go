@@ -64,8 +64,7 @@ func TestMustReadProxyURLState_ReadsExisting(t *testing.T) {
 // file is not silent: mustReadProxyURLState degrades to an empty state (so
 // the fetch cycle treats every address as new) AND logs the warning, so the
 // operator sees why — the missing-file and round-trip paths were covered,
-// the tlog error path the coderabbit review asked for was not (Opus review
-// test gap).
+// the tlog error path was not covered.
 func TestMustReadProxyURLState_CorruptLogsWarning(t *testing.T) {
 	withTempHome(t)
 	path, err := proxyURLStatePath()

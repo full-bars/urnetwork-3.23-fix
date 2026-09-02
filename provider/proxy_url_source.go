@@ -376,7 +376,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	tierCounts := map[string]int{}
 	// countedGrade dedupes the breakdown by ADDRESS across sources: the same
 	// address listed in two sources (bare + credentialed, or duplicated)
-	// must count once, matching admittedByTier (coderabbit review).
+	// must count once, matching admittedByTier.
 	countedGrade := map[string]bool{}
 	probeCfg := resolveProxyTableProbeConfig()
 	tlog("[proxy][url] stage-1 table probe config: %s\n", describeProxyTableProbeConfig(probeCfg))
@@ -498,8 +498,8 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 	if skippedCached > 0 {
 		// Cached-skip is the main efficiency change of this PR; the
-		// operator should see how many addresses were skipped (coderabbit
-		// review) — grade refresh is the reaper's job. One AGGREGATE line
+		// operator should see how many addresses were skipped — grade
+		// refresh is the reaper's job. One AGGREGATE line
 		// after the loop: the counter is cumulative across sources, so
 		// logging it inside the loop would read as per-source figures
 		// (finding LOW).
@@ -547,15 +547,14 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// not by Qualified, so the positional fallback (ProbeOK = i < apiOKCount)
 	// would be wrong if a candidate ever reached the merge without a grade —
 	// a kill-switch-disabled admission (Qualified=true, Decidable=false)
-	// ranks last while a decidable F ranks first (coderabbit review).
+	// ranks last while a decidable F ranks first.
 	added := mergeProxyURLEntries(state, admittedLines, 0, maxTotal, rankAddr, gradeFor)
 	totalAdded += added
 	// admittedByTier counts what actually entered the cache this cycle, per
 	// letter grade. The same address can appear in multiple sources' fetched
 	// lists (bare + credentialed, or listed twice), so count each address
 	// ONCE — the merge itself dedupes (existing addresses are skipped), and
-	// the counters must match the cache, not the pooled line count (Sonnet
-	// review finding).
+	// the counters must match the cache, not the pooled line count.
 	countedTier := map[string]bool{}
 	for _, c := range cands {
 		if countedTier[c.address] {
@@ -590,7 +589,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	markedSocks5 := 0
 	// Dedupe by address so a cross-source duplicate is persisted and counted
 	// once — the counters reflect distinct cached addresses, not pooled
-	// lines (Sonnet review finding).
+	// lines.
 	seen := map[string]bool{}
 	for _, c := range cands {
 		if seen[c.address] {
@@ -690,13 +689,12 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 	for {
 		// Publish the countdown BEFORE the pass so the first cycle is not
 		// "unknown" and the estimate is not systematically late by the
-		// pass duration (coderabbit minor + LOW-9).
+		// pass duration.
 		setNextGradeRefreshAt(time.Now().Add(proxyReaperInterval))
 		select {
 		case <-ctx.Done():
 			// Clear the published refresh estimate on shutdown so the
-			// summary countdown does not go stale (coderabbit follow-up,
-			// PR #10).
+			// summary countdown does not go stale.
 			setNextGradeRefreshAt(time.Time{})
 			return
 		case <-ticker.C:
@@ -795,7 +793,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// Grade refresh is bounded per cycle: each stale once-good candidate
 	// that passes stage 0 would otherwise run a serial table probe of
 	// sample_width destinations, and a large cache could stretch the reaper
-	// cycle past its own tick (coderabbit review). Liveness probing is
+	// cycle past its own tick. Liveness probing is
 	// unaffected; only the quality refresh is capped. Candidates are sorted
 	// above so the budget lands on the OLDEST grades first; budget losers
 	// keep their stale LastProbe and are first in line next tick, so the
@@ -851,7 +849,7 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// Grade-refresh counters for the per-cycle summary: the per-address
 		// important line fires only on a LETTER TIER change, and one summary
 		// line is emitted after the loop, so a large cache does not turn the
-		// important buffer into a per-proxy stream (coderabbit review).
+		// important buffer into a per-proxy stream.
 		refreshedGrades := 0
 		tierChanges := 0
 		for _, r := range results {
@@ -1117,7 +1115,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 
 	activeInterval := resolveProxyURLRefresh(refreshInterval)
 	// Publish the initial next-fetch estimate WITH the pressure stretch
-	// applied, mirroring the loop's own math below (coderabbit minor: the
+	// applied, mirroring the loop's own math below (the
 	// initial estimate was unstretched).
 	initialCache := readURLCacheSize()
 	initialNext := activeInterval
@@ -1137,8 +1135,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 		case <-ctx.Done():
 			// Same CR #5 contract as the fetcher's other two exits: clear
 			// the published schedule so countdownLine() cannot keep showing
-			// a stale "next fetch probe in Xs" after shutdown (coderabbit
-			// follow-up, PR #10).
+			// a stale "next fetch probe in Xs" after shutdown.
 			setNextFetchProbeAt(time.Time{})
 			setURLFetcherState("inactive")
 			return
@@ -1168,7 +1165,7 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 			// countdown, mirroring shouldFetchNow's stretch math exactly
 			// (reuse cacheSize read above — LOW-10) and anchored to
 			// lastFetch, the same reference shouldFetchNow measures against
-			// (coderabbit minor: it was anchored to a post-fetch now).
+			// (it was anchored to a post-fetch now).
 			effectiveNext := activeInterval
 			if cacheSize >= 50 {
 				effectiveNext = time.Duration(float64(activeInterval) * fetchStretch(currentPressure()))
