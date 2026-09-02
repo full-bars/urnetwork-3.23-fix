@@ -816,24 +816,33 @@ func installBinary(src, dst, user string) error {
 		os.Remove(newPath)
 		return err
 	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(newPath)
-		return err
-	}
-	if err := os.Chmod(newPath, 0o755); err != nil {
+	// Apply mode/ownership through the HELD descriptor, not by path: a
+	// lower-privileged writer in the temp dir can swap newPath for a
+	// symlink between tmpFile.Close() and a path-based os.Chmod/os.Chown,
+	// and those would follow it to an arbitrary target (update.go CRITICAL).
+	// fchmod/fchown on the open fd act on the real inode we wrote.
+	if err := tmpFile.Chmod(0o755); err != nil {
+		tmpFile.Close()
 		os.Remove(newPath)
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
+			tmpFile.Close()
 			os.Remove(newPath)
 			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
-		if err := os.Chown(newPath, uid, gid); err != nil {
+		if err := tmpFile.Chown(uid, gid); err != nil {
+			tmpFile.Close()
 			os.Remove(newPath)
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
+	}
+	// Close only after all metadata is applied via the fd.
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(newPath)
+		return err
 	}
 	if err := os.Rename(newPath, dst); err != nil {
 		os.Remove(newPath)

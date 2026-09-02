@@ -105,6 +105,12 @@ func writeSelfHeal(state string, targetArgs []string) error {
 	if perr != nil {
 		return perr
 	}
+	// A provider-scoped target must resolve a real state dir. If the resolved
+	// provider has an empty StateDir, falling through to the legacy $HOME path
+	// would report success while not changing the selected provider (CR).
+	if targetArgs != nil && p != nil && p.StateDir == "" {
+		return fmt.Errorf("self-heal: provider %s has no resolvable state dir", providerLabel(*p))
+	}
 
 	// The marker is always proxy_self_heal inside the state dir.
 	const markerName = "proxy_self_heal"

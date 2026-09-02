@@ -121,9 +121,11 @@ func discoverProcesses() []Provider {
 			if _, home := processOwner(p.PID); home != "" {
 				cleanHome := filepath.Clean(home)
 				cleanState := filepath.Clean(p.StateDir)
-				// Exact match (state dir IS the home) or proper prefix with separator
-				if cleanState != cleanHome && !strings.HasPrefix(cleanState, cleanHome+string(filepath.Separator)) {
-					// Not under user's home — reject the foreign state-dir.
+				// Reject the state-dir if it is the owner's HOME itself (an
+				// uninstall RemoveAll would wipe the entire home dir) OR not
+				// under the home at all.
+				if cleanState == cleanHome || !strings.HasPrefix(cleanState, cleanHome+string(filepath.Separator)) {
+					// Invalid or dangerous state-dir (exact home, outside home).
 					p.StateDir = ""
 				}
 			}

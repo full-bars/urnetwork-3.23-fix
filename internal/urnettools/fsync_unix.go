@@ -48,10 +48,27 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	tmpFile.Close()
-	if err := os.Chmod(tmpPath, perm); err != nil {
+	// Apply perm through the held fd (not os.Chmod by path) so a symlink
+	// planted at tmpPath cannot redirect the metadata change (same class
+	// as installBinary's CRITICAL). Then close.
+	if err := tmpFile.Chmod(perm); err != nil {
+		tmpFile.Close()
 		os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	// Sync the parent directory so the rename survives a crash before the
+	// directory entry is committed (fsync after rename).
+	if dir, err := os.Open(dir); err == nil {
+		dir.Sync()
+		dir.Close()
+	}
+	return nil
 }

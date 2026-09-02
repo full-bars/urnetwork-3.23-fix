@@ -815,8 +815,16 @@ func cmdHubInstall(p Provider, rest []string) error {
 		// M4 fix: explicitly parse --tag=<v> or --tag <v>, reject unrecognized positionals.
 		if strings.HasPrefix(rest[0], "--tag=") {
 			tag = strings.TrimPrefix(rest[0], "--tag=")
+			// Reject leftover positionals after --tag=<v> (CR: silent drop).
+			if len(rest) > 1 {
+				return fmt.Errorf("hub install: unrecognized argument %q (expected --tag=<version> only)", rest[1])
+			}
 		} else if rest[0] == "--tag" && len(rest) > 1 {
 			tag = rest[1]
+			// --tag <v> consumes exactly two args; anything after is an error.
+			if len(rest) > 2 {
+				return fmt.Errorf("hub install: unrecognized argument %q (expected --tag <version> only)", rest[2])
+			}
 		} else {
 			return fmt.Errorf("hub install: unrecognized argument %q (expected --tag=<version>)", rest[0])
 		}

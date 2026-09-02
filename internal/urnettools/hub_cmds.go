@@ -401,12 +401,6 @@ func confirmFingerprint(fp string) bool {
 	return hubYesNo("Accept this hub fingerprint? (y/n)")
 }
 
-func acceptFingerprintPrompt() bool {
-	// acceptFingerprintPrompt is called when we don't have the fingerprint
-	// to display — caller should use confirmFingerprint directly when possible.
-	return hubYesNo("Accept this hub fingerprint? (y/n)")
-}
-
 // cmdHubTest verifies TLS to the hub at url (or the configured report URL),
 // preferring CA-chain verification, falling back to the pinned fingerprint.
 func cmdHubTest(p Provider, url string) error {

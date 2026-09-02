@@ -618,13 +618,22 @@ func TestProviderVersionFallbackToExec(t *testing.T) {
 func TestProviderVersionDoesNotExecuteNonELF(t *testing.T) {
 	tmp := t.TempDir()
 	// Create a shell script named like a provider — it should NOT be executed.
+	sentinel := filepath.Join(tmp, "executed.sentinel")
 	script := filepath.Join(tmp, "fake-provider")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho pwned\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \""+sentinel+"\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	got := providerVersion(script)
 	if got != "" {
 		t.Errorf("providerVersion executed a non-ELF file! got %q — the C1 security fix may be bypassed", got)
+	}
+	// The strongest signal is a non-execution SIDE EFFECT: the guard must
+	// prevent the script from running at all, not merely hide its output.
+	// If it ran, the sentinel file would exist.
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("providerVersion executed the non-ELF script (sentinel file exists) — C1 security fix bypassed")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat sentinel: %v", err)
 	}
 }
 
