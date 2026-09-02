@@ -1364,8 +1364,7 @@ func runLifetimeCollector(ctx context.Context) {
 			// active branch does the same): on the FIRST tick prevRxPerProxy is
 			// empty while bw is populated with every known proxy, so a bare
 			// index dereference panics (nil *uint64) and — with the collector
-			// launched as a bare `go` — crashes the whole provider process
-			// (Sonnet CRITICAL, 2026-08-27).
+			// launched as a bare `go` — crashes the whole provider process.
 			for key, b := range bw {
 				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
 				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
@@ -1763,8 +1762,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
 		// newly confirmed dead). report.Dead is the COMPLETE currently-
 		// dead list rebuilt every tick — counting it here would inflate
-		// the persisted counter on every tick a proxy stays dead
-		// (Sonnet review HIGH).
+		// the persisted counter on every tick a proxy stays dead.
 		lifetimeStore.Add(0, 0, 0, 0,
 			uint64(len(report.Recovered)),
 			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
@@ -2898,7 +2896,7 @@ func provide(opts docopt.Opts) {
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
-							// the proxy list (Opus HIGH-2 fix).
+							// the proxy list.
 							proxyCancelMu.Lock()
 							delete(proxyCancelMap, proxySettings.Address)
 							proxyCancelMu.Unlock()
@@ -3279,7 +3277,7 @@ func provide(opts docopt.Opts) {
 			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
 			// can't nuke a fresh direct's registration, and so the reloader's
 			// running[] snapshot doesn't leave direct permanently "running" after
-			// the goroutine exits (DeepSeek HIGH).
+			// the goroutine exits.
 			defer func() {
 				proxyCancelMu.Lock()
 				delete(proxyCancelMap, directProxyKey)

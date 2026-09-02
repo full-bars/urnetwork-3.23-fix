@@ -368,8 +368,7 @@ func TestReload_PreservesBackoffURLProxyState(t *testing.T) {
 	}
 }
 
-// TestReload_SkipsPruneOnURLCacheReadFailure is a regression test for a
-// CodeRabbit finding on the ghost-prune above: if proxy_url.json fails to
+// TestReload_SkipsPruneOnURLCacheReadFailure is a regression test for the ghost-prune above: if proxy_url.json fails to
 // read (corrupt file, transient I/O error — NOT the normal "no URL sources
 // configured" case, which returns an empty cache with no error), desiredSet
 // silently excludes every URL-sourced address for that reload cycle. Pruning

@@ -12,7 +12,7 @@ import (
 // off a RECENT liveness signal, never the raw cumulative BillableRx/Tx
 // counters — a cumulative counter only resets on process restart, so a
 // proxy that earned once early then died would otherwise look "earning"
-// forever and never be re-probed (Sonnet design review finding 2c).
+// forever and never be re-probed.
 type perProxyEarnTracker struct {
 	mu sync.Mutex
 	// lastEarned maps proxy address -> time of the last positive billable
@@ -146,6 +146,6 @@ const paidEarnWindow = 15 * time.Minute
 // suppresses probes for actively-earning proxies, but a proxy that has been
 // "earning" (or just not quiet long enough) must still be force-probed at
 // least this often so the fail-fast path can never be starved indefinitely
-// (Sonnet design review findings 2c/4b — the multiplicative hazard with the
+// (the multiplicative hazard with the
 // persisted-grade cache).
 const paidForceProbeCeiling = 24 * time.Hour

@@ -292,7 +292,7 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// Ownership resolution MUST agree with the paid grader's UNION (file when
 	// set + internal), not an either/or: a mixed file+internal deployment would
 	// otherwise report internal-config addresses as ungraded with the wrong
-	// staleness window (Opus review MEDIUM-2). Uses the same helper as the
+	// staleness window. Uses the same helper as the
 	// grader so the reader cannot drift from the writer.
 	desired := map[string]struct{}{}
 	paidOwned, _ := paidDesiredSet(state)
@@ -404,7 +404,7 @@ func (s gradeSummary) scoresLine() string {
 	}
 	// Nearest-rank p95. The unguarded index `int(float64(n)*0.95)` is
 	// exactly `n` when 0.95n is an integer (n%20==0), i.e. the n=20 case
-	// coderabbit flagged — clamp to the last element instead of indexing
+	// clamps to the last element instead of indexing
 	// out of range or selecting the max by accident.
 	p95i := int(float64(len(s.scores)) * 0.95)
 	if p95i >= len(s.scores) {
@@ -528,8 +528,7 @@ func gradesLogWrite(line string) {
 		return
 	}
 	// Private directory + files: they contain per-proxy endpoints and
-	// grades — operational intelligence not for other local users
-	// (coderabbit security major).
+	// grades — operational intelligence not for other local users.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		tlog("[proxy][grade] warning: grades dir %s: %v\n", dir, err)
 		return
@@ -600,7 +599,7 @@ func emitProxyGradeDelta(addr, oldTier, newTier string, oldScore, newScore float
 func runProxyGradeSummary(ctx context.Context) {
 	// Read the interval from config so proxy_grades.json interval_sec is
 	// honored; re-read + Reset each tick so a live edit takes effect on
-	// the next round (coderabbit major: the ticker was hardcoded to the
+	// the next round (the ticker was hardcoded to the
 	// default).
 	cur := summaryIntervalFromConfig()
 	ticker := time.NewTicker(cur)
@@ -633,7 +632,7 @@ func summaryIntervalFromConfig() time.Duration {
 // runner. It is a package-level var (not a direct call) so tests can
 // inject a fake that returns ok=false with tracked>0 — the scenario that
 // proves the HIGH-2 guard is load-bearing rather than masked by the
-// tracked==0 skip (Sonnet round-2 Finding A).
+// tracked==0 skip.
 var collectGradeSummaryFn = collectProxyGradeSummary
 
 // runProxyGradeSummaryOnce computes and logs one snapshot. Split out for

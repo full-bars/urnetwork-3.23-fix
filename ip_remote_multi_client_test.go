@@ -582,7 +582,7 @@ func TestMultiClientPQERequiresSaneEncryptionIdleTimeout(t *testing.T) {
 }
 
 func TestMultiClientRemoveClientDoesNotClobberSuccessorUpdate(t *testing.T) {
-	// Regression (Opus HIGH finding on the #370 leak fix): removeClient
+	// Regression (on the #370 leak fix): removeClient
 	// cancels a still-registered update's ctx, and a packet arriving
 	// afterwards replaces it in the path map with a fresh update. The stale
 	// teardown goroutine's unconditional `delete(ip4PathUpdates, ip4Path)`

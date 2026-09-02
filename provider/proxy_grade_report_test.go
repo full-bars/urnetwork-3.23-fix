@@ -85,8 +85,7 @@ func TestProxyGradeFor_URLNoLastGradedReportsZero(t *testing.T) {
 	// A graded URL entry with a LastProbe but no LastGraded (e.g. a
 	// pre-migration proxy_url.json, or liveness-only bumps) must report
 	// last_graded = 0 — the honest "grade never re-recorded" answer, not
-	// a liveness timestamp masquerading as a grade time (Sonnet-5 MEDIUM,
-	// folded into this PR).
+	// a liveness timestamp masquerading as a grade time.
 	lastProbe := time.Date(2026, 8, 10, 13, 30, 0, 0, time.UTC)
 	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{
 		"1.2.3.4:1080": {Score: 0.61, Graded: true, LastProbe: lastProbe},

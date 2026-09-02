@@ -204,7 +204,7 @@ func TestEarnTracker_ZeroDeltaTickIsNotEarned(t *testing.T) {
 	}
 }
 
-// TestEarnTracker_EmptySnapshotPrunesAll pins the coderabbit finding:
+// TestEarnTracker_EmptySnapshotPrunesAll pins this behavior:
 // Update with an empty (or nil) snapshot must prune ALL per-address
 // state — this is what the runEarningWindows empty-health-set branch
 // calls so proxies that disappear (health count drops to 0) cannot keep

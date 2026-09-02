@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Coverage-gap test (Sonnet round-3 review): runPaidProxyGrader's ticker loop
+// Coverage-gap test: runPaidProxyGrader's ticker loop
 // was 0% covered — every existing paid-grader test drives runPaidProxyGradeOnce
 // directly, never the wrapping ticker/select loop that production actually
 // runs. proxyReaperInterval is 5 minutes, far too long to wait out in a unit

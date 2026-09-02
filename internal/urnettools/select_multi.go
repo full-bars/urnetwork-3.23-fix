@@ -174,7 +174,7 @@ func selectTargetOrSoleAccessible(providers []Provider, t Target, requireRunning
 		if requireRunning {
 			// A sole-accessible-but-STOPPED provider must not be auto-targeted
 			// by this path when it drives destructive stop/restart. Mirror
-			// defaultProvider's Running requirement (Sonnet backlog #1a).
+			// defaultProvider's Running requirement.
 			// Read-only callers (logs/status/summary) pass false so they can
 			// still reach a stopped provider for diagnostics.
 			var accessible []Provider

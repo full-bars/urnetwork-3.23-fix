@@ -356,7 +356,7 @@ func TestIsDegraded_FalseWhenRecoveredAfterDown(t *testing.T) {
 }
 
 func TestIsDegraded_FalseWhileRespawnConnecting(t *testing.T) {
-	// This is the scenario CodeRabbit flagged: RegisterProxy reuses the
+	// RegisterProxy reuses the
 	// existing *proxyHealth struct for an index rather than resetting it, so
 	// a freshly respawned instance inherits its predecessor's stale everUp/
 	// downSince fields. Without the `connecting` check, IsDegraded would

@@ -77,10 +77,10 @@ func TestParseLogLineCount(t *testing.T) {
 }
 
 // TestSplitExecArgs covers the exec argument-splitting logic (the pure
-// helper behind cmdDockerExec). Mimo HIGH-1: the integration tests only
+// helper behind cmdDockerExec). The integration tests only
 // exercised error paths (no docker daemon), so the actual -- separator
 // forwarding of rest... was never verified. This pins the slice math
-// directly without docker. Coderabbit: also pins the trailing-flag panic
+// directly without docker, and also pins the trailing-flag panic
 // guard and the inner-help forwarding.
 func TestSplitExecArgs(t *testing.T) {
 	cases := []struct {
@@ -90,7 +90,7 @@ func TestSplitExecArgs(t *testing.T) {
 		wantRest []string
 		wantErr  string
 	}{
-		// -- separator forwarding (mimo HIGH-1 happy path)
+		// -- separator forwarding (happy path)
 		{"sep-first-no-target", []string{"--", "urnet-tools", "status"}, nil, []string{"urnet-tools", "status"}, ""},
 		{"sep-flag-first-word", []string{"--", "-f", "urnet-tools"}, nil, []string{"-f", "urnet-tools"}, ""},
 		{"sep-flags-with-values", []string{"--", "urnet-tools", "--proxy_file=/tmp/p.txt"}, nil, []string{"urnet-tools", "--proxy_file=/tmp/p.txt"}, ""},
@@ -105,11 +105,11 @@ func TestSplitExecArgs(t *testing.T) {
 		{"unknown-short-flag", []string{"-f", "cmd"}, nil, nil, "unknown flag"},
 		{"unknown-flag-with-target", []string{"--unit", "x", "--verbose", "urnet-tools"}, []string{"--unit", "x"}, nil, "unknown flag"},
 		{"empty", nil, nil, nil, ""},
-		// Coderabbit critical: a trailing recognized target flag (no value)
+		// A trailing recognized target flag (no value)
 		// must error, not panic on the slice below.
 		{"trailing-unit-no-value", []string{"--unit"}, nil, nil, "requires a value"},
 		{"trailing-unit-no-value-after-target", []string{"--unit", "x", "--network"}, []string{"--unit", "x"}, nil, "requires a value"},
-		// Coderabbit major: -h/--help AFTER the -- separator belongs to the
+		// -h/--help AFTER the -- separator belongs to the
 		// container command and must be forwarded, not intercepted.
 		{"help-after-sep-forwarded", []string{"--", "urnet-tools", "--help"}, nil, []string{"urnet-tools", "--help"}, ""},
 		{"help-after-sep-with-target", []string{"--unit", "x", "--", "urnet-tools", "--help"}, []string{"--unit", "x"}, []string{"urnet-tools", "--help"}, ""},
@@ -127,7 +127,7 @@ func TestSplitExecArgs(t *testing.T) {
 		{"target-then-sep-then-inner-target", []string{"--unit", "x", "--", "--unit", "y"}, []string{"--unit", "x"}, []string{"--unit", "y"}, ""},
 	}
 
-	// Sonnet final-review MEDIUM: pre-separator --help must PRINT usage
+	// Pre-separator --help must PRINT usage
 	// (side effect), not just return the sentinel silently. RunDocker
 	// already covers bare exec --help via hasHelpFlag; this covers the
 	// --unit x --help form that goes through splitExecArgs.

@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-// Round-1 review additions (mimo + free-pass findings):
+// Regression-test additions:
 // 1. pruneProxyGrades retention — the proxy_grades table was never pruned
 //    (free-review MEDIUM: the ROW_NUMBER subquery in handleProxiesBest scans
 //    the whole table on every call, so unbounded growth is a perf regression
 //    on long-lived hubs).
-// 2. deleteFromDB must clear a node's grades (mimo LOW).
+// 2. deleteFromDB must clear a node's grades.
 // 3. Multi-node same-hour grade dedup — ROW_NUMBER must pick the freshest
-//    verdict when two nodes grade the same proxy in the same hour (mimo LOW).
+//    verdict when two nodes grade the same proxy in the same hour.
 
 func TestPruneProxyGradesRetainsRecentDeletesOld(t *testing.T) {
 	s := newTestStore(t)

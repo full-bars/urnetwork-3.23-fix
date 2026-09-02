@@ -1318,8 +1318,7 @@ func TestSeqNumIncrementAcrossDataPackets(t *testing.T) {
 
 func TestSynAckWithTimestamp(t *testing.T) {
 	// Timestamp option (kind 8, len 10) layout: MSS(4) + TS(10) padded to 16
-	// option bytes -> header 36 bytes, data offset 9 words (mimo finding:
-	// no test covered enableTimestamp=true).
+	// option bytes -> header 36 bytes, data offset 9 words (no test covered enableTimestamp=true).
 	cs := &ConnectionState{
 		ipVersion:             4,
 		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
@@ -1372,7 +1371,6 @@ func TestSynAckWithTimestamp(t *testing.T) {
 func TestTcpPacketWithTimestamp(t *testing.T) {
 	// tcpPacket must emit NOP-NOP-TSval-TSecr once timestamps are
 	// negotiated (RFC 7323 §3.2) — the data-path option layout
-	// (Opus MED-4 coverage gap).
 	cs := &ConnectionState{
 		ipVersion:             4,
 		sourceIp:              net.IPv4(10, 0, 0, 1).To4(),
@@ -1416,7 +1414,7 @@ func TestTcpPacketWithTimestamp(t *testing.T) {
 }
 
 func TestPureAckWithTimestamp(t *testing.T) {
-	// PureAck must include TSopt once negotiated (Opus MED-2); without it
+	// PureAck must include TSopt once negotiated; without it
 	// strict stacks can discard and Linux loses RTT samples.
 	cs := &ConnectionState{
 		ipVersion:             4,
@@ -1451,7 +1449,7 @@ func TestPureAckWithTimestamp(t *testing.T) {
 func TestDataPacketsTimestampSegmentation(t *testing.T) {
 	// With timestamps on an IPv6 flow, a full read (ReadBufferByteCount
 	// accounts for the TS option) must NOT split into a runt tail segment
-	// (Opus MED-1). 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
+	// . 1440 MTU - (40 IPv6 + 20 TCP + 12 TS) = 1368 payload.
 	cs := &ConnectionState{
 		ipVersion:       6,
 		sourceIp:        net.ParseIP("2001:db8::1"),
@@ -1473,14 +1471,14 @@ func TestDataPacketsTimestampSegmentation(t *testing.T) {
 }
 
 func TestDataPacketsPeerMssWireBudget(t *testing.T) {
-	// CodeRabbit finding: with timestamps on, a segment at the peer's MSS
+	// With timestamps on, a segment at the peer's MSS
 	// must leave room for OUR 12-byte TS option so the wire size stays
 	// within the peer's path-MTU budget (no fragmentation/drop).
 	// peerMss 1395, IPv4 (20+20 headers) + 12 TS -> data budget = min(
 	// 1440-52=1388, 1395-12=1383) = 1383 — the peer term binds, and the
 	// option-aware value (1383) differs from data-only (1395) and from
 	// unclamped (1388), so this test fails under EITHER a removed clamp or
-	// a re-revert to mimo's data-only form (Opus re-review MEDIUM: the
+	// a re-revert to the data-only form (the
 	// prior 1460 case was vacuous because the MTU term dominated).
 	cs := &ConnectionState{
 		ipVersion:       4,

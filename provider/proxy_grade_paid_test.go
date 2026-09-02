@@ -422,7 +422,7 @@ func tableProbePassPinnedUndecidable(address string) uint64 {
 
 // TestPaidGradeSettingsMatch pins the stale-settings guard used at apply
 // time: a probe result whose credentials no longer match the address's
-// current settings must be rejected (coderabbit review) — otherwise a
+// current settings must be rejected — otherwise a
 // concurrent reload that rotated credentials would persist a stale-creds
 // grade and defer the next probe by the whole 1-3h window.
 func TestPaidGradeSettingsMatch(t *testing.T) {

@@ -101,7 +101,7 @@ func writeDirectEnabled(enabled bool) error {
 	}
 	// TODO: add chownLikeStateOwner(dir, tmpPath) when provider gains access
 	// to the urnettools chown utilities — preserves ownership across
-	// sudo/cli → provider transitions (finding #7 from Opus review).
+	// sudo/cli → provider transitions.
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("renaming toggle file: %w", err)

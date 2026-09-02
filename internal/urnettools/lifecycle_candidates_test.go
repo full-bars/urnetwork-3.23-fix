@@ -284,7 +284,7 @@ func TestSessionSaveLegitimateSystemdTargetStillWorks(t *testing.T) {
 	}
 }
 
-// --- Sonnet review round: additional coverage (reconciled set) ---
+// --- additional coverage (reconciled set) ---
 
 // Multiple containers must EACH be selectable by their unique docker:user
 // value and refused (DiscoverDocker guarantees unique Users since
@@ -385,7 +385,7 @@ func TestLifecycleCmds_NarrowedNoteCountExcludesDocker(t *testing.T) {
 	}
 }
 
-// Documents today's UX on a containers-only box (Sonnet LOW finding #1):
+// Documents today's UX on a containers-only box :
 // no-target start says "no providers found on this box" WITHOUT a docker
 // hint. Pinning it so a future hint here is a deliberate decision.
 func TestLifecycleCmds_EmptySystemdBoxNoTargetNoDockerHint(t *testing.T) {

@@ -163,7 +163,7 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	sub := args[0]
 	rest := args[1:]
 	// -h/--help anywhere in the proxy args shows proxy help and returns
-	// without executing (gauntlet finding BUG-2 + Sonnet review: help can
+	// without executing (help can
 	// appear at any position, e.g. `proxy add <file> --help` or
 	// `proxy refresh --force -h` — the latter previously reached the
 	// interactive picker and blocked on EOF).

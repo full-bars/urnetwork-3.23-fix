@@ -492,8 +492,7 @@ func TestRuntimeGOARCH(t *testing.T) {
 
 // TestRestartAfterDropinNoUnit covers the empty-unit guard of
 // restartAfterDropin: it must reject BEFORE any systemctl invocation with
-// the same "no owning systemd unit" error unitCommand uses (coderabbit
-// minor on the coverage pass).
+// the same "no owning systemd unit" error unitCommand uses.
 func TestRestartAfterDropinNoUnit(t *testing.T) {
 	err := restartAfterDropin(Provider{})
 	if err == nil {

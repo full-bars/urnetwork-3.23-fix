@@ -38,7 +38,7 @@ func TestUpdateTargetFromArgs_NoTargetNoArgs(t *testing.T) {
 }
 
 // Host self-update pinning options (--tag/--digest/--url) must NEVER resolve
-// to a container, even a lone one (CodeRabbit PR #465 regression: `update
+// to a container, even a lone one (regression: `update
 // --tag vX` on a single-container box auto-selected the container and
 // silently dropped --tag). updateTargetFromArgs must return an empty target
 // so cmdDockerUpdate routes these to the host self-update.

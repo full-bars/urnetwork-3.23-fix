@@ -22,7 +22,7 @@ import (
 // caller that needs every sampled host resolvable can skip on a short count.
 func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConfig, pass uint64) int {
 	t.Helper()
-	// Mirror the probe's own derivations EXACTLY (Opus review TEST-1): the
+	// Mirror the probe's own derivations EXACTLY: the
 	// staged probe dials the base block at baseW (= MinSampleWidth when
 	// staging is active, else SampleWidth) and grows via disjoint SAME-WIDTH
 	// strides to probeWidth(). Seeding any other width seeds a DIFFERENT
@@ -291,7 +291,7 @@ func TestApplyPaidProbeBudget_Basic(t *testing.T) {
 
 func TestApplyPaidProbeBudget_TieBreakByAddr(t *testing.T) {
 	// Equal staleness (all never-graded) must be ordered by address, NOT by the
-	// randomized source-map iteration order (coderabbit review). Otherwise the
+	// randomized source-map iteration order . Otherwise the
 	// budget cut picks an arbitrary subset and a deferred proxy can starve
 	// across ticks.
 	targets := []gradeTarget{
@@ -337,7 +337,7 @@ func TestApplyPaidProbeBudget_DisabledWhenZero(t *testing.T) {
 // limiter is a process-global at test startup), so this is a wiring check,
 // not a throughput check. The behavior itself is covered indirectly by the
 // full provider suite (the dial limiter must not break probe timing).
-// TestGlobalProbeDialLimiter_DenialIsBoxSide pins the Opus CRITICAL-1 fix
+// TestGlobalProbeDialLimiter_DenialIsBoxSide pins the fix
 // end-to-end at the helper boundary: when the global bucket is drained, a
 // dial must report attempted=false (box-side), NOT a proxy failure. This is
 // the regression that previously produced a decidable F on zero dials.
@@ -405,7 +405,7 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 
 	// The staged probe dials the base block at baseW and grows via disjoint
 	// same-width strides to probeWidth(); mirror that derivation so the seeded
-	// dial set is exactly what the grader will touch (Opus review TEST-1).
+	// dial set is exactly what the grader will touch.
 	baseW := cfg.MinSampleWidth
 	if baseW <= 0 || baseW > cfg.SampleWidth {
 		baseW = cfg.SampleWidth
@@ -455,7 +455,7 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 }
 
 // TestDisjointGrowthHosts_NoBaseOverlap is a FORWARD guard on the disjoint
-// growth invariant (Sonnet MEDIUM B): the same-width stride-tiling in
+// growth invariant: the same-width stride-tiling in
 // disjointGrowthHosts must keep the growth block free of ANY base-block host
 // and internally distinct, across many (address, pass) combos. It does not
 // invoke the superseded different-width call (that path no longer exists), so
