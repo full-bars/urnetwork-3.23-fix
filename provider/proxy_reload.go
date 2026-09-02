@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -418,10 +419,16 @@ func (r *ProxyReloader) reload() {
 			defer r.wg.Done()
 			defer directCancel()
 			// Delete cancelMap AFTER UnregisterProxy so stale-unregister
-			// can't nuke a fresh direct's registration.
+			// can't nuke a fresh direct's registration. Only delete if the
+			// entry is still THIS goroutine's cancel func — a rapid
+			// disable→enable can start a new generation under the same key
+			// before this one unwinds, and an unconditional delete would
+			// drop the new (live) generation's cancel, wedging the toggle.
 			defer func() {
 				r.cancelMapMu.Lock()
-				delete(r.cancelMap, directProxyKey)
+				if cur, ok := r.cancelMap[directProxyKey]; ok && reflect.ValueOf(cur).Pointer() == reflect.ValueOf(directCancel).Pointer() {
+					delete(r.cancelMap, directProxyKey)
+				}
 				r.cancelMapMu.Unlock()
 			}()
 			defer connect.UnregisterProxy(0)

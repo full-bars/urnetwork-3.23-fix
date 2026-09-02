@@ -1223,6 +1223,11 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		return self.sendPacket(source, provideMode, parsedPacket, timeout)
 	case SecurityPolicyResultDrop:
 		if self.LocalSecurityBypass() {
+			// nil guard — localUserNat can be nil in headless/minimal-relay
+			// configs (same guard as the single-client counterpart).
+			if self.localUserNat == nil {
+				return false
+			}
 			return self.localUserNat.SendPacket(source, provideMode, packet, timeout)
 		} else {
 			return false
@@ -1831,7 +1836,9 @@ func (self *RemoteUserNatMultiClient) Close() {
 		}
 	}()
 
-	self.localUserNat.Close()
+	if self.localUserNat != nil {
+		self.localUserNat.Close()
+	}
 	self.localUserNatUnsub()
 }
 
