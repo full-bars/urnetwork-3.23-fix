@@ -3646,8 +3646,10 @@ func (self *pathTable) evictOldestBatch() {
 		}
 		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
 
-		// If this entry is younger than minEvictAge and we're below the
-		// hard cap, stop — allow the table to grow rather than reroute.
+		// Pressure-release valve: if this entry is younger than minEvictAge
+		// (60s) and we're below the hard cap, stop evicting. This intentionally
+		// leaves the table slightly over the 90% soft target rather than reroute
+		// live flows. The next reconciliation cycle will re-check.
 		if time.Since(pairs[i].lastUsed) < minEvictAge && total-evicted < pathTableMaxEntries {
 			break
 		}

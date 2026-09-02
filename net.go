@@ -184,6 +184,9 @@ func pruneDNSCacheLocked(now time.Time) {
 
 	// Phase 2: collect (key, expiry) pairs, partial-sort to find
 	// nearest-to-expiry, then delete — O(n) total instead of O(n²).
+	// NOTE: toEvict is computed from the post-Phase-1 map size. The pairs
+	// snapshot below is a copy; deletions during Phase 2 iteration affect the
+	// map but not the slice, so toEvict remains correct.
 	toEvict := len(dnsCache.m) - target
 	type kv struct {
 		key    string
