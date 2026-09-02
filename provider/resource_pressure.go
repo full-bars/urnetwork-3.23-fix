@@ -593,6 +593,10 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		if !resolveSelfHealEnabled(selfHealEnabled) {
 			smoothed = 0
 			setPressure(0)
+			// Reset the connection memory budget to full so connections
+			// opened after self-healing is disabled don't keep the reduced
+			// buffers from an earlier pressure episode.
+			applyPressureMemoryBudget(0)
 			continue
 		}
 		sample := collectPressureSample()
