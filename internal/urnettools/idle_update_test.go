@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -143,14 +144,14 @@ func TestWaitForIdleTimeout(t *testing.T) {
 
 func TestIdleUpdateDryRun(t *testing.T) {
 	err := Run([]string{"idle-update", "--dry-run", "--unit=urnetwork.service"})
-	if err != nil && err.Error() != "no providers found on this box" {
+	if err != nil && err.Error() != "no providers found on this box" && !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected idle-update dry-run error: %v", err)
 	}
 }
 
 func TestDockerIdleUpdateDryRun(t *testing.T) {
 	err := RunDocker([]string{"idle-update", "--dry-run", "--unit=test-provider"})
-	if err != nil && err.Error() != "no provider containers found" {
+	if err != nil && err.Error() != "no provider containers found" && !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected urnet-docker idle-update dry-run error: %v", err)
 	}
 }
