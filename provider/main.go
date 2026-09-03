@@ -950,7 +950,6 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
-    --file=<file>                    Alias for --proxy_file.
     --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
     --url=<url>                      Alias for --proxy_url.
     --URL=<URL>                      Alias for --proxy_url.
@@ -964,8 +963,7 @@ Options:
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
                                      With no pattern, 'proxy exclude' lists active patterns.
-    --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
-                                     proxy (any common format) or an http(s) URL to fetch as a proxy source.
+    --file=<file>                    A path to a proxy file (alias for --proxy_file, or input for 'proxy paste').
     <state>                          Direct IP providing state: on | off | status. If omitted, reports current state.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.

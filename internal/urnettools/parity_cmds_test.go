@@ -48,7 +48,10 @@ func TestProxyAddFlagAndUrlParsing(t *testing.T) {
 			return true
 		}
 		s := err.Error()
-		return strings.Contains(s, "providers found") || strings.Contains(s, "no providers") || strings.Contains(s, "[dry-run]")
+		return strings.Contains(s, "providers found") ||
+			strings.Contains(s, "no providers") ||
+			strings.Contains(s, "matches no provider") ||
+			strings.Contains(s, "[dry-run]")
 	}
 
 	// 1. Straight path
