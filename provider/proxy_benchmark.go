@@ -4,8 +4,8 @@ import (
 	"context"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -25,15 +25,20 @@ func resolveBenchmarkEndpoint() string {
 	if cfg, ok, err := readNetworkConfig(); err == nil && ok && cfg.ConnectUrl != "" {
 		connectUrl = cfg.ConnectUrl
 	}
-	cleaned := strings.TrimPrefix(strings.TrimPrefix(connectUrl, "wss://"), "ws://")
-	if cleaned == "" {
+	// Parse rather than manually trim the scheme (matches apiProbeHostPort in
+	// network.go): validateConnectUrl only requires a ws/wss scheme and a
+	// host, so a saved connect_url may carry a path -- manual scheme
+	// trimming would leave that path in the "host:port" result and break
+	// net.SplitHostPort / produce a garbage port.
+	u, err := url.Parse(connectUrl)
+	if err != nil || u.Hostname() == "" {
 		return "connect.bringyour.com:443"
 	}
-	if _, _, err := net.SplitHostPort(cleaned); err != nil {
-		// No port in URL, just a hostname — assume wss default port.
-		cleaned = cleaned + ":443"
+	port := u.Port()
+	if port == "" {
+		port = "443"
 	}
-	return cleaned
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 // benchmarkEndpoint is resolved lazily (not at package init) so the chosen

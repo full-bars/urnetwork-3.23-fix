@@ -462,17 +462,6 @@ func proxyPaste(opts docopt.Opts) {
 		shmLogFatal(81, "could not create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile.Name())
-	for _, line := range allNormalized {
-		if _, err := fmt.Fprintln(tmpFile, line); err != nil {
-			tmpFile.Close()
-			os.Remove(tmpFile.Name())
-			shmLogFatal(81, "could not write temp file: %v", err)
-		}
-	}
-	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpFile.Name())
-		shmLogFatal(81, "could not finalize temp file: %v", err)
-	}
 
 	// os.Exit and shmLogFatal bypass deferred calls, so the temp file holding
 	// plaintext proxy credentials would be left on disk on any error path
@@ -490,8 +479,26 @@ func proxyPaste(opts docopt.Opts) {
 	// default disposition and re-raise the signal so the process exits with the
 	// conventional status. signal.Notify suppresses the default terminate, so we must
 	// signal.Reset(sig) first or the re-raised signal would just be caught again.
+	//
+	// Registered immediately after the (empty) file is created and BEFORE
+	// any plaintext credential line is written -- registering after the
+	// write loop left a real window where a SIGINT/SIGTERM arriving mid-write
+	// (or between the write loop and this point) would leave plaintext
+	// credentials on disk with no handler armed to clean them up.
 	cleanupSig := setupPasteSignalHandler(removeTempFile)
 	defer cleanupSig()
+
+	for _, line := range allNormalized {
+		if _, err := fmt.Fprintln(tmpFile, line); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			shmLogFatal(81, "could not write temp file: %v", err)
+		}
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpFile.Name())
+		shmLogFatal(81, "could not finalize temp file: %v", err)
+	}
 
 	fmt.Printf("\nadding %d proxies (%d dupes skipped, %d rejected)\n",
 		len(allNormalized), totalSkipped, totalRejected)

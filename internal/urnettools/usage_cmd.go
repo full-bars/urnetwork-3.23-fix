@@ -63,16 +63,15 @@ func cmdUsage(args []string) error {
 		switch a {
 		case "graphs":
 			// `usage graphs` = all three views; never treat a following
-			// token (e.g. --unit) as a view.
-			return cmdUsageGraph(args[:i], "")
+			// token (e.g. --unit) as a view. Drop only the subcommand
+			// token itself -- flags before AND after it (e.g.
+			// `usage graphs --unit X`) must still reach target parsing.
+			return cmdUsageGraph(usageGraphsArgs(args, i), "")
 		case "graph":
 			// `usage graph <view>`: consume exactly one non-flag token as
 			// the view; flags before/after still route to target parsing.
-			var view string
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				view = args[i+1]
-			}
-			return cmdUsageGraph(args[:i], view)
+			targetArgs, view := usageGraphArgs(args, i)
+			return cmdUsageGraph(targetArgs, view)
 		case "-h", "--help":
 			return fmt.Errorf("usage: show aggregate usage (billable vs control)\n\n  urnet-tools usage\n  urnet-tools usage graphs\n  urnet-tools usage graph day|hour|month")
 		}
@@ -80,6 +79,27 @@ func cmdUsage(args []string) error {
 
 	// No subcommand found — treat all args as target flags and show cards.
 	return cmdUsageCards(args)
+}
+
+// usageGraphsArgs computes the target-flag args for `usage graphs`: args
+// with the subcommand token at index i removed. Flags before AND after the
+// subcommand token (e.g. `usage graphs --unit X`) are preserved -- dropping
+// everything from i onward (args[:i]) would silently discard trailing
+// flags.
+func usageGraphsArgs(args []string, i int) []string {
+	return append(append([]string{}, args[:i]...), args[i+1:]...)
+}
+
+// usageGraphArgs computes the target-flag args and view for
+// `usage graph [<view>]`: args with the subcommand token at index i removed,
+// consuming the following token as the view only when it's present and not
+// itself a flag. Flags before AND after the subcommand token (and the
+// consumed view, if any) are preserved.
+func usageGraphArgs(args []string, i int) (targetArgs []string, view string) {
+	if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+		return append(append([]string{}, args[:i]...), args[i+2:]...), args[i+1]
+	}
+	return append(append([]string{}, args[:i]...), args[i+1:]...), ""
 }
 
 // cmdUsageCards renders the summary cards for a targeted provider.

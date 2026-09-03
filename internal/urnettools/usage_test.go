@@ -175,6 +175,101 @@ func TestDeltaBucketsRestartWithinBucket(t *testing.T) {
 	}
 }
 
+// TestDeltaBucketsTwoRestartsWithinSameBucket is the regression for the
+// CodeRabbit finding: bucketInfo tracked only ONE (restartCum,
+// maxCumPostRestart) pair. A SECOND same-bucket restart overwrote that pair,
+// silently discarding the growth of the first post-restart segment (between
+// the two restarts). Realistic on repeated proxy trim/reload or reaper
+// eviction landing within one hour bucket.
+func TestDeltaBucketsTwoRestartsWithinSameBucket(t *testing.T) {
+	now := time.Now()
+	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	snaps := []usageSnapshot{
+		{TS: day0, RX: 1000, TX: 2000, BillableRX: 900, BillableTX: 1800},                   // cum=3000 (seg1)
+		{TS: day0.Add(time.Hour), RX: 200, TX: 300, BillableRX: 180, BillableTX: 270},       // cum=500 (restart 1)
+		{TS: day0.Add(2 * time.Hour), RX: 1200, TX: 800, BillableRX: 1100, BillableTX: 700}, // cum=2000 (seg2 peak)
+		{TS: day0.Add(3 * time.Hour), RX: 100, TX: 150, BillableRX: 90, BillableTX: 130},    // cum=250 (restart 2)
+		{TS: day0.Add(4 * time.Hour), RX: 900, TX: 600, BillableRX: 800, BillableTX: 550},   // cum=1500 (seg3 peak)
+		{TS: day1, RX: 2500, TX: 1500, BillableRX: 2400, BillableTX: 1400},                  // cum=4000
+	}
+	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}, 10, now)
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	// day0 = seg1(3000-0) + seg2(2000-500=1500) + seg3(1500-250=1250) = 5750.
+	// Before the fix, seg2's 1500 was silently discarded by the second
+	// restart overwriting the tracked pair: total = 3000 + (1500-250) = 4250.
+	if buckets[0].total != 5750 {
+		t.Fatalf("day0 total = %d, want 5750 (bytes lost to second same-bucket restart, want %d got dropped)", buckets[0].total, 5750-buckets[0].total)
+	}
+	// day0 billable = seg1(2700-0) + seg2(1800-450=1350) + seg3(1350-220=1130) = 5180.
+	if buckets[0].billable != 5180 {
+		t.Fatalf("day0 billable = %d, want 5180", buckets[0].billable)
+	}
+	// day1 = 4000 - 1500 (day0's final post-restart max) = 2500.
+	if buckets[1].total != 2500 {
+		t.Fatalf("day1 total = %d, want 2500", buckets[1].total)
+	}
+	if buckets[1].billable != 2450 {
+		t.Fatalf("day1 billable = %d, want 2450", buckets[1].billable)
+	}
+}
+
+// TestDeltaBucketsNowMustBeUTC is the regression for the CodeRabbit finding
+// on renderDayGraph/renderMonthGraph: the day/month truncate closures build
+// a UTC time.Date from t.Date() -- which returns t's LOCAL calendar fields,
+// not UTC ones. Passing a non-UTC `now` (renderDayGraph/renderMonthGraph did
+// this; renderHourGraph already called .UTC() correctly) can put `now` on a
+// different calendar day than its UTC equivalent, so the "drop the current,
+// incomplete trailing bucket" check compares against the wrong day and
+// either wrongly drops a complete bucket or wrongly keeps an incomplete one.
+//
+// This pins the underlying mechanism: the same instant, truncated with a
+// UTC `now` vs a non-UTC `now`, must NOT produce the same trailing-bucket
+// decision when the instant straddles a UTC day boundary in a shifted zone.
+func TestDeltaBucketsNowMustBeUTC(t *testing.T) {
+	// Sep 1 00:30 UTC: in a fixed UTC-2 zone the same instant's LOCAL
+	// calendar date is Aug 31 -- one day behind the UTC date.
+	nowUTC := time.Date(2026, 9, 1, 0, 30, 0, 0, time.UTC)
+	nowShifted := nowUTC.In(time.FixedZone("UTC-2", -2*60*60))
+	if nowShifted.Year() != 2026 || nowShifted.Month() != 8 || nowShifted.Day() != 31 {
+		t.Fatalf("test setup: expected shifted local date Aug 31, got %v", nowShifted)
+	}
+
+	truncateDay := func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+
+	snaps := []usageSnapshot{
+		{TS: time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC), RX: 1000, TX: 0},
+		// The "current, incomplete" bucket as of nowUTC: Sep 1 00:00 UTC.
+		{TS: time.Date(2026, 9, 1, 0, 15, 0, 0, time.UTC), RX: 2000, TX: 0},
+	}
+
+	withUTC := deltaBuckets(snaps, truncateDay, 30, nowUTC)
+	withShifted := deltaBuckets(snaps, truncateDay, 30, nowShifted)
+
+	// Correct (UTC now): the Sep 1 bucket IS the current/incomplete period
+	// (truncateDay(nowUTC) == Sep 1 00:00 UTC), so it's dropped -- only the
+	// Aug 30 bucket remains.
+	if len(withUTC) != 1 {
+		t.Fatalf("deltaBuckets with UTC now: got %d buckets, want 1 (current incomplete bucket dropped)", len(withUTC))
+	}
+
+	// Buggy (non-UTC now, matching the pre-fix call sites): truncateDay
+	// reads nowShifted's LOCAL fields (Aug 31), producing a truncated `now`
+	// of Aug 31 00:00 UTC -- which matches NEITHER bucket, so the Sep 1
+	// bucket is wrongly kept as if it were a complete period.
+	if len(withShifted) != 2 {
+		t.Fatalf("deltaBuckets with non-UTC now: got %d buckets, want 2 (demonstrates the bug this fix prevents -- current bucket wrongly kept)", len(withShifted))
+	}
+}
+
 // TestBillableExceedsTotal verifies the M1 signal: when the independent
 // billable (ip.go) and total (net.go) counters disagree, the mismatch is
 // reported rather than silently floored by Control().
@@ -265,5 +360,78 @@ func TestDeltaBucketsRestartAcrossBuckets(t *testing.T) {
 	// Total: 150+1900 = 2050.
 	if buckets[1].total != 2050 {
 		t.Fatalf("day1 total = %d, want 2050", buckets[1].total)
+	}
+}
+
+// TestUsageGraphsArgsPreservesTrailingFlags is the regression for the
+// CodeRabbit finding on `cmdUsage`: `usage graphs --unit X` must reach
+// target parsing with --unit X intact. The bug computed target args as
+// args[:i] (everything before the subcommand token), which for the
+// documented example `usage graphs --unit mynetwork-provider` (subcommand
+// at index 0) produced an EMPTY target-args slice, silently discarding the
+// flag.
+func TestUsageGraphsArgsPreservesTrailingFlags(t *testing.T) {
+	args := []string{"graphs", "--unit", "mynetwork-provider"}
+	got := usageGraphsArgs(args, 0)
+	want := []string{"--unit", "mynetwork-provider"}
+	if len(got) != len(want) {
+		t.Fatalf("usageGraphsArgs(%v, 0) = %v, want %v", args, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("usageGraphsArgs(%v, 0) = %v, want %v", args, got, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsPreservesTrailingFlags mirrors the above for
+// `usage graph <view> --flags`, the other documented example
+// (`usage graph month --network tacogonzalez3000`).
+func TestUsageGraphArgsPreservesTrailingFlags(t *testing.T) {
+	args := []string{"graph", "month", "--network", "tacogonzalez3000"}
+	targetArgs, view := usageGraphArgs(args, 0)
+	if view != "month" {
+		t.Fatalf("usageGraphArgs(%v, 0) view = %q, want %q", args, view, "month")
+	}
+	want := []string{"--network", "tacogonzalez3000"}
+	if len(targetArgs) != len(want) {
+		t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want %v", args, targetArgs, want)
+	}
+	for i := range want {
+		if targetArgs[i] != want[i] {
+			t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want %v", args, targetArgs, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsFlagBeforeSubcommand covers `usage --unit X graph day`:
+// the subcommand token is not at index 0, and no view-like flag should be
+// mistaken for the view.
+func TestUsageGraphArgsFlagBeforeSubcommand(t *testing.T) {
+	args := []string{"--unit", "X", "graph", "day"}
+	targetArgs, view := usageGraphArgs(args, 2)
+	if view != "day" {
+		t.Fatalf("usageGraphArgs(%v, 2) view = %q, want %q", args, view, "day")
+	}
+	want := []string{"--unit", "X"}
+	if len(targetArgs) != len(want) {
+		t.Fatalf("usageGraphArgs(%v, 2) targetArgs = %v, want %v", args, targetArgs, want)
+	}
+	for i := range want {
+		if targetArgs[i] != want[i] {
+			t.Fatalf("usageGraphArgs(%v, 2) targetArgs = %v, want %v", args, targetArgs, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsNoView covers bare `usage graph` (no view token at all).
+func TestUsageGraphArgsNoView(t *testing.T) {
+	args := []string{"graph"}
+	targetArgs, view := usageGraphArgs(args, 0)
+	if view != "" {
+		t.Fatalf("usageGraphArgs(%v, 0) view = %q, want empty", args, view)
+	}
+	if len(targetArgs) != 0 {
+		t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want empty", args, targetArgs)
 	}
 }

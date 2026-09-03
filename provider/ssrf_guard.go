@@ -77,18 +77,47 @@ func ssrfVerifyURLHost(rawURL string) error {
 
 // ssrfDialContext wraps a plain TCP dialer so any dial to a blocked
 // (non-global) destination is refused immediately, before bytes are sent.
+// http.Transport passes the still-unresolved hostname here for the common
+// case (a hostname source URL) — resolution happens inside net.Dialer, not
+// before this call — so we must resolve and validate the destination
+// ourselves rather than only guarding the case where addr is already a
+// literal IP.
 func ssrfDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
-	// addr here is already an IP (the resolver ran); guard it directly.
-	ip := net.ParseIP(host)
-	if ip != nil && isBlockedSourceIP(ip) {
-		return nil, fmt.Errorf("refusing dial to non-global address %s (SSRF guard)", addr)
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedSourceIP(ip) {
+			return nil, fmt.Errorf("refusing dial to non-global address %s (SSRF guard)", addr)
+		}
+		d := net.Dialer{}
+		return d.DialContext(ctx, network, addr)
+	}
+
+	resolver := net.Resolver{}
+	ipAddrs, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
 	}
 	d := net.Dialer{}
-	return d.DialContext(ctx, network, addr)
+	var lastErr error
+	for _, ipAddr := range ipAddrs {
+		if isBlockedSourceIP(ipAddr.IP) {
+			lastErr = fmt.Errorf("refusing dial to non-global address %s (SSRF guard, host %s)", ipAddr.IP, host)
+			continue
+		}
+		conn, dialErr := d.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no addresses found for host %s", host)
+	}
+	return nil, lastErr
 }
 
 // ssrfCheckRedirect rejects any HTTP redirect whose target resolves to a

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -74,5 +75,26 @@ func TestSSRF_AllowLoopbackForTesting(t *testing.T) {
 	}
 	if err := ssrfVerifyURLHost("http://169.254.169.254/latest/meta-data"); err == nil {
 		t.Fatal("expected link-local to be rejected even with loopback allowed")
+	}
+}
+
+// TestSSRFDialContext_BlocksHostnameResolvingToPrivate is a regression test:
+// ssrfDialContext previously only validated addr when it was already an IP
+// literal (net.ParseIP(host) != nil). For the common case — a hostname
+// source URL — that check was always skipped, and net.Dialer resolved and
+// dialed the hostname with zero SSRF validation. "localhost" resolves to a
+// loopback address, so with ssrfAllowLoopback off the dial must be refused
+// before any connection is attempted.
+func TestSSRFDialContext_BlocksHostnameResolvingToPrivate(t *testing.T) {
+	ssrfAllowLoopback.Store(false)
+	defer ssrfAllowLoopback.Store(true)
+
+	conn, err := ssrfDialContext(context.Background(), "tcp", "localhost:80")
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected dial to hostname resolving to loopback to be refused, got nil error")
+	}
+	if !strings.Contains(err.Error(), "SSRF guard") {
+		t.Errorf("expected SSRF guard error, got: %v", err)
 	}
 }

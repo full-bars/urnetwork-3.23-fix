@@ -2246,24 +2246,11 @@ func (self *SendSequence) Run() {
 	defer func() {
 		self.cancel()
 
-		// close contract
-		for _, sendContract := range self.openSendContracts {
-			self.client.ContractManager().CloseContract(
-				sendContract.contractId,
-				sendContract.ackedByteCount,
-				sendContract.unackedByteCount,
-			)
-			// flush queued contracts for already sent contracts
-			// contractKey = ContractKey{
-			// 	Destination:       sendContract.path.DestinationMask(),
-			// 	IntermediaryIds:   self.intermediaryIds,
-			// 	CompanionContract: self.companionContract,
-			// 	ForceStream:       self.forceStream,
-			// }
-			// self.client.ContractManager().FlushContractQueue(contractKey, true)
-		}
-
-		// drain the buffer
+		// drain the buffer first: unack() below corrects openSendContracts'
+		// unackedByteCount for undelivered items, and CloseContract must see
+		// that correction — closing contracts before the drain would read
+		// stale counts and lose the H1 billing fix (unack() runs too late to
+		// matter).
 		for _, item := range self.resendQueue.Clear() {
 			if item.retainAfterAckTimeout {
 				// R-H1: retained item dropped on sequence teardown — log
@@ -2295,6 +2282,24 @@ func (self *SendSequence) Run() {
 			item.messagePoolReturn()
 		}
 		self.retainedByteCount = 0
+
+		// close contract — after the drain above so unack()'s correction to
+		// unackedByteCount is reflected in what CloseContract reports.
+		for _, sendContract := range self.openSendContracts {
+			self.client.ContractManager().CloseContract(
+				sendContract.contractId,
+				sendContract.ackedByteCount,
+				sendContract.unackedByteCount,
+			)
+			// flush queued contracts for already sent contracts
+			// contractKey = ContractKey{
+			// 	Destination:       sendContract.path.DestinationMask(),
+			// 	IntermediaryIds:   self.intermediaryIds,
+			// 	CompanionContract: self.companionContract,
+			// 	ForceStream:       self.forceStream,
+			// }
+			// self.client.ContractManager().FlushContractQueue(contractKey, true)
+		}
 
 		// flush queued contracts (used ids were closed above). Keyed by
 		// (EncryptionRole, EncryptionCompanion) so this exit-flush doesn't discard

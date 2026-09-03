@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -328,6 +329,14 @@ var (
 	// during what should be a graceful shutdown.
 	retentionEventMu     sync.Mutex
 	retentionEventClosed bool
+
+	// retentionEventDropped counts events dropped because the buffer was
+	// full. Incremented with a non-blocking atomic op on the hot path;
+	// reported from the writer goroutine (off the hot path) instead of via
+	// a synchronous stderr write at drop time, which could block on a slow
+	// pipe/log collector and stall the transfer sequence that called
+	// appendRetentionEvent.
+	retentionEventDropped atomic.Uint64
 )
 
 // startRetentionEventWriter launches the single goroutine that performs the
@@ -338,8 +347,13 @@ func startRetentionEventWriter() {
 		retentionEventDone = make(chan struct{})
 		go func() {
 			defer close(retentionEventDone)
+			var lastReportedDropped uint64
 			for event := range retentionEventCh {
 				writeRetentionEventLine(event)
+				if dropped := retentionEventDropped.Load(); dropped != lastReportedDropped {
+					fmt.Fprintf(os.Stderr, "[provider] warn: retention event buffer was full, dropped %d event(s)\n", dropped-lastReportedDropped)
+					lastReportedDropped = dropped
+				}
 			}
 		}()
 	})
@@ -362,7 +376,12 @@ func appendRetentionEvent(event string) {
 	select {
 	case retentionEventCh <- event:
 	default:
-		fmt.Fprintf(os.Stderr, "[provider] warn: retention event buffer full, dropping event: %s\n", event)
+		// Non-blocking: never write to stderr synchronously here. This runs
+		// on the transfer sequence hot path (RetentionEventCallback), and a
+		// blocked stderr write (slow pipe/log collector) would stall
+		// transfer sequences under sustained retention-event backpressure.
+		// The writer goroutine reports the drop count once it next runs.
+		retentionEventDropped.Add(1)
 	}
 }
 

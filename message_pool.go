@@ -118,14 +118,22 @@ const debugTags = false
 const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
 
-// MessagePoolFlagNoReturn is set when a MessagePoolShareReadOnly increment is
-// REFUSED (refcount at uint16 max). It marks the shared buffer as one the
-// caller must NOT pass to MessagePoolReturn: without it the refused share's
-// eventual Return would over-decrement a legitimate owner's reference
-// (L4 — previously only a log warning, undetectable by the caller).
-// MessagePoolReturn treats the flag as a signal to skip the decrement and
-// clear it, so a misbehaving caller degrades to a no-op return, not corruption.
-const MessagePoolFlagNoReturn = uint8(0x02)
+// MessagePoolRefusedShareCountMask/Shift address bits 1-7 of the flags byte,
+// holding a saturating count (0-127) of MessagePoolShareReadOnly calls
+// REFUSED on this buffer (refcount at uint16 max). Each refused share marks
+// the buffer as one the caller must NOT pass to MessagePoolReturn without
+// forgiveness: without tracking it, the refused share's eventual Return
+// would over-decrement a legitimate owner's reference (L4 — previously only
+// a log warning, undetectable by the caller). MessagePoolReturn treats a
+// nonzero count as a signal to skip the decrement and consume ONE unit of
+// forgiveness, so each refusal degrades exactly one future Return to a
+// no-op — not just the first. A single bit (the original fix) could only
+// forgive one refusal even when several stacked up on the same buffer,
+// letting later no-op Returns fall through to a real decrement and
+// over-release a legitimate owner's reference.
+const MessagePoolRefusedShareCountShift = 1
+const MessagePoolRefusedShareCountMask = uint8(0xFE)
+const MessagePoolMaxRefusedShareCount = uint8(0x7F) // 127, saturating cap
 
 var InitialMessagePoolByteCount = mib(2)
 
@@ -596,15 +604,20 @@ func MessagePoolReturn(message []byte) bool {
 				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
-				if poolMessage[pool.size+9]&MessagePoolFlagNoReturn != 0 {
-					// L4: this buffer was flagged by a refused
-					// MessagePoolShareReadOnly (refcount overflow). Its
-					// refcount does NOT include the failed share, so
-					// consuming a Return for it would over-decrement a
-					// legitimate owner's reference. Degrade to a no-op
-					// return: clear the flag (one flagged buffer, one
-					// forgiveness) and skip the decrement entirely.
-					poolMessage[pool.size+9] &^= MessagePoolFlagNoReturn
+				refusedCount := (poolMessage[pool.size+9] & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+				if refusedCount != 0 {
+					// L4: this buffer has one or more refused
+					// MessagePoolShareReadOnly calls outstanding (refcount
+					// overflow). Its refcount does NOT include those failed
+					// shares, so consuming a Return for one would
+					// over-decrement a legitimate owner's reference.
+					// Degrade to a no-op return: consume one unit of
+					// forgiveness and skip the decrement entirely. Only
+					// once every refused share has been forgiven does a
+					// Return resume decrementing for real.
+					refusedCount--
+					poolMessage[pool.size+9] = (poolMessage[pool.size+9] &^ MessagePoolRefusedShareCountMask) |
+						(refusedCount << MessagePoolRefusedShareCountShift)
 					DefaultLogger().Warningf("[mp]return message[%d] flagged no-return (refused share); skipping decrement", id)
 				} else if count == 0 {
 					if debugTags {
@@ -662,13 +675,23 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 					// overflow wrapping to 0 (which reads as "not taken"
 					// everywhere else → cross-flow data corruption).
 					//
-					// L4 fix: set MessagePoolFlagNoReturn so the (contract-
+					// L4 fix: bump the refused-share count so the (contract-
 					// violating) caller that returns this buffer anyway is
 					// caught by MessagePoolReturn, which skips the decrement
-					// for flagged buffers — a no-op return, not an
-					// over-decrement of a legitimate owner's reference.
+					// for buffers with outstanding refusals — a no-op
+					// return, not an over-decrement of a legitimate owner's
+					// reference. A saturating counter (not a single bit) so
+					// stacked refusals each get their own forgiveness.
+					flags := poolMessage[pool.size+9]
+					refusedCount := (flags & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+					if refusedCount < MessagePoolMaxRefusedShareCount {
+						refusedCount++
+					} else {
+						DefaultLogger().Warningf("[mp]share message[%d] refused-share count saturated at %d", id, MessagePoolMaxRefusedShareCount)
+					}
+					poolMessage[pool.size+9] = (flags &^ MessagePoolRefusedShareCountMask) |
+						(refusedCount << MessagePoolRefusedShareCountShift)
 					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (flagged no-return)", id)
-					poolMessage[pool.size+9] |= MessagePoolFlagNoReturn
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared
