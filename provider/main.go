@@ -62,9 +62,9 @@ func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, 
 
 	var jitter time.Duration
 	if slotDuration > 0 {
-		slotMs := int(slotDuration.Milliseconds())
-		if slotMs > 0 {
-			jMs := mathrand.Intn(slotMs + 1)
+		halfSlotMs := int(slotDuration.Milliseconds()) / 2
+		if halfSlotMs > 0 {
+			jMs := mathrand.Intn(halfSlotMs + 1)
 			if mathrand.Intn(2) == 0 {
 				jMs = -jMs
 			}

@@ -98,7 +98,12 @@ func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTie
 	if !ok || entry.ByClientJWT == "" || entry.ClientID == "" {
 		return WarmthCold
 	}
-	if entry.NetworkID != "" && currentNetworkID != "" && entry.NetworkID != currentNetworkID {
+	// Mirror provideAuth: an unresolvable current network_id means the stored
+	// client JWT will not be reused, so the proxy must be paced as cold.
+	if currentNetworkID == "" {
+		return WarmthCold
+	}
+	if entry.NetworkID != "" && entry.NetworkID != currentNetworkID {
 		return WarmthCold
 	}
 	if err := validateJWTExpiry(entry.ByClientJWT); err == nil && jwtContainsClientId(entry.ByClientJWT) {
@@ -119,6 +124,7 @@ type ProxySchedule struct {
 }
 
 // prioritizeAndScheduleProxies sorts proxies by provenance and warmth, then computes cumulative launch delays.
+// Note: the proxies slice is reordered in place.
 func prioritizeAndScheduleProxies(
 	proxies []*connect.ProxySettings,
 	proxySourceOf map[string]string,

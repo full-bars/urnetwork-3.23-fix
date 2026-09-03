@@ -222,6 +222,13 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 		_ = os.Unsetenv("URNETWORK_HOT_RESTART")
 	})
 
+	t.Run("empty currentNetworkID returns WarmthCold", func(t *testing.T) {
+		got := evaluateProxyWarmth("proxy-valid", "")
+		if got != WarmthCold {
+			t.Errorf("evaluateProxyWarmth() with empty currentNetworkID = %v, want WarmthCold", got)
+		}
+	})
+
 	t.Run("nil globalClientJWTStore returns WarmthCold", func(t *testing.T) {
 		orig := globalClientJWTStore
 		globalClientJWTStore = nil
@@ -235,6 +242,7 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 }
 
 func TestPrioritizeAndScheduleProxies(t *testing.T) {
+	t.Setenv("URNETWORK_HOT_RESTART", "1")
 	home := t.TempDir()
 	storePath := filepath.Join(home, ".client_jwts.json")
 	restoreStore := withGlobalStore(t, storePath)
