@@ -87,11 +87,22 @@ func cmdDirectToggle(args []string, force, dryRun bool) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(togglePath), 0700); err != nil {
+	toggleDir := filepath.Dir(togglePath)
+	if err := os.MkdirAll(toggleDir, 0700); err != nil {
 		return fmt.Errorf("could not create dir for direct toggle: %v", err)
+	}
+	// Match every other state-write in this package (session_cmds.go,
+	// self_heal.go): a root-run `urnet-tools direct` must not leave a
+	// root-owned dir/file the provider's unprivileged user can't read, or
+	// the toggle silently falls back to default behavior for that user.
+	if err := chownLikeStateOwner(p.StateDir, toggleDir); err != nil {
+		return fmt.Errorf("could not set owner on direct toggle dir: %v", err)
 	}
 	if err := os.WriteFile(togglePath, []byte(val), 0600); err != nil {
 		return fmt.Errorf("could not write direct toggle for %s: %v", providerLabel(p), err)
+	}
+	if err := chownLikeStateOwner(p.StateDir, togglePath); err != nil {
+		return fmt.Errorf("could not set owner on direct toggle file: %v", err)
 	}
 
 	if p.Running {
