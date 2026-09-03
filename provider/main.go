@@ -53,6 +53,38 @@ var provideStartTime time.Time
 // for this before launching, so file proxies get an uncontested ramp.
 var proxyWarmupDone atomic.Bool
 
+// backoffPacerWithDelay calculates the effective start delay using a cumulative base delay
+// and slotDuration for jitter calculation.
+func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, proxyCtx context.Context) bool {
+	if baseDelay <= 0 && slotDuration <= 0 {
+		return true
+	}
+
+	var jitter time.Duration
+	if slotDuration > 0 {
+		slotMs := int(slotDuration.Milliseconds())
+		if slotMs > 0 {
+			jMs := mathrand.Intn(slotMs + 1)
+			if mathrand.Intn(2) == 0 {
+				jMs = -jMs
+			}
+			jitter = time.Duration(jMs) * time.Millisecond
+		}
+	}
+
+	wait := baseDelay + jitter
+	if wait < 0 {
+		wait = 0
+	}
+
+	select {
+	case <-proxyCtx.Done():
+		return false
+	case <-time.After(wait):
+	}
+	return true
+}
+
 // backoffPacer calculates the effective start delay for the n-th proxy goroutine.
 // staggerMs is the base gap between consecutive proxy starts; ±50% random
 // jitter spreads dials within each slot. File proxies typically pass 0 for
@@ -62,20 +94,8 @@ func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context)
 	if staggerMs <= 0 {
 		return true
 	}
-
-	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
-	if mathrand.Intn(2) == 0 {             // coinflip — add or subtract
-		jitter = -jitter
-	}
-
-	wait := time.Duration(n)*time.Duration(staggerMs)*time.Millisecond + time.Duration(jitter)*time.Millisecond
-
-	select {
-	case <-proxyCtx.Done():
-		return false
-	case <-time.After(wait):
-	}
-	return true
+	baseDelay := time.Duration(n) * time.Duration(staggerMs) * time.Millisecond
+	return backoffPacerWithDelay(baseDelay, time.Duration(staggerMs)*time.Millisecond, proxyCtx)
 }
 
 // paceMonitor logs real-time warmup progress every 30s. It uses the health
@@ -3346,21 +3366,13 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
-	// Sort so file-sourced (or internal-config) proxies launch before
-	// URL-sourced ones. backoffPacer uses the index in this slice to
-	// determine initial delay, so file proxies get a head start of
-	// ~len(file_proxies) * staggerMs before URL proxies begin connecting.
-	sort.SliceStable(allProxySettings, func(i, j int) bool {
-		si := proxySourceOf[allProxySettings[i].Address]
-		sj := proxySourceOf[allProxySettings[j].Address]
-		if si == "url" && sj != "url" {
-			return false
-		}
-		if si != "url" && sj == "url" {
-			return true
-		}
-		return false
-	})
+	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
+	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
+	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
+	currentNetworkId := currentProviderNetworkID()
+	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
+	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
+		len(allProxySettings), warmCount, renewableCount, coldCount)
 
 	// Start the native [direct] connection as proxy[0] unless the operator
 	// has explicitly disabled it. Precedence (highest to lowest):
@@ -3449,27 +3461,24 @@ func provide(opts docopt.Opts) {
 			)
 		}
 
-		for i, proxySettings := range allProxySettings {
+		for _, sched := range proxySchedules {
+			proxySettings := sched.Settings
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
 			proxyCancelMap[proxySettings.Address] = proxyCancel
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
-			proxyIdx := i
 			isURLSourced := proxySourceOf[proxySettings.Address] == "url"
+			baseDelay := sched.Delay
+			staggerDuration := sched.Stagger
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
-				staggerMs := 150
-				if isURLSourced {
-					staggerMs = 500
-				}
-				now := time.Now()
-				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
+				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
 					return
 				}
 				// Log previously-dropped proxies on restart so the
@@ -3500,6 +3509,7 @@ func provide(opts docopt.Opts) {
 		spawnProxy:      provideWithProxy,
 		drainingProxies: make(map[string]context.CancelFunc),
 		directDone:      directStartupDone,
+		networkID:       currentNetworkId,
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
