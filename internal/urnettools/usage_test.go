@@ -267,3 +267,76 @@ func TestDeltaBucketsRestartAcrossBuckets(t *testing.T) {
 		t.Fatalf("day1 total = %d, want 2050", buckets[1].total)
 	}
 }
+
+// TestUsageGraphsArgsPreservesTrailingFlags is the regression for the
+// CodeRabbit finding on `cmdUsage`: `usage graphs --unit X` must reach
+// target parsing with --unit X intact. The bug computed target args as
+// args[:i] (everything before the subcommand token), which for the
+// documented example `usage graphs --unit mynetwork-provider` (subcommand
+// at index 0) produced an EMPTY target-args slice, silently discarding the
+// flag.
+func TestUsageGraphsArgsPreservesTrailingFlags(t *testing.T) {
+	args := []string{"graphs", "--unit", "mynetwork-provider"}
+	got := usageGraphsArgs(args, 0)
+	want := []string{"--unit", "mynetwork-provider"}
+	if len(got) != len(want) {
+		t.Fatalf("usageGraphsArgs(%v, 0) = %v, want %v", args, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("usageGraphsArgs(%v, 0) = %v, want %v", args, got, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsPreservesTrailingFlags mirrors the above for
+// `usage graph <view> --flags`, the other documented example
+// (`usage graph month --network tacogonzalez3000`).
+func TestUsageGraphArgsPreservesTrailingFlags(t *testing.T) {
+	args := []string{"graph", "month", "--network", "tacogonzalez3000"}
+	targetArgs, view := usageGraphArgs(args, 0)
+	if view != "month" {
+		t.Fatalf("usageGraphArgs(%v, 0) view = %q, want %q", args, view, "month")
+	}
+	want := []string{"--network", "tacogonzalez3000"}
+	if len(targetArgs) != len(want) {
+		t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want %v", args, targetArgs, want)
+	}
+	for i := range want {
+		if targetArgs[i] != want[i] {
+			t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want %v", args, targetArgs, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsFlagBeforeSubcommand covers `usage --unit X graph day`:
+// the subcommand token is not at index 0, and no view-like flag should be
+// mistaken for the view.
+func TestUsageGraphArgsFlagBeforeSubcommand(t *testing.T) {
+	args := []string{"--unit", "X", "graph", "day"}
+	targetArgs, view := usageGraphArgs(args, 2)
+	if view != "day" {
+		t.Fatalf("usageGraphArgs(%v, 2) view = %q, want %q", args, view, "day")
+	}
+	want := []string{"--unit", "X"}
+	if len(targetArgs) != len(want) {
+		t.Fatalf("usageGraphArgs(%v, 2) targetArgs = %v, want %v", args, targetArgs, want)
+	}
+	for i := range want {
+		if targetArgs[i] != want[i] {
+			t.Fatalf("usageGraphArgs(%v, 2) targetArgs = %v, want %v", args, targetArgs, want)
+		}
+	}
+}
+
+// TestUsageGraphArgsNoView covers bare `usage graph` (no view token at all).
+func TestUsageGraphArgsNoView(t *testing.T) {
+	args := []string{"graph"}
+	targetArgs, view := usageGraphArgs(args, 0)
+	if view != "" {
+		t.Fatalf("usageGraphArgs(%v, 0) view = %q, want empty", args, view)
+	}
+	if len(targetArgs) != 0 {
+		t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want empty", args, targetArgs)
+	}
+}
