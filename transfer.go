@@ -3397,39 +3397,14 @@ func (self *SendSequence) dropItem(item *sendItem, err error) {
 }
 
 // ackItemWithErrDropped is the error-path settle for a DROPPED item
-// (backstop expiry, teardown). Unlike ackItemWithErr it releases the
-// contract's unackedByteCount via unack (no ackedByteCount credit) so a
-// delivery failure is not laundered into acked/billed bytes, then fires the
-// error callback and returns the frame to the pool.
+// (backstop expiry, teardown). Unlike ackItem (which credits ackedByteCount)
+// it releases the contract's unackedByteCount via unack (no ackedByteCount
+// credit) so a delivery failure is not laundered into acked/billed bytes,
+// then fires the error callback and returns the frame to the pool.
 func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
 	if item.contractId != nil {
 		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
 			itemSendContract.unack(item.messageByteCount)
-			// not current and closed
-			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
-				self.client.ContractManager().CloseContract(
-					itemSendContract.contractId,
-					itemSendContract.ackedByteCount,
-					itemSendContract.unackedByteCount,
-				)
-				delete(self.openSendContracts, itemSendContract.contractId)
-			}
-		}
-	}
-	safeAck(item.ackCallback, err)
-	item.messagePoolReturn()
-}
-
-// ackItemWithErr settles an item's contract and fires its callback with an
-// error, then returns the frame to the pool. Unlike ackItem (nil callback),
-// this is used for error-path disposals where the caller provides the reason.
-func (self *SendSequence) ackItemWithErr(item *sendItem, err error) {
-	if item.contractId != nil {
-		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
-			itemSendContract.ack(item.messageByteCount)
-			if itemSendContract.contractStatsEntry != nil {
-				itemSendContract.contractStatsEntry.updateUsedByteCount(itemSendContract.ackedByteCount)
-			}
 			// not current and closed
 			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
 				self.client.ContractManager().CloseContract(
