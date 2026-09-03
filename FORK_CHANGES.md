@@ -3213,7 +3213,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **Files Modified**: `provider/direct.go` (new), `provider/direct_test.go` (new), `provider/main.go`, `provider/proxy_reload.go`.
 
 **Change**:
-- **CLI Subcommand**: `provider direct on|off|<state>` toggles direct native connection state.
+- **CLI Subcommand**: `provider direct on|off` toggles direct native connection state.
 - **Atomic Persistence**: State is stored in `~/.urnetwork/direct_override` using atomic write-and-rename.
 - **Hot-Reload Integration**: SIGHUP reload and watcher reload re-evaluates direct transport state without restarting the provider process.
 - **Lifecycle & CAS Safety**: Worker goroutines use compare-and-delete tracking and synchronized `cancelMap` cleanup to eliminate race conditions.
