@@ -198,7 +198,9 @@ func isSourceURL(line string) bool {
 // Body is capped at 10 MiB, matching the proxy-URL-source fetch convention
 // (io.LimitReader) — an infinite/huge response must not exhaust memory.
 func fetchURL(url string) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Use the hardened client (SSRF guard + redirect limit), same trust model
+	// as the `proxy add-source` fetch path.
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: ssrfCheckRedirect, Transport: sourceURLTransport()}
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
