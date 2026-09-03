@@ -175,6 +175,70 @@ func TestDeltaBucketsRestartWithinBucket(t *testing.T) {
 	}
 }
 
+// TestBillableExceedsTotal verifies the M1 signal: when the independent
+// billable (ip.go) and total (net.go) counters disagree, the mismatch is
+// reported rather than silently floored by Control().
+func TestBillableExceedsTotal(t *testing.T) {
+	consistent := usageAggregates{TotalRX: 100, TotalTX: 100, BillableRX: 50, BillableTX: 50}
+	if consistent.BillableExceedsTotal() {
+		t.Fatal("consistent aggregates flagged as billable > total")
+	}
+	if consistent.Control() != 100 {
+		t.Fatalf("consistent control = %d, want 100", consistent.Control())
+	}
+
+	inconsistent := usageAggregates{TotalRX: 100, TotalTX: 0, BillableRX: 50, BillableTX: 80}
+	if !inconsistent.BillableExceedsTotal() {
+		t.Fatal("billable (130) > total (100) not flagged")
+	}
+	// Control() floors at 0 regardless — BillableExceedsTotal is the only
+	// signal a caller has that this floor is masking bad accounting.
+	if inconsistent.Control() != 0 {
+		t.Fatalf("inconsistent control = %d, want 0 (floored)", inconsistent.Control())
+	}
+}
+
+// TestUsageLifetimeUnsortedInput verifies readUsageHistory's chronological
+// sort guarantee (M2): usageLifetime must produce the same result whether
+// snapshots arrive already sorted or out of order (e.g. combined rotated + main
+// history files, or clock corrections). Passing unsorted input straight to
+// the old (pre-fix) segment walk would misdetect restarts on the out-of-order
+// rows and undercount.
+func TestUsageLifetimeUnsortedInput(t *testing.T) {
+	base := time.Now()
+	sorted := []usageSnapshot{
+		{TS: base.Add(-3 * time.Hour), RX: 100, TX: 0},
+		{TS: base.Add(-2 * time.Hour), RX: 500, TX: 0},
+		{TS: base.Add(-time.Hour), RX: 200, TX: 0}, // restart
+		{TS: base, RX: 700, TX: 0},
+	}
+	shuffled := []usageSnapshot{sorted[2], sorted[0], sorted[3], sorted[1]}
+
+	want := usageLifetime(sorted)
+	got := usageLifetime(shuffled)
+	if got.Total() != want.Total() {
+		t.Fatalf("unsorted-input lifetime total = %d, want %d (chronological-sort input order sensitivity)", got.Total(), want.Total())
+	}
+}
+
+// TestUsageWindowUnsortedInput is the usageWindow counterpart of
+// TestUsageLifetimeUnsortedInput.
+func TestUsageWindowUnsortedInput(t *testing.T) {
+	now := time.Now()
+	sorted := []usageSnapshot{
+		{TS: now.Add(-10 * 24 * time.Hour), RX: 1000, TX: 900},
+		{TS: now.Add(-26 * time.Hour), RX: 2000, TX: 1800},
+		{TS: now.Add(-2 * time.Hour), RX: 3000, TX: 2700},
+	}
+	shuffled := []usageSnapshot{sorted[2], sorted[0], sorted[1]}
+
+	want := usageWindow(sorted, 24*time.Hour, now)
+	got := usageWindow(shuffled, 24*time.Hour, now)
+	if got.Total() != want.Total() {
+		t.Fatalf("unsorted-input window total = %d, want %d", got.Total(), want.Total())
+	}
+}
+
 // TestDeltaBucketsRestartAcrossBuckets: a restart between buckets must reset
 // the baseline so the new bucket counts only post-restart traffic.
 func TestDeltaBucketsRestartAcrossBuckets(t *testing.T) {
