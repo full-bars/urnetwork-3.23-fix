@@ -525,22 +525,24 @@ docker run -d \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
+  -p 127.0.0.1:9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
-Access the traffic page in your browser at `http://<host_ip>:9001`.
+Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet; use a reverse proxy or SSH tunnel if accessing remotely).
 
 ---
 
 ### 3. Multi-Container Rules: Offsetting Ports & Volumes
 
-When running more than one provider container on the same host with vnStat enabled, you **must adhere to two mandatory isolation rules**:
+When running more than one provider container on the same host with vnStat enabled, you **must adhere to three mandatory isolation rules**:
 
 > [!CAUTION]
-> **1. Offset Host Ports:** The internal container port is always `:8080`. Every container running on the same Docker host must map to a **unique host port** (e.g. Node 1 on `9001`, Node 2 on `9002`, Node 3 on `9003`). Attempting to reuse the same host port will cause a Docker daemon bind error (`bind: address already in use`).
+> **1. Offset Host Ports:** The internal container port is always `:8080`. Every container running on the same Docker host must map to a **unique host port** (e.g. Node 1 on `127.0.0.1:9001`, Node 2 on `127.0.0.1:9002`). Attempting to reuse the same host port will cause a Docker daemon bind error (`bind: address already in use`).
 >
 > **2. Offset vnStat Storage Volumes:** Never point multiple containers at the same vnStat volume. vnStat maintains an active database inside `/var/lib/vnstat`. Sharing a single volume causes concurrent write locks, data clobbering, and database corruption. Each container must have its own isolated volume (e.g. `urfix-1_vnstat`, `urfix-2_vnstat`).
+>
+> **3. Isolate Provider Config Volumes (`/root/.urnetwork`):** Never share `/root/.urnetwork` between multiple running containers. The provider maintains process-local SQLite databases (`proxy.state`, `.client_jwts.json`, `lifetime`) and identity keys inside this directory. Sharing it across containers leads to lock contention and state corruption. Each container requires its own config volume (`ur_config_1`, `ur_config_2`).
 
 #### Multi-Container Compose Snippet:
 
@@ -553,11 +555,11 @@ services:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
     volumes:
-      - ur_config:/root/.urnetwork      # SHARED identity volume
+      - ur_config_1:/root/.urnetwork    # ISOLATED identity & state volume
       - urfix-1_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
       - ./proxy-1.txt:/app/proxy.txt
     ports:
-      - "9001:8080"                    # OFFSET host port 9001
+      - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
 
   node-2:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
@@ -566,14 +568,15 @@ services:
       - BUILD=jwt
       - ENABLE_VNSTAT=true
     volumes:
-      - ur_config:/root/.urnetwork      # SHARED identity volume
+      - ur_config_2:/root/.urnetwork    # ISOLATED identity & state volume
       - urfix-2_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
       - ./proxy-2.txt:/app/proxy.txt
     ports:
-      - "9002:8080"                    # OFFSET host port 9002
+      - "127.0.0.1:9002:8080"          # OFFSET host port (localhost bound)
 
 volumes:
-  ur_config:
+  ur_config_1:
+  ur_config_2:
   urfix-1_vnstat:
   urfix-2_vnstat:
 ```
