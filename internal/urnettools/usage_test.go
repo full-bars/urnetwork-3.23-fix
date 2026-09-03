@@ -219,6 +219,57 @@ func TestDeltaBucketsTwoRestartsWithinSameBucket(t *testing.T) {
 	}
 }
 
+// TestDeltaBucketsNowMustBeUTC is the regression for the CodeRabbit finding
+// on renderDayGraph/renderMonthGraph: the day/month truncate closures build
+// a UTC time.Date from t.Date() -- which returns t's LOCAL calendar fields,
+// not UTC ones. Passing a non-UTC `now` (renderDayGraph/renderMonthGraph did
+// this; renderHourGraph already called .UTC() correctly) can put `now` on a
+// different calendar day than its UTC equivalent, so the "drop the current,
+// incomplete trailing bucket" check compares against the wrong day and
+// either wrongly drops a complete bucket or wrongly keeps an incomplete one.
+//
+// This pins the underlying mechanism: the same instant, truncated with a
+// UTC `now` vs a non-UTC `now`, must NOT produce the same trailing-bucket
+// decision when the instant straddles a UTC day boundary in a shifted zone.
+func TestDeltaBucketsNowMustBeUTC(t *testing.T) {
+	// Sep 1 00:30 UTC: in a fixed UTC-2 zone the same instant's LOCAL
+	// calendar date is Aug 31 -- one day behind the UTC date.
+	nowUTC := time.Date(2026, 9, 1, 0, 30, 0, 0, time.UTC)
+	nowShifted := nowUTC.In(time.FixedZone("UTC-2", -2*60*60))
+	if nowShifted.Year() != 2026 || nowShifted.Month() != 8 || nowShifted.Day() != 31 {
+		t.Fatalf("test setup: expected shifted local date Aug 31, got %v", nowShifted)
+	}
+
+	truncateDay := func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+
+	snaps := []usageSnapshot{
+		{TS: time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC), RX: 1000, TX: 0},
+		// The "current, incomplete" bucket as of nowUTC: Sep 1 00:00 UTC.
+		{TS: time.Date(2026, 9, 1, 0, 15, 0, 0, time.UTC), RX: 2000, TX: 0},
+	}
+
+	withUTC := deltaBuckets(snaps, truncateDay, 30, nowUTC)
+	withShifted := deltaBuckets(snaps, truncateDay, 30, nowShifted)
+
+	// Correct (UTC now): the Sep 1 bucket IS the current/incomplete period
+	// (truncateDay(nowUTC) == Sep 1 00:00 UTC), so it's dropped -- only the
+	// Aug 30 bucket remains.
+	if len(withUTC) != 1 {
+		t.Fatalf("deltaBuckets with UTC now: got %d buckets, want 1 (current incomplete bucket dropped)", len(withUTC))
+	}
+
+	// Buggy (non-UTC now, matching the pre-fix call sites): truncateDay
+	// reads nowShifted's LOCAL fields (Aug 31), producing a truncated `now`
+	// of Aug 31 00:00 UTC -- which matches NEITHER bucket, so the Sep 1
+	// bucket is wrongly kept as if it were a complete period.
+	if len(withShifted) != 2 {
+		t.Fatalf("deltaBuckets with non-UTC now: got %d buckets, want 2 (demonstrates the bug this fix prevents -- current bucket wrongly kept)", len(withShifted))
+	}
+}
+
 // TestBillableExceedsTotal verifies the M1 signal: when the independent
 // billable (ip.go) and total (net.go) counters disagree, the mismatch is
 // reported rather than silently floored by Control().

@@ -253,7 +253,7 @@ func renderDayGraph(snaps []usageSnapshot) {
 	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
 		y, m, d := t.Date()
 		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
-	}, 30, time.Now())
+	}, 30, time.Now().UTC())
 	if len(buckets) > 7 {
 		buckets = buckets[len(buckets)-7:]
 	}
@@ -294,7 +294,7 @@ func renderMonthGraph(snaps []usageSnapshot) {
 	fmt.Println("USAGE BY MONTH (billable, last 12mo)")
 	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
 		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-	}, 12, time.Now())
+	}, 12, time.Now().UTC())
 	if len(buckets) > 12 {
 		buckets = buckets[len(buckets)-12:]
 	}
