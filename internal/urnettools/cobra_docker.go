@@ -41,6 +41,7 @@ Core Commands:
 
 Proxy Management (inside the container):
   proxy add <file>                Bulk add proxies
+  proxy paste                     Paste raw proxies from stdin, file, or URL
   proxy clear                     Remove all configured proxies
   proxy remove                    Remove proxies (by addr/match, or all)
   proxy refresh [--force]         Re-read configs and hot-reload
@@ -61,6 +62,8 @@ Config & Automation:
   fast-auth [on|off]        Bypass auth rate limiter without restart
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
+  direct [on|off]           Toggle providing on the machine's direct/local IP
+  usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
   session save|load <file>  Export/import identity + proxy state (encrypted)
   report <url>|off          Set hub report URL
   help <command>            Show help for a command
@@ -124,6 +127,8 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerHubCmd(),
 		newDockerSessionCmd(),
 		newDockerExecCmd(),
+		newDockerDirectCmd(),
+		newDockerUsageCmd(),
 	)
 	for _, sub := range rootCmd.Commands() {
 		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
@@ -258,6 +263,10 @@ func newDockerProxyCmd() *cobra.Command {
 			"  urnet-docker proxy add ~/proxies.txt              # Linux / macOS\n"+
 				"  urnet-docker proxy add C:\\Users\\<you>\\proxies.txt   # Windows (\\ or / separators)\n"+
 				"  urnet-docker proxy add ~/proxies.txt --unit mynetwork-provider"),
+		dockerProxySub("paste", "paste [flags] [target]", "paste raw proxies from stdin, file, or URL", "Ingest raw proxies into the provider inside the targeted container via proxy paste.",
+			"  urnet-docker proxy paste --unit mynetwork-provider\n"+
+				"  cat proxies.txt | urnet-docker proxy paste --unit mynetwork-provider\n"+
+				"  urnet-docker proxy paste --file=~/proxies.txt --unit mynetwork-provider"),
 		dockerProxySub("clear", "clear [target] [--force]", "remove configured proxies", "Remove all configured proxies from the provider inside the targeted container. Any extra flags, such as --force, are forwarded so this is scriptable from a non-interactive job.",
 			"  urnet-docker proxy clear --unit mynetwork-provider\n"+
 				"  urnet-docker proxy clear --unit mynetwork-provider --force"),
@@ -331,3 +340,16 @@ func newDockerExecCmd() *cobra.Command {
 		},
 	}
 }
+
+func newDockerDirectCmd() *cobra.Command {
+	return withHelp(newCobraCmd("direct", "toggle or report direct/local IP providing", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerDirect(args)
+	}), "Turn providing on the machine's direct/local IP address on or off for the targeted container, or show current status. By default both the direct IP and configured proxy list are used for providing. Running 'direct off' disables direct native egress — only proxies from --proxy_file / --proxy_url are used. The change takes effect immediately on a running provider via dynamic reload. Delegated to the in-container 'urnet-tools direct [on|off|status]'.", "  urnet-docker direct --unit mynetwork-provider\n  urnet-docker direct status --unit mynetwork-provider\n  urnet-docker direct off --unit mynetwork-provider\n  urnet-docker direct on --unit mynetwork-provider")
+}
+
+func newDockerUsageCmd() *cobra.Command {
+	return withHelp(newCobraCmd("usage", "show aggregate usage (billable vs control) across time spans", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerUsage(args)
+	}), "Show aggregate traffic usage for the provider inside the targeted container as summary cards (billable vs control-plane split) or as day/hour/month time-series graphs. Reads the container's persistent usage history, so lifetime spans survive restarts and updates. Delegated to the in-container 'urnet-tools usage'.", "  urnet-docker usage --unit mynetwork-provider\n  urnet-docker usage graphs --unit mynetwork-provider\n  urnet-docker usage graph day --unit mynetwork-provider\n  urnet-docker usage graph month --unit mynetwork-provider")
+}
+

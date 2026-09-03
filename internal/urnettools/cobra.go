@@ -47,6 +47,7 @@ Session & Identity:
 
 Proxy Management:
   proxy add <file>        Bulk add proxies from a text file
+  proxy paste             Paste raw proxies from stdin, file, or URL
   proxy clear             Remove all configured proxies
   proxy remove            Remove proxies (by addr/match, or all)
   proxy refresh [--force] Re-read configs and hot-reload proxies
@@ -442,12 +443,12 @@ func newProxyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "proxy",
 		Short:              "Proxy Management",
-		Long:               "Manage proxies for a provider: add from a file, clear, remove, refresh, and inspect health and traffic.",
-		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy add C:\\Users\\<you>\\proxies.txt    # Windows (\\ or / separators)\n  urnet-tools proxy clear",
+		Long:               "Manage proxies for a provider: add from a file, paste from stdin/file/URL, clear, remove, refresh, and inspect health and traffic.",
+		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy paste < proxies.txt         # Paste from stdin / pipe\n  urnet-tools proxy paste --file=~/proxies.txt  # Paste from file\n  urnet-tools proxy clear",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
+				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {

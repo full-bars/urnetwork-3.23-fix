@@ -237,6 +237,32 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 				break
 			}
 			return fmt.Errorf("%s requires a value (use --%s=a,b)", a, strings.TrimPrefix(a, "--"))
+		case strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "--proxy_file="):
+			val := strings.TrimPrefix(a, "--file=")
+			if strings.HasPrefix(a, "--proxy_file=") {
+				val = strings.TrimPrefix(a, "--proxy_file=")
+			}
+			positionals = append(positionals, val)
+		case a == "--file" || a == "--proxy_file":
+			if i+1 < len(rest) {
+				positionals = append(positionals, rest[i+1])
+				i++
+				break
+			}
+			return fmt.Errorf("%s requires a file path", a)
+		case strings.HasPrefix(a, "--url=") || strings.HasPrefix(a, "--URL="):
+			val := strings.TrimPrefix(a, "--url=")
+			if strings.HasPrefix(a, "--URL=") {
+				val = strings.TrimPrefix(a, "--URL=")
+			}
+			positionals = append(positionals, val)
+		case a == "--url" || a == "--URL":
+			if i+1 < len(rest) {
+				positionals = append(positionals, rest[i+1])
+				i++
+				break
+			}
+			return fmt.Errorf("%s requires a URL", a)
 		default:
 			// Unknown --flag: pass through only for refresh/remove-dead
 			// (provider-binary flags like --force); reject elsewhere so a
@@ -273,9 +299,29 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	switch sub {
 	case "add":
 		if len(positionals) < 1 {
-			return fmt.Errorf("proxy add requires a proxy file path")
+			return fmt.Errorf("proxy add requires a proxy file path or URL")
 		}
-		file := positionals[0]
+		target := positionals[0]
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+				return fmt.Errorf("proxy add with URL operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it")
+			}
+			p, err := selectTarget(providers, t)
+			if err != nil {
+				return err
+			}
+			if dryRun {
+				fmt.Printf("[dry-run] would add-source %s on %s\n", target, providerLabel(p))
+				return nil
+			}
+			return providerSubcommand(p, "proxy", "add-source", target)
+		}
+		file := target
+		if strings.HasPrefix(file, "~/") || strings.HasPrefix(file, "~\\") {
+			if home, err := os.UserHomeDir(); err == nil {
+				file = filepath.Join(home, file[2:])
+			}
+		}
 		// Stat the file as the tool's user (existence check), then verify
 		// the targeted provider user can actually read it: `proxy add` is
 		// delegated to providerSubcommand → dropPrivilegesTo(p.User, cmd),

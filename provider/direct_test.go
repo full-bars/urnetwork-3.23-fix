@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/docopt/docopt-go"
 )
 
 func TestDirectToggleRoundTrip(t *testing.T) {
@@ -219,3 +221,32 @@ func TestDirectKeyExcludedFromRemoval(t *testing.T) {
 	directCancel()
 	directCtx.Done() // prevent unused warning
 }
+
+func TestCmdDirectStatusReporting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	// Case 1: Default state (no file, no env) -> on
+	opts := docopt.Opts{"<state>": ""}
+	cmdDirect(opts)
+
+	opts = docopt.Opts{"<state>": "status"}
+	cmdDirect(opts)
+
+	// Case 2: Env set to 1 -> off
+	t.Setenv("DISABLE_DIRECT_IP", "1")
+	cmdDirect(opts)
+
+	// Case 3: Toggle written off -> off
+	if err := writeDirectEnabled(false); err != nil {
+		t.Fatalf("writeDirectEnabled(false): %v", err)
+	}
+	cmdDirect(opts)
+
+	// Case 4: Toggle written on -> on
+	if err := writeDirectEnabled(true); err != nil {
+		t.Fatalf("writeDirectEnabled(true): %v", err)
+	}
+	cmdDirect(opts)
+}
+

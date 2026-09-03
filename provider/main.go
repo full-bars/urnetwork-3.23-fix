@@ -860,7 +860,10 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
+        [--file=<file>]
         [--proxy_url=<proxy_url>...]
+        [--url=<url>...]
+        [--URL=<URL>...]
         [--proxy_url_refresh=<proxy_url_refresh>]
         [--proxy_url_max=<proxy_url_max>]
         [--proxy_dead_cleanup_scope=<proxy_dead_cleanup_scope>]
@@ -872,6 +875,11 @@ Usage:
         [--connect_url=<connect_url>]
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
+        [--proxy_file=<proxy_file>]
+        [--file=<file>]
+        [--proxy_url=<proxy_url>...]
+        [--url=<url>...]
+        [--URL=<URL>...]
         [-v...]
     provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
@@ -885,7 +893,7 @@ Usage:
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
-    provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
+    provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [--file=<file>] [--url=<url>] [--URL=<URL>] [-f]
     provider proxy remove [<key_address>...] [--all]
     provider proxy remove --match=<pattern> [--yes] [--preview]
     provider proxy remove-dead [--degraded[=<duration>]] [--auth-failures=<N>] [--source=<source>] [--yes] [--preview]
@@ -896,7 +904,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
-    provider direct <state>
+    provider direct [<state>]
     provider proxy paste [--file=<file>]
     provider logs [-n <lines>]
     provider print-network-id <file>
@@ -942,7 +950,10 @@ Options:
     <proxy_password>                 SOCKS5 password
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
+    --file=<file>                    Alias for --proxy_file.
     --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
+    --url=<url>                      Alias for --proxy_url.
+    --URL=<URL>                      Alias for --proxy_url.
     --proxy_url_refresh=<dur>        How often to re-fetch --proxy_url sources and add new entries. Also settable via PROXY_URL_REFRESH.
     --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited, defaults to 500. Also settable via PROXY_URL_MAX.
     --proxy_dead_cleanup_scope=<s>   Automatic dead-proxy cleanup scope: none, url, or all. Defaults to url (URL-sourced only). Also settable via PROXY_DEAD_CLEANUP_SCOPE.
@@ -955,6 +966,7 @@ Options:
                                      With no pattern, 'proxy exclude' lists active patterns.
     --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
                                      proxy (any common format) or an http(s) URL to fetch as a proxy source.
+    <state>                          Direct IP providing state: on | off | status. If omitted, reports current state.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -3303,6 +3315,9 @@ func provide(opts docopt.Opts) {
 
 	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
 	proxyFile, _ := opts.String("--proxy_file")
+	if proxyFile == "" {
+		proxyFile, _ = opts.String("--file")
+	}
 	// Also accept PROXY_FILE env var (for Docker/Pelican where CLI flags
 	// cannot be set by the user — the env var is the only knob).
 	if proxyFile == "" {
@@ -4267,6 +4282,16 @@ func proxyAuthRemove(opts docopt.Opts) {
 	writeProxyConfig(proxyConfig)
 }
 
+// expandPath expands leading ~/ or ~\ to the user's home directory.
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
 func proxyAdd(opts docopt.Opts) {
 	proxyConfig := readProxyConfig()
 
@@ -4274,7 +4299,46 @@ func proxyAdd(opts docopt.Opts) {
 	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
 		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
 	}
-	if proxyPath, _ := opts.String("--proxy_file"); proxyPath != "" {
+
+	url, _ := opts.String("--url")
+	if url == "" {
+		url, _ = opts.String("--URL")
+	}
+	if url != "" {
+		proxyAddSource(docopt.Opts{"<url>": url})
+	}
+
+	proxyPath, _ := opts.String("--proxy_file")
+	if proxyPath == "" {
+		proxyPath, _ = opts.String("--file")
+	}
+
+	var remainingKeyAddress []string
+	for _, item := range allKeyAddress {
+		if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+			proxyAddSource(docopt.Opts{"<url>": item})
+			continue
+		}
+		candidate := expandPath(item)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			b, err := os.ReadFile(candidate)
+			if err != nil {
+				panic(err)
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && line[0] != '#' {
+					remainingKeyAddress = append(remainingKeyAddress, line)
+				}
+			}
+			continue
+		}
+		remainingKeyAddress = append(remainingKeyAddress, item)
+	}
+	allKeyAddress = remainingKeyAddress
+
+	if proxyPath != "" {
+		proxyPath = expandPath(proxyPath)
 		b, err := os.ReadFile(proxyPath)
 		if err != nil {
 			panic(err)
@@ -4780,13 +4844,15 @@ func resolveString(opts docopt.Opts, flag, envVar, def string) string {
 func resolveProxyURLs(opts docopt.Opts) []string {
 	var urls []string
 
-	if v, ok := opts["--proxy_url"]; ok && v != nil {
-		switch vv := v.(type) {
-		case []string:
-			urls = append(urls, vv...)
-		case string:
-			if vv != "" {
-				urls = append(urls, vv)
+	for _, flag := range []string{"--proxy_url", "--url", "--URL"} {
+		if v, ok := opts[flag]; ok && v != nil {
+			switch vv := v.(type) {
+			case []string:
+				urls = append(urls, vv...)
+			case string:
+				if vv != "" {
+					urls = append(urls, vv)
+				}
 			}
 		}
 	}

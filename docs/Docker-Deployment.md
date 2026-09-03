@@ -30,7 +30,12 @@ Common host-side commands:
 ```sh
 urnet-docker providers                          # list provider containers
 urnet-docker status --unit urfix                # status of one container
-urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host
+urnet-docker direct status --unit urfix         # show direct IP providing state
+urnet-docker direct off --unit urfix            # toggle direct IP (proxies only)
+urnet-docker usage --unit urfix                 # show aggregate billable vs control traffic
+urnet-docker usage graphs --unit urfix          # time-series usage graphs (day/hour/month)
+urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host (or URL)
+urnet-docker proxy paste --unit urfix < p.txt   # stream raw proxies from stdin
 urnet-docker proxy trim --unit urfix 500        # hold running proxies at cap (A-F worst first)
 urnet-docker proxy refresh --unit urfix         # reload proxies without restart
 urnet-docker restart --unit urfix               # restart a container
