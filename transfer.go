@@ -2281,6 +2281,16 @@ func (self *SendSequence) Run() {
 						item.messageId, item.sendCount))
 				}
 			}
+			if item.retainAfterAckTimeout {
+				self.retainedByteCount -= item.MessageByteCount()
+			}
+			// Settle the contract without crediting ackedByteCount — these
+			// bytes were never delivered (H1).
+			if item.contractId != nil {
+				if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
+					itemSendContract.unack(item.messageByteCount)
+				}
+			}
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
@@ -3078,6 +3088,22 @@ func (self *SendSequence) sendWithSetContract(
 			if self.retainedByteCount+messageByteCount > retainCapByteCount {
 				item.retainAfterAckTimeout = false
 				item.backstopDeadline = time.Time{}
+				// M3/L5: retention was denied by the R-5 cap. The item now
+				// reverts to the ordinary ack-timeout path — under the
+				// congested conditions that trigger the cap, it will likely
+				// blow its ack deadline and tear down the whole sequence.
+				// Fire the retention event so operators can see cap denials.
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) retain cap denied for item %x (retained=%d, cap=%d, bytes=%d)\n",
+						self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+						item.messageId, self.retainedByteCount, retainCapByteCount, messageByteCount)
+				}
+				if self.sendBufferSettings.RetentionEventCallback != nil {
+					self.sendBufferSettings.RetentionEventCallback(fmt.Sprintf(
+						"retain_cap_denied msg=%x bytes=%d retained=%d cap=%d sendCount=%d",
+						item.messageId, messageByteCount, self.retainedByteCount,
+						retainCapByteCount, item.sendCount))
+				}
 			} else {
 				self.retainedByteCount += messageByteCount
 			}
@@ -3258,8 +3284,17 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		if removed == nil {
 			// Already dropped by backstop (dropItem removed from resendQueue).
 			// Contract, callback, and retained byte count already settled.
-			if v := self.log.V(2); v.Enabled() {
-				v.Infof("[s]ack %d <> %d (already removed) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+			// Only retained items can legitimately vanish from the resend
+			// queue while still ahead of the ack head — the backstop drop is
+			// the sole mid-sequence removal path for such items. Anything
+			// else is a genuine resendQueue/sendItems desync and must not be
+			// silently swallowed.
+			if !implicitItem.retainAfterAckTimeout {
+				self.log.Errorf("[s]%s->%s...%s s(%s) ack %d <> %d (non-retained item missing from resendQueue — desync) msg=%x sendCount=%d\n",
+					self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId,
+					item.sequenceNumber, implicitItem.sequenceNumber, implicitItem.messageId, implicitItem.sendCount)
+			} else if v := self.log.V(2); v.Enabled() {
+				v.Infof("[s]ack %d <> %d (retained already dropped) %s->%s...%s s(%s)\n", item.sequenceNumber, implicitItem.sequenceNumber, self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 			}
 			self.sendItems[i] = nil
 			continue
@@ -3354,9 +3389,35 @@ func (self *SendSequence) dropItem(item *sendItem, err error) {
 		self.retainedByteCount -= item.MessageByteCount()
 	}
 
-	// settle contract bytes (moves unacked → acked, closes fully-settled
-	// non-current contracts) and fire the error callback + pool-return
-	self.ackItemWithErr(item, err)
+	// settle contract bytes and fire the error callback + pool-return.
+	// Dropped items release the contract's unacked debit WITHOUT crediting
+	// ackedByteCount — the bytes were never delivered, so they must not
+	// count as billing success.
+	self.ackItemWithErrDropped(item, err)
+}
+
+// ackItemWithErrDropped is the error-path settle for a DROPPED item
+// (backstop expiry, teardown). Unlike ackItemWithErr it releases the
+// contract's unackedByteCount via unack (no ackedByteCount credit) so a
+// delivery failure is not laundered into acked/billed bytes, then fires the
+// error callback and returns the frame to the pool.
+func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
+	if item.contractId != nil {
+		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
+			itemSendContract.unack(item.messageByteCount)
+			// not current and closed
+			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
+				self.client.ContractManager().CloseContract(
+					itemSendContract.contractId,
+					itemSendContract.ackedByteCount,
+					itemSendContract.unackedByteCount,
+				)
+				delete(self.openSendContracts, itemSendContract.contractId)
+			}
+		}
+	}
+	safeAck(item.ackCallback, err)
+	item.messagePoolReturn()
 }
 
 // ackItemWithErr settles an item's contract and fires its callback with an
@@ -5254,6 +5315,24 @@ func (self *sequenceContract) ack(byteCount ByteCount) {
 
 	self.unackedByteCount -= effectiveByteCount
 	self.ackedByteCount += effectiveByteCount
+}
+
+// unack releases `byteCount` from the contract's unacked count WITHOUT
+// crediting ackedByteCount. It mirrors the effective-byte-count computation
+// in update()/ack() so the released amount matches what was originally
+// debited. Used when bytes are known to be undelivered (backstop drop of a
+// retained item): the debit must be released so the contract can close, but
+// the bytes must not be laundered into acked (billing) success.
+func (self *sequenceContract) unack(byteCount ByteCount) {
+	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
+
+	if self.unackedByteCount < effectiveByteCount {
+		// Cumulative acks on the shared contract may already have covered
+		// part of this debit; release only what remains instead of panicking.
+		effectiveByteCount = self.unackedByteCount
+	}
+
+	self.unackedByteCount -= effectiveByteCount
 }
 
 type ForwardBufferSettings struct {

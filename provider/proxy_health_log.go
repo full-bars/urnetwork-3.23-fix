@@ -15,10 +15,10 @@ import (
 
 // usageHistoryMaxBytes bounds the accumulated usage history file before it
 // rotates to <name>.1. At ~90 bytes/row and hourly snapshots, 512 MiB is
-// ~60+ years of history. The cap guards against a runaway writer. NOTE:
-// the LIFETIME metric (running max over the file) is approximate if the
-// file rotates — old rows beyond the cap are lost, so lifetime may not
-// reflect very early data. Compaction is intentionally not implemented.
+// ~60+ years of history. The cap guards against a runaway writer. NOTE: if
+// the file rotates, readUsageHistory still reads the rotated .1 file, so
+// LIFETIME (segment-summed over the full history, see usageLifetime)
+// continues to include pre-rotation rows.
 const usageHistoryMaxBytes = 512 << 20 // 512 MiB
 
 // usageHistoryPath is the persistent JSONL history of aggregate usage
@@ -305,8 +305,61 @@ func rotateIfNeeded(path string, maxBytes int64) {
 	_ = os.Rename(path, path+".1")
 }
 
-// appendRetentionEvent appends a retention telemetry line to the health event log.
+// retentionEventBuffer bounds the pending retention events before the writer
+// drops new entries under sustained backpressure (events are telemetry, not
+// correctness-critical — dropping is preferable to blocking the transfer
+// sequence goroutine that fires the callback).
+const retentionEventBuffer = 256
+
+// retentionEventCh is the buffered channel feeding the single retention-event
+// writer goroutine. Created lazily on first use so CLI subcommands that never
+// wire RetentionEventCallback pay nothing.
+var (
+	retentionEventOnce sync.Once
+	retentionEventCh   chan string
+	retentionEventDone chan struct{}
+)
+
+// startRetentionEventWriter launches the single goroutine that performs the
+// per-event file I/O (stat + rotate + open + append + close) off the hot path.
+func startRetentionEventWriter() {
+	retentionEventOnce.Do(func() {
+		retentionEventCh = make(chan string, retentionEventBuffer)
+		retentionEventDone = make(chan struct{})
+		go func() {
+			defer close(retentionEventDone)
+			for event := range retentionEventCh {
+				writeRetentionEventLine(event)
+			}
+		}()
+	})
+}
+
+// appendRetentionEvent buffers a retention telemetry line and returns
+// immediately; a single writer goroutine performs the file I/O. When the
+// buffer is full the event is dropped (with a stderr note) rather than
+// blocking the caller, which runs on the transfer sequence hot path.
 func appendRetentionEvent(event string) {
+	startRetentionEventWriter()
+	select {
+	case retentionEventCh <- event:
+	default:
+		fmt.Fprintf(os.Stderr, "[provider] warn: retention event buffer full, dropping event: %s\n", event)
+	}
+}
+
+// flushRetentionEvents drains all buffered events and waits for the writer
+// goroutine to finish, so no pending entries are lost at shutdown. Safe to
+// call multiple times (subsequent calls are no-ops).
+func flushRetentionEvents() {
+	startRetentionEventWriter()
+	close(retentionEventCh)
+	<-retentionEventDone
+}
+
+// writeRetentionEventLine performs the actual append of one retention event
+// to the health event log. Runs only on the writer goroutine.
+func writeRetentionEventLine(event string) {
 	dir, ok := proxyHealthDir()
 	if !ok {
 		return

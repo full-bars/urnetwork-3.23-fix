@@ -692,12 +692,61 @@ func applyStagedSession() {
 // sanitizeRootPath rewrites PATH when running as root. Instead of replacing
 // PATH with a fixed FHS list (which drops reachable entries on NixOS and
 // similar where systemctl lives under /run/current-system/sw/bin), it keeps
-// only existing absolute directories that are not group- or world-writable
-// (an attacker writable earlier in root's PATH could hijack exec.Command bare
-// names), then appends the safe FHS defaults. Missing/relative/attacker-
+// only existing absolute directories that are not group- or world-writable —
+// NOR any of their ancestor directories (M8: a root-owned leaf inside an
+// attacker-writable parent can be swapped for a malicious binary after
+// sanitization at process start; the leaf's permissions alone don't protect
+// it) — then appends the safe FHS defaults. Missing/relative/attacker-
 // writable entries are dropped.
 func sanitizeRootPath() {
 	seen := map[string]bool{}
+	// Ancestor checks are memoized per sanitized run: PATH entries share
+	// deep prefixes (e.g. /usr/lib/...), and stat-ing the whole chain for
+	// every entry is wasteful. Cached verdicts stay valid for the lifetime
+	// of the call, which is the same window the filter is meant to cover.
+	ancestorSafe := map[string]bool{}
+	isDirWritableByOthers := func(path string) bool {
+		info, err := os.Stat(path)
+		if err != nil {
+			// Missing ancestor: treat as unsafe — it could be created
+			// (and made writable) between now and exec time.
+			return true
+		}
+		if !info.IsDir() {
+			return true
+		}
+		return info.Mode().Perm()&0o022 != 0
+	}
+	ancestorWritable := func(abs string) bool {
+		// Walk from root down to the entry's parent (the leaf itself is
+		// checked separately by the caller). "/" (Clean's stop) is skipped.
+		p := filepath.Clean(abs)
+		var chain []string
+		for {
+			parent := filepath.Dir(p)
+			if parent == p {
+				break
+			}
+			chain = append(chain, p)
+			p = parent
+		}
+		// chain is [leaf, ..., /]; check ancestors only (exclude leaf at 0).
+		for i := len(chain) - 1; i >= 1; i-- {
+			dir := chain[i]
+			if v, ok := ancestorSafe[dir]; ok {
+				if !v {
+					return true
+				}
+				continue
+			}
+			unsafe := isDirWritableByOthers(dir)
+			ancestorSafe[dir] = !unsafe
+			if unsafe {
+				return true
+			}
+		}
+		return false
+	}
 	var filtered []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
@@ -717,6 +766,12 @@ func sanitizeRootPath() {
 			continue
 		}
 		if strings.Contains(abs, "..") {
+			continue
+		}
+		// M8 TOCTOU fix: also drop entries whose ANY ancestor directory is
+		// group/world-writable (or missing) — an unprivileged user who can
+		// write to a parent can replace the safe leaf after this filter ran.
+		if ancestorWritable(abs) {
 			continue
 		}
 		key := filepath.Clean(abs)
@@ -2658,23 +2713,9 @@ func provide(opts docopt.Opts) {
 	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
 	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
 
-	// Extract API host:port for the reachability probe
-	apiProbeHost := defaultAPIHost
-	apiProbePort := uint16(defaultAPIPort)
-	if apiUrl != "" {
-		if h, p, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")); err == nil {
-			apiProbeHost = h
-			if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
-				apiProbePort = uint16(port)
-			}
-		} else {
-			// No port in URL, just a hostname
-			cleaned := strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")
-			if cleaned != "" {
-				apiProbeHost = cleaned
-			}
-		}
-	}
+	// Extract API host:port for the reachability probe (from the chosen
+	// network's API URL, already resolved above via resolveApiUrl).
+	apiProbeHost, apiProbePort := apiProbeHostPort(apiUrl)
 	// Wrapped in connect.HandleError so a panic in paceMonitor degrades to
 	// "that one loop dies" instead of taking the whole provider process down,
 	// consistent with every other fleet background loop (#12 fault isolation).
@@ -4914,7 +4955,9 @@ func proxyAddSource(opts docopt.Opts) {
 	// maxTotal=0 here: the cap configured for the running provide() process
 	// (--proxy_url_max) applies to its own background fetcher, not to this
 	// one-shot CLI fetch. The next scheduled fetch will resume honoring it.
-	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0, defaultAPIHost, defaultAPIPort)
+	// M6: probe the chosen network's API, not a hardcoded main-network host.
+	probeHost, probePort := resolveAPIProbeHostPort()
+	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0, probeHost, probePort)
 	fmt.Println("done.")
 }
 

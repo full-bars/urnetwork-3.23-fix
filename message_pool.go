@@ -118,6 +118,15 @@ const debugTags = false
 const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
 
+// MessagePoolFlagNoReturn is set when a MessagePoolShareReadOnly increment is
+// REFUSED (refcount at uint16 max). It marks the shared buffer as one the
+// caller must NOT pass to MessagePoolReturn: without it the refused share's
+// eventual Return would over-decrement a legitimate owner's reference
+// (L4 — previously only a log warning, undetectable by the caller).
+// MessagePoolReturn treats the flag as a signal to skip the decrement and
+// clear it, so a misbehaving caller degrades to a no-op return, not corruption.
+const MessagePoolFlagNoReturn = uint8(0x02)
+
 var InitialMessagePoolByteCount = mib(2)
 
 type poolShard struct {
@@ -587,7 +596,17 @@ func MessagePoolReturn(message []byte) bool {
 				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
-				if count == 0 {
+				if poolMessage[pool.size+9]&MessagePoolFlagNoReturn != 0 {
+					// L4: this buffer was flagged by a refused
+					// MessagePoolShareReadOnly (refcount overflow). Its
+					// refcount does NOT include the failed share, so
+					// consuming a Return for it would over-decrement a
+					// legitimate owner's reference. Degrade to a no-op
+					// return: clear the flag (one flagged buffer, one
+					// forgiveness) and skip the decrement entirely.
+					poolMessage[pool.size+9] &^= MessagePoolFlagNoReturn
+					DefaultLogger().Warningf("[mp]return message[%d] flagged no-return (refused share); skipping decrement", id)
+				} else if count == 0 {
 					if debugTags {
 						err := fmt.Errorf("[mp]return message[%d] not taken", id)
 						DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
@@ -643,15 +662,13 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 					// overflow wrapping to 0 (which reads as "not taken"
 					// everywhere else → cross-flow data corruption).
 					//
-					// CR note: on refusal the caller still receives the
-					// buffer and CANNOT detect the failed increment, so a
-					// later MessagePoolReturn would over-decrement an owner's
-					// reference. This only matters at 65,535 concurrent
-					// read-only shares of ONE buffer — unreachable in practice
-					// (the pool shards and flows don't share at that scale).
-					// Callers must treat a paste-received buffer as NOT shared
-					// and not return it when this warning fires.
-					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (caller must not return the buffer as shared)", id)
+					// L4 fix: set MessagePoolFlagNoReturn so the (contract-
+					// violating) caller that returns this buffer anyway is
+					// caught by MessagePoolReturn, which skips the decrement
+					// for flagged buffers — a no-op return, not an
+					// over-decrement of a legitimate owner's reference.
+					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (flagged no-return)", id)
+					poolMessage[pool.size+9] |= MessagePoolFlagNoReturn
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared

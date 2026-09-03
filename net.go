@@ -124,11 +124,14 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 			return ip, true
 		}
 		// Cache the negative result for 10s to avoid hammering the resolver
-		// for the same nonexistent hostname (finding #4).
+		// for the same nonexistent hostname (finding #4). Prune here too:
+		// the success path is the only place pruneDNSCacheLocked runs today,
+		// and a workload of distinct failing lookups never reaches it (M7).
 		if dnsCache.neg == nil {
 			dnsCache.neg = make(map[string]time.Time)
 		}
 		dnsCache.neg[host] = time.Now().Add(10 * time.Second)
+		pruneDNSCacheNegLocked(time.Now())
 		dnsCache.mu.Unlock()
 		return "", false
 	}
@@ -164,7 +167,36 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 // negPruneCap is the maximum size of the negative DNS cache.
 const negPruneCap = 1024
 
+// pruneDNSCacheNegLocked sweeps expired negative-cache entries and caps the
+// map at negPruneCap by arbitrary eviction. Caller holds dnsCache.mu.
+// Called both on the failure path (M7: a workload of distinct failing
+// lookups never reaches the success path's pruneDNSCacheLocked) and from
+// pruneDNSCacheLocked itself.
+func pruneDNSCacheNegLocked(now time.Time) {
+	if len(dnsCache.neg) == 0 {
+		return
+	}
+	for k, exp := range dnsCache.neg {
+		if now.After(exp) {
+			delete(dnsCache.neg, k)
+		}
+	}
+	for len(dnsCache.neg) > negPruneCap {
+		for k := range dnsCache.neg {
+			delete(dnsCache.neg, k)
+			break
+		}
+	}
+}
+
 func pruneDNSCacheLocked(now time.Time) {
+	// M7: the negative cache is swept on EVERY prune call, independent of
+	// the positive-cache-size early returns below. pruneDNSCacheLocked only
+	// runs on the success path, where a workload of distinct failing lookups
+	// never trips the positive threshold — without this unconditional sweep,
+	// dnsCache.neg would grow without bound.
+	pruneDNSCacheNegLocked(now)
+
 	const targetPercent = 90
 	target := dnsCacheMaxEntries * targetPercent / 100
 
@@ -207,21 +239,6 @@ func pruneDNSCacheLocked(now time.Time) {
 		}
 		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
 		delete(dnsCache.m, pairs[i].key)
-	}
-
-	// Prune the negative cache: drop expired entries, then cap.
-	if len(dnsCache.neg) > 0 {
-		for k, exp := range dnsCache.neg {
-			if now.After(exp) {
-				delete(dnsCache.neg, k)
-			}
-		}
-		for len(dnsCache.neg) > negPruneCap {
-			for k := range dnsCache.neg {
-				delete(dnsCache.neg, k)
-				break
-			}
-		}
 	}
 }
 
