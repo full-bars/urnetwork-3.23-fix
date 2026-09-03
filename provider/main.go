@@ -2630,6 +2630,9 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+	// Drain buffered retention events before exit so a shutdown racing the
+	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
+	defer flushRetentionEvents()
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If

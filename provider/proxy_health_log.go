@@ -318,6 +318,16 @@ var (
 	retentionEventOnce sync.Once
 	retentionEventCh   chan string
 	retentionEventDone chan struct{}
+
+	// retentionEventMu guards retentionEventClosed against the race between
+	// flushRetentionEvents closing retentionEventCh and a SendSequence still
+	// draining on shutdown calling appendRetentionEvent concurrently — the
+	// teardown drain (transfer.go Run() exit path) fires RetentionEventCallback
+	// for every retained item, which is exactly the same window flush runs in.
+	// Without this guard a send on the closed channel panics the process
+	// during what should be a graceful shutdown.
+	retentionEventMu     sync.Mutex
+	retentionEventClosed bool
 )
 
 // startRetentionEventWriter launches the single goroutine that performs the
@@ -341,6 +351,14 @@ func startRetentionEventWriter() {
 // blocking the caller, which runs on the transfer sequence hot path.
 func appendRetentionEvent(event string) {
 	startRetentionEventWriter()
+	retentionEventMu.Lock()
+	defer retentionEventMu.Unlock()
+	if retentionEventClosed {
+		// Lost the race with shutdown's flush; the writer goroutine has
+		// already been told to drain and exit. Telemetry, not correctness —
+		// drop rather than reopen a closed channel.
+		return
+	}
 	select {
 	case retentionEventCh <- event:
 	default:
@@ -350,10 +368,17 @@ func appendRetentionEvent(event string) {
 
 // flushRetentionEvents drains all buffered events and waits for the writer
 // goroutine to finish, so no pending entries are lost at shutdown. Safe to
-// call multiple times (subsequent calls are no-ops).
+// call multiple times (subsequent calls are no-ops) and safe to race against
+// concurrent appendRetentionEvent calls (retentionEventMu makes the close
+// and the closed-check atomic with respect to each other).
 func flushRetentionEvents() {
 	startRetentionEventWriter()
-	close(retentionEventCh)
+	retentionEventMu.Lock()
+	if !retentionEventClosed {
+		retentionEventClosed = true
+		close(retentionEventCh)
+	}
+	retentionEventMu.Unlock()
 	<-retentionEventDone
 }
 
