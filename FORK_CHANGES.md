@@ -3187,4 +3187,109 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Removed the outage watcher feature and its webhook signaling.
 - Removed stale `URNETWORK_ALERT_WEBHOOK` references from docs.
 
-**Impact**: No false outage alerts; fewer moving parts on the provider.
+**Impact**: No false outage alerts; fewer moving parts on the provider.---
+
+## 151. TCP-Return Retention Across Ack Timeouts (PR #506, #521)
+
+**Purpose**: Retain in-flight packets on TCP return paths past acknowledgment deadlines rather than prematurely discarding them, protecting relay session continuity and operator billing credit during transient packet stalls.
+
+**Files Modified**: `provider/main.go`, `transfer_contract_manager.go`, `provider/proxy_health_log.go`, `transfer_retain*.go` (new tests).
+
+**Change**:
+- **Retention State Machine**: When an ack deadline passes on a TCP return path, packets enter a retention queue instead of being dropped.
+- **Memory Ceiling**: Bounded by `MaxRetainedBytes` to prevent memory bloat under downstream partition.
+- **Flow Drainage**: Connection teardown (`rstFlow`) cleanly drains retained items without leaking memory.
+- **Billing Precision**: Contract `unack()` reconciles debit rounding so unearned credit is never granted on backstop drops.
+- **Health Telemetry**: Retention events (`retained_ack` and `retained_drop`) are recorded in the persistent health log.
+
+**Impact**: Significantly reduced premature connection drops and preserved billable byte credits on congested provider nodes.
+
+---
+
+## 152. Dynamic Direct Transport Toggle (`provider direct`) (PR #510, #514, #516, #517)
+
+**Purpose**: Enable operators to dynamically toggle the provider native direct IP transport without process restarts or disrupting active SOCKS5 proxy pools.
+
+**Files Modified**: `provider/direct.go` (new), `provider/direct_test.go` (new), `provider/main.go`, `provider/proxy_reload.go`.
+
+**Change**:
+- **CLI Subcommand**: `provider direct on|off|<state>` toggles direct native connection state.
+- **Atomic Persistence**: State is stored in `~/.urnetwork/direct_override` using atomic write-and-rename.
+- **Hot-Reload Integration**: SIGHUP reload and watcher reload re-evaluates direct transport state without restarting the provider process.
+- **Lifecycle & CAS Safety**: Worker goroutines use compare-and-delete tracking and synchronized `cancelMap` cleanup to eliminate race conditions.
+
+**Impact**: Zero-downtime control over native IP egress on multi-homed or proxy-dedicated nodes.
+
+---
+
+## 153. Bulk Proxy Ingestion via `proxy paste` & Signal Cleanup (PR #502, #520)
+
+**Purpose**: Streamlined, bulk ingestion of raw proxy lists from stdin, files, or HTTP(S) endpoints with automated format normalization and secure cleanup.
+
+**Files Modified**: `provider/proxy_paste.go` (new), `provider/proxy_paste_test.go` (new), `provider/main.go`.
+
+**Change**:
+- **Format Normalization**: Ingests bare `host:port`, `socks5://host:port`, `user:pass@host:port`, and CSV (`ip,port,user,pass`).
+- **Validation**: Rejects unsupported protocols (HTTP/HTTPS/SOCKS4), colon-in-credential corruption, out-of-range ports, and pseudo-IPv6.
+- **Signal Handler**: Intercepts `SIGINT`/`SIGTERM` during execution to remove temporary files containing plaintext credentials, resetting signal disposition and re-raising via cross-platform `os.Process.Signal`.
+
+**Impact**: Fast, reliable proxy loading for large fleets without credential leaks on interruption.
+
+---
+
+## 154. SSRF Hardening for Proxy Source URLs (PR #522)
+
+**Purpose**: Protect provider nodes against Server-Side Request Forgery (SSRF) when fetching operator-configured proxy lists via `proxy add-source` or `proxy paste`.
+
+**Files Modified**: `provider/ssrf_guard.go` (new), `provider/ssrf_guard_test.go` (new), `provider/proxy_url.go`, `provider/proxy_paste.go`.
+
+**Change**:
+- **Dial-Time Protection**: Resolves destination IPs before dialing and aborts connections to loopback (`127.0.0.0/8`, `::1`), link-local metadata (`169.254.0.0/16`, `fe80::/10`), private RFC1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6 ULA (`fc00::/7`), and multicast.
+- **Redirect Validation**: Follows up to 3 redirects, verifying each hop against the SSRF guard before issuing the next HTTP request.
+- **Testing Seam**: Unexported `ssrfAllowLoopback` toggle enables loopback test endpoints during test runs without compromising production protection.
+
+**Impact**: Prevents malicious or misconfigured proxy list URLs from targeting cloud instance metadata or internal services.
+
+---
+
+## 155. Multi-Hop Route Map (`pathTable`) LRU Eviction & Concurrency Protection (PR #513)
+
+**Purpose**: Guard the multi-hop routing table against unbounded memory growth and concurrent map read/write crashes under heavy peer churn.
+
+**Files Modified**: `ip.go`.
+
+**Change**:
+- **Concurrency Mutex**: Protected `pathTable` access with a mutex, matching the `TcpBuffer`/`UdpBuffer` pattern.
+- **LRU Eviction**: Implemented bounded size cap and LRU pruning so stale peer routes are evicted when the table reaches capacity.
+- **Last-Used Refresh**: Active connections continuously refresh their last-used timestamp to prevent premature eviction of active flows.
+
+**Impact**: Eliminates memory leaks and concurrent map panics on high-churn relay nodes.
+
+---
+
+## 156. Usage Accounting & Time-Series History (`urnet-tools usage`) (PR #507, #521)
+
+**Purpose**: Provide operators with transparent, granular visibility into node traffic, distinguishing billable relay bytes from protocol overhead.
+
+**Files Modified**: `cmd/urnet-tools/`, `internal/urnettools/`, `provider/main.go`.
+
+**Change**:
+- **Traffic Differentiation**: Tracks billable relay bytes versus control-plane protocol traffic.
+- **Time-Series Aggregation**: Generates rolling summary cards for `24h`, `7d`, `30d`, and `lifetime` windows.
+- **Chronological Sorting**: History logs are strictly sorted and deduped across restarts.
+
+**Impact**: Clear operational insights into earning efficiency and traffic distribution.
+
+---
+
+## 157. `choose_network` Presets (`main|beta`) (PR #504)
+
+**Purpose**: Simplify backend network switching between production and test environments without memorizing complex endpoint URLs.
+
+**Files Modified**: `internal/urnettools/`, `provider/main.go`.
+
+**Change**:
+- **Named Presets**: `choose_network main` maps to the production control endpoints; `choose_network beta` routes to the staging/test infrastructure.
+- **URL Resolution**: Translates preset aliases before writing to `~/.urnetwork/network.json`.
+
+**Impact**: Operator convenience and elimination of typo-related network misconfigurations.
