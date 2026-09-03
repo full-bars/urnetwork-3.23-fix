@@ -175,6 +175,50 @@ func TestDeltaBucketsRestartWithinBucket(t *testing.T) {
 	}
 }
 
+// TestDeltaBucketsTwoRestartsWithinSameBucket is the regression for the
+// CodeRabbit finding: bucketInfo tracked only ONE (restartCum,
+// maxCumPostRestart) pair. A SECOND same-bucket restart overwrote that pair,
+// silently discarding the growth of the first post-restart segment (between
+// the two restarts). Realistic on repeated proxy trim/reload or reaper
+// eviction landing within one hour bucket.
+func TestDeltaBucketsTwoRestartsWithinSameBucket(t *testing.T) {
+	now := time.Now()
+	day0 := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	snaps := []usageSnapshot{
+		{TS: day0, RX: 1000, TX: 2000, BillableRX: 900, BillableTX: 1800},                   // cum=3000 (seg1)
+		{TS: day0.Add(time.Hour), RX: 200, TX: 300, BillableRX: 180, BillableTX: 270},       // cum=500 (restart 1)
+		{TS: day0.Add(2 * time.Hour), RX: 1200, TX: 800, BillableRX: 1100, BillableTX: 700}, // cum=2000 (seg2 peak)
+		{TS: day0.Add(3 * time.Hour), RX: 100, TX: 150, BillableRX: 90, BillableTX: 130},    // cum=250 (restart 2)
+		{TS: day0.Add(4 * time.Hour), RX: 900, TX: 600, BillableRX: 800, BillableTX: 550},   // cum=1500 (seg3 peak)
+		{TS: day1, RX: 2500, TX: 1500, BillableRX: 2400, BillableTX: 1400},                  // cum=4000
+	}
+	buckets := deltaBuckets(snaps, func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}, 10, now)
+	if len(buckets) != 2 {
+		t.Fatalf("got %d buckets, want 2", len(buckets))
+	}
+	// day0 = seg1(3000-0) + seg2(2000-500=1500) + seg3(1500-250=1250) = 5750.
+	// Before the fix, seg2's 1500 was silently discarded by the second
+	// restart overwriting the tracked pair: total = 3000 + (1500-250) = 4250.
+	if buckets[0].total != 5750 {
+		t.Fatalf("day0 total = %d, want 5750 (bytes lost to second same-bucket restart, want %d got dropped)", buckets[0].total, 5750-buckets[0].total)
+	}
+	// day0 billable = seg1(2700-0) + seg2(1800-450=1350) + seg3(1350-220=1130) = 5180.
+	if buckets[0].billable != 5180 {
+		t.Fatalf("day0 billable = %d, want 5180", buckets[0].billable)
+	}
+	// day1 = 4000 - 1500 (day0's final post-restart max) = 2500.
+	if buckets[1].total != 2500 {
+		t.Fatalf("day1 total = %d, want 2500", buckets[1].total)
+	}
+	if buckets[1].billable != 2450 {
+		t.Fatalf("day1 billable = %d, want 2450", buckets[1].billable)
+	}
+}
+
 // TestBillableExceedsTotal verifies the M1 signal: when the independent
 // billable (ip.go) and total (net.go) counters disagree, the mismatch is
 // reported rather than silently floored by Control().

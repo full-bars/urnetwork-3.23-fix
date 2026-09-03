@@ -62,16 +62,18 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 	// and post-restart segments. Also track the previous bucket's final max
 	// so cross-bucket deltas use the correct baseline.
 	type bucketInfo struct {
-		d                  time.Time
-		maxCumPreRestart   uint64
-		maxBillPreRestart  uint64
-		maxCumPostRestart  uint64
-		maxBillPostRestart uint64
-		restartCum         uint64 // cumulative at the restart point (baseline for post-restart segment)
-		restartBill        uint64
-		hasRestart         bool
-		crossBucketRestart bool // restart happened at a bucket boundary (not within the bucket)
-		hasData            bool
+		d                      time.Time
+		maxCumPreRestart       uint64
+		maxBillPreRestart      uint64
+		maxCumPostRestart      uint64
+		maxBillPostRestart     uint64
+		restartCum             uint64 // cumulative at the MOST RECENT restart point (baseline for the current post-restart segment)
+		restartBill            uint64
+		postRestartSettled     uint64 // sum of deltas from post-restart segments already ended by a LATER restart in this bucket
+		postRestartBillSettled uint64
+		hasRestart             bool
+		crossBucketRestart     bool // restart happened at a bucket boundary (not within the bucket)
+		hasData                bool
 	}
 	byID := map[int64]*bucketInfo{}
 
@@ -138,6 +140,18 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 			bd.hasData = true
 		} else if s.RX < prevRX || s.TX < prevTX || s.BillableRX < prevBillRX || s.BillableTX < prevBillTX {
 			// Same-bucket restart: a cumulative field dropped within this bucket.
+			if bd.hasRestart {
+				// This bucket already had a restart (same-bucket or the
+				// cross-bucket restart that started it) whose post-restart
+				// segment is now itself ending. Settle that segment's delta
+				// into the running total before resetting the baseline for
+				// the new segment -- otherwise only the pair (restartCum,
+				// maxCumPostRestart) from the MOST RECENT restart survives,
+				// silently discarding growth from every earlier post-restart
+				// segment in this bucket.
+				bd.postRestartSettled += satSub(bd.maxCumPostRestart, bd.restartCum)
+				bd.postRestartBillSettled += satSub(bd.maxBillPostRestart, bd.restartBill)
+			}
 			bd.hasRestart = true
 			bd.restartCum = curCum // restart trigger snapshot (baseline for post-restart segment)
 			bd.restartBill = curBill
@@ -183,20 +197,19 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 		bd := byID[id]
 		var total, billable uint64
 		if bd.hasRestart {
-			// Two independent segments.
 			// Segment 1 delta = maxPreRestart - prevMax.
 			total = satSub(bd.maxCumPreRestart, prevMaxCum)
 			billable = satSub(bd.maxBillPreRestart, prevMaxBill)
-			// Segment 2: same-bucket restart uses restartCum as baseline
-			// (restart snapshot is old-process traffic); cross-bucket
-			// restart adds full cumulative (new process from ~0).
-			if bd.crossBucketRestart {
-				total += bd.maxCumPostRestart
-				billable += bd.maxBillPostRestart
-			} else {
-				total += satSub(bd.maxCumPostRestart, bd.restartCum)
-				billable += satSub(bd.maxBillPostRestart, bd.restartBill)
-			}
+			// Remaining segments: postRestartSettled sums every
+			// post-restart segment already ended by a LATER restart in
+			// this bucket (see the settle step above); the current
+			// (most recent) segment is added on top via restartCum as its
+			// baseline. A cross-bucket restart leaves restartCum at its
+			// zero value unless a later same-bucket restart reset it, so
+			// this also covers the "new process from ~0" cross-bucket case
+			// without a separate branch.
+			total += bd.postRestartSettled + satSub(bd.maxCumPostRestart, bd.restartCum)
+			billable += bd.postRestartBillSettled + satSub(bd.maxBillPostRestart, bd.restartBill)
 			prevMaxCum = bd.maxCumPostRestart
 			prevMaxBill = bd.maxBillPostRestart
 		} else {
