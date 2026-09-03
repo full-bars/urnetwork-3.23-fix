@@ -200,20 +200,19 @@ func parseProxyURLLine(line string) (address, user, password string, ok bool) {
 const maxProxyURLFetchBytes = 10 * 1024 * 1024 // 10 MiB
 
 // proxyURLHTTPClient is a custom HTTP client with redirect limits and
-// timeouts, instead of the global http.DefaultClient which has no guards.
+// timeouts — instead of the global http.DefaultClient which has no guards —
+// plus SSRF hardening: it refuses to dial or redirect to non-global
+// (loopback/link-local/private RFC1918/ULA/multicast) addresses, since
+// proxy-source URLs are operator-supplied and must only reach public lists.
 var proxyURLHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return fmt.Errorf("stopped after 3 redirects")
 		}
-		return nil
+		return ssrfVerifyURLHost(req.URL.String())
 	},
-	Transport: &http.Transport{
-		MaxIdleConns:       1,
-		IdleConnTimeout:    30 * time.Second,
-		DisableCompression: true,
-	},
+	Transport: sourceURLTransport(),
 }
 
 // fetchProxyURLLines fetches a proxy list from a URL and splits it into

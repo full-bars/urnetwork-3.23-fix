@@ -12,6 +12,10 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+func init() {
+	ssrfAllowLoopback.Store(true)
+}
+
 func TestWriteReadProxyURLState_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "proxy_url.json")
