@@ -352,4 +352,3 @@ func newDockerUsageCmd() *cobra.Command {
 		return cmdDockerUsage(args)
 	}), "Show aggregate traffic usage for the provider inside the targeted container as summary cards (billable vs control-plane split) or as day/hour/month time-series graphs. Reads the container's persistent usage history, so lifetime spans survive restarts and updates. Delegated to the in-container 'urnet-tools usage'.", "  urnet-docker usage --unit mynetwork-provider\n  urnet-docker usage graphs --unit mynetwork-provider\n  urnet-docker usage graph day --unit mynetwork-provider\n  urnet-docker usage graph month --unit mynetwork-provider")
 }
-

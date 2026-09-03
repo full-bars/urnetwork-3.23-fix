@@ -249,4 +249,3 @@ func TestCmdDirectStatusReporting(t *testing.T) {
 	}
 	cmdDirect(opts)
 }
-
