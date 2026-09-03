@@ -54,9 +54,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 	if len(snaps) == 0 {
 		return nil
 	}
-	sorted := make([]usageSnapshot, len(snaps))
-	copy(sorted, snaps)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
+	ordered := orderChronological(snaps)
 
 	bucketOf := func(t time.Time) int64 { return truncate(t).Unix() }
 
@@ -88,7 +86,7 @@ func deltaBuckets(snaps []usageSnapshot, truncate func(time.Time) time.Time, nBu
 	var prevRX, prevTX, prevBillRX, prevBillTX uint64
 	first := true
 
-	for _, s := range sorted {
+	for _, s := range ordered {
 		id := bucketOf(s.TS)
 		curCum := s.RX + s.TX
 		curBill := s.BillableRX + s.BillableTX

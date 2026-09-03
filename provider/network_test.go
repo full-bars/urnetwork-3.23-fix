@@ -276,6 +276,38 @@ func TestResolveConnectUrlPrecedence(t *testing.T) {
 	}
 }
 
+// TestApiProbeHostPort covers apiProbeHostPort's URL parsing, including the
+// M6 fix's port extraction and the case a manual scheme-trim +
+// net.SplitHostPort implementation gets wrong: a path or query string after
+// an explicit port (validateApiUrl permits paths; only scheme+host are
+// required) must not prevent the port from being recognized.
+func TestApiProbeHostPort(t *testing.T) {
+	cases := []struct {
+		name     string
+		apiUrl   string
+		wantHost string
+		wantPort uint16
+	}{
+		{"empty falls back to default", "", defaultAPIHost, uint16(defaultAPIPort)},
+		{"host with explicit port", "https://api.example.com:8443", "api.example.com", 8443},
+		{"host without port uses default port", "https://api.example.com", "api.example.com", uint16(defaultAPIPort)},
+		{"http scheme", "http://api.example.com:9000", "api.example.com", 9000},
+		{"host and port survive a path suffix", "https://api.example.com:8443/v1", "api.example.com", 8443},
+		{"unparseable falls back to default", "https://", defaultAPIHost, uint16(defaultAPIPort)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			host, port := apiProbeHostPort(c.apiUrl)
+			if host != c.wantHost {
+				t.Errorf("apiProbeHostPort(%q) host = %q, want %q", c.apiUrl, host, c.wantHost)
+			}
+			if port != c.wantPort {
+				t.Errorf("apiProbeHostPort(%q) port = %d, want %d", c.apiUrl, port, c.wantPort)
+			}
+		})
+	}
+}
+
 func TestChooseNetworkCmdSaves(t *testing.T) {
 	withTempHome(t)
 	opts := docopt.Opts{

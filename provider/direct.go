@@ -139,8 +139,11 @@ func cmdDirect(opts docopt.Opts) {
 	}
 
 	// If the provider is running, trigger an immediate reload so the
-	// change takes effect without a restart.
+	// change takes effect without a restart. (L6: hold proxyStateMu for
+	// the read so this can't interleave with reload()'s state write.)
+	proxyStateMu.Lock()
 	state, err := readProxyState()
+	proxyStateMu.Unlock()
 	if err != nil {
 		return
 	}

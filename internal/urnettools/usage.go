@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -37,30 +38,47 @@ func (a usageAggregates) Control() uint64 {
 	return 0
 }
 
-// readUsageHistory parses the provider's usage_history.jsonl into snapshots,
-// oldest-first, skipping malformed lines. A missing file yields an empty slice.
-// Streams from the file handle (no os.ReadFile + string copy) so a large
-// capped history file does not peak at ~2x its size in memory (CR Major).
+// BillableExceedsTotal reports the inconsistent state where the billable
+// counters (ip.go IP-packet accounting) exceed the total egress counters
+// (net.go SOCKS5 accounting). The two are independent counters so this is
+// possible; Control() floors it at 0 ("0% control traffic"), which would
+// silently mask a real accounting bug, so callers should surface it.
+func (a usageAggregates) BillableExceedsTotal() bool {
+	return a.Billable() > a.Total()
+}
+
+// readUsageHistory parses the provider's usage history (the rotated
+// usage_history.jsonl.1, if present, followed by usage_history.jsonl) into
+// snapshots sorted by timestamp (oldest-first), skipping malformed lines.
+// A missing set of files yields an empty slice. The rotated file is included
+// so LIFETIME survives history rotation. Streams from file handles (no
+// os.ReadFile + string copy) so large capped history files do not peak at
+// ~2x their size in memory (CR Major).
 func readUsageHistory(stateDir string) []usageSnapshot {
-	f, err := os.Open(filepath.Join(stateDir, "usage_history.jsonl"))
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
 	var snaps []usageSnapshot
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
+	for _, name := range []string{"usage_history.jsonl.1", "usage_history.jsonl"} {
+		f, err := os.Open(filepath.Join(stateDir, name))
+		if err != nil {
+			continue // missing file (the .1 is optional) — skip
 		}
-		var s usageSnapshot
-		if err := json.Unmarshal([]byte(line), &s); err != nil {
-			continue // ragged/partial last line — skip
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			var s usageSnapshot
+			if err := json.Unmarshal([]byte(line), &s); err != nil {
+				continue // ragged/partial last line — skip
+			}
+			snaps = append(snaps, s)
 		}
-		snaps = append(snaps, s)
+		f.Close()
 	}
+	// Callers (usageWindow, usageLifetime) assume chronological order; the
+	// combined .1 + main files and clock skew can violate that, so sort here.
+	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].TS.Before(snaps[j].TS) })
 	return snaps
 }
 
@@ -78,9 +96,12 @@ func usageLifetime(snaps []usageSnapshot) usageAggregates {
 	if len(snaps) == 0 {
 		return result
 	}
+	// Callers may hand us file-read order; sort a copy chronologically so the
+	// segment logic sees the same ordering deltaBuckets enforces.
+	ordered := orderChronological(snaps)
 	segBase := usageAggregates{} // baseline for the first segment = 0
-	for i := 1; i < len(snaps); i++ {
-		cur, prev := snaps[i], snaps[i-1]
+	for i := 1; i < len(ordered); i++ {
+		cur, prev := ordered[i], ordered[i-1]
 		if cur.RX < prev.RX || cur.TX < prev.TX ||
 			cur.BillableRX < prev.BillableRX || cur.BillableTX < prev.BillableTX {
 			// Drop: the previous segment ran segBase -> prev. Flush it.
@@ -96,7 +117,7 @@ func usageLifetime(snaps []usageSnapshot) usageAggregates {
 		}
 	}
 	// Final segment: segBase -> last.
-	last := snaps[len(snaps)-1]
+	last := ordered[len(ordered)-1]
 	result.TotalRX += satSub(last.RX, segBase.TotalRX)
 	result.TotalTX += satSub(last.TX, segBase.TotalTX)
 	result.BillableRX += satSub(last.BillableRX, segBase.BillableRX)
@@ -111,11 +132,16 @@ func usageLifetime(snaps []usageSnapshot) usageAggregates {
 // counters reset toward zero and a naive two-point delta undercounts (or
 // returns 0 via satSub). usageWindow walks all snapshots in the window,
 // detects restart boundaries (cumulative drops), and sums each segment
-// independently to handle restarts correctly.
+// independently to handle restarts correctly. Input may be in any order; it
+// is sorted chronologically first (see orderChronological).
 func usageWindow(snaps []usageSnapshot, window time.Duration, now time.Time) usageAggregates {
 	if len(snaps) == 0 {
 		return usageAggregates{}
 	}
+	// Same ordering guarantee as usageLifetime/deltaBuckets: sort a copy
+	// chronologically so a backward-timestamp row (clock correction) cannot
+	// desync the window walk's base lookup from its segment sums.
+	snaps = orderChronological(snaps)
 	// Collect snapshots within the window (including one before the window
 	// for the base reference).
 	var inWindow []usageSnapshot
@@ -185,4 +211,15 @@ func satSub(a, b uint64) uint64 {
 		return a - b
 	}
 	return 0
+}
+
+// orderChronological returns a chronologically sorted copy of snaps (stable
+// for equal timestamps). All three consumers (usageLifetime, usageWindow,
+// deltaBuckets) use it so file-read order and clock corrections cannot
+// desync restart/drop detection.
+func orderChronological(snaps []usageSnapshot) []usageSnapshot {
+	ordered := make([]usageSnapshot, len(snaps))
+	copy(ordered, snaps)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].TS.Before(ordered[j].TS) })
+	return ordered
 }

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/docopt/docopt-go"
 )
@@ -153,4 +154,40 @@ func resolveConnectUrl(opts docopt.Opts) (string, error) {
 		return cfg.ConnectUrl, nil
 	}
 	return DefaultConnectUrl, nil
+}
+
+// apiProbeHostPort extracts the API probe host:port from an API URL,
+// falling back to defaultAPIHost/defaultAPIPort for URLs that don't
+// parse into a host. Shared by provide()'s reachability-probe setup and
+// `proxy add-source`'s one-shot fetch so both follow the chosen network.
+// Parses with url.Parse (not manual scheme-trimming + SplitHostPort) so a
+// path or query string on the URL (e.g. "https://api.example.com:8443/v1")
+// doesn't get swept into the port and silently fall back to the default.
+func apiProbeHostPort(apiUrl string) (string, uint16) {
+	if apiUrl == "" {
+		return defaultAPIHost, uint16(defaultAPIPort)
+	}
+	u, err := url.Parse(apiUrl)
+	if err != nil || u.Hostname() == "" {
+		return defaultAPIHost, uint16(defaultAPIPort)
+	}
+	apiProbeHost := u.Hostname()
+	apiProbePort := uint16(defaultAPIPort)
+	if p := u.Port(); p != "" {
+		if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
+			apiProbePort = uint16(port)
+		}
+	}
+	return apiProbeHost, apiProbePort
+}
+
+// resolveAPIProbeHostPort resolves the API probe endpoint from the chosen
+// network (saved network config > default), for call sites that run without
+// docopt opts (e.g. the `proxy add-source` one-shot fetch).
+func resolveAPIProbeHostPort() (string, uint16) {
+	apiUrl := DefaultApiUrl
+	if cfg, ok, err := readNetworkConfig(); err == nil && ok && cfg.ApiUrl != "" {
+		apiUrl = cfg.ApiUrl
+	}
+	return apiProbeHostPort(apiUrl)
 }

@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -96,7 +97,9 @@ func cmdUsageCards(targetArgs []string) error {
 	}
 
 	// The reference (latest) snapshot gives "since start" (cumulative-per-process,
-	// which resets on restart). Lifetime is the running max over the file.
+	// which resets on restart). Lifetime is segment-summed from the history
+	// (see usageLifetime): the totals can drop on ordinary proxy churn, so a
+	// running max would discard post-drop growth.
 	ref := snaps[len(snaps)-1]
 	sinceStart := usageAggregates{BillableRX: ref.BillableRX, BillableTX: ref.BillableTX, TotalRX: ref.RX, TotalTX: ref.TX}
 	lifetime := usageLifetime(snaps)
@@ -115,6 +118,14 @@ func cmdUsageCards(targetArgs []string) error {
 	fmt.Println()
 	fmt.Printf("  Lifetime billable share: %.1f%% of %s total\n",
 		pct(lifetime.Billable(), lifetime.Total()), fmtBytes(lifetime.Total()))
+	for title, agg := range map[string]usageAggregates{
+		"LIFETIME": lifetime, "LAST 30D": month, "LAST 7D": week, "LAST 24H": day, "SINCE START": sinceStart,
+	} {
+		if agg.BillableExceedsTotal() {
+			fmt.Fprintf(os.Stderr, "warning: %s: billable (%s) > total (%s) — independent counters (ip.go vs net.go) disagree; control traffic floored to 0\n",
+				title, fmtBytes(agg.Billable()), fmtBytes(agg.Total()))
+		}
+	}
 	fmt.Printf("  Updated with latest hourly snapshot %s\n", ref.TS.UTC().Format(time.RFC3339))
 	return nil
 }

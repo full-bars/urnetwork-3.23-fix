@@ -68,3 +68,51 @@ func TestPruneDNSCacheBoundsAtCap(t *testing.T) {
 	}
 	dnsCache.mu.Unlock()
 }
+
+// TestPruneDNSCacheNegLockedExpiresEntries: pruneDNSCacheNegLocked drops
+// expired negative entries and keeps fresh ones.
+func TestPruneDNSCacheNegLockedExpiresEntries(t *testing.T) {
+	now := time.Now()
+	dnsCache.mu.Lock()
+	dnsCache.neg = map[string]time.Time{
+		"expired.example.com": now.Add(-time.Second),
+		"fresh.example.com":   now.Add(time.Minute),
+	}
+	pruneDNSCacheNegLocked(now)
+	if _, ok := dnsCache.neg["expired.example.com"]; ok {
+		t.Fatal("expired negative entry not evicted")
+	}
+	if _, ok := dnsCache.neg["fresh.example.com"]; !ok {
+		t.Fatal("fresh negative entry incorrectly evicted")
+	}
+	dnsCache.mu.Unlock()
+}
+
+// TestPruneDNSCacheNegLockedBoundsAtCap: M7 — a workload of distinct failing
+// lookups (each calling pruneDNSCacheNegLocked from lookupProxyTarget's
+// failure path, independent of the positive cache's size) must not grow the
+// negative cache without bound.
+func TestPruneDNSCacheNegLockedBoundsAtCap(t *testing.T) {
+	now := time.Now()
+	dnsCache.mu.Lock()
+	dnsCache.neg = make(map[string]time.Time)
+	for i := 0; i < negPruneCap+512; i++ {
+		k := fmt.Sprintf("miss%04d.example.invalid", i)
+		dnsCache.neg[k] = now.Add(10 * time.Second) // all fresh (unexpired)
+	}
+	pruneDNSCacheNegLocked(now)
+	if len(dnsCache.neg) > negPruneCap {
+		t.Fatalf("negative cache not bounded: %d > %d", len(dnsCache.neg), negPruneCap)
+	}
+	dnsCache.mu.Unlock()
+}
+
+// TestPruneDNSCacheNegLockedEmptyIsNoop: an empty/nil negative cache must not
+// panic (pruneDNSCacheNegLocked now runs unconditionally on every failed
+// lookup, including the very first one before dnsCache.neg is initialized).
+func TestPruneDNSCacheNegLockedEmptyIsNoop(t *testing.T) {
+	dnsCache.mu.Lock()
+	dnsCache.neg = nil
+	pruneDNSCacheNegLocked(time.Now())
+	dnsCache.mu.Unlock()
+}
