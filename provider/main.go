@@ -780,11 +780,27 @@ func sanitizeRootPath() {
 			filtered = append(filtered, key)
 		}
 	}
-	// Append safe FHS defaults (dedup).
+	// Append safe FHS defaults (dedup) — through the SAME filter as the
+	// existing-PATH loop above. These are well-known paths, but on a host
+	// where one is missing, group/world-writable, or has an unsafe ancestor
+	// (e.g. a container image with a misconfigured /usr/local), appending it
+	// unchecked would re-introduce exactly the class of directory the filter
+	// above exists to remove.
 	for _, dir := range []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
-		if !seen[filepath.Clean(dir)] {
-			seen[filepath.Clean(dir)] = true
-			filtered = append(filtered, dir)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			continue
+		}
+		if ancestorWritable(dir) {
+			continue
+		}
+		key := filepath.Clean(dir)
+		if !seen[key] {
+			seen[key] = true
+			filtered = append(filtered, key)
 		}
 	}
 	os.Setenv("PATH", strings.Join(filtered, string(os.PathListSeparator)))
@@ -3560,9 +3576,12 @@ func provide(opts docopt.Opts) {
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
 	critLog("PROVIDER EXIT: normal shutdown (code=0)")
-	// Explicitly close the DoH cache before os.Exit(0) since defers do
-	// not run on os.Exit. idempotent — safe if already called by defer.
+	// Explicitly close the DoH cache and flush retention events before
+	// os.Exit(0) since defers do not run on os.Exit. Both are idempotent —
+	// safe if already called by their defer (flushRetentionEvents guards on
+	// retentionEventClosed; closeDohCache is safe to call twice).
 	closeDohCache()
+	flushRetentionEvents()
 	os.Exit(0)
 }
 
