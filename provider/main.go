@@ -3353,6 +3353,11 @@ func provide(opts docopt.Opts) {
 	// The toggle file always wins — `provider direct on` re-enables direct
 	// even if the env var was set, and vice versa.
 	noDirect := !isDirectEnabled()
+	// Published to the reloader below so a `direct off` before any reload
+	// has hot-toggled direct doesn't skip the bounded wait for this startup
+	// goroutine (it would otherwise unregister proxy[0] out from under a
+	// still-running direct transport).
+	var directStartupDone chan struct{}
 	if !noDirect {
 		// ALWAYS start the native [direct] connection as proxy[0].
 		// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
@@ -3363,7 +3368,9 @@ func provide(opts docopt.Opts) {
 		proxyCancelMu.Lock()
 		proxyCancelMap[directProxyKey] = nativeCancel
 		proxyCancelMu.Unlock()
+		directStartupDone = make(chan struct{})
 		go connect.HandleError(func() {
+			defer close(directStartupDone) // first defer = runs last (LIFO)
 			defer wg.Done()
 			defer nativeCancel()
 			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
@@ -3476,6 +3483,7 @@ func provide(opts docopt.Opts) {
 		wg:              &wg,
 		spawnProxy:      provideWithProxy,
 		drainingProxies: make(map[string]context.CancelFunc),
+		directDone:      directStartupDone,
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
