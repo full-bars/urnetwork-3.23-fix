@@ -13,12 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/docopt/docopt-go"
 )
@@ -162,21 +160,22 @@ func resolveConnectUrl(opts docopt.Opts) (string, error) {
 // falling back to defaultAPIHost/defaultAPIPort for URLs that don't
 // parse into a host. Shared by provide()'s reachability-probe setup and
 // `proxy add-source`'s one-shot fetch so both follow the chosen network.
+// Parses with url.Parse (not manual scheme-trimming + SplitHostPort) so a
+// path or query string on the URL (e.g. "https://api.example.com:8443/v1")
+// doesn't get swept into the port and silently fall back to the default.
 func apiProbeHostPort(apiUrl string) (string, uint16) {
-	apiProbeHost := defaultAPIHost
+	if apiUrl == "" {
+		return defaultAPIHost, uint16(defaultAPIPort)
+	}
+	u, err := url.Parse(apiUrl)
+	if err != nil || u.Hostname() == "" {
+		return defaultAPIHost, uint16(defaultAPIPort)
+	}
+	apiProbeHost := u.Hostname()
 	apiProbePort := uint16(defaultAPIPort)
-	if apiUrl != "" {
-		if h, p, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")); err == nil {
-			apiProbeHost = h
-			if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
-				apiProbePort = uint16(port)
-			}
-		} else {
-			// No port in URL, just a hostname
-			cleaned := strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")
-			if cleaned != "" {
-				apiProbeHost = cleaned
-			}
+	if p := u.Port(); p != "" {
+		if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
+			apiProbePort = uint16(port)
 		}
 	}
 	return apiProbeHost, apiProbePort
