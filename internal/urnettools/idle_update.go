@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,6 +76,12 @@ func waitForIdle(ctx context.Context, stateDir string, running bool, opts IdleUp
 		}
 	}
 
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	startTime := time.Now()
 	var quietDuration time.Duration
 	pollInterval := 5 * time.Second
@@ -90,16 +97,15 @@ func waitForIdle(ctx context.Context, stateDir string, running bool, opts IdleUp
 	for {
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				fmt.Printf("[idle-update] Timeout of %s reached waiting for idle traffic — proceeding with update.\n", opts.Timeout)
+				return nil
+			}
 			return ctx.Err()
 		case <-ticker.C:
 		}
 
 		elapsed := time.Since(startTime)
-		if opts.Timeout > 0 && elapsed >= opts.Timeout {
-			fmt.Printf("[idle-update] Timeout of %s reached waiting for idle traffic — proceeding with update.\n", opts.Timeout)
-			return nil
-		}
-
 		rate, found, err := pollFn()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[idle-update] warning reading billable_rate: %v\n", err)
@@ -144,7 +150,15 @@ func waitForIdle(ctx context.Context, stateDir string, running bool, opts IdleUp
 				fmt.Printf("  [idle-update] Threshold met. Verifying sustained quiet (5s check)...\n")
 				verified := true
 				for i := 0; i < 5; i++ {
-					time.Sleep(1 * time.Second)
+					select {
+					case <-ctx.Done():
+						if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+							fmt.Printf("[idle-update] Timeout of %s reached waiting for idle traffic — proceeding with update.\n", opts.Timeout)
+							return nil
+						}
+						return ctx.Err()
+					case <-time.After(1 * time.Second):
+					}
 					vrate, vfound, verr := pollFn()
 					if verr != nil || !vfound || vrate > opts.Threshold {
 						verified = false
@@ -264,7 +278,10 @@ func cmdIdleUpdate(args []string, force, dryRun bool) error {
 	t, _, _ := parseTargetFlagsLenient(rest)
 	providers := Discover()
 	chosen, err := selectTargets(providers, t, nil, nil, false)
-	if err == nil && len(chosen) > 0 {
+	if err != nil {
+		return err
+	}
+	if len(chosen) > 0 {
 		// Wait on primary/first chosen provider
 		ctx := context.Background()
 		if err := waitForIdle(ctx, chosen[0].StateDir, chosen[0].Running, opts, nil); err != nil {
@@ -283,7 +300,7 @@ func cmdDockerIdleUpdate(args []string, force, dryRun bool) error {
 	}
 
 	providers := DiscoverDocker()
-	t, updateArgs, err := updateTargetFromArgs(rest, providers)
+	t, _, err := updateTargetFromArgs(rest, providers)
 	if err != nil {
 		return err
 	}
@@ -330,5 +347,5 @@ func cmdDockerIdleUpdate(args []string, force, dryRun bool) error {
 		return err
 	}
 
-	return cmdDockerUpdate(updateArgs, force, dryRun)
+	return cmdDockerUpdate(rest, force, dryRun)
 }

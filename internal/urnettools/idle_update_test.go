@@ -144,14 +144,13 @@ func TestWaitForIdleTimeout(t *testing.T) {
 func TestIdleUpdateDryRun(t *testing.T) {
 	err := Run([]string{"idle-update", "--dry-run", "--unit=urnetwork.service"})
 	if err != nil && err.Error() != "no providers found on this box" {
-		// In test environments without running providers, dry-run parsing verifies clean dispatch
-		t.Logf("idle-update dry-run returned expected status: %v", err)
+		t.Fatalf("unexpected idle-update dry-run error: %v", err)
 	}
 }
 
 func TestDockerIdleUpdateDryRun(t *testing.T) {
 	err := RunDocker([]string{"idle-update", "--dry-run", "--unit=test-provider"})
-	if err != nil {
-		t.Logf("urnet-docker idle-update dry-run returned: %v", err)
+	if err != nil && err.Error() != "no provider containers found" {
+		t.Fatalf("unexpected urnet-docker idle-update dry-run error: %v", err)
 	}
 }
