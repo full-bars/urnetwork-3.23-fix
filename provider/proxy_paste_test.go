@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeProxyLine(t *testing.T) {
@@ -272,5 +277,79 @@ func TestNormalizeProxyLinePseudoIPv6(t *testing.T) {
 	}
 	if got := normalizeProxyLine("user@host:1.2.3.4:1080"); got != "" {
 		t.Errorf("normalizeProxyLine cred-free pseudo-IPv6 = %q, want empty", got)
+	}
+}
+
+func TestSetupPasteSignalHandler_NormalCleanup(t *testing.T) {
+	called := false
+	remove := func() { called = true }
+	cleanup := setupPasteSignalHandler(remove)
+	cleanup()
+	if called {
+		t.Errorf("removeTempFile should not be called on normal cleanup")
+	}
+}
+
+func TestSetupPasteSignalHandler_SignalHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_PASTE_SIGNAL_HELPER") != "1" {
+		return
+	}
+	tmpFile, err := os.CreateTemp("", "proxy-paste-test-*.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create temp error: %v\n", err)
+		os.Exit(2)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	remove := func() {
+		_ = os.Remove(tmpPath)
+	}
+	_ = setupPasteSignalHandler(remove)
+
+	// Print temp path to stdout so parent test knows file is ready
+	fmt.Println(tmpPath)
+
+	// Wait for signal
+	select {
+	case <-time.After(5 * time.Second):
+		remove()
+		os.Exit(3)
+	}
+}
+
+func TestSetupPasteSignalHandler_RemovesTempFileOnSignal(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestSetupPasteSignalHandler_SignalHelper")
+	cmd.Env = append(os.Environ(), "GO_WANT_PASTE_SIGNAL_HELPER=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatalf("failed to read temp path from helper process: %v", scanner.Err())
+	}
+	tmpPath := scanner.Text()
+
+	// Verify temp file exists
+	if _, err := os.Stat(tmpPath); err != nil {
+		t.Fatalf("expected temp file to exist: %v", err)
+	}
+
+	// Send Interrupt signal to helper process
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("failed to send interrupt: %v", err)
+	}
+
+	_ = cmd.Wait()
+
+	// Verify temp file was removed by the signal handler
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		_ = os.Remove(tmpPath)
+		t.Errorf("expected temp file %s to be removed on signal, stat err: %v", tmpPath, err)
 	}
 }
