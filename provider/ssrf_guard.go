@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,10 @@ import (
 // This intentionally matches (and tightens) the trust model: source URLs are
 // operator-supplied for fetching public proxy lists, which are always global-routed.
 
+// ssrfAllowLoopback allows loopback dials/redirects when true. This is used
+// exclusively in unit tests to allow httptest.NewServer mock endpoints.
+var ssrfAllowLoopback atomic.Bool
+
 // isBlockedSourceIP reports whether ip must never be contacted by a fetcher.
 // Blocks: loopback (127.0.0.0/8, ::1), link-local (169.254.0.0/16, fe80::/10),
 // private RFC1918 (10/8, 172.16/12, 192.168/16) + IPv6 ULA (fc00::/7),
@@ -27,6 +32,9 @@ import (
 func isBlockedSourceIP(ip net.IP) bool {
 	if ip == nil {
 		return true // unresolvable — treat as unsafe
+	}
+	if ssrfAllowLoopback.Load() && ip.IsLoopback() {
+		return false
 	}
 	return ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() ||
