@@ -3,6 +3,7 @@ package connect
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	mathrand "math/rand"
 	"testing"
@@ -249,6 +250,53 @@ func TestMessagePoolShardPowerOfTwo(t *testing.T) {
 	nonPowersOfTwo := []int{3, 5, 6, 7, 9, 10, 15, 31, 63, 127, 255}
 	for _, v := range nonPowersOfTwo {
 		assert.Equal(t, v&(v-1) == 0, false)
+	}
+}
+
+// TestMessagePoolRefusedShareFlagsNoReturn is the L4 regression: a share
+// refused at refcount overflow (uint16 max) must not let a later
+// MessagePoolReturn on the refused share over-decrement a legitimate owner's
+// reference. Before the fix, the refusal was only a log line — the caller
+// held an indistinguishable buffer and a stray Return would decrement the
+// count exactly as if the share had succeeded, corrupting the real owners'
+// accounting.
+func TestMessagePoolRefusedShareFlagsNoReturn(t *testing.T) {
+	message := MessagePoolGet(64)
+	c := cap(message)
+	poolSize := c - MessagePoolMetaByteCount
+	poolMessage := message[:c]
+
+	// Simulate a buffer already at max refcount (65535 concurrent read-only
+	// shares) rather than looping that many times.
+	binary.BigEndian.PutUint16(poolMessage[poolSize+10:], ^uint16(0))
+
+	shared := MessagePoolShareReadOnly(message)
+	if &shared[0] != &message[0] {
+		t.Fatal("MessagePoolShareReadOnly returned a different buffer on refusal")
+	}
+	if poolMessage[poolSize+9]&MessagePoolFlagNoReturn == 0 {
+		t.Fatal("refused share did not set MessagePoolFlagNoReturn")
+	}
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
+		t.Fatalf("refused share mutated the refcount: got %d, want unchanged max", count)
+	}
+
+	// A caller that (incorrectly, per the refusal warning) returns the
+	// refused share anyway must be a no-op — NOT a decrement of the count
+	// that legitimate owners are still relying on.
+	MessagePoolReturn(message)
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
+		t.Fatalf("no-return flag did not prevent decrement: count = %d, want unchanged max", count)
+	}
+	if poolMessage[poolSize+9]&MessagePoolFlagNoReturn != 0 {
+		t.Fatal("MessagePoolFlagNoReturn not cleared after being consumed by Return")
+	}
+
+	// The flag is single-use ("one flagged buffer, one forgiveness"): the
+	// next Return decrements normally like any legitimate owner's Return.
+	MessagePoolReturn(message)
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0)-1 {
+		t.Fatalf("post-forgiveness return did not decrement: count = %d, want %d", count, ^uint16(0)-1)
 	}
 }
 
