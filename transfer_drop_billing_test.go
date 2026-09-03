@@ -201,6 +201,67 @@ func TestUnackClampsWhenCumulativeAckCoveredDebit(t *testing.T) {
 	}
 }
 
+// TestUnackMirrorsUpdateRounding verifies unack()'s documented mirror of
+// update()'s minUpdateByteCount rounding: the amount released by unack for a
+// given byteCount must equal the amount debited by update() for that same
+// byteCount, even when minUpdateByteCount rounds a small message up to a
+// larger effective debit. Before this would matter, a naive unack(byteCount)
+// (releasing the raw, unrounded byteCount) would under-release and leave the
+// contract's unackedByteCount permanently offset after a drop.
+func TestUnackMirrorsUpdateRounding(t *testing.T) {
+	contract := &sequenceContract{
+		log:                        DefaultLogger(),
+		localId:                    NewId(),
+		contractId:                 NewId(),
+		minUpdateByteCount:         64,
+		effectiveTransferByteCount: 10000,
+	}
+
+	const small = ByteCount(10) // below minUpdateByteCount, rounds up to 64
+
+	if ok := contract.update(small); !ok {
+		t.Fatal("update() rejected debit within contract capacity")
+	}
+	if contract.unackedByteCount != 64 {
+		t.Fatalf("update() debit = %d, want 64 (rounded up to minUpdateByteCount)", contract.unackedByteCount)
+	}
+
+	contract.unack(small)
+	if contract.unackedByteCount != 0 {
+		t.Fatalf("unack() left unackedByteCount at %d, want 0 (must release the full rounded-up debit of 64, not just the raw 10)", contract.unackedByteCount)
+	}
+}
+
+// TestUnackReleasesOnlyItsOwnDebit verifies that when two items share a
+// contract and both debits are rounded up by minUpdateByteCount, dropping
+// one releases exactly its own effective debit — not the other item's.
+func TestUnackReleasesOnlyItsOwnDebit(t *testing.T) {
+	contract := &sequenceContract{
+		log:                        DefaultLogger(),
+		localId:                    NewId(),
+		contractId:                 NewId(),
+		minUpdateByteCount:         64,
+		effectiveTransferByteCount: 10000,
+	}
+
+	if ok := contract.update(10); !ok { // rounds up to 64
+		t.Fatal("update() rejected item1 debit")
+	}
+	if ok := contract.update(100); !ok { // already above minUpdateByteCount
+		t.Fatal("update() rejected item2 debit")
+	}
+	if contract.unackedByteCount != 164 {
+		t.Fatalf("combined debit = %d, want 164 (64 + 100)", contract.unackedByteCount)
+	}
+
+	// Drop item1 (byteCount=10) — must release exactly its rounded debit
+	// (64), leaving item2's 100 outstanding and untouched.
+	contract.unack(10)
+	if contract.unackedByteCount != 100 {
+		t.Fatalf("unackedByteCount after dropping item1 = %d, want 100 (item2's debit must be untouched)", contract.unackedByteCount)
+	}
+}
+
 // TestDropItemSettlesContractOnNonCurrentContract verifies the full drop
 // settlement on a NON-current contract (sendContract != itemContract): the
 // fully-settled non-current contract is closed and removed from
