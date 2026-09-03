@@ -119,6 +119,7 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerSummaryCmd(),
 		newDockerReportCmd(),
 		newDockerUpdateCmd(),
+		newDockerIdleUpdateCmd(),
 		newDockerVersionCmd(),
 		newDockerProxyCmd(),
 		newDockerSelfHealCmd(),
@@ -215,6 +216,44 @@ func newDockerUpdateCmd() *cobra.Command {
 			return cmdDockerUpdate(rest, force, dryRun)
 		})
 	}), "With a target (a container name given directly, or --unit/--network/--network-id/--state-dir), update that container's provider binary in place with no recreate, by running its own urnet-tools update inside the container; the container must already be running. With no target, this instead self-updates the host urnet-docker binary, so --tag/--digest/--url then apply to the host tool, not any container.", "  urnet-docker update\n  urnet-docker update mynetwork-provider\n  urnet-docker update --unit mynetwork-provider\n  urnet-docker update --unit=mynetwork-provider")
+}
+
+func newDockerIdleUpdateCmd() *cobra.Command {
+	long := `Wait for billable traffic inside a container to subside before applying an in-place update.
+
+Monitors the provider container's rolling billable relay throughput without recreating
+the container. Once traffic remains below --threshold for the required --window duration,
+it verifies sustained quiet and performs the in-place binary swap inside the running container.
+
+Features a configurable --timeout ceiling so maintenance automations and Watchtower scripts
+do not hang indefinitely if low-volume client activity persists. When the timeout expires,
+it logs a notice and applies the update.
+
+Flags:
+  --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
+  --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
+  --timeout <duration>    Maximum wait time before forcing update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
+  --tag <version>         Pin to a specific release tag
+  -f, --force             Skip interactive confirmation prompts
+  -n, --dry-run           Print the plan and wait parameters without modifying the container`
+
+	examples := `  # Wait for a quiet window on the default/lone container:
+  urnet-docker idle-update
+
+  # Target a specific container with custom 15 KiB/s threshold and 45m timeout:
+  urnet-docker idle-update mynetwork-provider --threshold 15360 --window 5m --timeout 45m
+
+  # Target by unit flag:
+  urnet-docker idle-update --unit urfix-1 --timeout 1h
+
+  # Dry-run preview:
+  urnet-docker idle-update --unit urfix-1 --dry-run`
+
+	return withHelp(newCobraCmd("idle-update [<container> | --unit <name>]", "wait for traffic lull before updating container's provider in place", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdDockerIdleUpdate(rest, force, dryRun)
+		})
+	}), long, examples)
 }
 
 func newDockerVersionCmd() *cobra.Command {
