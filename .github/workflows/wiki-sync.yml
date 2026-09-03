@@ -1,0 +1,51 @@
+name: Sync Docs to Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          path: main-repo
+
+      - name: Checkout wiki repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Sync markdown files to wiki
+        run: |
+          if [ -d "wiki-repo" ]; then
+            echo "Copying documentation pages to wiki repository..."
+            cp -v main-repo/docs/*.md wiki-repo/
+            if [ -f "main-repo/docs/urnet-tools-go.md" ]; then
+              cp -v main-repo/docs/urnet-tools-go.md wiki-repo/urnet-tools-Go.md
+            fi
+            cd wiki-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            if [ -n "$(git status --porcelain)" ]; then
+              git add .
+              git commit -m "docs: automated sync from main docs/"
+              git push origin master || git push origin main
+            else
+              echo "Wiki is already in sync."
+            fi
+          else
+            echo "Wiki repo could not be checked out (check repository wiki settings)."
+          fi
