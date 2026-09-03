@@ -270,12 +270,16 @@ func TestMessagePoolRefusedShareFlagsNoReturn(t *testing.T) {
 	// shares) rather than looping that many times.
 	binary.BigEndian.PutUint16(poolMessage[poolSize+10:], ^uint16(0))
 
+	refusedShareCount := func() uint8 {
+		return (poolMessage[poolSize+9] & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+	}
+
 	shared := MessagePoolShareReadOnly(message)
 	if &shared[0] != &message[0] {
 		t.Fatal("MessagePoolShareReadOnly returned a different buffer on refusal")
 	}
-	if poolMessage[poolSize+9]&MessagePoolFlagNoReturn == 0 {
-		t.Fatal("refused share did not set MessagePoolFlagNoReturn")
+	if refusedShareCount() != 1 {
+		t.Fatalf("refused share did not set refused-share count to 1, got %d", refusedShareCount())
 	}
 	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
 		t.Fatalf("refused share mutated the refcount: got %d, want unchanged max", count)
@@ -286,14 +290,70 @@ func TestMessagePoolRefusedShareFlagsNoReturn(t *testing.T) {
 	// that legitimate owners are still relying on.
 	MessagePoolReturn(message)
 	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
-		t.Fatalf("no-return flag did not prevent decrement: count = %d, want unchanged max", count)
+		t.Fatalf("no-return count did not prevent decrement: count = %d, want unchanged max", count)
 	}
-	if poolMessage[poolSize+9]&MessagePoolFlagNoReturn != 0 {
-		t.Fatal("MessagePoolFlagNoReturn not cleared after being consumed by Return")
+	if refusedShareCount() != 0 {
+		t.Fatalf("refused-share count not decremented after being consumed by Return, got %d", refusedShareCount())
 	}
 
-	// The flag is single-use ("one flagged buffer, one forgiveness"): the
-	// next Return decrements normally like any legitimate owner's Return.
+	// A single refusal is forgiven by exactly one no-op Return: the next
+	// Return decrements normally like any legitimate owner's Return.
+	MessagePoolReturn(message)
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0)-1 {
+		t.Fatalf("post-forgiveness return did not decrement: count = %d, want %d", count, ^uint16(0)-1)
+	}
+}
+
+// TestMessagePoolStackedRefusedSharesEachGetForgiveness is the regression
+// for the CodeRabbit finding on the original single-bit fix: two
+// MessagePoolShareReadOnly calls can both be refused while the count is
+// saturated at max. A single bit can only record "refused at least once",
+// so the first Return would clear it and the SECOND Return would fall
+// through to a real decrement — over-releasing a legitimate owner's
+// reference by one. The counter must instead require one no-op Return per
+// refusal before decrementing resumes.
+func TestMessagePoolStackedRefusedSharesEachGetForgiveness(t *testing.T) {
+	message := MessagePoolGet(64)
+	c := cap(message)
+	poolSize := c - MessagePoolMetaByteCount
+	poolMessage := message[:c]
+
+	binary.BigEndian.PutUint16(poolMessage[poolSize+10:], ^uint16(0))
+
+	refusedShareCount := func() uint8 {
+		return (poolMessage[poolSize+9] & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+	}
+
+	// Two independent callers both attempt to share while refcount is
+	// saturated; both are refused.
+	MessagePoolShareReadOnly(message)
+	MessagePoolShareReadOnly(message)
+	if refusedShareCount() != 2 {
+		t.Fatalf("two stacked refusals: got refused-share count %d, want 2", refusedShareCount())
+	}
+
+	// First no-op return: forgives exactly one refusal, must NOT decrement
+	// the real refcount.
+	MessagePoolReturn(message)
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
+		t.Fatalf("first return after stacked refusals decremented early: count = %d, want unchanged max", count)
+	}
+	if refusedShareCount() != 1 {
+		t.Fatalf("first return did not consume exactly one refusal, got refused-share count %d", refusedShareCount())
+	}
+
+	// Second no-op return: forgives the second refusal, still must NOT
+	// decrement — this is exactly the case the single-bit version got wrong.
+	MessagePoolReturn(message)
+	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0) {
+		t.Fatalf("second return after stacked refusals decremented (single-bit regression): count = %d, want unchanged max", count)
+	}
+	if refusedShareCount() != 0 {
+		t.Fatalf("second return did not clear refused-share count, got %d", refusedShareCount())
+	}
+
+	// Both refusals now forgiven: the next Return is a legitimate owner's
+	// Return and must decrement for real.
 	MessagePoolReturn(message)
 	if count := binary.BigEndian.Uint16(poolMessage[poolSize+10:]); count != ^uint16(0)-1 {
 		t.Fatalf("post-forgiveness return did not decrement: count = %d, want %d", count, ^uint16(0)-1)
