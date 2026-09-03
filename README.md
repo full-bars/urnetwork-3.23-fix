@@ -77,7 +77,7 @@ walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Addi
 
 ### 🐋 Docker (Production-Ready)
 
-Recommended for real deployments — includes auto-tuning, in-memory logs, persistent config, and bandwidth monitoring:
+Recommended for real deployments — includes auto-tuning, in-memory logs, and persistent config with zero listening ports:
 
 ```bash
 docker run -d \
@@ -90,23 +90,23 @@ docker run -d \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_RAMLOGS=1 \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urnetwork_config:/root/.urnetwork \
-  -v urnetwork_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 8080:8080 \
   -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
 **Key env vars:**
 - `URNETWORK_PROFILE=auto` — Auto-tunes based on available RAM (balanced, lowmem, etc.)
-- `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
+- `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `urnet-docker logs`)
 - `URNETWORK_AUTH_CODE` — Auth code is exchanged for your JWT token, obtained from https://ur.io (single-use on first run; saved to volume)
 - `PROXY_URL` — Optional live proxy list URL (comma-separated for multiple), additive with the mounted `proxy.txt`. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
 - `UR_API_URL` / `UR_CONNECT_URL` — Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
+
+> [!TIP]
+> Providers do not require any listening ports. Outbound connections handle all traffic. If you wish to enable the optional vnstat web monitor, see [Running with vnstat](docs/Docker-Deployment.md#-optional-running-with-vnstat-bandwidth-monitor).
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
