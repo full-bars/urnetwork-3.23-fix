@@ -816,11 +816,19 @@ func snStatusCmd(opts docopt.Opts) {
 		ChainID           uint64  `json:"chain_id,omitempty"`
 		PayoutShareBps    int     `json:"payout_share_bps,omitempty"`
 		ClaimEpoch        uint64  `json:"claim_epoch,omitempty"`
+		Error             string  `json:"error,omitempty"`
 	}
 
 	out := SnStatusOutput{}
 
-	if rankingRes, err := api.NetworkGetRankingSync(); err == nil && rankingRes != nil && rankingRes.NetworkRanking != nil {
+	var errs []string
+
+	rankingRes, err := api.NetworkGetRankingSync()
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("network ranking: %v", err))
+	} else if rankingRes != nil && rankingRes.Error != nil && rankingRes.Error.Message != "" {
+		errs = append(errs, fmt.Sprintf("network ranking: %s", rankingRes.Error.Message))
+	} else if rankingRes != nil && rankingRes.NetworkRanking != nil {
 		out.LeaderboardRank = rankingRes.NetworkRanking.LeaderboardRank
 		out.NetMibCount = rankingRes.NetworkRanking.NetMibCount
 		out.LeaderboardPublic = rankingRes.NetworkRanking.LeaderboardPublic
@@ -843,29 +851,38 @@ func snStatusCmd(opts docopt.Opts) {
 		}
 	}
 
-	if epochRes, err := api.SnEpochSync(); err == nil && epochRes != nil {
+	epochRes, err := api.SnEpochSync()
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("subnet epoch: %v", err))
+	} else if epochRes != nil {
 		out.CurrentEpoch = epochRes.Epoch
 		out.StartBlock = epochRes.StartBlock
 		out.FinalizeBlock = epochRes.FinalizeBlock
 		out.ContractAddress = epochRes.ContractAddress
 		out.ChainID = epochRes.ChainId
 
-		targetEpoch := epochRes.Epoch
-		if targetEpoch > 1 {
-			targetEpoch = epochRes.Epoch - 1
-		}
-		if claimRes, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{Epoch: targetEpoch}); err == nil && claimRes != nil {
-			out.ClaimEpoch = claimRes.Epoch
-			out.PayoutShareBps = claimRes.ShareBps
-			if len(claimRes.Coldkey) == 32 {
-				var ck [32]byte
-				copy(ck[:], claimRes.Coldkey)
-				out.ColdkeyHex = fmt.Sprintf("0x%x", ck)
-				if encoded, err := ss58.Encode(ck, ss58.BittensorPrefix); err == nil {
-					out.ColdkeySs58 = encoded
+		if epochRes.Epoch > 0 {
+			targetEpoch := epochRes.Epoch - 1
+			if claimRes, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{Epoch: targetEpoch}); err == nil && claimRes != nil {
+				out.ClaimEpoch = claimRes.Epoch
+				out.PayoutShareBps = claimRes.ShareBps
+				if len(claimRes.Coldkey) == 32 {
+					var ck [32]byte
+					copy(ck[:], claimRes.Coldkey)
+					claimHex := fmt.Sprintf("0x%x", ck)
+					if out.ColdkeyHex == "" {
+						out.ColdkeyHex = claimHex
+					}
+					if encoded, err := ss58.Encode(ck, ss58.BittensorPrefix); err == nil && out.ColdkeySs58 == "" {
+						out.ColdkeySs58 = encoded
+					}
 				}
 			}
 		}
+	}
+
+	if len(errs) > 0 {
+		out.Error = strings.Join(errs, "; ")
 	}
 
 	if jsonMode {
@@ -925,6 +942,9 @@ func snStatusCmd(opts docopt.Opts) {
 	if out.PayoutShareBps > 0 {
 		fmt.Printf("  \x1b[1mPayout Share:\x1b[0m     \x1b[32m%.2f%%\x1b[0m (%d bps in Epoch #%d)\n",
 			float64(out.PayoutShareBps)/100.0, out.PayoutShareBps, out.ClaimEpoch)
+	}
+	if out.Error != "" {
+		fmt.Printf("  \x1b[33;1mWarning:\x1b[0m          \x1b[33m%s\x1b[0m\n", out.Error)
 	}
 	fmt.Println("\x1b[1m════════════════════════════════════════════════════════════════════════════════\x1b[0m")
 }

@@ -117,16 +117,21 @@ func cmdSnStatus(args []string) error {
 func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 	stateDir := p.StateDir
 	if stateDir == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve home directory: %w", err)
+		}
 		stateDir = filepath.Join(home, ".urnetwork")
 	}
 
 	jwtPath := filepath.Join(stateDir, "jwt")
 	jwtBytes, err := os.ReadFile(jwtPath)
 	if errors.Is(err, os.ErrNotExist) {
-		home, _ := os.UserHomeDir()
-		jwtPath = filepath.Join(home, ".urnetwork", "jwt")
-		jwtBytes, err = os.ReadFile(jwtPath)
+		home, err := os.UserHomeDir()
+		if err == nil {
+			jwtPath = filepath.Join(home, ".urnetwork", "jwt")
+			jwtBytes, err = os.ReadFile(jwtPath)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("no authentication JWT found at %s: %w. Run 'urnet-tools auth' first", jwtPath, err)
@@ -169,8 +174,15 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 
+	var errs []string
+
 	// 1. Fetch Network Ranking
-	if rankingRes, err := api.NetworkGetRankingSync(); err == nil && rankingRes != nil && rankingRes.NetworkRanking != nil {
+	rankingRes, err := api.NetworkGetRankingSync()
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("network ranking: %v", err))
+	} else if rankingRes != nil && rankingRes.Error != nil && rankingRes.Error.Message != "" {
+		errs = append(errs, fmt.Sprintf("network ranking: %s", rankingRes.Error.Message))
+	} else if rankingRes != nil && rankingRes.NetworkRanking != nil {
 		info.LeaderboardRank = rankingRes.NetworkRanking.LeaderboardRank
 		info.NetMibCount = rankingRes.NetworkRanking.NetMibCount
 		info.LeaderboardPublic = rankingRes.NetworkRanking.LeaderboardPublic
@@ -194,30 +206,39 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 	}
 
 	// 2. Fetch Subnet Epoch
-	if epochRes, err := api.SnEpochSync(); err == nil && epochRes != nil {
+	epochRes, err := api.SnEpochSync()
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("subnet epoch: %v", err))
+	} else if epochRes != nil {
 		info.CurrentEpoch = epochRes.Epoch
 		info.StartBlock = epochRes.StartBlock
 		info.FinalizeBlock = epochRes.FinalizeBlock
 		info.ContractAddress = epochRes.ContractAddress
 		info.ChainID = epochRes.ChainId
 
-		// 3. Fetch Payout Claim for latest finalized epoch (e-1)
-		targetEpoch := epochRes.Epoch
-		if targetEpoch > 1 {
-			targetEpoch = epochRes.Epoch - 1
-		}
-		if claimRes, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{Epoch: targetEpoch}); err == nil && claimRes != nil {
-			info.ClaimEpoch = claimRes.Epoch
-			info.PayoutShareBps = claimRes.ShareBps
-			if len(claimRes.Coldkey) == 32 {
-				var ck [32]byte
-				copy(ck[:], claimRes.Coldkey)
-				info.ColdkeyHex = fmt.Sprintf("0x%x", ck)
-				if encoded, err := ss58.Encode(ck, ss58.BittensorPrefix); err == nil && info.ColdkeySs58 == "" {
-					info.ColdkeySs58 = encoded
+		// 3. Fetch Payout Claim for latest finalized epoch (current - 1 if current > 0)
+		if epochRes.Epoch > 0 {
+			targetEpoch := epochRes.Epoch - 1
+			if claimRes, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{Epoch: targetEpoch}); err == nil && claimRes != nil {
+				info.ClaimEpoch = claimRes.Epoch
+				info.PayoutShareBps = claimRes.ShareBps
+				if len(claimRes.Coldkey) == 32 {
+					var ck [32]byte
+					copy(ck[:], claimRes.Coldkey)
+					claimHex := fmt.Sprintf("0x%x", ck)
+					if info.ColdkeyHex == "" {
+						info.ColdkeyHex = claimHex
+					}
+					if encoded, err := ss58.Encode(ck, ss58.BittensorPrefix); err == nil && info.ColdkeySs58 == "" {
+						info.ColdkeySs58 = encoded
+					}
 				}
 			}
 		}
+	}
+
+	if len(errs) > 0 {
+		info.Error = strings.Join(errs, "; ")
 	}
 
 	return info, nil
@@ -291,6 +312,9 @@ func renderSnStatusDashboard(s *SnStatusInfo) {
 		sharePct := float64(s.PayoutShareBps) / 100.0
 		fmt.Printf("  \x1b[1mPayout Share:\x1b[0m     \x1b[32m%.2f%%\x1b[0m (%d bps in Epoch #%d)\n",
 			sharePct, s.PayoutShareBps, s.ClaimEpoch)
+	}
+	if s.Error != "" {
+		fmt.Printf("  \x1b[33;1mWarning:\x1b[0m          \x1b[33m%s\x1b[0m\n", s.Error)
 	}
 
 	fmt.Println("\x1b[1m════════════════════════════════════════════════════════════════════════════════\x1b[0m")

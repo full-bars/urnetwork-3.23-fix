@@ -155,3 +155,57 @@ func TestRenderSnStatusDashboard(t *testing.T) {
 		t.Errorf("dashboard missing formatted payout share percentage")
 	}
 }
+
+func TestFetchSnStatus_EpochEdgeCasesAndErrors(t *testing.T) {
+	var requestedClaimEpoch string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/network/ranking":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"internal error"}}`))
+		case "/sn/epoch":
+			resp := connect.SnEpochResult{
+				Epoch: 1, // current epoch is 1 -> finalized epoch should be 0
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/sn/pool/claim":
+			requestedClaimEpoch = r.URL.Query().Get("epoch")
+			resp := connect.SnPoolClaimResult{
+				Epoch:    0,
+				ShareBps: 100,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "jwt"), []byte("test-jwt"), 0600)
+	_ = os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte(ts.URL), 0600)
+
+	p := Provider{
+		Unit:     "test.service",
+		StateDir: tmpDir,
+	}
+
+	info, err := FetchSnStatus(p)
+	if err != nil {
+		t.Fatalf("FetchSnStatus failed: %v", err)
+	}
+
+	if requestedClaimEpoch != "0" {
+		t.Errorf("expected claim requested for epoch 0, got %s", requestedClaimEpoch)
+	}
+	if info.ClaimEpoch != 0 {
+		t.Errorf("expected ClaimEpoch 0, got %d", info.ClaimEpoch)
+	}
+	if info.PayoutShareBps != 100 {
+		t.Errorf("expected PayoutShareBps 100, got %d", info.PayoutShareBps)
+	}
+	if info.Error == "" {
+		t.Errorf("expected error to be populated for 500 status on ranking")
+	}
+}
