@@ -77,6 +77,7 @@ func TestCurrentProviderNetworkID(t *testing.T) {
 
 func TestEvaluateProxyWarmth(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	storePath := filepath.Join(home, ".client_jwts.json")
 	restoreStore := withGlobalStore(t, storePath)
 	defer restoreStore()
@@ -245,6 +246,7 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 
 	t.Run("empty currentNetworkID and all empty entries return WarmthCold", func(t *testing.T) {
 		isolatedHome := t.TempDir()
+		t.Setenv("HOME", isolatedHome)
 		restoreIso := withGlobalStore(t, filepath.Join(isolatedHome, "store.json"))
 		defer restoreIso()
 

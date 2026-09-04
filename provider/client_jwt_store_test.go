@@ -178,4 +178,14 @@ func TestClientJWTStoreAnyNetworkID(t *testing.T) {
 	if got := store.AnyNetworkID(); got != "net-test-123" {
 		t.Fatalf("AnyNetworkID() = %q, want net-test-123", got)
 	}
+
+	// Conflicting network IDs in store must return empty (ambiguous)
+	_ = store.Put("p3", clientJWTEntry{
+		ClientID:  testClientId,
+		NetworkID: "net-conflicting-456",
+		MintedAt:  time.Now(),
+	})
+	if got := store.AnyNetworkID(); got != "" {
+		t.Fatalf("AnyNetworkID() with conflicting networks = %q, want empty (ambiguous)", got)
+	}
 }

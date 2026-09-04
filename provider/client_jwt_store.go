@@ -205,19 +205,25 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	return s.flushLocked()
 }
 
-// AnyNetworkID scans loaded store entries and returns the first non-empty
-// NetworkID found, or empty string if none exists. It ensures the store is loaded
-// before reading.
+// AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
+// NetworkID found across all entries. If entries contain conflicting non-empty
+// NetworkIDs, it returns "" to prevent selecting an arbitrary network identity.
 func (s *clientJWTStore) AnyNetworkID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
+	var unambiguous string
 	for _, entry := range s.entries {
 		if entry.NetworkID != "" {
-			return entry.NetworkID
+			if unambiguous == "" {
+				unambiguous = entry.NetworkID
+			} else if unambiguous != entry.NetworkID {
+				// Conflicting network IDs present in store — ambiguous, return empty.
+				return ""
+			}
 		}
 	}
-	return ""
+	return unambiguous
 }
 
 // Delete evicts key, if present, and flushes the store to disk immediately.
