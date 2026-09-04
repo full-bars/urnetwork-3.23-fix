@@ -16,7 +16,7 @@ import (
 )
 
 func TestFetchSnStatus_MockEndpoints(t *testing.T) {
-	expectedColdkey := "5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS"
+	expectedColdkey := "5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"
 	pubkey, err := ss58.DecodeWithPrefix(expectedColdkey, ss58.BittensorPrefix)
 	if err != nil {
 		t.Fatalf("failed to decode test coldkey: %v", err)
@@ -111,7 +111,7 @@ func TestRenderSnStatusDashboard(t *testing.T) {
 		LeaderboardRank:   7,
 		LeaderboardPublic: true,
 		NetMibCount:       5242880.0, // 5 GiB
-		ColdkeySs58:       "5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS",
+		ColdkeySs58:       "5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5",
 		Top200Eligible:    true,
 		TierDescription:   "Tier 1 Elite (Rank #7 Globally)",
 		CurrentEpoch:      100,
@@ -148,7 +148,7 @@ func TestRenderSnStatusDashboard(t *testing.T) {
 	if !strings.Contains(out, "5120.00 GiB") {
 		t.Errorf("dashboard missing formatted GiB bandwidth")
 	}
-	if !strings.Contains(out, "5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS") {
+	if !strings.Contains(out, "5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5") {
 		t.Errorf("dashboard missing coldkey")
 	}
 	if !strings.Contains(out, "8.50%") {
