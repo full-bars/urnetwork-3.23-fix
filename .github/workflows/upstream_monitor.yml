@@ -224,6 +224,24 @@ jobs:
                 fi
               fi
             fi
+
+            # Fire repository_dispatch to trigger CFAA sync workflow
+            # when upstream CFAA security files are modified in a PR
+            if [ -n "$MATCHED_FILES" ]; then
+              echo "$MATCHED_FILES" | grep -q "ip_security_cfaa" && {
+                echo "CFAA file detected in upstream PR #${PR_NUMBER}, triggering sync..."
+                gh api \
+                  --method POST \
+                  -H "Accept: application/vnd.github+json" \
+                  /repos/full-bars/urnetwork-3.23-fix/dispatches \
+                  -f event_type=cfaa-sync-request \
+                  -f "client_payload[pr_number]=${PR_NUMBER}" \
+                  -f "client_payload[pr_title]=${PR_TITLE}" \
+                  -f "client_payload[pr_url]=${PR_URL}" \
+                  -f "client_payload[changed_files]=$(echo "$MATCHED_FILES" | wc -w)" \
+                  2>&1 || echo "[WARN] Failed to fire repository_dispatch for CFAA sync"
+              }
+            fi
           done
 
   monitor-all-prs:
