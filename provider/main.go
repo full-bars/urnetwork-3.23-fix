@@ -3323,6 +3323,7 @@ func provide(opts docopt.Opts) {
 	}
 	var allProxySettings []*connect.ProxySettings
 	if proxyFile != "" {
+		proxyFile = expandPath(proxyFile)
 		settings, err := readProxySettingsFromFile(proxyFile)
 		if err != nil {
 			shmLogFatal(20, "[proxy] could not read proxy file: %v", err)
