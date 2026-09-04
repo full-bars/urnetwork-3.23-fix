@@ -12,28 +12,38 @@ URNetwork Connect providers operate on a dual-incentive model:
 
 ### Identity & Wallet Model
 - **Network Account Token (`jwt`)**: The provider authenticates to the URNetwork control plane using a signed JWT stored at `~/.urnetwork/jwt` (or container volume `/home/urnet/.urnetwork/jwt`).
-- **Claim Coldkey (`ss58`)**: Bittensor coldkey address (prefix `42`, e.g. `5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS`) registered with the platform to authorize and receive pool emissions.
+- **Claim Coldkey (`ss58`)**: Bittensor coldkey address (prefix `42`, e.g. `5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5`) registered with the platform to authorize and receive pool emissions.
 - **Mirror Account**: EVM smart contract accounts mirrored on Subtensor via `evm:<H160_address>` hash derivation for non-custodial claims.
 
 ---
 
 ## 2. Coldkey Registration & Setup
 
-Before claiming Subnet 25 emissions, link your Bittensor coldkey to your network account.
+Before claiming Subnet 25 emissions, link your Bittensor coldkey to your network account using any of the following methods.
 
-### Host / Bare-Metal Deployment
+### Method 1: Single-Line curl (Direct API)
+Run this single command on the machine running your provider:
+```bash
+curl -s -X POST "https://api.bringyour.com/sn/wallet" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat ~/.urnetwork/jwt)" \
+  -d '{"coldkey_ss58": "5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"}'
+```
+Returns `{}` on success.
+
+### Method 2: Host / Bare-Metal CLI
 ```bash
 # Register coldkey for the local provider
-provider wallet set 5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS
+provider wallet set 5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5
 ```
 
-### Docker Deployments
+### Method 3: Docker Deployments
 Pass your coldkey directly via `docker-compose.yml` or container flags:
 ```yaml
 services:
   provider:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.30.9
-    command: ["provide", "--wallet=5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS"]
+    command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"]
     volumes:
       - ur_config_1:/home/urnet/.urnetwork
 ```
@@ -64,12 +74,12 @@ urnet-tools sn-status --json
 ════════════════════════════════════════════════════════════════════════════════
   URNetwork Subnet 25 — Node & Miner Status
 ════════════════════════════════════════════════════════════════════════════════
-  Provider:         urnetwork.service (State: /home/klets/.urnetwork)
-  Network:          mesocyclone (f078e470-36d0-48e0-bb15-b5d1e2e9c1aa)
+  Provider:         urnetwork.service (State: /var/lib/urnetwork)
+  Network:          miner-node-01 (f078e470-36d0-48e0-bb15-b5d1e2e9c1aa)
   Global Rank:      #7 [Public] — Tier 1 Elite (Rank #7 Globally)
   Net Bandwidth:    1,234,567.89 MiB (1205.63 GiB) provided
-  Coldkey (SS58):   5GbD4Vk6cASzfgkywuGkGHszPSr1s6gx9y9fFBDjLV2q1GWS
-  Coldkey (Hex):    0x9a3e...
+  Coldkey (SS58):   5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5
+  Coldkey (Hex):    0xa21b...
   Subnet Epoch:     #1054 (Start: #1054000, Finalize: #1054720)
   Contract:         0x5FbDB2315678afecb367f032d93F642f64180aa3 (Chain ID: 964)
   Payout Share:     4.85% (485 bps in Epoch #1053)
