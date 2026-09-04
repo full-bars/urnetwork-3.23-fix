@@ -157,6 +157,13 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 		MintedAt:    time.Now().Add(-2 * time.Hour),
 	})
 
+	_ = globalClientJWTStore.Put("proxy-legacy-empty-net", clientJWTEntry{
+		ByClientJWT: validJWTWithClientID,
+		ClientID:    testClientId,
+		NetworkID:   "", // legacy entry
+		MintedAt:    time.Now(),
+	})
+
 	t.Run("valid unexpired token returns WarmthValid", func(t *testing.T) {
 		got := evaluateProxyWarmth("proxy-valid", "net-abc")
 		if got != WarmthValid {
@@ -199,17 +206,17 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 		}
 	})
 
-	t.Run("valid jwt lacking client_id claim returns WarmthCold", func(t *testing.T) {
+	t.Run("valid jwt lacking client_id claim in payload returns WarmthRenewable (salvage via renewal)", func(t *testing.T) {
 		got := evaluateProxyWarmth("proxy-no-clientid-in-jwt", "net-abc")
-		if got != WarmthCold {
-			t.Errorf("evaluateProxyWarmth() = %v, want WarmthCold", got)
+		if got != WarmthRenewable {
+			t.Errorf("evaluateProxyWarmth() = %v, want WarmthRenewable", got)
 		}
 	})
 
-	t.Run("expired jwt lacking client_id claim returns WarmthCold", func(t *testing.T) {
+	t.Run("expired jwt lacking client_id claim returns WarmthRenewable (salvage via renewal)", func(t *testing.T) {
 		got := evaluateProxyWarmth("proxy-expired-no-clientid-in-jwt", "net-abc")
-		if got != WarmthCold {
-			t.Errorf("evaluateProxyWarmth() = %v, want WarmthCold", got)
+		if got != WarmthRenewable {
+			t.Errorf("evaluateProxyWarmth() = %v, want WarmthRenewable", got)
 		}
 	})
 
@@ -222,10 +229,35 @@ func TestEvaluateProxyWarmth(t *testing.T) {
 		_ = os.Unsetenv("URNETWORK_HOT_RESTART")
 	})
 
-	t.Run("empty currentNetworkID returns WarmthCold", func(t *testing.T) {
+	t.Run("empty currentNetworkID filled in from entry.NetworkID returns WarmthValid", func(t *testing.T) {
 		got := evaluateProxyWarmth("proxy-valid", "")
+		if got != WarmthValid {
+			t.Errorf("evaluateProxyWarmth() with empty currentNetworkID but stored NetworkID = %v, want WarmthValid", got)
+		}
+	})
+
+	t.Run("legacy entry with empty NetworkID and known currentNetworkID returns WarmthValid", func(t *testing.T) {
+		got := evaluateProxyWarmth("proxy-legacy-empty-net", "net-abc")
+		if got != WarmthValid {
+			t.Errorf("evaluateProxyWarmth() legacy empty NetworkID = %v, want WarmthValid", got)
+		}
+	})
+
+	t.Run("empty currentNetworkID and all empty entries return WarmthCold", func(t *testing.T) {
+		isolatedHome := t.TempDir()
+		restoreIso := withGlobalStore(t, filepath.Join(isolatedHome, "store.json"))
+		defer restoreIso()
+
+		_ = globalClientJWTStore.Put("proxy-only-legacy", clientJWTEntry{
+			ByClientJWT: validJWTWithClientID,
+			ClientID:    testClientId,
+			NetworkID:   "", // legacy entry with no network_id anywhere in store
+			MintedAt:    time.Now(),
+		})
+
+		got := evaluateProxyWarmth("proxy-only-legacy", "")
 		if got != WarmthCold {
-			t.Errorf("evaluateProxyWarmth() with empty currentNetworkID = %v, want WarmthCold", got)
+			t.Errorf("evaluateProxyWarmth() with no network_id anywhere = %v, want WarmthCold", got)
 		}
 	})
 
@@ -311,7 +343,7 @@ func TestPrioritizeAndScheduleProxies(t *testing.T) {
 		delay   time.Duration
 		stagger time.Duration
 	}{
-		{"file-warm", WarmthValid, 0, WarmValidStagger},                     // 0
+		{"file-warm", WarmthValid, 0, WarmValidStagger},                                  // 0
 		{"file-renewable", WarmthRenewable, 25 * time.Millisecond, WarmRenewableStagger}, // 25ms
 		{"file-cold", WarmthCold, 75 * time.Millisecond, ColdFileStagger},                // 25ms + 50ms = 75ms
 		{"url-warm", WarmthValid, 225 * time.Millisecond, WarmValidStagger},              // 75ms + 150ms = 225ms

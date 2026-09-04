@@ -54,18 +54,28 @@ const (
 	ColdURLStagger = 500 * time.Millisecond
 )
 
-// currentProviderNetworkID extracts the network_id claim from the active ~/.urnetwork/jwt file.
+// currentProviderNetworkID extracts the network_id claim from the active ~/.urnetwork/jwt file,
+// falling back to any stored network_id in the client JWT store if missing.
 func currentProviderNetworkID() string {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
+	if err == nil && home != "" {
+		if jwtBytes, err := os.ReadFile(filepath.Join(home, ".urnetwork", "jwt")); err == nil {
+			if nid, ok := jwtNetworkId(strings.TrimSpace(string(jwtBytes))); ok && nid != "" {
+				return nid
+			}
+		}
 	}
-	jwtBytes, err := os.ReadFile(filepath.Join(home, ".urnetwork", "jwt"))
-	if err != nil {
-		return ""
+	if globalClientJWTStore != nil {
+		globalClientJWTStore.mu.Lock()
+		defer globalClientJWTStore.mu.Unlock()
+		globalClientJWTStore.loadLocked()
+		for _, entry := range globalClientJWTStore.entries {
+			if entry.NetworkID != "" {
+				return entry.NetworkID
+			}
+		}
 	}
-	nid, _ := jwtNetworkId(strings.TrimSpace(string(jwtBytes)))
-	return nid
+	return ""
 }
 
 // proxyLaunchStagger returns the per-proxy stagger duration based on warmth and source.
@@ -98,18 +108,24 @@ func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTie
 	if !ok || entry.ByClientJWT == "" || entry.ClientID == "" {
 		return WarmthCold
 	}
-	// Mirror provideAuth: an unresolvable current network_id means the stored
-	// client JWT will not be reused, so the proxy must be paced as cold.
-	if currentNetworkID == "" {
+	// If currentNetworkID is missing, try to fill it in from the stored entry.
+	if currentNetworkID == "" && entry.NetworkID != "" {
+		currentNetworkID = entry.NetworkID
+	}
+	// If neither side has a network_id, provideAuth cannot verify identity reuse and must mint fresh.
+	if currentNetworkID == "" && entry.NetworkID == "" {
 		return WarmthCold
 	}
-	if entry.NetworkID != "" && entry.NetworkID != currentNetworkID {
+	// Reject known network mismatches.
+	if entry.NetworkID != "" && currentNetworkID != "" && entry.NetworkID != currentNetworkID {
 		return WarmthCold
 	}
 	if err := validateJWTExpiry(entry.ByClientJWT); err == nil && jwtContainsClientId(entry.ByClientJWT) {
 		return WarmthValid
 	}
-	if _, err := connect.ParseId(entry.ClientID); err == nil && jwtContainsClientId(entry.ByClientJWT) {
+	// Salvage priority: if client_id is a valid identity, it can be renewed to salvage
+	// reputation even if the expired token payload lacked the client_id claim.
+	if _, err := connect.ParseId(entry.ClientID); err == nil {
 		return WarmthRenewable
 	}
 	return WarmthCold

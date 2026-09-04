@@ -3976,6 +3976,19 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+			// If the account JWT has no network_id claim, fill it in from the stored entry
+			// to reuse/renew the existing client ID instead of minting a fresh one.
+			if !haveCurrentNetworkId && entry.NetworkID != "" {
+				currentNetworkId = entry.NetworkID
+				haveCurrentNetworkId = true
+			}
+			// Fall back: if still missing, check if any entry in the store has a known network_id
+			if !haveCurrentNetworkId {
+				if knownNet := currentProviderNetworkID(); knownNet != "" {
+					currentNetworkId = knownNet
+					haveCurrentNetworkId = true
+				}
+			}
 			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
 				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
@@ -3983,7 +3996,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				// before falling through to fresh mint, so the operator's
 				// identities (and their server-side reliability reputation)
 				// survive even when the JWT has aged out of its 24h window.
-				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
 						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
@@ -3999,10 +4012,29 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 					}
 					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
-				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				// Stored JWT missing client_id claim in payload: prioritize salvaging the
+				// identity via renewal instead of minting fresh if client_id is valid.
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					if renewErr == nil {
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", identityKey, parsedId)
+						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+							ByClientJWT: renewedJwt,
+							ClientID:    entry.ClientID,
+							NetworkID:   currentNetworkId,
+							MintedAt:    time.Now(),
+						}); putErr != nil {
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+						}
+						return renewedJwt, parsedId, true, nil
+					}
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
+				} else {
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				}
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
