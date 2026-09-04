@@ -118,8 +118,9 @@ func clearDirectToggle() error {
 	return os.Remove(path)
 }
 
-// cmdDirect implements `provider direct <state>`: toggles the runtime
-// direct-IP toggle and triggers a reload of a running provider.
+// cmdDirect implements `provider direct [<state>]`: toggles the runtime
+// direct-IP toggle and triggers a reload of a running provider, or reports
+// the current direct state if called without arguments or with "status".
 func cmdDirect(opts docopt.Opts) {
 	arg, _ := opts.String("<state>")
 	switch strings.ToLower(strings.TrimSpace(arg)) {
@@ -133,8 +134,22 @@ func cmdDirect(opts docopt.Opts) {
 			shmLogFatal(72, "could not disable direct providing: %v", err)
 		}
 		fmt.Println("direct: providing on direct/local IP is now DISABLED (proxies only)")
+	case "", "status":
+		enabled, exists := readDirectOverride()
+		if !exists {
+			if os.Getenv("DISABLE_DIRECT_IP") == "1" {
+				fmt.Println("direct: off (disabled by DISABLE_DIRECT_IP env var)")
+			} else {
+				fmt.Println("direct: on (default — no override file)")
+			}
+		} else if enabled {
+			fmt.Println("direct: on (direct/local IP providing enabled)")
+		} else {
+			fmt.Println("direct: off (direct/local IP providing disabled)")
+		}
+		return
 	default:
-		fmt.Fprintf(os.Stderr, "Usage: provider direct <state> (on|off)\n")
+		fmt.Fprintf(os.Stderr, "Usage: provider direct [<state>] (on|off|status)\n")
 		os.Exit(2)
 	}
 

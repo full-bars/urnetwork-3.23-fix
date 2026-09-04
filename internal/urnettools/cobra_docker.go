@@ -41,6 +41,7 @@ Core Commands:
 
 Proxy Management (inside the container):
   proxy add <file>                Bulk add proxies
+  proxy paste                     Paste raw proxies from stdin, file, or URL
   proxy clear                     Remove all configured proxies
   proxy remove                    Remove proxies (by addr/match, or all)
   proxy refresh [--force]         Re-read configs and hot-reload
@@ -61,6 +62,8 @@ Config & Automation:
   fast-auth [on|off]        Bypass auth rate limiter without restart
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
+  direct [on|off]           Toggle providing on the machine's direct/local IP
+  usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
   session save|load <file>  Export/import identity + proxy state (encrypted)
   report <url>|off          Set hub report URL
   help <command>            Show help for a command
@@ -116,6 +119,7 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerSummaryCmd(),
 		newDockerReportCmd(),
 		newDockerUpdateCmd(),
+		newDockerIdleUpdateCmd(),
 		newDockerVersionCmd(),
 		newDockerProxyCmd(),
 		newDockerSelfHealCmd(),
@@ -124,6 +128,8 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerHubCmd(),
 		newDockerSessionCmd(),
 		newDockerExecCmd(),
+		newDockerDirectCmd(),
+		newDockerUsageCmd(),
 	)
 	for _, sub := range rootCmd.Commands() {
 		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
@@ -212,6 +218,44 @@ func newDockerUpdateCmd() *cobra.Command {
 	}), "With a target (a container name given directly, or --unit/--network/--network-id/--state-dir), update that container's provider binary in place with no recreate, by running its own urnet-tools update inside the container; the container must already be running. With no target, this instead self-updates the host urnet-docker binary, so --tag/--digest/--url then apply to the host tool, not any container.", "  urnet-docker update\n  urnet-docker update mynetwork-provider\n  urnet-docker update --unit mynetwork-provider\n  urnet-docker update --unit=mynetwork-provider")
 }
 
+func newDockerIdleUpdateCmd() *cobra.Command {
+	long := `Wait for billable traffic inside a container to subside before applying an in-place update.
+
+Monitors the provider container's rolling billable relay throughput without recreating
+the container. Once traffic remains below --threshold for the required --window duration,
+it verifies sustained quiet and performs the in-place binary swap inside the running container.
+
+Features a configurable --timeout ceiling so maintenance automations and Watchtower scripts
+do not hang indefinitely if low-volume client activity persists. When the timeout expires,
+it logs a notice and applies the update.
+
+Flags:
+  --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
+  --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
+  --timeout <duration>    Maximum wait time before forcing update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
+  --tag <version>         Pin to a specific release tag
+  -f, --force             Skip interactive confirmation prompts
+  -n, --dry-run           Print the plan and wait parameters without modifying the container`
+
+	examples := `  # Wait for a quiet window on the default/lone container:
+  urnet-docker idle-update
+
+  # Target a specific container with custom 15 KiB/s threshold and 45m timeout:
+  urnet-docker idle-update mynetwork-provider --threshold 15360 --window 5m --timeout 45m
+
+  # Target by unit flag:
+  urnet-docker idle-update --unit urfix-1 --timeout 1h
+
+  # Dry-run preview:
+  urnet-docker idle-update --unit urfix-1 --dry-run`
+
+	return withHelp(newCobraCmd("idle-update [<container> | --unit <name>]", "wait for traffic lull before updating container's provider in place", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdDockerIdleUpdate(rest, force, dryRun)
+		})
+	}), long, examples)
+}
+
 func newDockerVersionCmd() *cobra.Command {
 	return withHelp(newCobraCmd("version", "print tool version", nil, func(cmd *cobra.Command, args []string) error {
 		fmt.Println(ToolVersion)
@@ -258,6 +302,10 @@ func newDockerProxyCmd() *cobra.Command {
 			"  urnet-docker proxy add ~/proxies.txt              # Linux / macOS\n"+
 				"  urnet-docker proxy add C:\\Users\\<you>\\proxies.txt   # Windows (\\ or / separators)\n"+
 				"  urnet-docker proxy add ~/proxies.txt --unit mynetwork-provider"),
+		dockerProxySub("paste", "paste [flags] [target]", "paste raw proxies from stdin, file, or URL", "Ingest raw proxies into the provider inside the targeted container via proxy paste.",
+			"  urnet-docker proxy paste --unit mynetwork-provider\n"+
+				"  cat proxies.txt | urnet-docker proxy paste --unit mynetwork-provider\n"+
+				"  urnet-docker proxy paste --file=~/proxies.txt --unit mynetwork-provider"),
 		dockerProxySub("clear", "clear [target] [--force]", "remove configured proxies", "Remove all configured proxies from the provider inside the targeted container. Any extra flags, such as --force, are forwarded so this is scriptable from a non-interactive job.",
 			"  urnet-docker proxy clear --unit mynetwork-provider\n"+
 				"  urnet-docker proxy clear --unit mynetwork-provider --force"),
@@ -330,4 +378,16 @@ func newDockerExecCmd() *cobra.Command {
 			return cmdDockerExec(args)
 		},
 	}
+}
+
+func newDockerDirectCmd() *cobra.Command {
+	return withHelp(newCobraCmd("direct", "toggle or report direct/local IP providing", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerDirect(args)
+	}), "Turn providing on the machine's direct/local IP address on or off for the targeted container, or show current status. By default both the direct IP and configured proxy list are used for providing. Running 'direct off' disables direct native egress — only proxies from --proxy_file / --proxy_url are used. The change takes effect immediately on a running provider via dynamic reload. Delegated to the in-container 'urnet-tools direct [on|off|status]'.", "  urnet-docker direct --unit mynetwork-provider\n  urnet-docker direct status --unit mynetwork-provider\n  urnet-docker direct off --unit mynetwork-provider\n  urnet-docker direct on --unit mynetwork-provider")
+}
+
+func newDockerUsageCmd() *cobra.Command {
+	return withHelp(newCobraCmd("usage", "show aggregate usage (billable vs control) across time spans", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerUsage(args)
+	}), "Show aggregate traffic usage for the provider inside the targeted container as summary cards (billable vs control-plane split) or as day/hour/month time-series graphs. Reads the container's persistent usage history, so lifetime spans survive restarts and updates. Delegated to the in-container 'urnet-tools usage'.", "  urnet-docker usage --unit mynetwork-provider\n  urnet-docker usage graphs --unit mynetwork-provider\n  urnet-docker usage graph day --unit mynetwork-provider\n  urnet-docker usage graph month --unit mynetwork-provider")
 }

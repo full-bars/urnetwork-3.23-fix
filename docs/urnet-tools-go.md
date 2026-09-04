@@ -41,6 +41,8 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
+| `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider`, `urnet-tools`, and `urnet-docker`. |
+| `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
 | `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`). Confirm-gated. |
@@ -53,7 +55,8 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 | Command | What it does |
 |---|---|
-| `proxy add <file> [target]` | Merge proxies from text file (`host:port[:user:pass]`). |
+| `proxy add <file\|url> [target]` | Merge proxies from text file (`host:port[:user:pass]`) or live URL. Supports straight paths with `~`, URLs (auto-routed to `add-source`), and flags (`--file=`, `--proxy_file=`, `--url=`). |
+| `proxy paste [target]` | Stream raw proxies from stdin or pipe without creating host files. Auto-detects formats and URLs. |
 | `proxy clear [target]` | Remove all proxies and URL sources. Confirm-gated (`-f` bypasses prompt). |
 | `proxy remove [addresses...] [target]` | Remove specific proxies or patterns. Use `--match=<pattern>` for host substring matches, or `--all` for complete wipe. |
 | `proxy trim <N> [target] [--preview]` | **(New in 30.4)** Set persistent hard cap of `<N>` running proxies. Sheds worst A-F reachability graded proxies first. `proxy trim off` clears the cap. |

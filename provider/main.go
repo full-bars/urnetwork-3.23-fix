@@ -53,6 +53,38 @@ var provideStartTime time.Time
 // for this before launching, so file proxies get an uncontested ramp.
 var proxyWarmupDone atomic.Bool
 
+// backoffPacerWithDelay calculates the effective start delay using a cumulative base delay
+// and slotDuration for jitter calculation.
+func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, proxyCtx context.Context) bool {
+	if baseDelay <= 0 && slotDuration <= 0 {
+		return true
+	}
+
+	var jitter time.Duration
+	if slotDuration > 0 {
+		halfSlotMs := int(slotDuration.Milliseconds()) / 2
+		if halfSlotMs > 0 {
+			jMs := mathrand.Intn(halfSlotMs + 1)
+			if mathrand.Intn(2) == 0 {
+				jMs = -jMs
+			}
+			jitter = time.Duration(jMs) * time.Millisecond
+		}
+	}
+
+	wait := baseDelay + jitter
+	if wait < 0 {
+		wait = 0
+	}
+
+	select {
+	case <-proxyCtx.Done():
+		return false
+	case <-time.After(wait):
+	}
+	return true
+}
+
 // backoffPacer calculates the effective start delay for the n-th proxy goroutine.
 // staggerMs is the base gap between consecutive proxy starts; ±50% random
 // jitter spreads dials within each slot. File proxies typically pass 0 for
@@ -62,20 +94,8 @@ func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context)
 	if staggerMs <= 0 {
 		return true
 	}
-
-	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
-	if mathrand.Intn(2) == 0 {             // coinflip — add or subtract
-		jitter = -jitter
-	}
-
-	wait := time.Duration(n)*time.Duration(staggerMs)*time.Millisecond + time.Duration(jitter)*time.Millisecond
-
-	select {
-	case <-proxyCtx.Done():
-		return false
-	case <-time.After(wait):
-	}
-	return true
+	baseDelay := time.Duration(n) * time.Duration(staggerMs) * time.Millisecond
+	return backoffPacerWithDelay(baseDelay, time.Duration(staggerMs)*time.Millisecond, proxyCtx)
 }
 
 // paceMonitor logs real-time warmup progress every 30s. It uses the health
@@ -860,7 +880,10 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
+        [--file=<file>]
         [--proxy_url=<proxy_url>...]
+        [--url=<url>...]
+        [--URL=<URL>...]
         [--proxy_url_refresh=<proxy_url_refresh>]
         [--proxy_url_max=<proxy_url_max>]
         [--proxy_dead_cleanup_scope=<proxy_dead_cleanup_scope>]
@@ -872,6 +895,11 @@ Usage:
         [--connect_url=<connect_url>]
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
+        [--proxy_file=<proxy_file>]
+        [--file=<file>]
+        [--proxy_url=<proxy_url>...]
+        [--url=<url>...]
+        [--URL=<URL>...]
         [-v...]
     provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
@@ -885,7 +913,7 @@ Usage:
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
-    provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [-f]
+    provider proxy add [<key_address>...] [--proxy_file=<proxy_file>] [--file=<file>] [--url=<url>] [--URL=<URL>] [-f]
     provider proxy remove [<key_address>...] [--all]
     provider proxy remove --match=<pattern> [--yes] [--preview]
     provider proxy remove-dead [--degraded[=<duration>]] [--auth-failures=<N>] [--source=<source>] [--yes] [--preview]
@@ -896,7 +924,7 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
-    provider direct <state>
+    provider direct [<state>]
     provider proxy paste [--file=<file>]
     provider logs [-n <lines>]
     provider print-network-id <file>
@@ -943,6 +971,8 @@ Options:
     <key_address>                    SOCKS5 server as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_file=<proxy_file>        A path to a file where each line contains on entry as host:port, host:port:user:pass, host:port::, or key@host:port
     --proxy_url=<proxy_url>          A live proxy list URL. Repeatable. Additive with --proxy_file / internal config. Also settable via PROXY_URL (comma-separated for multiple).
+    --url=<url>                      Alias for --proxy_url.
+    --URL=<URL>                      Alias for --proxy_url.
     --proxy_url_refresh=<dur>        How often to re-fetch --proxy_url sources and add new entries. Also settable via PROXY_URL_REFRESH.
     --proxy_url_max=<n>              Cap on total proxies sourced from --proxy_url. 0 = unlimited, defaults to 500. Also settable via PROXY_URL_MAX.
     --proxy_dead_cleanup_scope=<s>   Automatic dead-proxy cleanup scope: none, url, or all. Defaults to url (URL-sourced only). Also settable via PROXY_DEAD_CLEANUP_SCOPE.
@@ -953,8 +983,8 @@ Options:
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
                                      With no pattern, 'proxy exclude' lists active patterns.
-    --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
-                                     proxy (any common format) or an http(s) URL to fetch as a proxy source.
+    --file=<file>                    A path to a proxy file (alias for --proxy_file, or input for 'proxy paste').
+    <state>                          Direct IP providing state: on | off | status. If omitted, reports current state.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -3303,6 +3333,9 @@ func provide(opts docopt.Opts) {
 
 	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
 	proxyFile, _ := opts.String("--proxy_file")
+	if proxyFile == "" {
+		proxyFile, _ = opts.String("--file")
+	}
 	// Also accept PROXY_FILE env var (for Docker/Pelican where CLI flags
 	// cannot be set by the user — the env var is the only knob).
 	if proxyFile == "" {
@@ -3310,6 +3343,7 @@ func provide(opts docopt.Opts) {
 	}
 	var allProxySettings []*connect.ProxySettings
 	if proxyFile != "" {
+		proxyFile = expandPath(proxyFile)
 		settings, err := readProxySettingsFromFile(proxyFile)
 		if err != nil {
 			shmLogFatal(20, "[proxy] could not read proxy file: %v", err)
@@ -3346,21 +3380,13 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
-	// Sort so file-sourced (or internal-config) proxies launch before
-	// URL-sourced ones. backoffPacer uses the index in this slice to
-	// determine initial delay, so file proxies get a head start of
-	// ~len(file_proxies) * staggerMs before URL proxies begin connecting.
-	sort.SliceStable(allProxySettings, func(i, j int) bool {
-		si := proxySourceOf[allProxySettings[i].Address]
-		sj := proxySourceOf[allProxySettings[j].Address]
-		if si == "url" && sj != "url" {
-			return false
-		}
-		if si != "url" && sj == "url" {
-			return true
-		}
-		return false
-	})
+	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
+	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
+	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
+	currentNetworkId := currentProviderNetworkID()
+	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
+	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
+		len(allProxySettings), warmCount, renewableCount, coldCount)
 
 	// Start the native [direct] connection as proxy[0] unless the operator
 	// has explicitly disabled it. Precedence (highest to lowest):
@@ -3449,27 +3475,24 @@ func provide(opts docopt.Opts) {
 			)
 		}
 
-		for i, proxySettings := range allProxySettings {
+		for _, sched := range proxySchedules {
+			proxySettings := sched.Settings
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
 			proxyCancelMap[proxySettings.Address] = proxyCancel
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
-			proxyIdx := i
 			isURLSourced := proxySourceOf[proxySettings.Address] == "url"
+			baseDelay := sched.Delay
+			staggerDuration := sched.Stagger
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
-				staggerMs := 150
-				if isURLSourced {
-					staggerMs = 500
-				}
-				now := time.Now()
-				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
+				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
 					return
 				}
 				// Log previously-dropped proxies on restart so the
@@ -3500,6 +3523,7 @@ func provide(opts docopt.Opts) {
 		spawnProxy:      provideWithProxy,
 		drainingProxies: make(map[string]context.CancelFunc),
 		directDone:      directStartupDone,
+		networkID:       currentNetworkId,
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
@@ -3966,6 +3990,19 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+			// If the account JWT has no network_id claim, fill it in from the stored entry
+			// to reuse/renew the existing client ID instead of minting a fresh one.
+			if !haveCurrentNetworkId && entry.NetworkID != "" {
+				currentNetworkId = entry.NetworkID
+				haveCurrentNetworkId = true
+			}
+			// Fall back: if still missing, check if any entry in the store has a known network_id
+			if !haveCurrentNetworkId {
+				if knownNet := currentProviderNetworkID(); knownNet != "" {
+					currentNetworkId = knownNet
+					haveCurrentNetworkId = true
+				}
+			}
 			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
 				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
@@ -3973,7 +4010,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				// before falling through to fresh mint, so the operator's
 				// identities (and their server-side reliability reputation)
 				// survive even when the JWT has aged out of its 24h window.
-				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
 						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
@@ -3989,10 +4026,29 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 					}
 					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
-				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				// Stored JWT missing client_id claim in payload: prioritize salvaging the
+				// identity via renewal instead of minting fresh if client_id is valid.
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					if renewErr == nil {
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", identityKey, parsedId)
+						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+							ByClientJWT: renewedJwt,
+							ClientID:    entry.ClientID,
+							NetworkID:   currentNetworkId,
+							MintedAt:    time.Now(),
+						}); putErr != nil {
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+						}
+						return renewedJwt, parsedId, true, nil
+					}
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
+				} else {
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				}
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
@@ -4267,6 +4323,16 @@ func proxyAuthRemove(opts docopt.Opts) {
 	writeProxyConfig(proxyConfig)
 }
 
+// expandPath expands leading ~/ or ~\ to the user's home directory.
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
 func proxyAdd(opts docopt.Opts) {
 	proxyConfig := readProxyConfig()
 
@@ -4274,7 +4340,46 @@ func proxyAdd(opts docopt.Opts) {
 	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
 		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
 	}
-	if proxyPath, _ := opts.String("--proxy_file"); proxyPath != "" {
+
+	url, _ := opts.String("--url")
+	if url == "" {
+		url, _ = opts.String("--URL")
+	}
+	if url != "" {
+		proxyAddSource(docopt.Opts{"<url>": url})
+	}
+
+	proxyPath, _ := opts.String("--proxy_file")
+	if proxyPath == "" {
+		proxyPath, _ = opts.String("--file")
+	}
+
+	var remainingKeyAddress []string
+	for _, item := range allKeyAddress {
+		if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+			proxyAddSource(docopt.Opts{"<url>": item})
+			continue
+		}
+		candidate := expandPath(item)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			b, err := os.ReadFile(candidate)
+			if err != nil {
+				panic(err)
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && line[0] != '#' {
+					remainingKeyAddress = append(remainingKeyAddress, line)
+				}
+			}
+			continue
+		}
+		remainingKeyAddress = append(remainingKeyAddress, item)
+	}
+	allKeyAddress = remainingKeyAddress
+
+	if proxyPath != "" {
+		proxyPath = expandPath(proxyPath)
 		b, err := os.ReadFile(proxyPath)
 		if err != nil {
 			panic(err)
@@ -4780,13 +4885,15 @@ func resolveString(opts docopt.Opts, flag, envVar, def string) string {
 func resolveProxyURLs(opts docopt.Opts) []string {
 	var urls []string
 
-	if v, ok := opts["--proxy_url"]; ok && v != nil {
-		switch vv := v.(type) {
-		case []string:
-			urls = append(urls, vv...)
-		case string:
-			if vv != "" {
-				urls = append(urls, vv)
+	for _, flag := range []string{"--proxy_url", "--url", "--URL"} {
+		if v, ok := opts[flag]; ok && v != nil {
+			switch vv := v.(type) {
+			case []string:
+				urls = append(urls, vv...)
+			case string:
+				if vv != "" {
+					urls = append(urls, vv)
+				}
 			}
 		}
 	}

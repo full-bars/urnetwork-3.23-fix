@@ -153,3 +153,39 @@ func TestClientJWTStoreConcurrentPut(t *testing.T) {
 		t.Error("expected at least one concurrent Put to have landed")
 	}
 }
+
+func TestClientJWTStoreAnyNetworkID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client_jwts.json")
+	store := newClientJWTStore(path)
+
+	if got := store.AnyNetworkID(); got != "" {
+		t.Fatalf("expected empty NetworkID from empty store, got %q", got)
+	}
+
+	_ = store.Put("p1", clientJWTEntry{
+		ClientID: testClientId,
+		MintedAt: time.Now(),
+	})
+	if got := store.AnyNetworkID(); got != "" {
+		t.Fatalf("expected empty NetworkID when entries have no NetworkID, got %q", got)
+	}
+
+	_ = store.Put("p2", clientJWTEntry{
+		ClientID:  testClientId,
+		NetworkID: "net-test-123",
+		MintedAt:  time.Now(),
+	})
+	if got := store.AnyNetworkID(); got != "net-test-123" {
+		t.Fatalf("AnyNetworkID() = %q, want net-test-123", got)
+	}
+
+	// Conflicting network IDs in store must return empty (ambiguous)
+	_ = store.Put("p3", clientJWTEntry{
+		ClientID:  testClientId,
+		NetworkID: "net-conflicting-456",
+		MintedAt:  time.Now(),
+	})
+	if got := store.AnyNetworkID(); got != "" {
+		t.Fatalf("AnyNetworkID() with conflicting networks = %q, want empty (ambiguous)", got)
+	}
+}

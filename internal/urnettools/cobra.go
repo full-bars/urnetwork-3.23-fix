@@ -47,6 +47,7 @@ Session & Identity:
 
 Proxy Management:
   proxy add <file>        Bulk add proxies from a text file
+  proxy paste             Paste raw proxies from stdin, file, or URL
   proxy clear             Remove all configured proxies
   proxy remove            Remove proxies (by addr/match, or all)
   proxy refresh [--force] Re-read configs and hot-reload proxies
@@ -139,6 +140,7 @@ func buildRootCmd() *cobra.Command {
 		newStopCmd(),
 		newRestartCmd(),
 		newUpdateCmd(),
+		newIdleUpdateCmd(),
 		newSelfUpdateCmd(),
 		newLogsCmd(),
 		newSummaryCmd(),
@@ -255,6 +257,45 @@ func newUpdateCmd() *cobra.Command {
 			return cmdUpdate(rest, force, dryRun)
 		})
 	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+}
+
+func newIdleUpdateCmd() *cobra.Command {
+	long := `Wait for billable traffic to drop below a threshold before applying a provider update.
+
+Instead of updating immediately and severing active client connections mid-flight,
+idle-update continuously polls the provider's billable relay traffic rate. When traffic
+remains below --threshold for a sustained --window, it performs a 5-second verification
+pass and then downloads, verifies, and installs the update.
+
+A fallback --timeout ceiling ensures maintenance runs and automated scripts do not wait
+indefinitely if low-volume background traffic never fully ceases. When the timeout is
+reached, it logs a notice and proceeds with the update.
+
+Flags:
+  --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
+  --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
+  --timeout <duration>    Maximum wait time before forcing the update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
+  --tag <version>         Pin to a specific release tag (e.g. v3.23.0-fix.30.9)
+  -f, --force             Skip interactive confirmation prompts
+  -n, --dry-run           Print the traffic wait plan and release target without modifying anything`
+
+	examples := `  # Wait for up to 30m for a 5-minute quiet window below 5 KiB/s:
+  urnet-tools idle-update
+
+  # Target a specific systemd unit with custom 10 KiB/s threshold and 1-hour timeout:
+  urnet-tools idle-update --unit urnetwork-native.service --threshold 10240 --window 10m --timeout 1h
+
+  # Immediate update bypass (equivalent to 'update' but through idle-update interface):
+  urnet-tools idle-update --window 0
+
+  # Preview the wait parameters and target release without acting:
+  urnet-tools idle-update --dry-run`
+
+	return withHelp(newCobraCmd("idle-update [target]", "wait for traffic lull before updating provider(s)", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdIdleUpdate(rest, force, dryRun)
+		})
+	}), long, examples)
 }
 
 func newSelfUpdateCmd() *cobra.Command {
@@ -442,12 +483,12 @@ func newProxyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "proxy",
 		Short:              "Proxy Management",
-		Long:               "Manage proxies for a provider: add from a file, clear, remove, refresh, and inspect health and traffic.",
-		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy add C:\\Users\\<you>\\proxies.txt    # Windows (\\ or / separators)\n  urnet-tools proxy clear",
+		Long:               "Manage proxies for a provider: add from a file, paste from stdin/file/URL, clear, remove, refresh, and inspect health and traffic.",
+		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy paste < proxies.txt         # Paste from stdin / pipe\n  urnet-tools proxy paste --file=~/proxies.txt  # Paste from file\n  urnet-tools proxy clear",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
+				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {
