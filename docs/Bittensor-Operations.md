@@ -15,6 +15,24 @@ URNetwork Connect providers operate on a dual-incentive model:
 - **Claim Coldkey (`ss58`)**: Bittensor coldkey address (prefix `42`, e.g. `5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5`) registered with the platform to authorize and receive pool emissions.
 - **Mirror Account**: EVM smart contract accounts mirrored on Subtensor via `evm:<H160_address>` hash derivation for non-custodial claims.
 
+### Two Distinct Miner Tiers: Pool Providers vs. Top 200 Head Fleets
+
+Subnet 25 operates a two-channel architecture under a hard 256-UID metagraph ceiling (`urfoundation/sn` WHITEPAPER §8.4, §11.4; `protocol/policy.go`):
+`256 >= (Top-Level Head Miners ~200) + (NO-Pool UIDs) + (Validator UIDs)`
+
+The 41% miner emission is divided into two distinct processes:
+
+| Dimension | Tail Providers (Pool Process) | Top ~200 Fleets (Head Miner Process) |
+|---|---|---|
+| **On-Chain Identity** | **No UID.** Operates as a `client_id` inside an operator's pool. | **Holds its own Subnet 25 Miner UID** (claimed via `burned_register`). |
+| **Scoring Basis** | Demand-coupled: `deposit × quality` across the operator's pool. | **Pure measured routable-IP breadth** (`score(u) = Σ 1/claim(h)` across verified /29 IPv4 & /48 IPv6 subnets). |
+| **Emission & Payout** | **Custodied in EVM Contract** (`STSubnet.sol`). Requires Merkle inclusion proofs. | **Native Bittensor Protocol Emission** via Yuma Consensus credited as α stake directly to the coldkey. |
+| **Payout Timing** | Finalized **once per epoch (~7 days / 50,400 blocks)**. | Deposited **every block (~12 seconds)**. |
+| **Gas & Claiming** | **Manual Claim Required:** Operators submit an on-chain `claimMiner` transaction and pay gas. | **Zero Gas, Zero Claims:** Automated native emission. No EVM contract claims, no Merkle trees. |
+| **Intermediary** | Operator commits the Merkle payout root (auditable on-chain). | **Trust-minimized:** Direct consensus-to-coldkey. No operator in the payout path. |
+| **Setup Required** | Linked via `POST /sn/wallet` (or `provider wallet set`). | Requires **Dual-Signed Fleet Binding (`provider bind-head`)** linking provider server keys to the Bittensor Substrate hotkey. |
+| **Lifecycle Tournament** | **The Baseline On-Ramp:** Guaranteed floor without UID registration burn. | **The Merit Apex:** Earns directly while in the top 200. If IP breadth falls below the cutoff, it is evicted by Yuma churn and **falls back into the pool**. |
+
 ---
 
 ## 2. Coldkey Registration & Setup
