@@ -759,6 +759,36 @@ func cmdDockerSummary(args []string) error {
 	return containerExecByName(p.Unit, "urnet-tools", "proxy", "summary")
 }
 
+// cmdDockerDirect manages the direct IP toggle inside the container.
+func cmdDockerDirect(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "direct"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
+// cmdDockerUsage shows aggregate traffic usage for a container.
+func cmdDockerUsage(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "usage"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
 // cmdDockerReport configures the hub report URL inside the container.
 func cmdDockerReport(args []string) error {
 	providers := DiscoverDocker()
@@ -856,7 +886,7 @@ func cmdDockerSession(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -884,13 +914,30 @@ func cmdDockerProxy(args []string) error {
 
 	switch sub {
 	case "add":
-		// Exactly one positional: the host proxy file. A leading flag (e.g.
-		// --force) would be misread as a filename, so reject anything that is
-		// not a single non-flag argument.
-		if len(rest2) != 1 || strings.HasPrefix(rest2[0], "-") {
-			return fmt.Errorf("proxy add requires exactly one proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
+		var target string
+		for _, a := range rest2 {
+			if strings.HasPrefix(a, "--file=") {
+				target = strings.TrimPrefix(a, "--file=")
+			} else if strings.HasPrefix(a, "--proxy_file=") {
+				target = strings.TrimPrefix(a, "--proxy_file=")
+			} else if strings.HasPrefix(a, "--url=") {
+				target = strings.TrimPrefix(a, "--url=")
+			} else if strings.HasPrefix(a, "--URL=") {
+				target = strings.TrimPrefix(a, "--URL=")
+			} else if !strings.HasPrefix(a, "-") {
+				target = a
+			}
 		}
-		hostFile := rest2[0]
+		if target == "" {
+			return fmt.Errorf("proxy add requires a proxy file or URL, e.g. 'urnet-docker proxy add ~/proxies.txt'")
+		}
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return containerExecByName(container, "urnet-tools", "proxy", "add-source", target)
+		}
+		hostFile := expandHomePath(target)
+		if _, err := os.Stat(hostFile); err != nil {
+			return fmt.Errorf("proxy file not found on host: %s", hostFile)
+		}
 		// M9 fix: use mktemp inside the container for an unpredictable
 		// path. The old PID-based name was trivially guessable. Template
 		// ends in XXXXXX (no suffix) for BusyBox compatibility — GNU
@@ -918,6 +965,43 @@ func cmdDockerProxy(args []string) error {
 		// address instead of the file contents. --proxy_file= flows through
 		// the wrapper to `provider proxy add` which reads the file.
 		return containerExecByName(container, "urnet-tools", "proxy", "add", "--proxy_file="+inPath)
+	case "paste":
+		// If a host file is passed via --file=<file>, copy it into the container first.
+		var fileArg string
+		var otherArgs []string
+		for _, arg := range rest2 {
+			if strings.HasPrefix(arg, "--file=") {
+				fileArg = strings.TrimPrefix(arg, "--file=")
+			} else if strings.HasPrefix(arg, "-file=") {
+				fileArg = strings.TrimPrefix(arg, "-file=")
+			} else {
+				otherArgs = append(otherArgs, arg)
+			}
+		}
+		if fileArg != "" {
+			fileArg = expandHomePath(fileArg)
+			if _, err := os.Stat(fileArg); err != nil {
+				return fmt.Errorf("proxy paste file not found: %w", err)
+			}
+			mktempOut, err := exec.Command(dockerCLI(), "exec", container, "mktemp", "/tmp/urnet-proxies-XXXXXXXX").Output()
+			if err != nil {
+				return fmt.Errorf("mktemp in container: %w", err)
+			}
+			inPath := strings.TrimSpace(string(mktempOut))
+			if !strings.HasPrefix(inPath, "/tmp/urnet-proxies-") {
+				return fmt.Errorf("mktemp returned unexpected path: %s", inPath)
+			}
+			defer func() {
+				_ = exec.Command(dockerCLI(), "exec", container, "rm", "-f", inPath).Run()
+			}()
+			if err := dockerCopyInto(container, fileArg, inPath); err != nil {
+				return fmt.Errorf("copy %s into container: %w", fileArg, err)
+			}
+			inner := append([]string{"urnet-tools", "proxy", "paste", "--file=" + inPath}, otherArgs...)
+			return containerExecByName(container, inner...)
+		}
+		inner := append([]string{"urnet-tools", "proxy", "paste"}, rest2...)
+		return containerInteractiveExecByName(container, inner...)
 	case "clear":
 		// Forward remaining args (e.g. --force) so clear is scriptable from
 		// CI/cron on a non-TTY.

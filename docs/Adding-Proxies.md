@@ -149,28 +149,37 @@ urnet-docker proxy add --unit urfix ~/proxies.txt
 urnet-docker proxy refresh --unit urfix
 ```
 
+You can pass straight file paths (with automatic `~` home directory expansion),
+straight URLs (`urnet-docker proxy add https://example.com/proxies.txt`), or
+flag aliases (`--file=` / `--proxy_file=`).
+
 `--unit urfix` selects the container by name. If you have one container, the
 name is optional; if you have several, pass the one you want.
 
-#### Option B: manual `docker cp` + `docker exec`
+#### Option B: `urnet-docker proxy paste` (fastest for pipes/stdin)
 
-Copy the file into the container, then run the add inside it. Two steps:
+You can pipe proxies straight into the container without saving a file to disk:
+
+```bash
+cat proxies.txt | urnet-docker proxy paste --unit urfix
+```
+
+#### Option C: manual `docker cp` + `docker exec`
+
+Copy the file into the container, then run the add inside it:
 
 ```bash
 # 1. copy your host file into the container
 docker cp ~/proxies.txt urfix:/tmp/proxies.txt
 
 # 2. add it from inside the container
-docker exec -it urfix urnet-tools proxy add --proxy_file=/tmp/proxies.txt
+docker exec -it urfix urnet-tools proxy add /tmp/proxies.txt
 docker exec -it urfix urnet-tools proxy refresh
 ```
 
-The `--proxy_file=` flag is **required** here. A bare path, like
-`urnet-tools proxy add /tmp/proxies.txt`, makes the in-container wrapper
-register the literal string `/tmp/proxies.txt` as a proxy address instead of
-reading the file. This is the trap that catches most first-time Docker users.
+`urnet-tools proxy add` accepts straight file paths directly (as well as `--file=` and `--proxy_file=`).
 
-Both options need a `refresh` after the add (use `--force` if the warmup
+All options trigger immediate reload or can be followed by a `refresh` (use `--force` if the warmup
 lockout applies). Verify with `urnet-docker proxy traffic --unit urfix` or
 `docker exec -it urfix urnet-tools proxy traffic`.
 
@@ -179,7 +188,7 @@ lockout applies). Verify with `urnet-docker proxy traffic --unit urfix` or
 > time with a bind mount, for example `-v /path/to/proxy.txt:/app/proxy.txt`.
 > That is useful when the list already exists before you start the container.
 > For a running container, whether its list is mounted or not, `urnet-docker
-> proxy add` (Option A) is the simplest way to add or replace proxies.
+> proxy add` (Option A) or `urnet-docker proxy paste` (Option B) is the simplest way to add or replace proxies.
 
 ## Tidying up
 

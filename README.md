@@ -20,7 +20,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Dead proxy handling | Retry forever (15min loop, no ceiling) | 24h daily retry, 14-day drop (file) or 65min cleanup (URL), persisted state |
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
-| Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
+| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and optional telemetry (`dev/hub`) |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
 | Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
@@ -38,7 +38,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
-| Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
+| Track traffic usage (billable vs control overhead) | [Docker Deployment](docs/Docker-Deployment.md) · [CLI Reference](docs/urnet-tools-go.md) |
 | Load a proxy file into the provider (per-OS) | [Adding Proxies](docs/Adding-Proxies.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 | Import into a Pelican game-server panel | [Pelican Panel](docs/Docker-Deployment.md#-pelican-panel) · [Egg README](pelican/README.md) |
@@ -77,7 +77,7 @@ walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Addi
 
 ### 🐋 Docker (Production-Ready)
 
-Recommended for real deployments — includes auto-tuning, in-memory logs, persistent config, and bandwidth monitoring:
+Recommended for real deployments — includes auto-tuning, in-memory logs, and persistent config with zero listening ports:
 
 ```bash
 docker run -d \
@@ -90,32 +90,34 @@ docker run -d \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_RAMLOGS=1 \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urnetwork_config:/root/.urnetwork \
-  -v urnetwork_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 8080:8080 \
   -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
 **Key env vars:**
 - `URNETWORK_PROFILE=auto` — Auto-tunes based on available RAM (balanced, lowmem, etc.)
-- `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `docker exec urnetwork-provider logs`)
+- `URNETWORK_RAMLOGS=1` — In-memory logging for fast diagnostics (view with `urnet-docker logs`)
 - `URNETWORK_AUTH_CODE` — Auth code is exchanged for your JWT token, obtained from https://ur.io (single-use on first run; saved to volume)
 - `PROXY_URL` — Optional live proxy list URL (comma-separated for multiple), additive with the mounted `proxy.txt`. See [Proxy URL Sources](docs/Proxy-URL-Sources.md).
 - `UR_API_URL` / `UR_CONNECT_URL` — Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
 
+> [!TIP]
+> Providers do not require any listening ports. Outbound connections handle all traffic. If you wish to enable the optional vnstat web monitor, see [Running with vnstat](docs/Docker-Deployment.md#-optional-running-with-vnstat-bandwidth-monitor).
+
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
 > [!NOTE]
-> **Docker shortcuts** — `urnet-tools` commands work via `docker exec` (same as bare-metal):
-> - `docker exec -it urfix urnet-tools proxy health`
-> - `docker exec -it urfix urnet-tools logs`
-> - `docker exec -it urfix urnet-tools status`
-> - `docker exec -it urfix urnet-tools session save /root/.urnetwork/backup.urnsession`
+> **Docker Management** — Use `urnet-docker` directly on the host (no `docker exec` wrapping needed):
+> - `urnet-docker status`
+> - `urnet-docker direct status` (or `urnet-docker direct off` for proxy-only mode)
+> - `urnet-docker usage` (or `urnet-docker usage graphs` for time-series history)
+> - `urnet-docker proxy add ~/proxies.txt`
+> - `cat proxies.txt | urnet-docker proxy paste`
+> - `urnet-docker proxy traffic`
 
 ---
 
@@ -124,6 +126,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Command | Use this when... |
 | :--- | :--- |
 | `urnetwork auth` | You need to log in or refresh your identity manually |
+| `urnet-tools direct [on\|off\|status]` | You want to check or toggle native direct IP providing (`off` = proxy-only stealth) |
+| `urnet-tools usage [graphs]` | You want to view persistent traffic accounting (billable relay vs control plane split) |
+| `urnet-tools proxy add <path\|url>` | You want to add proxies from a file (straight path or `--file=`) or URL source |
+| `urnet-tools proxy paste < file` | You want to stream raw proxies from stdin or a pipe into the provider |
+| `urnet-tools proxy trim <count>` | You want to enforce a hard cap, shedding worst A-F reachability graded proxies first |
 | `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy |
 | `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP` |
 | `urnet-tools logs` | You want to stream the current RAMLOGS buffer |
@@ -133,35 +140,20 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
-| `urnet-tools report <url>` | You want to set or change the hub report URL without restarting |
-| `urnet-tools report` | You want to check which URL the provider is currently reporting to |
 | `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
 | `urnetwork choose_network --reset` | You want to clear a saved custom network and revert to the main network |
 
 > [!TIP]
-> `~/proxies.txt` and `/home/user/proxies.txt` are both valid path formats.
+> `~/proxies.txt` and `/home/user/proxies.txt` are both valid straight path formats across all tools.
 
 ---
 
-## 📡 Fleet Dashboard
+## 📡 Telemetry & Legacy Fleet Dashboard
 
-Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all nodes and renders a live HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
+UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
 
-![Hub Dashboard Preview](docs/hub-dashboard-preview.png)
-
-```bash
-# Run the hub (Linux, via urnet-tools — recommended)
-urnet-tools hub install
-
-# Or run it in Docker (Windows / Mac / any host)
-docker build -f hub/Dockerfile -t urnetwork-hub .
-docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data urnetwork-hub
-
-# Point each provider at it
-URNETWORK_REPORT_URL=http://HUB_IP:8080
-```
-
-See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub-Dashboard.md) for full feature details.
+> [!NOTE]
+> **Legacy Central Dashboard:** The multi-node aggregation hub dashboard has been transitioned to an optional add-on. Development and maintenance are tracked on the [`dev/hub`](https://github.com/full-bars/urnetwork-3.23-fix/tree/dev/hub) branch of `urnetwork-3.23-fix` and the [`dev/hub`](https://github.com/full-bars/meso-miner/tree/dev/hub) branch of `meso-miner`. For setup details, see [Hub Setup](docs/Hub-Setup.md).
 
 ---
 

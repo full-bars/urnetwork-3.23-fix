@@ -60,6 +60,7 @@ func TestEveryToolsCommandHelpIsPerCommand(t *testing.T) {
 		{"stop", "stop"},
 		{"restart", "restart"},
 		{"update", "update"},
+		{"idle-update", "idle-update"},
 		{"self-update", "self-update"},
 		{"logs", "logs"},
 		{"summary", "summary"},
@@ -122,12 +123,15 @@ func TestEveryDockerCommandHelpIsPerCommand(t *testing.T) {
 		{"summary", "summary"},
 		{"report", "report"},
 		{"update", "update"},
+		{"idle-update", "idle-update"},
 		{"self-heal", "self-heal"},
 		{"set", "set"},
 		{"fast-auth", "fast-auth"},
 		{"hub", "hub"},
 		{"session", "session"},
 		{"exec", "exec"},
+		{"direct", "direct"},
+		{"usage", "usage"},
 	}
 	for _, c := range single {
 		checkHelp(t, run, c.name, []string{c.name}, c.token)
@@ -136,7 +140,7 @@ func TestEveryDockerCommandHelpIsPerCommand(t *testing.T) {
 	checkHelp(t, run, "proxy", []string{"proxy"}, "proxy")
 	// every proxy subcommand renders its own help page.
 	subs := []string{
-		"add", "clear", "remove", "add-source", "remove-source",
+		"add", "paste", "clear", "remove", "add-source", "remove-source",
 		"refresh", "remove-dead", "health", "traffic", "summary", "trim", "exclude",
 	}
 	for _, sub := range subs {
