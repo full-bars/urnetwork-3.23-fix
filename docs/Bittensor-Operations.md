@@ -48,6 +48,19 @@ services:
       - ur_config_1:/home/urnet/.urnetwork
 ```
 
+### Beginner FAQ: Why Didn't My Browser Wallet Pop Up to Sign?
+
+If you are used to Web3 dApps prompting your browser extension (like Talisman, SubWallet, Polkadot{.js}, or MetaMask) to approve transactions, you might wonder why linking your wallet here didn't trigger a popup:
+
+1. **Linking your wallet (Step 1 — Direct Deposit Setup):**
+   - Think of this like giving an employer your account number for direct deposit.
+   - You are only telling URNetwork where to send your rewards. Because sharing a public wallet address cannot move or spend funds from your wallet, **no signature, password, or browser wallet popup is required**.
+   - The system verifies your node using your local authentication file (`~/.urnetwork/jwt`).
+
+2. **Claiming your rewards (Step 2 — Withdrawing Tokens):**
+   - **This is where your browser wallet extension is used.**
+   - At the end of every reward cycle (epoch), emissions are calculated and locked on the blockchain. When you go to claim those tokens to your wallet on the web dashboard or portal, your browser wallet extension will pop up and ask you to click **Approve / Sign** to finalize the on-chain transfer.
+
 ---
 
 ## 3. Real-Time Status & Telemetry (`sn-status`)
