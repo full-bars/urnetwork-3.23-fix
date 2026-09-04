@@ -42,6 +42,7 @@ Session & Identity:
   session save <file>     Export identity + proxy state (encrypted)
   session load <file>     Import identity + proxy state, then restart
   auth [<code>]           Authenticate (omit for interactive paste)
+  sn-status [--json]      Subnet 25 node rank, coldkey & miner status
   choose-network          Set API/connect endpoints
   default                 Persist a default provider target for this box
 
@@ -136,6 +137,7 @@ func buildRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newProvidersCmd(),
 		newStatusCmd(),
+		newSnStatusCmd(),
 		newStartCmd(),
 		newStopCmd(),
 		newRestartCmd(),
@@ -225,6 +227,14 @@ func newStatusCmd() *cobra.Command {
 			return cmdStatus(rest)
 		})
 	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service")
+}
+
+func newSnStatusCmd() *cobra.Command {
+	return withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdSnStatus(rest)
+		})
+	}), "Show real-time Subnet 25 metrics: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json for machine-readable automation. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools sn-status\n  urnet-tools sn-status --json\n  urnet-tools sn-status --unit urnetwork-native.service")
 }
 
 func newStartCmd() *cobra.Command {

@@ -904,6 +904,9 @@ Usage:
     provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
         [-v...]
+    provider sn-status [--json]
+        [--api_url=<api_url>]
+        [-v...]
     provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
@@ -936,6 +939,7 @@ Options:
     --version                        Show version.
     -v...                            Enable verbose mode. -v implies verbose level 1,
     				                 -vv implies level 2... etc.
+    --json                           Output in JSON format for automated tooling.
     -f                               Force overwrite the JWT token store file or proxy value, if exists.
                                      By default, existing values will not be overwritten.
     --api_url=<api_url>              Specify a custom API URL to use.
@@ -1045,6 +1049,8 @@ Options:
 		if set, _ := opts.Bool("set"); set {
 			walletSet(opts)
 		}
+	} else if snStatus, _ := opts.Bool("sn-status"); snStatus {
+		snStatusCmd(opts)
 	} else if claim_, _ := opts.Bool("claim"); claim_ {
 		claim(opts)
 	} else if bindHead_, _ := opts.Bool("bind-head"); bindHead_ {
