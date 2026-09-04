@@ -508,6 +508,46 @@ func TestProvideAuthRejectsCurrentJWTWithoutNetworkID(t *testing.T) {
 	}
 }
 
+func TestProvideAuthFillsMissingNetworkIDFromStore(t *testing.T) {
+	// If the current account JWT is missing the network_id claim, but the
+	// stored entry carries a valid NetworkID="net-1", provideAuth fills it in
+	// from the store and reuses the existing identity instead of minting fresh.
+	home, restoreHome := withHome(t)
+	defer restoreHome()
+	writeAccountJWT(t, home, map[string]interface{}{
+		"client_id": testClientId, // no network_id in account JWT
+	})
+	restoreStore := withGlobalStore(t, filepath.Join(t.TempDir(), "store.json"))
+	defer restoreStore()
+
+	goodJwt := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id":  testClientId,
+		"exp":        float64(time.Now().Add(time.Hour).Unix()),
+		"network_id": "net-1",
+	})
+	_ = globalClientJWTStore.Put("direct", clientJWTEntry{
+		ByClientJWT: goodJwt,
+		ClientID:    testClientId,
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	})
+
+	t.Setenv("URNETWORK_HOT_RESTART", "1")
+	byJwt, id, reused, err := provideAuth(nil, nil, "", docopt.Opts{}, "node", "direct")
+	if err != nil {
+		t.Fatalf("provideAuth err = %v", err)
+	}
+	if !reused {
+		t.Error("expected reused=true when missing network_id is filled in from store")
+	}
+	if id.String() != testClientId {
+		t.Errorf("client_id = %q, want %q", id.String(), testClientId)
+	}
+	if byJwt != goodJwt {
+		t.Errorf("returned jwt = %q, want %q", byJwt, goodJwt)
+	}
+}
+
 // --- self-heal of legacy NetworkID="" entries on reuse ---------------------
 
 func TestProvideAuthSelfHealStampsNetworkID(t *testing.T) {

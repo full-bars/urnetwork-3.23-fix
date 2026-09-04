@@ -220,6 +220,7 @@ type ProxyReloader struct {
 	directDone      chan struct{}                 // closed when direct goroutine exits; nil when not running
 	drainingProxies map[string]context.CancelFunc // proxies draining active sessions
 	drainMu         sync.Mutex
+	networkID       string
 }
 
 func (r *ProxyReloader) isDraining(addr string) bool {
@@ -628,8 +629,12 @@ func (r *ProxyReloader) reload() {
 	// dominant ramlog flooder, flushing high-value lines out of the small
 	// in-RAM buffer within seconds. The "[proxy] reloaded: +N -M" summary
 	// below carries the operator-relevant signal.
+	// Prioritize added proxies by warmth (cached client JWTs) so warm proxies ramp up
+	// at 25ms intervals while cold proxies use standard backoff.
+	addedSchedules, _, _, _ := prioritizeAndScheduleProxies(added, sourceOf, r.networkID)
 	warmupDeferred := 0
-	for i, settings := range added {
+	for _, sched := range addedSchedules {
+		settings := sched.Settings
 		if r.isDraining(settings.Address) {
 			tlog("[proxy] skip add %s: still draining\n", settings.Address)
 			continue
@@ -650,20 +655,17 @@ func (r *ProxyReloader) reload() {
 		r.cancelMap[settings.Address] = proxyCancel
 		r.cancelMapMu.Unlock()
 
-		staggerPos := i
 		settingsCopy := settings
 		isURLSourced := sourceOf[settings.Address] == "url"
-		reloadStaggerMs := 150
-		if isURLSourced {
-			reloadStaggerMs = 500
-		}
+		baseDelay := sched.Delay
+		staggerDuration := sched.Stagger
 		r.wg.Add(1)
 		go connect.HandleError(func() {
 			defer r.wg.Done()
 			defer connect.UnregisterProxy(stableID)
 			defer proxyCancel()
 
-			if !backoffPacer(staggerPos, reloadStaggerMs, time.Now(), proxyCtx) {
+			if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
 				return
 			}
 			r.spawnProxy(proxyCtx, settingsCopy, false, isURLSourced)

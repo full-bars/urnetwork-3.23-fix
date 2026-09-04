@@ -53,6 +53,38 @@ var provideStartTime time.Time
 // for this before launching, so file proxies get an uncontested ramp.
 var proxyWarmupDone atomic.Bool
 
+// backoffPacerWithDelay calculates the effective start delay using a cumulative base delay
+// and slotDuration for jitter calculation.
+func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, proxyCtx context.Context) bool {
+	if baseDelay <= 0 && slotDuration <= 0 {
+		return true
+	}
+
+	var jitter time.Duration
+	if slotDuration > 0 {
+		halfSlotMs := int(slotDuration.Milliseconds()) / 2
+		if halfSlotMs > 0 {
+			jMs := mathrand.Intn(halfSlotMs + 1)
+			if mathrand.Intn(2) == 0 {
+				jMs = -jMs
+			}
+			jitter = time.Duration(jMs) * time.Millisecond
+		}
+	}
+
+	wait := baseDelay + jitter
+	if wait < 0 {
+		wait = 0
+	}
+
+	select {
+	case <-proxyCtx.Done():
+		return false
+	case <-time.After(wait):
+	}
+	return true
+}
+
 // backoffPacer calculates the effective start delay for the n-th proxy goroutine.
 // staggerMs is the base gap between consecutive proxy starts; ±50% random
 // jitter spreads dials within each slot. File proxies typically pass 0 for
@@ -62,20 +94,8 @@ func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context)
 	if staggerMs <= 0 {
 		return true
 	}
-
-	jitter := mathrand.Intn(staggerMs + 1) // [0, staggerMs]
-	if mathrand.Intn(2) == 0 {             // coinflip — add or subtract
-		jitter = -jitter
-	}
-
-	wait := time.Duration(n)*time.Duration(staggerMs)*time.Millisecond + time.Duration(jitter)*time.Millisecond
-
-	select {
-	case <-proxyCtx.Done():
-		return false
-	case <-time.After(wait):
-	}
-	return true
+	baseDelay := time.Duration(n) * time.Duration(staggerMs) * time.Millisecond
+	return backoffPacerWithDelay(baseDelay, time.Duration(staggerMs)*time.Millisecond, proxyCtx)
 }
 
 // paceMonitor logs real-time warmup progress every 30s. It uses the health
@@ -3360,21 +3380,13 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
-	// Sort so file-sourced (or internal-config) proxies launch before
-	// URL-sourced ones. backoffPacer uses the index in this slice to
-	// determine initial delay, so file proxies get a head start of
-	// ~len(file_proxies) * staggerMs before URL proxies begin connecting.
-	sort.SliceStable(allProxySettings, func(i, j int) bool {
-		si := proxySourceOf[allProxySettings[i].Address]
-		sj := proxySourceOf[allProxySettings[j].Address]
-		if si == "url" && sj != "url" {
-			return false
-		}
-		if si != "url" && sj == "url" {
-			return true
-		}
-		return false
-	})
+	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
+	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
+	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
+	currentNetworkId := currentProviderNetworkID()
+	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
+	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
+		len(allProxySettings), warmCount, renewableCount, coldCount)
 
 	// Start the native [direct] connection as proxy[0] unless the operator
 	// has explicitly disabled it. Precedence (highest to lowest):
@@ -3463,27 +3475,24 @@ func provide(opts docopt.Opts) {
 			)
 		}
 
-		for i, proxySettings := range allProxySettings {
+		for _, sched := range proxySchedules {
+			proxySettings := sched.Settings
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
 			proxyCancelMap[proxySettings.Address] = proxyCancel
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
-			proxyIdx := i
 			isURLSourced := proxySourceOf[proxySettings.Address] == "url"
+			baseDelay := sched.Delay
+			staggerDuration := sched.Stagger
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
 				defer connect.UnregisterProxy(stableID)
 				defer proxyCancel()
 
-				staggerMs := 150
-				if isURLSourced {
-					staggerMs = 500
-				}
-				now := time.Now()
-				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
+				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
 					return
 				}
 				// Log previously-dropped proxies on restart so the
@@ -3514,6 +3523,7 @@ func provide(opts docopt.Opts) {
 		spawnProxy:      provideWithProxy,
 		drainingProxies: make(map[string]context.CancelFunc),
 		directDone:      directStartupDone,
+		networkID:       currentNetworkId,
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
@@ -3980,6 +3990,19 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
+			// If the account JWT has no network_id claim, fill it in from the stored entry
+			// to reuse/renew the existing client ID instead of minting a fresh one.
+			if !haveCurrentNetworkId && entry.NetworkID != "" {
+				currentNetworkId = entry.NetworkID
+				haveCurrentNetworkId = true
+			}
+			// Fall back: if still missing, check if any entry in the store has a known network_id
+			if !haveCurrentNetworkId {
+				if knownNet := currentProviderNetworkID(); knownNet != "" {
+					currentNetworkId = knownNet
+					haveCurrentNetworkId = true
+				}
+			}
 			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
 				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
@@ -3987,7 +4010,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				// before falling through to fresh mint, so the operator's
 				// identities (and their server-side reliability reputation)
 				// survive even when the JWT has aged out of its 24h window.
-				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
 						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
@@ -4003,10 +4026,29 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 					}
 					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
-				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				// Stored JWT missing client_id claim in payload: prioritize salvaging the
+				// identity via renewal instead of minting fresh if client_id is valid.
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					if renewErr == nil {
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", identityKey, parsedId)
+						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+							ByClientJWT: renewedJwt,
+							ClientID:    entry.ClientID,
+							NetworkID:   currentNetworkId,
+							MintedAt:    time.Now(),
+						}); putErr != nil {
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+						}
+						return renewedJwt, parsedId, true, nil
+					}
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
+				} else {
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+				}
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {

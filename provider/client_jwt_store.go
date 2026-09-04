@@ -205,6 +205,27 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	return s.flushLocked()
 }
 
+// AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
+// NetworkID found across all entries. If entries contain conflicting non-empty
+// NetworkIDs, it returns "" to prevent selecting an arbitrary network identity.
+func (s *clientJWTStore) AnyNetworkID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	var unambiguous string
+	for _, entry := range s.entries {
+		if entry.NetworkID != "" {
+			if unambiguous == "" {
+				unambiguous = entry.NetworkID
+			} else if unambiguous != entry.NetworkID {
+				// Conflicting network IDs present in store — ambiguous, return empty.
+				return ""
+			}
+		}
+	}
+	return unambiguous
+}
+
 // Delete evicts key, if present, and flushes the store to disk immediately.
 // Used when a reused client JWT turns out to be rejected server-side (e.g.
 // the client_id was revoked) so the next mint attempt — this process's
