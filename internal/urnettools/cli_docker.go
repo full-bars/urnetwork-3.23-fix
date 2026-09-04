@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -935,12 +934,7 @@ func cmdDockerProxy(args []string) error {
 		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 			return containerExecByName(container, "urnet-tools", "proxy", "add-source", target)
 		}
-		hostFile := target
-		if strings.HasPrefix(hostFile, "~/") || strings.HasPrefix(hostFile, "~\\") {
-			if home, err := os.UserHomeDir(); err == nil {
-				hostFile = filepath.Join(home, hostFile[2:])
-			}
-		}
+		hostFile := expandHomePath(target)
 		if _, err := os.Stat(hostFile); err != nil {
 			return fmt.Errorf("proxy file not found on host: %s", hostFile)
 		}
@@ -985,6 +979,7 @@ func cmdDockerProxy(args []string) error {
 			}
 		}
 		if fileArg != "" {
+			fileArg = expandHomePath(fileArg)
 			if _, err := os.Stat(fileArg); err != nil {
 				return fmt.Errorf("proxy paste file not found: %w", err)
 			}

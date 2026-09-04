@@ -93,4 +93,40 @@ func TestProxyAddFlagAndUrlParsing(t *testing.T) {
 			t.Fatalf("unexpected error with --url=: %v", err)
 		}
 	})
+
+	// 6. Multiple straight files
+	t.Run("multi-file-straight", func(t *testing.T) {
+		proxyFile2 := filepath.Join(tmpDir, "proxies2.txt")
+		if err := os.WriteFile(proxyFile2, []byte("127.0.0.2:1080\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err := Run([]string{"proxy", "add", proxyFile, proxyFile2, "--dry-run", "--unit=urnetwork.service"})
+		if !isAcceptable(err) {
+			t.Fatalf("unexpected error with multi-file straight add: %v", err)
+		}
+	})
+}
+
+func TestExpandHomePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("skipping home expansion test: home unavailable")
+	}
+
+	got := expandHomePath("~/test/path.txt")
+	expected := filepath.Join(home, "test/path.txt")
+	if got != expected {
+		t.Errorf("expandHomePath(~/...) = %q, want %q", got, expected)
+	}
+
+	gotWin := expandHomePath("~\\test\\path.txt")
+	expectedWin := filepath.Join(home, "test\\path.txt")
+	if gotWin != expectedWin {
+		t.Errorf("expandHomePath(~\\...) = %q, want %q", gotWin, expectedWin)
+	}
+
+	gotLiteral := expandHomePath("/var/log/test.txt")
+	if gotLiteral != "/var/log/test.txt" {
+		t.Errorf("expandHomePath(/var/...) = %q, want /var/log/test.txt", gotLiteral)
+	}
 }
