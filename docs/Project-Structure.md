@@ -93,6 +93,7 @@ urnetwork-3.23-fix/
 │   ├── Proxy-URL-Sources.md
 │   ├── Traffic-Amplification.md
 │   ├── Adding-Proxies.md
+│   ├── Bittensor-Operations.md
 │   ├── Troubleshooting.md
 │   └── design/                   # Internal design docs (proxy health, hot-reload, bandwidth)
 │

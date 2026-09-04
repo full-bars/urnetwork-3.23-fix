@@ -34,6 +34,7 @@ Core Commands:
   restart                   Restart container
   update                    Update host binary or provider in place (no recreate)
   status                    Detailed status of one container
+  sn-status                 Subnet 25 node rank, coldkey & miner status
   logs                      Follow container logs
   exec <cmd>                Run arbitrary command inside the container
   providers                 List all provider containers
@@ -110,6 +111,7 @@ func buildDockerRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newDockerProvidersCmd(),
 		newDockerStatusCmd(),
+		newDockerSnStatusCmd(),
 		newDockerStartCmd(),
 		newDockerStopCmd(),
 		newDockerRestartCmd(),
@@ -149,6 +151,12 @@ func newDockerStatusCmd() *cobra.Command {
 	return withHelp(newCobraCmd("status [target]", "detailed status of one container", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerStatus(args)
 	}), "Show detailed status for one provider container: image, running state, in-container state dir, network identity, and JWT expiry. Target it with --unit (the container name), --network, --network-id, --state-dir, or a bare container name.", "  urnet-docker status\n  urnet-docker status mynetwork-provider\n  urnet-docker status --network tacogonzalez3000")
+}
+
+func newDockerSnStatusCmd() *cobra.Command {
+	return withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerSnStatus(args)
+	}), "Show real-time Subnet 25 metrics inside the targeted container: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json.", "  urnet-docker sn-status\n  urnet-docker sn-status --json\n  urnet-docker sn-status --unit mynetwork-provider")
 }
 
 func newDockerStartCmd() *cobra.Command {

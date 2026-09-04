@@ -19,6 +19,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/docopt/docopt-go"
 
@@ -773,4 +775,156 @@ func printHeadUnbound(receipt *types.Receipt, contract common.Address) {
 	if !decoded {
 		fmt.Printf("warning: no HeadUnbound event decoded from the receipt\n")
 	}
+}
+
+// snStatusCmd implements `provider sn-status [--json]`.
+func snStatusCmd(opts docopt.Opts) {
+	apiUrl, err := resolveApiUrl(opts)
+	if err != nil {
+		fmt.Printf("network config error: %s\n", err)
+		os.Exit(1)
+	}
+	jsonMode, _ := opts.Bool("--json")
+
+	byJwt, err := readNetworkJwt()
+	if err != nil {
+		fmt.Printf("authentication error: %s\n", err)
+		os.Exit(1)
+	}
+
+	event := connect.NewEventWithContext(context.Background())
+	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	ctx, cancel := context.WithTimeout(event.Ctx(), 15*time.Second)
+	defer cancel()
+
+	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
+	api.SetByJwt(byJwt)
+
+	type SnStatusOutput struct {
+		LeaderboardRank   int     `json:"leaderboard_rank"`
+		LeaderboardPublic bool    `json:"leaderboard_public"`
+		NetMibCount       float64 `json:"net_mib_count"`
+		Top200Eligible    bool    `json:"top200_eligible"`
+		TierDescription   string  `json:"tier_description"`
+		ColdkeySs58       string  `json:"coldkey_ss58,omitempty"`
+		ColdkeyHex        string  `json:"coldkey_hex,omitempty"`
+		CurrentEpoch      uint64  `json:"current_epoch,omitempty"`
+		StartBlock        uint64  `json:"start_block,omitempty"`
+		FinalizeBlock     uint64  `json:"finalize_block,omitempty"`
+		ContractAddress   string  `json:"contract_address,omitempty"`
+		ChainID           uint64  `json:"chain_id,omitempty"`
+		PayoutShareBps    int     `json:"payout_share_bps,omitempty"`
+		ClaimEpoch        uint64  `json:"claim_epoch,omitempty"`
+	}
+
+	out := SnStatusOutput{}
+
+	if rankingRes, err := api.NetworkGetRankingSync(); err == nil && rankingRes != nil && rankingRes.NetworkRanking != nil {
+		out.LeaderboardRank = rankingRes.NetworkRanking.LeaderboardRank
+		out.NetMibCount = rankingRes.NetworkRanking.NetMibCount
+		out.LeaderboardPublic = rankingRes.NetworkRanking.LeaderboardPublic
+
+		rank := out.LeaderboardRank
+		if rank > 0 && rank <= 10 {
+			out.Top200Eligible = true
+			out.TierDescription = fmt.Sprintf("Tier 1 Elite (Rank #%d Globally)", rank)
+		} else if rank > 10 && rank <= 50 {
+			out.Top200Eligible = true
+			out.TierDescription = fmt.Sprintf("Tier 2 High-Volume (Rank #%d Globally)", rank)
+		} else if rank > 50 && rank <= 200 {
+			out.Top200Eligible = true
+			out.TierDescription = fmt.Sprintf("Tier 3 Active (Rank #%d Globally)", rank)
+		} else if rank > 200 {
+			out.Top200Eligible = false
+			out.TierDescription = fmt.Sprintf("Rank #%d (%d below Top 200 cutoff)", rank, rank-200)
+		} else {
+			out.TierDescription = "Unranked / Processing"
+		}
+	}
+
+	if epochRes, err := api.SnEpochSync(); err == nil && epochRes != nil {
+		out.CurrentEpoch = epochRes.Epoch
+		out.StartBlock = epochRes.StartBlock
+		out.FinalizeBlock = epochRes.FinalizeBlock
+		out.ContractAddress = epochRes.ContractAddress
+		out.ChainID = epochRes.ChainId
+
+		targetEpoch := epochRes.Epoch
+		if targetEpoch > 1 {
+			targetEpoch = epochRes.Epoch - 1
+		}
+		if claimRes, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{Epoch: targetEpoch}); err == nil && claimRes != nil {
+			out.ClaimEpoch = claimRes.Epoch
+			out.PayoutShareBps = claimRes.ShareBps
+			if len(claimRes.Coldkey) == 32 {
+				var ck [32]byte
+				copy(ck[:], claimRes.Coldkey)
+				out.ColdkeyHex = fmt.Sprintf("0x%x", ck)
+				if encoded, err := ss58.Encode(ck, ss58.BittensorPrefix); err == nil {
+					out.ColdkeySs58 = encoded
+				}
+			}
+		}
+	}
+
+	if jsonMode {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(out); err != nil {
+			fmt.Fprintf(os.Stderr, "json encode error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	fmt.Println("\x1b[1m════════════════════════════════════════════════════════════════════════════════\x1b[0m")
+	fmt.Println("  \x1b[1;36mURNetwork Subnet 25 — Node & Miner Status\x1b[0m")
+	fmt.Println("\x1b[1m════════════════════════════════════════════════════════════════════════════════\x1b[0m")
+
+	if out.LeaderboardRank > 0 {
+		color := "\x1b[32m"
+		if !out.Top200Eligible {
+			color = "\x1b[33m"
+		}
+		pubBadge := ""
+		if out.LeaderboardPublic {
+			pubBadge = " [Public]"
+		}
+		fmt.Printf("  \x1b[1mGlobal Rank:\x1b[0m      %s#%d%s\x1b[0m — %s\n",
+			color, out.LeaderboardRank, pubBadge, out.TierDescription)
+	} else {
+		fmt.Printf("  \x1b[1mGlobal Rank:\x1b[0m      \x1b[90mUnranked or pending initial telemetry\x1b[0m\n")
+	}
+
+	if out.NetMibCount > 0 {
+		fmt.Printf("  \x1b[1mNet Bandwidth:\x1b[0m    \x1b[1;32m%.2f MiB\x1b[0m (%.2f GiB) provided\n",
+			out.NetMibCount, out.NetMibCount/1024.0)
+	} else {
+		fmt.Printf("  \x1b[1mNet Bandwidth:\x1b[0m    0.00 MiB\n")
+	}
+
+	if out.ColdkeySs58 != "" {
+		fmt.Printf("  \x1b[1mColdkey (SS58):\x1b[0m   \x1b[33m%s\x1b[0m\n", out.ColdkeySs58)
+		if out.ColdkeyHex != "" {
+			fmt.Printf("  \x1b[1mColdkey (Hex):\x1b[0m    \x1b[90m%s\x1b[0m\n", out.ColdkeyHex)
+		}
+	} else if out.ColdkeyHex != "" {
+		fmt.Printf("  \x1b[1mColdkey (Hex):\x1b[0m    \x1b[33m%s\x1b[0m\n", out.ColdkeyHex)
+	} else {
+		fmt.Printf("  \x1b[1mColdkey:\x1b[0m          \x1b[90m(Not configured — register with 'provider wallet set <coldkey>')\x1b[0m\n")
+	}
+
+	if out.CurrentEpoch > 0 {
+		fmt.Printf("  \x1b[1mSubnet Epoch:\x1b[0m     #%d (Start: #%d, Finalize: #%d)\n",
+			out.CurrentEpoch, out.StartBlock, out.FinalizeBlock)
+	}
+	if out.ContractAddress != "" {
+		fmt.Printf("  \x1b[1mContract:\x1b[0m         %s (Chain ID: %d)\n", out.ContractAddress, out.ChainID)
+	}
+	if out.PayoutShareBps > 0 {
+		fmt.Printf("  \x1b[1mPayout Share:\x1b[0m     \x1b[32m%.2f%%\x1b[0m (%d bps in Epoch #%d)\n",
+			float64(out.PayoutShareBps)/100.0, out.PayoutShareBps, out.ClaimEpoch)
+	}
+	fmt.Println("\x1b[1m════════════════════════════════════════════════════════════════════════════════\x1b[0m")
 }

@@ -1063,3 +1063,18 @@ func dockerCopyInto(container, hostFile, destPath string) error {
 	}
 	return nil
 }
+
+// cmdDockerSnStatus queries Subnet 25 telemetry inside the targeted container.
+func cmdDockerSnStatus(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "sn-status"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
