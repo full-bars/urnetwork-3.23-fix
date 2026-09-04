@@ -431,6 +431,9 @@ func TestBackoffPacerWithDelay(t *testing.T) {
 
 	t.Run("completes after delay", func(t *testing.T) {
 		start := time.Now()
+		// Base delay 15ms with 2ms slot implies ±1ms jitter (effective wait 14ms..16ms).
+		// We assert elapsed >= 10ms to provide a safe lower-bound floor that tolerates
+		// scheduler/timer granularity jitter on virtualized CI runners without flaking.
 		ok := backoffPacerWithDelay(15*time.Millisecond, 2*time.Millisecond, ctx)
 		if !ok {
 			t.Error("expected backoffPacerWithDelay to return true")

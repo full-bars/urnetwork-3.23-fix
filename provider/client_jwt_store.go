@@ -205,6 +205,21 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	return s.flushLocked()
 }
 
+// AnyNetworkID scans loaded store entries and returns the first non-empty
+// NetworkID found, or empty string if none exists. It ensures the store is loaded
+// before reading.
+func (s *clientJWTStore) AnyNetworkID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	for _, entry := range s.entries {
+		if entry.NetworkID != "" {
+			return entry.NetworkID
+		}
+	}
+	return ""
+}
+
 // Delete evicts key, if present, and flushes the store to disk immediately.
 // Used when a reused client JWT turns out to be rejected server-side (e.g.
 // the client_id was revoked) so the next mint attempt — this process's

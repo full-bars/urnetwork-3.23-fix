@@ -66,14 +66,7 @@ func currentProviderNetworkID() string {
 		}
 	}
 	if globalClientJWTStore != nil {
-		globalClientJWTStore.mu.Lock()
-		defer globalClientJWTStore.mu.Unlock()
-		globalClientJWTStore.loadLocked()
-		for _, entry := range globalClientJWTStore.entries {
-			if entry.NetworkID != "" {
-				return entry.NetworkID
-			}
-		}
+		return globalClientJWTStore.AnyNetworkID()
 	}
 	return ""
 }
