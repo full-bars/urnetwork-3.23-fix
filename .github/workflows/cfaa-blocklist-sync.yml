@@ -7,6 +7,10 @@ on:
   repository_dispatch:
     types: [cfaa-sync-request]
 
+concurrency:
+  group: cfaa-blocklist-sync
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -73,6 +77,25 @@ jobs:
           echo "CFAA blocklist is already in sync. Nothing to do."
           exit 0
 
+      - name: Import GPG key
+        if: steps.fetch.outputs.files_identical == 'false'
+        env:
+          GPG_RELEASE_KEY: ${{ secrets.GPG_RELEASE_KEY }}
+        run: |
+          if [ -z "$GPG_RELEASE_KEY" ]; then
+            echo "ERROR: GPG_RELEASE_KEY secret not set. Cannot sign commits."
+            exit 1
+          fi
+          echo "$GPG_RELEASE_KEY" | gpg --batch --import 2>&1
+          SIGNING_KEY=$(gpg --list-keys --keyid-format long meso-release-bot 2>&1 | awk '/^pub/{print $2}' | cut -d/ -f2)
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "ERROR: Could not extract GPG key ID after import."
+            exit 1
+          fi
+          git config user.signingkey "$SIGNING_KEY"
+          git config commit.gpgsign true
+          echo "GPG signing key configured: $SIGNING_KEY"
+
       - name: Create branch and apply changes
         if: steps.fetch.outputs.files_identical == 'false'
         run: .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}"
@@ -81,15 +104,7 @@ jobs:
         if: steps.fetch.outputs.files_identical == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH_NAME=$(git branch --show-current)
-          git push origin "$BRANCH_NAME"
-          EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --state open --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING_PR" ]; then
-            echo "PR #$EXISTING_PR already exists"
-          else
-            gh pr create --title "chore(security): sync CFAA blocklist from upstream" --body-file /tmp/cfaa_pr_body.md --label "security"
-          fi
+        run: .github/scripts/create_pr.sh
 
       - name: Post confirmation to Discord
         if: always()
