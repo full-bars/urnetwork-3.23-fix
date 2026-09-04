@@ -2,7 +2,7 @@ name: CFAA Blocklist Sync
 
 on:
   schedule:
-    - cron: '0 3,15 * * *'
+    - cron: '0 4,16 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [cfaa-sync-request]
