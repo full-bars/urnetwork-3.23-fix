@@ -3293,3 +3293,34 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **URL Resolution**: Translates preset aliases before writing to `~/.urnetwork/network.json`.
 
 **Impact**: Operator convenience and elimination of typo-related network misconfigurations.
+
+---
+
+## 158. Warm Proxy Startup Priority & Accelerated Stagger (PR #526)
+
+**Purpose**: Eliminate validator probe cold-start penalties by prioritizing proxies with existing, valid authentication tokens upon node launch.
+
+**Files Modified**: `provider/main.go`, `provider/proxy_warmth.go`, `provider/proxy_warmth_test.go`.
+
+**Change**:
+- **JWT Store Inspection**: Evaluates local client token cache at boot to identify previously verified warm proxies.
+- **Priority Launch**: Sorts connection pool candidates to launch warm proxies first.
+- **Accelerated Stagger**: Reduces connection launch stagger from 2s down to 100ms for warm proxies.
+
+**Impact**: Slashes cold-start ramp times by up to 95%, ensuring immediate responsiveness to Subnet 25 validator bandwidth probes.
+
+---
+
+## 159. Subnet 25 Telemetry Engine & Operations Guide (`sn-status`) (PR #528)
+
+**Purpose**: Give Bittensor Subnet 25 operators real-time visibility into validator ranking, top-200 tier eligibility, bandwidth credit, epoch schedules, and reward claims directly from the CLI.
+
+**Files Modified**: `api_ranking.go`, `api_ranking_test.go`, `internal/urnettools/sn_status.go`, `internal/urnettools/sn_status_test.go`, `internal/urnettools/cobra.go`, `internal/urnettools/cobra_docker.go`, `internal/urnettools/cli_docker.go`, `provider/main.go`, `provider/sn.go`, `docs/Bittensor-Operations.md`.
+
+**Change**:
+- **SDK Bindings**: Added `NetworkGetRankingSync` (`GET /network/ranking`) and `StatsLeaderboardSync` (`POST /stats/leaderboard`) to `BringYourApi`.
+- **`sn-status` Command**: Real-time dashboard displaying global rank, tier qualification, net bandwidth provided (MiB/GiB), coldkey registration (SS58/Hex), current epoch block schedule, and finalized epoch pool payout share (bps/%).
+- **CLI Parity & JSON Support**: Fully supported across `urnet-tools sn-status`, `urnet-docker sn-status`, and `provider sn-status`, with `--json` output for automated monitoring.
+- **Bittensor Operations Guide**: Created `docs/Bittensor-Operations.md` detailing subnet mechanics, coldkey setup, epoch timelines, and claim operations.
+
+**Impact**: Full observability and streamlined operations for high-performance Subnet 25 miners and node operators.

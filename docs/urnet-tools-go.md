@@ -42,6 +42,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 |---|---|
 | `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
 | `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider`, `urnet-tools`, and `urnet-docker`. |
+| `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry: global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools`, `urnet-docker`, and `provider`. |
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |

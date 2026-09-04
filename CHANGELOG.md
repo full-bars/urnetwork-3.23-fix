@@ -21,6 +21,10 @@ All notable changes to this project are documented here.
 - **Warm proxy priority on startup (PR #526)**: evaluates local client JWT store on boot and prioritizes warm, previously-authenticated proxies during startup selection to minimize validator probe latency.
 - **Accelerated startup stagger for warm proxies (PR #526)**: reduces connection launch stagger from 2s to 100ms for known-warm proxies, slashing cold-start ramp times by up to 95%.
 - **Network ID conflict guard (PR #526)**: hardens `AnyNetworkID` against mismatched network identity state, ensuring strict network identity consistency.
+- **Subnet 25 telemetry & status dashboard (`sn-status`) (PR #528)**: live Bittensor Subnet 25 miner and node telemetry displaying global ranking, top-200 tier eligibility, net bandwidth provided (MiB/GiB), registered coldkey (SS58 & Hex), subnet epoch lifecycle, and finalized epoch merkle pool payout share (basis points & percentage). Available across `urnet-tools sn-status`, `urnet-docker sn-status`, and `provider sn-status`.
+- **JSON machine telemetry output (`--json`) (PR #528)**: machine-readable JSON output for `sn-status` across all CLI tools for automated monitoring, scraping, and alerting fleets.
+- **Subnet 25 ranking API client bindings (PR #528)**: Go SDK methods `NetworkGetRankingSync` (`GET /network/ranking`) and `StatsLeaderboardSync` (`POST /stats/leaderboard`) on `BringYourApi`.
+- **Bittensor operations guide (`docs/Bittensor-Operations.md`) (PR #528)**: operator guide covering Subnet 25 mining mechanics, coldkey registration, epoch lifecycle, top 200 cutoff requirements, reward claims, and CLI monitoring workflows.
 - **Go-native `idle-update` (PR #525)**: polls billable throughput rate before updating in place, ensuring active client sessions aren't severed, with configurable `--timeout` ceiling and `--threshold`.
 - **Docker CLI parity (PR #525)**: `urnet-docker direct`, `urnet-docker usage`, and `urnet-docker proxy paste` delegating to in-container commands.
 - **Tilde home path expansion (PR #525)**: expands `~` in `--file` and positional arguments across CLI tools and shells.
