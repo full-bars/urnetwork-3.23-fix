@@ -1,0 +1,104 @@
+name: CFAA Blocklist Sync
+
+on:
+  schedule:
+    - cron: '0 3,15 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [cfaa-sync-request]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream CFAA blocklist
+        uses: actions/github-script@v7
+        id: fetch
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { execSync } = require('child_process');
+            const fs = require('fs');
+
+            const upstreamRepo = 'urnetwork/connect';
+            const upstreamFile = 'ip_security_cfaa_block.go';
+
+            // Fetch upstream main
+            execSync(`git fetch --depth=1 https://github.com/${upstreamRepo}.git HEAD`, { stdio: 'pipe' });
+            const sha = execSync('git rev-parse FETCH_HEAD', { encoding: 'utf-8' }).trim();
+
+            // Get upstream file content
+            const upstreamContent = execSync(`git show ${sha}:${upstreamFile}`, { encoding: 'utf-8' });
+            fs.writeFileSync('/tmp/upstream_cfaa.go', upstreamContent);
+
+            // Extract constants
+            const extractConst = (content, name) => {
+              const m = content.match(new RegExp(`${name}\\s*=\\s*(\\d+)`));
+              return m ? parseInt(m[1]) : 0;
+            };
+
+            const upstreamV4 = extractConst(upstreamContent, 'cfaaBlockedPrefixCount');
+            const upstreamV6 = extractConst(upstreamContent, 'cfaaBlockedPrefix6Count');
+
+            const forkContent = fs.readFileSync(upstreamFile, 'utf-8');
+            const forkV4 = extractConst(forkContent, 'cfaaBlockedPrefixCount');
+            const forkV6 = extractConst(forkContent, 'cfaaBlockedPrefix6Count');
+
+            const filesIdentical = upstreamContent === forkContent;
+
+            console.log(`Upstream: IPv4=${upstreamV4}, IPv6=${upstreamV6}, SHA=${sha}`);
+            console.log(`Fork:     IPv4=${forkV4}, IPv6=${forkV6}`);
+            console.log(`Files identical: ${filesIdentical}`);
+
+            core.setOutput('upstream_sha', sha);
+            core.setOutput('upstream_v4', upstreamV4);
+            core.setOutput('upstream_v6', upstreamV6);
+            core.setOutput('fork_v4', forkV4);
+            core.setOutput('fork_v6', forkV6);
+            core.setOutput('files_identical', filesIdentical);
+
+      - name: Write sync info JSON
+        run: .github/scripts/write_sync_info.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.files_identical }}"
+
+      - name: Skip if no changes needed
+        if: steps.fetch.outputs.files_identical == 'true'
+        run: |
+          echo "CFAA blocklist is already in sync. Nothing to do."
+          exit 0
+
+      - name: Create branch and apply changes
+        if: steps.fetch.outputs.files_identical == 'false'
+        run: .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}"
+
+      - name: Push and open PR
+        if: steps.fetch.outputs.files_identical == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME=$(git branch --show-current)
+          git push origin "$BRANCH_NAME"
+          EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists"
+          else
+            gh pr create --title "chore(security): sync CFAA blocklist from upstream" --body-file /tmp/cfaa_pr_body.md --label "security"
+          fi
+
+      - name: Post confirmation to Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            python3 .github/scripts/cfaa_sync_notify.py
+          else
+            echo "DISCORD_WEBHOOK not set, skipping notification"
+          fi
