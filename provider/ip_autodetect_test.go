@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -75,13 +77,52 @@ func TestResolvePublicIP_DisableFileNotPresentAttemptsFetch(t *testing.T) {
 }
 
 func parseIPv4(s string) []byte {
-	// Simple check
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
+	// Simple check: must be exactly 4 dot-separated octets, each 0-255
+	parts := strings.Split(strings.TrimSpace(s), ".")
+	if len(parts) != 4 {
+		return nil
+	}
+	var b [4]byte
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || n > 255 {
 			return nil
 		}
+		b[i] = byte(n)
 	}
-	return nil
+	return b[:]
+}
+
+func TestParseIPv4_Valid(t *testing.T) {
+	cases := []string{
+		"66.249.75.83",
+		"192.0.2.1",
+		"203.0.113.96",
+		"10.0.0.1",
+	}
+	for _, c := range cases {
+		if parseIPv4(c) == nil {
+			t.Errorf("parseIPv4(%q) returned nil for valid IPv4", c)
+		}
+	}
+}
+
+func TestParseIPv4_Invalid(t *testing.T) {
+	cases := []string{
+		"not an ip",
+		"",
+		"256.1.1.1",
+		"1.2.3",
+		"::1",
+		"2001:db8::1",
+		"1.2.3.4.5",
+		"999.999.999.999",
+	}
+	for _, c := range cases {
+		if parseIPv4(c) != nil {
+			t.Errorf("parseIPv4(%q) returned non-nil for invalid input", c)
+		}
+	}
 }
 
 func TestIPDetectionDisabled_DefaultFalse(t *testing.T) {

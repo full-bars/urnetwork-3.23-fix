@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // cmdIPDetect toggles or reports the provider's IP autodetection marker file.
@@ -46,7 +45,10 @@ func cmdIPDetect(args []string) error {
 	}
 }
 
-// ipDetectDisabledPath returns ~/.urnetwork/disable_ip_autodetect.
+// ipDetectDisabledPath returns the path to the disable_ip_autodetect marker
+// file. The provider always reads ~/.urnetwork/disable_ip_autodetect
+// (see disableIPDetectionPath in provider/main.go), so the CLI must write
+// to the same location regardless of the --state-dir override.
 func ipDetectDisabledPath(targetArgs []string) (string, error) {
 	if len(targetArgs) == 0 {
 		home := os.Getenv("HOME")
@@ -58,6 +60,7 @@ func ipDetectDisabledPath(targetArgs []string) (string, error) {
 		}
 		return filepath.Join(home, ".urnetwork", "disable_ip_autodetect"), nil
 	}
+	// When targeting a specific provider, resolve to that user's ~/.urnetwork
 	t, _, err := parseTargetFlags(targetArgs)
 	if err != nil {
 		return "", err
@@ -66,10 +69,25 @@ func ipDetectDisabledPath(targetArgs []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if p.StateDir == "" {
-		return "", fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	if p.StateDir != "" {
+		// StateDir is already home/.urnetwork; use it directly.
+		return filepath.Join(p.StateDir, "disable_ip_autodetect"), nil
 	}
-	return filepath.Join(p.StateDir, "disable_ip_autodetect"), nil
+	// Fallback: resolve from the provider's user field
+	if p.User != "" {
+		if home := homeForUser(p.User); home != "" {
+			return filepath.Join(home, ".urnetwork", "disable_ip_autodetect"), nil
+		}
+	}
+	// Last resort: current user's home
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = os.Getenv("USERPROFILE")
+	}
+	if home == "" {
+		return "", fmt.Errorf("cannot resolve IP detection marker path: $HOME is not set")
+	}
+	return filepath.Join(home, ".urnetwork", "disable_ip_autodetect"), nil
 }
 
 func disableIPDetection(targetArgs []string, disable bool) error {
@@ -112,10 +130,3 @@ func showIPDetection(targetArgs []string) error {
 	fmt.Println("ip-detect: off (provider won't auto-detect public IP; set URNETWORK_PUBLIC_IP to override)")
 	return nil
 }
-
-// Provider-level wrapper for the cobra command.
-func cmdIPDetectProvider(p Provider, args []string) error {
-	return cmdIPDetect(args)
-}
-
-var _ = strings.TrimSpace // keep strings import used if logic expands

@@ -3888,11 +3888,14 @@ func ipDetectionDisabledPath() (string, error) {
 
 // ipDetectionDisabled checks whether the operator has created the disable file.
 // Re-checked on every call so it can be toggled at runtime via:
-//   urnet-tools ip-detect off   (creates the file)
-//   urnet-tools ip-detect on    (removes the file)
+//
+//	urnet-tools ip-detect off   (creates the file)
+//	urnet-tools ip-detect on    (removes the file)
+//
 // Binary users can also create/remove the file directly:
-//   touch ~/.urnetwork/disable_ip_autodetect     # disable
-//   rm ~/.urnetwork/disable_ip_autodetect         # re-enable
+//
+//	touch ~/.urnetwork/disable_ip_autodetect     # disable
+//	rm ~/.urnetwork/disable_ip_autodetect         # re-enable
 func ipDetectionDisabled() bool {
 	path, err := ipDetectionDisabledPath()
 	if err != nil {
@@ -3906,7 +3909,8 @@ func ipDetectionDisabled() bool {
 // dashboard identity. Priority:
 //  1. URNETWORK_PUBLIC_IP env var (operators running Docker/systemd can set this)
 //  2. ~/.urnetwork/disable_ip_autodetect file exists (operator opted out) → ""
-//  3. HTTP fetch from ip.me with a 5s timeout (auto-detected for systemd/native)
+//  3. cached fetch from ip.me (5s timeout) — cached for 60s to avoid hammering
+//     the external service when minting/renewing many proxy identities
 func resolvePublicIP() string {
 	if v := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP")); v != "" {
 		return v
@@ -3914,17 +3918,49 @@ func resolvePublicIP() string {
 	if ipDetectionDisabled() {
 		return ""
 	}
-	if ip := fetchPublicIP(); ip != "" {
+	if ip := getCachedPublicIP(); ip != "" {
 		return ip
 	}
 	return ""
 }
 
+// getCachedPublicIP returns the cached public IP if still fresh (60s TTL),
+// otherwise fetches a new one and caches it. The TTL matches the provider's
+// hot-reload ticker so IP changes are picked up on the same cadence as
+// other runtime overrides.
+var (
+	cachedIP     string
+	cachedIPTime time.Time
+	cachedIPMu   sync.Mutex
+	ipCacheTTL   = 60 * time.Second
+)
+
+func getCachedPublicIP() string {
+	now := time.Now()
+	cachedIPMu.Lock()
+	defer cachedIPMu.Unlock()
+	if now.Sub(cachedIPTime) < ipCacheTTL {
+		return cachedIP
+	}
+	ip := fetchPublicIP()
+	if ip != "" {
+		cachedIP = ip
+		cachedIPTime = now
+	}
+	return ip
+}
+
 // fetchPublicIP retrieves the public IPv4 address from ip.me.
-// Uses a 5-second timeout to avoid hanging startup.
+// Uses a 5-second timeout context to avoid hanging at startup.
 func fetchPublicIP() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://ip.me", nil)
+	if err != nil {
+		return ""
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://ip.me")
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -3934,7 +3970,13 @@ func fetchPublicIP() string {
 		return ""
 	}
 	ip := strings.TrimSpace(string(body))
-	if net.ParseIP(ip) == nil {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	// Only accept IPv4 — the provider's redaction logic (first.x.x.last)
+	// assumes a 4-octet address. Ignore IPv6 responses.
+	if parsed.To4() == nil {
 		return ""
 	}
 	return ip
