@@ -38,9 +38,9 @@ jobs:
             execSync(`git fetch --depth=1 https://github.com/${upstreamRepo}.git HEAD`, { stdio: 'pipe' });
             const sha = execSync('git rev-parse FETCH_HEAD', { encoding: 'utf-8' }).trim();
 
-            // Get upstream file content
-            const upstreamContent = execSync(`git show ${sha}:${upstreamFile}`, { encoding: 'utf-8' });
-            fs.writeFileSync('/tmp/upstream_cfaa.go', upstreamContent);
+            // Get upstream file content (redirect to file to avoid ENOBUFS on 4MB+ file)
+            execSync(`git show ${sha}:${upstreamFile} > /tmp/upstream_cfaa.go`, { stdio: 'pipe' });
+            const upstreamContent = fs.readFileSync('/tmp/upstream_cfaa.go', 'utf-8');
 
             // Extract constants
             const extractConst = (content, name) => {
