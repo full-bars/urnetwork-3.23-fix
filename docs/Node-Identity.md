@@ -42,13 +42,32 @@ Automatically appended from Go build info.
 ## Controlling Identity
 
 ### Set a custom name
+
+#### Native (systemd/binary)
 ```sh
-# systemd
+# Via urnet-tools — no restart, takes effect on next renewal tick
+urnet-tools rename us-east-1
+
+# Or via systemd drop-in for persistence across restarts
 echo 'Environment="URNETWORK_NODE_NAME=us-east-1"' >> /etc/systemd/system/urnetwork.service.d/override.conf
 
 # Docker
 docker run -e URNETWORK_NODE_NAME="us-east-1" ...
 ```
+
+#### Docker
+```sh
+# Sets the dashboard identity label on the targeted container
+urnet-docker rename us-east-1 --unit my-provider
+
+# Or directly inside the container (does not affect the container's hostname)
+docker exec -it <container> urnet-tools rename us-east-1
+
+# Clear the override (reverts to hostname)
+urnet-docker rename off --unit my-provider
+```
+
+> **Note:** The `rename` command is a convenience alias for `urnet-tools set node-name <name>`. Both write to `~/.urnetwork/node_name`, which the provider re-reads on its next renewal tick. No restart is needed.
 
 ### Disable IP autodetection (native/systemd only)
 Docker startup scripts already set `URNETWORK_PUBLIC_IP` at container startup. For native/systemd installs where the binary auto-fetches its own IP, you can disable this:
@@ -78,9 +97,9 @@ export URNETWORK_PUBLIC_IP=192.0.2.5
 The provider is designed to give you flexibility in how you identify your nodes without compromising privacy:
 
 - **Redacted IP**: Only `first.x.x.last` is ever reported — the full IP is never sent to the backend or shown in the dashboard.
-- **Custom names**: Use `URNETWORK_NODE_NAME` to label nodes however you want — no IP exposure at all.
+- **Custom names**: Use `urnet-tools rename <name>` to label nodes however you want — no IP exposure at all.
 - **Hostname passthrough**: Docker users can pass the host's real hostname via `HOST_HOSTNAME` for fleet-wide consistency.
-- **Opt out entirely**: Create `~/.urnetwork/disable_ip_autodetect` or set `urnet-tools ip-detect off` to report only the node name without any IP.
+- **Opt out entirely**: Run `urnet-tools ip-detect off` to report only the node name without any IP.
 
 Besides the redacted IP, you can also have it report either the server's hostname or something entirely custom that you choose — so there are multiple ways to identify your own nodes without resorting to a full IP address. The provider is designed to give users that flexibility without compromising privacy.
 
