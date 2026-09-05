@@ -24,10 +24,17 @@ func proxyURLMaxOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_url_max"), nil
 }
 
-// resolveProxyURLMax re-reads the cap on every call. startupMax is the value
-// from --proxy_url_max at process start. Returns startupMax if the file
-// doesn't exist, is empty, or holds an unparseable value.
+// resolveProxyURLMax checks the control-socket state first, then the legacy
+// override file, then startupMax (the value from --proxy_url_max at process
+// start). A missing, empty, or unparseable value at any layer falls through
+// to the next.
 func resolveProxyURLMax(startupMax int) int {
+	if v, ok := globalControlState.get("proxy_url_max"); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+
 	path, err := proxyURLMaxOverridePath()
 	if err != nil {
 		return startupMax
@@ -78,8 +85,15 @@ func proxyURLRefreshOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_url_refresh"), nil
 }
 
-// resolveProxyURLRefresh re-reads the interval on every call.
+// resolveProxyURLRefresh checks the control-socket state first, then the
+// legacy override file, then startupInterval.
 func resolveProxyURLRefresh(startupInterval time.Duration) time.Duration {
+	if v, ok := globalControlState.get("proxy_url_refresh"); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 10*time.Second {
+			return d
+		}
+	}
+
 	path, err := proxyURLRefreshOverridePath()
 	if err != nil {
 		return startupInterval
@@ -108,8 +122,13 @@ func proxyCleanupScopeOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_dead_cleanup_scope"), nil
 }
 
-// resolveProxyCleanupScope re-reads the scope on every call.
+// resolveProxyCleanupScope checks the control-socket state first, then the
+// legacy override file, then startupScope.
 func resolveProxyCleanupScope(startupScope string) string {
+	if v, ok := globalControlState.get("proxy_dead_cleanup_scope"); ok && v != "" {
+		return v
+	}
+
 	path, err := proxyCleanupScopeOverridePath()
 	if err != nil {
 		return startupScope
@@ -134,8 +153,15 @@ func proxyCleanupIntervalOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_dead_cleanup_interval"), nil
 }
 
-// resolveProxyCleanupInterval re-reads the interval on every call.
+// resolveProxyCleanupInterval checks the control-socket state first, then
+// the legacy override file, then startupInterval.
 func resolveProxyCleanupInterval(startupInterval time.Duration) time.Duration {
+	if v, ok := globalControlState.get("proxy_dead_cleanup_interval"); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= time.Minute {
+			return d
+		}
+	}
+
 	path, err := proxyCleanupIntervalOverridePath()
 	if err != nil {
 		return startupInterval
@@ -167,12 +193,17 @@ func proxySelfHealOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "proxy_self_heal"), nil
 }
 
-// resolveSelfHealEnabled reads the runtime override file every call.
-// startupEnabled is the value from URNETWORK_SELF_HEAL at process start;
-// the override file takes precedence when present: "on" enables, any other
-// non-empty value disables. Falls back to startupEnabled (default FALSE —
-// self-heal is opt-in) when the file is absent or empty.
+// resolveSelfHealEnabled checks the control-socket state first, then the
+// legacy override file, then startupEnabled (the value from
+// URNETWORK_SELF_HEAL at process start). At either the socket or the file
+// layer, "on" enables and any other non-empty value disables; a missing or
+// empty value falls through to the next layer, and startupEnabled itself
+// defaults to FALSE — self-heal is opt-in.
 func resolveSelfHealEnabled(startupEnabled bool) bool {
+	if v, ok := globalControlState.get("proxy_self_heal"); ok {
+		return strings.EqualFold(v, "on")
+	}
+
 	path, err := proxySelfHealOverridePath()
 	if err != nil {
 		return startupEnabled

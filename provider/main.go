@@ -2686,6 +2686,23 @@ func provide(opts docopt.Opts) {
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
 
+	// Load any settings a previous run of this provider persisted via the
+	// control socket, then open the socket so `urnet-tools` can change them
+	// live without a restart. The provider is the only writer of
+	// provider_state.json; a load failure here just means we start with no
+	// socket-set overrides (every resolve* function falls back to its legacy
+	// file / startup default), not a fatal error.
+	if loaded, err := loadControlState(); err != nil {
+		tlog("[control] failed to load provider_state.json, starting with no socket-set overrides: %s\n", err)
+	} else {
+		globalControlState = loaded
+	}
+	if cleanupControlSocket, err := startControlSocket(ctx, globalControlState); err != nil {
+		tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
+	} else {
+		defer cleanupControlSocket()
+	}
+
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
 	// cancel() was never called (e.g. the parent event.Ctx() was cancelled
