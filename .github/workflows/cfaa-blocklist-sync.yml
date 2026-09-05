@@ -69,7 +69,7 @@ jobs:
             core.setOutput('files_identical', filesIdentical);
 
       - name: Write sync info JSON
-        run: .github/scripts/write_sync_info.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.files_identical }}"
+        run: bash .github/scripts/write_sync_info.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.files_identical }}"
 
       - name: Skip if no changes needed
         if: steps.fetch.outputs.files_identical == 'true'
@@ -98,13 +98,13 @@ jobs:
 
       - name: Create branch and apply changes
         if: steps.fetch.outputs.files_identical == 'false'
-        run: .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}"
+        run: bash .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}"
 
       - name: Push and open PR
         if: steps.fetch.outputs.files_identical == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: .github/scripts/create_pr.sh
+        run: bash .github/scripts/create_pr.sh
 
       - name: Post confirmation to Discord
         if: always()
