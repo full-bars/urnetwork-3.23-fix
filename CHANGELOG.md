@@ -28,7 +28,8 @@ All notable changes to this project are documented here.
 - **Go-native `idle-update` (PR #525)**: polls billable throughput rate before updating in place, ensuring active client sessions aren't severed, with configurable `--timeout` ceiling and `--threshold`.
 - **Docker CLI parity (PR #525)**: `urnet-docker direct`, `urnet-docker usage`, and `urnet-docker proxy paste` delegating to in-container commands.
 - **Tilde home path expansion (PR #525)**: expands `~` in `--file` and positional arguments across CLI tools and shells.
-- **CFAA blocklist sync (PR #527)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions.
+- **CFAA blocklist sync (PR #527, #530, #532)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions (IPv4: 48,427 entries, IPv6: 453 entries).
+- **Automated CFAA blocklist sync CI/CD (PR #529, #531)**: daily automated GitHub Actions cron workflow and repository dispatch trigger that monitors upstream `urnetwork/connect` for blocklist updates, verifies lookup table integrity, and opens automated pull requests with Discord webhook notifications.
 - **Provider version in `urnet-tools status` (PR #497)**: each provider's actual running version is shown.
 - **Subprocess timeouts (PR #499)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
 
