@@ -16,11 +16,11 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if !p.Running || p.PID <= 0 {
-		return fmt.Errorf("provider %s is not running (cannot hot-swap)", providerLabel(p))
-	}
 	if len(rest) > 0 {
 		return fmt.Errorf("hotswap takes no arguments (got %v)", rest)
+	}
+	if !p.Running || p.PID <= 0 {
+		return fmt.Errorf("provider %s is not running (cannot hot-swap)", providerLabel(p))
 	}
 	ok, err := confirmGate("zero-downtime hot-swap "+providerLabel(p), p, force, dryRun)
 	if err != nil {

@@ -1062,7 +1062,9 @@ Options:
 	} else if provide_, _ := opts.Bool("provide"); provide_ {
 		provide(opts)
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
-		auth(opts)
+		if os.Getenv(EnvHotSwap) != "1" {
+			auth(opts)
+		}
 		provide(opts)
 	} else if logs, _ := opts.Bool("logs"); logs {
 		providerLogs(opts)
@@ -1214,7 +1216,7 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0600); err != nil {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -2380,7 +2382,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
 					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
-				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0600); err != nil {
 					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
@@ -2648,9 +2650,28 @@ func provide(opts docopt.Opts) {
 		applyStagedSession()
 	}
 
-	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
-	host, _ := os.Hostname()
-	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
+	// and announce readiness to parent via IPC before starting transports.
+	var isHotSwapCandidate bool
+	var hotSwapIPC *os.File
+	var candidateAckOnce sync.Once
+	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
+		isHotSwapCandidate = true
+		hotSwapIPC = ipcFile
+		defer hotSwapIPC.Close()
+		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
+			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	if !isHotSwapCandidate {
+		tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+		host, _ := os.Hostname()
+		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	} else {
+		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
+	}
 
 	// Log JWT expiry status at startup
 	home, _ := os.UserHomeDir()
@@ -2670,20 +2691,6 @@ func provide(opts docopt.Opts) {
 					}
 				}
 			}
-		}
-	}
-
-	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
-	// and announce readiness to parent via IPC before starting transports.
-	var isHotSwapCandidate bool
-	var hotSwapIPC *os.File
-	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
-		isHotSwapCandidate = true
-		hotSwapIPC = ipcFile
-		defer hotSwapIPC.Close()
-		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
-			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
-			os.Exit(2)
 		}
 	}
 
@@ -3247,18 +3254,24 @@ func provide(opts docopt.Opts) {
 			AppVersion: RequireVersion(),
 		}
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
-		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff
-		RegisterCoordinatorCloser(func() {
+		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
+		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
+		unregCloser := RegisterCoordinatorCloser(func() {
 			platformTransport.Close()
 		})
+		defer unregCloser()
 
-		// If candidate child, announce ACK to parent now that the live transport is active
-		if isHotSwapCandidate && hotSwapIPC != nil {
-			_ = runHotSwapChildAck(hotSwapIPC)
-			hotSwapIPC = nil
-			// Now that takeover is complete and process is live, arm signal listener for future hotswaps
-			startHotSwapSignalListener(ctx, cancel, opts)
-		}
+		// If candidate child, announce ACK to parent once the first live transport is active
+		candidateAckOnce.Do(func() {
+			if isHotSwapCandidate && hotSwapIPC != nil {
+				_ = runHotSwapChildAck(hotSwapIPC)
+				_ = hotSwapIPC.Close()
+				hotSwapIPC = nil
+				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
+				startHotSwapSignalListener(ctx, cancel, opts)
+			}
+			_ = notifySystemdReady()
+		})
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:

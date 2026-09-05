@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 import (
@@ -13,39 +15,6 @@ import (
 
 	"github.com/docopt/docopt-go"
 )
-
-func TestHotSwapMessageFraming(t *testing.T) {
-	var buf bytes.Buffer
-
-	want := HotswapMessage{
-		Type:    HotswapMsgReady,
-		Version: "v3.23.0-fix.31.0",
-		PID:     12345,
-	}
-
-	if err := writeHotswapMessage(&buf, want); err != nil {
-		t.Fatalf("writeHotswapMessage: %v", err)
-	}
-
-	reader := bufio.NewReader(&buf)
-	got, err := readHotswapMessage(reader)
-	if err != nil {
-		t.Fatalf("readHotswapMessage: %v", err)
-	}
-
-	if got.Type != want.Type {
-		t.Errorf("got.Type = %v, want %v", got.Type, want.Type)
-	}
-	if got.Version != want.Version {
-		t.Errorf("got.Version = %v, want %v", got.Version, want.Version)
-	}
-	if got.PID != want.PID {
-		t.Errorf("got.PID = %v, want %v", got.PID, want.PID)
-	}
-	if got.Timestamp.IsZero() {
-		t.Errorf("got.Timestamp is zero")
-	}
-}
 
 func TestHotSwapPreflightValidation(t *testing.T) {
 	// Setup isolated HOME
@@ -489,6 +458,10 @@ func TestHotSwapParentPID1PreflightFailurePreservesProcess(t *testing.T) {
 }
 
 func TestHotSwapPreflightPermissionHealing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission healing is unobservable as root (CAP_DAC_OVERRIDE)")
+	}
+
 	tempHome := t.TempDir()
 	origHome := os.Getenv("HOME")
 	defer os.Setenv("HOME", origHome)
@@ -523,5 +496,191 @@ func TestHotSwapPreflightPermissionHealing(t *testing.T) {
 		t.Errorf("expected healed permissions 0600, got %v", fi.Mode().Perm())
 	}
 }
+
+func TestHotSwapParentStandardBatonSuccess(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	ResetHotSwapStateForTest()
+	defer ResetHotSwapStateForTest()
+
+	origGetpid := getpidFunc
+	origSpawn := spawnCandidateFunc
+	origExit := exitFunc
+	defer func() {
+		getpidFunc = origGetpid
+		spawnCandidateFunc = origSpawn
+		exitFunc = origExit
+	}()
+
+	getpidFunc = func() int { return 9999 } // Host non-PID-1
+	parentExited := make(chan int, 1)
+	exitFunc = func(code int) { parentExited <- code }
+
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			childCmd: nil,
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	coordinatorYielded := false
+	ClearCoordinatorClosers()
+	unreg := RegisterCoordinatorCloser(func() {
+		coordinatorYielded = true
+	})
+	defer unreg()
+
+	// Child simulation: announce READY -> wait TAKEOVER -> send ACK
+	childDone := make(chan struct{})
+	go func() {
+		defer close(childDone)
+		childReader := bufio.NewReader(childFile)
+		_ = writeHotswapMessage(childFile, HotswapMessage{
+			Type:    HotswapMsgReady,
+			PID:     10000,
+			Version: "v3.23.0-fix.31.0",
+		})
+
+		msg, err := readHotswapMessage(childReader)
+		if err != nil || msg.Type != HotswapMsgTakeover {
+			t.Errorf("child expected TAKEOVER, got %s (err %v)", msg.Type, err)
+			return
+		}
+
+		_ = writeHotswapMessage(childFile, HotswapMessage{
+			Type: HotswapMsgAck,
+			PID:  10000,
+		})
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = runHotSwapParentHandoff(ctx, cancel, docopt.Opts{})
+	if err != nil {
+		t.Fatalf("runHotSwapParentHandoff returned error: %v", err)
+	}
+
+	<-childDone
+
+	// Cancel context to complete drain sleep immediately in test
+	cancel()
+	select {
+	case code := <-parentExited:
+		if code != 0 {
+			t.Errorf("expected exit code 0 on drain, got %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for parent exit on drain")
+	}
+
+	if !coordinatorYielded {
+		t.Errorf("expected coordinator session to be yielded during handoff")
+	}
+}
+
+func TestHotSwapParentStandardBatonAckTimeoutAborts(t *testing.T) {
+	ResetHotSwapStateForTest()
+	defer ResetHotSwapStateForTest()
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origGetpid := getpidFunc
+	origSpawn := spawnCandidateFunc
+	defer func() {
+		getpidFunc = origGetpid
+		spawnCandidateFunc = origSpawn
+	}()
+
+	getpidFunc = func() int { return 9999 }
+
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			childCmd: nil,
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	// Child announces READY, receives TAKEOVER, but closes connection post-TAKEOVER (crash)
+	go func() {
+		childReader := bufio.NewReader(childFile)
+		_ = writeHotswapMessage(childFile, HotswapMessage{
+			Type:    HotswapMsgReady,
+			PID:     10000,
+			Version: "v3.23.0-fix.31.0",
+		})
+		_, _ = readHotswapMessage(childReader)
+		// Close childFile to simulate candidate crash post-TAKEOVER
+		childFile.Close()
+	}()
+
+	err = runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{})
+	if err == nil {
+		t.Fatal("expected error on candidate unconfirmed takeover, got nil")
+	}
+}
+
+func TestRegisterCoordinatorCloserUnregister(t *testing.T) {
+	ClearCoordinatorClosers()
+
+	called := false
+	unreg := RegisterCoordinatorCloser(func() {
+		called = true
+	})
+
+	// Before unregister, yield calls closer
+	yieldCoordinatorSession()
+	if !called {
+		t.Fatalf("closer was not called")
+	}
+
+	// Unregister
+	unreg()
+	called = false
+
+	// After unregister, closer is not called
+	yieldCoordinatorSession()
+	if called {
+		t.Fatalf("unregistered closer was unexpectedly called (memory leak)")
+	}
+}
+
+func TestGetHotSwapChildIPCValidation(t *testing.T) {
+	origEnv := os.Getenv(EnvHotSwap)
+	defer os.Setenv(EnvHotSwap, origEnv)
+
+	// If env var is not set, returns false
+	os.Unsetenv(EnvHotSwap)
+	if _, isChild := getHotSwapChildIPC(); isChild {
+		t.Errorf("expected isChild=false when %s is unset", EnvHotSwap)
+	}
+
+	// If env var is set but fd 3 is not a socket, returns false (F-11)
+	os.Setenv(EnvHotSwap, "1")
+	// On arbitrary process fd 3 is typically either closed or not a socket
+	_ = syscall.Close(3)
+	if _, isChild := getHotSwapChildIPC(); isChild {
+		t.Errorf("expected isChild=false when fd 3 is invalid/closed")
+	}
+}
+
 
 

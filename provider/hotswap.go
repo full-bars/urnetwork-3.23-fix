@@ -57,10 +57,15 @@ const (
 	HotSwapPreflightTimeout = 20 * time.Second
 
 	// HotSwapAckTimeout is the max duration the parent waits for the candidate's ACK after TAKEOVER.
-	HotSwapAckTimeout = 15 * time.Second
+	HotSwapAckTimeout = 60 * time.Second
 
 	// HotSwapDrainTimeout is how long the retiring parent maintains in-flight streams before exit.
 	HotSwapDrainTimeout = 30 * time.Second
+)
+
+var (
+	// ErrNoNotifySocket indicates that systemd's NOTIFY_SOCKET is not present.
+	ErrNoNotifySocket = errors.New("NOTIFY_SOCKET not set")
 )
 
 var (
@@ -70,11 +75,10 @@ var (
 	// hotSwapLock guards against concurrent hot-swap operations in the same process.
 	hotSwapLock sync.Mutex
 
-	// coordinatorClosersMu protects coordinatorClosers.
-	coordinatorClosersMu sync.Mutex
-	// coordinatorClosers holds callbacks to close live coordinator connections
-	// during a handoff without terminating in-flight client streams.
-	coordinatorClosers []func()
+	// coordinatorClosersMu protects coordinatorClosersMap.
+	coordinatorClosersMu  sync.Mutex
+	coordinatorCloserSeq  uint64
+	coordinatorClosersMap = make(map[uint64]func())
 
 	// Test hook points
 	getpidFunc         = os.Getpid
@@ -84,33 +88,50 @@ var (
 )
 
 // RegisterCoordinatorCloser registers a callback invoked to yield coordinator sessions
-// during a hot-swap handoff.
-func RegisterCoordinatorCloser(closer func()) {
+// during a hot-swap handoff. It returns a cleanup function that must be deferred to prevent leaks.
+func RegisterCoordinatorCloser(closer func()) func() {
 	if closer == nil {
-		return
+		return func() {}
 	}
 	coordinatorClosersMu.Lock()
 	defer coordinatorClosersMu.Unlock()
-	coordinatorClosers = append(coordinatorClosers, closer)
+	coordinatorCloserSeq++
+	id := coordinatorCloserSeq
+	if coordinatorClosersMap == nil {
+		coordinatorClosersMap = make(map[uint64]func())
+	}
+	coordinatorClosersMap[id] = closer
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			coordinatorClosersMu.Lock()
+			delete(coordinatorClosersMap, id)
+			coordinatorClosersMu.Unlock()
+		})
+	}
 }
 
 // ClearCoordinatorClosers clears all registered coordinator closers (primarily for testing).
 func ClearCoordinatorClosers() {
 	coordinatorClosersMu.Lock()
 	defer coordinatorClosersMu.Unlock()
-	coordinatorClosers = nil
+	coordinatorClosersMap = make(map[uint64]func())
 }
 
 // yieldCoordinatorSession executes all registered callbacks to disconnect from the coordinator.
 func yieldCoordinatorSession() {
 	coordinatorClosersMu.Lock()
-	closers := append([]func(){}, coordinatorClosers...)
+	closers := make([]func(), 0, len(coordinatorClosersMap))
+	for _, closer := range coordinatorClosersMap {
+		if closer != nil {
+			closers = append(closers, closer)
+		}
+	}
 	coordinatorClosersMu.Unlock()
 
 	for _, closer := range closers {
-		if closer != nil {
-			closer()
-		}
+		closer()
 	}
 }
 
@@ -178,7 +199,7 @@ func runHotSwapChildPreflight(opts docopt.Opts, apiUrl string) error {
 			host += ":443"
 		}
 	}
-	dialer := &net.Dialer{Timeout: 4 * time.Second}
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
 	var lastDialErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		conn, err := dialer.Dial("tcp", host)
@@ -279,7 +300,8 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 
 	exe, err := os.Executable()
 	if err != nil {
-		exe = os.Args[0]
+		tlog("❌ [hotswap] Failed to resolve executable path: %v. Aborting handoff.\n", err)
+		return fmt.Errorf("resolve executable: %w", err)
 	}
 
 	parentPID := getpidFunc()
@@ -327,29 +349,43 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return ctx.Err()
 	}
 
-	// Branch: Docker PID 1 Container Entrypoint
-	if getpidFunc() == 1 {
-		tlog("⚡ [hotswap] Docker PID 1 detected: candidate pre-flight verified -> preparing in-place execve\n")
+	// Branch: Docker Container (PID 1 or container environment) -> In-Place execve
+	isDocker := false
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		isDocker = true
+	}
+	if getpidFunc() == 1 || isDocker {
+		tlog("⚡ [hotswap] Docker container detected: candidate pre-flight verified -> preparing in-place execve\n")
 
-		// 1. Tell canary child it's done so it exits cleanly
-		_ = writeHotswapMessage(session.Writer, HotswapMessage{
+		// 1. Tell canary child it's done so it exits cleanly (with bounded timeout)
+		if err := writeHotswapMessage(session.Writer, HotswapMessage{
 			Type:    HotswapMsgCanaryDone,
 			PID:     parentPID,
 			Version: RequireVersion(),
-		})
-		_ = session.Wait()
+		}); err != nil {
+			tlog("⚠️ [hotswap] Failed to send CANARY_DONE: %v\n", err)
+		}
+
+		waitCh := make(chan error, 1)
+		go func() {
+			waitCh <- session.Wait()
+		}()
+		select {
+		case <-waitCh:
+		case <-time.After(5 * time.Second):
+			tlog("⚠️ [hotswap] Canary did not exit within 5s; terminating canary\n")
+			session.Kill()
+		}
 		session.Close()
 
-		// 2. Yield live coordinator session cleanly
+		// 2. Yield live coordinator session and flush metrics immediately before execve
 		yieldCoordinatorSession()
-
-		// 3. Flush retention logs and lifetime metrics before replacing process memory
 		flushRetentionEvents()
 		lifetimeStore.Flush()
 
-		tlog("⚡ [hotswap] Executing in-place syscall.Exec for PID 1 (container stays up)...\n")
+		tlog("⚡ [hotswap] Executing in-place syscall.Exec (container stays up)...\n")
 
-		// 4. In-place execve: replaces process memory image without altering PID 1 or closing stdout/stderr
+		// 3. In-place execve: replaces process memory image without altering PID or closing stdout/stderr
 		var cleanEnv []string
 		for _, e := range os.Environ() {
 			if !strings.HasPrefix(e, EnvHotSwap+"=") {
@@ -363,28 +399,37 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		}
 
 		if err := execInPlaceFunc(exe, args, cleanEnv); err != nil {
-			tlog("❌ [hotswap] syscall.Exec failed: %v. Live provider retained.\n", err)
+			tlog("CRITICAL [hotswap] syscall.Exec failed: %v\n", err)
+			critLog("FATAL: syscall.Exec failed during hotswap: %v", err)
+			exitFunc(1)
 			return fmt.Errorf("syscall.Exec: %w", err)
 		}
 		return nil
 	}
 
-	// Standard Unix Branch (PID != 1): Baton handoff to child
-	// 1. Yield live coordinator session so candidate can connect without collision
-	yieldCoordinatorSession()
+	// Standard Unix Branch (Host / systemd): Baton handoff to child
+	// Pre-check systemd notify capability: if running under systemd, NOTIFY_SOCKET is required to update MainPID (F-2)
+	if os.Getenv("INVOCATION_ID") != "" && os.Getenv("NOTIFY_SOCKET") == "" {
+		tlog("❌ [hotswap] Running under systemd without Type=notify (NOTIFY_SOCKET unset). Cannot safely transfer MainPID without service manager terminating unit. Aborting handoff; use standard restart.\n")
+		session.Kill()
+		return ErrNoNotifySocket
+	}
 
-	// 2. Send TAKEOVER to candidate
+	// 1. Send TAKEOVER to candidate FIRST before yielding
 	if err := writeHotswapMessage(session.Writer, HotswapMessage{
 		Type:    HotswapMsgTakeover,
 		PID:     parentPID,
 		Version: RequireVersion(),
 	}); err != nil {
-		tlog("❌ [hotswap] Failed to send TAKEOVER: %v. Aborting handoff.\n", err)
+		tlog("❌ [hotswap] Failed to send TAKEOVER: %v. Aborting handoff; live provider retained.\n", err)
 		session.Kill()
 		return err
 	}
 
-	// 3. Wait for ACK from candidate
+	// 2. Yield live coordinator session cleanly so candidate can connect without collision
+	yieldCoordinatorSession()
+
+	// 3. Wait for mandatory ACK from candidate
 	ackCh := make(chan readyResult, 1)
 	go func() {
 		msg, err := readHotswapMessage(session.Reader)
@@ -394,19 +439,28 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	select {
 	case res := <-ackCh:
 		if res.err != nil || res.msg.Type != HotswapMsgAck {
-			tlog("⚠️ [hotswap] Candidate takeover ACK unconfirmed (%v). Proceeding with drain.\n", res.err)
-		} else {
-			tlog("⚡ [hotswap] Candidate PID %d confirmed active takeover (ACK received)!\n", childPID)
+			tlog("❌ [hotswap] Candidate failed active takeover (%v). Aborting handoff; live provider retained.\n", res.err)
+			session.Kill()
+			return fmt.Errorf("candidate takeover unconfirmed: %v", res.err)
 		}
+		tlog("⚡ [hotswap] Candidate PID %d confirmed active takeover (ACK received)!\n", childPID)
 	case <-time.After(HotSwapAckTimeout):
-		tlog("⚠️ [hotswap] Candidate takeover ACK timed out (>%s). Proceeding with drain.\n", HotSwapAckTimeout)
+		tlog("❌ [hotswap] Candidate takeover ACK timed out (>%s). Aborting handoff; live provider retained.\n", HotSwapAckTimeout)
+		session.Kill()
+		return fmt.Errorf("candidate takeover ACK timed out (>%s)", HotSwapAckTimeout)
 	}
 
-	// 4. Update systemd service manager with new MainPID
-	if err := notifySystemdMainPID(childPID); err != nil {
-		tlog("⚠️ [hotswap] systemd notify: %v\n", err)
-	} else {
-		tlog("⚡ [hotswap] systemd updated: MAINPID=%d\n", childPID)
+	// 4. Update systemd service manager with new MainPID (if running under systemd)
+	if os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != "" {
+		if err := notifySystemdMainPID(childPID); err != nil {
+			if errors.Is(err, ErrNoNotifySocket) {
+				tlog("⚠️ [hotswap] Running under systemd without Type=notify (NOTIFY_SOCKET unset). MainPID update skipped.\n")
+			} else {
+				tlog("⚠️ [hotswap] systemd notify: %v\n", err)
+			}
+		} else {
+			tlog("⚡ [hotswap] systemd updated: MAINPID=%d\n", childPID)
+		}
 	}
 
 	// 5. Enter graceful stream drain mode
@@ -414,15 +468,34 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	tlog("⚡ [hotswap] Parent PID %d entering graceful stream drain (max %s)...\n", parentPID, HotSwapDrainTimeout)
 
 	go func() {
-		// Wait for active streams to wind down, capped at HotSwapDrainTimeout
-		time.Sleep(HotSwapDrainTimeout)
+		// Monitor candidate child liveness during drain
+		childWaitCh := make(chan error, 1)
+		go func() {
+			childWaitCh <- session.Wait()
+		}()
+
+		select {
+		case <-time.After(HotSwapDrainTimeout):
+			// Normal drain duration elapsed
+		case <-childWaitCh:
+			tlog("⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!\n")
+		case <-ctx.Done():
+		}
+
 		flushRetentionEvents()
 		lifetimeStore.Flush()
 		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
+		isHotSwapDraining.Store(false)
 		cancel()
 		exitFunc(0)
 	}()
 
 	return nil
+}
+
+// ResetHotSwapStateForTest resets draining state and closers for test isolation.
+func ResetHotSwapStateForTest() {
+	isHotSwapDraining.Store(false)
+	ClearCoordinatorClosers()
 }
 
