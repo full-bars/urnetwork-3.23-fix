@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,7 +13,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/docopt/docopt-go"
 )
@@ -41,6 +44,14 @@ func (s *HotswapParentSession) Kill() {
 	s.Close()
 }
 
+// Wait waits for the candidate child process to exit.
+func (s *HotswapParentSession) Wait() error {
+	if s.childCmd != nil {
+		return s.childCmd.Wait()
+	}
+	return nil
+}
+
 // spawnHotSwapCandidate creates an anonymous socketpair, passes descriptor 3 to the child via ExtraFiles,
 // and starts the candidate process.
 func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, error) {
@@ -60,6 +71,26 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
+		// Self-healing: if binary lacks execute permission, repair with chmod 0755 and retry
+		if errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "permission denied") {
+			tlog("⚠️ [hotswap-heal] Candidate binary %s missing execute permission; auto-healing chmod 0755...\n", exe)
+			if chmodErr := os.Chmod(exe, 0755); chmodErr == nil {
+				cmd = exec.Command(exe, args...)
+				cmd.Env = append(os.Environ(), EnvHotSwap+"=1")
+				cmd.ExtraFiles = []*os.File{childFile}
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if retryErr := cmd.Start(); retryErr == nil {
+					tlog("⚡ [hotswap-heal] Successfully spawned candidate after permission repair (PID %d)\n", cmd.Process.Pid)
+					return &HotswapParentSession{
+						childCmd: cmd,
+						parentFd: parentFile,
+						Reader:   bufio.NewReader(parentFile),
+						Writer:   parentFile,
+					}, nil
+				}
+			}
+		}
 		parentFile.Close()
 		return nil, fmt.Errorf("cmd.Start candidate: %w", err)
 	}
@@ -123,3 +154,20 @@ func notifySystemdMainPID(pid int) error {
 	_, err = conn.Write(msg)
 	return err
 }
+
+// execInPlace replaces the current process image in-place via syscall.Exec (execve)
+// with an automatic retry loop if the Linux kernel returns ETXTBSY.
+func execInPlace(exe string, args []string, env []string) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = syscall.Exec(exe, args, env)
+		if err == syscall.ETXTBSY {
+			tlog("⚠️ [hotswap-heal] syscall.Exec hit ETXTBSY (attempt %d/3); retrying after 150ms...\n", attempt)
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	return err
+}
+

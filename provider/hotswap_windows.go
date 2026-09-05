@@ -20,6 +20,9 @@ type HotswapParentSession struct {
 
 func (s *HotswapParentSession) Close() {}
 func (s *HotswapParentSession) Kill()  {}
+func (s *HotswapParentSession) Wait() error {
+	return nil
+}
 
 func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, error) {
 	return nil, errors.New("hotswap not yet implemented on windows (requires named pipe adapter)")
@@ -36,3 +39,8 @@ func startHotSwapSignalListener(ctx context.Context, cancel context.CancelFunc, 
 func notifySystemdMainPID(pid int) error {
 	return nil
 }
+
+func execInPlace(exe string, args []string, env []string) error {
+	return errors.New("execve not supported on Windows")
+}
+

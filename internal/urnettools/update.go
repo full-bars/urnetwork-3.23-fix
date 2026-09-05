@@ -653,7 +653,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			// drive-letter case or separator mismatch between derivations
 			// would fail to match (same physical dir under a different
 			// spelling = symlink/~ expansion/container mapping = no match).
-			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && (rp.PID != oldPID || rp.PID == 1 || (hotSwapTriggered && p.Version != cfg.Tag)) && !rp.BinaryDeleted {
 				// Version of the image the RUNNING process is executing, resolved by
 				// the platform-specific runningImagePath (Linux /proc/<pid>/exe,
 				// Windows QueryFullProcessImageName — /proc does not exist on Windows,

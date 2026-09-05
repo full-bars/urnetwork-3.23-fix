@@ -2320,6 +2320,9 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	defer ticker.Stop()
 
 	for {
+		if isHotSwapDraining.Load() {
+			return
+		}
 		byJwtBytes, err := os.ReadFile(jwtPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -2639,10 +2642,11 @@ func provide(opts docopt.Opts) {
 	provideStartTime = time.Now()
 
 	// Apply a staged session (from `urnet-tools session load`) before
-	// loading any identity or starting transports. The staging dir and
-	// marker file are written by the shell wrapper; the provider's job
-	// is to atomically swap them in on the next startup.
-	applyStagedSession()
+	// loading any identity or starting transports. Skip when running as
+	// a HotSwap candidate so the candidate preserves the parent's active session.
+	if os.Getenv(EnvHotSwap) != "1" {
+		applyStagedSession()
+	}
 
 	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
 	host, _ := os.Hostname()
@@ -2697,8 +2701,11 @@ func provide(opts docopt.Opts) {
 	}
 	defer cancel()
 
-	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix)
-	startHotSwapSignalListener(ctx, cancel, opts)
+	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix).
+	// Only arm listener if running as live provider, not while acting as candidate.
+	if !isHotSwapCandidate {
+		startHotSwapSignalListener(ctx, cancel, opts)
+	}
 
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
@@ -3249,6 +3256,8 @@ func provide(opts docopt.Opts) {
 		if isHotSwapCandidate && hotSwapIPC != nil {
 			_ = runHotSwapChildAck(hotSwapIPC)
 			hotSwapIPC = nil
+			// Now that takeover is complete and process is live, arm signal listener for future hotswaps
+			startHotSwapSignalListener(ctx, cancel, opts)
 		}
 		// go platformTransport.Run(connectClient.RouteManager())
 

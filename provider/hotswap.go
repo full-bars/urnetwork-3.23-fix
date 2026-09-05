@@ -32,6 +32,10 @@ const (
 	// HotswapMsgAck is sent by the child confirming active traffic takeover.
 	HotswapMsgAck HotswapMsgType = "ACK"
 
+	// HotswapMsgCanaryDone is sent by parent to canary child when running in Docker PID 1 mode
+	// to signal that pre-flight succeeded and child should exit cleanly before parent execve.
+	HotswapMsgCanaryDone HotswapMsgType = "CANARY_DONE"
+
 	// HotswapMsgError is sent when either side encounters a fatal protocol or pre-flight error.
 	HotswapMsgError HotswapMsgType = "ERROR"
 )
@@ -71,6 +75,12 @@ var (
 	// coordinatorClosers holds callbacks to close live coordinator connections
 	// during a handoff without terminating in-flight client streams.
 	coordinatorClosers []func()
+
+	// Test hook points
+	getpidFunc         = os.Getpid
+	execInPlaceFunc    = execInPlace
+	spawnCandidateFunc = spawnHotSwapCandidate
+	exitFunc           = os.Exit
 )
 
 // RegisterCoordinatorCloser registers a callback invoked to yield coordinator sessions
@@ -138,7 +148,14 @@ func runHotSwapChildPreflight(opts docopt.Opts, apiUrl string) error {
 	jwtPath := filepath.Join(home, ".urnetwork", "jwt")
 	jwtBytes, err := os.ReadFile(jwtPath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", jwtPath, err)
+		if os.IsPermission(err) {
+			tlog("⚠️ [hotswap-heal] Repairing permissions on %s (0600)\n", jwtPath)
+			_ = os.Chmod(jwtPath, 0600)
+			jwtBytes, err = os.ReadFile(jwtPath)
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", jwtPath, err)
+		}
 	}
 	exp := parseJWTExpiryTime(string(jwtBytes))
 	if exp == nil {
@@ -148,7 +165,7 @@ func runHotSwapChildPreflight(opts docopt.Opts, apiUrl string) error {
 		return fmt.Errorf("account JWT is expired (%s ago)", time.Since(*exp).Round(time.Second))
 	}
 
-	// 2. Verify API URL reachability (host:port dial).
+	// 2. Verify API URL reachability (host:port dial) with dual-stack retry
 	u, err := url.Parse(apiUrl)
 	if err != nil {
 		return fmt.Errorf("parse api_url %q: %w", apiUrl, err)
@@ -161,12 +178,34 @@ func runHotSwapChildPreflight(opts docopt.Opts, apiUrl string) error {
 			host += ":443"
 		}
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	conn, err := dialer.Dial("tcp", host)
-	if err != nil {
-		return fmt.Errorf("pre-flight dial to API %s failed: %w", host, err)
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
+	var lastDialErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		conn, err := dialer.Dial("tcp", host)
+		if err == nil {
+			_ = conn.Close()
+			lastDialErr = nil
+			break
+		}
+		lastDialErr = err
+
+		// Dual-stack healing: If IPv6 route is blackholed, try explicit IPv4
+		conn4, err4 := dialer.Dial("tcp4", host)
+		if err4 == nil {
+			_ = conn4.Close()
+			tlog("⚡ [hotswap-heal] IPv4 fallback dial to %s succeeded on attempt %d\n", host, attempt)
+			lastDialErr = nil
+			break
+		}
+		lastDialErr = err4
+
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt*250) * time.Millisecond)
+		}
 	}
-	_ = conn.Close()
+	if lastDialErr != nil {
+		return fmt.Errorf("pre-flight dial to API %s failed: %w", host, lastDialErr)
+	}
 
 	return nil
 }
@@ -196,18 +235,23 @@ func runHotSwapChildHandshake(ipcConn io.ReadWriter, opts docopt.Opts, apiUrl st
 
 	tlog("⚡ [hotswap] Candidate PID %d passed pre-flight -> announced READY to parent\n", os.Getpid())
 
-	// Wait for TAKEOVER from parent
+	// Wait for response from parent: TAKEOVER (standard) or CANARY_DONE (Docker PID 1)
 	reader := bufio.NewReader(ipcConn)
 	msg, err := readHotswapMessage(reader)
 	if err != nil {
-		return fmt.Errorf("wait for TAKEOVER: %w", err)
+		return fmt.Errorf("wait for parent handoff signal: %w", err)
 	}
-	if msg.Type != HotswapMsgTakeover {
-		return fmt.Errorf("unexpected message from parent (wanted TAKEOVER, got %s: %s)", msg.Type, msg.Error)
+	switch msg.Type {
+	case HotswapMsgTakeover:
+		tlog("⚡ [hotswap] TAKEOVER received from parent (PID %d) -> candidate assuming live traffic\n", msg.PID)
+		return nil
+	case HotswapMsgCanaryDone:
+		tlog("⚡ [hotswap] Canary verification confirmed by parent (PID %d) -> exiting cleanly for PID 1 takeover\n", msg.PID)
+		exitFunc(0)
+		return nil
+	default:
+		return fmt.Errorf("unexpected message from parent (wanted TAKEOVER or CANARY_DONE, got %s: %s)", msg.Type, msg.Error)
 	}
-
-	tlog("⚡ [hotswap] TAKEOVER received from parent (PID %d) -> candidate assuming live traffic\n", msg.PID)
-	return nil
 }
 
 // runHotSwapChildAck informs the parent that the child has assumed live traffic.
@@ -220,7 +264,7 @@ func runHotSwapChildAck(ipcConn io.Writer) error {
 }
 
 // runHotSwapParentHandoff coordinates spawning the candidate, validating its readiness,
-// yielding the coordinator session, and entering graceful stream drain.
+// yielding the coordinator session, and entering graceful stream drain (or in-place execve for PID 1).
 func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opts docopt.Opts) error {
 	if !hotSwapLock.TryLock() {
 		tlog("⚠️ [hotswap] Hot-swap already in progress; ignoring duplicate trigger\n")
@@ -238,10 +282,10 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		exe = os.Args[0]
 	}
 
-	parentPID := os.Getpid()
+	parentPID := getpidFunc()
 	tlog("⚡ [hotswap] Initiating zero-downtime handoff (live parent PID %d, binary %s)...\n", parentPID, exe)
 
-	session, err := spawnHotSwapCandidate(exe, os.Args[1:])
+	session, err := spawnCandidateFunc(exe, os.Args[1:])
 	if err != nil {
 		tlog("❌ [hotswap] Failed to spawn candidate: %v. Live provider retained untouched.\n", err)
 		return err
@@ -273,7 +317,7 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 			return fmt.Errorf("candidate pre-flight failed: %s", res.msg.Error)
 		}
 		childPID = res.msg.PID
-		tlog("⚡ [hotswap] Candidate PID %d reported READY (version=%s) -> yielding session\n", childPID, res.msg.Version)
+		tlog("⚡ [hotswap] Candidate PID %d reported READY (version=%s)\n", childPID, res.msg.Version)
 	case <-time.After(HotSwapPreflightTimeout):
 		tlog("❌ [hotswap] Candidate timed out during pre-flight (>%s). Aborting handoff; live provider retained.\n", HotSwapPreflightTimeout)
 		session.Kill()
@@ -283,6 +327,49 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return ctx.Err()
 	}
 
+	// Branch: Docker PID 1 Container Entrypoint
+	if getpidFunc() == 1 {
+		tlog("⚡ [hotswap] Docker PID 1 detected: candidate pre-flight verified -> preparing in-place execve\n")
+
+		// 1. Tell canary child it's done so it exits cleanly
+		_ = writeHotswapMessage(session.Writer, HotswapMessage{
+			Type:    HotswapMsgCanaryDone,
+			PID:     parentPID,
+			Version: RequireVersion(),
+		})
+		_ = session.Wait()
+		session.Close()
+
+		// 2. Yield live coordinator session cleanly
+		yieldCoordinatorSession()
+
+		// 3. Flush retention logs and lifetime metrics before replacing process memory
+		flushRetentionEvents()
+		lifetimeStore.Flush()
+
+		tlog("⚡ [hotswap] Executing in-place syscall.Exec for PID 1 (container stays up)...\n")
+
+		// 4. In-place execve: replaces process memory image without altering PID 1 or closing stdout/stderr
+		var cleanEnv []string
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, EnvHotSwap+"=") {
+				cleanEnv = append(cleanEnv, e)
+			}
+		}
+
+		args := os.Args
+		if len(args) == 0 {
+			args = []string{exe}
+		}
+
+		if err := execInPlaceFunc(exe, args, cleanEnv); err != nil {
+			tlog("❌ [hotswap] syscall.Exec failed: %v. Live provider retained.\n", err)
+			return fmt.Errorf("syscall.Exec: %w", err)
+		}
+		return nil
+	}
+
+	// Standard Unix Branch (PID != 1): Baton handoff to child
 	// 1. Yield live coordinator session so candidate can connect without collision
 	yieldCoordinatorSession()
 
@@ -330,10 +417,12 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		// Wait for active streams to wind down, capped at HotSwapDrainTimeout
 		time.Sleep(HotSwapDrainTimeout)
 		flushRetentionEvents()
+		lifetimeStore.Flush()
 		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
 		cancel()
-		os.Exit(0)
+		exitFunc(0)
 	}()
 
 	return nil
 }
+
