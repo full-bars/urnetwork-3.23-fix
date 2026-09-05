@@ -109,12 +109,17 @@ func fastAuthPath() (string, error) {
 }
 
 // fastAuthEnabled returns true when the operator has opted out of auth rate
-// limiting, either via the URNETWORK_AUTH_UNLIMITED env var or by creating
-// the ~/.urnetwork/fast_auth marker file. The file is re-stated on every call
-// so a write takes effect immediately.
+// limiting: via the URNETWORK_AUTH_UNLIMITED env var, the control socket
+// (see control_state.go — `urnet-tools fast-auth on|off`), or the legacy
+// ~/.urnetwork/fast_auth marker file. Re-checked on every call so a change
+// takes effect immediately — no restart, and (via the socket) no polling
+// delay either.
 func fastAuthEnabled() bool {
 	if os.Getenv("URNETWORK_AUTH_UNLIMITED") == "true" {
 		return true
+	}
+	if v, ok := globalControlState.get("fast_auth"); ok {
+		return strings.EqualFold(v, "on")
 	}
 	path, err := fastAuthPath()
 	if err != nil {

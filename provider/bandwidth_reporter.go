@@ -113,11 +113,21 @@ func reportURLOverridePath() (string, error) {
 // restart, the same way hub set/link turn it on.
 const reportURLOverrideOff = "off"
 
-// resolveReportURL re-reads the override file on every call so a change
-// takes effect on the reporter's next tick. envFallback is the value
-// captured from URNETWORK_REPORT_URL at startup, used when no override file
-// exists or it's empty.
+// resolveReportURL checks the control-socket state first (see
+// control_state.go — set live via `urnet-tools hub set/off`), then falls
+// back to the legacy override file, then to envFallback. Re-resolved on
+// every call so a change takes effect on the reporter's next tick.
+// envFallback is the value captured from URNETWORK_REPORT_URL at startup,
+// used when neither the socket state nor the override file has a value.
 func resolveReportURL(envFallback string) string {
+	if v, ok := globalControlState.get("report_url"); ok {
+		if v == reportURLOverrideOff {
+			return ""
+		} else if v != "" {
+			return v
+		}
+	}
+
 	path, err := reportURLOverridePath()
 	if err == nil {
 		if b, err := os.ReadFile(path); err == nil {
@@ -142,10 +152,15 @@ func nodeNameOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "node_name"), nil
 }
 
-// resolveNodeName re-reads the override file on every call so a change takes
-// effect on the reporter's next tick. startupName is the hostname captured at
-// startup, used when no override file exists or it's empty.
+// resolveNodeName checks the control-socket state first, then the legacy
+// override file, then startupName (the hostname captured at process start).
+// Re-resolved on every call so a change takes effect on the reporter's next
+// tick.
 func resolveNodeName(startupName string) string {
+	if v, ok := globalControlState.get("node_name"); ok && v != "" {
+		return v
+	}
+
 	path, err := nodeNameOverridePath()
 	if err == nil {
 		if b, err := os.ReadFile(path); err == nil {
@@ -169,12 +184,18 @@ func reportIntervalOverridePath() (string, error) {
 	return filepath.Join(home, ".urnetwork", "report_interval"), nil
 }
 
-// resolveReportInterval re-reads the override file on every call so a change
-// takes effect on the reporter's next tick. startupInterval is the value
-// captured from URNETWORK_REPORT_INTERVAL at startup, used when no override
-// file exists or it's empty. A zero duration (or unparseable content) falls
-// back to startupInterval.
+// resolveReportInterval checks the control-socket state first, then the
+// legacy override file, then startupInterval (the value captured from
+// URNETWORK_REPORT_INTERVAL at startup). Re-resolved on every call so a
+// change takes effect on the reporter's next tick. A zero duration (or
+// unparseable content) at any layer falls through to the next.
 func resolveReportInterval(startupInterval time.Duration) time.Duration {
+	if v, ok := globalControlState.get("report_interval"); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 10*time.Second {
+			return d
+		}
+	}
+
 	path, err := reportIntervalOverridePath()
 	if err == nil {
 		if b, err := os.ReadFile(path); err == nil {
