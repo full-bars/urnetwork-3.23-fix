@@ -20,6 +20,13 @@ urnetwork-3.23-fix/
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
+│   ├── direct.go                 # Dynamic direct native connection controller
+│   ├── proxy_paste.go            # Bulk proxy ingestion and format normalization
+│   ├── ssrf_guard.go             # SSRF guard for proxy source URL fetching
+│   ├── doh_cache.go              # Persistent DNS-over-HTTPS resolver cache
+│   ├── client_jwt_hotrestart.go  # Identity snapshotting across hot restarts
+│   ├── read_fd_frac_unix.go      # Linux/Unix file descriptor pressure reader
+│   ├── read_fd_frac_windows.go   # Windows file descriptor pressure stub
 │   ├── dup_linux_arm64.go        # ARM64-specific fd dup shim
 │   ├── dup_linux_generic.go      # Generic Linux fd dup shim
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)

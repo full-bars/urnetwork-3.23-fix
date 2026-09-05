@@ -7,27 +7,57 @@ All notable changes to this project are documented here.
 ## [v3.23.0-fix.30.9]
 
 ### Added
+- **TCP-return retention across ack timeouts (PR #506, #521)**: in-flight packets on TCP return paths are retained past ack deadlines instead of being prematurely dropped, protecting relay session continuity and operator billing credit during transient network stalls. Retained items are bounded by `MaxRetainedBytes` and cleanly drained on flow resets (`rstFlow`).
+- **Retention health telemetry (PR #506, #521)**: structured `retained_ack` and `retained_drop` events written to the persistent health log (`proxy_health_log.go`) via a buffered, thread-safe writer.
+- **Bulk proxy ingestion via `proxy paste` (PR #502, #520)**: operator command accepting raw proxy lines from stdin, files, or HTTP(S) URLs. Auto-detects and normalizes `host:port`, `socks5://`, `user:pass@host:port`, and CSV formats.
+- **Signal-safe proxy-paste temp cleanup (PR #520)**: unlinks plaintext temporary proxy-paste files on `SIGINT`/`SIGTERM` with cross-platform process signaling (`os.Process.Signal`) and restores default signal disposition.
+- **SSRF guard on proxy sources (PR #522)**: dial-time and redirect-time verification blocking all operator-supplied URLs from reaching loopback, link-local metadata (`169.254.169.254`), private RFC1918, IPv6 ULA, and multicast addresses.
+- **Dynamic direct transport toggle (`provider direct`) (PR #510, #514, #516, #517)**: CLI command (`provider direct on|off`) to enable or disable native direct IP transport on demand without restarting SOCKS5 proxies. State is persisted atomically to `~/.urnetwork/direct_override`.
+- **Usage & traffic accounting (`urnet-tools usage`) (PR #507, #521)**: aggregate traffic accounting distinguishing billable relay bytes from control-plane protocol overhead, with rolling time-series summaries (`24h`, `7d`, `30d`, `lifetime`).
+- **`choose_network` presets (PR #504)**: fast target switching using `main` and `beta` network presets.
 - **Persistent DoH cache (PR #496)**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
 - **Upstream production DoH optimizations P1-P3 (PR #495)**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
 - **Client JWT hot-restart v2 (PR #494)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
+- **Warm proxy priority on startup (PR #526)**: evaluates local client JWT store on boot and prioritizes warm, previously-authenticated proxies during startup selection to minimize validator probe latency.
+- **Accelerated startup stagger for warm proxies (PR #526)**: reduces connection launch stagger from 2s to 100ms for known-warm proxies, slashing cold-start ramp times by up to 95%.
+- **Network ID conflict guard (PR #526)**: hardens `AnyNetworkID` against mismatched network identity state, ensuring strict network identity consistency.
+- **Subnet 25 telemetry & status dashboard (`sn-status`) (PR #528)**: live Bittensor Subnet 25 miner and node telemetry displaying global ranking, top-200 tier eligibility, net bandwidth provided (MiB/GiB), registered coldkey (SS58 & Hex), subnet epoch lifecycle, and finalized epoch merkle pool payout share (basis points & percentage). Available across `urnet-tools sn-status`, `urnet-docker sn-status`, and `provider sn-status`.
+- **JSON machine telemetry output (`--json`) (PR #528)**: machine-readable JSON output for `sn-status` across all CLI tools for automated monitoring, scraping, and alerting fleets.
+- **Subnet 25 ranking API client bindings (PR #528)**: Go SDK methods `NetworkGetRankingSync` (`GET /network/ranking`) and `StatsLeaderboardSync` (`POST /stats/leaderboard`) on `BringYourApi`.
+- **Bittensor operations guide (`docs/Bittensor-Operations.md`) (PR #528)**: operator guide covering Subnet 25 mining mechanics, coldkey registration, epoch lifecycle, top 200 cutoff requirements, reward claims, and CLI monitoring workflows.
+- **Go-native `idle-update` (PR #525)**: polls billable throughput rate before updating in place, ensuring active client sessions aren't severed, with configurable `--timeout` ceiling and `--threshold`.
+- **Docker CLI parity (PR #525)**: `urnet-docker direct`, `urnet-docker usage`, and `urnet-docker proxy paste` delegating to in-container commands.
+- **Tilde home path expansion (PR #525)**: expands `~` in `--file` and positional arguments across CLI tools and shells.
+- **CFAA blocklist sync (PR #527, #530, #532)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions (IPv4: 48,427 entries, IPv6: 453 entries).
+- **Automated CFAA blocklist sync CI/CD (PR #529, #531)**: daily automated GitHub Actions cron workflow and repository dispatch trigger that monitors upstream `urnetwork/connect` for blocklist updates, verifies lookup table integrity, and opens automated pull requests with Discord webhook notifications.
 - **Provider version in `urnet-tools status` (PR #497)**: each provider's actual running version is shown.
 - **Subprocess timeouts (PR #499)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
 
 ### Changed
-- **urnet-tools security audit remediation (PR #499)**: version strings are read from Go build info when recorded; discovered binaries are still executed as a 3s-timeout `--version` fallback when build info lacks a version (e.g. `-trimpath` builds), so this reduces but does not remove the exec-related privilege-escalation surface; `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
-- **Reliable provider updates (PR #497)**: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
-- **restart safety (PR #499)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
+- **`pathTable` LRU eviction & bounds (PR #513)**: multi-hop route table in `ip.go` guarded with mutex locking, bounded size cap, and LRU pruning to eliminate unbounded memory growth under peer churn.
+- **DNS negative-cache bounded pruning (PR #513)**: replaced unbounded negative DNS caching with periodic sort-based eviction.
+- **Message pool metrics & refcount safety (PR #505, #521)**: converted pool size distribution mutex (`sizeDistMu`) to `sync.RWMutex` and added bounds checking against buffer counter underflows/overflows.
+- **urnet-tools security audit remediation (PR #499, #505, #509)**: version strings are read from Go build info when recorded; discovered binaries are still executed as a 3s-timeout `--version` fallback when build info lacks a version (e.g. `-trimpath` builds); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
+- **Reliable provider updates (PR #497, #503)**: post-restart verification reads running process image via `/proc/<pid>/exe`; redundant reinstall for stale on-disk binaries.
+- **Direct reloader lifecycle (PR #514, #517, #521)**: compare-and-delete CAS tracking and clean `cancelMap` cleanup prevent orphaned cancellation tokens or race conditions during rapid reload cycles.
 - **Bounded DNS resolution (upstream)**: DNS lookups capped at 3s and abort on the winning server.
+- **Source comments cleanup (PR #518, #519)**: removed stale review-process references and AI attributions for clean codebase hygiene.
 
 ### Fixed
+- **Contract billing debit rounding (PR #521)**: fixed `unack()` debit rounding to ensure packets discarded at the retention backstop ceiling are never erroneously credited as acknowledged billable transfer.
+- **Cross-platform build compatibility (PR #520)**: replaced POSIX-only `syscall.Kill` with standard `os.Process.Signal` for clean Windows (`GOOS=windows`), macOS (`GOOS=darwin`), and Linux compilation.
+- **SSRF test fixture loopback isolation (PR #522)**: added unexported `ssrfAllowLoopback` toggle to allow local `httptest.NewServer` mock fixtures during test runs without relaxing strict production guards.
+- **Direct toggle `<state>` argument parsing (PR #517)**: fixed docopt command parsing to properly recognize positional state arguments.
+- **Root PATH sanitization (PR #517)**: preserved accessible executable directories in system search paths while preventing ancestor directory traversal.
 - **Uninstall path guard (PR #499)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
-- **update confirm no longer hangs (PR #499)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Update confirm no longer hangs (PR #499)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
 - **Chown of state dir (PR #499)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
 - **DoH concurrent-map race (PR #499 / upstream)**: `stateLock` restored around the stale-cache read.
-- **Outage watcher removed (parity)**: the unreliable alert-webhook outage watcher and its stale references are gone.
+- **14 parity findings resolved (PR #523)**: fixed CodeRabbit-confirmed findings from meso-miner parity port audit across provider core, memory allocation, and connection management.
 
 ### Removed
 - **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed (parity with meso-miner). It produced false outage signals.
+
 ---
 
 ## [v3.23.0-fix.30.8]
