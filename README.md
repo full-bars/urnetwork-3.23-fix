@@ -175,6 +175,7 @@ UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usa
 - [Docker Deployment](docs/Docker-Deployment.md)
 - [Multi-Container Scaling](docs/Multi-Container-Scaling.md)
 - [Configuration Reference](docs/Configuration.md)
+- [Node Identity & Dashboard Label](docs/Node-Identity.md)
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
 - [Hub Setup](docs/Hub-Setup.md)
