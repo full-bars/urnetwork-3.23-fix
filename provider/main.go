@@ -3219,23 +3219,24 @@ func provide(opts docopt.Opts) {
 		registerEncryptionManager(connectClient.EncryptionSessionManager())
 
 		// Persist the live identity material so the next process
-		// start loads the same values. On a fresh install both
-		// reads above returned empty and the connect.Client just
-		// generated; on subsequent starts we're writing back the
-		// same bytes (cheap no-op-equivalent).
-		if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
-			if seed := keyManager.Seed(); 0 < len(seed) {
-				if err := writeProviderClientKeySeed(seed); err != nil {
-					fmt.Printf("provider client key save failed: %s\n", err)
+		// start loads the same values. Skip when running as a HotSwap
+		// candidate: the parent has already persisted these, and writing
+		// from two live processes risks stale-map overwrites (F-9).
+		if !isHotSwapCandidate {
+			if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
+				if seed := keyManager.Seed(); 0 < len(seed) {
+					if err := writeProviderClientKeySeed(seed); err != nil {
+						fmt.Printf("provider client key save failed: %s\n", err)
+					}
 				}
 			}
-		}
-		if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
-			certPem := encManager.ProvideTlsCertificatePem()
-			keyPem := encManager.ProvideTlsPrivateKeyPem()
-			if 0 < len(certPem) && 0 < len(keyPem) {
-				if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
-					fmt.Printf("provider tls cert/key save failed: %s\n", err)
+			if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
+				certPem := encManager.ProvideTlsCertificatePem()
+				keyPem := encManager.ProvideTlsPrivateKeyPem()
+				if 0 < len(certPem) && 0 < len(keyPem) {
+					if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
+						fmt.Printf("provider tls cert/key save failed: %s\n", err)
+					}
 				}
 			}
 		}

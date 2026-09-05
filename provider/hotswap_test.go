@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -679,6 +680,91 @@ func TestGetHotSwapChildIPCValidation(t *testing.T) {
 	_ = syscall.Close(3)
 	if _, isChild := getHotSwapChildIPC(); isChild {
 		t.Errorf("expected isChild=false when fd 3 is invalid/closed")
+	}
+}
+
+func TestSanitizeCandidateArgs(t *testing.T) {
+	// auth-provide with positional auth code should become pure "provide"
+	got := sanitizeCandidateArgs([]string{"auth-provide", "abc123secret", "--user"})
+	want := []string{"provide", "--user"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("auth-provide + code: got %v, want %v", got, want)
+	}
+
+	// auth-provide with flag-style next arg should not skip it
+	got = sanitizeCandidateArgs([]string{"auth-provide", "-f", "--user"})
+	want = []string{"provide", "--user"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("auth-provide + flags: got %v, want %v", got, want)
+	}
+
+	// -f flag stripped
+	got = sanitizeCandidateArgs([]string{"provide", "-f", "--port", "8080"})
+	want = []string{"provide", "--port", "8080"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("-f strip: got %v, want %v", got, want)
+	}
+
+	// --user_auth and --password flags stripped, including their positional values (separated form)
+	got = sanitizeCandidateArgs([]string{"provide", "--user_auth", "admin", "--password", "secret"})
+	want = []string{"provide"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("auth args strip: got %v, want %v", got, want)
+	}
+
+	// --user_auth=val form (value attached) is fully stripped
+	got = sanitizeCandidateArgs([]string{"provide", "--user_auth=admin", "--password=secret"})
+	want = []string{"provide"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("attached auth args strip: got %v, want %v", got, want)
+	}
+
+	// Full auth-provide invocation sanitized to pure provide
+	got = sanitizeCandidateArgs([]string{"auth-provide", "ABC123secret", "-f", "--user_auth", "admin", "--password", "secret"})
+	want = []string{"provide"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("full auth-provide sanitize: got %v, want %v", got, want)
+	}
+
+	// Normal args pass through unchanged
+	got = sanitizeCandidateArgs([]string{"provide", "--port", "8080", "--user"})
+	want = []string{"provide", "--port", "8080", "--user"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("passthrough: got %v, want %v", got, want)
+	}
+}
+
+func TestClientJWTStoreFlockExclusivity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client_jwts.json")
+	store := newClientJWTStore(path)
+
+	// First store acquires lock and writes
+	if err := store.Put("proxy-1", clientJWTEntry{
+		ByClientJWT: "jwt1",
+		ClientID:    testClientId,
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("Put 1 failed: %v", err)
+	}
+
+	// Second store instance acquires its own lock (sequential, not concurrent in same process
+	// but verifies the lock file mechanism works and doesn't block)
+	store2 := newClientJWTStore(path)
+	if err := store2.Put("proxy-2", clientJWTEntry{
+		ByClientJWT: "jwt2",
+		ClientID:    testClientId,
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("Put 2 (flock acquire) failed: %v", err)
+	}
+
+	// Both entries should be present (store2 loaded store1's data + added its own)
+	got, ok := store2.Get("proxy-1")
+	if !ok {
+		t.Error("expected proxy-1 entry to survive after store2 Put")
+	}
+	if got.ByClientJWT != "jwt1" {
+		t.Errorf("proxy-1 JWT = %q, want jwt1 (stale-map overwrite would have lost this)", got.ByClientJWT)
 	}
 }
 

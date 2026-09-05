@@ -256,6 +256,14 @@ func (s *clientJWTStore) flushLocked() error {
 		return err
 	}
 
+	// Acquire inter-process lock so a concurrent HotSwap candidate cannot
+	// overwrite our flush with its stale in-memory map (F-9).
+	release, err := acquireJWTStoreLock(s.path)
+	if err != nil {
+		return fmt.Errorf("acquire jwt store lock: %w", err)
+	}
+	defer release()
+
 	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
 	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
 	if err != nil {
