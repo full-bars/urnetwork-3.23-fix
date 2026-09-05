@@ -102,7 +102,8 @@ def post_to_discord(webhook: str, info: dict, summary: str) -> None:
     color = 0x5865F2  # blurple
 
     pr_url = info.get("pr_url", "")
-    pr_field = {"name": "Pull Request", "value": pr_url or "N/A", "inline": True}
+    valid_pr_url = pr_url if (isinstance(pr_url, str) and pr_url.startswith("http")) else None
+    pr_field = {"name": "Pull Request", "value": valid_pr_url or "N/A", "inline": True}
 
     fields = [
         {"name": "Action", "value": "synced" if sync_needed else "checked (no changes)", "inline": True},
@@ -113,16 +114,17 @@ def post_to_discord(webhook: str, info: dict, summary: str) -> None:
         {"name": "AI Summary", "value": summary, "inline": False},
     ]
 
-    payload = json.dumps({
-        "embeds": [{
-            "title": title,
-            "url": pr_url or None,
-            "description": "Automated CFAA blocklist sync from urnetwork/connect upstream.",
-            "color": color,
-            "fields": fields,
-            "footer": {"text": "URNetwork CFAA Sync • Automated"},
-        }]
-    })
+    embed = {
+        "title": title,
+        "description": "Automated CFAA blocklist sync from urnetwork/connect upstream.",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": "URNetwork CFAA Sync • Automated"},
+    }
+    if valid_pr_url:
+        embed["url"] = valid_pr_url
+
+    payload = json.dumps({"embeds": [embed]})
 
     req = urllib.request.Request(
         webhook,
