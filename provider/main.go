@@ -2697,6 +2697,10 @@ func provide(opts docopt.Opts) {
 	} else {
 		globalControlState = loaded
 	}
+	// Apply anything urnet-tools queued while this provider wasn't running
+	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
+	// socket for new commands.
+	mergePendingOverrides(globalControlState)
 	if cleanupControlSocket, err := startControlSocket(ctx, globalControlState); err != nil {
 		tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
 	} else {
