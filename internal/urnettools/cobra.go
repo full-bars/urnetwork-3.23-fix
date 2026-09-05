@@ -59,6 +59,7 @@ Proxy Management:
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
+  ip-detect [on|off|status] Auto-detect public IP for dashboard identity
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
@@ -171,6 +172,7 @@ func buildRootCmd() *cobra.Command {
 		newAutoStartCmd(),
 		newSelfHealCmd(),
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
+		newIPDetectCmd(),
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
@@ -581,6 +583,24 @@ func newSelfHealCmd() *cobra.Command {
 				return cmd.Help()
 			}
 			return cmdSelfHeal(args)
+		},
+	}
+}
+
+func newIPDetectCmd() *cobra.Command {
+	// cmdIPDetect has its own -h handling; building raw preserves it.
+	return &cobra.Command{
+		Use:                "ip-detect",
+		Short:              "toggle public IP autodetection",
+		Long:               "Toggle or report whether the provider auto-detects its public IP (via ip.me) for dashboard identity. Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set.",
+		Example:            "  urnet-tools ip-detect status\n  urnet-tools ip-detect off\n  urnet-tools ip-detect on",
+		Aliases:            []string{"ipdetect"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdIPDetect(args)
 		},
 	}
 }
