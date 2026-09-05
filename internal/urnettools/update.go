@@ -580,10 +580,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Prune old backups before creating a new one so disk pressure cannot
 	// cause the update to fail.
 	pruneBackups(p.Binary, 2)
+	var backup string
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
 	} else {
-		backup := backupName(p.Binary, time.Now())
+		backup = backupName(p.Binary, time.Now())
 		if _, err := os.Stat(backup); err == nil {
 			// Same-instant collision: fail loudly rather than silently reusing
 			// the older backup and losing the immediate previous binary.
@@ -608,12 +609,23 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
-	// Restart the unit that owns the running process. restartForUpdate is
-	// plain restartProvider by default; the update flow temporarily routes
-	// it through the staged-tool escalation ladder
-	// (updateProviderWithRestart).
-	if err := restartForUpdate(p); err != nil {
-		return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+	// Attempt zero-downtime HotSwap first if supported on running process.
+	hotSwapTriggered := false
+	if p.Running && p.PID > 0 {
+		if err := triggerHotSwap(p); err == nil {
+			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
+			hotSwapTriggered = true
+		}
+	}
+
+	if !hotSwapTriggered {
+		// Restart the unit that owns the running process. restartForUpdate is
+		// plain restartProvider by default; the update flow temporarily routes
+		// it through the staged-tool escalation ladder
+		// (updateProviderWithRestart).
+		if err := restartForUpdate(p); err != nil {
+			return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+		}
 	}
 
 	// Verify the restart took effect: wait for the process to be on the
@@ -658,6 +670,21 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			}
 		}
 	}
+
+	// Verification failed:
+	if hotSwapTriggered {
+		fmt.Printf("❌ HotSwap candidate failed to take over within 30s.\n")
+		if backup != "" {
+			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
+			if rerr := copyFile(backup, p.Binary); rerr != nil {
+				fmt.Printf("warning: rollback copy failed: %v\n", rerr)
+			} else {
+				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
+			}
+		}
+		return fmt.Errorf("update %s: HotSwap candidate failed to take over; binary rolled back; live provider PID %d was never killed and remains active", providerLabel(p), oldPID)
+	}
+
 	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
 }
 

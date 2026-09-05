@@ -2669,6 +2669,20 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
+	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
+	// and announce readiness to parent via IPC before starting transports.
+	var isHotSwapCandidate bool
+	var hotSwapIPC *os.File
+	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
+		isHotSwapCandidate = true
+		hotSwapIPC = ipcFile
+		defer hotSwapIPC.Close()
+		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
+			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 
@@ -2682,6 +2696,10 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+
+	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix)
+	startHotSwapSignalListener(ctx, cancel, opts)
+
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
@@ -3222,6 +3240,16 @@ func provide(opts docopt.Opts) {
 			AppVersion: RequireVersion(),
 		}
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff
+		RegisterCoordinatorCloser(func() {
+			platformTransport.Close()
+		})
+
+		// If candidate child, announce ACK to parent now that the live transport is active
+		if isHotSwapCandidate && hotSwapIPC != nil {
+			_ = runHotSwapChildAck(hotSwapIPC)
+			hotSwapIPC = nil
+		}
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:
