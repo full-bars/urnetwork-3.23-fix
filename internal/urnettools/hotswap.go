@@ -2,7 +2,50 @@ package urnettools
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 )
+
+// isHotSwapSupportedVersion checks whether the given provider version string indicates
+// support for in-process zero-downtime HotSwap (introduced in v3.23.0-fix.31.0).
+func isHotSwapSupportedVersion(ver string) bool {
+	if ver == "" {
+		return false
+	}
+	ver = strings.TrimPrefix(ver, "v")
+	idx := strings.Index(ver, "fix.")
+	if idx != -1 {
+		sub := ver[idx+4:]
+		dotIdx := strings.IndexAny(sub, ".-")
+		if dotIdx != -1 {
+			sub = sub[:dotIdx]
+		}
+		fixNum, err := strconv.Atoi(sub)
+		if err == nil {
+			return fixNum >= 31
+		}
+	}
+	if strings.Contains(ver, "hotswap") || strings.Contains(ver, "test") || ver == "dev" {
+		return true
+	}
+	return false
+}
+
+// supportsHotSwap determines whether the target running provider is capable of
+// zero-downtime HotSwap handoff based on its running image or reported version.
+func supportsHotSwap(p Provider) bool {
+	if p.PID > 0 {
+		if exe, err := runningImagePath(p.PID); err == nil {
+			if ver := providerVersionFromBuildinfo(exe); ver != "" {
+				return isHotSwapSupportedVersion(ver)
+			}
+		}
+	}
+	if p.Version != "" {
+		return isHotSwapSupportedVersion(p.Version)
+	}
+	return false
+}
 
 // cmdHotswap implements `urnet-tools hotswap [target]`: it triggers an in-process
 // zero-downtime binary handover on a running provider without cycling the unit.
@@ -35,3 +78,4 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	fmt.Printf("triggered zero-downtime HotSwap on %s (PID %d)\n", providerLabel(p), p.PID)
 	return nil
 }
+
