@@ -62,6 +62,7 @@ Config & Automation:
   choose-network            Set API/connect endpoints
   fast-auth [on|off]        Bypass auth rate limiter without restart
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
+  rename <name>            Set dashboard display name (alias: set node-name)
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
   direct [on|off]           Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
@@ -126,6 +127,7 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerProxyCmd(),
 		newDockerSelfHealCmd(),
 		newDockerSetCmd(),
+		newDockerRenameCmd(),
 		newDockerFastAuthCmd(),
 		newDockerHubCmd(),
 		newDockerSessionCmd(),
@@ -347,6 +349,12 @@ func newDockerSetCmd() *cobra.Command {
 	return withHelp(newCobraCmd("set", "runtime tuning override in container state", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSet(args)
 	}), "Read or write a runtime tuning override in the container's provider state, delegating to its urnet-tools set. Run with no key to list, a key alone to show a value, a key and value to set it, or a key and \"off\" to clear it.", "  urnet-docker set report-interval 5m --unit mynetwork-provider\n  urnet-docker set cleanup-scope off --unit mynetwork-provider")
+}
+
+func newDockerRenameCmd() *cobra.Command {
+	return withHelp(newCobraCmd("rename", "set dashboard display name in container", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerRename(args)
+	}), "Set the targeted container's provider display name reported to the dashboard. Delegates to the container's own urnet-tools rename.", "  urnet-docker rename us-west-2 --unit mynetwork-provider\n  urnet-docker rename off --unit mynetwork-provider")
 }
 
 func newDockerFastAuthCmd() *cobra.Command {
