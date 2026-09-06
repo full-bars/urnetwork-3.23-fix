@@ -25,7 +25,7 @@ func isHotSwapSupportedVersion(ver string) bool {
 			return fixNum >= 31
 		}
 	}
-	if strings.Contains(ver, "hotswap") || strings.Contains(ver, "test") || ver == "dev" {
+	if strings.Contains(ver, "hotswap") || strings.Contains(ver, "test") || strings.Contains(ver, "canary") || strings.HasPrefix(ver, "dev") || ver == "dev" {
 		return true
 	}
 	return false

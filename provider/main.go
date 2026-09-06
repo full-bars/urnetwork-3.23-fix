@@ -2738,11 +2738,26 @@ func provide(opts docopt.Opts) {
 	// Apply anything urnet-tools queued while this provider wasn't running
 	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
 	// socket for new commands.
-	mergePendingOverrides(globalControlState)
-	if cleanupControlSocket, err := startControlSocket(ctx, globalControlState); err != nil {
-		tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
-	} else {
-		defer cleanupControlSocket()
+	var cleanupControlSocket func()
+	if !isHotSwapCandidate {
+		var err error
+		cleanupControlSocket, err = startControlSocket(ctx, globalControlState)
+		if err != nil {
+			tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
+		} else {
+			defer func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+				}
+			}()
+			unregSocketCloser := RegisterCoordinatorCloser(func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+					cleanupControlSocket = nil
+				}
+			})
+			defer unregSocketCloser()
+		}
 	}
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
@@ -3297,6 +3312,21 @@ func provide(opts docopt.Opts) {
 				hotSwapIPC = nil
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
+
+				mergePendingOverrides(globalControlState)
+				// Bind control socket now that the parent yielded its listener
+				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
+					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
+				} else {
+					cleanupControlSocket = cleanup
+					unregSocketCloser := RegisterCoordinatorCloser(func() {
+						if cleanupControlSocket != nil {
+							cleanupControlSocket()
+							cleanupControlSocket = nil
+						}
+					})
+					defer unregSocketCloser()
+				}
 			}
 			_ = notifySystemdReady()
 		})
