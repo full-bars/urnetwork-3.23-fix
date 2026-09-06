@@ -3,7 +3,6 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -163,8 +162,8 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 		}
 		return setFastAuthMarker(p, sub == "on", dryRun)
 	case "", "status":
-		file := filepath.Join(p.StateDir, "fast_auth")
-		if _, err := os.Stat(file); err == nil {
+		val, _, found, _ := queryControlOverride(p, "fast_auth")
+		if found && strings.EqualFold(val, "on") {
 			fmt.Printf("fast-auth: on for %s (rate limiter bypassed)\n", providerLabel(p))
 		} else {
 			fmt.Printf("fast-auth: off for %s (rate limiter active) — use 'fast-auth on' to bypass\n", providerLabel(p))
@@ -222,13 +221,20 @@ var setKeyFiles = map[string]string{
 
 // setKeyHelps describes each key for `set help` / usage.
 var setKeyHelps = []string{
-	"  node-name           <string>    node name reported to the fleet hub (default: hostname)",
-	"  report-interval     <duration>  bandwidth report cadence (default: 5m, min: 10s)",
-	"  proxy-url-max       <int>       max proxies from URL feeds (default: 500)",
-	"  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)",
+	"  node-name           <string>      node name reported to the fleet hub (default: hostname)",
+	"  report-url          <url>|off     bandwidth report destination URL",
+	"  report-interval     <duration>    bandwidth report cadence (default: 5m, min: 10s)",
+	"  fast-auth           on|off        bypass auth rate limiter",
+	"  self-heal           on|off        dead proxy auto-cleanup & load gate",
+	"  proxy-url-max       <int>         max proxies from URL feeds (default: 500)",
+	"  proxy-url-refresh   <duration>    URL proxy list refresh interval (default: 1h, min: 10s)",
 	"  cleanup-scope       none|url|all  dead proxy auto-cleanup scope (default: url)",
-	"  cleanup-interval    <duration>  dead proxy cleanup interval (default: 6h, min: 1m)",
-	"  fast-auth           on|off      bypass auth rate limiter (marker file)",
+	"  cleanup-interval    <duration>    dead proxy cleanup interval (default: 6h, min: 1m)",
+	"  hot-restart         on|off        preserve client JWTs across restarts",
+	"  gomemlimit          <bytes>       Go runtime memory limit (e.g. 256MiB, 1GiB)",
+	"  gogc                <int>|off     Go runtime garbage collection target percentage (default: 100)",
+	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
+	"  ramlogs             on|off        in-memory ramlogs toggle",
 }
 
 func printSetHelp() {
@@ -236,8 +242,10 @@ func printSetHelp() {
 
 Usage: urnet-tools set <key> [<value>|off] [target]
 
-Runtime overrides are files the provider reads live from ~/.urnetwork/.
-Changes take effect on the next provider tick (no restart needed).
+Runtime overrides are managed via the provider's control socket (~/.urnetwork/provider.sock).
+When the provider is running, changes take effect immediately without a restart.
+When the provider is not running, changes are queued in pending_overrides.json and apply on next startup.
+
 Set a value:  urnet-tools set <key> <value>
 Show current: urnet-tools set <key>
 Clear it:     urnet-tools set <key> off
@@ -250,12 +258,13 @@ Available keys:
 	}
 	fmt.Fprint(os.Stderr, `
 Duration format: Go-style, e.g. 30s, 5m, 1h, 24h.
+Byte format: Go-style, e.g. 256MiB, 1GiB, 500MB.
 `)
 }
 
-// cmdSet restores `urnet-tools set <key> [<value>|off] [target]`: it reads and
-// writes the provider's runtime-override files in ~/.urnetwork. The provider
-// consumes these at runtime, so no restart is needed.
+// cmdSet restores `urnet-tools set <key> [<value>|off] [target]`: it manages the
+// provider's runtime overrides via its control socket, falling back to
+// pending_overrides.json if the provider is not running.
 func cmdSet(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
@@ -273,18 +282,18 @@ func cmdSet(args []string, force, dryRun bool) error {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 
-	// No key: list every active override, mirroring the legacy do_set.
+	// No key: list every active override.
 	if len(rest) == 0 {
 		return formatSets(p, "")
 	}
 	key := rest[0]
 	// key only: show current value.
 	if len(rest) == 1 {
-		filename, ok := setKeyFiles[key]
+		canonicalKey, ok := canonicalControlKey(key)
 		if !ok {
 			return fmt.Errorf("unknown key %q (see 'urnet-tools set help')", key)
 		}
-		return formatSets(p, filepath.Join(p.StateDir, filename))
+		return formatSets(p, canonicalKey)
 	}
 	if len(rest) > 2 {
 		return fmt.Errorf("set takes <key> [<value>|off] (got %v)", rest[1:])
@@ -302,12 +311,10 @@ func cmdSet(args []string, force, dryRun bool) error {
 }
 
 // applySetOverride writes, clears, or shows the runtime override for one key
-// on a resolved provider. Extracted from cmdSet so the file lifecycle is
-// directly unit-testable with a temp state dir (no live discovery). It
-// validates the key against setKeyFiles and routes fast-auth to the marker
-// logic. Honours --dry-run.
+// on a resolved provider. It talks to the provider's control socket if reachable,
+// or queues the change in pending_overrides.json if the provider is down.
 func applySetOverride(p Provider, key, value string, dryRun bool) error {
-	filename, ok := setKeyFiles[key]
+	canonicalKey, ok := canonicalControlKey(key)
 	if !ok {
 		return fmt.Errorf("unknown key %q (see 'urnet-tools set help')", key)
 	}
@@ -315,9 +322,8 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 
-	// fast-auth is existence-based, not value-based — manage the marker file
-	// directly so the message and the on/off semantics match do_fast_auth.
-	if filename == "fast_auth" {
+	// fast-auth is existence-based, not value-based — manage via fast_auth helper
+	if canonicalKey == "fast_auth" {
 		switch value {
 		case "on":
 			return setFastAuthMarker(p, true, dryRun)
@@ -329,141 +335,143 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		}
 	}
 
-	if err := validateSetValue(key, value); err != nil {
-		return err
-	}
-
-	file := filepath.Join(p.StateDir, filename)
-	if value == "off" {
+	if value == "off" && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" {
 		if dryRun {
-			fmt.Printf("[dry-run] would clear %s ('%s') and revert to startup default\n", file, key)
+			fmt.Printf("[dry-run] would clear %s for %s and revert to startup default\n", key, providerLabel(p))
 			return nil
 		}
-		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+		appliedLive, err := applyControlOverride(p, "clear", canonicalKey, "", false)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("%s cleared for %s — reverts to startup default on next tick\n", key, providerLabel(p))
+		if appliedLive {
+			fmt.Printf("%s cleared for %s (applied live via control socket)\n", key, providerLabel(p))
+		} else {
+			fmt.Printf("%s cleared for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, providerLabel(p))
+		}
 		return nil
+	}
+
+	if err := validateControlValue(canonicalKey, value); err != nil {
+		return err
 	}
 
 	if dryRun {
-		fmt.Printf("[dry-run] would set %s=%s for %s (%s)\n", key, value, providerLabel(p), file)
+		fmt.Printf("[dry-run] would set %s=%s for %s\n", key, value, providerLabel(p))
 		return nil
 	}
-	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
+
+	appliedLive, err := applyControlOverride(p, "set", canonicalKey, value, false)
+	if err != nil {
 		return err
 	}
-	// When run as root, MkdirAll creates the dir owned by root. Fix
-	// ownership so the provider process can write its own state.
-	// Uses Lchown to prevent following symlinks (C2 fix).
-	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = chownStateDir(p.StateDir, uid, gid)
+	if appliedLive {
+		fmt.Printf("%s set to %s for %s (applied live via control socket)\n", key, value, providerLabel(p))
+	} else {
+		fmt.Printf("%s set to %s for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, value, providerLabel(p))
 	}
-	// 0o644, matching the sibling override-writers: the provider often runs
-	// under a different user than the tool, so a 0600 file would be unreadable
-	// and the change would silently never take effect.
-	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks.
-	if err := writeStateFile(p.StateDir, filename, []byte(value), 0o644); err != nil {
-		return fmt.Errorf("write %s: %v", file, err)
-	}
-	// chown the written file so the provider can read/rewrite it.
-	// Uses Lchown to prevent following symlinks.
-	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = chownStateFile(file, uid, gid)
-	}
-	fmt.Printf("%s set to %s for %s — takes effect on next provider tick\n", key, value, providerLabel(p))
 	return nil
 }
 
 // setFastAuthMarker sets or clears the auth-rate-limiter bypass marker in the
-// provider's state dir, honouring --dry-run. Shared by `set fast-auth <v>` and
-// the standalone fast-auth command path semantics.
+// provider's control state, honouring --dry-run.
 func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	file := filepath.Join(p.StateDir, "fast_auth")
 	if !on {
 		if dryRun {
-			fmt.Printf("[dry-run] would disable fast-auth for %s (remove %s)\n", providerLabel(p), file)
+			fmt.Printf("[dry-run] would disable fast-auth for %s\n", providerLabel(p))
 			return nil
 		}
-		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		fmt.Printf("fast-auth: off for %s — auth rate limiter active\n", providerLabel(p))
-		return nil
-	}
-	if dryRun {
-		fmt.Printf("[dry-run] would enable fast-auth for %s (marker %s)\n", providerLabel(p), file)
-		return nil
-	}
-	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
-		return err
-	}
-	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = chownStateDir(p.StateDir, uid, gid)
-	}
-	if err := writeStateFile(p.StateDir, "fast_auth", nil, 0o644); err != nil {
-		return err
-	}
-	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = chownStateFile(file, uid, gid)
-	}
-	fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
-	return nil
-}
-
-// formatSets prints active runtime overrides from the provider's state dir.
-// When want is non-nil it prints only that one file's status; otherwise it
-// lists every override in canonical key order. Mirrors legacy do_set.
-func formatSets(p Provider, want string) error {
-	keyFor := func(base string) string {
-		for k, f := range setKeyFiles {
-			if f == base {
-				return k
-			}
-		}
-		return ""
-	}
-	if want != "" {
-		key := keyFor(filepath.Base(want))
-		b, err := os.ReadFile(want)
-		if os.IsNotExist(err) {
-			if key == "fast-auth" {
-				fmt.Printf("fast-auth: off for %s (not set)\n", providerLabel(p))
-			} else {
-				fmt.Printf("%s: not set for %s (using startup default)\n", key, providerLabel(p))
-			}
-			return nil
-		}
+		appliedLive, err := applyControlOverride(p, "clear", "fast_auth", "", false)
 		if err != nil {
 			return err
 		}
-		if key == "fast-auth" {
-			fmt.Printf("fast-auth: on for %s\n", providerLabel(p))
+		if appliedLive {
+			fmt.Printf("fast-auth: off for %s — auth rate limiter active (applied live via control socket)\n", providerLabel(p))
 		} else {
-			fmt.Printf("%s: %s\n", key, strings.TrimSpace(string(b)))
+			fmt.Printf("fast-auth: off for %s — auth rate limiter active (queued in pending_overrides.json)\n", providerLabel(p))
+		}
+		return nil
+	}
+	if dryRun {
+		fmt.Printf("[dry-run] would enable fast-auth for %s\n", providerLabel(p))
+		return nil
+	}
+	appliedLive, err := applyControlOverride(p, "set", "fast_auth", "on", false)
+	if err != nil {
+		return err
+	}
+	if appliedLive {
+		fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately via control socket)\n", providerLabel(p))
+	} else {
+		fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (queued in pending_overrides.json, takes effect on next start)\n", providerLabel(p))
+	}
+	return nil
+}
+
+// formatSets prints active runtime overrides from the provider's control state.
+// When want is non-empty it prints only that one setting's status; otherwise it
+// lists every override in canonical key order.
+func formatSets(p Provider, want string) error {
+	if want != "" {
+		canonicalKey, ok := canonicalControlKey(want)
+		if !ok {
+			return fmt.Errorf("unknown key %q (see 'urnet-tools set help')", want)
+		}
+		val, _, found, err := queryControlOverride(p, canonicalKey)
+		if err != nil {
+			return err
+		}
+		if found {
+			if canonicalKey == "fast_auth" {
+				fmt.Printf("fast-auth: on for %s\n", providerLabel(p))
+			} else {
+				fmt.Printf("%s: %s\n", want, val)
+			}
+		} else {
+			if canonicalKey == "fast_auth" {
+				fmt.Printf("fast-auth: off for %s (not set)\n", providerLabel(p))
+			} else {
+				fmt.Printf("%s: not set for %s (using startup default)\n", want, providerLabel(p))
+			}
 		}
 		return nil
 	}
 
 	fmt.Printf("Runtime overrides (%s/):\n", p.StateDir)
 	found := 0
-	for _, k := range []string{"node-name", "report-interval", "proxy-url-max", "proxy-url-refresh", "cleanup-scope", "cleanup-interval", "fast-auth"} {
-		f := filepath.Join(p.StateDir, setKeyFiles[k])
-		b, err := os.ReadFile(f)
-		if os.IsNotExist(err) {
+	orderedKeys := []struct {
+		cliName      string
+		canonicalKey string
+	}{
+		{"node-name", "node_name"},
+		{"report-url", "report_url"},
+		{"report-interval", "report_interval"},
+		{"fast-auth", "fast_auth"},
+		{"self-heal", "proxy_self_heal"},
+		{"proxy-url-max", "proxy_url_max"},
+		{"proxy-url-refresh", "proxy_url_refresh"},
+		{"cleanup-scope", "proxy_dead_cleanup_scope"},
+		{"cleanup-interval", "proxy_dead_cleanup_interval"},
+		{"hot-restart", "hot_restart"},
+		{"gomemlimit", "gomemlimit"},
+		{"gogc", "gogc"},
+		{"profile", "profile"},
+		{"ramlogs", "ramlogs"},
+	}
+
+	for _, item := range orderedKeys {
+		val, _, isFound, err := queryControlOverride(p, item.canonicalKey)
+		if err != nil || !isFound {
 			continue
 		}
-		if err != nil {
-			return err
-		}
 		found++
-		if k == "fast-auth" {
-			fmt.Printf("  %-32s %s\n", setKeyFiles[k], "on")
+		if item.canonicalKey == "fast_auth" {
+			fmt.Printf("  %-32s %s\n", item.cliName, "on")
 		} else {
-			fmt.Printf("  %-32s %s\n", setKeyFiles[k], strings.TrimSpace(string(b)))
+			fmt.Printf("  %-32s %s\n", item.cliName, val)
 		}
 	}
 	if found == 0 {
