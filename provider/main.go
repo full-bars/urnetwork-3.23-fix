@@ -1062,7 +1062,9 @@ Options:
 	} else if provide_, _ := opts.Bool("provide"); provide_ {
 		provide(opts)
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
-		auth(opts)
+		if os.Getenv(EnvHotSwap) != "1" {
+			auth(opts)
+		}
 		provide(opts)
 	} else if logs, _ := opts.Bool("logs"); logs {
 		providerLogs(opts)
@@ -1214,7 +1216,7 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0600); err != nil {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -2320,6 +2322,9 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	defer ticker.Stop()
 
 	for {
+		if isHotSwapDraining.Load() {
+			return
+		}
 		byJwtBytes, err := os.ReadFile(jwtPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -2377,7 +2382,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
 					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
-				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0600); err != nil {
 					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
@@ -2639,14 +2644,34 @@ func provide(opts docopt.Opts) {
 	provideStartTime = time.Now()
 
 	// Apply a staged session (from `urnet-tools session load`) before
-	// loading any identity or starting transports. The staging dir and
-	// marker file are written by the shell wrapper; the provider's job
-	// is to atomically swap them in on the next startup.
-	applyStagedSession()
+	// loading any identity or starting transports. Skip when running as
+	// a HotSwap candidate so the candidate preserves the parent's active session.
+	if os.Getenv(EnvHotSwap) != "1" {
+		applyStagedSession()
+	}
 
-	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
-	host, _ := os.Hostname()
-	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
+	// and announce readiness to parent via IPC before starting transports.
+	var isHotSwapCandidate bool
+	var hotSwapIPC *os.File
+	var candidateAckOnce sync.Once
+	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
+		isHotSwapCandidate = true
+		hotSwapIPC = ipcFile
+		defer hotSwapIPC.Close()
+		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
+			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	if !isHotSwapCandidate {
+		tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+		host, _ := os.Hostname()
+		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	} else {
+		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
+	}
 
 	// Log JWT expiry status at startup
 	home, _ := os.UserHomeDir()
@@ -2682,6 +2707,13 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+
+	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix).
+	// Only arm listener if running as live provider, not while acting as candidate.
+	if !isHotSwapCandidate {
+		startHotSwapSignalListener(ctx, cancel, opts)
+	}
+
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
@@ -3187,23 +3219,24 @@ func provide(opts docopt.Opts) {
 		registerEncryptionManager(connectClient.EncryptionSessionManager())
 
 		// Persist the live identity material so the next process
-		// start loads the same values. On a fresh install both
-		// reads above returned empty and the connect.Client just
-		// generated; on subsequent starts we're writing back the
-		// same bytes (cheap no-op-equivalent).
-		if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
-			if seed := keyManager.Seed(); 0 < len(seed) {
-				if err := writeProviderClientKeySeed(seed); err != nil {
-					fmt.Printf("provider client key save failed: %s\n", err)
+		// start loads the same values. Skip when running as a HotSwap
+		// candidate: the parent has already persisted these, and writing
+		// from two live processes risks stale-map overwrites (F-9).
+		if !isHotSwapCandidate {
+			if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
+				if seed := keyManager.Seed(); 0 < len(seed) {
+					if err := writeProviderClientKeySeed(seed); err != nil {
+						fmt.Printf("provider client key save failed: %s\n", err)
+					}
 				}
 			}
-		}
-		if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
-			certPem := encManager.ProvideTlsCertificatePem()
-			keyPem := encManager.ProvideTlsPrivateKeyPem()
-			if 0 < len(certPem) && 0 < len(keyPem) {
-				if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
-					fmt.Printf("provider tls cert/key save failed: %s\n", err)
+			if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
+				certPem := encManager.ProvideTlsCertificatePem()
+				keyPem := encManager.ProvideTlsPrivateKeyPem()
+				if 0 < len(certPem) && 0 < len(keyPem) {
+					if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
+						fmt.Printf("provider tls cert/key save failed: %s\n", err)
+					}
 				}
 			}
 		}
@@ -3222,6 +3255,24 @@ func provide(opts docopt.Opts) {
 			AppVersion: RequireVersion(),
 		}
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
+		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
+		unregCloser := RegisterCoordinatorCloser(func() {
+			platformTransport.Close()
+		})
+		defer unregCloser()
+
+		// If candidate child, announce ACK to parent once the first live transport is active
+		candidateAckOnce.Do(func() {
+			if isHotSwapCandidate && hotSwapIPC != nil {
+				_ = runHotSwapChildAck(hotSwapIPC)
+				_ = hotSwapIPC.Close()
+				hotSwapIPC = nil
+				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
+				startHotSwapSignalListener(ctx, cancel, opts)
+			}
+			_ = notifySystemdReady()
+		})
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:
