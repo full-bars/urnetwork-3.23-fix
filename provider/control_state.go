@@ -21,10 +21,28 @@ type controlState struct {
 	values map[string]string
 }
 
-// controlKeys are the only settings the socket accepts. Mirrors the 9
-// existing ~/.urnetwork/* override files (node_name, report_url,
-// report_interval, fast_auth, proxy_self_heal, proxy_url_max,
-// proxy_url_refresh, proxy_dead_cleanup_scope, proxy_dead_cleanup_interval).
+// controlKeys are the only settings the socket accepts.
+//
+// The first 9 mirror the existing ~/.urnetwork/* override files
+// (node_name, report_url, report_interval, fast_auth, proxy_self_heal,
+// proxy_url_max, proxy_url_refresh, proxy_dead_cleanup_scope,
+// proxy_dead_cleanup_interval).
+//
+// The remaining 5 mirror settings previously managed only via systemd
+// override.conf (see scripts/Provider_Install_Linux.sh's
+// override_set_env/override_rm_env), which required a full restart to
+// take effect and were edited by sed-ing a hand-written drop-in file.
+// Fully wired here (apply immediately, no restart) via
+// handleSetSideEffects in control_socket.go: hot_restart, gomemlimit,
+// gogc. profile and ramlogs are accepted and persisted but NOT YET
+// consumed at startup — they're read in main()/initGlog()/
+// RunStartupAudit(), all of which run before provide() (and therefore
+// before loadControlState) even executes. Applying them requires moving
+// state-loading to the top of main(), tracked as a follow-up; until
+// then a `set profile`/`set ramlogs` over the socket takes effect on
+// the NEXT restart at the earliest, same as editing override.conf did,
+// but at least stops depending on sed-editing a shared text file to get
+// there.
 var controlKeys = map[string]bool{
 	"node_name":                   true,
 	"report_url":                  true,
@@ -35,6 +53,11 @@ var controlKeys = map[string]bool{
 	"proxy_url_refresh":           true,
 	"proxy_dead_cleanup_scope":    true,
 	"proxy_dead_cleanup_interval": true,
+	"hot_restart":                 true,
+	"gomemlimit":                  true,
+	"gogc":                        true,
+	"profile":                     true,
+	"ramlogs":                     true,
 }
 
 // globalControlState is the single provider-wide instance. Set by
