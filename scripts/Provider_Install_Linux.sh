@@ -663,9 +663,12 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
+Type=notify
+NotifyAccess=all
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
-Restart=no
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target

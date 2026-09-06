@@ -580,10 +580,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Prune old backups before creating a new one so disk pressure cannot
 	// cause the update to fail.
 	pruneBackups(p.Binary, 2)
+	var backup string
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
 	} else {
-		backup := backupName(p.Binary, time.Now())
+		backup = backupName(p.Binary, time.Now())
 		if _, err := os.Stat(backup); err == nil {
 			// Same-instant collision: fail loudly rather than silently reusing
 			// the older backup and losing the immediate previous binary.
@@ -608,45 +609,42 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
-	// Restart the unit that owns the running process. restartForUpdate is
-	// plain restartProvider by default; the update flow temporarily routes
-	// it through the staged-tool escalation ladder
-	// (updateProviderWithRestart).
-	if err := restartForUpdate(p); err != nil {
-		return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+	// Attempt zero-downtime HotSwap first if supported on running process.
+	hotSwapTriggered := false
+	if p.Running && p.PID > 0 {
+		if err := triggerHotSwap(p); err == nil {
+			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
+			hotSwapTriggered = true
+		} else {
+			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+		}
+	}
+
+	if !hotSwapTriggered {
+		// Restart the unit that owns the running process. restartForUpdate is
+		// plain restartProvider by default; the update flow temporarily routes
+		// it through the staged-tool escalation ladder
+		// (updateProviderWithRestart).
+		if err := restartForUpdate(p); err != nil {
+			return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+		}
 	}
 
 	// Verify the restart took effect: wait for the process to be on the
 	// new version. We must check the RUNNING process's image, not the
-	// on-disk binary (which we just swapped — reading its version is
-	// tautological and proves nothing about what the process executes).
-	// /proc/<PID>/exe resolves to the image the running process actually
-	// loaded; compare its embedded version against cfg.Tag, and require the
-	// on-disk binary is not deleted/stale.
-	// Verification loop: bounded at 15 iterations (~30s), one Discover() per
-	// iteration; no extra early-break needed because the first successful
-	// match (running PID changed, image not deleted, /proc/<pid>/exe build
-	// info reports cfg.Tag) returns nil immediately.
+	// on-disk binary.
 	oldPID := p.PID
-	// NOTE: returns nil (exits) on the first matching provider — the full 15
-	// iterations only run when no match is ever found.
-	for i := 0; i < 15; i++ { // up to ~30s
+	maxIterations := 15 // ~30s for standard restart
+	if hotSwapTriggered {
+		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
+	}
+
+	for i := 0; i < maxIterations; i++ {
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			// StateDir identity check: both sides come from the same discovery
-			// logic (unitStateDir on unix, windowsStateDir on Windows), so
-			// string equality is consistent per platform. Platform risk: on
-			// Windows this is a case-sensitive string compare of paths, so a
-			// drive-letter case or separator mismatch between derivations
-			// would fail to match (same physical dir under a different
-			// spelling = symlink/~ expansion/container mapping = no match).
-			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
-				// Version of the image the RUNNING process is executing, resolved by
-				// the platform-specific runningImagePath (Linux /proc/<pid>/exe,
-				// Windows QueryFullProcessImageName — /proc does not exist on Windows,
-				// where the resolver previously returned an unusable path and restart
-				// verification could never succeed).
+			// Check matching state directory and verify running image
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
 				procExe, perr := runningImagePath(rp.PID)
 				if perr == nil {
 					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
@@ -658,6 +656,22 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			}
 		}
 	}
+
+	// Verification failed:
+	if hotSwapTriggered {
+		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
+		if backup != "" {
+			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
+			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
+			if rerr := installBinary(backup, p.Binary, p.User); rerr != nil {
+				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
+			} else {
+				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
+			}
+		}
+		return fmt.Errorf("update %s: HotSwap candidate failed to take over; binary rolled back; live provider PID %d was never killed and remains active", providerLabel(p), oldPID)
+	}
+
 	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
 }
 

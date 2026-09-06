@@ -541,8 +541,14 @@ func jwtContainsClientId(byJwt string) bool {
 }
 
 // hotRestartEnabled reports whether persisted client JWTs should be reused
-// across process restarts. On by default unless URNETWORK_HOT_RESTART=0.
+// across process restarts. Checks the control-socket state first (see
+// control_state.go — `urnet-tools hot-restart on|off`), then the
+// URNETWORK_HOT_RESTART env var (systemd override.conf, historically the
+// only way to set this). On by default unless disabled by either.
 func hotRestartEnabled() bool {
+	if v, ok := globalControlState.get("hot_restart"); ok {
+		return v != "off"
+	}
 	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }
 
@@ -1062,7 +1068,9 @@ Options:
 	} else if provide_, _ := opts.Bool("provide"); provide_ {
 		provide(opts)
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
-		auth(opts)
+		if os.Getenv(EnvHotSwap) != "1" {
+			auth(opts)
+		}
 		provide(opts)
 	} else if logs, _ := opts.Bool("logs"); logs {
 		providerLogs(opts)
@@ -1214,7 +1222,7 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0600); err != nil {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -2320,6 +2328,9 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	defer ticker.Stop()
 
 	for {
+		if isHotSwapDraining.Load() {
+			return
+		}
 		byJwtBytes, err := os.ReadFile(jwtPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -2377,7 +2388,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
 					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
-				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0600); err != nil {
 					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
@@ -2639,14 +2650,34 @@ func provide(opts docopt.Opts) {
 	provideStartTime = time.Now()
 
 	// Apply a staged session (from `urnet-tools session load`) before
-	// loading any identity or starting transports. The staging dir and
-	// marker file are written by the shell wrapper; the provider's job
-	// is to atomically swap them in on the next startup.
-	applyStagedSession()
+	// loading any identity or starting transports. Skip when running as
+	// a HotSwap candidate so the candidate preserves the parent's active session.
+	if os.Getenv(EnvHotSwap) != "1" {
+		applyStagedSession()
+	}
 
-	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
-	host, _ := os.Hostname()
-	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
+	// and announce readiness to parent via IPC before starting transports.
+	var isHotSwapCandidate bool
+	var hotSwapIPC *os.File
+	var candidateAckOnce sync.Once
+	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
+		isHotSwapCandidate = true
+		hotSwapIPC = ipcFile
+		defer hotSwapIPC.Close()
+		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
+			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	if !isHotSwapCandidate {
+		tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+		host, _ := os.Hostname()
+		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	} else {
+		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
+	}
 
 	// Log JWT expiry status at startup
 	home, _ := os.UserHomeDir()
@@ -2682,9 +2713,52 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+
+	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix).
+	// Only arm listener if running as live provider, not while acting as candidate.
+	if !isHotSwapCandidate {
+		startHotSwapSignalListener(ctx, cancel, opts)
+	}
+
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
+
+	// Load any settings a previous run of this provider persisted via the
+	// control socket, then open the socket so `urnet-tools` can change them
+	// live without a restart. The provider is the only writer of
+	// provider_state.json; a load failure here just means we start with no
+	// socket-set overrides (every resolve* function falls back to its legacy
+	// file / startup default), not a fatal error.
+	if loaded, err := loadControlState(); err != nil {
+		tlog("[control] failed to load provider_state.json, starting with no socket-set overrides: %s\n", err)
+	} else {
+		globalControlState = loaded
+	}
+	// Apply anything urnet-tools queued while this provider wasn't running
+	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
+	// socket for new commands.
+	var cleanupControlSocket func()
+	if !isHotSwapCandidate {
+		var err error
+		cleanupControlSocket, err = startControlSocket(ctx, globalControlState)
+		if err != nil {
+			tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
+		} else {
+			defer func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+				}
+			}()
+			unregSocketCloser := RegisterCoordinatorCloser(func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+					cleanupControlSocket = nil
+				}
+			})
+			defer unregSocketCloser()
+		}
+	}
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
@@ -3187,23 +3261,24 @@ func provide(opts docopt.Opts) {
 		registerEncryptionManager(connectClient.EncryptionSessionManager())
 
 		// Persist the live identity material so the next process
-		// start loads the same values. On a fresh install both
-		// reads above returned empty and the connect.Client just
-		// generated; on subsequent starts we're writing back the
-		// same bytes (cheap no-op-equivalent).
-		if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
-			if seed := keyManager.Seed(); 0 < len(seed) {
-				if err := writeProviderClientKeySeed(seed); err != nil {
-					fmt.Printf("provider client key save failed: %s\n", err)
+		// start loads the same values. Skip when running as a HotSwap
+		// candidate: the parent has already persisted these, and writing
+		// from two live processes risks stale-map overwrites (F-9).
+		if !isHotSwapCandidate {
+			if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
+				if seed := keyManager.Seed(); 0 < len(seed) {
+					if err := writeProviderClientKeySeed(seed); err != nil {
+						fmt.Printf("provider client key save failed: %s\n", err)
+					}
 				}
 			}
-		}
-		if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
-			certPem := encManager.ProvideTlsCertificatePem()
-			keyPem := encManager.ProvideTlsPrivateKeyPem()
-			if 0 < len(certPem) && 0 < len(keyPem) {
-				if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
-					fmt.Printf("provider tls cert/key save failed: %s\n", err)
+			if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
+				certPem := encManager.ProvideTlsCertificatePem()
+				keyPem := encManager.ProvideTlsPrivateKeyPem()
+				if 0 < len(certPem) && 0 < len(keyPem) {
+					if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
+						fmt.Printf("provider tls cert/key save failed: %s\n", err)
+					}
 				}
 			}
 		}
@@ -3222,6 +3297,39 @@ func provide(opts docopt.Opts) {
 			AppVersion: RequireVersion(),
 		}
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
+		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
+		unregCloser := RegisterCoordinatorCloser(func() {
+			platformTransport.Close()
+		})
+		defer unregCloser()
+
+		// If candidate child, announce ACK to parent once the first live transport is active
+		candidateAckOnce.Do(func() {
+			if isHotSwapCandidate && hotSwapIPC != nil {
+				_ = runHotSwapChildAck(hotSwapIPC)
+				_ = hotSwapIPC.Close()
+				hotSwapIPC = nil
+				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
+				startHotSwapSignalListener(ctx, cancel, opts)
+
+				mergePendingOverrides(globalControlState)
+				// Bind control socket now that the parent yielded its listener
+				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
+					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
+				} else {
+					cleanupControlSocket = cleanup
+					unregSocketCloser := RegisterCoordinatorCloser(func() {
+						if cleanupControlSocket != nil {
+							cleanupControlSocket()
+							cleanupControlSocket = nil
+						}
+					})
+					defer unregSocketCloser()
+				}
+			}
+			_ = notifySystemdReady()
+		})
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:
@@ -3830,24 +3938,31 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 
 // providerDescription builds the display-name string sent as the client
 // description at mint AND renewal time: "Identity [Version]", where Identity
-// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
-// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
-// redacted IP for container-id gibberish names. Kept as ONE helper so mint
-// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
-// the server UPDATEs the row's description on renewal, so divergence would
-// silently rename the device in the dashboard.
+// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname,
+// then ~/.urnetwork/node_name override), optionally "Name @ RedactedIP" when
+// the public IP is detected. Kept as ONE helper so mint (provideAuth) and
+// in-process renewal (runProxyJWTWatcher) always agree — the server UPDATEs
+// the row's description on renewal, so divergence would silently rename the
+// device in the dashboard.
 func providerDescription(nodeName string) string {
-	displayName := nodeName
-	hostname, _ := os.Hostname()
+	// Check the runtime override file first — this is what
+	// `urnet-tools set node-name` writes, and it can be changed
+	// without restarting the provider.
+	displayName := resolveNodeName(nodeName)
+
+	// If the startup name was empty and no override file exists,
+	// fall back to HOST_HOSTNAME then os.Hostname (same as before).
 	if displayName == "" {
+		hostname, _ := os.Hostname()
 		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
 			displayName = hostHostname
 		} else {
 			displayName = hostname
 		}
 	}
+
 	isContainerID := containerIDRe.MatchString(displayName)
-	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
+	publicIP := resolvePublicIP()
 
 	var dashboardLabel string
 	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
@@ -3866,6 +3981,113 @@ func providerDescription(nodeName string) string {
 		}
 	}
 	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+}
+
+// ipDetectionDisabledPath returns ~/.urnetwork/disable_ip_autodetect, a file
+// an operator can create to prevent the provider from fetching its public IP
+// at startup/renewal. An empty file or missing file has no effect.
+func ipDetectionDisabledPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "disable_ip_autodetect"), nil
+}
+
+// ipDetectionDisabled checks whether the operator has created the disable file.
+// Re-checked on every call so it can be toggled at runtime via:
+//
+//	urnet-tools ip-detect off   (creates the file)
+//	urnet-tools ip-detect on    (removes the file)
+//
+// Binary users can also create/remove the file directly:
+//
+//	touch ~/.urnetwork/disable_ip_autodetect     # disable
+//	rm ~/.urnetwork/disable_ip_autodetect         # re-enable
+func ipDetectionDisabled() bool {
+	path, err := ipDetectionDisabledPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+// resolvePublicIP returns the public IP advertised by the provider for
+// dashboard identity. Priority:
+//  1. URNETWORK_PUBLIC_IP env var (operators running Docker/systemd can set this)
+//  2. ~/.urnetwork/disable_ip_autodetect file exists (operator opted out) → ""
+//  3. cached fetch from ip.me (5s timeout) — cached for 60s to avoid hammering
+//     the external service when minting/renewing many proxy identities
+func resolvePublicIP() string {
+	if v := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP")); v != "" {
+		return v
+	}
+	if ipDetectionDisabled() {
+		return ""
+	}
+	if ip := getCachedPublicIP(); ip != "" {
+		return ip
+	}
+	return ""
+}
+
+// getCachedPublicIP returns the cached public IP if still fresh (60s TTL),
+// otherwise fetches a new one and caches it. The TTL matches the provider's
+// hot-reload ticker so IP changes are picked up on the same cadence as
+// other runtime overrides.
+var (
+	cachedIP     string
+	cachedIPTime time.Time
+	cachedIPMu   sync.Mutex
+	ipCacheTTL   = 60 * time.Second
+)
+
+func getCachedPublicIP() string {
+	now := time.Now()
+	cachedIPMu.Lock()
+	defer cachedIPMu.Unlock()
+	if now.Sub(cachedIPTime) < ipCacheTTL {
+		return cachedIP
+	}
+	ip := fetchPublicIP()
+	if ip != "" {
+		cachedIP = ip
+		cachedIPTime = now
+	}
+	return ip
+}
+
+// fetchPublicIP retrieves the public IPv4 address from ip.me.
+// Uses a 5-second timeout context to avoid hanging at startup.
+func fetchPublicIP() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://ip.me", nil)
+	if err != nil {
+		return ""
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16))
+	if err != nil {
+		return ""
+	}
+	ip := strings.TrimSpace(string(body))
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	// Only accept IPv4 — the provider's redaction logic (first.x.x.last)
+	// assumes a 4-octet address. Ignore IPv6 responses.
+	if parsed.To4() == nil {
+		return ""
+	}
+	return ip
 }
 
 // newProviderAuthClientArgsForRenewal builds the AuthNetworkClientArgs used to
