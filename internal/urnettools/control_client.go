@@ -166,6 +166,16 @@ func isSocketUnavailable(err error) bool {
 			}
 		}
 	}
+	// Windows (Winsock) errno compatibility: WSAECONNREFUSED (10061), WSAEINVAL (10022), WSAENOTSOCK (10038)
+	// and descriptive socket error messages when dialing an offline Unix domain socket on Windows.
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "actively refused") ||
+		strings.Contains(errStr, "invalid argument") ||
+		strings.Contains(errStr, "not a socket") ||
+		strings.Contains(errStr, "not found") ||
+		strings.Contains(errStr, "cannot find") {
+		return true
+	}
 	return false
 }
 
