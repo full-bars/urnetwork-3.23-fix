@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -499,6 +500,9 @@ func TestHotSwapPreflightPermissionHealing(t *testing.T) {
 }
 
 func TestHotSwapParentStandardBatonSuccess(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		t.Fatalf("socketpair: %v", err)
@@ -541,26 +545,36 @@ func TestHotSwapParentStandardBatonSuccess(t *testing.T) {
 	defer unreg()
 
 	// Child simulation: announce READY -> wait TAKEOVER -> send ACK
-	childDone := make(chan struct{})
+	childErr := make(chan error, 1)
 	go func() {
-		defer close(childDone)
 		childReader := bufio.NewReader(childFile)
-		_ = writeHotswapMessage(childFile, HotswapMessage{
+		if err := writeHotswapMessage(childFile, HotswapMessage{
 			Type:    HotswapMsgReady,
 			PID:     10000,
 			Version: "v3.23.0-fix.31.0",
-		})
-
-		msg, err := readHotswapMessage(childReader)
-		if err != nil || msg.Type != HotswapMsgTakeover {
-			t.Errorf("child expected TAKEOVER, got %s (err %v)", msg.Type, err)
+		}); err != nil {
+			childErr <- err
 			return
 		}
 
-		_ = writeHotswapMessage(childFile, HotswapMessage{
+		msg, err := readHotswapMessage(childReader)
+		if err != nil {
+			childErr <- err
+			return
+		}
+		if msg.Type != HotswapMsgTakeover {
+			childErr <- fmt.Errorf("child expected TAKEOVER, got %s", msg.Type)
+			return
+		}
+
+		if err := writeHotswapMessage(childFile, HotswapMessage{
 			Type: HotswapMsgAck,
 			PID:  10000,
-		})
+		}); err != nil {
+			childErr <- err
+			return
+		}
+		childErr <- nil
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -571,7 +585,14 @@ func TestHotSwapParentStandardBatonSuccess(t *testing.T) {
 		t.Fatalf("runHotSwapParentHandoff returned error: %v", err)
 	}
 
-	<-childDone
+	select {
+	case err := <-childErr:
+		if err != nil {
+			t.Fatalf("child simulation error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for child simulation")
+	}
 
 	// Cancel context to complete drain sleep immediately in test
 	cancel()
@@ -590,6 +611,9 @@ func TestHotSwapParentStandardBatonSuccess(t *testing.T) {
 }
 
 func TestHotSwapParentStandardBatonAckTimeoutAborts(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
 	ResetHotSwapStateForTest()
 	defer ResetHotSwapStateForTest()
 
@@ -636,6 +660,54 @@ func TestHotSwapParentStandardBatonAckTimeoutAborts(t *testing.T) {
 	err = runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{})
 	if err == nil {
 		t.Fatal("expected error on candidate unconfirmed takeover, got nil")
+	}
+}
+
+func TestHotSwapParentSystemdMissingNotifySocket(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "service-invocation-12345")
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	ResetHotSwapStateForTest()
+	defer ResetHotSwapStateForTest()
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origGetpid := getpidFunc
+	origSpawn := spawnCandidateFunc
+	defer func() {
+		getpidFunc = origGetpid
+		spawnCandidateFunc = origSpawn
+	}()
+
+	getpidFunc = func() int { return 9999 }
+
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			childCmd: nil,
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	go func() {
+		_ = writeHotswapMessage(childFile, HotswapMessage{
+			Type:    HotswapMsgReady,
+			PID:     10000,
+			Version: "v3.23.0-fix.31.0",
+		})
+	}()
+
+	err = runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{})
+	if !errors.Is(err, ErrNoNotifySocket) {
+		t.Fatalf("expected ErrNoNotifySocket when INVOCATION_ID is set without NOTIFY_SOCKET, got %v", err)
 	}
 }
 
