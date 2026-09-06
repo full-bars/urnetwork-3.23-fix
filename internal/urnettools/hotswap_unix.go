@@ -30,4 +30,3 @@ func triggerHotSwap(p Provider) error {
 	}
 	return nil
 }
-

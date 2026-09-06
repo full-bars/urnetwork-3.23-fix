@@ -84,4 +84,3 @@ func TestTriggerHotSwapNotCapable(t *testing.T) {
 		t.Errorf("expected error triggering hotswap on provider running v3.23.0-fix.30.9")
 	}
 }
-

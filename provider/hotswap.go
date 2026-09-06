@@ -498,4 +498,3 @@ func ResetHotSwapStateForTest() {
 	isHotSwapDraining.Store(false)
 	ClearCoordinatorClosers()
 }
-
