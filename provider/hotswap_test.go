@@ -839,6 +839,3 @@ func TestClientJWTStoreFlockExclusivity(t *testing.T) {
 		t.Errorf("proxy-1 JWT = %q, want jwt1 (stale-map overwrite would have lost this)", got.ByClientJWT)
 	}
 }
-
-
-

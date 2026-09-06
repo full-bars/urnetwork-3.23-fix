@@ -78,4 +78,3 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	fmt.Printf("triggered zero-downtime HotSwap on %s (PID %d)\n", providerLabel(p), p.PID)
 	return nil
 }
-
