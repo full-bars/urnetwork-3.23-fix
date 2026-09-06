@@ -9,7 +9,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
 	"syscall"
+
+	"github.com/urnetwork/connect"
 )
 
 // controlSocketPath returns ~/.urnetwork/provider.sock — the Unix domain
@@ -165,6 +169,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
 		}
+		if err := applyLiveSideEffect(req.Key, req.Value); err != nil {
+			// Persisted fine — it'll take effect on the next restart — but
+			// the immediate, no-restart-needed part of it failed. Surface
+			// that distinction rather than claiming full success.
+			return controlResponse{OK: false, Error: "persisted, but failed to apply live: " + err.Error()}
+		}
 		return controlResponse{OK: true}
 
 	case "clear":
@@ -213,4 +223,32 @@ func dialControlSocket(req controlRequest) (controlResponse, error) {
 		return controlResponse{}, err
 	}
 	return resp, nil
+}
+
+// applyLiveSideEffect runs the immediate, no-restart-needed part of a
+// socket `set`, for the handful of keys where the underlying knob is a Go
+// runtime setting safely changeable at any time via runtime/debug. Every
+// other key has no live side effect here: the persisted value alone is
+// enough, because the resolve*/*Enabled function that consumes it re-reads
+// controlState on its own next call (see bandwidth_reporter.go,
+// auth_rate_limiter.go, proxy_url_source.go). Not called on `clear` — there
+// is no well-defined "revert to" value to apply live, so clearing one of
+// these two keys only affects the NEXT restart's baseline, same as before
+// this feature existed.
+func applyLiveSideEffect(key, value string) error {
+	switch key {
+	case "gomemlimit":
+		limit, err := connect.ParseByteCount(value)
+		if err != nil {
+			return fmt.Errorf("gomemlimit: %w", err)
+		}
+		debug.SetMemoryLimit(limit)
+	case "gogc":
+		percent, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("gogc: %w", err)
+		}
+		debug.SetGCPercent(percent)
+	}
+	return nil
 }

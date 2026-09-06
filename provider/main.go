@@ -541,8 +541,14 @@ func jwtContainsClientId(byJwt string) bool {
 }
 
 // hotRestartEnabled reports whether persisted client JWTs should be reused
-// across process restarts. On by default unless URNETWORK_HOT_RESTART=0.
+// across process restarts. Checks the control-socket state first (see
+// control_state.go — `urnet-tools hot-restart on|off`), then the
+// URNETWORK_HOT_RESTART env var (systemd override.conf, historically the
+// only way to set this). On by default unless disabled by either.
 func hotRestartEnabled() bool {
+	if v, ok := globalControlState.get("hot_restart"); ok {
+		return v != "off"
+	}
 	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }
 
