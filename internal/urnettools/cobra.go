@@ -156,6 +156,7 @@ func buildRootCmd() *cobra.Command {
 		newRamlogsCmd(),
 		newOptimizeCmd(),
 		newHotRestartCmd(),
+		newHotswapCmd(),
 		newFastAuthCmd(),
 		newSetCmd(),
 		newAuthCmd(),
@@ -421,6 +422,14 @@ func newHotRestartCmd() *cobra.Command {
 			return cmdHotRestart(rest, force, dryRun)
 		})
 	}), "Restart the provider's unit in a way that lets it reuse client IDs across the restart. It takes no extra arguments beyond a target, and asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools hot-restart --unit urnetwork-native.service\n  urnet-tools hot-restart --force")
+}
+
+func newHotswapCmd() *cobra.Command {
+	return withHelp(newCobraCmd("hotswap", "zero-downtime in-process binary reload", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdHotswap(rest, force, dryRun)
+		})
+	}), "Trigger an in-process zero-downtime HotSwap on a running provider without cycling the unit.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
 }
 
 func newFastAuthCmd() *cobra.Command {
