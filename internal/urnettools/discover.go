@@ -13,9 +13,10 @@ import (
 // knownBinaries are the binary basenames the tool recognizes as URnetwork
 // providers. provider_beta is the beta-test build name used on fleet boxes.
 var knownBinaries = map[string]bool{
-	"urnetwork":     true,
-	"provider_beta": true,
-	"provider":      true,
+	"urnetwork":      true,
+	"urnet-provider": true,
+	"provider_beta":  true,
+	"provider":       true,
 }
 
 // providerCandidateUsers returns the usernames of users that show
