@@ -541,8 +541,14 @@ func jwtContainsClientId(byJwt string) bool {
 }
 
 // hotRestartEnabled reports whether persisted client JWTs should be reused
-// across process restarts. On by default unless URNETWORK_HOT_RESTART=0.
+// across process restarts. Checks the control-socket state first (see
+// control_state.go — `urnet-tools hot-restart on|off`), then the
+// URNETWORK_HOT_RESTART env var (systemd override.conf, historically the
+// only way to set this). On by default unless disabled by either.
 func hotRestartEnabled() bool {
+	if v, ok := globalControlState.get("hot_restart"); ok {
+		return v != "off"
+	}
 	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }
 
@@ -2717,6 +2723,27 @@ func provide(opts docopt.Opts) {
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
+
+	// Load any settings a previous run of this provider persisted via the
+	// control socket, then open the socket so `urnet-tools` can change them
+	// live without a restart. The provider is the only writer of
+	// provider_state.json; a load failure here just means we start with no
+	// socket-set overrides (every resolve* function falls back to its legacy
+	// file / startup default), not a fatal error.
+	if loaded, err := loadControlState(); err != nil {
+		tlog("[control] failed to load provider_state.json, starting with no socket-set overrides: %s\n", err)
+	} else {
+		globalControlState = loaded
+	}
+	// Apply anything urnet-tools queued while this provider wasn't running
+	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
+	// socket for new commands.
+	mergePendingOverrides(globalControlState)
+	if cleanupControlSocket, err := startControlSocket(ctx, globalControlState); err != nil {
+		tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
+	} else {
+		defer cleanupControlSocket()
+	}
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If

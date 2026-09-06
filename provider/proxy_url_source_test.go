@@ -34,6 +34,11 @@ func withTempHome(t *testing.T) string {
 	// behavior. Fresh tracker per test.
 	globalPerProxyEarnTracker = newPerProxyEarnTracker()
 	t.Cleanup(func() { globalPerProxyEarnTracker = newPerProxyEarnTracker() })
+	// globalControlState is likewise process-global: a test that sets a
+	// control-socket value (or one from a previous run of the process) must
+	// not leak into the next test's resolve*/*Enabled expectations.
+	globalControlState = newControlState()
+	t.Cleanup(func() { globalControlState = newControlState() })
 	return dir
 }
 
