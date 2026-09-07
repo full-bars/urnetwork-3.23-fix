@@ -393,28 +393,24 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 	return f.w.Write(p)
 }
 
-// providerUsesRamlogs checks the unit's Environment for RAM logging or a
-// RAM profile (the same check the legacy show_logs does). User units are
-// queried in the owning user's session, not the system manager
+// providerUsesRamlogs reports whether cmdLogs should stream from the
+// provider's RAM buffer instead of journald: true if ramlogs is explicitly
+// on, or a RAM-implying profile (lowmem/eco) is active. Checks the
+// control-socket state — live via the socket if the provider is reachable,
+// else the pending-overrides queue (queryControlOverride's own fallback
+// order) — rather than the systemd unit's Environment, since cmdTune no
+// longer writes profile/ramlogs into a drop-in file. Any error (provider
+// unreachable and nothing queued, no resolvable state dir, etc.) is
+// treated as "no", same as the old version's behavior on a failed
+// systemctl query.
 func providerUsesRamlogs(p Provider) bool {
-	if p.Unit == "" {
-		return false
+	if v, _, found, err := queryControlOverride(p, "ramlogs"); err == nil && found && v == "on" {
+		return true
 	}
-	var out []byte
-	var err error
-	if isUserUnit(p.Unit) && p.User != "" {
-		args := append(systemctlUserArgs(p.User), "show", p.Unit, "-p", "Environment")
-		out, err = exec.Command("systemctl", args...).Output()
-	} else {
-		out, err = exec.Command("systemctl", "show", p.Unit, "-p", "Environment").Output()
+	if v, _, found, err := queryControlOverride(p, "profile"); err == nil && found && (v == "lowmem" || v == "eco") {
+		return true
 	}
-	if err != nil {
-		return false
-	}
-	env := string(out)
-	return strings.Contains(env, "URNETWORK_RAMLOGS=1") ||
-		strings.Contains(env, "URNETWORK_PROFILE=lowmem") ||
-		strings.Contains(env, "URNETWORK_PROFILE=eco")
+	return false
 }
 
 // cmdHub implements hub set/off/install: writes the URNETWORK_REPORT_URL
@@ -926,8 +922,23 @@ func runtimeGOARCH() string {
 }
 
 // cmdTune implements the tuning profile commands (turbo/eco/lowmode/ramlogs/
-// auto/optimize) by writing URNETWORK_PROFILE / env drop-ins for the
-// targeted provider. Mode names match the legacy tool.
+// auto) by writing the "profile"/"ramlogs" control-socket key for the
+// targeted provider (applySetOverride — live via the socket if the provider
+// is running, queued in pending_overrides.json otherwise) and then
+// restarting it. Mode names match the legacy tool.
+//
+// Historically this wrote URNETWORK_PROFILE/URNETWORK_RAMLOGS into a
+// tuning.conf systemd drop-in (writeDropinEnv/removeDropinEnv below) — the
+// same sed-editing pattern CLAUDE.md's override_set_env/override_rm_env
+// were written to replace on the shell-script side. profile and ramlogs
+// both still require the restart this function performs (buffer/worker
+// sizing baked into objects allocated once at startup, and a live
+// stdout/stderr ramlog redirect, respectively — not something the socket
+// can apply without a process restart), but the provider now picks up a
+// socket-set value on that restart via seedEnvFromControlState() in its own
+// init(), so writing through the socket instead of hand-editing a drop-in
+// file is safe and gets the operator the single source of truth
+// (`urnet-tools set`/`status`) already used for every other tunable.
 func cmdTune(profile string, args []string, force, dryRun bool) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%s requires a mode: on | off (or v4/v8/off for turbo)", profile)
@@ -966,42 +977,56 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 		return nil
 	}
 
-	var envLine string
+	key, value, err := tuneControlKeyValue(profile, mode)
+	if err != nil {
+		return err
+	}
+
+	if err := applySetOverride(p, key, value, dryRun); err != nil {
+		return err
+	}
+	if dryRun {
+		return nil
+	}
+	fmt.Printf("Restarting %s to apply the change...\n", providerLabel(p))
+	return restartProvider(p)
+}
+
+// tuneControlKeyValue maps a cmdTune (profile, mode) pair to the
+// control-socket key/value applySetOverride should write. Pure — no I/O —
+// so the mapping itself (which is easy to get backwards, e.g. "off"
+// clearing the wrong key) is directly testable without a discovered
+// provider or a real systemd unit.
+func tuneControlKeyValue(profile, mode string) (key, value string, err error) {
 	switch profile {
 	case "ramlogs":
 		if mode == "on" {
-			envLine = "URNETWORK_RAMLOGS=1"
-		} else {
-			return removeDropinEnv(p, "tuning.conf", "URNETWORK_RAMLOGS")
+			return "ramlogs", "on", nil
 		}
+		return "ramlogs", "off", nil
 	case "eco":
 		if mode == "on" {
-			envLine = "URNETWORK_PROFILE=eco"
-		} else {
-			return removeDropinEnv(p, "tuning.conf", "URNETWORK_PROFILE")
+			return "profile", "eco", nil
 		}
+		return "profile", "off", nil
 	case "lowmode":
 		if mode == "on" {
-			envLine = "URNETWORK_PROFILE=lowmem"
-		} else {
-			return removeDropinEnv(p, "tuning.conf", "URNETWORK_PROFILE")
+			return "profile", "lowmem", nil
 		}
+		return "profile", "off", nil
 	case "turbo":
 		if mode == "v4" || mode == "v8" {
-			envLine = "URNETWORK_PROFILE=turbo-" + mode
-		} else {
-			return removeDropinEnv(p, "tuning.conf", "URNETWORK_PROFILE")
+			return "profile", "turbo-" + mode, nil
 		}
+		return "profile", "off", nil
 	case "auto":
 		if mode == "on" {
-			envLine = "URNETWORK_PROFILE=auto"
-		} else {
-			return removeDropinEnv(p, "tuning.conf", "URNETWORK_PROFILE")
+			return "profile", "auto", nil
 		}
+		return "profile", "off", nil
 	default:
-		return fmt.Errorf("unknown profile %q", profile)
+		return "", "", fmt.Errorf("unknown profile %q", profile)
 	}
-	return writeDropinEnv(p, "tuning.conf", envLine)
 }
 
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates

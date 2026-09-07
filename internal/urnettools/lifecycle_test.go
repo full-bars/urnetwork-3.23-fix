@@ -93,6 +93,110 @@ func TestCmdTuneModeValidation(t *testing.T) {
 	}
 }
 
+// TestTuneControlKeyValue pins the (profile, mode) -> (key, value) mapping
+// cmdTune hands to applySetOverride. Getting this backwards (e.g. "off"
+// clearing the wrong key, or turbo not distinguishing v4/v8) would silently
+// tune the wrong knob or the wrong provider setting, so every case that
+// cmdTune's own mode-validation switch allows through is pinned here.
+func TestTuneControlKeyValue(t *testing.T) {
+	cases := []struct {
+		profile, mode string
+		wantKey       string
+		wantValue     string
+	}{
+		{"ramlogs", "on", "ramlogs", "on"},
+		{"ramlogs", "off", "ramlogs", "off"},
+		{"eco", "on", "profile", "eco"},
+		{"eco", "off", "profile", "off"},
+		{"lowmode", "on", "profile", "lowmem"},
+		{"lowmode", "off", "profile", "off"},
+		{"turbo", "v4", "profile", "turbo-v4"},
+		{"turbo", "v8", "profile", "turbo-v8"},
+		{"turbo", "off", "profile", "off"},
+		{"auto", "on", "profile", "auto"},
+		{"auto", "off", "profile", "off"},
+	}
+	for _, c := range cases {
+		t.Run(c.profile+"/"+c.mode, func(t *testing.T) {
+			key, value, err := tuneControlKeyValue(c.profile, c.mode)
+			if err != nil {
+				t.Fatalf("tuneControlKeyValue(%q, %q) error: %v", c.profile, c.mode, err)
+			}
+			if key != c.wantKey || value != c.wantValue {
+				t.Errorf("tuneControlKeyValue(%q, %q) = (%q, %q), want (%q, %q)",
+					c.profile, c.mode, key, value, c.wantKey, c.wantValue)
+			}
+		})
+	}
+	if _, _, err := tuneControlKeyValue("not-a-profile", "on"); err == nil {
+		t.Error("expected an error for an unknown profile")
+	}
+}
+
+// TestCmdTuneAppliesViaSocketAndRestarts exercises cmdTune end-to-end
+// against a provider with no owning systemd unit: applySetOverride must
+// still queue the change in pending_overrides.json (provider "down"), and
+// the subsequent restartProvider call must fail with the same "no owning
+// unit" error the rest of this file already establishes as that function's
+// contract for an empty Unit — confirming cmdTune queues the setting before
+// ever attempting the restart, not the other way around.
+func TestCmdTuneAppliesViaSocketAndRestarts(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir}
+
+	err := applySetOverride(p, "ramlogs", "on", false)
+	if err != nil {
+		t.Fatalf("applySetOverride: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
+	if err != nil {
+		t.Fatalf("read pending_overrides.json: %v", err)
+	}
+	if !strings.Contains(string(b), `"key": "ramlogs"`) || !strings.Contains(string(b), `"value": "on"`) {
+		t.Fatalf("pending_overrides.json = %s, want ramlogs=on queued", string(b))
+	}
+
+	if err := restartProvider(p); err == nil || !strings.Contains(err.Error(), "could not restart provider") {
+		t.Fatalf("restartProvider(no unit) = %v, want a \"could not restart provider\" error", err)
+	}
+}
+
+// TestProviderUsesRamlogsReadsPendingQueue: after PR 7's migration off the
+// tuning.conf drop-in, providerUsesRamlogs must see a queued (not yet
+// merged into a running provider) ramlogs/profile change via
+// pending_overrides.json — cmdLogs uses this to decide whether to stream
+// from the RAM buffer, and getting it wrong silently reads from the wrong
+// log source instead of erroring.
+func TestProviderUsesRamlogsReadsPendingQueue(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir}
+
+	if providerUsesRamlogs(p) {
+		t.Fatal("expected false before anything is queued")
+	}
+
+	if err := applySetOverride(p, "ramlogs", "on", false); err != nil {
+		t.Fatalf("applySetOverride: %v", err)
+	}
+	if !providerUsesRamlogs(p) {
+		t.Fatal("expected true once ramlogs=on is queued")
+	}
+
+	if err := applySetOverride(p, "ramlogs", "off", false); err != nil {
+		t.Fatalf("applySetOverride: %v", err)
+	}
+	if providerUsesRamlogs(p) {
+		t.Fatal("expected false once ramlogs is explicitly turned off")
+	}
+
+	if err := applySetOverride(p, "profile", "eco", false); err != nil {
+		t.Fatalf("applySetOverride profile=eco: %v", err)
+	}
+	if !providerUsesRamlogs(p) {
+		t.Fatal("expected true once profile=eco is queued (eco implies RAM logging)")
+	}
+}
+
 // TestCmdHubRequiresSubcommand: hub with no subcommand errors cleanly.
 func TestCmdHubRequiresSubcommand(t *testing.T) {
 	err := cmdHub([]string{}, false, false)
