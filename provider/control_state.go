@@ -34,15 +34,21 @@ type controlState struct {
 // take effect and were edited by sed-ing a hand-written drop-in file.
 // Fully wired here (apply immediately, no restart) via
 // handleSetSideEffects in control_socket.go: hot_restart, gomemlimit,
-// gogc. profile and ramlogs are accepted and persisted but NOT YET
-// consumed at startup — they're read in main()/initGlog()/
-// RunStartupAudit(), all of which run before provide() (and therefore
-// before loadControlState) even executes. Applying them requires moving
-// state-loading to the top of main(), tracked as a follow-up; until
-// then a `set profile`/`set ramlogs` over the socket takes effect on
-// the NEXT restart at the earliest, same as editing override.conf did,
-// but at least stops depending on sed-editing a shared text file to get
-// there.
+// gogc. profile and ramlogs are read via os.Getenv("URNETWORK_PROFILE"/
+// "URNETWORK_RAMLOGS") in main()/initGlog()/RunStartupAudit(), all of
+// which run before provide() (and therefore before loadControlState) even
+// executes — initGlog in particular runs from this package's init(),
+// before main() even starts, making its one-shot decision about
+// redirecting stdout/stderr to a ramlog. loadControlState()/
+// mergePendingOverrides() inside provide() can't reach back in time to
+// affect that. See startup_env_seed.go: init() seeds those two env vars
+// from provider_state.json + pending_overrides.json before initGlog()
+// runs, so `set profile`/`set ramlogs` over the socket still requires a
+// restart (inherent to what they configure — buffer/worker sizing baked
+// into objects allocated once at startup, and a live stdout/stderr
+// redirect respectively) but is correctly picked up on that restart,
+// including the very first one after a fresh-install `urnet-tools set`
+// queued while the provider wasn't running yet.
 var controlKeys = map[string]bool{
 	"node_name":                   true,
 	"report_url":                  true,
