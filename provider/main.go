@@ -2746,6 +2746,29 @@ func provide(opts docopt.Opts) {
 	// socket for new commands. This must run in the normal startup path —
 	// not just the HotSwap candidate path (see merge in hotswap branch).
 	mergePendingOverrides(globalControlState)
+	// gomemlimit/gogc are otherwise ONLY ever applied by applyLiveSideEffect
+	// via a live socket `set` (control_socket.go) — there is no other
+	// startup-time consumer of these two control-state keys. Unlike
+	// profile/ramlogs (seedEnvFromControlState, this package's init()),
+	// GOMEMLIMIT/GOGC can't be fixed by seeding an env var: the Go runtime
+	// reads those from the OS environment at its own bootstrap, before any
+	// package init() ever runs, so setting the env var here would already
+	// be too late. debug.SetMemoryLimit/SetGCPercent, on the other hand,
+	// are safe to call at any point in the process's life — so apply a
+	// persisted/just-merged value here once, the same call
+	// applyLiveSideEffect makes for a live socket set, so a value queued
+	// or set before a restart doesn't silently go inert until the next
+	// live `set` call.
+	if v, ok := globalControlState.get("gomemlimit"); ok && v != "" && v != "off" {
+		if err := applyLiveSideEffect("gomemlimit", v); err != nil {
+			tlog("[control] failed to apply persisted gomemlimit=%s at startup: %s\n", v, err)
+		}
+	}
+	if v, ok := globalControlState.get("gogc"); ok && v != "" && v != "off" {
+		if err := applyLiveSideEffect("gogc", v); err != nil {
+			tlog("[control] failed to apply persisted gogc=%s at startup: %s\n", v, err)
+		}
+	}
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error
