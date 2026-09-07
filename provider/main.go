@@ -2737,7 +2737,9 @@ func provide(opts docopt.Opts) {
 	}
 	// Apply anything urnet-tools queued while this provider wasn't running
 	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
-	// socket for new commands.
+	// socket for new commands. This must run in the normal startup path —
+	// not just the HotSwap candidate path (see merge in hotswap branch).
+	mergePendingOverrides(globalControlState)
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error
@@ -3313,7 +3315,6 @@ func provide(opts docopt.Opts) {
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
 
-				mergePendingOverrides(globalControlState)
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
@@ -4032,10 +4033,12 @@ func resolvePublicIP() string {
 	return ""
 }
 
-// getCachedPublicIP returns the cached public IP if still fresh (60s TTL),
-// otherwise fetches a new one and caches it. The TTL matches the provider's
-// hot-reload ticker so IP changes are picked up on the same cadence as
-// other runtime overrides.
+// getCachedPublicIP returns the cached public IP if still fresh (60s TTL).
+// Otherwise, it kicks off a background refresh and returns the stale cache
+// (or empty if no cache exists) immediately — the fetch must NEVER block the
+// caller, because resolvePublicIP() runs on the proxy mint/renewal hot path
+// (providerDescription) and serializing behind a blocking HTTP call to ip.me
+// stalls every proxy identity operation on the provider for up to 5s.
 var (
 	cachedIP     string
 	cachedIPTime time.Time
@@ -4044,16 +4047,40 @@ var (
 )
 
 func getCachedPublicIP() string {
-	now := time.Now()
 	cachedIPMu.Lock()
-	defer cachedIPMu.Unlock()
-	if now.Sub(cachedIPTime) < ipCacheTTL {
-		return cachedIP
+	now := time.Now()
+	fresh := now.Sub(cachedIPTime) < ipCacheTTL
+	ip := cachedIP
+	cachedIPMu.Unlock()
+
+	if fresh {
+		return ip
 	}
-	ip := fetchPublicIP()
-	if ip != "" {
-		cachedIP = ip
-		cachedIPTime = now
+
+	// Cache is stale or empty — return what we have immediately and
+	// refresh in the background so the hot path is never blocked.
+	if ip == "" {
+		// No prior cache; do a best-effort async fetch.
+		go func() {
+			newIP := fetchPublicIP()
+			if newIP != "" {
+				cachedIPMu.Lock()
+				cachedIP = newIP
+				cachedIPTime = time.Now()
+				cachedIPMu.Unlock()
+			}
+		}()
+	} else {
+		// Stale cache: return it now, refresh async.
+		go func() {
+			newIP := fetchPublicIP()
+			if newIP != "" {
+				cachedIPMu.Lock()
+				cachedIP = newIP
+				cachedIPTime = time.Now()
+				cachedIPMu.Unlock()
+			}
+		}()
 	}
 	return ip
 }
