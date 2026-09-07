@@ -84,6 +84,58 @@ func (s *controlState) clear(key string) error {
 	return nil
 }
 
+// setAndPersist validates key, applies value, and durably persists the
+// resulting snapshot to disk, all under a single held lock. Holding the lock
+// across the disk write (rather than set()-then-persist() as two separate
+// locked operations, as control_socket.go's handlers used to do) closes a
+// race: with two separate calls, a concurrent setAndPersist/clearAndPersist
+// for a different key could persist a snapshot that includes this key's new,
+// not-yet-confirmed value; if persisting *this* change then failed, the
+// rollback below would only undo the in-memory value, leaving disk holding a
+// value that was never actually committed. Serializing the whole
+// mutate-then-persist step under mu means no other change can be persisted
+// in between, so failure here always rolls back to exactly the state that
+// was actually last written to disk.
+func (s *controlState) setAndPersist(key, value string) error {
+	if !controlKeys[key] {
+		return fmt.Errorf("unknown control key %q", key)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldValue, hadOld := s.values[key]
+	s.values[key] = value
+	if err := s.persistLocked(); err != nil {
+		if hadOld {
+			s.values[key] = oldValue
+		} else {
+			delete(s.values, key)
+		}
+		return err
+	}
+	return nil
+}
+
+// clearAndPersist is clear's counterpart to setAndPersist: removes key and
+// persists the result atomically under a single held lock, for the same
+// reason. A no-op (including on disk) if key wasn't set.
+func (s *controlState) clearAndPersist(key string) error {
+	if !controlKeys[key] {
+		return fmt.Errorf("unknown control key %q", key)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldValue, hadOld := s.values[key]
+	if !hadOld {
+		return nil
+	}
+	delete(s.values, key)
+	if err := s.persistLocked(); err != nil {
+		s.values[key] = oldValue
+		return err
+	}
+	return nil
+}
+
 // snapshot returns a copy of every currently-set key, for persistence.
 func (s *controlState) snapshot() map[string]string {
 	s.mu.RLock()
@@ -148,6 +200,17 @@ func loadControlState() (*controlState, error) {
 // never leaves a torn file. No flock is needed — the provider is the only
 // process that ever writes this file.
 func (s *controlState) persist() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.persistLocked()
+}
+
+// persistLocked is persist()'s body, minus the locking: the caller must
+// already hold mu (as reader or writer) for the duration of this call.
+// setAndPersist/clearAndPersist call this while holding the write lock, so
+// mutate-then-write-to-disk happens as one atomic step from the perspective
+// of any other goroutine touching this controlState.
+func (s *controlState) persistLocked() error {
 	path, err := controlStatePath()
 	if err != nil {
 		return err
@@ -156,7 +219,7 @@ func (s *controlState) persist() error {
 		return err
 	}
 
-	data, err := json.MarshalIndent(s.snapshot(), "", "  ")
+	data, err := json.MarshalIndent(s.values, "", "  ")
 	if err != nil {
 		return err
 	}

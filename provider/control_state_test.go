@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -147,6 +148,56 @@ func TestControlState_ConcurrentSetClear(t *testing.T) {
 	for _, k := range keys {
 		if _, found := s.get(k); found {
 			t.Errorf("key %s: expected cleared, still found", k)
+		}
+	}
+}
+
+// TestControlState_ConcurrentSetAndPersist_DiskMatchesMemory guards against
+// the race setAndPersist/clearAndPersist were introduced to close: when
+// set() and persist() were two separately-locked calls (as
+// control_socket.go's handlers used to do it), a concurrent persist() for a
+// different key could write this key's not-yet-confirmed value to disk
+// before this key's own persist() call decided whether to roll it back —
+// leaving disk holding a value memory no longer agreed with. Because
+// setAndPersist now holds the lock across mutate-and-write, every concurrent
+// writer's disk snapshot is a consistent superset of the memory state at the
+// instant it ran, so after all goroutines finish, disk must exactly match
+// the final in-memory state.
+func TestControlState_ConcurrentSetAndPersist_DiskMatchesMemory(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+
+	keys := []string{
+		"node_name", "report_url", "report_interval", "fast_auth",
+		"proxy_self_heal", "proxy_url_max", "proxy_url_refresh",
+		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
+	}
+
+	var wg sync.WaitGroup
+	for i, k := range keys {
+		wg.Add(1)
+		go func(key, val string) {
+			defer wg.Done()
+			if err := s.setAndPersist(key, val); err != nil {
+				t.Errorf("setAndPersist(%q): %v", key, err)
+			}
+		}(k, fmt.Sprintf("v%d", i))
+	}
+	wg.Wait()
+
+	loaded, err := loadControlState()
+	if err != nil {
+		t.Fatalf("loadControlState: %v", err)
+	}
+	for i, k := range keys {
+		want := fmt.Sprintf("v%d", i)
+		memVal, memFound := s.get(k)
+		diskVal, diskFound := loaded.get(k)
+		if !memFound || memVal != want {
+			t.Errorf("in-memory %q = (%q, %v), want (%q, true)", k, memVal, memFound, want)
+		}
+		if !diskFound || diskVal != want {
+			t.Errorf("on-disk %q = (%q, %v), want (%q, true) — disk/memory disagreement", k, diskVal, diskFound, want)
 		}
 	}
 }

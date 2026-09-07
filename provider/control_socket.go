@@ -149,33 +149,17 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Value: value, Found: found}
 
 	case "set":
-		// Persist-then-commit would be safer in the abstract, but persist()
-		// needs the full snapshot including this change, so: apply, try to
-		// persist, and roll back the in-memory change if persisting fails —
-		// keeping memory and disk from disagreeing about what's "set".
-		oldValue, hadOld := state.get(req.Key)
-		if err := state.set(req.Key, req.Value); err != nil {
-			return controlResponse{OK: false, Error: err.Error()}
-		}
-		if err := state.persist(); err != nil {
-			if hadOld {
-				state.set(req.Key, oldValue)
-			} else {
-				state.clear(req.Key)
-			}
+		// setAndPersist holds controlState's lock across both the mutation
+		// and the disk write, so a concurrent set/clear for a different key
+		// can't persist a snapshot containing this change before this call
+		// itself has decided whether to keep or roll it back.
+		if err := state.setAndPersist(req.Key, req.Value); err != nil {
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
 		}
 		return controlResponse{OK: true}
 
 	case "clear":
-		oldValue, hadOld := state.get(req.Key)
-		if err := state.clear(req.Key); err != nil {
-			return controlResponse{OK: false, Error: err.Error()}
-		}
-		if err := state.persist(); err != nil {
-			if hadOld {
-				state.set(req.Key, oldValue)
-			}
+		if err := state.clearAndPersist(req.Key); err != nil {
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
 		}
 		return controlResponse{OK: true}
