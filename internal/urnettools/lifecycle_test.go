@@ -14,10 +14,14 @@ func TestOptimizeLinuxRootCheck(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; the non-root guard cannot be exercised")
 	}
+	// The root requirement is enforced in cmdOptimize (which re-execs under
+	// sudo on Linux). With no sudo on PATH, a non-root caller must get a
+	// clear "root required" error pointing at the exact elevated command —
+	// never a half-success or a silent sysctl failure.
 	t.Setenv("PATH", "")
-	err := optimizeLinux()
+	err := cmdOptimize(nil, true, false) // force=true skips the confirm prompt
 	if err == nil {
-		t.Fatal("optimizeLinux on non-root without sudo must return an error")
+		t.Fatal("cmdOptimize on non-root without sudo must return an error")
 	}
 	if !strings.Contains(err.Error(), "requires root") {
 		t.Fatalf("error must say root is required, got: %v", err)

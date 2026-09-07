@@ -67,7 +67,7 @@ func Run(args []string) error {
 func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "-f", "--force":
+		case "-f", "--force", "-y", "--yes":
 			force = true
 		case "-n", "--dry-run":
 			dryRun = true
@@ -289,6 +289,7 @@ Targeting rules:
 
 Force (machines/scripts):
   -f, --force            skip confirm prompts ONLY - never picks providers
+  -y, --yes              alias for --force
   -n, --dry-run          print the plan, change nothing (safe anywhere)
   -h, --help             show help (never executes anything)
 `)
@@ -423,18 +424,58 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 // providers exist but docker provider containers do, it says so and points
 // at urnet-docker (which has its own providers listing).
 func cmdProviders(args []string) error {
+	// Scope: by default an unprivileged caller sees only the providers owned
+	// by the current OS user (the one-provider-per-user contract — other
+	// users' providers exist but are not this operator's business). --all shows
+	// every provider on the box, marking identities the caller can't read.
+	all := false
+	rest := args[:0:0]
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("providers: unexpected arguments: %v", rest)
+	}
 	providers := Discover()
+	if !all && !isPrivileged() {
+		cur := currentUserName()
+		var mine []Provider
+		for _, p := range providers {
+			if p.User == cur {
+				mine = append(mine, p)
+			}
+		}
+		providers = mine
+	}
 	if len(providers) == 0 {
-		docker := DiscoverDocker()
-		if len(docker) == 0 {
-			fmt.Println("no providers found on this box")
+		if all || isPrivileged() {
+			docker := DiscoverDocker()
+			if len(docker) == 0 {
+				if all {
+					fmt.Println("no providers found on this box")
+				} else {
+					// Unprivileged user with no provider: don't imply the box is
+					// empty — other users may have providers we scoped out.
+					fmt.Printf("no providers found for user %s (run 'providers --all' as root to see every user's)\n", currentUserName())
+				}
+				return nil
+			}
+			fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
+			for _, p := range docker {
+				fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
+			}
 			return nil
 		}
-		fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
-		for _, p := range docker {
-			fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
-		}
+		fmt.Printf("no providers found for user %s (run 'urnet-tools providers --all' as root to see every user's)\n", currentUserName())
 		return nil
+	}
+	if !all && !isPrivileged() {
+		fmt.Printf("providers for user %s (%d):\n", currentUserName(), len(providers))
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PID	USER	UNIT	NETWORK	NET-ID	STATE-DIR	BIN	VER")
@@ -753,7 +794,7 @@ func stdinIsInteractive() bool {
 func confirmStdinRead(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	if !stdinIsInteractive() {
-		return "", fmt.Errorf("stdin is not a terminal; use -f/--force to skip the prompt (or --yes where supported)")
+		return "", fmt.Errorf("stdin is not a terminal; use -f/--force (or -y/--yes) to skip the prompt")
 	}
 	line, err := stdinReader.ReadString('\n')
 	if err != nil {

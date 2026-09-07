@@ -200,8 +200,10 @@ curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 Then optimize the host:
 
 ```bash
-sudo urnet-tools optimize -f
+urnet-tools optimize -f
 ```
+
+`optimize` re-executes itself under `sudo` with its own resolved binary path when it needs root, so you don't have to type `sudo /path/to/urnet-tools` (and it does NOT work as bare `sudo urnet-tools` — the binary lives on a per-user path, not root's PATH).
 
 The `-f` flag skips interactive prompts. This applies:
 

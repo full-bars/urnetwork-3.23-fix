@@ -219,11 +219,11 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 }
 
 func newProvidersCmd() *cobra.Command {
-	return withHelp(newCobraCmd("providers", "list all providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("providers [--all]", "list providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List every provider found on this box: systemd units and bare processes, across all OS users, identified by their JWT network identity. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers")
+	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all")
 }
 
 func newStatusCmd() *cobra.Command {
@@ -263,7 +263,7 @@ func newRestartCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force. Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network tacogonzalez3000 --force")
+	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network tacogonzalez3000 --force")
 }
 
 func newUpdateCmd() *cobra.Command {
@@ -417,7 +417,7 @@ func newOptimizeCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdOptimize(rest, force, dryRun)
 		})
-	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force, and needs root (or sudo) on Linux.", "  urnet-tools optimize\n  sudo urnet-tools optimize --force")
+	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes), then prompts for sudo as needed on Linux and applies both the live settings and the reboot-persisted file. Run it as a normal user — it re-executes itself under sudo.", "  urnet-tools optimize\n  urnet-tools optimize --force")
 }
 
 func newHotRestartCmd() *cobra.Command {

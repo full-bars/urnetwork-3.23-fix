@@ -23,7 +23,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 | Command | What it does |
 |---|---|
-| `providers` (`list`, `ps`) | List all providers on the box with JWT identities, systemd units, and state directories. |
+| `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
 | `status [target]` | Show detailed status. On Linux, displays live `systemctl status` view; on Windows/macOS, renders styled panel. |
 | `start [target]` | Start provider service/process. |
 | `stop [target]` | Stop provider service/process. |
@@ -92,7 +92,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `auto [on\|off]` | Enable or disable Smart Auto hardware profile. |
-| `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. |
+| `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. Self-elevates to root when needed (apply live + persist atomically, or roll back). |
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
@@ -113,13 +113,17 @@ The tool accepts selectors in both space-separated and equals-separated format (
 | `--state-dir <path>` or `--state-dir=<path>` | Explicit state directory | `--state-dir=/home/urnet/.urnetwork` |
 
 ### Targeting Rules
-1. **Multi-provider box + no target = REFUSAL.** The tool errors and displays an inventory table of available providers. It never guesses.
-2. **Single provider + no target = AUTO-SELECT.** Proceeds after echoing the selected target.
-3. **Persisted Default Provider:** If configured via `urnet-tools default set <target>`, the tool uses this target when no flag is passed, printing a visible notice to stderr.
-4. **Explicit flags and `--all` override default:** `--unit`, `--user`, `--network`, etc., take precedence over persisted defaults.
-5. **Conflicting selectors** (e.g. `--unit foo --network bar` pointing to different instances) = ERROR.
-6. **`-f` / `--force` only skips confirmation prompts:** It **never** selects a provider. To target all providers with force, use `-f --all`.
-7. **`--help` always prints help** and never executes actions.
+1. **One provider per OS user** is the supported deployment model. Your provider, your user: an unprivileged `urnet-tools` command with no explicit target resolves to the provider owned by your own OS account.
+2. **Unprivileged, no target, exactly one provider for your user = AUTO-SELECT.** The tool acts on it with minimal commentary. It deliberately does not enumerate other users' providers on every command.
+3. **Unprivileged, no target, more than one provider for your user = REFUSAL** with a short inventory of *your* providers (you broke the one-per-user contract), pointing at `urnet-tools providers`, `default set --network <name>`, or `--unit <unit>`. The tool never guesses.
+4. **Unprivileged, no provider for your user = error** saying so, pointing at `urnet-tools providers --all` (as root) to see other users' providers.
+5. **`providers` shows your providers by default; `providers --all` (root) shows every provider on the box** — the single place multi-user inventory is visible.
+6. **Explicit target always wins** — `--unit`, `--user`, `--network`, `--network-id`, `--state-dir` resolve exactly, never narrowed.
+7. **Root, no target, more than one provider total = REFUSAL** with the full inventory. Root must name a target or pass `--all`.
+8. **Persisted Default Provider:** `urnet-tools default set <target>` pins an implicit target for future no-flag commands, printing a visible notice to stderr. It only fills the "no target" gap.
+9. **Conflicting selectors** (e.g. `--unit foo --network bar` pointing to different instances) = ERROR.
+10. **`-f` / `--force` (or `-y` / `--yes`) only skips confirmation prompts:** It **never** selects a provider. To target all providers with force, use `-f --all`.
+11. **`--help` always prints help** and never executes actions.
 
 ---
 

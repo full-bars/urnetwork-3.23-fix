@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,15 +20,58 @@ func rootHint() string {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		return ""
 	}
+	return "sudo " + resolvedExecutablePath()
+}
+
+// resolvedExecutablePath returns this process's own executable path, with
+// symlinks resolved so a `sudo <path>` invocation is valid regardless of how
+// the binary was installed (it always points at the real file, never a symlink
+// that lives on a per-user path root can't traverse).
+func resolvedExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
-		return ""
+		return "urnet-tools"
 	}
 	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-		exe = resolved
+		return resolved
 	}
-	return "sudo " + exe
+	return exe
 }
+
+// elevateSelf re-executes this same binary under sudo with the given
+// subcommand arguments, so cross-user and host-scope operations (optimize,
+// and management of another user's provider) run in a single root context
+// instead of asking the operator to hand-craft `sudo /long/path/urnet-tools
+// ...` themselves. The elevated child inherits an env marker so it skips the
+// confirmation it already got pre-elevation (the sudo password prompt is the
+// elevation boundary). Returns the child's exit error; stdin/stdout/stderr are
+// passed through so the sudo password prompt and any output reach the user.
+func elevateSelf(args []string) error {
+	exe := resolvedExecutablePath()
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("operation requires root, but sudo is unavailable; run directly: sudo %s %s", exe, strings.Join(args, " "))
+	}
+	cmdArgs := append([]string{sudo, exe}, args...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), urnetElevatedEnv+"=1")
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 0 {
+			return nil
+		}
+		return fmt.Errorf("elevated %s failed: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// urnetElevatedEnv marks the child spawned by elevateSelf so it can skip the
+// confirm prompt it already passed pre-elevation (the sudo password is the
+// boundary). It is intentionally not a user-facing flag: the operator never
+// types it.
+const urnetElevatedEnv = "URNET_TOOLS_ELEVATED"
 
 // printNarrowedNote reports that selectTargetOrSoleAccessible auto-picked
 // the sole provider reachable without root, so the operator knows other

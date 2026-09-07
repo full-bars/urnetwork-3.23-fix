@@ -1066,15 +1066,27 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 		fmt.Fprintln(os.Stderr, "[dry-run] would apply golden-fleet OS/kernel limits — no changes made")
 		return nil
 	}
-	if !force {
+
+	// Host-wide kernel tuning requires root. Running the whole operation in ONE
+	// elevated process keeps live+persist atomic (the old code ran sysctl under
+	// sudo but wrote /etc/sysctl.d from the non-root process, half-succeeding).
+	// The confirmation gates both paths: a non-root caller answers "yes" here,
+	// then the sudo password is the second (and only) boundary; a root caller
+	// answers "yes" once too. The already-elevated child (our own re-exec)
+	// skips the prompt because the operator already answered pre-elevation.
+	elevated := os.Getenv(urnetElevatedEnv) == "1"
+	if !force && !elevated {
 		fmt.Fprintln(os.Stderr, "[urnet-tools] apply golden-fleet OS/kernel limits to this host")
-		line, err := confirmStdinRead("Type 'yes' to continue: ")
-		if err != nil {
-			return fmt.Errorf("read confirmation: %w", err)
+		line, cerr := confirmStdinRead("Type 'yes' to continue: ")
+		if cerr != nil {
+			return fmt.Errorf("read confirmation: %w", cerr)
 		}
 		if strings.TrimSpace(line) != "yes" {
 			return fmt.Errorf("aborted (confirmation did not match)")
 		}
+	}
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 && !elevated {
+		return elevateSelf([]string{"optimize", "--force"})
 	}
 	fmt.Println("optimize: applying golden-fleet network limits")
 	return optimizeFor(runtime.GOOS)()
@@ -1096,49 +1108,23 @@ func optimizeFor(goos string) func() error {
 // optimizeLinux applies the Linux sysctl set: socket buffers, FD limit, and
 // the two connection-churn knobs that matter most for a proxy box — the
 // ephemeral port pool (ip_local_port_range) and TIME_WAIT recycling
-// (tcp_fin_timeout). Conservative; failures are logged, never fatal.
-// If run as non-root, attempts sudo sysctl if sudo is available; otherwise
-// returns an actionable error pointing to the absolute binary path.
+// (tcp_fin_timeout). Runs as root (cmdOptimize self-elevates to root before
+// calling this on Linux), and is atomic: it loads the current values, applies
+// live sysctls, persists, and only reports success when BOTH live apply and
+// the persist file wrote. If any step fails it rolls the already-applied keys
+// back to their prior values so a failure never leaves a half-tuned host
+// (settings live but not persisted, or a partial sysctl set).
 func optimizeLinux() error {
-	var prefix []string
-	if os.Geteuid() != 0 {
-		if _, err := exec.LookPath("sudo"); err == nil {
-			prefix = []string{"sudo"}
-		} else {
-			self, _ := os.Executable()
-			if self == "" {
-				self = "urnet-tools"
-			}
-			return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
-		}
+	// Key -> desired live value; order matters: apply in this order, roll back
+	// in reverse.
+	writes := [][]string{
+		{"net.core.rmem_max", "134217728"},
+		{"net.core.wmem_max", "134217728"},
+		{"fs.file-max", "1000000"},
+		{"net.ipv4.ip_local_port_range", "10240 65535"},
+		{"net.ipv4.tcp_fin_timeout", "15"},
 	}
-	// Buffer + FD settings mirror the legacy do_optimize; the port range
-	// and TIME_WAIT knobs are new (proxy-scale outbound churn exhausts
-	// the default ~28k ephemeral ports and parks sockets in TIME_WAIT).
-	for _, args := range [][]string{
-		{"-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728"},
-		{"-w", "fs.file-max=1000000"},
-		{"-w", "net.ipv4.ip_local_port_range=10240 65535"},
-		{"-w", "net.ipv4.tcp_fin_timeout=15"},
-	} {
-		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
-		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-		cmd.Stdin = os.Stdin
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if len(prefix) > 0 && (strings.Contains(string(out), "password") || strings.Contains(string(out), "incorrect") || strings.Contains(string(out), "sudoers")) {
-				self, _ := os.Executable()
-				if self == "" {
-					self = "urnet-tools"
-				}
-				return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
-			}
-			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
-		}
-	}
-	// Persist settings across reboot. Writing /etc/sysctl.d/ on a fleet of
-	// production boxes is a one-shot per box; non-fatal if it fails (the
-	// live sysctl -w applied the settings for this boot).
-	sysctlConf := "/etc/sysctl.d/99-urnetwork.conf"
+	// The conf file mirrors these exact keys so persist and rollback agree.
 	conf := `# URnetwork golden-fleet kernel limits — applied by urnet-tools optimize
 # Ephemeral port pool: lower bound raised from the kernel default (32768)
 # so outbound proxy connections don't collide with well-known service ports.
@@ -1148,11 +1134,64 @@ net.core.wmem_max = 134217728
 fs.file-max = 1000000
 net.ipv4.tcp_fin_timeout = 15
 `
-	if err := os.WriteFile(sysctlConf, []byte(conf), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "optimize: warning: write %s: %v (settings are live but will not survive reboot)\n", sysctlConf, err)
+
+	prior := make(map[string]string, len(writes))
+	// Snapshot current values so rollback restores exactly what was there.
+	for _, w := range writes {
+		if out, err := exec.Command("sysctl", "-n", w[0]).Output(); err == nil {
+			prior[w[0]] = strings.TrimSpace(string(out))
+		} else {
+			// Cannot read the current value — abort rather than risk being
+			// unable to roll back if a later step fails.
+			fmt.Fprintf(os.Stderr, "optimize: cannot read current %s (%v); aborting\n", w[0], err)
+			return fmt.Errorf("optimize: read %s: %w", w[0], err)
+		}
 	}
-	fmt.Println("optimize: done")
+
+	// 1. Apply live, tracking what we changed so far for rollback.
+	applied := 0
+	for _, w := range writes {
+		if out, err := exec.Command("sysctl", "-w", w[0]+"="+w[1]).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl -w %s failed: %v (%s); rolling back\n", w[0], err, strings.TrimSpace(string(out)))
+			rollbackSysctls(writes[:applied], prior)
+			return fmt.Errorf("optimize: live apply of %s failed: %w", w[0], err)
+		}
+		applied++
+	}
+
+	// 2. Persist. Failure here must roll back the now-live values to their
+	// prior state, not leave a half-success.
+	sysctlConf := "/etc/sysctl.d/99-urnetwork.conf"
+	// Create a temp file in /etc/sysctl.d for the atomic rename.
+	tmpConf := sysctlConf + ".tmp"
+	if err := os.WriteFile(tmpConf, []byte(conf), 0o644); err != nil {
+		rollbackSysctls(writes, prior)
+		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live settings", sysctlConf, err)
+	}
+	if err := os.Rename(tmpConf, sysctlConf); err != nil {
+		os.Remove(tmpConf)
+		rollbackSysctls(writes, prior)
+		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live settings", sysctlConf, err)
+	}
+
+	fmt.Println("optimize: done (live + reboot persisted)")
 	return nil
+}
+
+// rollbackSysctls restores a subset of keys (the ones already applied) to
+// their prior live values. Best-effort: logs any failure rather than masking
+// the original error.
+func rollbackSysctls(writes [][]string, prior map[string]string) {
+	for i := len(writes) - 1; i >= 0; i-- {
+		key := writes[i][0]
+		v, ok := prior[key]
+		if !ok {
+			continue
+		}
+		if out, err := exec.Command("sysctl", "-w", key+"="+v).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "optimize: warning: rollback %s=%s failed: %v (%s)\n", key, v, err, strings.TrimSpace(string(out)))
+		}
+	}
 }
 
 // optimizeWindows applies the Windows network-stack equivalents: a widened
