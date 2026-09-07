@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -198,3 +201,62 @@ func TestHotRestartEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshJWT_TransferStats(t *testing.T) {
+	expectedNewJwt := createFakeJWTWithClaims(map[string]interface{}{
+		"network_id":   "net-test-123",
+		"user_id":      "user-456",
+		"network_name": "testnet",
+		"exp":          float64(time.Now().Unix() + 86400),
+	})
+
+	statsChecked := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/code-create":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"auth_code": "test-auth-code",
+			})
+		case "/auth/code-login":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"by_jwt": expectedNewJwt,
+			})
+		case "/transfer/stats":
+			statsChecked = true
+			if r.Header.Get("Authorization") != "Bearer "+expectedNewJwt {
+				t.Errorf("unexpected Authorization header: %s", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"paid_bytes_provided":   uint64(1073741824), // 1.0 GB
+				"unpaid_bytes_provided": uint64(524288000),  // 500.0 MB
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initialJwt := createFakeJWTWithClaims(map[string]interface{}{
+		"network_id": "net-old-123",
+		"user_id":    "user-456",
+		"exp":        float64(time.Now().Unix() + 86400),
+	})
+
+	newJwt, err := refreshJWT(ctx, server.URL, initialJwt)
+	if err != nil {
+		t.Fatalf("refreshJWT failed: %v", err)
+	}
+	if newJwt != expectedNewJwt {
+		t.Errorf("got jwt %q, want %q", newJwt, expectedNewJwt)
+	}
+	if !statsChecked {
+		t.Error("expected /transfer/stats to be requested")
+	}
+}
+

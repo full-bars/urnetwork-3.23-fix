@@ -574,7 +574,7 @@ A flat `r=` counter that doesn't grow means no sessions are active. A rapidly gr
 🔑 [jwt] refresh → step 2/3: exchanging auth code for network JWT...
 🔑 [jwt] refresh → step 2/3 ok: network JWT received (512 chars)
 🔑 [jwt] refresh → step 3/3: verifying new token against https://api.bringyour.com/transfer/stats...
-🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP 200)
+🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP 200, unpaid: 500.0 MB, paid: 1.0 GB)
 🔑 [jwt] refresh OK — network JWT written to /root/.urnetwork/jwt (512 bytes, next refresh in 168h0m)
 ```
 
