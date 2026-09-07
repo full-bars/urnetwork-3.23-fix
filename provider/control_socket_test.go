@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestControlSocket_SetGetClear_EndToEnd(t *testing.T) {
@@ -294,5 +296,50 @@ func TestHotRestartEnabled_GuessBooleanForms(t *testing.T) {
 	globalControlState.clear("hot_restart")
 	if got := hotRestartEnabled(); got != true {
 		t.Errorf("cleared hot_restart (env unset) -> hotRestartEnabled()=%v, want true", got)
+	}
+}
+
+// TestControlSocket_WaitForReleaseUnblocksWhenListenerGone pins the
+// hotswap-takeover gate (main.go candidateAckOnce.Do): a promoted candidate
+// must not reload+bind its control socket until the parent's listener at the
+// same path is actually gone. While a listener is up, waitForControlSocketRelease
+// must block; once it's closed (parent released the socket), it must return
+// promptly.
+func TestControlSocket_WaitForReleaseUnblocksWhenListenerGone(t *testing.T) {
+	withTempHome(t)
+	// controlSocketPath() is derived from the HOME redirected by withTempHome.
+	path, err := controlSocketPath()
+	if err != nil {
+		t.Fatalf("controlSocketPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	// 1. Listening: the wait must NOT return within 300ms.
+	done := make(chan struct{})
+	go func() {
+		waitForControlSocketRelease(5 * time.Second)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatalf("waitForControlSocketRelease returned while the listener was still live")
+	case <-time.After(300 * time.Millisecond):
+		// correct: blocks while parent is still listening
+	}
+
+	// 2. Close the listener (parent released the socket): wait must return.
+	ln.Close()
+	select {
+	case <-done:
+		// correct: unblocked promptly after the socket was released
+	case <-time.After(2 * time.Second):
+		t.Fatalf("waitForControlSocketRelease did not return after the listener closed")
 	}
 }

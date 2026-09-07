@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sync"
 
 	"golang.org/x/sys/windows"
@@ -58,7 +57,11 @@ func acquireJWTStoreLock(path string) (func(), error) {
 		var unlockOverlapped windows.Overlapped
 		_ = windows.UnlockFileEx(handle, 0, 1, 0, &unlockOverlapped)
 		windows.CloseHandle(handle)
-		_ = os.Remove(lockPath)
+		// Do NOT os.Remove(lockPath): no other lock in the codebase removes
+		// its lock file (unix jwt lock, both pending-overrides locks keep it),
+		// and removing a lock file that another process has open in LockFileEx
+		// can break that waiter's lock on a deleted file. The lock file's
+		// presence on disk is harmless.
 		jwtLockMu.Unlock()
 	}, nil
 }

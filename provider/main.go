@@ -3341,6 +3341,18 @@ func provide(opts docopt.Opts) {
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
 
+				// Wait for the parent to actually release the control socket before
+				// reloading state and binding our own. The parent only closes it when
+				// it processes our ACK inside yieldCoordinatorSession (hotswap.go), so
+				// reloading/binding immediately after sending ACK races it: a `set`
+				// to the still-open parent socket would persist after our snapshot,
+				// and binding while the parent's listener is still alive makes
+				// removeStaleSocket refuse (correctly) — leaving the promoted
+				// candidate with NO control socket. So wait until the parent's socket
+				// is gone; any set in that window then fails and falls back to
+				// pending_overrides.json, which the merge below consumes.
+				waitForControlSocketRelease(HotSwapAckTimeout + 15*time.Second)
+
 				// Reload persisted control state now, not the snapshot loaded at
 				// candidate spawn time: the parent still owned provider_state.json
 				// and could accept `urnet-tools set` (and its own control socket)

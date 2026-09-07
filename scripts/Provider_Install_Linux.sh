@@ -1765,6 +1765,24 @@ _append_pending_op() {
     ) 9>"$lock"
 }
 
+# json_escape STRING
+# Emits STRING as a single-line JSON string literal (double-quoted, with
+# backslash, double-quote, and C0 control characters backslash-escaped) for
+# embedding into pending_overrides.json. Values here can carry ", \ or a
+# newline (e.g. a report_url with a query string); an unescaped one silently
+# corrupts the queue file the provider parses at startup —
+# mergePendingOverrides() then skips it and the operator's queued change is
+# lost. parity with urnet-tools' Go json.Marshal. POSIX sh only (no ANSI-C
+# $'...' quoting — this script runs under dash).
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g' \
+        -e 's/	/\\t/g' \
+        -e 's/\r/\\r/g'
+    # Embedded newlines are not handled here (sed is line-oriented); callers
+    # pass single-line values (keys, report_url, profile names, toggles).
+}
+
 # queue_pending_override KEY VALUE [HOME_DIR]
 # Queues a control-socket "set" for KEY, applied on the provider's next
 # start. HOME_DIR defaults to $HOME — pass the provider user's actual home
@@ -1773,7 +1791,7 @@ _append_pending_op() {
 # os.UserHomeDir(), not root's.
 queue_pending_override() {
     local key="$1" value="$2" home="${3:-$HOME}"
-    _append_pending_op "{\"op\": \"set\", \"key\": \"$key\", \"value\": \"$value\"}" "$home"
+    _append_pending_op "{\"op\": \"set\", \"key\": $(json_escape "$key"), \"value\": $(json_escape "$value")}" "$home"
 }
 
 # queue_pending_clear KEY [HOME_DIR]
@@ -1782,7 +1800,7 @@ queue_pending_override() {
 # HOME_DIR.
 queue_pending_clear() {
     local key="$1" home="${2:-$HOME}"
-    _append_pending_op "{\"op\": \"clear\", \"key\": \"$key\"}" "$home"
+    _append_pending_op "{\"op\": \"clear\", \"key\": $(json_escape "$key")}" "$home"
 }
 
 # read_control_value KEY

@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/urnetwork/connect"
 )
@@ -283,5 +284,37 @@ func applyPersistedRuntimeTuning(state *controlState) {
 		if err := applyLiveSideEffect("gogc", v); err != nil {
 			tlog("[control] failed to apply persisted gogc=%s: %s\n", v, err)
 		}
+	}
+}
+
+// waitForControlSocketRelease blocks until the running provider's control
+// socket at ~/.urnetwork/provider.sock is no longer accepting connections — the
+// parent has released it — or timeoutMillis elapses, whichever comes first.
+// Used by a HotSwap candidate right after it ACKs takeover: the candidate must
+// not reload provider_state.json or bind its own socket until the parent has
+// stopped listening, otherwise a `set` that lands on the not-yet-closed parent
+// socket after the candidate's snapshot is dropped, and removeStaleSocket would
+// (correctly) refuse to steal a still-live listener — leaving the promoted
+// candidate with no control socket. A false "still listening" (parent between
+// CLOSE and unlink) only delays briefly; the caller treats a timeout as
+// proceed-anyway (the merge below is best-effort like all control reloads).
+func waitForControlSocketRelease(timeout time.Duration) {
+	path, err := controlSocketPath()
+	if err != nil {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.Dial("unix", path)
+		if err != nil {
+			// ENOENT / EINVAL / ECONNREFUSED: not listening anymore, or gone.
+			return
+		}
+		conn.Close()
+		if time.Now().After(deadline) {
+			tlog("[control] timed out waiting for parent to release control socket after takeover; proceeding anyway\n")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
