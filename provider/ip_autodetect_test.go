@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // tempHome sets HOME to a temp dir and returns a cleanup function.
@@ -140,5 +143,78 @@ func TestIPDetectionDisabled_FilePresentTrue(t *testing.T) {
 	disableFile(t, dir, true)
 	if !ipDetectionDisabled() {
 		t.Fatal("expected true when disable file exists")
+	}
+}
+
+// TestGetCachedPublicIP_ConcurrentCallersShareOneFetch guards against a
+// thundering herd: when the cache is cold or just expired, every concurrent
+// caller of getCachedPublicIP (e.g. every proxy on this provider starting up
+// at once) must NOT spawn its own fetchPublicIP goroutine. Only the first
+// caller to observe a stale cache should trigger a fetch; the rest get the
+// stale/empty value back immediately without adding another outbound
+// request to ip.me.
+func TestGetCachedPublicIP_ConcurrentCallersShareOneFetch(t *testing.T) {
+	cachedIPMu.Lock()
+	cachedIP = ""
+	cachedIPTime = time.Time{}
+	cachedIPRefresh = false
+	cachedIPMu.Unlock()
+	t.Cleanup(func() {
+		// Reset the package-level cache so later tests (e.g.
+		// TestProviderDescription_*) don't observe the fake IP this test
+		// wrote into it.
+		cachedIPMu.Lock()
+		cachedIP = ""
+		cachedIPTime = time.Time{}
+		cachedIPRefresh = false
+		cachedIPMu.Unlock()
+	})
+
+	var fetchCount int32
+	release := make(chan struct{})
+	origFetch := fetchPublicIPFunc
+	fetchPublicIPFunc = func() string {
+		atomic.AddInt32(&fetchCount, 1)
+		<-release // hold the "in flight" window open so callers race for it
+		return "203.0.113.7"
+	}
+	defer func() { fetchPublicIPFunc = origFetch }()
+
+	const callers = 50
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			getCachedPublicIP()
+		}()
+	}
+
+	// Give every caller a chance to reach getCachedPublicIP and observe the
+	// stale cache before the in-flight fetch is allowed to complete.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&fetchCount); got != 1 {
+		t.Fatalf("fetchPublicIPFunc called %d times for %d concurrent callers, want exactly 1", got, callers)
+	}
+
+	// getCachedPublicIP returns before the single in-flight fetch goroutine
+	// finishes writing its result back to cachedIP, so poll briefly rather
+	// than asserting immediately after wg.Wait().
+	deadline := time.Now().Add(time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		cachedIPMu.Lock()
+		got = cachedIP
+		cachedIPMu.Unlock()
+		if got == "203.0.113.7" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got != "203.0.113.7" {
+		t.Fatalf("cachedIP after fetch = %q, want the fetched value", got)
 	}
 }

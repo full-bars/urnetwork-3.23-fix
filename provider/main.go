@@ -4040,10 +4040,11 @@ func resolvePublicIP() string {
 // (providerDescription) and serializing behind a blocking HTTP call to ip.me
 // stalls every proxy identity operation on the provider for up to 5s.
 var (
-	cachedIP     string
-	cachedIPTime time.Time
-	cachedIPMu   sync.Mutex
-	ipCacheTTL   = 60 * time.Second
+	cachedIP        string
+	cachedIPTime    time.Time
+	cachedIPMu      sync.Mutex
+	cachedIPRefresh bool // true while a background fetchPublicIP() is in flight
+	ipCacheTTL      = 60 * time.Second
 )
 
 func getCachedPublicIP() string {
@@ -4051,39 +4052,41 @@ func getCachedPublicIP() string {
 	now := time.Now()
 	fresh := now.Sub(cachedIPTime) < ipCacheTTL
 	ip := cachedIP
+	// Cache is stale or empty: return what we have immediately and refresh
+	// in the background so the hot path is never blocked. Only the first
+	// caller to observe a stale cache kicks off the fetch — cachedIPRefresh
+	// makes every concurrent/later caller in the same refresh window skip
+	// spawning its own goroutine, so a burst of callers (e.g. every proxy
+	// on this provider hitting a cold or just-expired cache at once) issues
+	// exactly one outbound request to ip.me, not one per caller.
+	shouldFetch := !fresh && !cachedIPRefresh
+	if shouldFetch {
+		cachedIPRefresh = true
+	}
 	cachedIPMu.Unlock()
 
 	if fresh {
 		return ip
 	}
 
-	// Cache is stale or empty — return what we have immediately and
-	// refresh in the background so the hot path is never blocked.
-	if ip == "" {
-		// No prior cache; do a best-effort async fetch.
+	if shouldFetch {
 		go func() {
-			newIP := fetchPublicIP()
+			newIP := fetchPublicIPFunc()
+			cachedIPMu.Lock()
 			if newIP != "" {
-				cachedIPMu.Lock()
 				cachedIP = newIP
 				cachedIPTime = time.Now()
-				cachedIPMu.Unlock()
 			}
-		}()
-	} else {
-		// Stale cache: return it now, refresh async.
-		go func() {
-			newIP := fetchPublicIP()
-			if newIP != "" {
-				cachedIPMu.Lock()
-				cachedIP = newIP
-				cachedIPTime = time.Now()
-				cachedIPMu.Unlock()
-			}
+			cachedIPRefresh = false
+			cachedIPMu.Unlock()
 		}()
 	}
 	return ip
 }
+
+// fetchPublicIPFunc is fetchPublicIP by default; tests override it to avoid
+// depending on real network access.
+var fetchPublicIPFunc = fetchPublicIP
 
 // fetchPublicIP retrieves the public IPv4 address from ip.me.
 // Uses a 5-second timeout context to avoid hanging at startup.
