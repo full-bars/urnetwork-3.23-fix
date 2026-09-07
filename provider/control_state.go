@@ -113,6 +113,20 @@ func (s *controlState) clear(key string) error {
 	return nil
 }
 
+// replaceAll swaps the entire value set under the same mutex every get/set
+// caller already uses. Used to adopt a freshly reloaded provider_state.json
+// (e.g. a HotSwap candidate reloading after the parent releases its socket)
+// without ever reassigning the globalControlState *controlState pointer
+// itself — every resolve*/*Enabled function and proxy goroutine holds that
+// pointer for the process's entire lifetime, so swapping it out from under
+// them would be an unsynchronized read/write race on the pointer variable,
+// not just its pointed-to map (which s.mu alone would not protect against).
+func (s *controlState) replaceAll(values map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = values
+}
+
 // snapshot returns a copy of every currently-set key, for persistence.
 func (s *controlState) snapshot() map[string]string {
 	s.mu.RLock()

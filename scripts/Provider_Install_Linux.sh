@@ -1729,47 +1729,60 @@ override_rm_env() {
     fi
 }
 
-# _append_pending_op JSON_OBJECT
-# Appends one entry to ~/.urnetwork/pending_overrides.json's JSON array —
-# the exact file and format the provider's own mergePendingOverrides()
-# consumes (provider/pending_overrides.go) and urnet-tools' control-socket
-# client writes when it can't reach the provider's live socket
-# (internal/urnettools/control_client.go). The provider applies every
-# queued entry, in order, on its next start, then deletes the file — this
-# never needs read-modify-write locking: the provider is the only other
-# process that ever touches it, and only at its own startup. Not a live
-# apply — same as this script's own restart-after-toggle pattern already
-# required before this existed, just replacing sed-editing a systemd
-# drop-in with the provider's own persisted state as the source of truth.
+# _append_pending_op JSON_OBJECT [HOME_DIR]
+# Appends one entry to HOME_DIR/.urnetwork/pending_overrides.json's JSON
+# array — the exact file and format the provider's own
+# mergePendingOverrides() consumes (provider/pending_overrides.go) and
+# urnet-tools' control-socket client writes when it can't reach the
+# provider's live socket (internal/urnettools/control_client.go). Both of
+# those also write this file (mergePendingOverrides reads-then-deletes it at
+# provider startup; urnet-tools queues to it from a separate invocation), so
+# this function holds the same pending_overrides.json.lock they do for the
+# whole read-modify-write, and writes via a unique same-directory temp file
+# + atomic rename so a reader never observes a half-written array.
 _append_pending_op() {
     local entry="$1"
-    local dir="$HOME/.urnetwork"
+    local home="${2:-$HOME}"
+    local dir="$home/.urnetwork"
     local file="$dir/pending_overrides.json"
+    local lock="$dir/pending_overrides.json.lock"
     mkdir -p "$dir"
-    if [ -s "$file" ]; then
-        # This function is the pending-queue file's only writer, so its
-        # last line is always exactly "]" (see the else branch and the
-        # append below) — safe to drop it and re-close the array.
-        sed '$d' "$file" > "$file.tmp" && printf ',\n  %s\n]\n' "$entry" >> "$file.tmp" && mv "$file.tmp" "$file"
-    else
-        printf '[\n  %s\n]\n' "$entry" > "$file"
-    fi
+    (
+        # dash only supports single-digit fds (SC3023), so this uses fd 9
+        # rather than the more conventional 200.
+        flock -x 9
+        local tmp
+        tmp=$(mktemp "$dir/.pending_overrides.json.tmp-XXXXXX") || exit 1
+        if [ -s "$file" ]; then
+            # This function is the pending-queue file's only appender, so
+            # its last line is always exactly "]" (see the else branch and
+            # the append below) — safe to drop it and re-close the array.
+            sed '$d' "$file" > "$tmp" && printf ',\n  %s\n]\n' "$entry" >> "$tmp"
+        else
+            printf '[\n  %s\n]\n' "$entry" > "$tmp"
+        fi
+        mv "$tmp" "$file"
+    ) 9>"$lock"
 }
 
-# queue_pending_override KEY VALUE
+# queue_pending_override KEY VALUE [HOME_DIR]
 # Queues a control-socket "set" for KEY, applied on the provider's next
-# start.
+# start. HOME_DIR defaults to $HOME — pass the provider user's actual home
+# explicitly when running under sudo (e.g. `$actual_home`), since $HOME is
+# root's under sudo and the provider resolves its queue via its own
+# os.UserHomeDir(), not root's.
 queue_pending_override() {
-    local key="$1" value="$2"
-    _append_pending_op "{\"op\": \"set\", \"key\": \"$key\", \"value\": \"$value\"}"
+    local key="$1" value="$2" home="${3:-$HOME}"
+    _append_pending_op "{\"op\": \"set\", \"key\": \"$key\", \"value\": \"$value\"}" "$home"
 }
 
-# queue_pending_clear KEY
+# queue_pending_clear KEY [HOME_DIR]
 # Queues a control-socket "clear" for KEY (revert to startup default),
-# applied on the provider's next start.
+# applied on the provider's next start. See queue_pending_override for
+# HOME_DIR.
 queue_pending_clear() {
-    local key="$1"
-    _append_pending_op "{\"op\": \"clear\", \"key\": \"$key\"}"
+    local key="$1" home="${2:-$HOME}"
+    _append_pending_op "{\"op\": \"clear\", \"key\": \"$key\"}" "$home"
 }
 
 # read_control_value KEY
@@ -3944,7 +3957,7 @@ EOF
             pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
 
-            queue_pending_override "ramlogs" "on"
+            queue_pending_override "ramlogs" "on" "$actual_home"
         fi
     fi
 

@@ -252,3 +252,27 @@ func applyLiveSideEffect(key, value string) error {
 	}
 	return nil
 }
+
+// applyPersistedRuntimeTuning re-applies gomemlimit/gogc from state via
+// applyLiveSideEffect. Unlike every other control key, these two have no
+// other startup-time consumer (profile/ramlogs are seeded into env vars by
+// seedEnvFromControlState/this package's init(), before main() even runs;
+// everything else is read live by its own resolve*/*Enabled function on
+// each call) — a value that reached state via mergePendingOverrides, or a
+// reload, does not take effect until something calls applyLiveSideEffect
+// for it. Called once after ordinary startup's mergePendingOverrides, and
+// again after a HotSwap candidate's post-takeover reload+merge — the
+// parent's own gomemlimit/gogc runtime.debug calls apply only to the
+// parent's process, not the newly promoted candidate's.
+func applyPersistedRuntimeTuning(state *controlState) {
+	if v, ok := state.get("gomemlimit"); ok && v != "" && v != "off" {
+		if err := applyLiveSideEffect("gomemlimit", v); err != nil {
+			tlog("[control] failed to apply persisted gomemlimit=%s: %s\n", v, err)
+		}
+	}
+	if v, ok := state.get("gogc"); ok && v != "" && v != "off" {
+		if err := applyLiveSideEffect("gogc", v); err != nil {
+			tlog("[control] failed to apply persisted gogc=%s: %s\n", v, err)
+		}
+	}
+}

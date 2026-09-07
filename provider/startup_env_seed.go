@@ -36,9 +36,12 @@ func seedEnvFromControlState() {
 		// Decode into a temporary map first: json.Unmarshal can populate
 		// fields decoded before a later UnmarshalTypeError, so unmarshaling
 		// straight into values could seed URNETWORK_PROFILE from a
-		// partially-decoded, otherwise-invalid provider_state.json.
+		// partially-decoded, otherwise-invalid provider_state.json. A literal
+		// JSON "null" decodes successfully but leaves onDisk nil (not just
+		// empty), so only adopt it when non-nil — assigning a nil map to
+		// values would make the "set" overlay below panic on its first write.
 		var onDisk map[string]string
-		if json.Unmarshal(data, &onDisk) == nil {
+		if json.Unmarshal(data, &onDisk) == nil && onDisk != nil {
 			values = onDisk
 		}
 	}

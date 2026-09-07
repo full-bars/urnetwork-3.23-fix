@@ -123,6 +123,29 @@ func TestSeedEnvFromControlState_MalformedFilesAreIgnored(t *testing.T) {
 	}
 }
 
+// TestSeedEnvFromControlState_NullPersistedStateThenPendingSetDoesNotPanic
+// covers a decode edge case distinct from "malformed JSON": a literal JSON
+// `null` unmarshals successfully into a nil map (no error), so a naive
+// unconditional `values = onDisk` assignment replaces the initialized
+// non-nil `values` with nil. The pending-queue overlay right after this
+// then panics on its first `values[op.Key] = op.Value` write into that nil
+// map. Regression test for that exact sequence: null persisted state,
+// followed by a queued set.
+func TestSeedEnvFromControlState_NullPersistedStateThenPendingSetDoesNotPanic(t *testing.T) {
+	dir := withTempHome(t)
+	clearProfileRamlogsEnv(t)
+
+	writeJSONFile(t, filepath.Join(dir, ".urnetwork", "provider_state.json"), `null`)
+	writeJSONFile(t, filepath.Join(dir, ".urnetwork", "pending_overrides.json"),
+		`[{"op":"set","key":"profile","value":"turbo-v4"}]`)
+
+	seedEnvFromControlState()
+
+	if v := os.Getenv("URNETWORK_PROFILE"); v != "turbo-v4" {
+		t.Errorf("URNETWORK_PROFILE = %q, want %q", v, "turbo-v4")
+	}
+}
+
 func writeJSONFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

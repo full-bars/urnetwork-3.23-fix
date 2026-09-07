@@ -150,3 +150,68 @@ func TestControlState_ConcurrentSetClear(t *testing.T) {
 		}
 	}
 }
+
+func TestControlState_ReplaceAll(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+
+	if err := s.set("node_name", "stale"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := s.set("hot_restart", "on"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	s.replaceAll(map[string]string{"node_name": "fresh"})
+
+	if v, found := s.get("node_name"); !found || v != "fresh" {
+		t.Fatalf("node_name = (%q, %v), want (%q, true)", v, found, "fresh")
+	}
+	if _, found := s.get("hot_restart"); found {
+		t.Fatalf("hot_restart should be gone after replaceAll dropped it, still found")
+	}
+}
+
+// TestControlState_ReplaceAllRacesWithConcurrentGet is the regression test
+// for the HotSwap-candidate-takeover race: a candidate reloading
+// provider_state.json calls replaceAll on the SAME *controlState instance
+// every other proxy goroutine already holds and calls get() on (e.g.
+// hotRestartEnabled -> globalControlState.get("hot_restart")), concurrently.
+// The bug this guards against was reassigning the globalControlState
+// *pointer* itself instead of mutating in place — a data race the -race
+// detector catches on the pointer variable, not on anything s.mu protects.
+// Exercising replaceAll (mutate in place) alongside concurrent get() must
+// stay -race clean.
+func TestControlState_ReplaceAllRacesWithConcurrentGet(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+	if err := s.set("hot_restart", "on"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Simulate other proxy goroutines reading control state throughout the
+	// takeover window, same as provideAuth -> hotRestartEnabled would.
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s.get("hot_restart")
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		s.replaceAll(map[string]string{"hot_restart": "on"})
+	}
+	close(stop)
+	wg.Wait()
+}
