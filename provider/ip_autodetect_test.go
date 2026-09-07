@@ -172,13 +172,24 @@ func TestGetCachedPublicIP_ConcurrentCallersShareOneFetch(t *testing.T) {
 
 	var fetchCount int32
 	release := make(chan struct{})
+	// getCachedPublicIP reads fetchPublicIPFunc under cachedIPMu (it
+	// captures the func value into a local before unlocking and spawning
+	// the goroutine — see main.go), so writes here must take the same lock
+	// to avoid racing an earlier test's still-in-flight background fetch,
+	// which reads this same var to decide what to call.
+	cachedIPMu.Lock()
 	origFetch := fetchPublicIPFunc
 	fetchPublicIPFunc = func() string {
 		atomic.AddInt32(&fetchCount, 1)
 		<-release // hold the "in flight" window open so callers race for it
 		return "203.0.113.7"
 	}
-	defer func() { fetchPublicIPFunc = origFetch }()
+	cachedIPMu.Unlock()
+	defer func() {
+		cachedIPMu.Lock()
+		fetchPublicIPFunc = origFetch
+		cachedIPMu.Unlock()
+	}()
 
 	const callers = 50
 	var wg sync.WaitGroup

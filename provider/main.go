@@ -4060,8 +4060,17 @@ func getCachedPublicIP() string {
 	// on this provider hitting a cold or just-expired cache at once) issues
 	// exactly one outbound request to ip.me, not one per caller.
 	shouldFetch := !fresh && !cachedIPRefresh
+	// Capture the fetch func here, under the lock, rather than reading the
+	// fetchPublicIPFunc package var from inside the goroutine below. Tests
+	// swap that var (also under cachedIPMu — see ip_autodetect_test.go) to
+	// avoid hitting the network; reading it unsynchronized from a goroutine
+	// that can easily outlive its triggering test is a real data race, not
+	// just a theoretical one — an earlier test's in-flight background fetch
+	// and a later test's swap have raced under -race in CI.
+	var fetch func() string
 	if shouldFetch {
 		cachedIPRefresh = true
+		fetch = fetchPublicIPFunc
 	}
 	cachedIPMu.Unlock()
 
@@ -4071,7 +4080,7 @@ func getCachedPublicIP() string {
 
 	if shouldFetch {
 		go func() {
-			newIP := fetchPublicIPFunc()
+			newIP := fetch()
 			cachedIPMu.Lock()
 			if newIP != "" {
 				cachedIP = newIP
