@@ -215,3 +215,19 @@ func TestControlState_ReplaceAllRacesWithConcurrentGet(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// resetGlobalControlStateForTest resets the package-global control state to a
+// clean empty state WITHOUT reassigning the pointer. Rewriting
+// `globalControlState = newControlState()` was the source of an intermittent
+// test data race: a background goroutine from a prior test (e.g. a hotswap or
+// framer test) that reads globalControlState directly via hotRestartEnabled()
+// or a resolve* function could race with the later socket test's pointer write.
+// This helper preserves the single stable *controlState instance (exactly like
+// production's replaceAll — see control_state.go) and instead clears all keys
+// under the same locks every get/set/persist already uses, so map access stays
+// synchronized and any in-flight set/clear is serialized against the reset.
+func resetGlobalControlStateForTest() {
+	globalControlState.txMu.Lock()
+	defer globalControlState.txMu.Unlock()
+	globalControlState.replaceAll(map[string]string{})
+}

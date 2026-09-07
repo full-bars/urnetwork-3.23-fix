@@ -35,11 +35,34 @@ type pendingOp struct {
 // an error. A malformed file, or an invalid entry within it, is logged and
 // skipped rather than blocking startup — the provider must always be able
 // to come up even if the queue is bad.
+//
+// The whole read-apply-persist-delete runs under the same cross-process
+// lock urnet-tools' queuePendingOverride holds when it appends to this file
+// (pending_overrides_lock_unix.go/_windows.go), so a queued op written after
+// we read but before we delete can never be dropped: urnet-tools blocks on
+// the flock until after we've renamed the file away, then writes a fresh
+// queue that the next startup consumes.
 func mergePendingOverrides(state *controlState) {
 	path, err := pendingOverridesPath()
 	if err != nil {
 		return
 	}
+
+	// Ensure the state dir exists so the lock file can be created — mirrors
+	// queuePendingOverride, which does os.MkdirAll before locking. On a fresh
+	// box with no ~/.urnetwork yet, this makes the whole merge a clean no-op
+	// instead of failing the lock acquire on a missing parent dir.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		tlog("[control] failed to create %s dir, skipping merge: %s\n", filepath.Dir(path), err)
+		return
+	}
+
+	release, err := acquirePendingOverridesLock(path)
+	if err != nil {
+		tlog("[control] failed to acquire pending_overrides.json lock, skipping merge: %s\n", err)
+		return
+	}
+	defer release()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -54,6 +77,14 @@ func mergePendingOverrides(state *controlState) {
 		tlog("[control] pending_overrides.json is malformed, leaving it in place for inspection: %s\n", err)
 		return
 	}
+
+	// Taking txMu across the whole apply+persist+delete makes this one logical
+	// transaction with the socket's set/clear path (handleControlRequest also
+	// holds txMu): a concurrent socket `set` cannot interleave between a queued
+	// op's in-memory apply and its persist, so memory and disk stay in agreement
+	// and last-writer-wins is preserved across both writer paths.
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
 
 	applied := 0
 	for _, op := range ops {

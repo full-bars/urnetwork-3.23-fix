@@ -156,7 +156,11 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// Persist-then-commit would be safer in the abstract, but persist()
 		// needs the full snapshot including this change, so: apply, try to
 		// persist, and roll back the in-memory change if persisting fails —
-		// keeping memory and disk from disagreeing about what's "set".
+		// keeping memory and disk from disagreeing about what's "set". Hold
+		// txMu across the whole get-old -> set -> persist -> rollback unit so
+		// concurrent connections can't interleave (see controlState.txMu).
+		state.txMu.Lock()
+		defer state.txMu.Unlock()
 		oldValue, hadOld := state.get(req.Key)
 		if err := state.set(req.Key, req.Value); err != nil {
 			return controlResponse{OK: false, Error: err.Error()}
@@ -178,6 +182,8 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true}
 
 	case "clear":
+		state.txMu.Lock()
+		defer state.txMu.Unlock()
 		oldValue, hadOld := state.get(req.Key)
 		if err := state.clear(req.Key); err != nil {
 			return controlResponse{OK: false, Error: err.Error()}
@@ -247,6 +253,9 @@ func applyLiveSideEffect(key, value string) error {
 		percent, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("gogc: %w", err)
+		}
+		if percent < 0 {
+			return fmt.Errorf("gogc: must be a non-negative percentage (got %d)", percent)
 		}
 		debug.SetGCPercent(percent)
 	}

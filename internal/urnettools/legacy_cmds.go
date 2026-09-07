@@ -404,13 +404,25 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // treated as "no", same as the old version's behavior on a failed
 // systemctl query.
 func providerUsesRamlogs(p Provider) bool {
-	if v, _, found, err := queryControlOverride(p, "ramlogs"); err == nil && found && v == "on" {
+	if v, _, found, err := queryControlOverride(p, "ramlogs"); err == nil && found && truthyOn(v) {
 		return true
 	}
 	if v, _, found, err := queryControlOverride(p, "profile"); err == nil && found && (v == "lowmem" || v == "eco") {
 		return true
 	}
 	return false
+}
+
+// truthyOn mirrors provider's isTruthyOn for the boolean-form control values
+// (on/off/1/0/true/false/yes/no) so both the Go CLI and the provider resolve a
+// stored value the same way, regardless of which literal form was written.
+func truthyOn(v string) bool {
+	switch v {
+	case "on", "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // cmdHub implements hub set/off/install: writes the URNETWORK_REPORT_URL

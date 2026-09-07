@@ -19,6 +19,16 @@ import (
 type controlState struct {
 	mu     sync.RWMutex
 	values map[string]string
+	// txMu serializes the read-modify-write-persist-rollback sequence that
+	// makes up one logical `set`/`clear` operation. Each control-socket
+	// connection is served on its own goroutine (handleControlConn), and the
+	// individual s.mu lock in set/clear/get/persist does NOT span that whole
+	// sequence — without txMu, two concurrent sets on the same key could
+	// interleave (G1 reads old, G2 reads old, G1 writes A, G2 writes B, G1
+	// persists, G2's persist-failure rolls back to its own stale view or
+	// clears B). txMu makes the get-old → set/clear → persist → rollback unit
+	// atomic for this state.
+	txMu sync.Mutex
 }
 
 // controlKeys are the only settings the socket accepts.

@@ -68,11 +68,27 @@ func seedEnvFromControlState() {
 		os.Setenv("URNETWORK_PROFILE", profile)
 	}
 	if ramlogs, ok := values["ramlogs"]; ok {
-		if ramlogs == "on" {
+		// The client accepts on/off/1/0/true/false for ramlogs
+		// (validateControlValue); normalize the full boolean set instead of
+		// only the literal "on".
+		if isTruthyOn(ramlogs) {
 			os.Setenv("URNETWORK_RAMLOGS", "1")
 		} else {
 			os.Setenv("URNETWORK_RAMLOGS", "0")
 		}
+	}
+}
+
+// isTruthyOn reports whether a stored boolean-ish control-socket value means
+// "enabled". Consumers agree on the literal set validateControlValue admits
+// (on/off/1/0/true/false for ramlogs; plus yes/no for hot_restart), so a value
+// written through any path resolves the same way everywhere it's read.
+func isTruthyOn(v string) bool {
+	switch v {
+	case "on", "1", "true", "yes":
+		return true
+	default:
+		return false
 	}
 }
 

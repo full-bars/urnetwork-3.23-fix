@@ -550,10 +550,23 @@ func jwtContainsClientId(byJwt string) bool {
 // across process restarts. Checks the control-socket state first (see
 // control_state.go — `urnet-tools hot-restart on|off`), then the
 // URNETWORK_HOT_RESTART env var (systemd override.conf, historically the
-// only way to set this). On by default unless disabled by either.
+// only way to set this). On by default unless disabled by either. The client
+// accepts on/off/1/0/true/false/yes/no for the hot_restart key
+// (validateControlValue), so treat any recognized "off" form — and only those
+// — as disabled; everything else stays on, matching the historical
+// URNETWORK_HOT_RESTART != "0" default-on semantics.
 func hotRestartEnabled() bool {
 	if v, ok := globalControlState.get("hot_restart"); ok {
-		return v != "off"
+		switch v {
+		case "off", "0", "false", "no":
+			return false
+		case "on", "1", "true", "yes":
+			return true
+		default:
+			// Unknown stored value: don't silently flip behavior off a bad
+			// write; keep the historical default-on baseline.
+			return true
+		}
 	}
 	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }

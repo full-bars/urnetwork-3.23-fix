@@ -103,6 +103,14 @@ func TestMergePendingOverrides_PersistFailureLeavesFileForRetry(t *testing.T) {
 	s := newControlState()
 
 	dir := filepath.Join(home, ".urnetwork")
+	// The pending-overrides lock file persists across invocations (created on
+	// first acquire, never removed), mirroring urnet-tools' own lock. Pre-create
+	// it so the merge gets past lock acquisition and exercises the persist-failure
+	// path rather than failing to create the lock in a now-read-only dir.
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatalf("pre-create lock file: %v", err)
+	}
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}

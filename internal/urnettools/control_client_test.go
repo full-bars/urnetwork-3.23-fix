@@ -212,6 +212,35 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 	}
 }
 
+// TestControlClient_MalformedQueueSurfacesErrorNotOverwritten covers the fix
+// that stopped queuePendingOverride from silently discarding a malformed
+// existing queue: instead of rewriting it with just the new op (losing every
+// previously queued override) and reporting success, it must surface the parse
+// error and leave the file untouched.
+func TestControlClient_MalformedQueueSurfacesErrorNotOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	p := Provider{StateDir: dir}
+	queueFile := filepath.Join(dir, "pending_overrides.json")
+
+	if err := os.WriteFile(queueFile, []byte("not valid json"), 0o644); err != nil {
+		t.Fatalf("write malformed queue: %v", err)
+	}
+	orig, _ := os.ReadFile(queueFile)
+
+	if err := applySetOverride(p, "report-interval", "30s", false); err == nil {
+		t.Fatalf("expected error surfacing the malformed queue, got nil")
+	}
+
+	// File must be left exactly as it was — the new op was NOT appended over it.
+	after, err := os.ReadFile(queueFile)
+	if err != nil {
+		t.Fatalf("queue file should still exist: %v", err)
+	}
+	if string(after) != string(orig) {
+		t.Fatalf("malformed queue was rewritten:\nbefore=%q\nafter =%q", orig, after)
+	}
+}
+
 func TestControlClient_All14KeysCanonicalizationAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir}
@@ -287,6 +316,7 @@ func TestControlClient_InvalidValuesRejected(t *testing.T) {
 		{"profile", "super-fast"},
 		{"gomemlimit", "not-a-size"},
 		{"gogc", "hundred"},
+		{"gogc", "-50"}, // negative GC target must be rejected
 	}
 
 	for _, bc := range badCases {

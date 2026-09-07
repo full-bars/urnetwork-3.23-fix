@@ -4,12 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
 func TestControlSocket_SetGetClear_EndToEnd(t *testing.T) {
 	withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -54,7 +55,7 @@ func TestControlSocket_SetGetClear_EndToEnd(t *testing.T) {
 
 func TestControlSocket_UnknownKeyRejected(t *testing.T) {
 	withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,7 +76,7 @@ func TestControlSocket_UnknownKeyRejected(t *testing.T) {
 
 func TestControlSocket_UnknownCommandRejected(t *testing.T) {
 	withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -112,7 +113,7 @@ func TestDialControlSocket_NoProviderRunning(t *testing.T) {
 // (e.g. SIGKILL). A fresh start must reclaim it instead of failing forever.
 func TestStartControlSocket_RemovesStaleSocketFile(t *testing.T) {
 	home := withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	dir := filepath.Join(home, ".urnetwork")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -145,7 +146,7 @@ func TestStartControlSocket_RemovesStaleSocketFile(t *testing.T) {
 // fails loudly instead of silently stealing it.
 func TestStartControlSocket_RefusesWhenAlreadyListening(t *testing.T) {
 	withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -163,7 +164,7 @@ func TestStartControlSocket_RefusesWhenAlreadyListening(t *testing.T) {
 
 func TestStartControlSocket_SocketFilePermissions(t *testing.T) {
 	home := withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -189,7 +190,7 @@ func TestStartControlSocket_SocketFilePermissions(t *testing.T) {
 // what's set.
 func TestControlSocket_PersistFailureRollsBackInMemoryState(t *testing.T) {
 	home := withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 	globalControlState.set("node_name", "old-value")
 
 	// Make the state directory read-only so persist() (which needs to
@@ -206,5 +207,92 @@ func TestControlSocket_PersistFailureRollsBackInMemoryState(t *testing.T) {
 	}
 	if v, _ := globalControlState.get("node_name"); v != "old-value" {
 		t.Fatalf("in-memory state after failed persist = %q, want rollback to %q", v, "old-value")
+	}
+}
+
+// TestControlSocket_ConcurrentSetsMemoryMatchesDisk hammers the same key with
+// many concurrent `set`s through handleControlRequest and asserts the contract
+// that motivated txMu: once every set has settled, the in-memory state and the
+// persisted provider_state.json must agree (last-writer-wins with no lost
+// update). This is exactly the write that raced before txMu serialized the
+// get-old -> set -> persist -> rollback unit — a concurrent set could interleave
+// between a persist's snapshot and a rollback, leaving memory and disk
+// disagreeing. Run with -race.
+func TestControlSocket_ConcurrentSetsMemoryMatchesDisk(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	const writers = 12
+	const rounds = 40
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				handleControlRequest(globalControlState, controlRequest{
+					Cmd: "set", Key: "node_name", Value: "w", // string spam is fine
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// In-memory final value.
+	memVal, memFound := globalControlState.get("node_name")
+	if !memFound {
+		t.Fatalf("node_name should be set after concurrent sets")
+	}
+
+	// Reload exactly what the last persist wrote.
+	reloaded, err := loadControlState()
+	if err != nil {
+		t.Fatalf("loadControlState: %v", err)
+	}
+	diskVal, diskFound := reloaded.get("node_name")
+	if !diskFound {
+		t.Fatalf("node_name should be persisted after concurrent sets")
+	}
+	if memVal != diskVal {
+		t.Fatalf("memory = %q, disk = %q — concurrent set/persist lost an update", memVal, diskVal)
+	}
+}
+
+func TestIsTruthyOn(t *testing.T) {
+	on := []string{"on", "1", "true", "yes"}
+	off := []string{"off", "0", "false", "no", "", "2", "bogus"}
+	for _, v := range on {
+		if !isTruthyOn(v) {
+			t.Errorf("isTruthyOn(%q) = false, want true", v)
+		}
+	}
+	for _, v := range off {
+		if isTruthyOn(v) {
+			t.Errorf("isTruthyOn(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestHotRestartEnabled_GuessBooleanForms(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	cases := []struct {
+		stored string
+		want   bool
+	}{
+		{"off", false}, {"0", false}, {"false", false}, {"no", false},
+		{"on", true}, {"1", true}, {"true", true}, {"yes", true},
+		{"bogus", true}, // unknown value keeps default-on baseline
+	}
+	for _, tc := range cases {
+		globalControlState.set("hot_restart", tc.stored)
+		if got := hotRestartEnabled(); got != tc.want {
+			t.Errorf("hot_restart=%q -> hotRestartEnabled()=%v, want %v", tc.stored, got, tc.want)
+		}
+	}
+	globalControlState.clear("hot_restart")
+	if got := hotRestartEnabled(); got != true {
+		t.Errorf("cleared hot_restart (env unset) -> hotRestartEnabled()=%v, want true", got)
 	}
 }

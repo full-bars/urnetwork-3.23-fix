@@ -113,7 +113,7 @@ func TestApplyLiveSideEffect_OtherKeysAreNoop(t *testing.T) {
 // directly, confirming handleControlRequest wires it in on the set path.
 func TestControlSocket_SetGOGCEndToEnd(t *testing.T) {
 	withTempHome(t)
-	globalControlState = newControlState()
+	resetGlobalControlStateForTest()
 	original := debug.SetGCPercent(100)
 	defer debug.SetGCPercent(original)
 

@@ -137,8 +137,12 @@ func validateControlValue(canonicalKey, value string) error {
 		}
 	case "gogc":
 		if value != "off" {
-			if _, err := strconv.Atoi(value); err != nil {
+			n, err := strconv.Atoi(value)
+			if err != nil {
 				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+			}
+			if n < 0 {
+				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
 			}
 		}
 	}
@@ -221,7 +225,13 @@ func queuePendingOverride(stateDir, op, key, value string) error {
 	var ops []pendingOp
 	data, err := os.ReadFile(queueFile)
 	if err == nil && len(data) > 0 {
-		_ = json.Unmarshal(data, &ops)
+		if err := json.Unmarshal(data, &ops); err != nil {
+			// Do NOT discard a malformed queue by rewriting it with only the
+			// new op: every previously-queued override would be lost and the
+			// operator would get a success message. Surface the parse error
+			// and leave the file untouched for inspection/fix instead.
+			return fmt.Errorf("parse %s: %w (fix or remove the file, then retry)", queueFile, err)
+		}
 	}
 
 	ops = append(ops, pendingOp{Op: op, Key: key, Value: value})

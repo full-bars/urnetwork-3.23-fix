@@ -18,7 +18,13 @@ func withTempHome(t *testing.T) string {
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir) // os.UserHomeDir() reads this on Windows
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
+	// Must hold the lock: doWriteReloadTrigger (scheduled by a prior test's
+	// writeReloadTrigger via time.AfterFunc) writes lastReloadTriggerTime.ts under
+	// this same lock, so an unlocked write here races that background goroutine.
+	lastReloadTriggerTime.Lock()
 	lastReloadTriggerTime.ts = time.Time{}
+	lastReloadTriggerTime.pending = false // drop any trailing AfterFunc window
+	lastReloadTriggerTime.Unlock()
 	// The probe-config and admission-state TTL caches are process-global and
 	// hold snapshots keyed to the previous HOME; a HOME change invalidates
 	// them, otherwise a config/state read in one test leaks into the next.
@@ -37,8 +43,8 @@ func withTempHome(t *testing.T) string {
 	// globalControlState is likewise process-global: a test that sets a
 	// control-socket value (or one from a previous run of the process) must
 	// not leak into the next test's resolve*/*Enabled expectations.
-	globalControlState = newControlState()
-	t.Cleanup(func() { globalControlState = newControlState() })
+	resetGlobalControlStateForTest()
+	t.Cleanup(resetGlobalControlStateForTest)
 	return dir
 }
 
