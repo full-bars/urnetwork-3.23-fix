@@ -8,27 +8,39 @@ import (
 
 // isHotSwapSupportedVersion checks whether the given provider version string indicates
 // support for in-process zero-downtime HotSwap (introduced in v3.23.0-fix.31.0).
+//
+// The check is anchored to the "3.23.0-fix." base version, not just the
+// presence of "fix." anywhere in the string: an unanchored substring match
+// would also accept a pre-fork or differently-based version like
+// "v3.22.0-fix.31.0" that happens to contain "fix.31", and triggerHotSwap
+// sends SIGUSR2 unconditionally once this returns true — a provider that
+// predates the HotSwap feature has no handler for that signal and would
+// terminate under its default action instead of gracefully handing off.
 func isHotSwapSupportedVersion(ver string) bool {
 	if ver == "" {
 		return false
 	}
-	ver = strings.TrimPrefix(ver, "v")
-	idx := strings.Index(ver, "fix.")
-	if idx != -1 {
-		sub := ver[idx+4:]
-		dotIdx := strings.IndexAny(sub, ".-")
-		if dotIdx != -1 {
-			sub = sub[:dotIdx]
-		}
-		fixNum, err := strconv.Atoi(sub)
-		if err == nil {
-			return fixNum >= 31
-		}
-	}
-	if strings.Contains(ver, "hotswap") || strings.Contains(ver, "test") || strings.Contains(ver, "canary") || strings.HasPrefix(ver, "dev") || ver == "dev" {
+	// The only non-numeric override this recognizes: local/CI dev builds
+	// report exactly "dev" (see RequireVersion()'s fallback), which always
+	// supports the current in-tree HotSwap implementation.
+	if ver == "dev" {
 		return true
 	}
-	return false
+	ver = strings.TrimPrefix(ver, "v")
+	const base = "3.23.0-fix."
+	if !strings.HasPrefix(ver, base) {
+		return false
+	}
+	sub := ver[len(base):]
+	dotIdx := strings.IndexAny(sub, ".-")
+	if dotIdx != -1 {
+		sub = sub[:dotIdx]
+	}
+	fixNum, err := strconv.Atoi(sub)
+	if err != nil {
+		return false
+	}
+	return fixNum >= 31
 }
 
 // supportsHotSwap determines whether the target running provider is capable of

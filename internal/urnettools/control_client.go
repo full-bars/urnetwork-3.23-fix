@@ -200,12 +200,23 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 }
 
 // queuePendingOverride appends one op to pending_overrides.json in stateDir
-// using atomic temp-file-and-rename.
+// using atomic temp-file-and-rename. The whole read-modify-write is held
+// under a cross-process lock: without it, two concurrent `urnet-tools`
+// invocations (the provider socket unavailable for both) can each read the
+// same queue, append their own op in memory, and let the last os.Rename win
+// — both commands report success, but only one op survives to be applied
+// at the provider's next startup.
 func queuePendingOverride(stateDir, op, key, value string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
 	queueFile := filepath.Join(stateDir, "pending_overrides.json")
+
+	release, err := acquirePendingOverridesLock(queueFile)
+	if err != nil {
+		return fmt.Errorf("acquire pending-overrides lock: %w", err)
+	}
+	defer release()
 
 	var ops []pendingOp
 	data, err := os.ReadFile(queueFile)

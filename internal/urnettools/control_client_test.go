@@ -6,14 +6,27 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
 type mockControlServer struct {
 	listener net.Listener
+
+	mu       sync.Mutex
 	requests []controlRequest
 	values   map[string]string
 	closed   bool
+}
+
+// value returns the current value for key and whether it is set, taking the
+// same lock handleConn uses to write — handleConn runs in its own goroutine
+// per connection, so unlocked reads here would race under go test -race.
+func (s *mockControlServer) value(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.values[key]
+	return v, ok
 }
 
 func startMockControlServer(t *testing.T, sockPath string) *mockControlServer {
@@ -48,16 +61,23 @@ func (s *mockControlServer) handleConn(conn net.Conn) {
 			_ = json.NewEncoder(conn).Encode(controlResponse{OK: false, Error: "bad json"})
 			return
 		}
+		s.mu.Lock()
 		s.requests = append(s.requests, req)
 		switch req.Cmd {
 		case "set":
 			s.values[req.Key] = req.Value
-			_ = json.NewEncoder(conn).Encode(controlResponse{OK: true})
 		case "clear":
 			delete(s.values, req.Key)
+		}
+		val, found := s.values[req.Key]
+		s.mu.Unlock()
+
+		switch req.Cmd {
+		case "set":
+			_ = json.NewEncoder(conn).Encode(controlResponse{OK: true})
+		case "clear":
 			_ = json.NewEncoder(conn).Encode(controlResponse{OK: true})
 		case "get":
-			val, found := s.values[req.Key]
 			_ = json.NewEncoder(conn).Encode(controlResponse{OK: true, Value: val, Found: found})
 		default:
 			_ = json.NewEncoder(conn).Encode(controlResponse{OK: false, Error: "unknown cmd"})
@@ -98,8 +118,8 @@ func TestControlClient_SocketReachableRoundTrip(t *testing.T) {
 		t.Fatalf("pending_overrides.json should not exist when socket is reachable")
 	}
 
-	if server.values["node_name"] != "edge-prod-01" {
-		t.Fatalf("server value for node_name = %q, want edge-prod-01", server.values["node_name"])
+	if v, _ := server.value("node_name"); v != "edge-prod-01" {
+		t.Fatalf("server value for node_name = %q, want edge-prod-01", v)
 	}
 
 	val, src, found, err := queryControlOverride(p, "node_name")
@@ -113,7 +133,7 @@ func TestControlClient_SocketReachableRoundTrip(t *testing.T) {
 	if err := applySetOverride(p, "node-name", "off", false); err != nil {
 		t.Fatalf("applySetOverride clear: %v", err)
 	}
-	if _, ok := server.values["node_name"]; ok {
+	if _, ok := server.value("node_name"); ok {
 		t.Fatalf("node_name should be cleared from server, but still present")
 	}
 

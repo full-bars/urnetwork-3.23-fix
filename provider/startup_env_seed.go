@@ -33,7 +33,14 @@ func seedEnvFromControlState() {
 	values := map[string]string{}
 
 	if data, err := os.ReadFile(mustControlStatePath()); err == nil {
-		json.Unmarshal(data, &values) //nolint:errcheck // best-effort seed, see doc comment
+		// Decode into a temporary map first: json.Unmarshal can populate
+		// fields decoded before a later UnmarshalTypeError, so unmarshaling
+		// straight into values could seed URNETWORK_PROFILE from a
+		// partially-decoded, otherwise-invalid provider_state.json.
+		var onDisk map[string]string
+		if json.Unmarshal(data, &onDisk) == nil {
+			values = onDisk
+		}
 	}
 
 	// Overlay anything urnet-tools queued while the provider wasn't

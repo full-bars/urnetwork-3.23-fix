@@ -3336,30 +3336,57 @@ func provide(opts docopt.Opts) {
 		defer unregCloser()
 
 		// If candidate child, announce ACK to parent once the first live transport is active
+		var unregSocketCloser func()
 		candidateAckOnce.Do(func() {
 			if isHotSwapCandidate && hotSwapIPC != nil {
 				_ = runHotSwapChildAck(hotSwapIPC)
+				// hotSwapIPC is not reassigned: provide()'s deferred Close() also
+				// runs on this same handle, and os.File.Close() is safe to call
+				// twice (the second call just returns os.ErrClosed, which the
+				// deferred call discards). Reassigning to nil here raced with
+				// that deferred read since sync.Once only orders callers of Do,
+				// not the unrelated deferred statement in provide().
 				_ = hotSwapIPC.Close()
-				hotSwapIPC = nil
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
+
+				// Reload persisted control state now, not the snapshot loaded at
+				// candidate spawn time: the parent still owned provider_state.json
+				// and could accept `urnet-tools set` (and its own control socket)
+				// for the whole pre-flight+drain window. A command that landed
+				// there after this candidate started but before it reaches this
+				// point would otherwise be silently dropped — the promoted
+				// candidate would bind its own socket on the stale snapshot.
+				if reloaded, err := loadControlState(); err != nil {
+					tlog("[control] candidate failed to reload provider_state.json on takeover, keeping pre-flight snapshot: %s\n", err)
+				} else {
+					globalControlState = reloaded
+				}
+				mergePendingOverrides(globalControlState)
 
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
 				} else {
 					cleanupControlSocket = cleanup
-					unregSocketCloser := RegisterCoordinatorCloser(func() {
+					unregSocketCloser = RegisterCoordinatorCloser(func() {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()
 							cleanupControlSocket = nil
 						}
 					})
-					defer unregSocketCloser()
 				}
 			}
 			_ = notifySystemdReady()
 		})
+		// unregSocketCloser must stay registered for the provider's lifetime (or
+		// until a later HotSwap explicitly closes it): it guards the promoted
+		// candidate's control socket, and a defer scoped to the candidateAckOnce.Do
+		// closure above would unregister it as soon as that closure returns,
+		// long before the provider actually exits or hands off again.
+		if unregSocketCloser != nil {
+			defer unregSocketCloser()
+		}
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:
@@ -3391,10 +3418,15 @@ func provide(opts docopt.Opts) {
 		// the 12h threshold never fires — a no-op.
 		renewNow := make(chan struct{}, 1)
 		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
-			IdentityKey:    identityKey,
-			ClientID:       clientId,
-			CurrentJWT:     byClientJwt,
-			Description:    providerDescription(nodeName),
+			IdentityKey: identityKey,
+			ClientID:    clientId,
+			CurrentJWT:  byClientJwt,
+			Description: providerDescription(nodeName),
+			// Recompute on every renewal instead of reusing the startup value:
+			// providerDescription re-resolves the node-name override and public
+			// IP each call, so a runtime `urnet-tools rename`/ip-detect change
+			// reaches the server on the next hourly/401 renewal, not just mint.
+			DescribeFn:     func() string { return providerDescription(nodeName) },
 			ApiURL:         apiUrl,
 			ClientStrategy: clientStrategy,
 			OOB:            clientOob,

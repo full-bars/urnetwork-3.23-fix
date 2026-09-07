@@ -669,6 +669,13 @@ Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=on-failure
 RestartSec=5
+# provide() only calls sd_notify(READY=1) after a proxy auth succeeds, and
+# the per-proxy auth retry loop backs off legitimately for a long time on a
+# rate-limited/unreachable API (up to hours -- see proxyURLGiveUpRetryDelay
+# in provider/main.go). Any finite TimeoutStartSec would eventually kill a
+# provider that's still correctly retrying, so disable the startup timeout
+# entirely; Restart=on-failure above still catches a genuine crash/exit.
+TimeoutStartSec=0
 
 [Install]
 WantedBy=default.target

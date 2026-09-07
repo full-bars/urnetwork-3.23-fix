@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +27,9 @@ type HotswapParentSession struct {
 	parentFd *os.File
 	Reader   *bufio.Reader
 	Writer   io.Writer
+
+	waitOnce sync.Once
+	waitErr  error
 }
 
 // Close closes the parent end of the IPC socketpair.
@@ -39,17 +43,23 @@ func (s *HotswapParentSession) Close() {
 func (s *HotswapParentSession) Kill() {
 	if s.childCmd != nil && s.childCmd.Process != nil {
 		_ = s.childCmd.Process.Kill()
-		_ = s.childCmd.Wait()
+		_ = s.Wait()
 	}
 	s.Close()
 }
 
-// Wait waits for the candidate child process to exit.
+// Wait waits for the candidate child process to exit. Safe to call from
+// multiple goroutines concurrently (e.g. a drain-timeout Kill racing a
+// liveness-monitor Wait) — only the first caller reaches exec.Cmd.Wait,
+// since os/exec does not support concurrent Wait calls on the same Cmd.
 func (s *HotswapParentSession) Wait() error {
-	if s.childCmd != nil {
-		return s.childCmd.Wait()
+	if s.childCmd == nil {
+		return nil
 	}
-	return nil
+	s.waitOnce.Do(func() {
+		s.waitErr = s.childCmd.Wait()
+	})
+	return s.waitErr
 }
 
 // sanitizeCandidateArgs strips identity-mutating arguments from the parent's

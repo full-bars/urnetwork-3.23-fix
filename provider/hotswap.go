@@ -426,10 +426,9 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return err
 	}
 
-	// 2. Yield live coordinator session cleanly so candidate can connect without collision
-	yieldCoordinatorSession()
-
-	// 3. Wait for mandatory ACK from candidate
+	// 2. Wait for mandatory ACK from candidate before yielding our own coordinator
+	// session. The candidate has not taken over traffic yet, so if the ACK fails
+	// or times out we can still abort with the parent's transports untouched.
 	ackCh := make(chan readyResult, 1)
 	go func() {
 		msg, err := readHotswapMessage(session.Reader)
@@ -449,6 +448,10 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		session.Kill()
 		return fmt.Errorf("candidate takeover ACK timed out (>%s)", HotSwapAckTimeout)
 	}
+
+	// 3. Only now yield the live coordinator session: the candidate has confirmed
+	// active takeover, so there is no window where neither process holds it.
+	yieldCoordinatorSession()
 
 	// 4. Update systemd service manager with new MainPID (if running under systemd)
 	if os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != "" {
@@ -474,19 +477,30 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 			childWaitCh <- session.Wait()
 		}()
 
+		candidateDied := false
 		select {
 		case <-time.After(HotSwapDrainTimeout):
 			// Normal drain duration elapsed
 		case <-childWaitCh:
 			tlog("⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!\n")
+			candidateDied = true
 		case <-ctx.Done():
 		}
 
 		flushRetentionEvents()
 		lifetimeStore.Flush()
-		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
 		isHotSwapDraining.Store(false)
 		cancel()
+		if candidateDied {
+			// The candidate already holds MainPID/traffic ownership; it died before
+			// taking over, so no process is left serving. Exit non-zero so systemd
+			// Restart=on-failure (or the Docker supervision loop) restarts the unit
+			// instead of leaving the node silently offline after a clean exit(0).
+			critLog("FATAL: hotswap candidate died during parent drain; exiting non-zero for supervisor restart")
+			exitFunc(1)
+			return
+		}
+		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
 		exitFunc(0)
 	}()
 

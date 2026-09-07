@@ -6,30 +6,59 @@ import (
 	"fmt"
 	"os"
 	"sync"
+
+	"golang.org/x/sys/windows"
 )
 
-// On Windows there is no flock(2). We use a separate lock file protected by
-// an in-process mutex. This prevents intra-process races (parent and candidate
-// never run concurrently in the same process anyway, since the candidate is
-// spawned via exec.Command). For inter-process safety we rely on the
-// os.CreateTemp + rename atomicity already in place — on Windows two
-// processes writing the same temp name will collide, but the os.CreateTemp
-// fix in commit c5256ed8 already prevents that.
+// On Windows there is no flock(2), so acquireJWTStoreLock uses LockFileEx
+// (blocking, exclusive) on a dedicated lock file for the real inter-process
+// mutex, mirroring jwt_store_lock_unix.go's unix.Flock(LOCK_EX). jwtLockMu
+// stays held for the caller's entire critical section (until release()
+// runs), matching that same contract on Unix — it only orders goroutines
+// within this process; LockFileEx is what excludes a concurrent process
+// (e.g. a HotSwap parent/candidate pair, each with its own clientJWTStore).
 var jwtLockMu sync.Mutex
+
+const jwtLockSuffix = ".lock"
 
 func acquireJWTStoreLock(path string) (func(), error) {
 	jwtLockMu.Lock()
-	defer jwtLockMu.Unlock()
 
 	lockPath := path + jwtLockSuffix
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	pathPtr, err := windows.UTF16PtrFromString(lockPath)
 	if err != nil {
+		jwtLockMu.Unlock()
+		return nil, fmt.Errorf("jwt lock path: %w", err)
+	}
+
+	handle, err := windows.CreateFile(
+		pathPtr,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_ALWAYS,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		jwtLockMu.Unlock()
 		return nil, fmt.Errorf("open jwt lock file: %w", err)
 	}
+
+	// Block (no LOCKFILE_FAIL_IMMEDIATELY) until the exclusive byte-range
+	// lock is available, same blocking contract as unix.Flock(LOCK_EX).
+	var overlapped windows.Overlapped
+	if err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
+		windows.CloseHandle(handle)
+		jwtLockMu.Unlock()
+		return nil, fmt.Errorf("lock jwt store: %w", err)
+	}
+
 	return func() {
-		f.Close()
-		os.Remove(lockPath)
+		var unlockOverlapped windows.Overlapped
+		_ = windows.UnlockFileEx(handle, 0, 1, 0, &unlockOverlapped)
+		windows.CloseHandle(handle)
+		_ = os.Remove(lockPath)
+		jwtLockMu.Unlock()
 	}, nil
 }
-
-const jwtLockSuffix = ".lock"

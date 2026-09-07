@@ -660,6 +660,19 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Verification failed:
 	if hotSwapTriggered {
 		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
+		// oldPID's process exits (via its drain-timeout goroutine) only after
+		// the candidate confirmed active takeover — the same handoff gate
+		// hotswap.go's ACK-then-yield ordering guarantees. So oldPID being
+		// gone here means ownership already transferred to some process
+		// (the candidate, or its own successor), even though this loop
+		// couldn't confirm which one is on cfg.Tag in time. Rolling back the
+		// disk binary in that state doesn't touch the already-running
+		// process, but it does silently revert the image a future restart
+		// would use, and "live provider was never killed" would be false —
+		// so skip the rollback and report the real (unknown) state instead.
+		if !pidIsAlive(oldPID) {
+			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*2)
+		}
 		if backup != "" {
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
 			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
