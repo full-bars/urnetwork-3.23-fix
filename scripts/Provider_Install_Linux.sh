@@ -1765,20 +1765,25 @@ _append_pending_op() {
     ) 9>"$lock"
 }
 
-# json_escape STRING
-# Emits STRING as a single-line JSON string literal (double-quoted, with
-# backslash, double-quote, and C0 control characters backslash-escaped) for
-# embedding into pending_overrides.json. Values here can carry ", \ or a
-# newline (e.g. a report_url with a query string); an unescaped one silently
-# corrupts the queue file the provider parses at startup —
-# mergePendingOverrides() then skips it and the operator's queued change is
-# lost. parity with urnet-tools' Go json.Marshal. POSIX sh only (no ANSI-C
-# $'...' quoting — this script runs under dash).
-json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' \
+# json_string STRING
+# Emits STRING as a COMPLETE, quoted JSON string literal (surrounding
+# double quotes included, with backslash, double-quote, tab, and CR
+# backslash-escaped) for embedding into pending_overrides.json. Deliberately
+# named json_string (not json_escape) and returns a full literal rather than
+# just escaped contents: a helper that hands back bare escaped text invites
+# a caller to forget the surrounding quotes, which is exactly the bug this
+# replaced (queue_pending_override used to emit `"key": ramlogs` — value
+# unquoted — which is not valid JSON at all, so every queued override was
+# silently unparseable and mergePendingOverrides() never applied it).
+# Values here can carry ", \ or a newline (e.g. a report_url with a query
+# string); an unescaped one silently corrupts the queue file the provider
+# parses at startup. Parity with urnet-tools' Go json.Marshal. POSIX sh only
+# (no ANSI-C $'...' quoting — this script runs under dash).
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' \
         -e 's/"/\\"/g' \
         -e 's/	/\\t/g' \
-        -e 's/\r/\\r/g'
+        -e 's/\r/\\r/g')"
     # Embedded newlines are not handled here (sed is line-oriented); callers
     # pass single-line values (keys, report_url, profile names, toggles).
 }
@@ -1791,7 +1796,7 @@ json_escape() {
 # os.UserHomeDir(), not root's.
 queue_pending_override() {
     local key="$1" value="$2" home="${3:-$HOME}"
-    _append_pending_op "{\"op\": \"set\", \"key\": $(json_escape "$key"), \"value\": $(json_escape "$value")}" "$home"
+    _append_pending_op "{\"op\": \"set\", \"key\": $(json_string "$key"), \"value\": $(json_string "$value")}" "$home"
 }
 
 # queue_pending_clear KEY [HOME_DIR]
@@ -1800,7 +1805,7 @@ queue_pending_override() {
 # HOME_DIR.
 queue_pending_clear() {
     local key="$1" home="${2:-$HOME}"
-    _append_pending_op "{\"op\": \"clear\", \"key\": $(json_escape "$key")}" "$home"
+    _append_pending_op "{\"op\": \"clear\", \"key\": $(json_string "$key")}" "$home"
 }
 
 # read_control_value KEY

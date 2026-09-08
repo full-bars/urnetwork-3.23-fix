@@ -209,6 +209,43 @@ test_verify_sha256_empty_digest() {
 }
 test_verify_sha256_empty_digest
 
+# queue_pending_override/queue_pending_clear write pending_overrides.json
+# through json_string(); regression for the bug where json_string's
+# predecessor (json_escape) emitted escaped CONTENTS without the
+# surrounding double quotes, producing entries like
+# {"op": "set", "key": ramlogs, "value": on} — invalid JSON that
+# mergePendingOverrides() could never parse, silently no-opping every
+# queued override. Exercise real call sites with values that need escaping
+# (embedded quote, embedded backslash, a URL) and require python3 to accept
+# the resulting file as valid JSON.
+test_pending_overrides_valid_json() {
+    local home
+    home=$(mktemp -d)
+    queue_pending_override "ramlogs" "on" "$home"
+    queue_pending_override 'weird"key' 'has "quotes" and a \backslash' "$home"
+    queue_pending_override "report_url" "https://example.com/a?b=c" "$home"
+    queue_pending_clear "profile" "$home"
+
+    local file="$home/.urnetwork/pending_overrides.json"
+    if [ ! -f "$file" ]; then
+        echo "❌ FAIL: pending_overrides.json was not created"
+        FAILS=$((FAILS + 1))
+        rm -rf "$home"
+        return
+    fi
+
+    if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d) == 4, d' "$file" 2>/tmp/urnet_json_err; then
+        echo "✅ PASS: pending_overrides.json queued by queue_pending_override/queue_pending_clear is valid JSON"
+    else
+        echo "❌ FAIL: pending_overrides.json is not valid JSON"
+        cat "$file"
+        cat /tmp/urnet_json_err
+        FAILS=$((FAILS + 1))
+    fi
+    rm -rf "$home"
+}
+test_pending_overrides_valid_json
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
