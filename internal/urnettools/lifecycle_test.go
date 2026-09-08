@@ -11,6 +11,14 @@ import (
 // TestOptimizeLinuxRootCheck: optimizeLinux must refuse non-root with an
 // actionable error when sudo is unavailable before touching sysctl.
 func TestOptimizeLinuxRootCheck(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// The root gate in cmdOptimize only applies on the Linux dispatch
+		// path (it self-elevates via sudo before calling optimizeLinux).
+		// On Windows, cmdOptimize dispatches straight to optimizeWindows,
+		// which has no root requirement at all, so this test's premise
+		// ("must return a root-required error") does not hold there.
+		t.Skip("root gate is Linux-specific; cmdOptimize on Windows goes through optimizeWindows, which has no such requirement")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; the non-root guard cannot be exercised")
 	}
