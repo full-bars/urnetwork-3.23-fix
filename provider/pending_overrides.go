@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // pendingOverridesPath returns ~/.urnetwork/pending_overrides.json — a
@@ -87,6 +88,11 @@ func mergePendingOverrides(state *controlState) {
 	defer state.txMu.Unlock()
 
 	applied := 0
+	// Name each key that lands, not just the count: an operator who ran
+	// `urnet-tools set` while the provider was stopped needs to see THEIR
+	// setting registered on the next start, and "applied 3 override(s)"
+	// does not tell them which three.
+	var appliedDesc []string
 	for _, op := range ops {
 		var applyErr error
 		switch op.Op {
@@ -101,6 +107,11 @@ func mergePendingOverrides(state *controlState) {
 			tlog("[control] skipping invalid pending override (op=%q key=%q): %s\n", op.Op, op.Key, applyErr)
 			continue
 		}
+		if op.Op == "clear" {
+			appliedDesc = append(appliedDesc, "cleared "+op.Key)
+		} else {
+			appliedDesc = append(appliedDesc, op.Key+"="+op.Value)
+		}
 		applied++
 	}
 
@@ -109,7 +120,8 @@ func mergePendingOverrides(state *controlState) {
 			tlog("[control] applied %d pending override(s) in memory but failed to persist; leaving pending_overrides.json in place to retry next start: %s\n", applied, err)
 			return
 		}
-		tlog("[control] applied %d pending override(s) from pending_overrides.json\n", applied)
+		tlog("⚙️ [control] applied %d queued override(s) from pending_overrides.json: %s\n",
+			applied, strings.Join(appliedDesc, ", "))
 	}
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

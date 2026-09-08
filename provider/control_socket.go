@@ -140,6 +140,18 @@ func handleControlConn(conn net.Conn, state *controlState) {
 	}
 }
 
+// formerValue renders the previous value of a control key for the log line,
+// distinguishing "was empty" from "was never set".
+func formerValue(old string, had bool) string {
+	if !had {
+		return "unset"
+	}
+	if old == "" {
+		return `""`
+	}
+	return old
+}
+
 func handleControlRequest(state *controlState, req controlRequest) controlResponse {
 	if req.Key == "" {
 		return controlResponse{OK: false, Error: "key is required"}
@@ -164,6 +176,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		defer state.txMu.Unlock()
 		oldValue, hadOld := state.get(req.Key)
 		if err := state.set(req.Key, req.Value); err != nil {
+			tlog("❌ [control] set %s=%s rejected: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
 		if err := state.persist(); err != nil {
@@ -172,14 +185,22 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			} else {
 				state.clear(req.Key)
 			}
+			tlog("❌ [control] set %s=%s failed to persist, rolled back: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
 		}
 		if err := applyLiveSideEffect(req.Key, req.Value); err != nil {
 			// Persisted fine — it'll take effect on the next restart — but
 			// the immediate, no-restart-needed part of it failed. Surface
 			// that distinction rather than claiming full success.
+			tlog("⚠️ [control] set %s=%s (was %s) persisted but live apply failed, takes effect on restart: %s\n",
+				req.Key, req.Value, formerValue(oldValue, hadOld), err)
 			return controlResponse{OK: false, Error: "persisted, but failed to apply live: " + err.Error()}
 		}
+		// The operator's confirmation that the setting actually reached the
+		// running provider: without this, `urnet-tools set` succeeding is
+		// only visible in the CLI, and nothing in the provider's own log
+		// shows the change was registered.
+		tlog("⚙️ [control] set %s=%s (was %s)\n", req.Key, req.Value, formerValue(oldValue, hadOld))
 		return controlResponse{OK: true}
 
 	case "clear":
@@ -187,14 +208,17 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		defer state.txMu.Unlock()
 		oldValue, hadOld := state.get(req.Key)
 		if err := state.clear(req.Key); err != nil {
+			tlog("❌ [control] clear %s rejected: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
 		if err := state.persist(); err != nil {
 			if hadOld {
 				state.set(req.Key, oldValue)
 			}
+			tlog("❌ [control] clear %s failed to persist, rolled back: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
 		}
+		tlog("⚙️ [control] cleared %s (was %s)\n", req.Key, formerValue(oldValue, hadOld))
 		return controlResponse{OK: true}
 
 	default:

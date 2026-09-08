@@ -3488,7 +3488,7 @@ func provide(opts docopt.Opts) {
 			Description: providerDescription(nodeName),
 			// Recompute on every renewal instead of reusing the startup value:
 			// providerDescription re-resolves the node-name override and public
-			// IP each call, so a runtime `urnet-tools rename`/ip-detect change
+			// IP each call, so a runtime `urnet-tools rename`/show-ip change
 			// reaches the server on the next hourly/401 renewal, not just mint.
 			DescribeFn:     func() string { return providerDescription(nodeName) },
 			ApiURL:         apiUrl,
@@ -4110,7 +4110,37 @@ func providerDescription(nodeName string) string {
 			dashboardLabel = displayName
 		}
 	}
-	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	logDashboardLabel(description)
+	return description
+}
+
+var (
+	lastDashboardLabelMu sync.Mutex
+	lastDashboardLabel   string
+)
+
+// logDashboardLabel reports the identity the node presents on the dashboard,
+// the first time it resolves and on every change after that.
+//
+// providerDescription runs once per proxy per renewal, so logging every call
+// would bury the log on a box with hundreds of proxies. Logging only on change
+// is what makes `urnet-tools rename` and `urnet-tools show-ip` verifiable from
+// the node's own log: both take effect at the next renewal rather than
+// immediately, so without this an operator has no way to confirm from the logs
+// that the provider picked the change up.
+func logDashboardLabel(description string) {
+	lastDashboardLabelMu.Lock()
+	defer lastDashboardLabelMu.Unlock()
+	if description == lastDashboardLabel {
+		return
+	}
+	if lastDashboardLabel == "" {
+		tlog("🏷️ [identity] dashboard label: %s\n", description)
+	} else {
+		tlog("🏷️ [identity] dashboard label changed: %s -> %s\n", lastDashboardLabel, description)
+	}
+	lastDashboardLabel = description
 }
 
 // ipDetectionDisabledPath returns ~/.urnetwork/disable_ip_autodetect, a file
