@@ -98,11 +98,15 @@ func sanitizeCandidateArgs(args []string) []string {
 	return cleanArgs
 }
 
-// spawnHotSwapCandidate creates an anonymous socketpair with SOCK_CLOEXEC,
+// spawnHotSwapCandidate creates an anonymous close-on-exec socketpair,
 // passes descriptor 3 to the child via ExtraFiles, and starts the candidate process.
 func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, error) {
-	// SOCK_CLOEXEC prevents descriptor leakage into child or unrelated forks (F-7)
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	// Close-on-exec prevents descriptor leakage into the child or unrelated
+	// forks (F-7). How that is achieved is platform-specific: see
+	// hotSwapSocketpair in hotswap_socketpair_linux.go (atomic SOCK_CLOEXEC)
+	// and hotswap_socketpair_other.go (ForkLock + CloseOnExec, since darwin
+	// and the BSDs have no SOCK_CLOEXEC).
+	fds, err := hotSwapSocketpair()
 	if err != nil {
 		return nil, fmt.Errorf("socketpair: %w", err)
 	}
