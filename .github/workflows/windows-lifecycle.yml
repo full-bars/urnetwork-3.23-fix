@@ -2,13 +2,30 @@ name: Windows lifecycle verification
 
 on:
   push:
-    branches: [main, "fix/*"]
+    branches: [main]
   pull_request:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - 'releases/**'
   workflow_dispatch:
+
+# Every fix/* branch reaches CI through a pull request, so `push: fix/*` only
+# ever duplicated the pull_request run: two runs of the same jobs, on the same
+# commit, started seconds apart. That is wasted CI everywhere, and in
+# tool-functional-smoke it is actively harmful, because both runs authenticate
+# against the live API with the same GAUNTLET_USER credential and one of them
+# loses. The loser reports "Authentication failed (exit code: 0)" with an empty
+# error body, which reads as a code failure but is a self-inflicted collision.
+#
+# push is therefore scoped to main (the one branch with no PR to trigger on),
+# and the concurrency group collapses a branch's runs whichever event started
+# them, so rapid successive pushes to a PR supersede rather than stack.
+# cancel-in-progress stays false for main: a main-branch validation run should
+# finish, not be cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-lifecycle:

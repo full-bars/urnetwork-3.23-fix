@@ -834,6 +834,22 @@ func cmdDockerSet(args []string) error {
 	return containerExecByName(p.Unit, inner...)
 }
 
+// cmdDockerRename delegates `urnet-docker rename <name>` into the container,
+// forwarding to the container's urnet-tools rename command.
+func cmdDockerRename(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "rename"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
 // cmdDockerFastAuth manages the auth rate limiter bypass marker in the container.
 func cmdDockerFastAuth(args []string) error {
 	providers := DiscoverDocker()

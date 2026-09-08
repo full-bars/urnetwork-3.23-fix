@@ -295,3 +295,93 @@ func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
 		seen[k] = true
 	}
 }
+
+// TestMaybeElevateForCrossUser pins the cross-user self-elevation: an
+// unprivileged caller targeting another OS user's provider must re-exec under
+// sudo with the same argv (plus -f when force), not hand the operator a manual
+// "run with sudo" hunt. Uses a recorder seam so no real sudo is spawned.
+func TestMaybeElevateForCrossUser(t *testing.T) {
+	origPriv := isPrivileged
+	origE := elevateSelfFunc
+	defer func() { isPrivileged = origPriv; elevateSelfFunc = origE }()
+	isPrivileged = func() bool { return false } // unprivileged caller
+
+	var recorded []string
+	elevateSelfFunc = func(args []string) error {
+		recorded = append([]string{}, args...)
+		return nil
+	}
+
+	own := Provider{User: currentUserName(), Unit: "urnetwork.service"}
+	other := Provider{User: "otheruser", Unit: "urnetwork-b.service"}
+
+	// Own user -> no elevation, proceed.
+	if elevated, _ := maybeElevateForCrossUser("status", own, []string{"--unit", "urnetwork.service"}, false, false); elevated {
+		t.Error("own-user provider must not elevate")
+	}
+	// Cross-user, no force -> elevates with [sub, args...].
+	elevated, err := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false)
+	if err != nil || !elevated {
+		t.Fatalf("cross-user status must elevate, got elevated=%v err=%v", elevated, err)
+	}
+	if len(recorded) != 3 || recorded[0] != "status" || recorded[1] != "--user" || recorded[2] != "otheruser" {
+		t.Errorf("expected argv [status --user otheruser], got %v", recorded)
+	}
+	// Cross-user + force -> the elevated child keeps -f (no double prompt).
+	elevateSelfFunc = func(args []string) error {
+		recorded = append([]string{}, args...)
+		return nil
+	}
+	if elevated, err := maybeElevateForCrossUser("restart", other, []string{"--user", "otheruser"}, true, false); err != nil || !elevated {
+		t.Fatalf("cross-user restart -f must elevate, got elevated=%v err=%v", elevated, err)
+	}
+	if len(recorded) != 4 || recorded[0] != "restart" || recorded[1] != "-f" || recorded[3] != "otheruser" {
+		t.Errorf("expected argv [restart -f --user otheruser], got %v", recorded)
+	}
+	// Already elevated (child under sudo) -> never re-elevate (no loop).
+	t.Setenv(urnetElevatedEnv, "1")
+	if elevated, _ := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false); elevated {
+		t.Error("elevated child must not re-elevate")
+	}
+	// Root -> no elevation.
+	os.Unsetenv(urnetElevatedEnv)
+	isPrivileged = func() bool { return true }
+	if elevated, _ := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false); elevated {
+		t.Error("root caller must not elevate")
+	}
+}
+
+// TestAmbiguousErrorIsActionable: the multi-provider refusal must hand the
+// operator concrete next steps (target flags, interaction, default set), not
+// just a flag-soup line plus a "run with sudo" hunt. These snapshots pin that
+// the actionable tips survive message regressions.
+func TestAmbiguousErrorIsActionable(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller
+	defer func() { isPrivileged = orig }()
+	ps := []Provider{
+		{User: "alice", Unit: "urnetwork.service", Network: "mesh-a", StateDir: "/home/alice/.urnetwork"},
+		{User: "bob", Unit: "urnetwork-b.service", Network: "mesh-b", StateDir: "/home/bob/.urnetwork"},
+	}
+	err := ambiguousError(ps)
+
+	for _, want := range []string{
+		"specify a target",
+		"--unit",
+		"default set",
+	} {
+		if !contains(err.Error(), want) {
+			t.Errorf("ambiguousError must tell the operator to use %q, got:\n%s", want, err.Error())
+		}
+	}
+	// The sudo/fullpath hunt must be GONE from the refusal — awareness now
+	// points at providers --all instead.
+	if strings.Contains(err.Error(), "sudo ") {
+		t.Errorf("ambiguousError must not dump a manual 'sudo /path' hunt; got:\n%s", err.Error())
+	}
+	// --select is redundant (interaction is already automatic on a TTY and
+	// refused off a TTY); it must not be advertised as the path to the picker.
+	if strings.Contains(err.Error(), "--select") {
+		t.Errorf("ambiguousError must not point at the redundant --select flag; got:\n%s", err.Error())
+	}
+}

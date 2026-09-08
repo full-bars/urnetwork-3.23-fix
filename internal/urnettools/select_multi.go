@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,26 +20,114 @@ func rootHint() string {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		return ""
 	}
+	return "sudo " + resolvedExecutablePath()
+}
+
+// resolvedExecutablePath returns this process's own executable path, with
+// symlinks resolved so a `sudo <path>` invocation is valid regardless of how
+// the binary was installed (it always points at the real file, never a symlink
+// that lives on a per-user path root can't traverse).
+func resolvedExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
-		return ""
+		return "urnet-tools"
 	}
 	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-		exe = resolved
+		return resolved
 	}
-	return "sudo " + exe
+	return exe
+}
+
+// elevateSelf re-executes this same binary under sudo with the given
+// subcommand arguments, so cross-user and host-scope operations (optimize,
+// and management of another user's provider) run in a single root context
+// instead of asking the operator to hand-craft `sudo /long/path/urnet-tools
+// ...` themselves. The elevated child inherits an env marker so it skips the
+// confirmation it already got pre-elevation (the sudo password prompt is the
+// elevation boundary). Returns the child's exit error; stdin/stdout/stderr are
+// passed through so the sudo password prompt and any output reach the user.
+func elevateSelf(args []string) error {
+	exe := resolvedExecutablePath()
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("operation requires root, but sudo is unavailable; run directly: sudo %s %s", exe, strings.Join(args, " "))
+	}
+	cmdArgs := append([]string{sudo, exe}, args...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), urnetElevatedEnv+"=1")
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 0 {
+			return nil
+		}
+		return fmt.Errorf("elevated %s failed: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// urnetElevatedEnv marks the child spawned by elevateSelf so it can skip the
+// confirm prompt it already passed pre-elevation (the sudo password is the
+// boundary). It is intentionally not a user-facing flag: the operator never
+// types it.
+const urnetElevatedEnv = "URNET_TOOLS_ELEVATED"
+
+// elevateSelfFunc is the elevation mechanism as a var seam so tests can stub
+// it (like isPrivileged / stdinIsInteractiveOverride) without ever invoking a
+// real `sudo`. This matters because cmdStatus/cmdLogs/cmdStop etc. re-exec
+// under sudo when the resolved provider belongs to another OS user, and a unit
+// test must never spawn a real sudo.
+var elevateSelfFunc = elevateSelf
+
+// maybeElevateForCrossUser re-executes a command under sudo when its resolved
+// provider belongs to another OS user and the caller is unprivileged — the
+// binary lives on a per-user path, so a plain `sudo urnet-tools ...` would be
+// "command not found", and the operator shouldn't have to hand-craft a
+// `sudo /long/path/urnet-tools ... --user bob` themselves. On success it
+// returns (true, nil): the caller must stop and return nil (the elevated child
+// did the work). Returns (false, nil) to proceed normally when the target is
+// the current user's, the caller is root/elevated, or already elevated. On a
+// failed elevation the error is returned so the operator sees exactly what to
+// run.
+//
+// `sub` is the subcommand name (e.g. "status"); `args` are the remaining
+// arguments exactly as the operator typed them (including any --user bob), so
+// the elevated child re-resolves the same target as root.
+func maybeElevateForCrossUser(sub string, p Provider, args []string, force, dryRun bool) (bool, error) {
+	if isPrivileged() || os.Getenv(urnetElevatedEnv) == "1" {
+		return false, nil
+	}
+	if p.User == "" || p.User == currentUserName() {
+		return false, nil
+	}
+	// Rebuild the argv the elevated child needs: the original args plus
+	// force/dry-run, which parseGlobal stripped before the command ran. Without
+	// them the child would re-prompt for confirmation (double-confirm bug). -n
+	// must NOT elevate at all (a plan needs no root), which callers ensure by
+	// skipping this for dry-run.
+	carry := args
+	if dryRun {
+		carry = append([]string{"-n"}, args...)
+	} else if force {
+		carry = append([]string{"-f"}, args...)
+	}
+	if err := elevateSelfFunc(append([]string{sub}, carry...)); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // printNarrowedNote reports that selectTargetOrSoleAccessible auto-picked
 // the sole provider reachable without root, so the operator knows other
-// providers exist on the box but were skipped rather than acted on — same
-// wording across every read-only command that uses the narrowing (logs,
-// status, summary), so the behavior reads as one consistent tool feature
-// rather than a per-command surprise.
+// providers exist on the box but were skipped rather than acted on. The note
+// points at the actionable inventory instead of dumping a long `/full/path`
+// hunt — multi-user awareness lives in `providers --all`, so that's what the
+// notice leads with.
 func printNarrowedNote(totalFound int, p Provider, what string) {
 	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — showing its %s.", totalFound, p.User, what)
-	if hint := rootHint(); hint != "" {
-		note += fmt.Sprintf(" To see/target the others: %s %s", hint, what)
+	if !isPrivileged() {
+		note += fmt.Sprintf(" To inspect all of them: urnet-tools providers --all (as root)")
 	}
 	fmt.Println(note)
 }
@@ -59,8 +148,8 @@ func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
 		gerund = action + "ting"
 	}
 	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — %s it.", totalFound, p.User, gerund)
-	if hint := rootHint(); hint != "" {
-		note += fmt.Sprintf(" To target another provider: %s --unit <unit>", hint)
+	if !isPrivileged() {
+		note += fmt.Sprintf(" To target another provider by unit/network, or pin a default: urnet-tools default set --network <name> (see 'urnet-tools providers --all')")
 	}
 	fmt.Println(note)
 }
@@ -72,8 +161,8 @@ func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
 // Resolution order:
 //  1. include (--include a,b) selects exactly those providers; ambiguous
 //     entries are an error.
-//  2. interactive (--select) prompts with a numbered list; the operator
-//     picks entries by number (comma/space separated) or "all".
+//  2. a single explicit target / the sole provider auto-picks without
+//     prompting; otherwise selection is interactive only on a TTY.
 //  3. no criteria: single provider → that one; multiple → refuse with the
 //     inventory (same guard as selectTarget).
 //
@@ -334,15 +423,21 @@ func ambiguousErrorWithReason(providers []Provider, reason string) error {
 	return err
 }
 
-// ambiguousError renders the refusal message with the inventory.
+// ambiguousError renders the refusal message with the inventory plus concrete
+// next steps, so an operator who hits "which one?" isn't left guessing at
+// flag syntax — it points at the inventory command, the target flags, and the
+// one-command way to make future runs unambiguous.
 func ambiguousError(providers []Provider) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
+	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include:\n", len(providers))
 	for _, p := range providers {
 		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
-	if hint := rootHint(); hint != "" {
-		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
+	fmt.Fprintf(&b, "Tips:\n")
+	fmt.Fprintf(&b, "  one target:     urnet-tools <cmd> --unit <unit>   (or --user / --network / --state-dir)\n")
+	if !isPrivileged() {
+		fmt.Fprintf(&b, "  make future runs unambiguous: urnet-tools default set --network <name>\n")
+		fmt.Fprintf(&b, "  see every provider on the box: urnet-tools providers --all (as root)\n")
 	}
 	return fmt.Errorf("%s", b.String())
 }

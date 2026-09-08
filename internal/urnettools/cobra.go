@@ -45,6 +45,7 @@ Session & Identity:
   sn-status [--json]      Subnet 25 node rank, coldkey & miner status
   choose-network          Set API/connect endpoints
   default                 Persist a default provider target for this box
+  rename <name>           Set dashboard display name (alias: set node-name)
 
 Proxy Management:
   proxy add <file>        Bulk add proxies from a text file
@@ -59,6 +60,7 @@ Proxy Management:
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
+  ip-detect [on|off|status] Auto-detect public IP for dashboard identity
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
@@ -156,6 +158,7 @@ func buildRootCmd() *cobra.Command {
 		newRamlogsCmd(),
 		newOptimizeCmd(),
 		newHotRestartCmd(),
+		newHotswapCmd(),
 		newFastAuthCmd(),
 		newSetCmd(),
 		newAuthCmd(),
@@ -171,6 +174,8 @@ func buildRootCmd() *cobra.Command {
 		newAutoStartCmd(),
 		newSelfHealCmd(),
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
+		newIPDetectCmd(),
+		newRenameCmd(),
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
@@ -214,11 +219,11 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 }
 
 func newProvidersCmd() *cobra.Command {
-	return withHelp(newCobraCmd("providers", "list all providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("providers [--all]", "list providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List every provider found on this box: systemd units and bare processes, across all OS users, identified by their JWT network identity. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers")
+	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all")
 }
 
 func newStatusCmd() *cobra.Command {
@@ -258,7 +263,7 @@ func newRestartCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force. Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network tacogonzalez3000 --force")
+	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network tacogonzalez3000 --force")
 }
 
 func newUpdateCmd() *cobra.Command {
@@ -412,7 +417,7 @@ func newOptimizeCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdOptimize(rest, force, dryRun)
 		})
-	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force, and needs root (or sudo) on Linux.", "  urnet-tools optimize\n  sudo urnet-tools optimize --force")
+	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes), then prompts for sudo as needed on Linux and applies both the live settings and the reboot-persisted file. Run it as a normal user — it re-executes itself under sudo.", "  urnet-tools optimize\n  urnet-tools optimize --force")
 }
 
 func newHotRestartCmd() *cobra.Command {
@@ -421,6 +426,14 @@ func newHotRestartCmd() *cobra.Command {
 			return cmdHotRestart(rest, force, dryRun)
 		})
 	}), "Restart the provider's unit in a way that lets it reuse client IDs across the restart. It takes no extra arguments beyond a target, and asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools hot-restart --unit urnetwork-native.service\n  urnet-tools hot-restart --force")
+}
+
+func newHotswapCmd() *cobra.Command {
+	return withHelp(newCobraCmd("hotswap", "zero-downtime in-process binary reload", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdHotswap(rest, force, dryRun)
+		})
+	}), "Trigger an in-process zero-downtime HotSwap on a running provider without cycling the unit.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
 }
 
 func newFastAuthCmd() *cobra.Command {
@@ -456,6 +469,33 @@ func newSetCmd() *cobra.Command {
 				return nil
 			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				return cmdSet(rest, force, dryRun)
+			})
+		},
+	}
+}
+
+func newRenameCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "rename <name>",
+		Short:              "set dashboard display name",
+		Long:               "Set the provider's display name reported to the dashboard. Equivalent to `urnet-tools set node-name <name>`. The change takes effect on the provider's next tick — no restart needed. Clears the override with `urnet-tools rename off` (reverts to hostname).",
+		Example:            "  urnet-tools rename us-west-2\n  urnet-tools rename off\n  urnet-tools rename my-node-3 --unit urnetwork-native.service",
+		Aliases:            []string{"set-node-name"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				if len(rest) == 0 || (rest[0] == "off" && len(rest) > 1) {
+					return fmt.Errorf("rename requires a name argument (or 'off' to clear)")
+				}
+				if rest[0] == "off" {
+					rest = []string{"node-name", "off"}
+				} else {
+					rest = []string{"node-name", rest[0]}
+				}
 				return cmdSet(rest, force, dryRun)
 			})
 		},
@@ -581,6 +621,24 @@ func newSelfHealCmd() *cobra.Command {
 				return cmd.Help()
 			}
 			return cmdSelfHeal(args)
+		},
+	}
+}
+
+func newIPDetectCmd() *cobra.Command {
+	// cmdIPDetect has its own -h handling; building raw preserves it.
+	return &cobra.Command{
+		Use:                "ip-detect",
+		Short:              "toggle public IP autodetection",
+		Long:               "Toggle or report whether the provider auto-detects its public IP (via ip.me) for dashboard identity. Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set.",
+		Example:            "  urnet-tools ip-detect status\n  urnet-tools ip-detect off\n  urnet-tools ip-detect on",
+		Aliases:            []string{"ipdetect"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdIPDetect(args)
 		},
 	}
 }

@@ -202,7 +202,7 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushLocked()
+	return s.flushLocked(key, entry, false)
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -239,24 +239,87 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushLocked()
+	return s.flushLocked(key, clientJWTEntry{}, true)
 }
 
-func (s *clientJWTStore) flushLocked() error {
+// flushLocked persists the single Put/Delete operation named by key
+// (entry/deleted) to disk. It reloads the durable store under the
+// inter-process lock and merges this operation into that reloaded state
+// before writing, rather than blindly marshaling s.entries (this process's
+// in-memory snapshot, potentially loaded before another process — e.g. a
+// HotSwap parent/candidate pair, each with its own clientJWTStore instance —
+// flushed a different key). Without the reload, the second process to reach
+// the lock would replace the first's update with its own stale map instead
+// of merging: both Put calls would report success, but only the last
+// process's snapshot survives on disk (F-9).
+func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted bool) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
 	}
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	// Acquire inter-process lock so a concurrent HotSwap candidate cannot
+	// overwrite our flush with its stale in-memory map (F-9).
+	release, err := acquireJWTStoreLock(s.path)
+	if err != nil {
+		return fmt.Errorf("acquire jwt store lock: %w", err)
+	}
+	defer release()
+
+	// Reload the durable store now, under the lock, so any entries a
+	// concurrent process wrote since we last loaded are preserved.
+	merged := s.entries
+	if data, err := os.ReadFile(s.path); err == nil && len(data) > 0 {
+		var onDisk map[string]clientJWTEntry
+		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
+			merged = onDisk
+		}
+		// A corrupt on-disk file falls back to this process's in-memory
+		// entries (merged stays s.entries) rather than failing the flush —
+		// loadLocked already snapshotted the corrupt bytes for recovery.
+	}
+	if deleted {
+		delete(merged, key)
+	} else {
+		merged[key] = entry
+	}
+	s.entries = merged
+
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
+
+	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
+	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	if err := tmpFile.Chmod(0600); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, s.path)
 }

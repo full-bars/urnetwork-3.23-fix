@@ -224,6 +224,15 @@ func_start_provider(){
                 failures=0
                 continue
             fi
+            if [ -f "$HOME/.urnetwork/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
+                rm -f "$HOME/.urnetwork/hotswap-pending"
+                log "[INFO] UrNetwork hotswap successor active; continuing supervision."
+                failures=0
+                while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
+                    sleep 2
+                done
+                continue
+            fi
             log " [INFO] UrNetwork exited cleanly."
             break
         fi

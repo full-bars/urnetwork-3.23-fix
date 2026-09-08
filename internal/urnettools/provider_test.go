@@ -309,3 +309,29 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestSelectTargetHotSwapDrainDeduplication(t *testing.T) {
+	// During HotSwap graceful stream drain, both parent (PID 100) and child (PID 200)
+	// exist simultaneously for the same unit, user, and state-dir.
+	// selectTarget must resolve to the promoted child without an ambiguous refusal.
+	providers := []Provider{
+		{PID: 100, User: "root", Unit: "urnetwork.service", StateDir: "/root/.urnetwork", Network: "mesh1", Running: true},
+		{PID: 200, User: "root", Unit: "urnetwork.service", StateDir: "/root/.urnetwork", Network: "mesh1", Running: true},
+	}
+	p, err := selectTarget(providers, Target{})
+	if err != nil {
+		t.Fatalf("unexpected error during drain transition: %v", err)
+	}
+	if p.PID != 200 {
+		t.Errorf("expected promoted child PID 200, got PID %d", p.PID)
+	}
+
+	// Explicit unit target also resolves cleanly
+	pUnit, err := selectTarget(providers, Target{Unit: "urnetwork.service"})
+	if err != nil {
+		t.Fatalf("unexpected error with unit target: %v", err)
+	}
+	if pUnit.PID != 200 {
+		t.Errorf("expected promoted child PID 200, got PID %d", pUnit.PID)
+	}
+}

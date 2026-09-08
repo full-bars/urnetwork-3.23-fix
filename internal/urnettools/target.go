@@ -121,6 +121,9 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		case 0:
 			return Provider{}, fmt.Errorf("target %s matches no provider (the pool includes stopped units; use status or providers to list them)", t)
 		default:
+			if p, ok := resolveHotSwapDrainTarget(matches); ok {
+				return p, nil
+			}
 			return Provider{}, fmt.Errorf("target %s is ambiguous (%d matches); use a more specific target", t, len(matches))
 		}
 	}
@@ -132,6 +135,9 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 	case 1:
 		return providers[0], nil
 	default:
+		if p, ok := resolveHotSwapDrainTarget(providers); ok {
+			return p, nil
+		}
 		// An explicitly persisted default provider (default set) resolves the
 		// no-target case with multiple providers, before the ambiguity refusal.
 		if p, ok := resolveDefaultProvider(providers); ok {
@@ -187,4 +193,27 @@ func providerLabel(p Provider) string {
 		return fmt.Sprintf("%s@%s", p.User, p.Network)
 	}
 	return p.StateDir
+}
+
+// resolveHotSwapDrainTarget checks if all candidates share the same Unit, User, and StateDir
+// (as occurs during the zero-downtime HotSwap graceful drain window when parent and candidate co-exist).
+// In that scenario, the candidate with the highest PID (the promoted child) is returned.
+func resolveHotSwapDrainTarget(candidates []Provider) (Provider, bool) {
+	if len(candidates) < 2 {
+		return Provider{}, false
+	}
+	first := candidates[0]
+	if first.Unit == "" || first.StateDir == "" {
+		return Provider{}, false
+	}
+	highestPID := first
+	for _, c := range candidates[1:] {
+		if c.Unit != first.Unit || c.User != first.User || c.StateDir != first.StateDir {
+			return Provider{}, false
+		}
+		if c.PID > highestPID.PID {
+			highestPID = c
+		}
+	}
+	return highestPID, true
 }
