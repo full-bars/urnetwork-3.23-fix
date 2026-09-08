@@ -1808,6 +1808,31 @@ queue_pending_clear() {
     _append_pending_op "{\"op\": \"clear\", \"key\": $(json_string "$key")}" "$home"
 }
 
+# repair_pending_overrides_ownership HOME_DIR OWNER
+# Restores OWNER:OWNER ownership on the pending-overrides queue file, its
+# lock file, and the containing .urnetwork directory. MUST be called after
+# every queue_pending_override/queue_pending_clear invoked from a
+# root/sudo context on another user's behalf (e.g. do_optimize, which
+# re-execs itself under sudo): _append_pending_op creates
+# pending_overrides.json (mode 0600) and pending_overrides.json.lock as
+# whatever UID is currently running — root — while the provider itself
+# runs as OWNER and opens both via its own os.UserHomeDir() during
+# mergePendingOverrides. Root-owned queue/lock files mean the provider can
+# neither take the lock nor read the queue, so the queued override is
+# silently never applied. Safe to call even if nothing was created yet
+# (e.g. the disk-benchmark branch in do_optimize only queues
+# conditionally).
+repair_pending_overrides_ownership() {
+    local home="$1" owner="$2"
+    local dir="$home/.urnetwork"
+    [ -n "$owner" ] || return 0
+    [ -d "$dir" ] || return 0
+    chown "$owner":"$owner" "$dir" 2>/dev/null || true
+    [ -f "$dir/pending_overrides.json" ] && chown "$owner":"$owner" "$dir/pending_overrides.json" 2>/dev/null
+    [ -f "$dir/pending_overrides.json.lock" ] && chown "$owner":"$owner" "$dir/pending_overrides.json.lock" 2>/dev/null
+    return 0
+}
+
 # read_control_value KEY
 # Best-effort current value for KEY, for status display only (the running
 # provider's own in-memory state, if reachable, is the real source of
@@ -3981,6 +4006,7 @@ EOF
             pr_info "Automatically enabling permanent RAM logging for performance..."
 
             queue_pending_override "ramlogs" "on" "$actual_home"
+            repair_pending_overrides_ownership "$actual_home" "$actual_user"
         fi
     fi
 
