@@ -58,7 +58,14 @@ func supportsHotSwap(p Provider) bool {
 func hotSwapVersionOK(p Provider) bool {
 	if p.PID > 0 {
 		if exe, err := runningImagePath(p.PID); err == nil {
-			if ver := providerVersionFromBuildinfo(exe); ver != "" {
+			// providerVersion, not the buildinfo-only variant: -trimpath
+			// release builds carry no main.Version in buildinfo, so the
+			// buildinfo-only read fell through to the module pseudo-version
+			// (v0.0.0-<ts>-<rev>). That is non-empty, so this branch took it
+			// and handed isHotSwapSupportedVersion a string that can never
+			// parse as a release, leaving supportsHotSwap permanently false
+			// on every release binary.
+			if ver := providerVersion(exe); ver != "" {
 				return isHotSwapSupportedVersion(ver)
 			}
 		}

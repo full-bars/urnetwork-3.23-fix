@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -178,6 +179,15 @@ func providerVersion(binary string) string {
 // providerVersionFromBuildinfo extracts the version from Go build info
 // without executing the binary. Returns "" when no version is recorded
 // (e.g. -trimpath builds).
+//
+// The Main.Version fallback deliberately rejects Go module pseudo-versions.
+// This repo's main module carries no semver tag, so a release binary's
+// buildinfo reports Main.Version as v0.0.0-20260905040828-776a45a81f1b --
+// non-empty, and completely unrelated to the provider release. Returning it
+// made providerVersion()'s `!= ""` guard short-circuit before the --version
+// fallback could ever run, so on every -trimpath release build (which is all
+// of them) callers silently compared a pseudo-version against a real tag and
+// always got false.
 func providerVersionFromBuildinfo(binary string) string {
 	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
@@ -201,10 +211,23 @@ func providerVersionFromBuildinfo(binary string) string {
 			return v
 		}
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+	if v := info.Main.Version; v != "" && v != "(devel)" && !isGoPseudoVersion(v) {
+		return v
 	}
 	return ""
+}
+
+// goPseudoVersionSuffix matches the trailing "<yyyymmddhhmmss>-<12 hex>" of a
+// Go module pseudo-version. The separator before the timestamp is a hyphen in
+// the v0.0.0-20260905040828-776a45a81f1b form and a dot in the
+// vX.Y.Z-0.<ts>-<rev> / vX.Y.Z-pre.0.<ts>-<rev> forms. A pseudo-version is
+// derived from a commit, never from a provider release tag, so it is never a
+// valid answer to "what version is this provider?".
+var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}$`)
+
+// isGoPseudoVersion reports whether v is a Go module pseudo-version.
+func isGoPseudoVersion(v string) bool {
+	return goPseudoVersionSuffix.MatchString(v)
 }
 
 // providerVersionFromExec runs the binary with --version under a 3-second

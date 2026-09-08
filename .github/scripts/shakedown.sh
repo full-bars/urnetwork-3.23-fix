@@ -75,11 +75,22 @@ wait_client_id() {
   return 1
 }
 
+# cids_since: the DISTINCT client_ids logged after journal line N, sorted
+# (sorted so `comm` can diff two of these directly).
+cids_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $2}' | sort -u; }
+# markers_since: the (new)/(reused) markers logged after journal line N.
+markers_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $3}'; }
+
 # restart_provider: systemctl --user restart + return the pre-restart journal
 # line count (for wait_client_id).
+# Bounded: sections U and V apply Type=notify drop-ins, under which
+# `systemctl restart` blocks until the provider sends READY=1 and (with
+# TimeoutStartSec=0) never gives up. Unbounded, a missing READY kills the
+# whole job via the CI watchdog and reports nothing; bounded, the caller's
+# own wait_client_id/assertion fails and the report says which check broke.
 restart_provider() {
   echo $(journal_line_count)
-  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+  timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 }
 
 echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
@@ -342,8 +353,24 @@ fi
 
 # ---------- F. Docker path ----------
 section "F. Docker"
-apt-get update -qq >/dev/null 2>&1
-run_check "docker installed" timeout 600 bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
+# The GH runner ships docker-ce preinstalled from Docker's own repo, so
+# `apt-get install docker.io` conflicts with it and exits 100 -- and because
+# of the && it never reaches `systemctl start docker` either. That produced a
+# standing "FAIL: docker installed (exit 100)" on every run while every
+# downstream docker check passed against the daemon that was already there.
+# Assert the END STATE (a responding daemon) and only install one when it is
+# genuinely absent.
+if timeout 60 docker info >/dev/null 2>&1; then
+  ok "docker available (preinstalled daemon responding)"
+else
+  apt-get update -qq >/dev/null 2>&1
+  run_check "docker installed" timeout 600 bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
+  if timeout 60 docker info >/dev/null 2>&1; then
+    ok "docker daemon responding after install"
+  else
+    bad "docker daemon not responding after install"
+  fi
+fi
 curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
 sh /tmp/install-docker.sh 2>&1 | grep -q "sha256 verified" && ok "install-urnet-docker.sh verified" || bad "docker installer"
 run_check "urnet-docker version" /usr/local/bin/urnet-docker version 2>&1
@@ -473,27 +500,55 @@ timeout 30 docker rm -f hub-test >/dev/null 2>&1 && ok "hub container removed" |
 
 # ---------- H. Hot-restart + client identity lifecycle ----------
 section "H. Hot-restart + identity"
-CID_BEFORE=$(j | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
-[ -n "$CID_BEFORE" ] && ok "provider client_id present (${CID_BEFORE:0:12}…)" || bad "provider client_id missing"
+# The provider mints one client_id PER PROXY (main.go prints "client_id: <id>
+# (new|reused)" from the per-proxy auth path), and by this point section E's
+# URL sources have brought up scores of them. So "last client_id before" vs
+# "last client_id after" compares two UNRELATED proxies: it fails even when
+# hot-restart works perfectly, and can even report an "after" id OLDER than
+# the "before" one, because a reused id encodes its ORIGINAL mint time
+# (observed on the v3.23.0-fix.30.9 run: before=01a06fd0-0e5
+# after=01a06fcf-d39, a standing FAIL against a working product).
+#
+# Compare the SETS instead, and assert the provider's own per-proxy
+# (new|reused) marker, which is the direct signal for JWT reuse.
+CIDS_BEFORE=$(mktemp); CIDS_AFTER=$(mktemp); CIDS_FRESH=$(mktemp)
+cids_since 0 > "$CIDS_BEFORE"
+N_BEFORE=$(wc -l < "$CIDS_BEFORE")
+[ "$N_BEFORE" -gt 0 ] && ok "provider client_ids present ($N_BEFORE distinct)" || bad "provider client_id missing"
 
-# 1) hot-restart must REUSE the same client_id (identity preserved).
+# 1) hot-restart must REUSE identities: ids logged after the restart come back
+#    marked (reused) and overlap the pre-restart set.
 MARK=$(restart_provider)
-CID_AFTER=$(wait_client_id "$MARK" 120)
-if [ -n "$CID_AFTER" ] && [ "$CID_BEFORE" = "$CID_AFTER" ]; then
-  ok "hot-restart reused client_id (${CID_AFTER:0:12}…)"
+wait_client_id "$MARK" 120 >/dev/null
+# wait_client_id returns on the FIRST id; settle so several proxies have
+# re-authed and the set comparison has more than one sample to work with.
+sleep 20
+cids_since "$MARK" > "$CIDS_AFTER"
+N_AFTER=$(wc -l < "$CIDS_AFTER")
+N_REUSED=$(markers_since "$MARK" | grep -c "reused" || true)
+N_OVERLAP=$(comm -12 "$CIDS_BEFORE" "$CIDS_AFTER" | wc -l)
+if [ "$N_AFTER" -gt 0 ] && [ "${N_REUSED:-0}" -gt 0 ] && [ "$N_OVERLAP" -gt 0 ]; then
+  ok "hot-restart reused client_ids ($N_REUSED reused markers, $N_OVERLAP of $N_AFTER ids carried over)"
 else
-  bad "hot-restart did NOT reuse client_id (before=${CID_BEFORE:0:12} after=${CID_AFTER:0:12})"
+  bad "hot-restart did NOT reuse client_ids (after=$N_AFTER reused_markers=${N_REUSED:-0} overlap=$N_OVERLAP)"
 fi
 
-# 2) Clear the persisted client-JWT cache, restart -> a NEW client_id mints.
+# 2) Clear the persisted client-JWT cache, restart -> ids must mint NEW, and
+#    none may carry over from the previous set.
 rm -f /home/urnet/.urnetwork/.client_jwts.json
 MARK=$(restart_provider)
-CID_FRESH=$(wait_client_id "$MARK" 120)
-if [ -n "$CID_FRESH" ] && [ "$CID_FRESH" != "$CID_AFTER" ]; then
-  ok "cleared cache minted NEW client_id (${CID_FRESH:0:12}…)"
+wait_client_id "$MARK" 120 >/dev/null
+sleep 20
+cids_since "$MARK" > "$CIDS_FRESH"
+N_FRESH=$(wc -l < "$CIDS_FRESH")
+N_NEW=$(markers_since "$MARK" | grep -c "new" || true)
+N_CARRIED=$(comm -12 "$CIDS_AFTER" "$CIDS_FRESH" | wc -l)
+if [ "$N_FRESH" -gt 0 ] && [ "${N_NEW:-0}" -gt 0 ] && [ "$N_CARRIED" -eq 0 ]; then
+  ok "cleared cache minted NEW client_ids ($N_NEW new markers, 0 of $N_AFTER carried over)"
 else
-  bad "cleared cache did NOT mint new client_id (after=${CID_AFTER:0:12} fresh=${CID_FRESH:0:12})"
+  bad "cleared cache did NOT mint new client_ids (fresh=$N_FRESH new_markers=${N_NEW:-0} carried_over=$N_CARRIED)"
 fi
+rm -f "$CIDS_BEFORE" "$CIDS_AFTER" "$CIDS_FRESH"
 
 # ---------- I. Control-plane connectivity evidence ----------
 section "I. Control-plane ([net][s]select)"
