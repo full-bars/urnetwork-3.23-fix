@@ -2811,6 +2811,28 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
+	// Startup barrier. The provider is now self-managing: control state is
+	// loaded, anything urnet-tools queued while it was stopped has been
+	// drained, and the control socket is bound. Everything past this point is
+	// retry loops that supervise themselves, so startup is complete in the
+	// only sense systemd asks about.
+	//
+	// This deliberately does NOT wait for a proxy to authenticate. See
+	// notifySystemdReady for the full reasoning; the short version is that the
+	// unit sets TimeoutStartSec=0, so gating READY on an external dependency
+	// turns `systemctl restart` into an unbounded hang during an API outage.
+	// Proxy health is reported continuously via STATUS= instead.
+	//
+	// The HotSwap candidate path sends its own READY after takeover completes
+	// (see candidateAckOnce below). sd_notify READY is idempotent, so a second
+	// send is harmless and the two paths do not need to coordinate.
+	if !isHotSwapCandidate {
+		if err := notifySystemdReady(); err != nil {
+			tlog("[systemd] READY=1 notify failed: %s\n", err)
+		}
+		reportProxyStatusToSystemd()
+	}
+
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
 	// cancel() was never called (e.g. the parent event.Ctx() was cancelled
@@ -3351,6 +3373,12 @@ func provide(opts docopt.Opts) {
 		})
 		defer unregCloser()
 
+		// This proxy now has a live transport; bracket it so systemd STATUS=
+		// reflects the real count. Paired with the defer so every early return
+		// below decrements too.
+		proxyBecameLive()
+		defer proxyWentDown()
+
 		// If candidate child, announce ACK to parent once the first live transport is active
 		var unregSocketCloser func()
 		candidateAckOnce.Do(func() {
@@ -3664,6 +3692,10 @@ func provide(opts docopt.Opts) {
 	// Load persisted slow-retry state so that a restart does not reset
 	// the 14-day drop clock for proxies that were already failing.
 	globalProxySlowRetryState = LoadProxySlowRetryState()
+
+	// Publish the denominator for systemd STATUS= now that the proxy list is
+	// final (post prune/rebuild above).
+	setConfiguredProxyCount(len(allProxySettings))
 
 	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))

@@ -198,11 +198,18 @@ func startHotSwapSignalListener(ctx context.Context, cancel context.CancelFunc, 
 	}()
 }
 
-// notifySystemdMainPID sends MAINPID=<pid> to systemd's NOTIFY_SOCKET if present.
-func notifySystemdMainPID(pid int) error {
+// sdNotify sends one datagram to systemd's NOTIFY_SOCKET. It is the single
+// dial/write path shared by every sd_notify caller below; the protocol is
+// newline-separated KEY=VALUE assignments in one message.
+//
+// Returns ErrNoNotifySocket when NOTIFY_SOCKET is unset, so callers can
+// distinguish "not running under Type=notify" from a genuine send failure.
+// notifySystemdMainPID needs that distinction (F-2); the fire-and-forget
+// callers below deliberately swallow it.
+func sdNotify(msg string) error {
 	notifySocket := os.Getenv("NOTIFY_SOCKET")
 	if notifySocket == "" {
-		return ErrNoNotifySocket // Distinguishable error when NOTIFY_SOCKET is missing (F-2)
+		return ErrNoNotifySocket
 	}
 
 	addr := &net.UnixAddr{
@@ -216,31 +223,45 @@ func notifySystemdMainPID(pid int) error {
 	}
 	defer conn.Close()
 
-	msg := []byte("MAINPID=" + strconv.Itoa(pid) + "\n")
-	_, err = conn.Write(msg)
+	_, err = conn.Write([]byte(msg))
 	return err
 }
 
-// notifySystemdReady sends READY=1 to systemd's NOTIFY_SOCKET when the provider is active.
+// notifySystemdMainPID sends MAINPID=<pid> to systemd's NOTIFY_SOCKET if present.
+func notifySystemdMainPID(pid int) error {
+	return sdNotify("MAINPID=" + strconv.Itoa(pid) + "\n")
+}
+
+// notifySystemdReady sends READY=1, meaning "startup is complete".
+//
+// READY is systemd's startup barrier, not a health signal: it answers "has
+// this unit finished starting", not "is this unit currently working". The
+// provider therefore sends it once it is self-managing (control socket bound,
+// supervision loops running), NOT once a proxy has authenticated.
+//
+// Gating READY on a successful proxy auth would make the barrier hostage to a
+// third party. The unit sets TimeoutStartSec=0, which is itself correct (proxy
+// auth backs off for hours against a rate-limited API, so any finite timeout
+// would eventually kill a provider that is retrying correctly). Combining the
+// two means a `systemctl restart` during an API outage blocks forever, with no
+// ceiling, at exactly the moment an operator most needs to restart. Health is
+// reported separately and continuously via notifySystemdStatus.
 func notifySystemdReady() error {
-	notifySocket := os.Getenv("NOTIFY_SOCKET")
-	if notifySocket == "" {
-		return nil
+	if err := sdNotify("READY=1\n"); err != nil && !errors.Is(err, ErrNoNotifySocket) {
+		return err
 	}
+	return nil
+}
 
-	addr := &net.UnixAddr{
-		Name: notifySocket,
-		Net:  "unixgram",
+// notifySystemdStatus sends STATUS=<text>, the free-form line systemd shows in
+// `systemctl status`. This is where proxy health belongs: it can be sent as
+// often as state changes, before or after READY, and is purely informational,
+// so it can never wedge the unit the way a withheld READY does.
+func notifySystemdStatus(text string) error {
+	if err := sdNotify("STATUS=" + text + "\n"); err != nil && !errors.Is(err, ErrNoNotifySocket) {
+		return err
 	}
-
-	conn, err := net.DialUnix("unixgram", nil, addr)
-	if err != nil {
-		return fmt.Errorf("dial NOTIFY_SOCKET %s: %w", notifySocket, err)
-	}
-	defer conn.Close()
-
-	_, err = conn.Write([]byte("READY=1\n"))
-	return err
+	return nil
 }
 
 // execInPlace replaces the current process image in-place via syscall.Exec (execve)
