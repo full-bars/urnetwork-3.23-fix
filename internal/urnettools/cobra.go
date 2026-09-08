@@ -23,6 +23,7 @@ Core Commands:
   stop                    Stop the provider
   restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)
   update                  Upgrade to the latest version
+  hotswap                 Zero-downtime in-process binary reload
   self-update             Update this tool binary itself
   status                  Show provider service status
   logs [all|dump|-i]      Stream logs (all=from start, dump=save, -i=important only)
@@ -60,7 +61,7 @@ Proxy Management:
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
-  ip-detect [on|off|status] Auto-detect public IP for dashboard identity
+  show-ip [on|off|status] Show public IP on the dashboard label (was: ip-detect)
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
@@ -377,7 +378,7 @@ func newTurboCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("turbo", rest, force, dryRun)
 		})
-	}), "Set the throughput profile to v4 or v8 to raise limits on a RAM-rich box, or turn it off to clear the override. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force. Target a specific provider with --unit, --user, --network, or --network-id.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
+	}), "Set the throughput profile to v4 or v8 to raise limits on a RAM-rich box, or turn it off to clear the override. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force. Target a specific provider with --unit, --user, --network, or --network-id.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
 }
 
 func newAutoCmd() *cobra.Command {
@@ -385,7 +386,7 @@ func newAutoCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("auto", rest, force, dryRun)
 		})
-	}), "Turn on or off the auto-tuning profile, which lets the provider detect the box's hardware and pick the best-fit performance profile. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools auto on\n  urnet-tools auto off --unit urnetwork-native.service")
+	}), "Turn on or off the auto-tuning profile, which lets the provider detect the box's hardware and pick the best-fit performance profile. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools auto on\n  urnet-tools auto off --unit urnetwork-native.service")
 }
 
 func newEcoCmd() *cobra.Command {
@@ -393,7 +394,7 @@ func newEcoCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("eco", rest, force, dryRun)
 		})
-	}), "Turn on or off eco mode, a garbage-collection-tuned profile for low-RAM systems. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools eco on\n  urnet-tools eco off --user urnet")
+	}), "Turn on or off eco mode, a garbage-collection-tuned profile for low-RAM systems. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools eco on\n  urnet-tools eco off --user urnet")
 }
 
 func newLowmodeCmd() *cobra.Command {
@@ -401,7 +402,7 @@ func newLowmodeCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("lowmode", rest, force, dryRun)
 		})
-	}), "Turn on or off low-memory mode, which reduces buffers to save RAM at the cost of throughput. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools lowmode on\n  urnet-tools lowmode off --unit urnetwork-native.service")
+	}), "Turn on or off low-memory mode, which reduces buffers to save RAM at the cost of throughput. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools lowmode on\n  urnet-tools lowmode off --unit urnetwork-native.service")
 }
 
 func newRamlogsCmd() *cobra.Command {
@@ -628,11 +629,16 @@ func newSelfHealCmd() *cobra.Command {
 func newIPDetectCmd() *cobra.Command {
 	// cmdIPDetect has its own -h handling; building raw preserves it.
 	return &cobra.Command{
-		Use:                "ip-detect",
-		Short:              "toggle public IP autodetection",
-		Long:               "Toggle or report whether the provider auto-detects its public IP (via ip.me) for dashboard identity. Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set.",
-		Example:            "  urnet-tools ip-detect status\n  urnet-tools ip-detect off\n  urnet-tools ip-detect on",
-		Aliases:            []string{"ipdetect"},
+		Use:   "show-ip",
+		Short: "show the public IP on the dashboard label",
+		Long: "Toggle or report whether the provider appends its public IP (fetched via ip.me) to the dashboard identity label set by `rename`. " +
+			"Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set. " +
+			"This controls what the dashboard displays, not which address the provider serves on; for that see `direct`.",
+		Example: "  urnet-tools show-ip status\n  urnet-tools show-ip off\n  urnet-tools show-ip on",
+		// ip-detect/ipdetect named the mechanism rather than the effect, and
+		// read as a diagnostic that would report the IP. Kept as aliases so
+		// existing scripts and runbooks keep working.
+		Aliases:            []string{"ip-detect", "ipdetect"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {

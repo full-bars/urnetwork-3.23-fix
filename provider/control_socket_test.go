@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -361,5 +363,131 @@ func TestControlSocket_WaitForReleaseUnblocksWhenListenerGone(t *testing.T) {
 		// correct: unblocked promptly after the socket was released
 	case <-time.After(2 * time.Second):
 		t.Fatalf("waitForControlSocketRelease did not return after the listener closed")
+	}
+}
+
+// captureTlog runs fn with os.Stdout redirected and returns what tlog wrote.
+// tlog goes through fmt.Printf to os.Stdout, so this is the same approach the
+// rest of the package's log assertions use.
+func captureTlog(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// TestControlSocketLogsSetAndClear covers the operator-visible half of the
+// control socket: a setting that reaches the running provider must say so in
+// the provider's own log. Without it, `urnet-tools set` succeeding is visible
+// only in the CLI, and there is no way to confirm from the node's logs that
+// the daemon actually registered the change.
+func TestControlSocketLogsSetAndClear(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+
+	out := captureTlog(t, func() {
+		if resp := handleControlRequest(s, controlRequest{Cmd: "set", Key: "node_name", Value: "nyc-1"}); !resp.OK {
+			t.Fatalf("set failed: %s", resp.Error)
+		}
+	})
+	if !strings.Contains(out, "[control] set node_name=nyc-1") {
+		t.Errorf("first set must be logged, got: %q", out)
+	}
+	if !strings.Contains(out, "was unset") {
+		t.Errorf("a key with no previous value must log 'was unset', got: %q", out)
+	}
+
+	// Overwriting must report the value it replaced, so a log reader can see
+	// what the node was running before.
+	out = captureTlog(t, func() {
+		if resp := handleControlRequest(s, controlRequest{Cmd: "set", Key: "node_name", Value: "nyc-2"}); !resp.OK {
+			t.Fatalf("second set failed: %s", resp.Error)
+		}
+	})
+	if !strings.Contains(out, "set node_name=nyc-2") || !strings.Contains(out, "was nyc-1") {
+		t.Errorf("overwrite must log the previous value, got: %q", out)
+	}
+
+	out = captureTlog(t, func() {
+		if resp := handleControlRequest(s, controlRequest{Cmd: "clear", Key: "node_name"}); !resp.OK {
+			t.Fatalf("clear failed: %s", resp.Error)
+		}
+	})
+	if !strings.Contains(out, "cleared node_name") || !strings.Contains(out, "was nyc-2") {
+		t.Errorf("clear must be logged with the previous value, got: %q", out)
+	}
+}
+
+// TestControlSocketLogsRejectedSet pins that a refused change is logged too:
+// a silent rejection is exactly the case where an operator most needs the
+// node's log to explain why their setting did not take.
+func TestControlSocketLogsRejectedSet(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+
+	out := captureTlog(t, func() {
+		if resp := handleControlRequest(s, controlRequest{Cmd: "set", Key: "not_a_real_key", Value: "x"}); resp.OK {
+			t.Fatal("an unknown control key must not be accepted")
+		}
+	})
+	if !strings.Contains(out, "not_a_real_key") || !strings.Contains(out, "rejected") {
+		t.Errorf("a rejected set must be logged, got: %q", out)
+	}
+}
+
+// TestControlSocketGetIsNotLogged keeps reads quiet. `urnet-tools status` polls
+// get on every invocation, so logging it would bury the writes that matter.
+func TestControlSocketGetIsNotLogged(t *testing.T) {
+	withTempHome(t)
+	s := newControlState()
+	if err := s.set("node_name", "nyc-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureTlog(t, func() {
+		if resp := handleControlRequest(s, controlRequest{Cmd: "get", Key: "node_name"}); !resp.OK {
+			t.Fatalf("get failed: %s", resp.Error)
+		}
+	})
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("get must not log, got: %q", out)
+	}
+}
+
+// TestDashboardLabelLoggedOnceAndOnChange covers the other half of the
+// operator's confirmation path. `urnet-tools rename` and `urnet-tools show-ip`
+// take effect at the next renewal rather than immediately, so the node's log is
+// the only place their effect can be observed. providerDescription runs per
+// proxy per renewal, so the line must appear on first resolve and on change,
+// and stay quiet otherwise.
+func TestDashboardLabelLoggedOnceAndOnChange(t *testing.T) {
+	lastDashboardLabelMu.Lock()
+	lastDashboardLabel = ""
+	lastDashboardLabelMu.Unlock()
+
+	first := captureTlog(t, func() { logDashboardLabel("nyc-1 [v1]") })
+	if !strings.Contains(first, "dashboard label: nyc-1 [v1]") {
+		t.Errorf("first resolve must log the label, got: %q", first)
+	}
+
+	repeat := captureTlog(t, func() {
+		logDashboardLabel("nyc-1 [v1]")
+		logDashboardLabel("nyc-1 [v1]")
+	})
+	if strings.TrimSpace(repeat) != "" {
+		t.Errorf("an unchanged label must stay quiet, got: %q", repeat)
+	}
+
+	changed := captureTlog(t, func() { logDashboardLabel("nyc-2 [v1]") })
+	if !strings.Contains(changed, "nyc-1 [v1] -> nyc-2 [v1]") {
+		t.Errorf("a changed label must log the transition, got: %q", changed)
 	}
 }

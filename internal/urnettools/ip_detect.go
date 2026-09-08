@@ -1,4 +1,5 @@
-// ip_detect.go — `urnet-tools ip-detect on|off|status` command
+// ip_detect.go — `urnet-tools show-ip on|off|status` command
+// (previously `ip-detect`, still accepted as an alias)
 //
 // Toggles or reports the provider's IP autodetection behavior. The provider
 // fetches its public IPv4 via ip.me at mint/renewal time unless
@@ -15,9 +16,9 @@ import (
 
 // cmdIPDetect toggles or reports the provider's IP autodetection marker file.
 //
-//	urnet-tools ip-detect on       enable (let provider auto-fetch public IP)
-//	urnet-tools ip-detect off      disable (provider won't autodetect IP)
-//	urnet-tools ip-detect status   report current state
+//	urnet-tools show-ip on       enable (let provider auto-fetch public IP)
+//	urnet-tools show-ip off      disable (provider won't autodetect IP)
+//	urnet-tools show-ip status   report current state
 func cmdIPDetect(args []string) error {
 	mode := "status"
 	rest := args
@@ -30,7 +31,7 @@ func cmdIPDetect(args []string) error {
 			usage()
 			return nil
 		default:
-			return fmt.Errorf("unknown ip-detect sub-arg %q (on|off|status)", args[0])
+			return fmt.Errorf("unknown show-ip sub-arg %q (on|off|status)", args[0])
 		}
 	}
 	switch mode {
@@ -41,7 +42,7 @@ func cmdIPDetect(args []string) error {
 	case "status":
 		return showIPDetection(rest)
 	default:
-		return fmt.Errorf("unknown ip-detect sub-arg %q (on|off|status)", mode)
+		return fmt.Errorf("unknown show-ip sub-arg %q (on|off|status)", mode)
 	}
 }
 
@@ -102,14 +103,14 @@ func disableIPDetection(targetArgs []string, disable bool) error {
 		if err := os.WriteFile(markerPath, []byte("1\n"), 0o644); err != nil {
 			return err
 		}
-		fmt.Println("ip-detect: off (provider won't auto-detect public IP; set URNETWORK_PUBLIC_IP to override)")
+		fmt.Println("show-ip: off (provider won't auto-detect public IP; set URNETWORK_PUBLIC_IP to override)")
 	} else {
 		if err := os.Remove(markerPath); err != nil {
 			if !os.IsNotExist(err) {
 				return err
 			}
 		}
-		fmt.Println("ip-detect: on (provider auto-detects public IP via ip.me)")
+		fmt.Println("show-ip: on (provider auto-detects public IP via ip.me)")
 	}
 	return nil
 }
@@ -121,12 +122,12 @@ func showIPDetection(targetArgs []string) error {
 	}
 	_, err = os.Stat(markerPath)
 	if os.IsNotExist(err) {
-		fmt.Println("ip-detect: on (provider auto-detects public IP via ip.me)")
+		fmt.Println("show-ip: on (provider auto-detects public IP via ip.me)")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Println("ip-detect: off (provider won't auto-detect public IP; set URNETWORK_PUBLIC_IP to override)")
+	fmt.Println("show-ip: off (provider won't auto-detect public IP; set URNETWORK_PUBLIC_IP to override)")
 	return nil
 }
