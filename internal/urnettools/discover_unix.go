@@ -270,13 +270,62 @@ func discoverSystemUnits(running []Provider) []Provider {
 	}
 	// unitUser maps unit name -> User= value, resolved on demand.
 	unitUser := func(unit string) string {
-		b, err := execWithTimeout(5*time.Second, "systemctl", "show", unit, "-p", "User", "--value")
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(b))
+		return unitProperty(nil, unit, "User")
 	}
-	return parseUnitLines(string(out), running, unitUser)
+	// unitBinary maps unit name -> ExecStart executable, resolved on demand.
+	unitBinary := func(unit string) string {
+		return parseExecStartPath(unitProperty(nil, unit, "ExecStart"))
+	}
+	return parseUnitLines(string(out), running, unitUser, unitBinary)
+}
+
+// unitProperty returns a single `systemctl show` property value for a unit.
+// scope is the systemctl scope prefix ("--user", or "--user -M <user>@") and
+// may be nil for the system manager.
+func unitProperty(scope []string, unit, prop string) string {
+	args := append(append([]string{}, scope...), "show", unit, "-p", prop, "--value")
+	b, err := execWithTimeout(5*time.Second, "systemctl", args...)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// parseExecStartPath extracts the executable path from a systemd ExecStart
+// property value. systemd renders it as a bracketed record --
+//
+//	{ path=/opt/urnetwork/bin/urnetwork ; argv[]=/opt/... provide ; ... }
+//
+// so the bare `--value` output is not itself a path. A multi-line value (a
+// unit with several ExecStart= lines) resolves to the first entry, matching
+// the ExecStart that systemd runs first. Returns "" when no path is present,
+// which keeps the caller's existing "no resolvable binary path" behaviour
+// rather than inventing one.
+func parseExecStartPath(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if i := strings.Index(line, "path="); i >= 0 {
+			rest := line[i+len("path="):]
+			// The record separates fields with " ; "; a path may not
+			// contain a space in systemd's own rendering.
+			if j := strings.IndexAny(rest, " ;"); j >= 0 {
+				rest = rest[:j]
+			}
+			if strings.HasPrefix(rest, "/") {
+				return rest
+			}
+			continue
+		}
+		// Older systemd (and some `show` variants) emit the raw command
+		// line instead of the bracketed record.
+		if strings.HasPrefix(line, "/") {
+			return strings.Fields(line)[0]
+		}
+	}
+	return ""
 }
 
 // parseUnitLines parses `systemctl list-units`/`list-unit-files` output
@@ -291,7 +340,7 @@ func discoverSystemUnits(running []Provider) []Provider {
 // identical Provider rows without the dedup here (observed live on a fleet
 // box: every enabled-but-inactive unit doubled in `urnet-tools logs`'s
 // ambiguity list).
-func parseUnitLines(text string, running []Provider, userFor func(unit string) string) []Provider {
+func parseUnitLines(text string, running []Provider, userFor, binaryFor func(unit string) string) []Provider {
 	var out []Provider
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
@@ -312,7 +361,11 @@ func parseUnitLines(text string, running []Provider, userFor func(unit string) s
 			continue
 		}
 		seen[unit] = true
-		out = append(out, providerFromUnit(unit, userFor(unit)))
+		binary := ""
+		if binaryFor != nil {
+			binary = binaryFor(unit)
+		}
+		out = append(out, providerFromUnit(unit, userFor(unit), binary))
 	}
 	return out
 }
@@ -373,7 +426,16 @@ func discoverUserUnits(running []Provider) []Provider {
 		if err != nil {
 			continue // no session bus / user manager for this user
 		}
-		out = append(out, parseUnitLines(string(b), running, func(string) string { return user })...)
+		// Same systemctl scope the listing above used, so ExecStart is
+		// read from the manager that actually owns the unit.
+		scope := []string{"--user"}
+		if user != current {
+			scope = append(scope, "-M", user+"@")
+		}
+		out = append(out, parseUnitLines(string(b), running,
+			func(string) string { return user },
+			func(unit string) string { return parseExecStartPath(unitProperty(scope, unit, "ExecStart")) },
+		)...)
 	}
 	return out
 }

@@ -936,8 +936,12 @@ U_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) system
 [ "$U_TYPE" = "notify" ] && ok "U: unit Type=notify after drop-in + daemon-reload" || bad "U: unit Type is '$U_TYPE', want notify"
 
 # U1: unit reaches active WITHOUT waiting for full proxy auth.
-runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+# The clock starts BEFORE the restart and the restart is wrapped in `timeout`
+# (as U3 does): under Type=notify `systemctl restart` blocks until READY=1, so
+# an unwrapped call measures nothing and, if READY never arrives, hangs until
+# the CI job watchdog kills the whole run instead of failing this one check.
 U1_T0=$(date +%s)
+timeout 120 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 U1_ACTIVE=0
 for i in $(seq 1 30); do
   if [ "$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user is-active urnetwork.service 2>/dev/null)" = "active" ]; then
