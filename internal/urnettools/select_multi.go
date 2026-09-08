@@ -75,14 +75,14 @@ const urnetElevatedEnv = "URNET_TOOLS_ELEVATED"
 
 // printNarrowedNote reports that selectTargetOrSoleAccessible auto-picked
 // the sole provider reachable without root, so the operator knows other
-// providers exist on the box but were skipped rather than acted on — same
-// wording across every read-only command that uses the narrowing (logs,
-// status, summary), so the behavior reads as one consistent tool feature
-// rather than a per-command surprise.
+// providers exist on the box but were skipped rather than acted on. The note
+// points at the actionable inventory instead of dumping a long `/full/path`
+// hunt — multi-user awareness lives in `providers --all`, so that's what the
+// notice leads with.
 func printNarrowedNote(totalFound int, p Provider, what string) {
 	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — showing its %s.", totalFound, p.User, what)
-	if hint := rootHint(); hint != "" {
-		note += fmt.Sprintf(" To see/target the others: %s %s", hint, what)
+	if !isPrivileged() {
+		note += fmt.Sprintf(" To inspect all of them: urnet-tools providers --all (as root)")
 	}
 	fmt.Println(note)
 }
@@ -103,8 +103,8 @@ func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
 		gerund = action + "ting"
 	}
 	note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — %s it.", totalFound, p.User, gerund)
-	if hint := rootHint(); hint != "" {
-		note += fmt.Sprintf(" To target another provider: %s --unit <unit>", hint)
+	if !isPrivileged() {
+		note += fmt.Sprintf(" To target another provider by unit/network, or pin a default: urnet-tools default set --network <name> (see 'urnet-tools providers --all')")
 	}
 	fmt.Println(note)
 }
@@ -378,15 +378,22 @@ func ambiguousErrorWithReason(providers []Provider, reason string) error {
 	return err
 }
 
-// ambiguousError renders the refusal message with the inventory.
+// ambiguousError renders the refusal message with the inventory plus concrete
+// next steps, so an operator who hits "which one?" isn't left guessing at
+// flag syntax — it points at the inventory command, the target flags, and the
+// one-command way to make future runs unambiguous.
 func ambiguousError(providers []Provider) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
 	for _, p := range providers {
 		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
-	if hint := rootHint(); hint != "" {
-		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)
+	fmt.Fprintf(&b, "Tips:\n")
+	fmt.Fprintf(&b, "  one target:     urnet-tools <cmd> --unit <unit>   (or --user / --network / --state-dir)\n")
+	fmt.Fprintf(&b, "  pick interactively: urnet-tools <cmd> --select\n")
+	if !isPrivileged() {
+		fmt.Fprintf(&b, "  make future runs unambiguous: urnet-tools default set --network <name>\n")
+		fmt.Fprintf(&b, "  see every provider on the box: urnet-tools providers --all (as root)\n")
 	}
 	return fmt.Errorf("%s", b.String())
 }

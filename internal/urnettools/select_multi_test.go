@@ -295,3 +295,34 @@ func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
 		seen[k] = true
 	}
 }
+
+// TestAmbiguousErrorIsActionable: the multi-provider refusal must hand the
+// operator concrete next steps (inventory, --select, default set), not just a
+// flag-soup line plus a "run with sudo" hunt. These snapshots pin that the
+// actionable tips survive message regressions.
+func TestAmbiguousErrorIsActionable(t *testing.T) {
+	orig := isPrivileged
+	isPrivileged = func() bool { return false } // unprivileged caller
+	defer func() { isPrivileged = orig }()
+	ps := []Provider{
+		{User: "alice", Unit: "urnetwork.service", Network: "mesh-a", StateDir: "/home/alice/.urnetwork"},
+		{User: "bob", Unit: "urnetwork-b.service", Network: "mesh-b", StateDir: "/home/bob/.urnetwork"},
+	}
+	err := ambiguousError(ps)
+
+	for _, want := range []string{
+		"specify a target",
+		"--select",
+		"--unit",
+		"default set",
+	} {
+		if !contains(err.Error(), want) {
+			t.Errorf("ambiguousError must tell the operator to use %q, got:\n%s", want, err.Error())
+		}
+	}
+	// The sudo/fullpath hunt must be GONE from the refusal — awareness now
+	// points at providers --all instead.
+	if strings.Contains(err.Error(), "sudo ") {
+		t.Errorf("ambiguousError must not dump a manual 'sudo /path' hunt; got:\n%s", err.Error())
+	}
+}
