@@ -44,6 +44,10 @@ func notifySystemdReady() error {
 	return nil
 }
 
+func notifySystemdStatus(text string) error {
+	return nil
+}
+
 func execInPlace(exe string, args []string, env []string) error {
 	return errors.New("execve not supported on Windows")
 }
