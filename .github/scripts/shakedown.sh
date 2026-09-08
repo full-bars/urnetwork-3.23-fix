@@ -80,6 +80,11 @@ wait_client_id() {
 cids_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $2}' | sort -u; }
 # markers_since: the (new)/(reused) markers logged after journal line N.
 markers_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $3}'; }
+# markers_snapshot: the raw "client_id: <id> (new|reused)" lines after journal
+# line N, captured ONCE. cids_since and markers_since each re-read the journal,
+# so deriving an id set and its marker counts from separate calls samples a
+# growing log at two different instants. Snapshot, then derive.
+markers_snapshot() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)"; }
 
 # restart_provider: systemctl --user restart + return the pre-restart journal
 # line count (for wait_client_id).
@@ -616,6 +621,7 @@ fi
 # section H documents. Assert the provider's own (new|reused) markers and
 # compare SETS, the same way H does.
 L_CIDS_OFF=$(mktemp); L_CIDS_ON=$(mktemp)
+L_SNAP_OFF=$(mktemp); L_SNAP_ON=$(mktemp)
 
 # 1) Toggle OFF + cleared cache: every identity must be freshly minted, and
 #    nothing may be reused.
@@ -625,10 +631,11 @@ wait_client_id "$MARK" 120 >/dev/null
 # wait_client_id returns on the FIRST id; settle so several proxies have
 # re-authed and the marker counts have more than one sample.
 sleep 20
-cids_since "$MARK" > "$L_CIDS_OFF"
+markers_snapshot "$MARK" > "$L_SNAP_OFF"
+awk '{print $2}' "$L_SNAP_OFF" | sort -u > "$L_CIDS_OFF"
 N_OFF=$(wc -l < "$L_CIDS_OFF")
-N_OFF_NEW=$(markers_since "$MARK" | grep -c "new" || true)
-N_OFF_REUSED=$(markers_since "$MARK" | grep -c "reused" || true)
+N_OFF_NEW=$(awk '{print $3}' "$L_SNAP_OFF" | grep -c "new" || true)
+N_OFF_REUSED=$(awk '{print $3}' "$L_SNAP_OFF" | grep -c "reused" || true)
 if [ "$N_OFF" -gt 0 ] && [ "${N_OFF_NEW:-0}" -gt 0 ] && [ "${N_OFF_REUSED:-0}" -eq 0 ]; then
   ok "hot-restart OFF minted new client_ids ($N_OFF_NEW new, 0 reused)"
 else
@@ -644,16 +651,17 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 MARK=$(restart_provider)
 wait_client_id "$MARK" 120 >/dev/null
 sleep 20
-cids_since "$MARK" > "$L_CIDS_ON"
+markers_snapshot "$MARK" > "$L_SNAP_ON"
+awk '{print $2}' "$L_SNAP_ON" | sort -u > "$L_CIDS_ON"
 N_ON=$(wc -l < "$L_CIDS_ON")
-N_ON_REUSED=$(markers_since "$MARK" | grep -c "reused" || true)
+N_ON_REUSED=$(awk '{print $3}' "$L_SNAP_ON" | grep -c "reused" || true)
 N_ON_OVERLAP=$(comm -12 "$L_CIDS_OFF" "$L_CIDS_ON" | wc -l)
 if [ "$N_ON" -gt 0 ] && [ "${N_ON_REUSED:-0}" -gt 0 ] && [ "$N_ON_OVERLAP" -gt 0 ]; then
   ok "hot-restart back ON reused client_ids ($N_ON_REUSED reused markers, $N_ON_OVERLAP of $N_ON carried over)"
 else
   bad "hot-restart back ON did not reuse (ids=$N_ON reused=${N_ON_REUSED:-0} overlap=$N_ON_OVERLAP)"
 fi
-rm -f "$L_CIDS_OFF" "$L_CIDS_ON"
+rm -f "$L_CIDS_OFF" "$L_CIDS_ON" "$L_SNAP_OFF" "$L_SNAP_ON"
 
 # ---------- M. update --tag pinned path ----------
 section "M. update --tag"
