@@ -6,9 +6,22 @@ name: Pre-Release Shakedown
 # disposable clean box; the shakedown runs in a temp HOME like a fresh install.
 #
 # Triggers: manual dispatch, or automatically when a v3.23.0-fix.* tag is pushed.
+#
+# A manual dispatch defaults to the latest PUBLISHED release, which excludes
+# prereleases. That silently mistargets the suite whenever the version worth
+# testing is an -rc: sections U and V exercise sd_notify READY/STATUS and the
+# HotSwap handoff, neither of which exists before v3.23.0-fix.31, so a default
+# dispatch aimed them at a binary that cannot implement them and reported
+# RELEASE_BLOCKED for reasons that were not defects. Pass `version` to target
+# a specific release (prereleases included) without having to cut a tag.
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to test (e.g. v3.23.0-fix.31.1-rc1). Empty = latest published release (excludes prereleases).'
+        required: false
+        default: ''
   push:
     tags:
       - 'v3.23.0-fix.*'
@@ -38,12 +51,17 @@ jobs:
         id: version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           # Tag-triggered runs test THE RELEASE BEING CUT (GITHUB_REF_NAME),
           # not whatever :latest happens to be. Manual runs default to the
           # last published release.
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VER="${GITHUB_REF_NAME}"
+          elif [ -n "${INPUT_VERSION}" ]; then
+            # Explicitly requested: an -rc is a legitimate target, and the
+            # /releases/latest lookup below would never select one.
+            VER="${INPUT_VERSION}"
           else
             VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
@@ -73,7 +91,7 @@ jobs:
             fi
             echo "waiting for release build of ${VER} (${i}/120)..."; sleep 30
           done
-          if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [ "$ASSETS_OK" != "1" ] && { [[ "${GITHUB_REF_TYPE}" == "tag" ]] || [ -n "${INPUT_VERSION}" ]; }; then
             echo "::error::release assets for ${VER} never appeared within 60 min safety cap"
             echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
           fi
