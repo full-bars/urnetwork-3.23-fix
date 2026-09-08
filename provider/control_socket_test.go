@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -220,20 +221,36 @@ func TestControlSocket_PersistFailureRollsBackInMemoryState(t *testing.T) {
 // get-old -> set -> persist -> rollback unit — a concurrent set could interleave
 // between a persist's snapshot and a rollback, leaving memory and disk
 // disagreeing. Run with -race.
+//
+// Every writer writes a DISTINCT value (w%d-%d, writer index and round), not
+// the same literal for all of them — with every writer writing "w", memory
+// and disk would trivially agree even if the ordering regression this test
+// exists to catch had occurred (any interleaving still lands on "w"). This
+// does NOT assert which value ends up final: concurrent completion order is
+// unspecified, so the only two things pinned are (1) memory and the
+// just-reloaded-from-disk value agree, and (2) whatever that value is, it
+// really was one of the values a writer wrote (not corrupted by a lost
+// update or a torn persist).
 func TestControlSocket_ConcurrentSetsMemoryMatchesDisk(t *testing.T) {
 	withTempHome(t)
 	resetGlobalControlStateForTest()
 
 	const writers = 12
 	const rounds = 40
+	written := make(map[string]bool, writers*rounds)
+	var writtenMu sync.Mutex
 	var wg sync.WaitGroup
 	for w := 0; w < writers; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
+				value := fmt.Sprintf("w%d-%d", w, i)
+				writtenMu.Lock()
+				written[value] = true
+				writtenMu.Unlock()
 				handleControlRequest(globalControlState, controlRequest{
-					Cmd: "set", Key: "node_name", Value: "w", // string spam is fine
+					Cmd: "set", Key: "node_name", Value: value,
 				})
 			}
 		}(w)
@@ -257,6 +274,9 @@ func TestControlSocket_ConcurrentSetsMemoryMatchesDisk(t *testing.T) {
 	}
 	if memVal != diskVal {
 		t.Fatalf("memory = %q, disk = %q — concurrent set/persist lost an update", memVal, diskVal)
+	}
+	if !written[memVal] {
+		t.Fatalf("final value %q was never written by any writer — corrupted by the concurrent set/persist path", memVal)
 	}
 }
 
