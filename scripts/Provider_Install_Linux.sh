@@ -663,9 +663,19 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
+Type=notify
+NotifyAccess=all
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
-Restart=no
+Restart=on-failure
+RestartSec=5
+# provide() only calls sd_notify(READY=1) after a proxy auth succeeds, and
+# the per-proxy auth retry loop backs off legitimately for a long time on a
+# rate-limited/unreachable API (up to hours -- see proxyURLGiveUpRetryDelay
+# in provider/main.go). Any finite TimeoutStartSec would eventually kill a
+# provider that's still correctly retrying, so disable the startup timeout
+# entirely; Restart=on-failure above still catches a genuine crash/exit.
+TimeoutStartSec=0
 
 [Install]
 WantedBy=default.target
@@ -1694,23 +1704,14 @@ show_logs ()
     fi
 }
 
-# override_set_env KEY VALUE
-# Idempotently sets Environment="KEY=VALUE" in the systemd override.conf.
-# Removes any existing line with the same KEY before appending, so running
-# this multiple times never creates duplicates. Creates the file with a
-# [Service] header if it doesn't exist.
-override_set_env() {
-    local key="$1" value="$2"
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    local override_file="$override_dir/override.conf"
-    mkdir -p "$override_dir"
-    if [ ! -f "$override_file" ]; then
-        printf '[Service]\n' > "$override_file"
-    fi
-    # Remove any existing line with this key (matches any value after =)
-    sed -i '/^Environment="'"$key"'=/d' "$override_file"
-    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
-}
+# override_set_env was retired: every call site that used to write
+# URNETWORK_PROFILE/RAMLOGS/HOT_RESTART/GOMEMLIMIT/GOGC/REPORT_URL into
+# override.conf now goes through queue_pending_override/queue_pending_clear
+# instead (see below) — the control-socket pending-overrides queue the
+# provider itself owns, rather than hand-edited systemd drop-in text.
+# override_rm_env is kept: two call sites still use it for one-time cleanup
+# of a stale URNETWORK_REPORT_URL an older urnet-tools version may have left
+# behind (do_hub_link/do_hub_unlink below).
 
 # override_rm_env KEY
 # Removes Environment="KEY=..." from override.conf. Cleans up empty files.
@@ -1728,15 +1729,144 @@ override_rm_env() {
     fi
 }
 
+# _append_pending_op JSON_OBJECT [HOME_DIR]
+# Appends one entry to HOME_DIR/.urnetwork/pending_overrides.json's JSON
+# array — the exact file and format the provider's own
+# mergePendingOverrides() consumes (provider/pending_overrides.go) and
+# urnet-tools' control-socket client writes when it can't reach the
+# provider's live socket (internal/urnettools/control_client.go). Both of
+# those also write this file (mergePendingOverrides reads-then-deletes it at
+# provider startup; urnet-tools queues to it from a separate invocation), so
+# this function holds the same pending_overrides.json.lock they do for the
+# whole read-modify-write, and writes via a unique same-directory temp file
+# + atomic rename so a reader never observes a half-written array.
+_append_pending_op() {
+    local entry="$1"
+    local home="${2:-$HOME}"
+    local dir="$home/.urnetwork"
+    local file="$dir/pending_overrides.json"
+    local lock="$dir/pending_overrides.json.lock"
+    mkdir -p "$dir"
+    (
+        # dash only supports single-digit fds (SC3023), so this uses fd 9
+        # rather than the more conventional 200.
+        flock -x 9
+        local tmp
+        tmp=$(mktemp "$dir/.pending_overrides.json.tmp-XXXXXX") || exit 1
+        if [ -s "$file" ]; then
+            # This function is the pending-queue file's only appender, so
+            # its last line is always exactly "]" (see the else branch and
+            # the append below) — safe to drop it and re-close the array.
+            sed '$d' "$file" > "$tmp" && printf ',\n  %s\n]\n' "$entry" >> "$tmp"
+        else
+            printf '[\n  %s\n]\n' "$entry" > "$tmp"
+        fi
+        mv "$tmp" "$file"
+    ) 9>"$lock"
+}
+
+# json_string STRING
+# Emits STRING as a COMPLETE, quoted JSON string literal (surrounding
+# double quotes included, with backslash, double-quote, tab, and CR
+# backslash-escaped) for embedding into pending_overrides.json. Deliberately
+# named json_string (not json_escape) and returns a full literal rather than
+# just escaped contents: a helper that hands back bare escaped text invites
+# a caller to forget the surrounding quotes, which is exactly the bug this
+# replaced (queue_pending_override used to emit `"key": ramlogs` — value
+# unquoted — which is not valid JSON at all, so every queued override was
+# silently unparseable and mergePendingOverrides() never applied it).
+# Values here can carry ", \ or a newline (e.g. a report_url with a query
+# string); an unescaped one silently corrupts the queue file the provider
+# parses at startup. Parity with urnet-tools' Go json.Marshal. POSIX sh only
+# (no ANSI-C $'...' quoting — this script runs under dash).
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g' \
+        -e 's/	/\\t/g' \
+        -e 's/\r/\\r/g')"
+    # Embedded newlines are not handled here (sed is line-oriented); callers
+    # pass single-line values (keys, report_url, profile names, toggles).
+}
+
+# queue_pending_override KEY VALUE [HOME_DIR]
+# Queues a control-socket "set" for KEY, applied on the provider's next
+# start. HOME_DIR defaults to $HOME — pass the provider user's actual home
+# explicitly when running under sudo (e.g. `$actual_home`), since $HOME is
+# root's under sudo and the provider resolves its queue via its own
+# os.UserHomeDir(), not root's.
+queue_pending_override() {
+    local key="$1" value="$2" home="${3:-$HOME}"
+    _append_pending_op "{\"op\": \"set\", \"key\": $(json_string "$key"), \"value\": $(json_string "$value")}" "$home"
+}
+
+# queue_pending_clear KEY [HOME_DIR]
+# Queues a control-socket "clear" for KEY (revert to startup default),
+# applied on the provider's next start. See queue_pending_override for
+# HOME_DIR.
+queue_pending_clear() {
+    local key="$1" home="${2:-$HOME}"
+    _append_pending_op "{\"op\": \"clear\", \"key\": $(json_string "$key")}" "$home"
+}
+
+# repair_pending_overrides_ownership HOME_DIR OWNER
+# Restores OWNER:OWNER ownership on the pending-overrides queue file, its
+# lock file, and the containing .urnetwork directory. MUST be called after
+# every queue_pending_override/queue_pending_clear invoked from a
+# root/sudo context on another user's behalf (e.g. do_optimize, which
+# re-execs itself under sudo): _append_pending_op creates
+# pending_overrides.json (mode 0600) and pending_overrides.json.lock as
+# whatever UID is currently running — root — while the provider itself
+# runs as OWNER and opens both via its own os.UserHomeDir() during
+# mergePendingOverrides. Root-owned queue/lock files mean the provider can
+# neither take the lock nor read the queue, so the queued override is
+# silently never applied. Safe to call even if nothing was created yet
+# (e.g. the disk-benchmark branch in do_optimize only queues
+# conditionally).
+repair_pending_overrides_ownership() {
+    local home="$1" owner="$2"
+    local dir="$home/.urnetwork"
+    [ -n "$owner" ] || return 0
+    [ -d "$dir" ] || return 0
+    chown "$owner":"$owner" "$dir" 2>/dev/null || true
+    [ -f "$dir/pending_overrides.json" ] && chown "$owner":"$owner" "$dir/pending_overrides.json" 2>/dev/null
+    [ -f "$dir/pending_overrides.json.lock" ] && chown "$owner":"$owner" "$dir/pending_overrides.json.lock" 2>/dev/null
+    return 0
+}
+
+# read_control_value KEY
+# Best-effort current value for KEY, for status display only (the running
+# provider's own in-memory state, if reachable, is the real source of
+# truth — this script doesn't dial the control socket). A pending
+# (not-yet-applied) queue entry wins over the last-persisted value, same
+# order the provider itself applies them in: a queued "clear" is
+# definitively unset (prints nothing) rather than falling through to a
+# stale persisted value; a queued "set" prints its value; no pending entry
+# at all falls through to provider_state.json.
+read_control_value() {
+    local key="$1"
+    local pending_file="$HOME/.urnetwork/pending_overrides.json"
+    local persisted_file="$HOME/.urnetwork/provider_state.json"
+    if [ -f "$pending_file" ]; then
+        local last
+        last=$(grep '"key": "'"$key"'"' "$pending_file" 2>/dev/null | tail -1)
+        if [ -n "$last" ]; then
+            case "$last" in
+                *'"op": "clear"'*) return 0 ;;
+                *) printf '%s' "$last" | sed -n 's/.*"value": "\([^"]*\)".*/\1/p'; return 0 ;;
+            esac
+        fi
+    fi
+    [ -f "$persisted_file" ] || return 0
+    grep '"'"$key"'":' "$persisted_file" 2>/dev/null | sed -n 's/.*"'"$key"'": *"\([^"]*\)".*/\1/p' | head -1
+}
+
 # hot_restart_is_enabled
-# Reports whether URNETWORK_HOT_RESTART=0 is NOT set in the override.conf —
-# matches provider/main.go's hotRestartEnabled() (on by default unless
-# explicitly disabled). Single source of truth so confirm_restart() and
-# toggle_hotrestart() can't drift.
+# Reports whether hot-restart is enabled: on by default unless the
+# control-socket "hot_restart" key is explicitly "off" — matches
+# provider/main.go's hotRestartEnabled(). Single source of truth so
+# confirm_restart() and toggle_hotrestart() can't drift.
 hot_restart_is_enabled() {
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    local override_file="$override_dir/override.conf"
-    if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
+    if [ "$(read_control_value hot_restart)" = "off" ]; then
         return 1
     fi
     return 0
@@ -1805,28 +1935,24 @@ override_rm_env_for_hub() {
 toggle_ramlogs ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
             confirm_restart "Enabling RAM logging requires restarting the URNetwork provider."
             pr_info "Enabling RAM logging..."
-            override_set_env "URNETWORK_RAMLOGS" "1"
-            systemctl --user daemon-reload
+            queue_pending_override "ramlogs" "on"
             systemctl --user restart urnetwork.service
             pr_info "RAM logging enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
-            override_rm_env "URNETWORK_RAMLOGS"
-            systemctl --user daemon-reload
+            queue_pending_override "ramlogs" "off"
             systemctl --user restart urnetwork.service
             pr_info "RAM logging disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_RAMLOGS=1' "$override_file" 2>/dev/null; then
+            if [ "$(read_control_value ramlogs)" = "on" ]; then
                 pr_info "RAM logging is enabled."
             else
                 pr_info "RAM logging is off."
@@ -1871,8 +1997,6 @@ detect_mem_limit_mib ()
 toggle_lowmode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1881,27 +2005,25 @@ toggle_lowmode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 85 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of ${ram_mib}MiB detected RAM)"
-            override_set_env "URNETWORK_PROFILE" "lowmem"
-            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
-            override_set_env "GOGC" "50"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "lowmem"
+            queue_pending_override "gomemlimit" "${gomem_mib}MiB"
+            queue_pending_override "gogc" "50"
             systemctl --user restart urnetwork.service
             pr_info "Lowmode enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling lowmode requires restarting the URNetwork provider."
             pr_info "Disabling lowmode..."
-            override_rm_env "URNETWORK_PROFILE"
-            override_rm_env "GOMEMLIMIT"
-            override_rm_env "GOGC"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
+            queue_pending_clear "gomemlimit"
+            queue_pending_clear "gogc"
             systemctl --user restart urnetwork.service
             pr_info "Lowmode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=lowmem' "$override_file" 2>/dev/null; then
-                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
-                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+            if [ "$(read_control_value profile)" = "lowmem" ]; then
+                gomem=$(read_control_value gomemlimit)
+                gogc=$(read_control_value gogc)
                 pr_info "Lowmode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
             else
                 pr_info "Lowmode is off."
@@ -1922,16 +2044,14 @@ toggle_hotrestart ()
         on)
             confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
             pr_info "Enabling hot-restart..."
-            override_rm_env "URNETWORK_HOT_RESTART"
-            systemctl --user daemon-reload
+            queue_pending_override "hot_restart" "on"
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling hot-restart requires restarting the URNetwork provider."
             pr_info "Disabling hot-restart..."
-            override_set_env "URNETWORK_HOT_RESTART" "0"
-            systemctl --user daemon-reload
+            queue_pending_override "hot_restart" "off"
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart disabled and service restarted."
             ;;
@@ -1952,8 +2072,6 @@ toggle_hotrestart ()
 toggle_ecomode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1962,27 +2080,25 @@ toggle_ecomode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 75 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (75%% of ${ram_mib}MiB detected RAM)"
-            override_set_env "URNETWORK_PROFILE" "eco"
-            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
-            override_set_env "GOGC" "50"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "eco"
+            queue_pending_override "gomemlimit" "${gomem_mib}MiB"
+            queue_pending_override "gogc" "50"
             systemctl --user restart urnetwork.service
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling eco mode requires restarting the URNetwork provider."
             pr_info "Disabling eco mode..."
-            override_rm_env "URNETWORK_PROFILE"
-            override_rm_env "GOMEMLIMIT"
-            override_rm_env "GOGC"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
+            queue_pending_clear "gomemlimit"
+            queue_pending_clear "gogc"
             systemctl --user restart urnetwork.service
             pr_info "Eco mode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=eco' "$override_file" 2>/dev/null; then
-                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
-                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+            if [ "$(read_control_value profile)" = "eco" ]; then
+                gomem=$(read_control_value gomemlimit)
+                gogc=$(read_control_value gogc)
                 pr_info "Eco mode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
             else
                 pr_info "Eco mode is off."
@@ -1998,28 +2114,24 @@ toggle_ecomode ()
 toggle_automode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
             confirm_restart "Enabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Enabling auto-tune profile..."
-            override_set_env "URNETWORK_PROFILE" "auto"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "auto"
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Disabling auto-tune profile..."
-            override_rm_env "URNETWORK_PROFILE"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=auto' "$override_file" 2>/dev/null; then
+            if [ "$(read_control_value profile)" = "auto" ]; then
                 pr_info "Auto-tune is currently enabled."
             else
                 pr_info "Auto-tune is currently off."
@@ -2035,33 +2147,32 @@ toggle_automode ()
 toggle_turbomode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         v4|v8)
             confirm_restart "Enabling turbo mode requires restarting the URNetwork provider."
             pr_info "Enabling turbo %s..." "$mode"
-            override_set_env "URNETWORK_PROFILE" "turbo-${mode}"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "turbo-${mode}"
             systemctl --user restart urnetwork.service
             pr_info "Turbo %s enabled and service restarted." "$mode"
             ;;
         off)
             confirm_restart "Disabling turbo mode requires restarting the URNetwork provider."
             pr_info "Disabling turbo mode..."
-            override_rm_env "URNETWORK_PROFILE"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
             systemctl --user restart urnetwork.service
             pr_info "Turbo mode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=turbo-' "$override_file" 2>/dev/null; then
-                level=$(grep 'URNETWORK_PROFILE=turbo-' "$override_file" | sed 's/.*turbo-\([^"]*\).*/\1/')
-                pr_info "Turbo mode is enabled: %s" "$level"
-            else
-                pr_info "Turbo mode is off."
-            fi
+            current=$(read_control_value profile)
+            case "$current" in
+                turbo-*)
+                    pr_info "Turbo mode is enabled: %s" "${current#turbo-}"
+                    ;;
+                *)
+                    pr_info "Turbo mode is off."
+                    ;;
+            esac
             ;;
         *)
             pr_err "Usage: urnet-tools turbo <v4|v8|off>"
@@ -2172,18 +2283,12 @@ setup_zram_manual () {
 do_report ()
 {
     mode="$1"
-    override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     if [ -z "$mode" ]; then
         # Show current setting
-        if [ -f "$override_file" ]; then
-            url=$(grep '^Environment="URNETWORK_REPORT_URL=' "$override_file" | sed 's/^Environment="URNETWORK_REPORT_URL=//; s/"$//')
-            if [ -n "$url" ]; then
-                pr_info "Report URL: %s" "$url"
-            else
-                pr_info "Report URL: not configured"
-            fi
+        url=$(read_control_value report_url)
+        if [ -n "$url" ]; then
+            pr_info "Report URL: %s" "$url"
         else
             pr_info "Report URL: not configured"
         fi
@@ -2193,14 +2298,12 @@ do_report ()
     case "$mode" in
         off)
             pr_info "Removing report URL (takes effect on next provider restart)..."
-            override_rm_env "URNETWORK_REPORT_URL"
-            systemctl --user daemon-reload
+            queue_pending_clear "report_url"
             pr_info "Report URL removed. Restart provider to apply: systemctl --user restart urnetwork.service"
             ;;
         *)
             pr_info "Setting report URL to %s (takes effect on next provider restart)..." "$mode"
-            override_set_env "URNETWORK_REPORT_URL" "$mode"
-            systemctl --user daemon-reload
+            queue_pending_override "report_url" "$mode"
             pr_info "Report URL set to %s. Restart provider to apply: systemctl --user restart urnetwork.service" "$mode"
             ;;
     esac
@@ -3901,8 +4004,9 @@ EOF
         if [ "$speed_mb" -lt 50 ]; then
             pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
-            
-            override_set_env "URNETWORK_RAMLOGS" "1"
+
+            queue_pending_override "ramlogs" "on" "$actual_home"
+            repair_pending_overrides_ownership "$actual_home" "$actual_user"
         fi
     fi
 

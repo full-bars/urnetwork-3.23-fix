@@ -25,4 +25,10 @@ prs.json
 /urnet-docker.exe
 /urnet-tools
 /urnet-tools.exe
+# Any stray cross-compiled binary. `go build ./provider/` writes provider.exe
+# under GOOS=windows (it cannot write "provider" -- that path is the source
+# directory), and a 40MB artifact is easy to sweep in with `git add -A`.
+# Deliberately not "/provider": that would ignore the source tree.
+*.exe
 review-egg-dsflash-v2.md
+/dist/

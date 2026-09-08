@@ -79,7 +79,7 @@ func RunSystemAudit(skipDiskTest bool) (slowDisk bool, lowSpace bool) {
 			fmt.Printf("[audit] Hint: Container is isolated from host network optimizations.\n")
 			fmt.Printf("[audit] Hint: Add the optimized sysctls from the README to your Docker command to fix.\n")
 		} else {
-			fmt.Printf("[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' as root to fix.\n")
+			fmt.Printf("[audit] Hint: System is not optimized for high volume. Run 'urnet-tools optimize' to fix (it will prompt for sudo).\n")
 		}
 	}
 

@@ -7,31 +7,36 @@ import (
 	"testing"
 )
 
-// TestSetWriteReadClear exercises the runtime-override file lifecycle that
-// applySetOverride drives: write a value, read it back via formatSets, clear
-// it, and reject an unknown key.
+// TestSetWriteReadClear exercises the runtime-override lifecycle that
+// applySetOverride drives: when the provider is down, write a value queued in
+// pending_overrides.json, read it back via formatSets, clear it, and reject
+// an unknown key.
 func TestSetWriteReadClear(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir}
 
-	// Write a value (node-name override file = node_name).
+	// Write a value (queued in pending_overrides.json).
 	if err := applySetOverride(p, "node-name", "edge01", false); err != nil {
 		t.Fatalf("set value: %v", err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "node_name"))
+	b, err := os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
 	if err != nil {
-		t.Fatalf("read written file: %v", err)
+		t.Fatalf("read pending_overrides.json: %v", err)
 	}
-	if string(b) != "edge01" {
-		t.Fatalf("node_name = %q, want edge01", string(b))
+	if !strings.Contains(string(b), `"key": "node_name"`) || !strings.Contains(string(b), `"value": "edge01"`) {
+		t.Fatalf("pending_overrides.json = %s, want node_name=edge01", string(b))
 	}
 
 	// Clear it.
 	if err := applySetOverride(p, "node-name", "off", false); err != nil {
 		t.Fatalf("clear value: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "node_name")); !os.IsNotExist(err) {
-		t.Fatalf("expected node_name to be removed, err=%v", err)
+	b, err = os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
+	if err != nil {
+		t.Fatalf("read pending_overrides.json: %v", err)
+	}
+	if !strings.Contains(string(b), `"op": "clear"`) {
+		t.Fatalf("pending_overrides.json = %s, want op=clear", string(b))
 	}
 
 	// Unknown keys are rejected, not silently absorbed.
@@ -40,32 +45,41 @@ func TestSetWriteReadClear(t *testing.T) {
 	}
 }
 
-// TestFastAuthMarker round-trips the auth-rate-limiter bypass marker.
+// TestFastAuthMarker round-trips the auth-rate-limiter bypass marker via pending queue when provider is down.
 func TestFastAuthMarker(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir}
-	file := filepath.Join(dir, "fast_auth")
+	file := filepath.Join(dir, "pending_overrides.json")
 
 	if err := setFastAuthMarker(p, true, false); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	if _, err := os.Stat(file); err != nil {
-		t.Fatalf("fast_auth marker should exist after enable: %v", err)
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("pending_overrides.json should exist after enable: %v", err)
+	}
+	if !strings.Contains(string(b), `"key": "fast_auth"`) || !strings.Contains(string(b), `"value": "on"`) {
+		t.Fatalf("pending_overrides.json = %s, want fast_auth=on", string(b))
 	}
 
-	// Dry-run off must NOT remove the marker (dry-run is a no-op).
+	// Dry-run off must NOT modify queue (dry-run is a no-op).
 	if err := setFastAuthMarker(p, false, true); err != nil {
 		t.Fatalf("dry-run disable: %v", err)
 	}
-	if _, err := os.Stat(file); err != nil {
-		t.Fatalf("dry-run must not remove marker: %v", err)
+	bAfterDry, err := os.ReadFile(file)
+	if err != nil || string(bAfterDry) != string(b) {
+		t.Fatalf("dry-run must not mutate queue file")
 	}
 
 	if err := setFastAuthMarker(p, false, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if _, err := os.Stat(file); !os.IsNotExist(err) {
-		t.Fatalf("marker should be gone after disable, err=%v", err)
+	bFinal, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("pending_overrides.json should exist after disable: %v", err)
+	}
+	if !strings.Contains(string(bFinal), `"op": "clear"`) {
+		t.Fatalf("queue should contain clear op: %s", string(bFinal))
 	}
 }
 

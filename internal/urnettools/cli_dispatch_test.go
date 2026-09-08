@@ -184,6 +184,41 @@ func TestRunForceAndDryRunParsed(t *testing.T) {
 	}
 }
 
+func TestRunYesAliasParsed(t *testing.T) {
+	if len(Discover()) != 0 {
+		t.Skip("this test requires a box with zero discoverable providers")
+	}
+	// -y/--yes must behave identically to -f/--force: with zero providers it
+	// still errors on resolution (force never picks providers), and a stray
+	// "-y" must NOT be treated as a positional arg (the old bug: "restart
+	// takes no positional arguments — got -y").
+	for _, yes := range []string{"-y", "--yes"} {
+		err := Run([]string{"restart", yes, "-n"})
+		if err == nil || !strings.Contains(err.Error(), "no providers found") {
+			t.Errorf("Run([restart %s -n]) = %v, want \"no providers found\" (not a positional error)", yes, err)
+		}
+	}
+}
+
+// TestParseGlobalFlagsYesIsForce pins the alias in the low-level parser used
+// by every command that gates on force.
+func TestParseGlobalFlagsYesIsForce(t *testing.T) {
+	force, _, rest, err := parseGlobalFlags([]string{"restart", "-y"})
+	if err != nil {
+		t.Fatalf("parseGlobalFlags: %v", err)
+	}
+	if !force {
+		t.Error("-y should set force=true")
+	}
+	if len(rest) != 1 || rest[0] != "restart" {
+		t.Errorf("rest = %v, want [restart]", rest)
+	}
+	force, _, rest, _ = parseGlobalFlags([]string{"restart", "--yes"})
+	if !force || len(rest) != 1 || rest[0] != "restart" {
+		t.Errorf("--yes: force=%v rest=%v, want force=true rest=[restart]", force, rest)
+	}
+}
+
 // TestRunDockerHelpEveryCommand mirrors TestRunHelpEveryCommand for the
 // urnet-docker entry point (RunDocker), which had 0% coverage.
 func TestRunDockerHelpEveryCommand(t *testing.T) {

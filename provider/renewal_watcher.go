@@ -44,8 +44,20 @@ type proxyJWTWatcherConfig struct {
 	// watcher's expiry decision so a store-write failure at startup cannot
 	// leave currentJwt empty (which would disable the exp-driven renewal).
 	// Falls back to the store entry when empty.
-	CurrentJWT     string
-	Description    string
+	CurrentJWT string
+	// Description is the client description sent with a renewal. It is a
+	// fixed fallback for callers (and tests) that don't need it to track
+	// runtime changes; DescribeFn, when set, takes priority and is
+	// re-evaluated on every renewal instead.
+	Description string
+	// DescribeFn, when non-nil, recomputes the description immediately
+	// before each renewal (startup check, hourly tick, or 401 fast-path)
+	// instead of reusing the value captured when the watcher was started.
+	// Without this, a runtime node rename (`urnet-tools rename`) or a
+	// public-IP change picked up by ip-autodetect between renewals would
+	// never reach the server: the watcher would keep sending the identity
+	// string it had at startup for the proxy's entire lifetime.
+	DescribeFn     func() string
 	ApiURL         string
 	ClientStrategy *connect.ClientStrategy
 	OOB            *connect.ApiOutOfBandControl
@@ -127,7 +139,11 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			return false
 		}
 
-		newJwt, err := renewClientJWT(renewCtx, cfg.ApiURL, accountJWT, cfg.ClientID, cfg.Description, cfg.ClientStrategy)
+		description := cfg.Description
+		if cfg.DescribeFn != nil {
+			description = cfg.DescribeFn()
+		}
+		newJwt, err := renewClientJWT(renewCtx, cfg.ApiURL, accountJWT, cfg.ClientID, description, cfg.ClientStrategy)
 		// Feed the outcome back so the limiter's AIMD adjusts (429s halve
 		// the rate, sustained success creeps it back up).
 		globalAuthRateLimiter.ReportResult(err)

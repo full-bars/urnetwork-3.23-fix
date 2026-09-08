@@ -389,7 +389,8 @@ func appendRetentionEvent(event string) {
 // goroutine to finish, so no pending entries are lost at shutdown. Safe to
 // call multiple times (subsequent calls are no-ops) and safe to race against
 // concurrent appendRetentionEvent calls (retentionEventMu makes the close
-// and the closed-check atomic with respect to each other).
+// and the closed-check atomic with respect to each other). Terminal: after
+// this call, appendRetentionEvent silently drops all events.
 func flushRetentionEvents() {
 	startRetentionEventWriter()
 	retentionEventMu.Lock()
