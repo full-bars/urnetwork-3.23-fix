@@ -20,6 +20,10 @@ on:
       - fix/v3.23-custom
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dash-compat:
     runs-on: ubuntu-latest

@@ -5,6 +5,13 @@ on:
   push:
     branches: [main, "fix/*"]
 
+# This workflow fires on every push to a fix/* branch, so a quick follow-up
+# push otherwise leaves two full 40-minute-budget runs racing. Cancel the
+# superseded one on feature branches; never cancel a run on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   multi-container:
     name: docker multi-container targeting + modes
