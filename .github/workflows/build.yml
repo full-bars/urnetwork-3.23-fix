@@ -298,7 +298,15 @@ jobs:
             # release notes, the shakedown, and docker.go). group=1
             # stripped the v3.23.0-fix. prefix and broke those pulls.
             type=match,pattern=v3\.23\.0-fix\..*,group=0
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') }}
+            # A pre-release must NOT become :latest. release.yml already marks
+            # the GitHub Release itself pre-release on -rc/-alpha/-beta, but
+            # that gate keys off the SUFFIX while this one keyed off the
+            # PREFIX, so the two disagreed: v3.23.0-fix.31.0-rc1 was hidden
+            # from /releases/latest (protecting native auto-update) yet still
+            # published :latest, silently exposing every Docker node that
+            # pulls it. The suffix checks below make both gates agree, so an
+            # -rc tag is safe to push under the normal naming convention.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') && !contains(github.ref, '-beta') }}
             # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
             type=sha,format=short
