@@ -1,5 +1,23 @@
 # ⚙️ Configuration Reference
 
+> [!IMPORTANT]
+> **As of v3.23.0-fix.31.0, systemd and native installs configure the provider
+> through the control socket, not by hand-editing `override.conf`.**
+> `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT` and `GOGC` are now held
+> in the provider's runtime state and set with `urnet-tools`:
+>
+> ```bash
+> urnet-tools turbo v8          # profile
+> urnet-tools ramlogs on        # ramlogs
+> urnet-tools set gogc 200      # any runtime tuning key
+> ```
+>
+> The environment variables below still work and remain the configuration
+> surface for **Docker**, where they are passed to the container. On systemd,
+> prefer `urnet-tools`: it is the single source of truth that `urnet-tools set`
+> and `urnet-tools status` both read, and a hand-edited drop-in can silently
+> disagree with it. See [Control Socket & Runtime Settings](#-control-socket--runtime-settings).
+
 ## 🌍 Environment Variables
 
 Quick jump:
@@ -26,9 +44,9 @@ Quick jump:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. |
+| `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. On systemd/native, set this with `urnet-tools turbo/eco/lowmode/auto` rather than a drop-in (v31+). |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Prefer this variable for Docker turbo mode. |
-| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. |
+| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. On systemd/native, set this with `urnet-tools ramlogs on\|off` (v31+). |
 | `URNETWORK_MESSAGE_POOL_SHARD_COUNT` | `16` | Number of internal mutex shards per message-pool size class. Higher values reduce lock contention at high packet rates. Must be a power of two, 1–256. Set to `1` to disable sharding (pre-v24.35 behavior). Sane values: `8` (moderate), `16` (default), `32` (high-pps tier3+). |
 | `URNETWORK_SKIP_AUDIT` | `0` | Set to `1` to skip the startup system audit (disk speed benchmark, ulimit, conntrack checks). Useful in Docker where host sysctls aren't visible. |
 | `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
@@ -106,6 +124,42 @@ Since v3.23.0-fix.25.14, the provider writes a per-process event log to `~/.urne
 ```bash
 cat ~/.urnetwork/events.log
 ```
+
+## 🔌 Control Socket & Runtime Settings
+
+*(v3.23.0-fix.31.0+, systemd and native installs)*
+
+| Path | Purpose |
+| :--- | :--- |
+| `~/.urnetwork/provider.sock` | Unix domain socket, owner-only `0600`. The live control plane `urnet-tools` talks to. |
+| `~/.urnetwork/provider_state.json` | Persisted runtime state. The provider is its single writer (atomic temp file + rename). |
+| `~/.urnetwork/pending_overrides.json` | Queue for changes made while the provider is stopped. Flock-guarded, merged atomically on the next start, then removed. |
+
+```bash
+urnet-tools set                     # list current overrides
+urnet-tools set report-interval 300 # change one, live, no restart
+urnet-tools set report-interval off # clear it
+```
+
+**Confirming a change landed.** The provider logs every accepted and rejected
+change, which is the authoritative signal rather than the CLI's exit code:
+
+```text
+⚙️ [control] set report-interval=300 (was unset)
+⚙️ [control] applied 2 queued override(s) from pending_overrides.json: profile=v8, cleared gogc
+❌ [control] set gogc=abc rejected: ...
+```
+
+`profile` and `ramlogs` still require the restart that `urnet-tools` performs
+for you: buffer and worker sizing is baked into objects allocated once at
+startup, and ramlogs is a live stdout redirect. The value is set through the
+socket either way, so `urnet-tools set` and `status` stay the single source of
+truth.
+
+> [!TIP]
+> `urnet-tools status` reports whether the socket is actually bound. A running
+> PID with no reachable socket is a startup failure or a same-user collision,
+> not a healthy provider.
 
 ## 🎛️ Profile Selection
 

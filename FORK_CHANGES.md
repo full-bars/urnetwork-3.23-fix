@@ -3324,3 +3324,54 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Bittensor Operations Guide**: Created `docs/Bittensor-Operations.md` detailing subnet mechanics, coldkey setup, epoch timelines, and claim operations.
 
 **Impact**: Full observability and streamlined operations for high-performance Subnet 25 miners and node operators.
+
+---
+
+## 160. Provider Control Socket & Offline Override Queue (PR #536, #537, #538, #539)
+
+**Purpose**: Replace hand-edited systemd drop-ins as the way a provider's runtime settings are changed, so a setting can be applied live, without a restart, and without two processes writing the same file.
+
+**Files Modified**: `provider/control_socket.go`, `provider/control_state.go`, `provider/pending_overrides.go`, `provider/startup_env_seed.go`, `internal/urnettools/control_client.go`, `internal/urnettools/legacy_cmds.go`, `internal/urnettools/cobra.go`, `scripts/Provider_Install_Linux.sh`.
+
+**Change**:
+- **Control socket**: the provider owns `~/.urnetwork/provider.sock` (owner-only `0600`) and is the single writer of `~/.urnetwork/provider_state.json` (atomic temp file + rename). `urnet-tools` sends `get`/`set`/`clear` over it.
+- **Atomic transactions**: a `set` or `clear` holds `txMu` across its whole read, apply, persist and rollback unit, so concurrent connections cannot interleave and leave memory and disk disagreeing.
+- **Offline queue**: a change made while the provider is stopped is written to `~/.urnetwork/pending_overrides.json`, flock-guarded so the Go CLI and the install script's shell helpers cannot lose each other's writes, then merged atomically on the next start and removed.
+- **Key migration**: `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT` and `GOGC` moved off `override.conf` into the control state. `profile` and `ramlogs` still require the restart `urnet-tools` performs, because buffer sizing is baked into objects allocated once at startup and ramlogs is a live stdout redirect; the value is set through the socket either way.
+
+**Impact**: One source of truth for runtime settings, readable with `urnet-tools set` and `urnet-tools status`, instead of a drop-in file that could silently disagree with what the provider was actually running.
+
+---
+
+## 161. Zero-Downtime HotSwap Binary Handover (PR #533, #539, #552)
+
+**Purpose**: Replace the 20-60s stop-swap-start stall on a binary upgrade with an in-place handover to a verified candidate.
+
+**Files Modified**: `provider/hotswap.go`, `provider/hotswap_unix.go`, `provider/hotswap_windows.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/update.go`.
+
+**Change**:
+- **Candidate pre-flight then ACK-then-yield**: the candidate verifies tokens, DoH and API reachability and announces READY; the control-socket listener and coordinator session are yielded only after it confirms a mandatory TAKEOVER ACK, so there is never a window where neither process holds them.
+- **Two transports**: Docker providers do an in-place PID-1 `syscall.Exec`; systemd providers use a `Type=notify` handoff with `NOTIFY_SOCKET` isolation.
+- **Fails closed on unit type**: `urnet-tools` checks the owning unit's `Type=` and declines HotSwap unless it is `notify`, falling back to a normal restart. An earlier revision gated on the version string alone, so the trigger fired, the internal handoff silently aborted, and the "hotswap triggered" path skipped the restart fallback, turning every update on a pre-existing node into a permanent no-op.
+- **Drain liveness gated on an actual child**: `Wait` returns immediately for a session with no child process, which left that case and `ctx.Done()` both ready in the drain select; Go chose at random, so a successful handoff could report a dead candidate and exit non-zero (PR #552).
+
+> [!IMPORTANT]
+> Only `install_systemd_units` writes `Type=notify`, and `urnet-tools update` never rewrites the unit, so **every node installed before v3.23.0-fix.31.0 still runs `Type=simple` and will decline HotSwap**. Those nodes update correctly via the restart fallback; a reinstall is required to get zero-downtime.
+
+**Impact**: Zero-downtime upgrades on newly installed nodes, and a safe, explicit fallback everywhere else.
+
+---
+
+## 162. Runtime Settings Are Visible in the Provider Log (PR #553)
+
+**Purpose**: Let an operator confirm from a node's own logs that a setting reached the running provider, rather than trusting the CLI's exit code.
+
+**Files Modified**: `provider/control_socket.go`, `provider/pending_overrides.go`, `provider/main.go`.
+
+**Change**:
+- `set` and `clear` log the key, the new value and the value they replaced. Rejected changes and "persisted but could not apply live" log too, since a refused change is when the log most needs to explain itself.
+- The startup merge names each queued override it applies instead of only reporting a count.
+- `rename` and `show-ip` never touch the socket, so `providerDescription` reports the resulting dashboard label on first resolve and on every change. It is not logged per call: that function runs once per proxy per renewal and would bury a busy node's log.
+- `get` stays silent, because `urnet-tools status` polls it on every invocation.
+
+**Impact**: `⚙️ [control]` and `🏷️ [identity]` lines make configuration changes auditable from the standard logs.

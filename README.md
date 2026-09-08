@@ -24,6 +24,10 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
 | Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
+| Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
+| Binary upgrade | Stop, swap, start (20-60s of downtime) | Zero-downtime HotSwap handoff to a verified candidate, with automatic rollback (requires a `Type=notify` unit, see the release notes) |
+| Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
+| Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
 
 ---
 
@@ -138,6 +142,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools proxy summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
+| `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
+| `urnet-tools hotswap` | Swap to an updated binary with no downtime (needs a `Type=notify` unit; otherwise `update` falls back to a restart) |
+| `urnet-tools rename <name>` | Set the dashboard display label without touching the hostname |
+| `urnet-tools show-ip [on\|off\|status]` | Control whether the public IP is appended to that dashboard label (was `ip-detect`) |
+| `urnet-tools providers [--all]` | List the providers on this box; `--all` (as root) covers every OS user |
 | `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
 | `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
