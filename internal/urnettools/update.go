@@ -645,7 +645,15 @@ func updateProvider(p Provider, cfg updateConfig) error {
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
 				procExe, perr := runningImagePath(rp.PID)
 				if perr == nil {
-					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
+					// providerVersion, not the buildinfo-only variant: every
+					// release binary is built with -trimpath, which strips
+					// -ldflags (and therefore main.Version) from buildinfo, so
+					// the buildinfo-only read can never return cfg.Tag and this
+					// verification failed on every successful update. procExe is
+					// the running image of the unit we just restarted, and
+					// providerVersion's --version fallback is gated behind
+					// isRecognizedExecutable.
+					if procVersion := providerVersion(procExe); procVersion == cfg.Tag {
 						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, procExe)
 						pruneBackups(p.Binary, 2)
 						return nil

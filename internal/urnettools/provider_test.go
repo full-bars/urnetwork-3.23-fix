@@ -3,6 +3,7 @@ package urnettools
 import (
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -333,5 +334,98 @@ func TestSelectTargetHotSwapDrainDeduplication(t *testing.T) {
 	}
 	if pUnit.PID != 200 {
 		t.Errorf("expected promoted child PID 200, got PID %d", pUnit.PID)
+	}
+}
+
+// TestIsGoPseudoVersion pins the pseudo-version shapes that must never be
+// mistaken for a provider release version. The first case is the literal
+// value read out of the v3.23.0-fix.30.9 release binary's buildinfo, which
+// is what defeated providerVersion()'s --version fallback.
+func TestIsGoPseudoVersion(t *testing.T) {
+	pseudo := []string{
+		"v0.0.0-20260905040828-776a45a81f1b",
+		"v1.2.3-0.20260905040828-abcdef123456",
+		"v1.2.4-pre.0.20260101000000-000000000000",
+		// A module with no go.mod carries a trailing +incompatible, which
+		// must not let the pseudo-version slip past the anchor.
+		"v2.0.0-20260905040828-776a45a81f1b+incompatible",
+	}
+	for _, v := range pseudo {
+		if !isGoPseudoVersion(v) {
+			t.Errorf("isGoPseudoVersion(%q) = false, want true", v)
+		}
+	}
+	releases := []string{
+		"v3.23.0-fix.30.9",
+		"v3.23.0-fix.31.0-rc1",
+		"v1.2.3",
+		"",
+		"dev",
+		// Close to the pseudo shape but not one: too few timestamp digits.
+		"v0.0.0-2026090504082-776a45a81f1b",
+	}
+	for _, v := range releases {
+		if isGoPseudoVersion(v) {
+			t.Errorf("isGoPseudoVersion(%q) = true, want false", v)
+		}
+	}
+}
+
+// TestProviderVersionResolvesTrimpathBuild is the regression test for the
+// whole chain. Every release binary is built with -trimpath, which strips
+// -ldflags (and therefore main.Version) from buildinfo. Before the fix,
+// providerVersionFromBuildinfo returned the module pseudo-version instead of
+// "", so providerVersion's `!= ""` guard short-circuited and the --version
+// fallback never ran: update's post-restart verification compared a
+// pseudo-version against the release tag and failed every single time, and
+// the hotswap version gate never matched a real version either.
+func TestProviderVersionResolvesTrimpathBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary; skipped under -short")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	dir := t.TempDir()
+	const want = "v3.23.0-fix.99.9"
+	src := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(src, []byte(
+		"package main\n\nimport \"fmt\"\n\nvar Version = \"dev\"\n\nfunc main() { fmt.Println(Version) }\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/vtest\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Windows needs the .exe suffix: without it the path is not executable
+	// (CreateProcess refuses it), so providerVersionFromExec would return ""
+	// and the test would fail for a reason unrelated to what it covers.
+	bin := filepath.Join(dir, "urnetwork")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.Version="+want, "-o", bin, ".")
+	build.Dir = dir
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("could not build fixture binary: %v (%s)", err, out)
+	}
+	// Assert the fixture is where we think it is BEFORE the buildinfo
+	// precondition below: providerVersionFromBuildinfo returns "" both for a
+	// -trimpath build and for a path it cannot read, so without this an
+	// output-naming mismatch would satisfy the precondition vacuously and
+	// then fail the real assertion for the wrong reason.
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("fixture binary not at %s: %v", bin, err)
+	}
+
+	// Precondition: this really is the -trimpath shape the release uses, so
+	// buildinfo alone cannot answer. If Go ever starts recording -ldflags
+	// under -trimpath this assertion fails loudly rather than the test
+	// silently passing for the wrong reason.
+	if v := providerVersionFromBuildinfo(bin); v != "" {
+		t.Fatalf("providerVersionFromBuildinfo(-trimpath build) = %q, want \"\" (a non-empty value here defeats the --version fallback)", v)
+	}
+	if got := providerVersion(bin); got != want {
+		t.Errorf("providerVersion = %q, want %q (--version fallback did not run)", got, want)
 	}
 }
