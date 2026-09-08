@@ -471,11 +471,23 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	tlog("⚡ [hotswap] Parent PID %d entering graceful stream drain (max %s)...\n", parentPID, HotSwapDrainTimeout)
 
 	go func() {
-		// Monitor candidate child liveness during drain
-		childWaitCh := make(chan error, 1)
-		go func() {
-			childWaitCh <- session.Wait()
-		}()
+		// Monitor candidate child liveness during drain.
+		//
+		// Only when a real child process backs the session: Wait returns
+		// immediately otherwise, which makes this case ready at once and
+		// leaves the select below picking at random between it and
+		// ctx.Done() — reporting a healthy handoff as a dead candidate and
+		// exiting non-zero. A nil channel blocks forever, so the select then
+		// resolves on the drain timeout or ctx.Done() alone, which is the
+		// intended behaviour when there is no candidate process to outlive.
+		var childWaitCh <-chan error
+		if session.hasChildProcess() {
+			ch := make(chan error, 1)
+			go func() {
+				ch <- session.Wait()
+			}()
+			childWaitCh = ch
+		}
 
 		candidateDied := false
 		select {

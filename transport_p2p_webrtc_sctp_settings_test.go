@@ -55,6 +55,14 @@ func TestSctpProgressWatchdogDisabledWhenTimeoutZero(t *testing.T) {
 }
 
 func TestWebRtcWithSctpProgressWatchdogEnabledPassesRealTraffic(t *testing.T) {
+	// Real ICE negotiation against the public STUN servers in
+	// DefaultWebRtcSettings, so this depends on third-party network reachability
+	// from the runner. Skipped in short mode like the package's other
+	// integration tests; it failed intermittently in CI and was masked by the
+	// test job's blanket retry.
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 	// Regression guard: a short-but-nonzero SctpNoProgressTimeout must not
 	// tear down a healthy, actively-exchanging connection. The watchdog
 	// should only fire on genuine no-progress, which real bidirectional
