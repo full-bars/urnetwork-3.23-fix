@@ -16,9 +16,14 @@ var ErrHotSwapNotSupported = errors.New("running provider does not support zero-
 // HotSwap but its owning systemd unit is not Type=notify, so
 // provider/hotswap.go would abort the in-process handoff internally rather
 // than actually hand off (see hotSwapUnitOK for the mechanism). Naming a
-// version here would be actively misleading — the fix is reinstalling the
-// systemd unit, not upgrading the binary.
-var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete — reinstall/refresh the systemd unit (re-run the installer, or urnet-tools install) to pick up Type=notify")
+// version here would be actively misleading: the fix is rewriting the
+// systemd unit, not upgrading the binary. The distinction matters because
+// the two obvious candidate remedies do NOT work. cmdUpdate and
+// cmdReinstall both route through updateProvider, which re-fetches and
+// atomically installs the binary and restarts the unit but never writes a
+// unit file, so neither migrates a Type=simple node. Only re-running
+// install_systemd_units in Provider_Install_Linux.sh does.
+var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete; re-run the installer script (Provider_Install_Linux.sh) to rewrite the unit with Type=notify. Note neither `urnet-tools update` nor `urnet-tools reinstall` rewrites the unit: both only re-fetch the binary")
 
 // triggerHotSwap signals the running provider process on Unix via SIGUSR2 to initiate
 // an in-process verified handoff.
