@@ -284,7 +284,6 @@ Targeting rules:
   - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
   - same network name on two providers: add --network-id or --unit to break the tie
   - batch: --include a,b / --exclude a,b / --all (everything)
-  - --select  interactive picker (choose A B C, skip D)
   - see 'providers' first to learn each provider's unit/user/network
 
 Force (machines/scripts):

@@ -297,9 +297,9 @@ func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
 }
 
 // TestAmbiguousErrorIsActionable: the multi-provider refusal must hand the
-// operator concrete next steps (inventory, --select, default set), not just a
-// flag-soup line plus a "run with sudo" hunt. These snapshots pin that the
-// actionable tips survive message regressions.
+// operator concrete next steps (target flags, interaction, default set), not
+// just a flag-soup line plus a "run with sudo" hunt. These snapshots pin that
+// the actionable tips survive message regressions.
 func TestAmbiguousErrorIsActionable(t *testing.T) {
 	orig := isPrivileged
 	isPrivileged = func() bool { return false } // unprivileged caller
@@ -312,7 +312,6 @@ func TestAmbiguousErrorIsActionable(t *testing.T) {
 
 	for _, want := range []string{
 		"specify a target",
-		"--select",
 		"--unit",
 		"default set",
 	} {
@@ -324,5 +323,10 @@ func TestAmbiguousErrorIsActionable(t *testing.T) {
 	// points at providers --all instead.
 	if strings.Contains(err.Error(), "sudo ") {
 		t.Errorf("ambiguousError must not dump a manual 'sudo /path' hunt; got:\n%s", err.Error())
+	}
+	// --select is redundant (interaction is already automatic on a TTY and
+	// refused off a TTY); it must not be advertised as the path to the picker.
+	if strings.Contains(err.Error(), "--select") {
+		t.Errorf("ambiguousError must not point at the redundant --select flag; got:\n%s", err.Error())
 	}
 }

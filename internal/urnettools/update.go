@@ -74,7 +74,7 @@ func newStageDir() (string, error) {
 // explicit target or --include is given — scripts must be explicit.
 func cmdUpdate(args []string, force, dryRun bool) error {
 	// LENIENT target parse: update defines its own flags (--tag, --digest,
-	// --url, --include, --exclude, --all, --select) which the loop below
+	// --url, --include, --exclude, --all) which the loop below
 	// consumes. Strict parsing here would reject them as unknown before
 	// the loop ever runs. Leftover
 	// unknown --flags are rejected AFTER the loop instead.
@@ -121,8 +121,6 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			i++
 		case "--all", "-all":
 			all = true
-		case "--select":
-			interactive = !force // --select forces the picker unless -f
 		default:
 			// Accept the = form (--include=a,b) as well as the space form.
 			if strings.HasPrefix(rest[i], "--include=") {
@@ -132,7 +130,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			} else if strings.HasPrefix(rest[i], "-") {
 				// Unknown --flag (typo like --netwrok): reject AFTER the
 				// command's own flags were consumed.
-				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
+				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
 			}

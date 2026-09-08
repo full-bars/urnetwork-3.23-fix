@@ -116,8 +116,8 @@ func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
 // Resolution order:
 //  1. include (--include a,b) selects exactly those providers; ambiguous
 //     entries are an error.
-//  2. interactive (--select) prompts with a numbered list; the operator
-//     picks entries by number (comma/space separated) or "all".
+//  2. a single explicit target / the sole provider auto-picks without
+//     prompting; otherwise selection is interactive only on a TTY.
 //  3. no criteria: single provider → that one; multiple → refuse with the
 //     inventory (same guard as selectTarget).
 //
@@ -384,13 +384,12 @@ func ambiguousErrorWithReason(providers []Provider, reason string) error {
 // one-command way to make future runs unambiguous.
 func ambiguousError(providers []Provider) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
+	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include:\n", len(providers))
 	for _, p := range providers {
 		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	fmt.Fprintf(&b, "Tips:\n")
 	fmt.Fprintf(&b, "  one target:     urnet-tools <cmd> --unit <unit>   (or --user / --network / --state-dir)\n")
-	fmt.Fprintf(&b, "  pick interactively: urnet-tools <cmd> --select\n")
 	if !isPrivileged() {
 		fmt.Fprintf(&b, "  make future runs unambiguous: urnet-tools default set --network <name>\n")
 		fmt.Fprintf(&b, "  see every provider on the box: urnet-tools providers --all (as root)\n")
