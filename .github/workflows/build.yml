@@ -17,13 +17,93 @@ on:
       - fix/v3.23-custom
   workflow_dispatch:
 
+# Supersede in-flight PR runs: this is the most expensive workflow in the
+# repo, and without this a quick second push runs the whole suite twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   DOCKER_IMAGE_NAME: 3cape/urnetwork-3.23-fix
 
 jobs:
-  test-and-lint:
+  test:
+    name: test (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Every shard reports independently: one failing package should not
+      # hide the results of the other two.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go (native cache)
+        # cache: true uses setup-go's built-in Go-aware cache (build + module
+        # caches via the actions/cache backend with atomic restore). Replaces
+        # the two manual cache steps, which flaked with tar extraction races
+        # ("Cannot open: File exists") on cache restore.
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify shard partition covers every package
+        run: ./.github/scripts/test_shard.sh --verify
+
+      - name: Run Go Unit Tests (shard ${{ matrix.shard }})
+        run: |
+          # Full suite with the race detector, split across shards so the
+          # wall clock is the slowest shard rather than the sum. The slow
+          # transport/transfer integration tests self-skip under -short via
+          # their testing.Short() guards. Package selection comes from
+          # test_shard.sh, which auto-assigns any newly added package and
+          # is verified above, so the suite cannot silently drop coverage.
+          PKGS=$(./.github/scripts/test_shard.sh ${{ matrix.shard }})
+          if [ -z "$PKGS" ]; then
+            echo "shard ${{ matrix.shard }} resolved to no packages"
+            exit 1
+          fi
+          echo "$PKGS" | sed 's/^/  /'
+          for attempt in 1 2 3; do
+            echo "=== go test attempt $attempt/3 ==="
+            set +e
+            # shellcheck disable=SC2086
+            go test -short -race -timeout 600s $PKGS 2>&1 | tee /tmp/gotest.out
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "go test passed (attempt $attempt)"
+              exit 0
+            fi
+            # Retry ONLY the known cache-restore flake ("Cannot open: File
+            # exists" from a tar extraction race). Retrying a genuine test
+            # failure just burns three full runs before reporting red, so
+            # anything else fails fast.
+            if grep -qE "Cannot open: File exists|tar:.*Cannot open" /tmp/gotest.out; then
+              echo "cache-restore flake detected; clearing build cache and retrying"
+              go clean -cache
+              sleep 5
+              continue
+            fi
+            echo "genuine test failure — not retrying"
+            exit "$rc"
+          done
+          echo "go test still flaking after 3 attempts"
+          exit 1
+
+  lint:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,34 +125,6 @@ jobs:
           go-version: '1.27'
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Run Go Unit Tests (with retry)
-        run: |
-          # Full suite across all packages with the race detector. The slow
-          # transport/transfer integration tests self-skip under -short via
-          # their testing.Short() guards, so this stays CI-fast (~2-4 min) while
-          # ./... auto-discovers new tests (the suite can no longer silently
-          # drift out of coverage the way the old -run allowlist did). -race
-          # gates concurrency regressions such as the message-pool reference
-          # count race.
-          # Retry: the Go cache restore occasionally flakes with a tar
-          # extraction error ("Cannot open: File exists"); a retry with a
-          # cold cache (no restore) clears it without a manual rerun.
-          for attempt in 1 2 3; do
-            echo "=== go test attempt $attempt/3 ==="
-            if go test -short -race -timeout 600s ./...; then
-              echo "go test passed (attempt $attempt)"
-              exit 0
-            fi
-            echo "go test failed on attempt $attempt"
-            if [ "$attempt" -lt 3 ]; then
-              echo "clearing Go build cache and retrying..."
-              go clean -cache
-              sleep 5
-            fi
-          done
-          echo "go test failed after 3 attempts"
-          exit 1
 
       - name: Run go vet
         run: |
@@ -250,7 +302,7 @@ jobs:
           govulncheck ./...
 
   build-and-push:
-    needs: test-and-lint
+    needs: [test, lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read
