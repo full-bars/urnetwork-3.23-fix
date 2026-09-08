@@ -220,10 +220,11 @@ func providerVersionFromBuildinfo(binary string) string {
 // goPseudoVersionSuffix matches the trailing "<yyyymmddhhmmss>-<12 hex>" of a
 // Go module pseudo-version. The separator before the timestamp is a hyphen in
 // the v0.0.0-20260905040828-776a45a81f1b form and a dot in the
-// vX.Y.Z-0.<ts>-<rev> / vX.Y.Z-pre.0.<ts>-<rev> forms. A pseudo-version is
-// derived from a commit, never from a provider release tag, so it is never a
-// valid answer to "what version is this provider?".
-var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}$`)
+// vX.Y.Z-0.<ts>-<rev> / vX.Y.Z-pre.0.<ts>-<rev> forms, and a module with no
+// go.mod carries a trailing +incompatible. A pseudo-version is derived from a
+// commit, never from a provider release tag, so it is never a valid answer to
+// "what version is this provider?".
+var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}(\+incompatible)?$`)
 
 // isGoPseudoVersion reports whether v is a Go module pseudo-version.
 func isGoPseudoVersion(v string) bool {

@@ -346,6 +346,9 @@ func TestIsGoPseudoVersion(t *testing.T) {
 		"v0.0.0-20260905040828-776a45a81f1b",
 		"v1.2.3-0.20260905040828-abcdef123456",
 		"v1.2.4-pre.0.20260101000000-000000000000",
+		// A module with no go.mod carries a trailing +incompatible, which
+		// must not let the pseudo-version slip past the anchor.
+		"v2.0.0-20260905040828-776a45a81f1b+incompatible",
 	}
 	for _, v := range pseudo {
 		if !isGoPseudoVersion(v) {

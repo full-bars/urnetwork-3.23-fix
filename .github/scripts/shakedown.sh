@@ -362,6 +362,11 @@ section "F. Docker"
 # genuinely absent.
 if timeout 60 docker info >/dev/null 2>&1; then
   ok "docker available (preinstalled daemon responding)"
+elif command -v docker >/dev/null 2>&1 && systemctl start docker >/dev/null 2>&1 && timeout 60 docker info >/dev/null 2>&1; then
+  # Installed but not running: start the daemon that is already there.
+  # Installing docker.io on top of a docker-ce host conflicts and fails a
+  # perfectly recoverable box.
+  ok "docker available (started the installed daemon)"
 else
   apt-get update -qq >/dev/null 2>&1
   run_check "docker installed" timeout 600 bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
@@ -542,7 +547,10 @@ sleep 20
 cids_since "$MARK" > "$CIDS_FRESH"
 N_FRESH=$(wc -l < "$CIDS_FRESH")
 N_NEW=$(markers_since "$MARK" | grep -c "new" || true)
-N_CARRIED=$(comm -12 "$CIDS_AFTER" "$CIDS_FRESH" | wc -l)
+# Union of BOTH pre-clear sets: CIDS_AFTER is only a 20s sample, so an
+# identity present in CIDS_BEFORE but not sampled into CIDS_AFTER could
+# reappear after the cache clear without ever raising N_CARRIED.
+N_CARRIED=$(comm -12 <(sort -u "$CIDS_BEFORE" "$CIDS_AFTER") "$CIDS_FRESH" | wc -l)
 if [ "$N_FRESH" -gt 0 ] && [ "${N_NEW:-0}" -gt 0 ] && [ "$N_CARRIED" -eq 0 ]; then
   ok "cleared cache minted NEW client_ids ($N_NEW new markers, 0 of $N_AFTER carried over)"
 else
