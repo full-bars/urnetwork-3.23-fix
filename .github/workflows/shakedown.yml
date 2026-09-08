@@ -148,6 +148,17 @@ jobs:
           cat /tmp/shakedown-report.txt 2>/dev/null || echo "(no report)"
           echo "::endgroup::"
           echo "shakedown exit: $SHAKE_EXIT"
+          # The script runs under `set -u`: an unset variable aborts it
+          # mid-suite with no FAIL line, so the report alone cannot explain a
+          # non-zero exit. This output is otherwise discarded entirely.
+          if [ "$SHAKE_EXIT" != "0" ]; then
+            echo "::group::shakedown raw output (last 200 lines)"
+            sudo tail -n 200 /tmp/shakedown.out 2>/dev/null || echo "(no output captured)"
+            echo "::endgroup::"
+          fi
+          if ! grep -q "===== SUMMARY =====" /tmp/shakedown-report.txt 2>/dev/null; then
+            echo "::warning::shakedown report has no SUMMARY — the suite aborted mid-section and later checks never ran"
+          fi
           REPORT_FAILS=$(grep -c "^FAIL:" /tmp/shakedown-report.txt 2>/dev/null || true)
           if [ "$SHAKE_EXIT" = "0" ] && [ "${REPORT_FAILS:-0}" -gt 0 ]; then
             echo "::error::shakedown reported $REPORT_FAILS FAIL(s) but exited 0 — RELEASE_BLOCKED"

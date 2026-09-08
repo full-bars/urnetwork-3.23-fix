@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -838,4 +839,124 @@ func TestClientJWTStoreFlockExclusivity(t *testing.T) {
 	if got.ByClientJWT != "jwt1" {
 		t.Errorf("proxy-1 JWT = %q, want jwt1 (stale-map overwrite would have lost this)", got.ByClientJWT)
 	}
+}
+
+// TestHotSwapSessionWithoutChildIsNotADeadCandidate pins the invariant behind
+// the drain-liveness monitor: a session with no child process must never be
+// reported as a candidate that died.
+//
+// Wait returns immediately for such a session, so arming the monitor makes its
+// select case ready at once. With ctx.Done() also ready after the drain is
+// cancelled, Go picks between two ready cases at random, and picking the
+// liveness case turns a healthy handoff into exit(1). That is the flake behind
+// TestHotSwapParentStandardBatonSuccess, which failed intermittently in CI and
+// was masked by the test job's blanket retry.
+func TestHotSwapSessionWithoutChildIsNotADeadCandidate(t *testing.T) {
+	if (&HotswapParentSession{}).hasChildProcess() {
+		t.Fatal("a session with no childCmd must not report a child process")
+	}
+	if (&HotswapParentSession{childCmd: &exec.Cmd{}}).hasChildProcess() != true {
+		t.Fatal("a session with a childCmd must report a child process")
+	}
+}
+
+// TestHotSwapParentDrainExitsCleanlyRepeatedly runs the standard baton handoff
+// through to the drain exit repeatedly. The failure it guards against is
+// probabilistic, so a single pass proves little: before the liveness monitor
+// was gated on an actual child process, iterations here would intermittently
+// observe exit(1) on a handoff that in fact succeeded.
+func TestHotSwapParentDrainExitsCleanlyRepeatedly(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		if code := runBatonHandoffOnce(t); code != 0 {
+			t.Fatalf("iteration %d: expected exit code 0 on drain, got %d", i, code)
+		}
+	}
+}
+
+// runBatonHandoffOnce drives one parent-side baton handoff with a simulated
+// candidate and returns the exit code the parent reported on drain.
+func runBatonHandoffOnce(t *testing.T) int {
+	t.Helper()
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	ResetHotSwapStateForTest()
+	defer ResetHotSwapStateForTest()
+
+	origGetpid, origSpawn, origExit := getpidFunc, spawnCandidateFunc, exitFunc
+	defer func() {
+		getpidFunc, spawnCandidateFunc, exitFunc = origGetpid, origSpawn, origExit
+	}()
+
+	getpidFunc = func() int { return 9999 }
+	parentExited := make(chan int, 1)
+	exitFunc = func(code int) { parentExited <- code }
+	// childCmd stays nil: this is the shape that used to race the drain select.
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	ClearCoordinatorClosers()
+	unreg := RegisterCoordinatorCloser(func() {})
+	defer unreg()
+
+	childErr := make(chan error, 1)
+	go func() {
+		childReader := bufio.NewReader(childFile)
+		if err := writeHotswapMessage(childFile, HotswapMessage{
+			Type: HotswapMsgReady, PID: 10000, Version: "v3.23.0-fix.31.0",
+		}); err != nil {
+			childErr <- err
+			return
+		}
+		msg, err := readHotswapMessage(childReader)
+		if err != nil {
+			childErr <- err
+			return
+		}
+		if msg.Type != HotswapMsgTakeover {
+			childErr <- fmt.Errorf("child expected TAKEOVER, got %s", msg.Type)
+			return
+		}
+		childErr <- writeHotswapMessage(childFile, HotswapMessage{
+			Type: HotswapMsgAck, PID: 10000,
+		})
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := runHotSwapParentHandoff(ctx, cancel, docopt.Opts{}); err != nil {
+		t.Fatalf("runHotSwapParentHandoff returned error: %v", err)
+	}
+	select {
+	case err := <-childErr:
+		if err != nil {
+			t.Fatalf("child simulation error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for child simulation")
+	}
+
+	cancel()
+	select {
+	case code := <-parentExited:
+		return code
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for parent exit on drain")
+	}
+	return -1
 }
