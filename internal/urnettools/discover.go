@@ -78,11 +78,19 @@ func unitIn(running []Provider, unit string) bool {
 }
 
 // providerFromUnit builds a Provider record for a (possibly stopped) unit.
-func providerFromUnit(unit, user string) Provider {
+//
+// binary is the unit's ExecStart executable, resolved by the caller (it needs
+// the right systemctl scope: system, --user, or --user -M <user>@). Without
+// it a stopped provider carries an empty Provider.Binary, and every operation
+// that has to touch the executable refuses outright -- `urnet-tools update`
+// aborts with "no resolvable binary path -- nothing updated", so a provider
+// that is merely stopped cannot be updated at all.
+func providerFromUnit(unit, user, binary string) Provider {
 	p := Provider{
 		User:     user,
 		StateDir: unitStateDir(user),
 		Unit:     unit,
+		Binary:   binary,
 		Running:  false,
 	}
 	if p.StateDir == "" {

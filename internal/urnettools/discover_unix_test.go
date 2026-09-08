@@ -192,7 +192,7 @@ func TestParseUnitLinesDedupesUnitPresentInBothListings(t *testing.T) {
 	// concatenated the way discoverSystemUnits builds `out`.
 	text := "urnetwork-native.service loaded inactive dead urnetwork-native.service\n" +
 		"urnetwork-native.service enabled\n"
-	got := parseUnitLines(text, nil, func(string) string { return "urnet" })
+	got := parseUnitLines(text, nil, func(string) string { return "urnet" }, nil)
 	if len(got) != 1 {
 		t.Fatalf("parseUnitLines returned %d providers, want 1 (unit appears in both listings): %+v", len(got), got)
 	}
@@ -210,7 +210,7 @@ func TestParseUnitLinesSkipsRunningAndNonProviderUnits(t *testing.T) {
 	text := "urnetwork-native.service loaded active running\n" +
 		"nginx.service loaded active running\n" +
 		"provider-dashboard.service loaded active running\n"
-	got := parseUnitLines(text, running, func(string) string { return "urnet" })
+	got := parseUnitLines(text, running, func(string) string { return "urnet" }, nil)
 	if len(got) != 0 {
 		t.Errorf("parseUnitLines returned %d providers, want 0 (running unit + non-provider units should all be excluded): %+v", len(got), got)
 	}
@@ -299,5 +299,59 @@ func TestDiscoverProcessesFallsBackToProcessOwner(t *testing.T) {
 	}
 	if ownerHome == "" {
 		t.Fatal("processOwner returned empty home for own PID")
+	}
+}
+
+// TestParseExecStartPath: a stopped provider's Binary comes from the unit's
+// ExecStart, and systemd renders that property as a bracketed record rather
+// than a bare path. Getting this wrong leaves Provider.Binary empty, which
+// makes `urnet-tools update` refuse every stopped provider with "no
+// resolvable binary path — nothing updated" (CI shakedown 2026-09-08).
+func TestParseExecStartPath(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "systemd bracketed record",
+			raw:  "{ path=/home/urnet/.local/share/urnetwork-provider/bin/urnetwork ; argv[]=/home/urnet/.local/share/urnetwork-provider/bin/urnetwork provide ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+			want: "/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
+		},
+		{
+			name: "bare command line",
+			raw:  "/usr/local/bin/urnetwork provide",
+			want: "/usr/local/bin/urnetwork",
+		},
+		{
+			name: "multiple ExecStart lines resolves to the first",
+			raw:  "{ path=/opt/a/urnetwork ; argv[]=/opt/a/urnetwork provide }\n{ path=/opt/b/urnetwork ; argv[]=/opt/b/urnetwork provide }",
+			want: "/opt/a/urnetwork",
+		},
+		{name: "empty", raw: "", want: ""},
+		{name: "whitespace only", raw: "   \n  ", want: ""},
+		{name: "relative path is not a resolvable binary", raw: "{ path=urnetwork ; argv[]=urnetwork provide }", want: ""},
+		{name: "no path field and not absolute", raw: "{ argv[]=urnetwork provide }", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseExecStartPath(tc.raw); got != tc.want {
+				t.Errorf("parseExecStartPath(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProviderFromUnitCarriesBinary: providerFromUnit must propagate the
+// resolved ExecStart into Provider.Binary even when the state dir is
+// unresolvable (the early-return path), since update.go's precondition loop
+// checks Binary regardless.
+func TestProviderFromUnitCarriesBinary(t *testing.T) {
+	p := providerFromUnit("urnetwork.service", "urnet", "/opt/urnetwork/bin/urnetwork")
+	if p.Binary != "/opt/urnetwork/bin/urnetwork" {
+		t.Errorf("Binary = %q, want /opt/urnetwork/bin/urnetwork", p.Binary)
+	}
+	if p.Running {
+		t.Error("a unit-derived provider must not be marked Running")
 	}
 }
