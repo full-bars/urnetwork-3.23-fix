@@ -1,3 +1,14 @@
-### **Unreleased**
+### **Unreleased (v3.23.0-fix.31.0 Draft)**
 
-_No unreleased changes yet._
+Full draft release notes: [releases/v3.23.0-fix.31.0.md](v3.23.0-fix.31.0.md)
+
+#### Added
+- **Provider Control Plane & Daemonization (Flagship)**: In-process control state with a local Unix domain socket control plane (`~/.urnetwork/provider.sock`) and a single-owner atomic state file (`~/.urnetwork/provider_state.json`); `urnet-tools set`/`clear`/`get` over the socket, with atomic set/clear (no split-brain), cross-process flocking, and systemd `override.conf` karma (profile, ramlogs, gomemlimit, gogc).
+- **Offline Pending Configuration Queue**: Queues `urnet-tools set` updates to `~/.urnetwork/pending_overrides.json` when the provider is offline (flock-guarded across processes), merging and applying settings one-shot on startup.
+- **Zero-Downtime HotSwap**: In-place binary handover between a running provider and a pre-flight-verified candidate — control-socket and listener transfer, mandatory TAKEOVER-ACK-then-yield, graceful drain, SIGUSR2/`urnet-tools hotswap` + Docker PID-1 in-place `execve` and systemd `Type=notify` handoff, and automatic rollback if the candidate fails to take over.
+- **Systemd Key Convergence**: Migrates `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT`, and `GOGC` into control-socket runtime state.
+- **Public IP Autodetection & Dashboard Rename (PR #534)**: Automatically discovers public IPv4 address with caching, 60s TTL, and concurrent request deduplication; `urnet-tools rename` sets the dashboard display label, and `urnet-tools ip-detect` / the `disable_ip_autodetect` marker disable autodetection.
+- **urnet-tools Multi-Provider UX (one provider per OS user)**: implicit current-user scope on ordinary commands; `providers` (your providers) and `providers --all` (whole box); cross-user `--user`/`--unit` commands self-elevate under `sudo <full binary path>`; `-y`/`--yes` aliases `--force`; `optimize` self-elevates and applies atomically with rollback; actionable manage-time refusals; control-socket liveness in `status`.
+- **JWT Auto-Refresh Transfer Stats Telemetry**: Step 3/3 of JWT rotation reads `paid_bytes_provided` and `unpaid_bytes_provided` from `GET /transfer/stats`, reporting account balances inline in human-readable units (`unpaid: X, paid: Y`).
+- **ICE IPv6 Host Candidate Egress Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent dead cellular routes on Android from blackholing WebRTC traffic.
+- **Automated CFAA Blocklist Synchronizations (PR #540, #542)**: Synchronized Computer Fraud and Abuse Act IP blocklists with upstream definitions.

@@ -2282,12 +2282,21 @@ func refreshJWT(ctx context.Context, apiUrl, byJwt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fresh token failed verification: %w", err)
 	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("fresh token rejected by server (HTTP %d)", resp.StatusCode)
 	}
 
-	tlog("🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP %d)\n", resp.StatusCode)
+	var stats struct {
+		PaidBytes   uint64 `json:"paid_bytes_provided"`
+		UnpaidBytes uint64 `json:"unpaid_bytes_provided"`
+	}
+	if err := json.Unmarshal(body, &stats); err == nil {
+		tlog("🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP %d, unpaid: %s, paid: %s)\n", resp.StatusCode, formatBytes(stats.UnpaidBytes), formatBytes(stats.PaidBytes))
+	} else {
+		tlog("🔑 [jwt] refresh → step 3/3 ok: verification passed (HTTP %d)\n", resp.StatusCode)
+	}
 
 	return newJwt, nil
 }

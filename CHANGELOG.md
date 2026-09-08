@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Provider Control Plane & Daemonization (Flagship)**: Decoupled provider service execution from interactive CLI sessions; added a background supervisor, a local Unix domain socket control plane (`~/.urnetwork/provider.sock`, `provider/control_socket.go`) and client protocol in `urnet-tools` for live runtime configuration management without restarts or brittle shared-file locks. Atomic set/clear, single-owner `provider_state.json`, and cross-process flocking.
+- **Offline Pending Configuration Queue**: Seamless fallback queue (`~/.urnetwork/pending_overrides.json`) for `urnet-tools set` invocations when the provider is offline, atomically merged and applied one-shot on startup.
+- **Zero-Downtime HotSwap**: In-place binary handover with control-socket/listener transfer, mandatory TAKEOVER-ACK-then-yield, graceful drain, SIGUSR2/`urnet-tools hotswap` + Docker PID-1 in-place `execve` and systemd `Type=notify` handoff, and automatic rollback if the candidate fails to take over.
+- **Public IP Autodetection & Dashboard Rename (PR #534)**: Automatic detection of public IPv4 address with caching, 60s TTL, concurrent request deduplication, and opt-out (`~/.urnetwork/disable_ip_autodetect` / `urnet-tools ip-detect off`); added `urnet-tools rename` to set custom dashboard display labels dynamically.
+- **Systemd Environment Key Migration**: Unified `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT`, and `GOGC` under control-socket configuration, eliminating manual `override.conf` requirements.
+- **urnet-tools Multi-Provider UX (one provider per OS user)**: implicit current-user scope on ordinary commands; `providers` / `providers --all` inventory; cross-user `--user`/`--unit` commands self-elevate under `sudo <full binary path>`; `-y`/`--yes` aliases `--force`; `optimize` self-elevates and applies atomically with rollback; actionable manage-time refusals; control-socket liveness in `status`.
+- **JWT Refresh Transfer Stats Logging**: Step 3/3 of JWT auto-refresh parses `paid_bytes_provided` and `unpaid_bytes_provided` from `GET /transfer/stats` and logs account balances in human-readable units inline (`unpaid: X, paid: Y`).
+- **CFAA Blocklist Synchronizations (PR #540, #542)**: Automated synchronization of Computer Fraud and Abuse Act IP blocklists with upstream definitions.
+
+### Fixed
+- **ICE IPv6 Host Candidate Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent blackholed cellular routes on Android from stalling ICE connection negotiation.
+- **Memory Target & GC Tuning at Startup**: Persisted `gomemlimit` and `gogc` applied at bootstrap and runtime via debug APIs.
+
+---
+
 ## [v3.23.0-fix.30.9]
 
 ### Added
