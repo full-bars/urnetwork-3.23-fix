@@ -143,6 +143,30 @@ func TestControlClient_SocketReachableRoundTrip(t *testing.T) {
 	}
 }
 
+// TestControlSocketReachable pins the liveness probe used by `status`: a
+// reachable socket reports true, a missing/nonexistent one false, and an empty
+// StateDir (no resolvable home) never panics — false.
+func TestControlSocketReachable(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "provider.sock")
+	server := startMockControlServer(t, sockPath)
+	defer server.Close()
+
+	if !controlSocketReachable(Provider{StateDir: dir}) {
+		t.Error("controlSocketReachable should be true when the socket is live")
+	}
+	server.Close()
+	if controlSocketReachable(Provider{StateDir: dir}) {
+		t.Error("controlSocketReachable should be false after the socket is gone")
+	}
+	if controlSocketReachable(Provider{StateDir: filepath.Join(t.TempDir(), "nope")}) {
+		t.Error("controlSocketReachable should be false for a nonexistent socket")
+	}
+	if controlSocketReachable(Provider{StateDir: ""}) {
+		t.Error("controlSocketReachable must be false for an empty StateDir")
+	}
+}
+
 func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir}

@@ -73,6 +73,51 @@ func elevateSelf(args []string) error {
 // types it.
 const urnetElevatedEnv = "URNET_TOOLS_ELEVATED"
 
+// elevateSelfFunc is the elevation mechanism as a var seam so tests can stub
+// it (like isPrivileged / stdinIsInteractiveOverride) without ever invoking a
+// real `sudo`. This matters because cmdStatus/cmdLogs/cmdStop etc. re-exec
+// under sudo when the resolved provider belongs to another OS user, and a unit
+// test must never spawn a real sudo.
+var elevateSelfFunc = elevateSelf
+
+// maybeElevateForCrossUser re-executes a command under sudo when its resolved
+// provider belongs to another OS user and the caller is unprivileged — the
+// binary lives on a per-user path, so a plain `sudo urnet-tools ...` would be
+// "command not found", and the operator shouldn't have to hand-craft a
+// `sudo /long/path/urnet-tools ... --user bob` themselves. On success it
+// returns (true, nil): the caller must stop and return nil (the elevated child
+// did the work). Returns (false, nil) to proceed normally when the target is
+// the current user's, the caller is root/elevated, or already elevated. On a
+// failed elevation the error is returned so the operator sees exactly what to
+// run.
+//
+// `sub` is the subcommand name (e.g. "status"); `args` are the remaining
+// arguments exactly as the operator typed them (including any --user bob), so
+// the elevated child re-resolves the same target as root.
+func maybeElevateForCrossUser(sub string, p Provider, args []string, force, dryRun bool) (bool, error) {
+	if isPrivileged() || os.Getenv(urnetElevatedEnv) == "1" {
+		return false, nil
+	}
+	if p.User == "" || p.User == currentUserName() {
+		return false, nil
+	}
+	// Rebuild the argv the elevated child needs: the original args plus
+	// force/dry-run, which parseGlobal stripped before the command ran. Without
+	// them the child would re-prompt for confirmation (double-confirm bug). -n
+	// must NOT elevate at all (a plan needs no root), which callers ensure by
+	// skipping this for dry-run.
+	carry := args
+	if dryRun {
+		carry = append([]string{"-n"}, args...)
+	} else if force {
+		carry = append([]string{"-f"}, args...)
+	}
+	if err := elevateSelfFunc(append([]string{sub}, carry...)); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 // printNarrowedNote reports that selectTargetOrSoleAccessible auto-picked
 // the sole provider reachable without root, so the operator knows other
 // providers exist on the box but were skipped rather than acted on. The note

@@ -119,7 +119,7 @@ func isUserUnitCompute(unit string) bool {
 // accessible RUNNING target, print the narrowed note, and confirm it is a
 // systemd (non-docker) provider. One place to change instead of triplicating it
 // across the destructive lifecycle commands.
-func selectLifecycleTarget(verb string, args []string) (Provider, error) {
+func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Provider, error) {
 	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
 		return Provider{}, err
@@ -128,6 +128,13 @@ func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, true)
 	if err != nil {
 		return Provider{}, err
+	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// A dry run plans without acting and needs no root, so it never elevates.
+	if !dryRun {
+		if elevated, err := maybeElevateForCrossUser(verb, p, args, force, false); elevated {
+			return Provider{}, err
+		}
 	}
 	if narrowed {
 		printLifecycleNarrowedNote(len(providers), p, verb)
@@ -140,7 +147,7 @@ func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
-	p, err := selectLifecycleTarget("start", args)
+	p, err := selectLifecycleTarget("start", args, force, dryRun)
 	if err != nil {
 		return err
 	}
@@ -159,7 +166,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
-	p, err := selectLifecycleTarget("stop", args)
+	p, err := selectLifecycleTarget("stop", args, force, dryRun)
 	if err != nil {
 		return err
 	}
@@ -178,7 +185,7 @@ func cmdStop(args []string, force, dryRun bool) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	p, err := selectLifecycleTarget("restart", args)
+	p, err := selectLifecycleTarget("restart", args, force, dryRun)
 	if err != nil {
 		return err
 	}
@@ -283,6 +290,11 @@ func cmdLogs(args []string) error {
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return errWithDockerHint(err, len(providers))
+	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// logs is read-only (no confirm gate), so force/dryRun are irrelevant.
+	if elevated, err := maybeElevateForCrossUser("logs", p, args, false, false); elevated {
+		return err
 	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "logs")

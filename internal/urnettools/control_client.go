@@ -203,6 +203,25 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 	return resp, nil
 }
 
+// controlSocketReachable reports whether the provider's control socket
+// (~/.urnetwork/provider.sock, derived from StateDir) is accepting now. This
+// is the strongest liveness signal for the control-plane plane this feature
+// introduced: a provider can be running (pid alive) yet not have its control
+// socket bound (startup failed, or a same-user collision). Untouched by the
+// set/clear path — a pure reachability probe, so it never mutates state.
+func controlSocketReachable(p Provider) bool {
+	if p.StateDir == "" {
+		return false
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 // queuePendingOverride appends one op to pending_overrides.json in stateDir
 // using atomic temp-file-and-rename. The whole read-modify-write is held
 // under a cross-process lock: without it, two concurrent `urnet-tools`
@@ -330,8 +349,7 @@ func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool,
 	return false, fmt.Errorf("control socket %s: %w", sockPath, dialErr)
 }
 
-// queryControlOverride retrieves the current value for canonicalKey on provider p.
-// Checks the socket first, then pending_overrides.json, then legacy files.
+// queryControlOverride retrieves the current value for canonicalKey on provider p. Checks the socket first, then pending_overrides.json, then legacy files.
 func queryControlOverride(p Provider, canonicalKey string) (value string, source string, found bool, err error) {
 	if p.StateDir == "" {
 		return "", "", false, fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))

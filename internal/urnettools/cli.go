@@ -97,6 +97,11 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// summary is read-only (no confirm gate), so force/dryRun are irrelevant.
+	if elevated, err := maybeElevateForCrossUser(sub, p, args, false, false); elevated {
+		return err
+	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, sub)
 	}
@@ -520,6 +525,11 @@ func cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// status is read-only (no confirm gate), so force/dryRun are irrelevant.
+	if elevated, err := maybeElevateForCrossUser("status", p, args, false, false); elevated {
+		return err
+	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
@@ -551,7 +561,11 @@ func cmdStatus(args []string) error {
 	if !p.JWTExpires.IsZero() {
 		exp = p.JWTExpires.Format(time.RFC3339)
 	}
-	fmt.Fprintf(w, "jwt-expires:\t%s\n", exp)
+	fmt.Fprintf(w, "jwt-expires:	%s\n", exp)
+	// The control socket is this feature's live control plane; report whether
+	// the provider's is actually bound (a stopped/startup-failed provider has a
+	// pid but no reachable socket).
+	fmt.Fprintf(w, "control-socket:	%v\n", controlSocketReachable(p))
 	return w.Flush()
 }
 

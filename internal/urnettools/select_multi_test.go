@@ -296,6 +296,61 @@ func TestMatchKeyUniquenessAcrossProviders(t *testing.T) {
 	}
 }
 
+// TestMaybeElevateForCrossUser pins the cross-user self-elevation: an
+// unprivileged caller targeting another OS user's provider must re-exec under
+// sudo with the same argv (plus -f when force), not hand the operator a manual
+// "run with sudo" hunt. Uses a recorder seam so no real sudo is spawned.
+func TestMaybeElevateForCrossUser(t *testing.T) {
+	origPriv := isPrivileged
+	origE := elevateSelfFunc
+	defer func() { isPrivileged = origPriv; elevateSelfFunc = origE }()
+	isPrivileged = func() bool { return false } // unprivileged caller
+
+	var recorded []string
+	elevateSelfFunc = func(args []string) error {
+		recorded = append([]string{}, args...)
+		return nil
+	}
+
+	own := Provider{User: currentUserName(), Unit: "urnetwork.service"}
+	other := Provider{User: "otheruser", Unit: "urnetwork-b.service"}
+
+	// Own user -> no elevation, proceed.
+	if elevated, _ := maybeElevateForCrossUser("status", own, []string{"--unit", "urnetwork.service"}, false, false); elevated {
+		t.Error("own-user provider must not elevate")
+	}
+	// Cross-user, no force -> elevates with [sub, args...].
+	elevated, err := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false)
+	if err != nil || !elevated {
+		t.Fatalf("cross-user status must elevate, got elevated=%v err=%v", elevated, err)
+	}
+	if len(recorded) != 3 || recorded[0] != "status" || recorded[1] != "--user" || recorded[2] != "otheruser" {
+		t.Errorf("expected argv [status --user otheruser], got %v", recorded)
+	}
+	// Cross-user + force -> the elevated child keeps -f (no double prompt).
+	elevateSelfFunc = func(args []string) error {
+		recorded = append([]string{}, args...)
+		return nil
+	}
+	if elevated, err := maybeElevateForCrossUser("restart", other, []string{"--user", "otheruser"}, true, false); err != nil || !elevated {
+		t.Fatalf("cross-user restart -f must elevate, got elevated=%v err=%v", elevated, err)
+	}
+	if len(recorded) != 4 || recorded[0] != "restart" || recorded[1] != "-f" || recorded[3] != "otheruser" {
+		t.Errorf("expected argv [restart -f --user otheruser], got %v", recorded)
+	}
+	// Already elevated (child under sudo) -> never re-elevate (no loop).
+	t.Setenv(urnetElevatedEnv, "1")
+	if elevated, _ := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false); elevated {
+		t.Error("elevated child must not re-elevate")
+	}
+	// Root -> no elevation.
+	os.Unsetenv(urnetElevatedEnv)
+	isPrivileged = func() bool { return true }
+	if elevated, _ := maybeElevateForCrossUser("status", other, []string{"--user", "otheruser"}, false, false); elevated {
+		t.Error("root caller must not elevate")
+	}
+}
+
 // TestAmbiguousErrorIsActionable: the multi-provider refusal must hand the
 // operator concrete next steps (target flags, interaction, default set), not
 // just a flag-soup line plus a "run with sudo" hunt. These snapshots pin that

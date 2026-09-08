@@ -47,9 +47,17 @@ func stubDiscovery(t *testing.T, systemd, docker []Provider) {
 	origS, origD := discoverSystemdFn, discoverDockerFn
 	discoverSystemdFn = func() []Provider { return systemd }
 	discoverDockerFn = func() []Provider { return docker }
+	// Fixture providers use users like "user"/"otheruser" that differ from the
+	// real test-runner's user, so a cross-user command would genuinely try to
+	// elevation-exec under sudo. Never spawn a real sudo in unit tests: stub
+	// the elevation seam to a no-op so the command proceeds (or the caller's
+	// own elevated argv assertion can replace it).
+	origE := elevateSelfFunc
+	elevateSelfFunc = func([]string) error { return nil }
 	t.Cleanup(func() {
 		discoverSystemdFn = origS
 		discoverDockerFn = origD
+		elevateSelfFunc = origE
 	})
 }
 
