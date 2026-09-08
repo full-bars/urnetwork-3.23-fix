@@ -259,4 +259,3 @@ func TestRefreshJWT_TransferStats(t *testing.T) {
 		t.Error("expected /transfer/stats to be requested")
 	}
 }
-
