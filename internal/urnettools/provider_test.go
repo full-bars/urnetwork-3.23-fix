@@ -394,11 +394,25 @@ func TestProviderVersionResolvesTrimpathBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/vtest\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Windows needs the .exe suffix: without it the path is not executable
+	// (CreateProcess refuses it), so providerVersionFromExec would return ""
+	// and the test would fail for a reason unrelated to what it covers.
 	bin := filepath.Join(dir, "urnetwork")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.Version="+want, "-o", bin, ".")
 	build.Dir = dir
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Skipf("could not build fixture binary: %v (%s)", err, out)
+	}
+	// Assert the fixture is where we think it is BEFORE the buildinfo
+	// precondition below: providerVersionFromBuildinfo returns "" both for a
+	// -trimpath build and for a path it cannot read, so without this an
+	// output-naming mismatch would satisfy the precondition vacuously and
+	// then fail the real assertion for the wrong reason.
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("fixture binary not at %s: %v", bin, err)
 	}
 
 	// Precondition: this really is the -trimpath shape the release uses, so
