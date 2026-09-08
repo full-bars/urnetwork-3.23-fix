@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -82,5 +83,112 @@ func TestTriggerHotSwapNotCapable(t *testing.T) {
 	err := triggerHotSwap(p)
 	if err == nil {
 		t.Errorf("expected error triggering hotswap on provider running v3.23.0-fix.30.9")
+	}
+}
+
+// TestSupportsHotSwapUnitType pins the interaction between version support
+// and systemd unit Type=: a supported version is not enough on its own if
+// the owning unit isn't Type=notify, because provider/hotswap.go silently
+// aborts the in-process handoff for any other unit type (see hotSwapUnitOK
+// for the full mechanism). Getting this backwards either strands
+// pre-existing Type=simple fleet nodes on a permanently-no-op update path
+// (false "yes"), or needlessly denies zero-downtime handoff to units that
+// are genuinely Type=notify (false "no").
+func TestSupportsHotSwapUnitType(t *testing.T) {
+	origUnitType := unitTypeFunc
+	defer func() { unitTypeFunc = origUnitType }()
+
+	const supportedVersion = "v3.23.0-fix.31.0"
+	const unsupportedVersion = "v3.23.0-fix.30.9"
+
+	cases := []struct {
+		name        string
+		version     string
+		unitType    string
+		unitTypeErr error
+		hasUnit     bool
+		want        bool
+	}{
+		{
+			name:     "notify unit + supported version -> supported",
+			version:  supportedVersion,
+			unitType: "notify",
+			hasUnit:  true,
+			want:     true,
+		},
+		{
+			name:     "simple unit + supported version -> NOT supported",
+			version:  supportedVersion,
+			unitType: "simple",
+			hasUnit:  true,
+			want:     false,
+		},
+		{
+			name:     "notify unit + unsupported version -> not supported regardless of unit type",
+			version:  unsupportedVersion,
+			unitType: "notify",
+			hasUnit:  true,
+			want:     false,
+		},
+		{
+			name:     "simple unit + unsupported version -> not supported",
+			version:  unsupportedVersion,
+			unitType: "simple",
+			hasUnit:  true,
+			want:     false,
+		},
+		{
+			name:        "unit type undeterminable -> not supported (safe fallback)",
+			version:     supportedVersion,
+			unitTypeErr: errors.New("systemctl: command not found"),
+			hasUnit:     true,
+			want:        false,
+		},
+		{
+			name:    "no owning unit at all (e.g. Docker PID-1) -> version alone decides",
+			version: supportedVersion,
+			hasUnit: false,
+			want:    true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			unitTypeFunc = func(Provider) (string, error) {
+				if c.unitTypeErr != nil {
+					return "", c.unitTypeErr
+				}
+				return c.unitType, nil
+			}
+			p := Provider{Version: c.version}
+			if c.hasUnit {
+				p.Unit = "urnetwork.service"
+			}
+			if got := supportsHotSwap(p); got != c.want {
+				t.Errorf("supportsHotSwap(%+v) = %v, want %v", p, got, c.want)
+			}
+		})
+	}
+}
+
+// TestTriggerHotSwapUnitNotNotify: a supported version on a Type=simple
+// unit must fail with the unit-specific error (naming Type=notify and how
+// to fix it), not the generic version-mismatch error — an operator reading
+// "requires >= v3.23.0-fix.31.0" on an already-current binary would chase
+// the wrong fix entirely.
+func TestTriggerHotSwapUnitNotNotify(t *testing.T) {
+	origUnitType := unitTypeFunc
+	defer func() { unitTypeFunc = origUnitType }()
+	unitTypeFunc = func(Provider) (string, error) { return "simple", nil }
+
+	p := Provider{
+		PID:     os.Getpid(),
+		Version: "v3.23.0-fix.31.0",
+		Unit:    "urnetwork.service",
+		Running: true,
+	}
+	err := triggerHotSwap(p)
+	if !errors.Is(err, ErrHotSwapUnitNotNotify) {
+		t.Fatalf("triggerHotSwap on a Type=simple unit = %v, want ErrHotSwapUnitNotNotify", err)
 	}
 }

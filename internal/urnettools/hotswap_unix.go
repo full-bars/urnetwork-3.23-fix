@@ -12,14 +12,25 @@ import (
 // ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
 var ErrHotSwapNotSupported = errors.New("running provider does not support zero-downtime hotswap (requires >= v3.23.0-fix.31.0)")
 
+// ErrHotSwapUnitNotNotify is returned when the provider's version supports
+// HotSwap but its owning systemd unit is not Type=notify, so
+// provider/hotswap.go would abort the in-process handoff internally rather
+// than actually hand off (see hotSwapUnitOK for the mechanism). Naming a
+// version here would be actively misleading — the fix is reinstalling the
+// systemd unit, not upgrading the binary.
+var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete — reinstall/refresh the systemd unit (re-run the installer, or urnet-tools install) to pick up Type=notify")
+
 // triggerHotSwap signals the running provider process on Unix via SIGUSR2 to initiate
 // an in-process verified handoff.
 func triggerHotSwap(p Provider) error {
 	if p.PID <= 0 {
 		return errors.New("provider has no valid PID")
 	}
-	if !supportsHotSwap(p) {
+	if !hotSwapVersionOK(p) {
 		return ErrHotSwapNotSupported
+	}
+	if !hotSwapUnitOK(p) {
+		return ErrHotSwapUnitNotNotify
 	}
 	proc, err := os.FindProcess(p.PID)
 	if err != nil {

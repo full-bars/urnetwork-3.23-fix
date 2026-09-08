@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -44,8 +45,17 @@ func isHotSwapSupportedVersion(ver string) bool {
 }
 
 // supportsHotSwap determines whether the target running provider is capable of
-// zero-downtime HotSwap handoff based on its running image or reported version.
+// zero-downtime HotSwap handoff. Both the reported version AND (when the
+// provider is systemd-managed) the owning unit's Type= must check out —
+// see hotSwapVersionOK and hotSwapUnitOK for why each is necessary on its
+// own.
 func supportsHotSwap(p Provider) bool {
+	return hotSwapVersionOK(p) && hotSwapUnitOK(p)
+}
+
+// hotSwapVersionOK reports whether the provider's running image or reported
+// version is new enough to speak the HotSwap handoff protocol at all.
+func hotSwapVersionOK(p Provider) bool {
 	if p.PID > 0 {
 		if exe, err := runningImagePath(p.PID); err == nil {
 			if ver := providerVersionFromBuildinfo(exe); ver != "" {
@@ -57,6 +67,73 @@ func supportsHotSwap(p Provider) bool {
 		return isHotSwapSupportedVersion(p.Version)
 	}
 	return false
+}
+
+// unitTypeFunc resolves a provider's owning systemd unit Type= value.
+// Overridable so tests can exercise hotSwapUnitOK without a real systemd.
+var unitTypeFunc = queryUnitType
+
+// queryUnitType runs `systemctl show -p Type --value <unit>`, scoped
+// EXACTLY like restartProvider/unitCommandArgs: a user-owned unit is
+// queried in the owning user's own --user session (never the system
+// manager, and never cross-user without -M). Getting this scope wrong is
+// what causes the polkit/root prompts restartProvider's own comments call
+// out — reuse that determination (isUserUnit + systemctlUserArgs) rather
+// than re-deriving it.
+func queryUnitType(p Provider) (string, error) {
+	if p.Unit == "" {
+		return "", fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
+	}
+	var args []string
+	if isUserUnit(p.Unit) && p.User != "" {
+		args = append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+		args = append(args, "show", "-p", "Type", "--value", p.Unit)
+	} else {
+		args = []string{"systemctl", "show", "-p", "Type", "--value", p.Unit}
+	}
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		return "", fmt.Errorf("systemctl show -p Type %s: %w", p.Unit, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// hotSwapUnitOK reports whether the provider's systemd unit (if any) allows
+// the HotSwap handoff to actually complete. provider/hotswap.go's Unix
+// branch aborts the handoff whenever INVOCATION_ID is set (i.e. systemd
+// started the process) and NOTIFY_SOCKET is empty — that only happens for
+// a unit that isn't Type=notify, since NotifyAccess=all + Type=notify is
+// what puts NOTIFY_SOCKET in the environment. Every pre-existing fleet node
+// still runs Type=simple (only install_systemd_units in
+// Provider_Install_Linux.sh writes Type=notify, and `urnet-tools update`
+// only ever swaps the binary, never the unit), so without this check
+// supportsHotSwap said "yes" purely from the version string,
+// triggerHotSwap fired, provider/hotswap.go silently aborted the internal
+// handoff, and update.go's "hotSwapTriggered = true" skipped the
+// restartForUpdate fallback entirely — turning every update into a
+// permanent no-op on pre-existing nodes.
+//
+// A provider not managed by systemd at all (no p.Unit — e.g. the Docker
+// PID-1 in-place execve path) never reaches that INVOCATION_ID check in the
+// first place (see provider/hotswap.go's Docker branch, which runs before
+// it), so it keeps working here unconditionally.
+//
+// When the unit type genuinely cannot be determined (systemctl missing,
+// permission error, unit vanished mid-check) this deliberately returns
+// false rather than true: a false "no" only costs zero-downtime and falls
+// through to update.go's normal restartForUpdate fallback, which always
+// works; a false "yes" fires triggerHotSwap into a handoff that silently
+// aborts and, per the paragraph above, bricks the update entirely. Between
+// those two failure modes, losing zero-downtime is always the safe one.
+func hotSwapUnitOK(p Provider) bool {
+	if p.Unit == "" {
+		return true
+	}
+	typ, err := unitTypeFunc(p)
+	if err != nil {
+		return false
+	}
+	return typ == "notify"
 }
 
 // cmdHotswap implements `urnet-tools hotswap [target]`: it triggers an in-process
