@@ -287,6 +287,32 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	}
 }
 
+// persistedRuntimeTuningActive reports whether the operator has an explicit,
+// persisted control-socket value for key ("gomemlimit" or "gogc") — i.e. a
+// value other than "" (never set) or "off" (explicitly cleared).
+//
+// This exists because applyPersistedRuntimeTuning above only runs once at
+// startup (and once more after a HotSwap takeover), but provideWithProxy /
+// applyTurboSettings / applyEcoSettings run again on EVERY proxy add, and
+// each only checked the GOMEMLIMIT/GOGC environment variables before
+// overwriting the runtime setting with the profile default — so a persisted
+// value applied at startup got silently clobbered back to the turbo/eco
+// default the next time a proxy connected.
+//
+// Precedence for gomemlimit/gogc (highest wins), enforced by checking each
+// gate in this order at every site that would otherwise apply a default:
+//  1. GOMEMLIMIT/GOGC environment variable — operator-explicit, checked
+//     first by every call site already.
+//  2. A persisted control-socket value (`urnet-tools set gomemlimit|gogc`)
+//     — also operator-explicit; this is what call sites were missing.
+//  3. The active profile's default (turbo/eco).
+//  4. ensureMemoryLimit's generic RAM-percentage fallback (gomemlimit only;
+//     gogc has no generic fallback below the profile default).
+func persistedRuntimeTuningActive(key string) bool {
+	v, ok := globalControlState.get(key)
+	return ok && v != "" && v != "off"
+}
+
 // waitForControlSocketRelease blocks until the running provider's control
 // socket at ~/.urnetwork/provider.sock is no longer accepting connections — the
 // parent has released it — or timeoutMillis elapses, whichever comes first.

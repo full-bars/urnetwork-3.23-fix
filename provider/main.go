@@ -343,9 +343,28 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	// Faster contract ramp: reach StandardContractTransferByteCount in 3 contracts instead of 4
 	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
-	if os.Getenv("GOGC") == "" {
+	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(200)
 	}
+}
+
+// applyTurboMemoryLimit sets GOMEMLIMIT to 80% of effective RAM for the
+// turbo profiles, unless an operator-explicit value already wins: the
+// GOMEMLIMIT env var, --max-memory, or a persisted control-socket
+// gomemlimit (see persistedRuntimeTuningActive for the full precedence
+// order). Called on every provideWithProxy invocation (once per proxy), so
+// this guard has to be checked every time, not just at startup — the first
+// version of this code only checked the env var and silently clobbered a
+// persisted gomemlimit back to the turbo default on the next proxy add.
+func applyTurboMemoryLimit(profile string, maxMemory connect.ByteCount) {
+	if profile != "turbo-v4" && profile != "turbo-v8" {
+		return
+	}
+	if os.Getenv("GOMEMLIMIT") != "" || maxMemory != 0 || persistedRuntimeTuningActive("gomemlimit") {
+		return
+	}
+	ramBytes := detectEffectiveRAMLimitBytes()
+	debug.SetMemoryLimit(ramBytes * 80 / 100)
 }
 
 // applyPoolAutoSize scales the message pool free-list capacity to RAM/32 at
@@ -379,13 +398,14 @@ func applyEcoSettings(maxMemory connect.ByteCount) {
 		return
 	}
 
-	if os.Getenv("GOGC") == "" {
+	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(50)
 	}
 
-	// Only set GOMEMLIMIT if neither --max-memory nor the GOMEMLIMIT env var
-	// were provided explicitly; those take precedence.
-	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
+	// Only set GOMEMLIMIT if neither --max-memory, the GOMEMLIMIT env var,
+	// nor a persisted control-socket value were provided explicitly; those
+	// take precedence (see persistedRuntimeTuningActive for the full order).
+	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 && !persistedRuntimeTuningActive("gomemlimit") {
 		ramBytes := detectEffectiveRAMLimitBytes()
 		ecoLimit := ramBytes * 75 / 100
 		debug.SetMemoryLimit(ecoLimit)
@@ -2917,11 +2937,7 @@ func provide(opts docopt.Opts) {
 
 		profile := os.Getenv("URNETWORK_PROFILE")
 
-		if (profile == "turbo-v4" || profile == "turbo-v8") &&
-			os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
-			ramBytes := detectEffectiveRAMLimitBytes()
-			debug.SetMemoryLimit(ramBytes * 80 / 100)
-		}
+		applyTurboMemoryLimit(profile, maxMemory)
 		applyEcoSettings(maxMemory)
 		ensureMemoryLimit(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
