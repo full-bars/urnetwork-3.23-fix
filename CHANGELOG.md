@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+---
+
+## [v3.23.0-fix.31.0]
+
 ### Added
 - **Provider Control Plane & Daemonization (Flagship)**: Decoupled provider service execution from interactive CLI sessions; added a background supervisor, a local Unix domain socket control plane (`~/.urnetwork/provider.sock`, `provider/control_socket.go`) and client protocol in `urnet-tools` for live runtime configuration management without restarts or brittle shared-file locks. Atomic set/clear, single-owner `provider_state.json`, and cross-process flocking.
 - **Offline Pending Configuration Queue**: Seamless fallback queue (`~/.urnetwork/pending_overrides.json`) for `urnet-tools set` invocations when the provider is offline, atomically merged and applied one-shot on startup.
@@ -19,6 +25,23 @@ All notable changes to this project are documented here.
 ### Fixed
 - **ICE IPv6 Host Candidate Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent blackholed cellular routes on Android from stalling ICE connection negotiation.
 - **Memory Target & GC Tuning at Startup**: Persisted `gomemlimit` and `gogc` applied at bootstrap and runtime via debug APIs.
+- **systemd `Type=notify` start/restart wedge (PR #543, #546)**: the provider signalled `READY=1` only once a proxy had authenticated, so a `Type=notify` unit waited on a readiness signal that arrived late or never and `systemctl start`/`restart` hung. READY is now sent when the provider is self-managing.
+- **Provider version on `-trimpath` release builds (PR #547)**: `urnet-tools` could not resolve the version from a stripped release binary, so `update --tag` reported the wrong version and refused to align an install to a requested release.
+- **HotSwap drain misreporting a successful handoff (PR #552)**: the liveness monitor armed even when no child process backed the session, where `Wait` returns immediately; that case and `ctx.Done()` were both ready and Go chose at random, so a successful handoff could exit non-zero as a dead candidate.
+- **Profile defaults clobbering persisted `gomemlimit`/`gogc`**: applying a profile overwrote values an operator had set explicitly.
+- **Installer `json_escape` emitting unquoted JSON**: corrupted `pending_overrides.json`; queueing an override under `sudo` also left the file owned by root.
+
+### Changed
+- **`urnet-tools ip-detect` is now `urnet-tools show-ip`**: the old name described the mechanism rather than the effect and read as a diagnostic that would report the IP, and sat awkwardly beside `direct`, which is about the address the provider serves on. `ip-detect` and `ipdetect` remain as aliases.
+- **Settings changes are logged at the provider**: `set`, `clear`, the startup merge of queued overrides, and dashboard-label changes now emit log lines, so an operator can confirm from the node's own log that a change registered with the daemon. `get` stays silent because `status` polls it on every invocation.
+- **`urnet-tools help` lists `hotswap`**: registered since PR #533 but never shown in the usage text.
+- **Tuning help text corrected**: `turbo`, `auto`, `eco` and `lowmode` described writing a systemd drop-in; they have written the control-socket key since the v31 migration.
+
+### Release Engineering
+- **Pre-release shakedown sections Q-Z (PR #544)** and a **Docker Shakedown workflow (PR #545)** covering the v31 daemon and container surfaces.
+- **Shakedown runs to completion (PR #550)**: section L read an unassigned variable, which under `set -u` aborted the suite silently, so every section after it had never executed. Both shakedown workflows now surface the script's raw output on failure and warn on a report with no SUMMARY.
+- **CI wall clock roughly halved (PR #551)**: race suite sharded across three runners, lint parallel to the tests, retry no longer masking genuine failures, and concurrency groups on the three workflows that lacked them.
+- **Manual shakedown dispatch can target a release (PR #548)**.
 
 ---
 

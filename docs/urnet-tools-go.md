@@ -32,6 +32,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
 | `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
 | `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
+| `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
@@ -42,11 +43,12 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 |---|---|
 | `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
 | `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider`, `urnet-tools`, and `urnet-docker`. |
+| `show-ip [on\|off\|status] [target]` | Control whether the provider appends its public IP to the dashboard label set by `rename`. Renamed from `ip-detect` in v3.23.0-fix.31.0, which is kept as an alias. This is about what the dashboard shows, not which address the provider serves on; for that see `direct`. |
 | `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry (v3.23.0-fix.30.9+): global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools`, `urnet-docker`, and `provider`. |
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
-| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`). Confirm-gated. |
+| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`). Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
 | `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available across `urnet-tools` and `urnet-docker`. |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
@@ -202,6 +204,63 @@ urnet-tools default show
 # Clear default
 urnet-tools default clear
 ```
+
+---
+
+### 5. Control Socket, Queued Overrides, and Confirming a Change (v3.23.0-fix.31.0+)
+
+Runtime settings no longer go through hand-edited systemd drop-ins. The provider
+owns a Unix domain socket at `~/.urnetwork/provider.sock` (owner-only, `0600`)
+and is the single writer of `~/.urnetwork/provider_state.json`.
+
+```bash
+# Change a setting on a running provider. No restart.
+urnet-tools set report-interval 300
+
+# Read one back
+urnet-tools set report-interval
+
+# Clear it
+urnet-tools set report-interval off
+```
+
+**When the provider is stopped**, the change is written to
+`~/.urnetwork/pending_overrides.json` instead (flock-guarded, so the CLI and the
+installer's shell helpers cannot lose each other's writes) and merged atomically
+on the next start.
+
+**Confirming the change registered.** The CLI's exit code only tells you the
+request was accepted. The provider logs the change itself, which is the
+authoritative confirmation:
+
+```text
+⚙️ [control] set report-interval=300 (was unset)
+⚙️ [control] cleared report-interval (was 300)
+⚙️ [control] applied 2 queued override(s) from pending_overrides.json: profile=v8, cleared gogc
+```
+
+Rejected changes log too, so a setting that did not take explains itself:
+
+```text
+❌ [control] set profile=v9 rejected: unknown control key "profile" value
+⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
+```
+
+`rename` and `show-ip` do not go through the socket. Both take effect at the
+next renewal, and the provider reports the resulting dashboard label when it
+changes:
+
+```text
+🏷️ [identity] dashboard label changed: nyc-1 [...] -> nyc-2 [...]
+```
+
+Reads are deliberately not logged: `urnet-tools status` polls the socket on
+every invocation, so logging them would bury the writes that matter.
+
+> [!TIP]
+> `urnet-tools status` also reports whether the control socket is actually
+> bound. A running PID with no reachable socket means a startup failure or a
+> same-user collision, not a healthy provider.
 
 ---
 
