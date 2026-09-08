@@ -145,6 +145,17 @@ jobs:
           cat /tmp/docker-shakedown-report.txt 2>/dev/null || echo "(no report)"
           echo "::endgroup::"
           echo "docker-shakedown exit: $DS_EXIT"
+          # The script runs under `set -u`: an unset variable aborts it
+          # mid-suite with no FAIL line, so the report alone cannot explain a
+          # non-zero exit. This output is otherwise discarded entirely.
+          if [ "$DS_EXIT" != "0" ]; then
+            echo "::group::docker-shakedown raw output (last 200 lines)"
+            sudo tail -n 200 /tmp/docker-shakedown.out 2>/dev/null || echo "(no output captured)"
+            echo "::endgroup::"
+          fi
+          if ! grep -q "===== SUMMARY =====" /tmp/docker-shakedown-report.txt 2>/dev/null; then
+            echo "::warning::docker-shakedown report has no SUMMARY — the suite aborted mid-section and later checks never ran"
+          fi
           REPORT_FAILS=$(grep -c "^FAIL:" /tmp/docker-shakedown-report.txt 2>/dev/null || true)
           if [ "$DS_EXIT" = "0" ] && [ "${REPORT_FAILS:-0}" -gt 0 ]; then
             echo "::error::docker-shakedown reported $REPORT_FAILS FAIL(s) but exited 0 — RELEASE_BLOCKED"

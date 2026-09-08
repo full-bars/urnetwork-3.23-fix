@@ -601,32 +601,59 @@ EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 MARK=$(restart_provider)
-CID=$(wait_client_id "$MARK" 120)
+# Wait for the provider to come back up before reading /proc; the returned id
+# is not the assertion here, the /proc environ check below is.
+wait_client_id "$MARK" 120 >/dev/null
 PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 if [ -n "$PROC_PID" ] && tr '\0' '\n' < /proc/$PROC_PID/environ | grep -q "URNETWORK_HOT_RESTART=0"; then
   ok "URNETWORK_HOT_RESTART=0 reached the process (pid $PROC_PID)"
 else
   bad "URNETWORK_HOT_RESTART=0 NOT in /proc/$PROC_PID/environ (env toggle broken)"
 fi
-# With the toggle off, a restart must mint a NEW client_id (no reuse).
+# The provider mints one client_id PER PROXY, so wait_client_id returns the
+# last id of an ARBITRARY proxy out of scores. Comparing two such ids across
+# restarts compares two unrelated proxies and proves nothing — the exact trap
+# section H documents. Assert the provider's own (new|reused) markers and
+# compare SETS, the same way H does.
+L_CIDS_OFF=$(mktemp); L_CIDS_ON=$(mktemp)
+
+# 1) Toggle OFF + cleared cache: every identity must be freshly minted, and
+#    nothing may be reused.
 rm -f /home/urnet/.urnetwork/.client_jwts.json
 MARK=$(restart_provider)
-CID_OFF=$(wait_client_id "$MARK" 120)
-if [ -n "$CID_OFF" ] && [ "$CID_OFF" != "$CID_FRESH" ]; then
-  ok "hot-restart OFF minted new client_id (${CID_OFF:0:12}…)"
+wait_client_id "$MARK" 120 >/dev/null
+# wait_client_id returns on the FIRST id; settle so several proxies have
+# re-authed and the marker counts have more than one sample.
+sleep 20
+cids_since "$MARK" > "$L_CIDS_OFF"
+N_OFF=$(wc -l < "$L_CIDS_OFF")
+N_OFF_NEW=$(markers_since "$MARK" | grep -c "new" || true)
+N_OFF_REUSED=$(markers_since "$MARK" | grep -c "reused" || true)
+if [ "$N_OFF" -gt 0 ] && [ "${N_OFF_NEW:-0}" -gt 0 ] && [ "${N_OFF_REUSED:-0}" -eq 0 ]; then
+  ok "hot-restart OFF minted new client_ids ($N_OFF_NEW new, 0 reused)"
 else
-  bad "hot-restart OFF did not mint new client_id (fresh=${CID_FRESH:0:12} off=${CID_OFF:0:12})"
+  bad "hot-restart OFF did not mint fresh identities (ids=$N_OFF new=${N_OFF_NEW:-0} reused=${N_OFF_REUSED:-0})"
 fi
-# Restore the default (remove override) so the rest of the run reuses identity.
+
+# 2) Restore the default (remove override) so the rest of the run reuses
+#    identity. The OFF pass above repopulated the store — persistence is
+#    unconditional, only the read path is gated (main.go) — so a restart with
+#    the toggle back ON must reuse those very ids.
 rm -f "$OVERRIDE_DIR/override.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 MARK=$(restart_provider)
-CID_ON=$(wait_client_id "$MARK" 120)
-if [ -n "$CID_ON" ] && [ "$CID_ON" = "$CID_OFF" ]; then
-  ok "hot-restart back ON reused client_id (${CID_ON:0:12}…)"
+wait_client_id "$MARK" 120 >/dev/null
+sleep 20
+cids_since "$MARK" > "$L_CIDS_ON"
+N_ON=$(wc -l < "$L_CIDS_ON")
+N_ON_REUSED=$(markers_since "$MARK" | grep -c "reused" || true)
+N_ON_OVERLAP=$(comm -12 "$L_CIDS_OFF" "$L_CIDS_ON" | wc -l)
+if [ "$N_ON" -gt 0 ] && [ "${N_ON_REUSED:-0}" -gt 0 ] && [ "$N_ON_OVERLAP" -gt 0 ]; then
+  ok "hot-restart back ON reused client_ids ($N_ON_REUSED reused markers, $N_ON_OVERLAP of $N_ON carried over)"
 else
-  bad "hot-restart back ON did not reuse (off=${CID_OFF:0:12} on=${CID_ON:0:12})"
+  bad "hot-restart back ON did not reuse (ids=$N_ON reused=${N_ON_REUSED:-0} overlap=$N_ON_OVERLAP)"
 fi
+rm -f "$L_CIDS_OFF" "$L_CIDS_ON"
 
 # ---------- M. update --tag pinned path ----------
 section "M. update --tag"
