@@ -1,0 +1,168 @@
+name: Docker Shakedown
+
+# Full Docker test matrix for the provider (groups W, X, Y, Z, AA, AB, AC —
+# see progress.md "SPEC: full Docker test matrix for shakedown (expands
+# #1081)"). This is a SEPARATE workflow from Pre-Release Shakedown
+# (.github/workflows/shakedown.yml): that one covers the systemd/native
+# install path plus one baseline docker section; this one is Docker-only and
+# goes deep — docker run variants, PID-1/hotswap semantics, compose, resource
+# limits, multi-container, and image/tag hygiene. Runs entirely on the GH
+# runner (ubuntu-latest, amd64), no droplet, no extra credentials.
+#
+# Triggers: manual dispatch, or automatically when a v3.23.0-fix.* tag is
+# pushed (mirrors shakedown.yml).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v3.23.0-fix.*'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  docker-shakedown:
+    runs-on: ubuntu-latest
+    # The matrix is ~35 sub-checks, most of them a `docker run` + short poll
+    # + `docker rm -f`. No 70-100min soak (that's shakedown.yml's job).
+    # Heavy items: three BUILD variants with real auth (W1), a memory sweep
+    # (AA1, 3 runs), the hotswap sequence (Z2, two version pulls + an
+    # in-container update + wait for canary), and a 3-container multi-arch
+    # + compose set (Y, AB). Estimated actual runtime ~55-70 min. Sized with
+    # headroom the way shakedown.yml sizes 150min for ~110min of work.
+    timeout-minutes: 120
+    # IMPORTANT: shares the concurrency group with shakedown.yml. Both mint
+    # a disposable JWT from the SAME gauntlet account server-side, and W1-W2
+    # here mint several MORE JWTs for the auth-mode matrix. Running either
+    # workflow concurrently with the other collides on that shared account
+    # and produces false auth failures. They must queue, never cancel.
+    concurrency:
+      group: shakedown
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Resolve target release version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Same resolution logic as shakedown.yml: tag-triggered runs test
+          # THE RELEASE BEING CUT; manual runs default to the last published
+          # release. Kept identical on purpose so both workflows always agree
+          # on "the release under test" for a given tag push.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
+              2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
+            VER="${VER:-v3.23.0-fix.30.7}"
+          fi
+          GITHUB_SHA_SHORT="${GITHUB_SHA}"
+          ASSETS_OK=0
+          REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+            2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null)
+          if [ -n "$REL_RUN_ID" ]; then
+            REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
+              2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null)
+            if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
+              echo "::error::create-release job FAILED ($REL_JOB_CONC) — ENV_BLOCKER"
+              echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/docker-shakedown.exit; exit 75
+            fi
+          fi
+          for i in $(seq 1 120); do
+            if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
+              2>/dev/null | grep -q '"browser_download_url"'; then
+              ASSETS_OK=1; echo "release assets for ${VER} appeared"; break
+            fi
+            echo "waiting for release build of ${VER} (${i}/120)..."; sleep 30
+          done
+          if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "::error::release assets for ${VER} never appeared within 60 min safety cap"
+            echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/docker-shakedown.exit; exit 75
+          fi
+          echo "EXPECTED_VERSION=${VER}" >> "$GITHUB_OUTPUT"
+          echo "target release: ${VER}"
+
+      - name: Mint disposable JWT from secrets
+        id: mint
+        env:
+          GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+          GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."; go build -ldflags "-X main.Version=docker-shakedown-mint" -o /tmp/provider ./provider/ && break
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10; else echo "Build failed after 3 attempts"; exit 1; fi
+          done
+          mkdir -p /tmp/mint
+          HOME=/tmp/mint /tmp/provider auth --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed (verification required?)"; exit 1; }
+          cp /tmp/mint/.urnetwork/jwt /tmp/gauntlet.jwt
+          # Same production-account refusal guard as shakedown.yml. Do NOT
+          # weaken or remove this: a misconfigured secret must not be able to
+          # point this workflow's docker run/compose fleet at production.
+          python3 - << 'PY'
+          import base64, json
+          raw = open('/tmp/gauntlet.jwt').read().strip()
+          p = raw.split('.')[1] + '=' * (-len(raw.split('.')[1]) % 4)
+          d = json.loads(base64.urlsafe_b64decode(p))
+          print("account:", d.get('network_name'))
+          if d.get('network_name') == 'mesocyclone':
+              raise SystemExit("REFUSING: minted JWT is the production account")
+          PY
+
+      - name: Syntax-check docker-shakedown script
+        run: |
+          bash -n .github/scripts/docker-shakedown.sh || { echo "::error::docker-shakedown.sh syntax error"; exit 1; }
+
+      - name: Run docker shakedown on the GH runner
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.EXPECTED_VERSION }}
+          GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
+          GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
+        run: |
+          # `timeout` restores the old watchdog semantics: a hang becomes a
+          # catchable 124 exit (so the verdict logic below works) instead of
+          # a raw job kill that leaves no report.
+          set +e
+          sudo -E timeout 6600 bash .github/scripts/docker-shakedown.sh /tmp/gauntlet.jwt > /tmp/docker-shakedown.out 2>&1
+          DS_EXIT=$?
+          set -e
+          echo "::group::Docker Shakedown Report"
+          cat /tmp/docker-shakedown-report.txt 2>/dev/null || echo "(no report)"
+          echo "::endgroup::"
+          echo "docker-shakedown exit: $DS_EXIT"
+          REPORT_FAILS=$(grep -c "^FAIL:" /tmp/docker-shakedown-report.txt 2>/dev/null || true)
+          if [ "$DS_EXIT" = "0" ] && [ "${REPORT_FAILS:-0}" -gt 0 ]; then
+            echo "::error::docker-shakedown reported $REPORT_FAILS FAIL(s) but exited 0 — RELEASE_BLOCKED"
+            DS_EXIT=1
+          fi
+          echo "$DS_EXIT" > /tmp/docker-shakedown.exit
+          if [ "$DS_EXIT" -eq 75 ]; then
+            echo "::error::ENV_BLOCKER (rc=75) — docker-shakedown did NOT run the release. NOT a pass."
+            exit 75
+          fi
+          if [ "$DS_EXIT" -eq 124 ]; then
+            echo "::error::docker-shakedown TIMED OUT (rc=124) — treated as RELEASE_BLOCKED, not a hang."
+          fi
+          exit $DS_EXIT
+
+      - name: Cleanup leftover containers/images
+        if: always()
+        run: |
+          docker rm -f $(docker ps -aq) 2>/dev/null || true
+          docker image prune -af 2>/dev/null || true
+          docker volume prune -f 2>/dev/null || true
