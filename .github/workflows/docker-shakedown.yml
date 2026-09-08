@@ -32,7 +32,9 @@ jobs:
     # in-container update + wait for canary), and a 3-container multi-arch
     # + compose set (Y, AB). Estimated actual runtime ~55-70 min. Sized with
     # headroom the way shakedown.yml sizes 150min for ~110min of work.
-    timeout-minutes: 120
+    # Sized for: asset wait (~60min) + image wait (~60min) + shakedown
+    # (~55-70min) + headroom. Both waits are sequential in the same step.
+    timeout-minutes: 210
     # IMPORTANT: shares the concurrency group with shakedown.yml. Both mint
     # a disposable JWT from the SAME gauntlet account server-side, and W1-W2
     # here mint several MORE JWTs for the auth-mode matrix. Running either
@@ -95,6 +97,19 @@ jobs:
           fi
           echo "EXPECTED_VERSION=${VER}" >> "$GITHUB_OUTPUT"
           echo "target release: ${VER}"
+          # Wait for the container image to appear (build.yml publishes it
+          # independently of release.yml assets). Without this, the docker
+          # shakedown script pulls immediately and hits 30+ cascading FAILs
+          # when the image does not exist yet.
+          IMG_OK=0
+          for i in $(seq 1 120); do
+            timeout 30 docker manifest inspect "ghcr.io/full-bars/urnetwork-3.23-fix:${VER}" >/dev/null 2>&1 && { IMG_OK=1; echo "docker image ${VER} found"; break; }
+            echo "waiting for docker image ${VER} (${i}/120)..."; sleep 30
+          done
+          if [ "$IMG_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "::error::docker image for ${VER} never appeared within 60 min safety cap"
+            echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/docker-shakedown.exit; exit 75
+          fi
 
       - name: Mint disposable JWT from secrets
         id: mint
