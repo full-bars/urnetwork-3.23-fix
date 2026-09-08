@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Provider Daemon Architecture (Flagship)**: Decoupled provider service execution from interactive CLI sessions; added background daemon supervision, Unix domain socket / named pipe control socket (`provider/control_socket.go`), and client protocol in `urnet-tools` for live runtime configuration management without service restarts or brittle shared-file locks.
+- **Offline Pending Configuration Queue**: Seamless fallback queue (`~/.urnetwork/pending_overrides.json`) for `urnet-tools set` invocations when the provider daemon is offline, atomically merged and applied one-shot on startup.
+- **Zero-Downtime HotSwap (In Flight)**: In-place binary replacement with socket inheritance and graceful drain/takeover protocol, dropping the typical 20–60s update downtime to 0s downtime.
+- **Public IP Autodetection & Dashboard Rename (PR #534)**: Automatic detection of public IPv4 address with caching, 60s TTL, concurrent in-flight deduplication, and opt-out support (`~/.urnetwork/disable_ip_autodetect`); added `urnet-tools rename` to set custom dashboard display labels dynamically.
+- **Systemd Environment Key Migration**: Unified `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT`, and `GOGC` under control-socket configuration, eliminating manual `override.conf` requirements.
+- **JWT Refresh Transfer Stats Logging**: Step 3/3 of JWT auto-refresh parses `paid_bytes_provided` and `unpaid_bytes_provided` from `GET /transfer/stats` and logs account balances in human-readable units inline (`unpaid: X, paid: Y`).
+- **CFAA Blocklist Synchronizations (PR #540, #542)**: Automated synchronization of Computer Fraud and Abuse Act IP blocklists with upstream definitions.
+
+### Fixed
+- **ICE IPv6 Host Candidate Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent blackholed cellular routes on Android from stalling ICE connection negotiation.
+- **Memory Target & GC Tuning at Startup**: Persisted `gomemlimit` and `gogc` applied at bootstrap and runtime via debug APIs.
+
+---
+
 ## [v3.23.0-fix.30.9]
 
 ### Added
