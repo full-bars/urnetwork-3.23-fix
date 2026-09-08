@@ -24,6 +24,10 @@ func (s *HotswapParentSession) Wait() error {
 	return nil
 }
 
+// hasChildProcess reports whether a real candidate process backs this session.
+// Always false here: the Windows adapter does not spawn one yet.
+func (s *HotswapParentSession) hasChildProcess() bool { return false }
+
 func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, error) {
 	return nil, errors.New("hotswap not yet implemented on windows (requires named pipe adapter)")
 }

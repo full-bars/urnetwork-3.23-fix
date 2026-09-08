@@ -48,6 +48,13 @@ func (s *HotswapParentSession) Kill() {
 	s.Close()
 }
 
+// hasChildProcess reports whether a real candidate process backs this session.
+// Wait returns immediately when one does not, which a liveness monitor would
+// otherwise read as "the candidate died".
+func (s *HotswapParentSession) hasChildProcess() bool {
+	return s != nil && s.childCmd != nil
+}
+
 // Wait waits for the candidate child process to exit. Safe to call from
 // multiple goroutines concurrently (e.g. a drain-timeout Kill racing a
 // liveness-monitor Wait) — only the first caller reaches exec.Cmd.Wait,

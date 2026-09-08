@@ -17,6 +17,14 @@ import (
 )
 
 func TestWebRtc(t *testing.T) {
+	// Real ICE negotiation against the public STUN servers in
+	// DefaultWebRtcSettings, so this depends on third-party network reachability
+	// from the runner. Skipped in short mode like the package's other
+	// integration tests; it failed intermittently in CI and was masked by the
+	// test job's blanket retry.
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -127,6 +135,14 @@ func TestWebRtc(t *testing.T) {
 // receive side mirrors P2pReceiveTransport: read each whole message into one
 // reused buffer, then copy out the exact bytes.
 func TestWebRtcMessageRoundTrip(t *testing.T) {
+	// Real ICE negotiation against the public STUN servers in
+	// DefaultWebRtcSettings, so this depends on third-party network reachability
+	// from the runner. Skipped in short mode like the package's other
+	// integration tests; it failed intermittently in CI and was masked by the
+	// test job's blanket retry.
+	if testing.Short() {
+		t.Skip("skipping testing in short mode")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
