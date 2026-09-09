@@ -608,9 +608,14 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
 	// Attempt zero-downtime HotSwap first if supported on running process.
+	// supportsHotSwap gates this explicitly: triggerHotSwap itself checks the
+	// unit type on Unix, but the Windows stub doesn't, and the version check
+	// in hotSwapVersionOK must gate every trigger path so a running provider
+	// that can't parse the handoff protocol never receives SIGUSR2.
 	hotSwapTriggered := false
 	if p.Running && p.PID > 0 {
-		if err := triggerHotSwap(p); err == nil {
+		if supportsHotSwap(p) {
+			if err := triggerHotSwap(p); err == nil {
 			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
 			hotSwapTriggered = true
 		} else {
@@ -632,7 +637,12 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// new version. We must check the RUNNING process's image, not the
 	// on-disk binary.
 	oldPID := p.PID
-	maxIterations := 15 // ~30s for standard restart
+	// Give the old process time to exit before the first check: during CI
+	// or slow systemd restarts the old process is often still alive when
+	// the loop fires, which previously read as "restart did not take
+	// effect" on the very first iteration.
+	time.Sleep(3 * time.Second)
+	maxIterations := 30 // ~60s for standard restart (plus 3s settle delay)
 	if hotSwapTriggered {
 		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
 	}

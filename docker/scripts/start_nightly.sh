@@ -86,6 +86,15 @@ func_get_architecture() {
     esac
 }
 
+# === Release Asset Selection ===
+# Releases ship per-arch tarballs (urnetwork-provider-vX-linux-amd64.tar.gz,
+# ...-darwin-amd64.tar.gz, ...) PLUS a multi-arch fat tarball
+# (urnetwork-provider-vX.tar.gz) that contains linux/<arch>/provider for
+# every arch. darwin/windows assets sort first, so a blind head -n1 on
+# "any provider tarball" grabs a darwin binary (and GitHub's release JSON
+# is a single line, so naive line-grepping grabs the last token of the
+# whole body instead of any URL). Uses grep -oE, which works for both
+# one-line and pretty-printed JSON.
 # === Custom Network Selection ===
 # UR_API_URL / UR_CONNECT_URL let operators point the provider at a
 # custom API + connect backend without a custom-built binary, using
@@ -189,15 +198,17 @@ func_check_update() {
     # to install a NEWER release, so if we are already current there is
     # nothing to fetch and nothing to verify. (An earlier draft fetched the
     # tarball first and skipped on version match afterwards — dead bytes, no
-    # verification, silent discard on corruption.)
+    # verification, silent discard on corruption.) The arch-aware filter keeps
+    # darwin/windows assets out of the version probe.
     RESP_VERSION_FILE="$UPDATE_TMP/version.json"
     HTTP_CODE="$(curl -sfL -w '%{http_code}' -o "$RESP_VERSION_FILE" "$API_URL" 2>/dev/null)" || HTTP_CODE="000"
     VERSION_JSON="$(cat "$RESP_VERSION_FILE" 2>/dev/null)" || VERSION_JSON=""
     if [ "$HTTP_CODE" != "000" ] && [ -n "$VERSION_JSON" ]; then
         LATEST_VERSION_CHECK="$(printf '%s\n' "$VERSION_JSON" \
-          | grep '"browser_download_url"' \
-          | grep 'urnetwork-provider-.*\.tar\.gz' \
-          | sed -E 's/.*"([^"]+)".*/\1/' \
+          | grep -oE '"browser_download_url": *"https://[^"]+"' \
+          | sed -E 's/.*"([^"]+)"$/\1/' \
+          | grep '/urnetwork-provider-[^/]*\.tar\.gz$' \
+          | grep -E -- "linux-${A_SYS_ARCH}\.tar\.gz$" \
           | head -n1 \
           | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
         CURRENT_VERSION=""
@@ -225,7 +236,12 @@ func_check_update() {
     DOWNLOAD_URL=""
     if command -v jq >/dev/null 2>&1 && [ -n "$RELEASE_JSON" ]; then
         ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
-          | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' 2>/dev/null \
+          | jq -r --arg arch "$A_SYS_ARCH" '
+              .assets[] | .name |
+              select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
+                     (contains("linux-" + $arch) or
+                      ((test("-darwin-|-linux-|-windows-")) | not)))
+            ' 2>/dev/null \
           | head -n1)"
         if [ -n "$ASSET_NAME" ]; then
             DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
@@ -233,14 +249,25 @@ func_check_update() {
         fi
     fi
     if [ -z "$ASSET_NAME" ] || [ -z "$DOWNLOAD_URL" ]; then
-        # Fallback (no jq / unexpected JSON shape): parse URLs textually, then
-        # map each candidate back to an asset name FROM THE JSON so the digest
-        # lookup stays keyed on real API names.
-        DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
-          | grep '"browser_download_url"' \
-          | grep 'urnetwork-provider-.*\.tar\.gz' \
-          | sed -E 's/.*"([^"]+)".*/\1/' \
+        # Fallback (no jq / unexpected JSON shape): extract candidate URLs
+        # with grep -oE — GitHub's release JSON is a single line, so naive
+        # line-grepping would grab the last token of the whole body instead
+        # of any URL. Preference 1: per-arch tarball for this container
+        # (~11MB vs ~84MB). Preference 2: the multi-arch fat tarball (no OS
+        # token in the name); the extract step below can still pull
+        # linux/${A_SYS_ARCH}/provider from it.
+        CAND_URLS="$(printf '%s\n' "$RELEASE_JSON" \
+          | grep -oE '"browser_download_url": *"https://[^"]+"' \
+          | sed -E 's/.*"([^"]+)"$/\1/' \
+          | grep '/urnetwork-provider-[^/]*\.tar\.gz$' || true)"
+        DOWNLOAD_URL="$(printf '%s\n' "$CAND_URLS" \
+          | grep -E -- "linux-${A_SYS_ARCH}\.tar\.gz$" \
           | head -n1)"
+        if [ -z "$DOWNLOAD_URL" ]; then
+            DOWNLOAD_URL="$(printf '%s\n' "$CAND_URLS" \
+              | grep -Ev -- '-(darwin|linux|windows)-' \
+              | head -n1)"
+        fi
         [ -n "$DOWNLOAD_URL" ] || {
             log "[ERROR] No urnetwork-provider-*.tar.gz asset in GitHub response." >&2
             log "[ERROR] HTTP status: $HTTP_CODE" >&2
@@ -299,13 +326,20 @@ func_check_update() {
         return 0
     fi
     log "[INFO] Digest verified OK"
-    tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "linux/${A_SYS_ARCH}/provider" || {
+    # Asset layout differs by kind: per-arch tarballs carry provider/ at the
+    # root; the multi-arch fat tarball nests it under linux/<arch>/. Try the
+    # nested path first, then the root path.
+    PROVIDER_IN_TARBALL="linux/${A_SYS_ARCH}/provider"
+    if ! tar -tzf "$ARCHIVE" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
+        PROVIDER_IN_TARBALL="provider"
+    fi
+    tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "$PROVIDER_IN_TARBALL" || {
         log "[ERROR] Failed to extract provider from tarball." >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"
         return 0
     }
-    [ -f "$UPDATE_TMP/linux/${A_SYS_ARCH}/provider" ] || {
+    [ -f "$UPDATE_TMP/$PROVIDER_IN_TARBALL" ] || {
         log "[ERROR] Provider binary not found in tarball." >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP"

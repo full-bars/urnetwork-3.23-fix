@@ -220,6 +220,7 @@ hub_unlink() {
 
 # === Update Logic ===
 do_update() {
+    requested_tag="${1:-}"
     # Pelican mode: updates are owned by the panel (image re-pull). A
     # runtime self-update would bypass the operator's pinned image.
     if [ "${PELICAN:-}" = "yes" ]; then
@@ -240,12 +241,22 @@ do_update() {
 
     echo "Checking for provider updates..."
 
-    release_json="$(curl -s --connect-timeout 10 "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest")" || {
+    if [ -n "$requested_tag" ]; then
+        release_url="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/$requested_tag"
+    else
+        release_url="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
+    fi
+
+    release_json="$(curl -s --connect-timeout 10 "$release_url")" || {
         echo "ERROR: could not reach GitHub API."
         exit 1
     }
 
     version="$(echo "$release_json" | jq -r '.tag_name // empty')"
+    if [ -n "$requested_tag" ] && [ "$version" != "$requested_tag" ]; then
+        echo "ERROR: release tag '$requested_tag' not found (GitHub API returned no matching release)."
+        exit 1
+    fi
     [ -n "$version" ] || { echo "ERROR: could not parse release info."; exit 1; }
 
     download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
@@ -868,7 +879,19 @@ case "$operation" in
         ;;
 
     update)
-        do_update
+        tag_arg=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --tag)
+                    if [ -z "${2:-}" ]; then
+                        echo "ERROR: Option --tag requires a value."; exit 1
+                    fi
+                    tag_arg="$2"; shift 2 ;;
+                *)
+                    echo "Unknown option: $1"; exit 1 ;;
+            esac
+        done
+        do_update "$tag_arg"
         ;;
 
     *)

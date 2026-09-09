@@ -1280,7 +1280,7 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 rm -f /home/urnet/.urnetwork/pending_overrides.json
 W1_VAL=$'weird "quoted" \\backslash\\ value\nwith a newline'
 printf '%s' "$W1_VAL" > /tmp/w1.expected
-urnet-tools set node-name "$W1_VAL" >/tmp/w1.out 2>&1
+urnet-tools set -y node-name "$W1_VAL" >/tmp/w1.out 2>&1
 if python3 -c "
 import json
 d = json.load(open('/home/urnet/.urnetwork/pending_overrides.json'))
@@ -1305,7 +1305,7 @@ CID=$(wait_client_id "$MARK" 120)
 # consumed on start.
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork.service
 rm -f /home/urnet/.urnetwork/pending_overrides.json
-urnet-tools set node-name "queued-under-root" >/dev/null 2>&1
+urnet-tools set -y node-name "queued-under-root" >/dev/null 2>&1
 Q_OWNER=$(stat -c '%U:%G:%a' /home/urnet/.urnetwork/pending_overrides.json 2>/dev/null)
 echo "  pending_overrides.json after root-queued set: $Q_OWNER" | tee -a "$REPORT"
 if runuser -u urnet -- test -r /home/urnet/.urnetwork/pending_overrides.json; then
@@ -1368,7 +1368,7 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 rm -f /home/urnet/.urnetwork/pending_overrides.json
 W5_N=6
 for i in $(seq 1 "$W5_N"); do
-  urnet-tools set node-name "concurrent-$i" >/tmp/w5-$i.out 2>&1 &
+  urnet-tools set -y node-name "concurrent-$i" >/tmp/w5-$i.out 2>&1 &
 done
 wait
 if python3 -c "
@@ -1414,7 +1414,7 @@ rm -f /tmp/w6.out
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork.service
 rm -f /home/urnet/.urnetwork/pending_overrides.json
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && bad "W7 (T7): setup failed, queue file still present" || ok "W7 (T7): confirmed queue file absent before the toggle"
-run_check "W7 (T7): set on a provider with no queue file yet" urnet-tools set node-name "fresh-state-w7" 2>&1
+run_check "W7 (T7): set on a provider with no queue file yet" urnet-tools set -y node-name "fresh-state-w7" 2>&1
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && ok "W7 (T7): pending_overrides.json CREATED by the toggle (not assumed pre-existing)" || bad "W7 (T7): pending_overrides.json was not created"
 MARK=$(restart_provider)
 CID=$(wait_client_id "$MARK" 120)
@@ -1665,8 +1665,8 @@ run_check "Z: --user $Z_USER targets the second provider" urnet-tools status --u
 
 # pending_overrides.json / control-socket set must not collide: distinct
 # values must reach the intended provider only.
-run_check "Z: set node-name on urnet's provider" urnet-tools set node-name "z-provider-one" --user urnet 2>&1
-run_check "Z: set node-name on $Z_USER's provider" urnet-tools set node-name "z-provider-two" --user "$Z_USER" 2>&1
+run_check "Z: set node-name on urnet's provider" urnet-tools set -y node-name "z-provider-one" --user urnet 2>&1
+run_check "Z: set node-name on $Z_USER's provider" urnet-tools set -y node-name "z-provider-two" --user "$Z_USER" 2>&1
 Z_GET1=$(urnet-tools set node-name --user urnet 2>&1 | tail -1)
 Z_GET2=$(urnet-tools set node-name --user "$Z_USER" 2>&1 | tail -1)
 if echo "$Z_GET1" | grep -q "z-provider-one" && echo "$Z_GET2" | grep -q "z-provider-two"; then

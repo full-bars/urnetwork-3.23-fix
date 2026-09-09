@@ -205,12 +205,16 @@ t "helper globals cleaned after successful call" true
 # Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
 # un-parenthesized form errors "Cannot index boolean with string" on every
 # real release. Pin the CORRECT parenthesized expression + first-wins order.
+# start_update.sh must select the MULTI-ARCH fat tarball (Extract_Providers
+# pulls both linux/amd64 and linux/arm64 from one file), so per-arch assets
+# (which carry an -<os>-<goarch> token, darwin first) are excluded.
 JSON_MULTI='{"assets":[
   {"name":"urnet-tools-linux-amd64","digest":"sha256:1"},
   {"name":"urnetwork-provider-v9-linux-amd64.tar.gz","digest":"sha256:2"},
-  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:3"}]}'
-sel="$(printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' | head -n1)"
-t "start_update asset filter returns exactly one name, first-wins" test "$sel" = "urnetwork-provider-v9-linux-amd64.tar.gz"
+  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:3"},
+  {"name":"urnetwork-provider-v9-darwin-amd64.tar.gz","digest":"sha256:4"}]}'
+sel="$(printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) and ((.name | test("-darwin-|-linux-|-windows-")) | not)) | .name' | head -n1)"
+t "start_update asset filter picks the multi-arch fat tarball, never darwin" test "$sel" = "urnetwork-provider-v9.tar.gz"
 
 # The broken (unparenthesized) shape must stay broken-and-unused: assert it
 # errors, so nobody reintroduces it thinking it works.
