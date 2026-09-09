@@ -60,7 +60,16 @@ func providerCandidateUsers() ([]string, error) {
 // isProviderUnit reports whether a systemd unit name looks like a provider
 // unit (basename matches a known binary, optionally suffixed).
 func isProviderUnit(unit string) bool {
-	base := unit
+	// Only a .service can be a provider. Timers, sockets, paths and targets
+	// share the provider's name prefix on an ordinary install
+	// (urnetwork-update.timer ships with it) and on any box running sibling
+	// tooling, and a name-only match swept them in as phantom providers:
+	// observed live 2026-09-09, where `urnet-tools logs` listed four
+	// "providers" on a box with one, two of them timers.
+	base, ok := strings.CutSuffix(unit, ".service")
+	if !ok {
+		return false
+	}
 	if i := strings.IndexByte(base, '.'); i >= 0 {
 		base = base[:i]
 	}
