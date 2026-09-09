@@ -170,3 +170,75 @@ func TestSupportsHotSwapUnitType(t *testing.T) {
 		})
 	}
 }
+
+// TestHotSwapPreflightReturnsTheGateSpecificReason pins which sentinel each
+// gate produces, and pins the substrings the pre-release shakedown greps for
+// in `urnet-tools update` output (section V: V1 asserts the VERSION decline,
+// V2 the UNIT TYPE decline and that it names the installer script).
+//
+// This coupling is easy to break silently and was broken once already: a
+// revision that gated the call site on a bool discarded the reason entirely,
+// so the decline printed nothing, section V could not distinguish the two
+// gates, and HotSwap dormancy became invisible to operators. Changing this
+// wording means updating .github/scripts/shakedown.sh section V to match.
+func TestHotSwapPreflightReturnsTheGateSpecificReason(t *testing.T) {
+	const supported = "v3.23.0-fix.31.0"
+
+	t.Run("version gate wins over the unit gate", func(t *testing.T) {
+		unitTypeFunc = func(Provider) (string, error) { return "simple", nil }
+		// Old provider on a non-notify unit: BOTH gates would reject, but the
+		// version reason must surface, because upgrading is the actual remedy.
+		err := hotSwapPreflight(Provider{Version: "v3.23.0-fix.30.9", Unit: "urnetwork.service"})
+		if !errors.Is(err, ErrHotSwapNotSupported) {
+			t.Fatalf("hotSwapPreflight = %v, want ErrHotSwapNotSupported", err)
+		}
+		if !strings.Contains(err.Error(), "does not support zero-downtime hotswap") {
+			t.Errorf("decline text %q lost the substring shakedown section V1 greps for", err)
+		}
+	})
+
+	t.Run("unit gate reason names the installer script", func(t *testing.T) {
+		unitTypeFunc = func(Provider) (string, error) { return "simple", nil }
+		err := hotSwapPreflight(Provider{Version: supported, Unit: "urnetwork.service"})
+		if !errors.Is(err, ErrHotSwapUnitNotNotify) {
+			t.Fatalf("hotSwapPreflight = %v, want ErrHotSwapUnitNotNotify", err)
+		}
+		for _, want := range []string{"is not Type=notify", "Provider_Install_Linux.sh"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("decline text %q lost %q, which shakedown section V2 greps for", err, want)
+			}
+		}
+	})
+
+	t.Run("both gates pass", func(t *testing.T) {
+		unitTypeFunc = func(Provider) (string, error) { return "notify", nil }
+		if err := hotSwapPreflight(Provider{Version: supported, Unit: "urnetwork.service"}); err != nil {
+			t.Fatalf("hotSwapPreflight = %v, want nil", err)
+		}
+	})
+}
+
+// TestHotSwapPreflightDistinguishesAnUnreadableUnitType covers the case where
+// systemctl itself fails (not installed, user bus unreachable, polkit denial).
+// Collapsing that into ErrHotSwapUnitNotNotify would tell the operator to
+// re-run the installer to rewrite a unit whose Type= was never actually read,
+// which is a false diagnosis and the wrong remedy.
+func TestHotSwapPreflightDistinguishesAnUnreadableUnitType(t *testing.T) {
+	queryErr := errors.New("Failed to connect to bus: Permission denied")
+	unitTypeFunc = func(Provider) (string, error) { return "", queryErr }
+
+	err := hotSwapPreflight(Provider{Version: "v3.23.0-fix.31.0", Unit: "urnetwork.service"})
+	if err == nil {
+		t.Fatal("hotSwapPreflight = nil, want the systemd query failure")
+	}
+	if errors.Is(err, ErrHotSwapUnitNotNotify) {
+		t.Errorf("query failure misreported as a Type= mismatch: %v", err)
+	}
+	if !errors.Is(err, queryErr) {
+		t.Errorf("hotSwapPreflight = %v, want it to wrap the underlying query error", err)
+	}
+	// The handoff must still be refused, not attempted, when the gate is unknown.
+	if supportsHotSwap(Provider{Version: "v3.23.0-fix.31.0", Unit: "urnetwork.service"}) {
+		t.Error("supportsHotSwap = true on an unreadable unit type; must fail closed")
+	}
+}

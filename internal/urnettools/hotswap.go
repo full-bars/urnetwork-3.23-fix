@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -50,7 +51,38 @@ func isHotSwapSupportedVersion(ver string) bool {
 // see hotSwapVersionOK and hotSwapUnitOK for why each is necessary on its
 // own.
 func supportsHotSwap(p Provider) bool {
-	return hotSwapVersionOK(p) && hotSwapUnitOK(p)
+	return hotSwapPreflight(p) == nil
+}
+
+// ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
+var ErrHotSwapNotSupported = errors.New("running provider does not support zero-downtime hotswap (requires >= v3.23.0-fix.31.0)")
+
+// ErrHotSwapUnitNotNotify is returned when the provider's version supports
+// HotSwap but its owning systemd unit is not Type=notify, so
+// provider/hotswap.go would abort the in-process handoff internally rather
+// than actually hand off (see hotSwapUnitOK for the mechanism). Naming a
+// version here would be actively misleading: the fix is rewriting the
+// systemd unit, not upgrading the binary. The distinction matters because
+// the two obvious candidate remedies do NOT work. cmdUpdate and
+// cmdReinstall both route through updateProvider, which re-fetches and
+// atomically installs the binary and restarts the unit but never writes a
+// unit file, so neither migrates a Type=simple node. Only re-running
+// install_systemd_units in Provider_Install_Linux.sh does.
+var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete; re-run the installer script (Provider_Install_Linux.sh) to rewrite the unit with Type=notify. Note neither `urnet-tools update` nor `urnet-tools reinstall` rewrites the unit: both only re-fetch the binary")
+
+// hotSwapPreflight reports WHY the handoff cannot run, or nil when it can.
+// It is the single source of that decision: triggerHotSwap calls it before
+// signalling, and updateProvider calls it to decide whether to try at all,
+// so the operator-facing decline text is identical on both paths and no
+// caller can gate on a bool and lose the reason.
+func hotSwapPreflight(p Provider) error {
+	if !hotSwapVersionOK(p) {
+		return ErrHotSwapNotSupported
+	}
+	if err := hotSwapUnitOK(p); err != nil {
+		return err
+	}
+	return nil
 }
 
 // hotSwapVersionOK reports whether the provider's running image or reported
@@ -105,8 +137,10 @@ func queryUnitType(p Provider) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// hotSwapUnitOK reports whether the provider's systemd unit (if any) allows
-// the HotSwap handoff to actually complete. provider/hotswap.go's Unix
+// hotSwapUnitOK reports nil when the provider's systemd unit (if any) allows
+// the HotSwap handoff to actually complete, and otherwise the reason it does
+// not: ErrHotSwapUnitNotNotify for a unit whose Type= was read and is not
+// notify, or a wrapped query error when the type could not be read at all. provider/hotswap.go's Unix
 // branch aborts the handoff whenever INVOCATION_ID is set (i.e. systemd
 // started the process) and NOTIFY_SOCKET is empty — that only happens for
 // a unit that isn't Type=notify, since NotifyAccess=all + Type=notify is
@@ -132,15 +166,23 @@ func queryUnitType(p Provider) (string, error) {
 // works; a false "yes" fires triggerHotSwap into a handoff that silently
 // aborts and, per the paragraph above, bricks the update entirely. Between
 // those two failure modes, losing zero-downtime is always the safe one.
-func hotSwapUnitOK(p Provider) bool {
+func hotSwapUnitOK(p Provider) error {
 	if p.Unit == "" {
-		return true
+		return nil
 	}
 	typ, err := unitTypeFunc(p)
 	if err != nil {
-		return false
+		// Do NOT collapse this into ErrHotSwapUnitNotNotify. That error tells
+		// the operator to re-run the installer to rewrite the unit, which is
+		// the wrong remedy and a false diagnosis when the unit's Type= was
+		// never actually read: systemctl missing, the user bus unreachable,
+		// or a polkit denial all land here. Report what failed instead.
+		return fmt.Errorf("query systemd unit type for %s: %w", p.Unit, err)
 	}
-	return typ == "notify"
+	if typ != "notify" {
+		return ErrHotSwapUnitNotNotify
+	}
+	return nil
 }
 
 // cmdHotswap implements `urnet-tools hotswap [target]`: it triggers an in-process
