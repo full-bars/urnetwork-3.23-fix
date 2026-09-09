@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"testing"
+	"time"
 )
 
 // TestDiscoverProcessesFallsBackToProcessOwnerWhenEnvironUnreadable
@@ -42,14 +43,27 @@ func TestDiscoverProcessesFallsBackToProcessOwnerWhenEnvironUnreadable(t *testin
 	readEnviron = func(pid int) map[string]string { return nil }
 	defer func() { readEnviron = origReadEnviron }()
 
-	providers := discoverProcesses()
-
+	// cmd.Start() returns as soon as the fork succeeds, which on Linux can
+	// precede the child's execve. Until that exec lands, /proc/<pid>/cmdline
+	// still holds this test binary's own argv, isProviderArg rejects it, and
+	// the scan correctly reports zero providers. Scanning once races the
+	// exec and fails only under load (green locally, red on a busy CI
+	// runner), so poll for the child to appear instead.
+	var providers []Provider
 	var found *Provider
-	for i := range providers {
-		if providers[i].PID == cmd.Process.Pid {
-			found = &providers[i]
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		providers = discoverProcesses()
+		for i := range providers {
+			if providers[i].PID == cmd.Process.Pid {
+				found = &providers[i]
+				break
+			}
+		}
+		if found != nil || time.Now().After(deadline) {
 			break
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if found == nil {
 		t.Fatalf("discoverProcesses did not find the test child (pid %d) among %d providers", cmd.Process.Pid, len(providers))
