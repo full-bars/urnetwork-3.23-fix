@@ -3808,7 +3808,7 @@ func provide(opts docopt.Opts) {
 		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
 		connect.SetExtraMetricsProvider(providerExtraMetrics)
 		connect.SetPersistentErrorFunc(IncrPersistentError)
-		metricsServer := &http.Server{
+		metricsServer = &http.Server{
 			Addr:              metricsAddr,
 			Handler:           connect.PrometheusHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
@@ -3871,6 +3871,11 @@ func provide(opts docopt.Opts) {
 	closeDohCache()
 	flushRetentionEvents()
 	FlushPersistentErrors()
+	if metricsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		metricsServer.Shutdown(ctx)
+	}
 	markCleanShutdown()
 	os.Exit(0)
 }
@@ -3878,6 +3883,7 @@ func provide(opts docopt.Opts) {
 // containerIDRe matches a default Docker container hostname (12-char hex),
 // so we can omit it from the dashboard label when it carries no useful meaning.
 var containerIDRe = regexp.MustCompile("^[0-9a-f]{12}$")
+var metricsServer *http.Server
 
 // providerStatePath returns the absolute filesystem path of a named
 // provider state file under ~/.urnetwork (alongside `jwt`). Does not

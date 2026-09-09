@@ -51,8 +51,14 @@ var startupDiag = &startupDiagnostics{}
 
 // markCleanShutdown writes a marker file so next startup knows this was clean.
 func markCleanShutdown() {
-	path := filepath.Join(mustStateDir(), ".clean-shutdown")
-	os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)), 0600)
+	stateDir := mustStateDir()
+	if stateDir == "" {
+		return
+	}
+	path := filepath.Join(stateDir, ".clean-shutdown")
+	if err := os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)), 0600); err != nil {
+		tlog("[metrics] failed to write shutdown marker: %v\n", err)
+	}
 }
 
 // detectStartup reads the shutdown marker and version file, then removes the
@@ -115,7 +121,9 @@ func initPersistentErrors() {
 	path := filepath.Join(stateDir, "error_counts.json")
 	pe := &persistentErrors{counts: map[string]uint64{}, path: path}
 	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &pe.counts)
+		if err := json.Unmarshal(data, &pe.counts); err != nil {
+			tlog("[metrics] failed to load error counts: %v\n", err)
+		}
 	}
 	persistentErrStore = pe
 }
@@ -167,11 +175,8 @@ func providerExtraMetrics() string {
 	uptime := time.Since(providerStartTime).Seconds()
 
 	// --- Provider info (version, proxy count, human-readable uptime) ---
-	proxyCount := 0
 	proxyVersion := RequireVersion()
-	if state, err := readProxyState(); err == nil {
-		proxyCount = len(state.Proxies)
-	}
+	proxyCount := 0
 	fmt.Fprintf(&b, "# HELP urnet_info Provider identity and uptime (Grafana display metric).\n")
 	fmt.Fprintf(&b, "# TYPE urnet_info info\n")
 	fmt.Fprintf(&b, "urnet_info{version=%q,proxies=%q,uptime=%q} 1\n",
@@ -180,21 +185,25 @@ func providerExtraMetrics() string {
 		connect.FormatDuration(uptime))
 
 	// --- Startup diagnostics (crash/restart/upgrade) ---
-	wasClean := "0"
-	if startupDiag.cleanShutdown {
-		wasClean = "1"
+	startupDiag.mu.Lock()
+	wasClean := startupDiag.cleanShutdown
+	prevVersion := startupDiag.previousVersion
+	startupDiag.mu.Unlock()
+	wasCleanStr := "0"
+	if wasClean {
+		wasCleanStr = "1"
 	}
 	restarted := "0"
-	if !startupDiag.cleanShutdown && startupDiag.previousVersion != "" {
+	if !wasClean && prevVersion != "" {
 		restarted = "1" // had a previous run that didn't shut down cleanly
 	}
 	upgraded := "0"
-	if startupDiag.previousVersion != "" && startupDiag.previousVersion != proxyVersion {
+	if prevVersion != "" && prevVersion != proxyVersion {
 		upgraded = "1"
 	}
 	fmt.Fprintf(&b, "# HELP urnet_startup_clean_shutdown Whether the previous shutdown was clean.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_startup_clean_shutdown gauge\n")
-	fmt.Fprintf(&b, "urnet_startup_clean_shutdown %s\n", wasClean)
+	fmt.Fprintf(&b, "urnet_startup_clean_shutdown %s\n", wasCleanStr)
 
 	fmt.Fprintf(&b, "# HELP urnet_startup_restarted Whether the provider restarted (dirty or clean).\n")
 	fmt.Fprintf(&b, "# TYPE urnet_startup_restarted gauge\n")
@@ -204,10 +213,10 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "# TYPE urnet_startup_upgraded gauge\n")
 	fmt.Fprintf(&b, "urnet_startup_upgraded %s\n", upgraded)
 
-	if startupDiag.previousVersion != "" {
+	if prevVersion != "" {
 		fmt.Fprintf(&b, "# HELP urnet_startup_previous_version Version before last upgrade.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_startup_previous_version info\n")
-		fmt.Fprintf(&b, "urnet_startup_previous_version{version=%q} 1\n", startupDiag.previousVersion)
+		fmt.Fprintf(&b, "urnet_startup_previous_version{version=%q} 1\n", prevVersion)
 	}
 
 	// --- Control socket commands ---
@@ -236,9 +245,9 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "urnet_lifetime_proxies_total{event=\"recovered\"} %d\n", recov)
 		fmt.Fprintf(&b, "urnet_lifetime_proxies_total{event=\"lost\"} %d\n", lost)
 
-		fmt.Fprintf(&b, "# HELP urnet_lifetime_billable_bytes Lifetime billable bytes transferred.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_lifetime_billable_bytes counter\n")
-		fmt.Fprintf(&b, "urnet_lifetime_billable_bytes %d\n", bill)
+		fmt.Fprintf(&b, "# HELP urnet_lifetime_billable_bytes_total Lifetime billable bytes transferred.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_lifetime_billable_bytes_total counter\n")
+		fmt.Fprintf(&b, "urnet_lifetime_billable_bytes_total %d\n", bill)
 	}
 
 	// --- Persistent error counts (survive restarts) ---
@@ -285,6 +294,9 @@ func providerExtraMetrics() string {
 
 	// --- Proxy grades ---
 	state, stateErr := readProxyState()
+	if stateErr == nil {
+		proxyCount = len(state.Proxies)
+	}
 	urlState, urlErr := readProxyURLState()
 
 	if stateErr == nil {
