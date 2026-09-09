@@ -157,6 +157,8 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: false, Error: "key is required"}
 	}
 
+	IncrControlCmd(req.Cmd)
+
 	switch req.Cmd {
 	case "get":
 		value, found := state.get(req.Key)

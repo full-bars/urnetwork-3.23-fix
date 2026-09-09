@@ -52,6 +52,17 @@ func (t *ErrorTracker) throttleFor(cat ErrorCategory) *logThrottle {
 	return th
 }
 
+// PersistentErrorFunc is set by the provider to persist error counts to disk.
+var persistentErrorFunc func(category string)
+var persistentErrorMu sync.RWMutex
+
+// SetPersistentErrorFunc registers the callback for persistent error tracking.
+func SetPersistentErrorFunc(fn func(category string)) {
+	persistentErrorMu.Lock()
+	defer persistentErrorMu.Unlock()
+	persistentErrorFunc = fn
+}
+
 // RecordError records a rate-limited categorized error with a truncated stack
 // trace. Errors that exceed the category's rate limit are suppressed (counted
 // by logThrottle) and not buffered. Recording never panics for an unknown
@@ -63,6 +74,16 @@ func RecordError(cat ErrorCategory, msg string) {
 	allowed, _ := globalErrorTracker.throttleFor(cat).Allow(time.Now())
 	if !allowed {
 		return
+	}
+	// Prometheus cumulative counter — always increments regardless of
+	// rate-limiting (rate-limit only suppresses log/buffer, not counts).
+	IncrError(cat)
+	// Persistent error count (survives restarts, written by provider on shutdown).
+	persistentErrorMu.RLock()
+	fn := persistentErrorFunc
+	persistentErrorMu.RUnlock()
+	if fn != nil {
+		fn(string(cat))
 	}
 	entry := fmt.Sprintf("%s (%s)", msg, stack)
 	globalErrorTracker.mu.Lock()
