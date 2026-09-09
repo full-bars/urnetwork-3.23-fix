@@ -378,7 +378,7 @@ func newTurboCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("turbo", rest, force, dryRun)
 		})
-	}), "Set the throughput profile to v4 or v8 to raise limits on a RAM-rich box, or turn it off to clear the override. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force. Target a specific provider with --unit, --user, --network, or --network-id.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
+	}), "Show current throughput profile, or set it to v4/v8 to raise limits on a RAM-rich box (or off to clear). This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force. Target a specific provider with --unit, --user, --network, or --network-id.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
 }
 
 func newAutoCmd() *cobra.Command {
@@ -386,7 +386,7 @@ func newAutoCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("auto", rest, force, dryRun)
 		})
-	}), "Turn on or off the auto-tuning profile, which lets the provider detect the box's hardware and pick the best-fit performance profile. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools auto on\n  urnet-tools auto off --unit urnetwork-native.service")
+	}), "Show current auto-tune status, or turn it on/off to let the provider detect hardware and pick the best-fit profile. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools auto on\n  urnet-tools auto off --unit urnetwork-native.service")
 }
 
 func newEcoCmd() *cobra.Command {
@@ -394,7 +394,7 @@ func newEcoCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("eco", rest, force, dryRun)
 		})
-	}), "Turn on or off eco mode, a garbage-collection-tuned profile for low-RAM systems. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools eco on\n  urnet-tools eco off --user urnet")
+	}), "Show current eco mode status, or turn it on/off (GC-tuned for low-RAM systems). This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools eco on\n  urnet-tools eco off --user urnet")
 }
 
 func newLowmodeCmd() *cobra.Command {
@@ -402,7 +402,7 @@ func newLowmodeCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("lowmode", rest, force, dryRun)
 		})
-	}), "Turn on or off low-memory mode, which reduces buffers to save RAM at the cost of throughput. This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools lowmode on\n  urnet-tools lowmode off --unit urnetwork-native.service")
+	}), "Show current low-memory status, or turn it on/off (reduces buffers to save RAM). This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools lowmode on\n  urnet-tools lowmode off --unit urnetwork-native.service")
 }
 
 func newRamlogsCmd() *cobra.Command {
@@ -410,7 +410,7 @@ func newRamlogsCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("ramlogs", rest, force, dryRun)
 		})
-	}), "Turn on or off RAM logging, which writes provider logs to a RAM buffer instead of disk. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools ramlogs on\n  urnet-tools ramlogs off --network tacogonzalez3000")
+	}), "Show current RAM logging status, or turn it on/off. RAM logging writes provider logs to a RAM buffer instead of disk. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \\\"yes\\\" unless you pass -f/--force.", "  urnet-tools ramlogs\n  urnet-tools ramlogs on\n  urnet-tools ramlogs off --network tacogonzalez3000")
 }
 
 func newOptimizeCmd() *cobra.Command {

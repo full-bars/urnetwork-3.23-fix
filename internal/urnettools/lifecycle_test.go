@@ -93,15 +93,16 @@ func TestTimerCalendarRewrite(t *testing.T) {
 	}
 }
 
-// TestCmdTuneModeValidation: tuning commands require a mode argument
-// (deterministic error without providers).
-func TestCmdTuneModeValidation(t *testing.T) {
+// TestCmdTuneNoModeShowsStatus: tuning commands with no mode should
+// show the current status (may fail with provider-discovery error if
+// no providers are found, but should NOT error with "requires a mode").
+func TestCmdTuneNoModeShowsStatus(t *testing.T) {
 	err := cmdTune("turbo", []string{}, false, false)
-	if err == nil {
-		t.Fatal("expected error for turbo with no mode")
-	}
-	if !contains(err.Error(), "requires a mode") {
-		t.Errorf("unexpected error: %v", err)
+	// With no providers on a test host, selectTarget may succeed or fail
+	// depending on environment. The key invariant: it should NOT return
+	// "requires a mode" — that error is gone; no-args shows status now.
+	if err != nil && contains(err.Error(), "requires a mode") {
+		t.Errorf("no-args should show status not 'requires a mode'; got: %v", err)
 	}
 }
 
