@@ -122,13 +122,14 @@ func TestRunProxyNoSubcommand(t *testing.T) {
 	}
 }
 
-// TestRunTuneRequiresMode: turbo/eco/lowmode/ramlogs/auto all require a mode
-// argument, validated before targeting.
-func TestRunTuneRequiresMode(t *testing.T) {
+// TestRunTuneNoModeShowsStatus: turbo/eco/lowmode/ramlogs/auto with no mode
+// show current status instead of erroring.
+func TestRunTuneNoModeShowsStatus(t *testing.T) {
 	for _, cmd := range []string{"turbo", "eco", "lowmode", "ramlogs", "auto"} {
 		err := Run([]string{cmd})
-		if err == nil || !strings.Contains(err.Error(), "requires a mode") {
-			t.Errorf("Run([%q]) = %v, want \"requires a mode\"", cmd, err)
+		// Should NOT contain "requires a mode" — that error is gone
+		if err != nil && strings.Contains(err.Error(), "requires a mode") {
+			t.Errorf("Run([%q]) = %v, want status not 'requires a mode'", cmd, err)
 		}
 	}
 }

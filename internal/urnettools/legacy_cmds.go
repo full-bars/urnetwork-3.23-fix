@@ -965,7 +965,39 @@ func runtimeGOARCH() string {
 // (`urnet-tools set`/`status`) already used for every other tunable.
 func cmdTune(profile string, args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%s requires a mode: on | off (or v4/v8/off for turbo)", profile)
+		// No mode given — show the current state for the targeted provider.
+		t, _, err := parseTargetFlags(args)
+		if err != nil {
+			return err
+		}
+		p, err := selectTarget(Discover(), t)
+		if err != nil {
+			return err
+		}
+		key := profile
+		if profile != "ramlogs" {
+			key = "profile"
+		}
+		val, _, found, qerr := queryControlOverride(p, key)
+		if qerr != nil {
+			val = ""
+			found = false
+		}
+		if profile == "ramlogs" {
+			if found && truthyOn(val) {
+				fmt.Printf("%s: ramlogs is on\n", providerLabel(p))
+			} else {
+				fmt.Printf("%s: ramlogs is off\n", providerLabel(p))
+			}
+		} else {
+			// profile-based: show current profile or "none"
+			if found && val != "" {
+				fmt.Printf("%s: profile is %s\n", providerLabel(p), val)
+			} else {
+				fmt.Printf("%s: no profile set (default)\n", providerLabel(p))
+			}
+		}
+		return nil
 	}
 	mode := args[0]
 	rest := args[1:]
