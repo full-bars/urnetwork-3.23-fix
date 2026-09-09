@@ -608,30 +608,22 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
 	// Attempt zero-downtime HotSwap first if supported on running process.
-	// supportsHotSwap gates this explicitly: triggerHotSwap itself checks the
-	// unit type on Unix, but the Windows stub doesn't, and the version check
-	// in hotSwapVersionOK must gate every trigger path so a running provider
-	// that can't parse the handoff protocol never receives SIGUSR2.
+	// hotSwapPreflight decides, and its error IS the operator-facing reason:
+	// gating on a bool here (as an earlier revision did) discarded that
+	// reason and printed nothing at all when the handoff was declined, which
+	// is the failure mode that made HotSwap dormancy invisible on every
+	// Type=simple node. triggerHotSwap runs the same preflight before
+	// signalling, so a provider that cannot parse the handoff protocol never
+	// receives SIGUSR2 regardless of which path a caller takes.
 	hotSwapTriggered := false
 	if p.Running && p.PID > 0 {
-		if supportsHotSwap(p) {
-			if err := triggerHotSwap(p); err == nil {
-				fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
-				hotSwapTriggered = true
-			} else {
-				fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
-			}
+		if err := hotSwapPreflight(p); err != nil {
+			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+		} else if err := triggerHotSwap(p); err == nil {
+			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
+			hotSwapTriggered = true
 		} else {
-			// Name which gate rejected the handoff. A silent fall-through here
-			// is what makes HotSwap dormancy invisible: the operator sees a
-			// normal restart and has no way to tell that zero-downtime was
-			// skipped, let alone whether the cause is a stale provider or the
-			// unit's Type=.
-			if !hotSwapVersionOK(p) {
-				fmt.Printf("hotswap unsupported by running %s (needs 3.23.0-fix.31 or newer); using service restart\n", providerLabel(p))
-			} else {
-				fmt.Printf("hotswap unavailable for %s (owning unit Type= does not permit handoff); using service restart\n", providerLabel(p))
-			}
+			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
 		}
 	}
 

@@ -9,33 +9,14 @@ import (
 	"syscall"
 )
 
-// ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
-var ErrHotSwapNotSupported = errors.New("running provider does not support zero-downtime hotswap (requires >= v3.23.0-fix.31.0)")
-
-// ErrHotSwapUnitNotNotify is returned when the provider's version supports
-// HotSwap but its owning systemd unit is not Type=notify, so
-// provider/hotswap.go would abort the in-process handoff internally rather
-// than actually hand off (see hotSwapUnitOK for the mechanism). Naming a
-// version here would be actively misleading: the fix is rewriting the
-// systemd unit, not upgrading the binary. The distinction matters because
-// the two obvious candidate remedies do NOT work. cmdUpdate and
-// cmdReinstall both route through updateProvider, which re-fetches and
-// atomically installs the binary and restarts the unit but never writes a
-// unit file, so neither migrates a Type=simple node. Only re-running
-// install_systemd_units in Provider_Install_Linux.sh does.
-var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete; re-run the installer script (Provider_Install_Linux.sh) to rewrite the unit with Type=notify. Note neither `urnet-tools update` nor `urnet-tools reinstall` rewrites the unit: both only re-fetch the binary")
-
 // triggerHotSwap signals the running provider process on Unix via SIGUSR2 to initiate
 // an in-process verified handoff.
 func triggerHotSwap(p Provider) error {
 	if p.PID <= 0 {
 		return errors.New("provider has no valid PID")
 	}
-	if !hotSwapVersionOK(p) {
-		return ErrHotSwapNotSupported
-	}
-	if !hotSwapUnitOK(p) {
-		return ErrHotSwapUnitNotNotify
+	if err := hotSwapPreflight(p); err != nil {
+		return err
 	}
 	proc, err := os.FindProcess(p.PID)
 	if err != nil {
