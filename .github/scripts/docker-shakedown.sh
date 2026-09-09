@@ -407,7 +407,7 @@ cleanup_dsk
 
 # ---------- W8. --user (non-root) and read-only rootfs ----------
 section "W8. --user non-root + read-only rootfs"
-d=$(fresh_state_dir); chmod 777 "$d"
+d=$(fresh_state_dir); chown -R 1000:1000 "$d"; chmod 755 "$d"; chmod 600 "$d/jwt"
 docker run -d --name dsk-w8 --user 1000:1000 --read-only --tmpfs /tmp \
   -v "$d:/root/.urnetwork" -e BUILD=jwt -e HOME=/root -e PROXY_URL_MAX=50 \
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
@@ -1034,7 +1034,7 @@ else
   t1bad "AA3 corrupt jwt somehow minted a client_id ($CID) — should never run unauthenticated on bad state"
 fi
 docker rm -f dsk-aa3-badjwt >/dev/null 2>&1
-d=$(fresh_state_dir); rm -f "$d/network.json"; touch "$d/network.json"; chmod 000 "$d/network.json"
+d=$(fresh_state_dir); rm -f "$d/network.json"; echo '{"invalid":"not a valid network config"}' > "$d/network.json"
 docker run -d --name dsk-aa3-badnet -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_MAX=50 \
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
 sleep 30
@@ -1053,13 +1053,18 @@ docker run -d --name dsk-aa4 --tmpfs /root/.urnetwork:size=2m -e BUILD=jwt -e PR
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
 sleep 10
 docker cp "$JWT_FILE" dsk-aa4:/root/.urnetwork/jwt >/dev/null 2>&1
-UPD_OUT=$(docker exec dsk-aa4 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1); UPD_RC=$?
-echo "  AA4 update rc=$UPD_RC on a 2m tmpfs (approximating disk-full)" | tee -a "$REPORT"
-echo "$UPD_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
-if [ "$UPD_RC" -ne 0 ]; then
-  ok "AA4 update fails clearly under disk pressure (exit $UPD_RC), does not hang or silently succeed"
+AA4_STATE=$(docker inspect -f '{{.State.Status}}' dsk-aa4 2>/dev/null)
+if [ "$AA4_STATE" != "running" ]; then
+  bad "AA4 container not running before update attempt (status=${AA4_STATE:-none}) — disk-pressure path not exercised"
 else
-  echo "INFO: AA4 update reported success on a 2m tmpfs (image assets may be small enough to fit) — not a gate" | tee -a "$REPORT"
+  UPD_OUT=$(docker exec dsk-aa4 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1); UPD_RC=$?
+  echo "  AA4 update rc=$UPD_RC on a 2m tmpfs (approximating disk-full)" | tee -a "$REPORT"
+  echo "$UPD_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+  if [ "$UPD_RC" -ne 0 ]; then
+    ok "AA4 update fails clearly under disk pressure (exit $UPD_RC), does not hang or silently succeed"
+  else
+    echo "INFO: AA4 update reported success on a 2m tmpfs (image assets may be small enough to fit) — not a gate" | tee -a "$REPORT"
+  fi
 fi
 docker rm -f dsk-aa4 >/dev/null 2>&1
 echo "NOTE: AA4 is an APPROXIMATION (size-capped tmpfs), not a true ENOSPC on a real block device. A genuine disk-full test needs a loopback filesystem, which this workflow's runner cannot provision cheaply." | tee -a "$REPORT"
