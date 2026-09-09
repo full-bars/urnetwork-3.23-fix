@@ -491,3 +491,279 @@ func TestDashboardLabelLoggedOnceAndOnChange(t *testing.T) {
 		t.Errorf("a changed label must log the transition, got: %q", changed)
 	}
 }
+
+func TestValidateControlValue(t *testing.T) {
+	tests := []struct {
+		key, value string
+		wantErr    bool
+	}{
+		// valid values
+		{"node_name", "nyc-1", false},
+		{"report_url", "https://example.com", false},
+		{"report_url", "", false},
+		{"profile", "turbo-v4", false},
+		{"profile", "auto", false},
+		{"profile", "eco", false},
+		{"profile", "lowmem", false},
+		{"profile", "turbo-v8", false},
+		{"ramlogs", "on", false},
+		{"ramlogs", "off", false},
+		{"fast_auth", "on", false},
+		{"fast_auth", "off", false},
+		{"proxy_self_heal", "on", false},
+		{"proxy_self_heal", "off", false},
+		{"hot_restart", "on", false},
+		{"hot_restart", "off", false},
+		{"hot_restart", "true", false},
+		{"hot_restart", "false", false},
+		{"hot_restart", "yes", false},
+		{"hot_restart", "no", false},
+		{"hot_restart", "1", false},
+		{"hot_restart", "0", false},
+		{"report_interval", "30s", false},
+		{"report_interval", "5m", false},
+		{"report_interval", "1h", false},
+		{"proxy_url_refresh", "10s", false},
+		{"proxy_dead_cleanup_interval", "1m", false},
+		{"proxy_dead_cleanup_interval", "5m", false},
+		{"proxy_dead_cleanup_scope", "none", false},
+		{"proxy_dead_cleanup_scope", "url", false},
+		{"proxy_dead_cleanup_scope", "all", false},
+		{"proxy_url_max", "0", false},
+		{"proxy_url_max", "50", false},
+		{"gomemlimit", "2048mib", false},
+		{"gomemlimit", "2gib", false},
+		{"gogc", "50", false},
+		{"gogc", "off", false},
+
+		// invalid values
+		{"node_name", "", true},
+		{"profile", "turbo", true},
+		{"profile", "turbo-v6", true},
+		{"ramlogs", "maybe", true},
+		{"fast_auth", "1", true},
+		{"proxy_self_heal", "true", true},
+		{"hot_restart", "y", true},
+		{"report_interval", "5", true},
+		{"report_interval", "1s", true},
+		{"proxy_url_refresh", "invalid", true},
+		{"proxy_dead_cleanup_interval", "30s", true},
+		{"proxy_dead_cleanup_scope", "all-proxies", true},
+		{"proxy_url_max", "-1", true},
+		{"proxy_url_max", "abc", true},
+		{"gogc", "-1", true},
+		{"report_url", "bad url", true},
+		{"report_url", "bad\nurl", true},
+		// case-insensitive: uppercase/TitleCase should work
+		{"fast_auth", "ON", false},
+		{"fast_auth", "Off", false},
+		{"proxy_self_heal", "ON", false},
+		{"proxy_self_heal", "Off", false},
+		// proxy_self_heal/ramlogs only accept on/off, NOT true/false/yes/no
+		{"proxy_self_heal", "TRUE", true},
+		{"ramlogs", "YES", true},
+		{"ramlogs", "On", false},
+		{"hot_restart", "TRUE", false},
+		{"hot_restart", "No", false},
+		{"profile", "AUTO", false},
+		{"profile", "Turbo-V4", false},
+		{"profile", "ECO", false},
+		{"gogc", "OFF", false},
+		{"gogc", "Off", false},
+		// unknown keys pass validation (unknown-key check is in controlKeys)
+		{"unknown_key", "anything", false},
+	}
+
+	for _, tt := range tests {
+		err := validateControlValue(tt.key, tt.value)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateControlValue(%q, %q): err=%v, wantErr=%v", tt.key, tt.value, err, tt.wantErr)
+		}
+	}
+}
+
+func TestNeedsRestart_AutoComputed(t *testing.T) {
+	// Keys that can be applied live — no restart needed
+	liveKeys := []string{"gomemlimit", "gogc"}
+	for _, k := range liveKeys {
+		if needsRestart(k) {
+			t.Errorf("needsRestart(%q) = true, expected false (has live side effect)", k)
+		}
+	}
+
+	// Keys that require restart
+	restartKeys := []string{"profile", "ramlogs", "hot_restart", "node_name",
+		"report_url", "report_interval", "fast_auth", "proxy_self_heal",
+		"proxy_url_max", "proxy_url_refresh", "proxy_dead_cleanup_interval",
+		"proxy_dead_cleanup_scope"}
+	for _, k := range restartKeys {
+		if !needsRestart(k) {
+			t.Errorf("needsRestart(%q) = false, expected true (no live side effect)", k)
+		}
+	}
+}
+
+func TestServerSideValidation_RejectsInvalidViaSocket(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	// Valid set should work and return needs_restart
+	resp, err := dialControlSocket(controlRequest{Cmd: "set", Key: "node_name", Value: "nyc-1"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("valid set should succeed: %v", resp.Error)
+	}
+	if !resp.NeedsRestart {
+		t.Errorf("node_name should need restart")
+	}
+
+	// Invalid profile value should be rejected
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "profile", Value: "turbo"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if resp.OK {
+		t.Errorf("invalid profile value 'turbo' should be rejected, got OK=true")
+	}
+	if !strings.Contains(resp.Error, "must be auto") {
+		t.Errorf("error should mention valid options, got: %s", resp.Error)
+	}
+
+	// gomemlimit valid set should NOT need restart
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "gomemlimit", Value: "2048mib"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("valid gomemlimit set should succeed: %v", resp.Error)
+	}
+	if resp.NeedsRestart {
+		t.Errorf("gomemlimit should NOT need restart (applies live)")
+	}
+
+	// profile set should need restart
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "profile", Value: "eco"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("valid profile set should succeed: %v", resp.Error)
+	}
+	if !resp.NeedsRestart {
+		t.Errorf("profile should need restart")
+	}
+}
+
+func TestClearLiveKey_ReappliesDefault(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	// Set gomemlimit, then clear it — should NOT need restart
+	resp, err := dialControlSocket(controlRequest{Cmd: "set", Key: "gomemlimit", Value: "256mib"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("set gomemlimit failed: %v", resp.Error)
+	}
+
+	resp, err = dialControlSocket(controlRequest{Cmd: "clear", Key: "gomemlimit"})
+	if err != nil {
+		t.Fatalf("dial clear: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("clear gomemlimit failed: %v", resp.Error)
+	}
+	if resp.NeedsRestart {
+		t.Errorf("clear gomemlimit should NOT need restart (default applied live)")
+	}
+
+	// Set gogc, then clear it — should NOT need restart
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "gogc", Value: "50"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("set gogc failed: %v", resp.Error)
+	}
+
+	resp, err = dialControlSocket(controlRequest{Cmd: "clear", Key: "gogc"})
+	if err != nil {
+		t.Fatalf("dial clear: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("clear gogc failed: %v", resp.Error)
+	}
+	if resp.NeedsRestart {
+		t.Errorf("clear gogc should NOT need restart (default applied live)")
+	}
+
+	// Clear node_name — SHOULD need restart
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "node_name", Value: "test"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+
+	resp, err = dialControlSocket(controlRequest{Cmd: "clear", Key: "node_name"})
+	if err != nil {
+		t.Fatalf("dial clear: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("clear node_name failed: %v", resp.Error)
+	}
+	if !resp.NeedsRestart {
+		t.Errorf("clear node_name SHOULD need restart (non-live key)")
+	}
+}
+
+func TestGogcOff_AppliesLive(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	// gogc=OFF (uppercase) should succeed and NOT need restart
+	resp, err := dialControlSocket(controlRequest{Cmd: "set", Key: "gogc", Value: "OFF"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("gogc=OFF should succeed: %v", resp.Error)
+	}
+	if resp.NeedsRestart {
+		t.Errorf("gogc should NOT need restart (applies live)")
+	}
+
+	// gogc=Off (mixed case) should also work
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "gogc", Value: "Off"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("gogc=Off should succeed: %v", resp.Error)
+	}
+}

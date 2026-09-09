@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,10 +39,11 @@ type controlRequest struct {
 }
 
 type controlResponse struct {
-	OK    bool   `json:"ok"`
-	Value string `json:"value,omitempty"`
-	Found bool   `json:"found,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK           bool   `json:"ok"`
+	Value        string `json:"value,omitempty"`
+	Found        bool   `json:"found,omitempty"`
+	Error        string `json:"error,omitempty"`
+	NeedsRestart bool   `json:"needs_restart,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -152,6 +154,124 @@ func formerValue(old string, had bool) string {
 	return old
 }
 
+// liveEffectKeys tracks which control keys can be applied at runtime
+// without a restart. The set is derived from applyLiveSideEffect's switch
+// cases — when a new key gets a live-apply case, it automatically stops
+// being flagged as needs_restart.
+var liveEffectKeys = map[string]bool{
+	"gomemlimit": true,
+	"gogc":       true,
+}
+
+// needsRestart returns true if setting this key requires a provider restart
+// to take effect. Any key NOT in liveEffectKeys needs a restart.
+func needsRestart(key string) bool {
+	return !liveEffectKeys[key]
+}
+
+// validateControlValue validates a value server-side before persisting.
+// Mirrors the client-side validation in internal/urnettools/control_client.go
+// so raw socket clients can't persist invalid values that silently break
+// on next restart.
+func validateControlValue(key, value string) error {
+	// Normalize to lowercase so ON/TRUE/YES are accepted — matches
+	// client-side behavior in internal/urnettools/control_client.go.
+	valLower := strings.ToLower(value)
+	switch key {
+	case "report_interval", "proxy_url_refresh", "proxy_dead_cleanup_interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("%s: invalid duration %q (use e.g. 30s, 5m, 1h)", key, value)
+		}
+		min := 10 * time.Second
+		if key == "proxy_dead_cleanup_interval" {
+			min = time.Minute
+		}
+		if d < min {
+			return fmt.Errorf("%s: %s is below the minimum %s", key, value, min)
+		}
+	case "proxy_url_max":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("%s: must be a non-negative integer (got %q)", key, value)
+		}
+	case "proxy_dead_cleanup_scope":
+		switch value {
+		case "none", "url", "all":
+		default:
+			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
+		}
+	case "fast_auth", "proxy_self_heal":
+		switch valLower {
+		case "on", "off":
+		default:
+			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
+	case "hot_restart":
+		switch valLower {
+		case "on", "off", "1", "0", "true", "false", "yes", "no":
+		default:
+			return fmt.Errorf("hot_restart: must be on or off (got %q)", value)
+		}
+	case "ramlogs":
+		switch valLower {
+		case "on", "off", "1", "0", "true", "false":
+		default:
+			return fmt.Errorf("ramlogs: must be on or off (got %q)", value)
+		}
+	case "profile":
+		switch valLower {
+		case "auto", "eco", "lowmem", "turbo-v4", "turbo-v8":
+		default:
+			return fmt.Errorf("profile: must be auto, eco, lowmem, turbo-v4, or turbo-v8 (got %q)", value)
+		}
+	case "gomemlimit":
+		if _, err := connect.ParseByteCount(value); err != nil {
+			return fmt.Errorf("gomemlimit: invalid byte count %q: %w", value, err)
+		}
+	case "gogc":
+		if valLower != "off" {
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+			}
+			if n < 0 {
+				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
+			}
+		}
+	case "node_name":
+		if value == "" {
+			return fmt.Errorf("node_name: must not be empty")
+		}
+	case "report_url":
+		if value != "" {
+			// basic URL sanity — reject values with spaces or newlines
+			for _, c := range value {
+				if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+					return fmt.Errorf("report_url: must not contain whitespace (got %q)", value)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// liveDefaults maps live-applied keys to their Go runtime defaults.
+// Used when clearing a key to reapply the default immediately.
+var liveDefaults = map[string]string{
+	"gomemlimit": "0", // Go's default: unlimited
+	"gogc":       "100",
+}
+
+// applyLiveDefault reapplies the runtime default for a live-applied key.
+func applyLiveDefault(key string) error {
+	def, ok := liveDefaults[key]
+	if !ok {
+		return nil
+	}
+	return applyLiveSideEffect(key, def)
+}
+
 func handleControlRequest(state *controlState, req controlRequest) controlResponse {
 	if req.Key == "" {
 		return controlResponse{OK: false, Error: "key is required"}
@@ -168,6 +288,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Value: value, Found: found}
 
 	case "set":
+		// Validate before touching state — reject bad values at the
+		// socket so the operator sees the error immediately, rather
+		// than persisting garbage that breaks on next restart.
+		if err := validateControlValue(req.Key, req.Value); err != nil {
+			return controlResponse{OK: false, Error: err.Error()}
+		}
 		// Persist-then-commit would be safer in the abstract, but persist()
 		// needs the full snapshot including this change, so: apply, try to
 		// persist, and roll back the in-memory change if persisting fails —
@@ -203,7 +329,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// only visible in the CLI, and nothing in the provider's own log
 		// shows the change was registered.
 		tlog("⚙️ [control] set %s=%s (was %s)\n", req.Key, req.Value, formerValue(oldValue, hadOld))
-		return controlResponse{OK: true}
+		return controlResponse{OK: true, NeedsRestart: needsRestart(req.Key)}
 
 	case "clear":
 		state.txMu.Lock()
@@ -220,8 +346,18 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			tlog("❌ [control] clear %s failed to persist, rolled back: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
 		}
+		// For live-applied keys, reapply the runtime default immediately
+		// instead of requiring a restart. For non-live keys, the cleared
+		// value takes effect on next restart.
+		liveCleared := liveEffectKeys[req.Key]
+		if liveCleared {
+			if err := applyLiveDefault(req.Key); err != nil {
+				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
+				return controlResponse{OK: true, Error: "cleared, but failed to reapply live default: " + err.Error()}
+			}
+		}
 		tlog("⚙️ [control] cleared %s (was %s)\n", req.Key, formerValue(oldValue, hadOld))
-		return controlResponse{OK: true}
+		return controlResponse{OK: true, NeedsRestart: !liveCleared}
 
 	default:
 		return controlResponse{OK: false, Error: fmt.Sprintf("unknown command %q", req.Cmd)}
@@ -277,14 +413,18 @@ func applyLiveSideEffect(key, value string) error {
 		}
 		debug.SetMemoryLimit(limit)
 	case "gogc":
-		percent, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("gogc: %w", err)
+		if strings.EqualFold(value, "off") {
+			debug.SetGCPercent(-1)
+		} else {
+			percent, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("gogc: %w", err)
+			}
+			if percent < 0 {
+				return fmt.Errorf("gogc: must be a non-negative percentage (got %d)", percent)
+			}
+			debug.SetGCPercent(percent)
 		}
-		if percent < 0 {
-			return fmt.Errorf("gogc: must be a non-negative percentage (got %d)", percent)
-		}
-		debug.SetGCPercent(percent)
 	}
 	return nil
 }
