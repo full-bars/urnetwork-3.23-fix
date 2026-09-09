@@ -155,7 +155,6 @@ func PrometheusHandler() http.Handler {
 			fmt.Fprintf(&b, "urnet_errors_total{category=%q} %d\n", string(cat), c.Load())
 		}
 
-
 		// --- Contract counters ---
 		fmt.Fprintf(&b, "# HELP urnet_contracts_total Cumulative contract outcomes.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_contracts_total counter\n")
