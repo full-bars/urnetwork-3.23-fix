@@ -93,8 +93,10 @@ func (m *proxyContractMetrics) add(acquired bool, generation uint32) {
 	}
 	if acquired {
 		m.Acquired.Add(1)
+		connect.IncrContractAcquired()
 	} else {
 		m.Denied.Add(1)
+		connect.IncrContractDenied()
 	}
 	if m.fine == nil {
 		m.fine = newContractRing(contractFineWidth, contractFineCount)

@@ -36,6 +36,9 @@ func EnableProfiling(addr string) error {
 	mux.HandleFunc("/metrics/errors", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, ErrorMetrics())
 	})
+	// Prometheus text-format /metrics on loopback (scrape target for local
+	// Prometheus/Grafana Agent, or for Tailscale listener below).
+	mux.Handle("/metrics", PrometheusHandler())
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("profiling: listen %s: %w", addr, err)

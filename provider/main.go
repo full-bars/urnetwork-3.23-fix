@@ -2789,6 +2789,7 @@ func provide(opts docopt.Opts) {
 	// not just the HotSwap candidate path (see merge in hotswap branch).
 	mergePendingOverrides(globalControlState)
 	applyPersistedRuntimeTuning(globalControlState)
+	initPersistentErrors()
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error
@@ -3795,10 +3796,29 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
-		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors\n", profileAddr)
+		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors, /metrics\n", profileAddr)
 		if err := connect.EnableProfiling(profileAddr); err != nil {
 			tlog("[profile] failed to enable diagnostics: %v\n", err)
 		}
+	}
+	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
+	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
+	// Prometheus can scrape without an agent on the fleet server.
+	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" {
+		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
+		connect.SetExtraMetricsProvider(providerExtraMetrics)
+		connect.SetPersistentErrorFunc(IncrPersistentError)
+		metricsServer := &http.Server{
+			Addr:              metricsAddr,
+			Handler:           connect.PrometheusHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+		}
+		go func() {
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				tlog("[metrics] listener failed: %v\n", err)
+			}
+		}()
 	}
 	if 0 < port {
 		fmt.Printf(
@@ -3850,6 +3870,8 @@ func provide(opts docopt.Opts) {
 	// retentionEventClosed; closeDohCache is safe to call twice).
 	closeDohCache()
 	flushRetentionEvents()
+	FlushPersistentErrors()
+	markCleanShutdown()
 	os.Exit(0)
 }
 
