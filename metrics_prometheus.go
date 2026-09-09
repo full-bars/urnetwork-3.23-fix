@@ -22,9 +22,8 @@ type prometheusCounters struct {
 	bytesOut     atomic.Int64
 	startTime    time.Time
 
-	mu               sync.Mutex
-	once             sync.Once
-	bytesTransferred uint64
+	mu   sync.Mutex
+	once sync.Once
 }
 
 var globalProm = &prometheusCounters{
@@ -60,9 +59,6 @@ func IncrContractAcquired() { globalProm.contractsIn.Add(1) }
 
 // IncrContractDenied increments the contract-denied counter.
 func IncrContractDenied() { globalProm.contractsOut.Add(1) }
-
-// IncrBytesTransferred adds n bytes to the cumulative transfer counter.
-func IncrBytesTransferred(n uint64) { globalProm.bytesTransferred += n }
 
 // ExtraMetricsProvider is set by the provider package to inject metrics
 // that only the provider has access to (PQE counts, grades, churn, etc.).
@@ -159,6 +155,7 @@ func PrometheusHandler() http.Handler {
 			fmt.Fprintf(&b, "urnet_errors_total{category=%q} %d\n", string(cat), c.Load())
 		}
 
+
 		// --- Contract counters ---
 		fmt.Fprintf(&b, "# HELP urnet_contracts_total Cumulative contract outcomes.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_contracts_total counter\n")
@@ -224,10 +221,12 @@ func readUint64Metric(v metrics.Value) uint64 {
 	}
 }
 
-// escapeLabelValue replaces backslash and double-quote for Prometheus label values.
+// escapeLabelValue escapes backslash, double-quote, and newlines for
+// Prometheus label values (per the text format spec).
 func escapeLabelValue(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
 	return s
 }
 
