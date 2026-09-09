@@ -147,14 +147,23 @@ func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	if !contains(err.Error(), "invalid interval") {
 		t.Errorf("unexpected error: %v", err)
 	}
-	// A valid interval must get past validation (it will then fail
-	// targeting on a box with no providers — that's fine, the point is the
-	// interval check itself passes).
-	err = cmdAutoUpdate([]string{"daily"}, false, false)
-	if err == nil {
-		t.Fatal("expected targeting error for daily (no provider on test box)")
-	}
-	if contains(err.Error(), "invalid interval") {
+	// A valid interval must get past validation. Assert ONLY that, never
+	// what happens after it.
+	//
+	// This previously called cmdAutoUpdate with dryRun=false and required a
+	// non-nil error, on the stated assumption that the test box has no
+	// providers. Both halves were wrong. On a developer machine that does
+	// run a provider, targeting succeeds, so the call fell through to
+	// setAutoUpdateSchedule and REWROTE THAT MACHINE'S systemd timer, and
+	// the required error never came, failing the test. The suite passed in
+	// CI only because runners have no provider, which is what hid the
+	// mutation.
+	//
+	// dryRun=true returns before setAutoUpdateSchedule, so the call is
+	// read-only wherever it runs, and the assertion holds whether or not a
+	// provider is present.
+	err = cmdAutoUpdate([]string{"daily"}, false, true)
+	if err != nil && contains(err.Error(), "invalid interval") {
 		t.Errorf("daily must pass interval validation, got: %v", err)
 	}
 }
