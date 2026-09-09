@@ -43,7 +43,12 @@ Download_API() {
     # NOTE: the parens matter — select((A) and (B)); without them jq parses
     # select(A) and B as a boolean stage and "| .name" then errors on it
     # ("Cannot index boolean with string") for every matching asset.
-    filename="$(echo "$release_json" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz"))) | .name' | head -n1)"
+    # Extract_Providers pulls BOTH linux/amd64 and linux/arm64 from the one
+    # tarball, so this script must select the multi-arch fat tarball
+    # (urnetwork-provider-vX.tar.gz): exclude per-arch assets (which carry an
+    # -<os>-<goarch> token) rather than filtering FOR linux-amd64 — a
+    # startswith/endswith-only head -n1 instead grabs darwin-amd64 first.
+    filename="$(echo "$release_json" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) and ((.name | test("-darwin-|-linux-|-windows-")) | not)) | .name' | head -n1)"
     download_url="$(echo "$release_json" | jq -r --arg f "$filename" \
         '.assets[] | select(.name == $f) | .browser_download_url')"
     [ -n "$filename" ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] || {
