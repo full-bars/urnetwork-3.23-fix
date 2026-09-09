@@ -364,6 +364,19 @@ func parseUnitLines(text string, running []Provider, userFor, binaryFor func(uni
 		binary := ""
 		if binaryFor != nil {
 			binary = binaryFor(unit)
+			// Corroborate the name match against what the unit actually
+			// runs. Matching on name alone requires a deny-list of every
+			// sibling program that shares the provider prefix (hub, update,
+			// dashboard, sentinel, ...), which is unbounded: each new one is
+			// a fresh false positive that floods the same-user candidate
+			// list and blocks narrowToAccessible's auto-pick, as
+			// provider-dashboard did on 2026-08-17 and urnetwork-sentinel
+			// did on 2026-09-09. ExecStart is evidence rather than a guess,
+			// so where it is readable it decides. Where it is not (empty),
+			// fall back to the name rule and its deny-list.
+			if binary != "" && !isProviderArg(binary) {
+				continue
+			}
 		}
 		out = append(out, providerFromUnit(unit, userFor(unit), binary))
 	}

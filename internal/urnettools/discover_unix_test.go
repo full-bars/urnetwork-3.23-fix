@@ -369,3 +369,75 @@ func TestProviderFromUnitCarriesBinary(t *testing.T) {
 		t.Error("a unit-derived provider must not be marked Running")
 	}
 }
+
+// TestIsProviderUnitRejectsNonServiceUnits: only a .service can be a
+// provider. An ordinary install ships urnetwork-update.timer alongside the
+// provider, and the name-only rule matched it, so `urnet-tools logs` listed
+// timers as providers and the ambiguity guard then refused every command.
+func TestIsProviderUnitRejectsNonServiceUnits(t *testing.T) {
+	for _, unit := range []string{
+		"urnetwork-update.timer",
+		"urnetwork-sentinel-update.timer",
+		"urnetwork.socket",
+		"urnetwork.path",
+		"urnetwork",
+	} {
+		if isProviderUnit(unit) {
+			t.Errorf("isProviderUnit(%q) = true, want false: only a .service can be a provider", unit)
+		}
+	}
+	for _, unit := range []string{"urnetwork.service", "urnetwork-native.service"} {
+		if !isProviderUnit(unit) {
+			t.Errorf("isProviderUnit(%q) = false, want true", unit)
+		}
+	}
+}
+
+// TestParseUnitLinesCorroboratesExecStart: a unit whose name matches the
+// provider prefix but whose ExecStart runs something else is not a provider.
+// Matching on name alone needs a deny-list of every sibling that shares the
+// prefix, which is unbounded — provider-dashboard hit this on 2026-08-17 and
+// urnetwork-sentinel on 2026-09-09, both flooding the candidate list and
+// blocking auto-pick. ExecStart is evidence, so it decides when readable.
+func TestParseUnitLinesCorroboratesExecStart(t *testing.T) {
+	lines := "urnetwork.service loaded active running\n" +
+		"urnetwork-sentinel.service loaded active running\n"
+
+	binaries := map[string]string{
+		"urnetwork.service":          "/home/klets/.local/share/urnetwork-provider/bin/urnetwork",
+		"urnetwork-sentinel.service": "/usr/bin/python3",
+	}
+
+	got := parseUnitLines(lines, nil,
+		func(string) string { return "klets" },
+		func(unit string) string { return binaries[unit] },
+	)
+
+	if len(got) != 1 {
+		names := []string{}
+		for _, p := range got {
+			names = append(names, p.Unit)
+		}
+		t.Fatalf("parseUnitLines returned %d providers (%v), want only urnetwork.service", len(got), names)
+	}
+	if got[0].Unit != "urnetwork.service" {
+		t.Errorf("kept %q, want urnetwork.service", got[0].Unit)
+	}
+}
+
+// TestParseUnitLinesFallsBackToTheNameRule: when ExecStart is unreadable the
+// corroboration has no evidence, so the name rule and its deny-list must
+// still apply rather than the unit being dropped or blindly accepted.
+func TestParseUnitLinesFallsBackToTheNameRule(t *testing.T) {
+	lines := "urnetwork.service loaded active running\n" +
+		"urnetwork-update.service loaded active running\n"
+
+	got := parseUnitLines(lines, nil,
+		func(string) string { return "klets" },
+		func(string) string { return "" }, // ExecStart unavailable
+	)
+
+	if len(got) != 1 || got[0].Unit != "urnetwork.service" {
+		t.Fatalf("parseUnitLines = %+v, want only urnetwork.service (deny-list still excludes -update)", got)
+	}
+}
