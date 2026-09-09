@@ -66,18 +66,21 @@ jobs:
             VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
-            VER="${VER:-v3.23.0-fix.30.7}"
+            if [ -z "$VER" ]; then
+              echo "::error::could not determine latest release from GitHub API"
+              echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
+            fi
           fi
           # Wait for the release build to COMPLETE before testing that tag.
           GITHUB_SHA_SHORT="${GITHUB_SHA}"
           ASSETS_OK=0
           REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
-            2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null)
+            2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null || echo "")
           if [ -n "$REL_RUN_ID" ]; then
             REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
-              2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null)
+              2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null || echo "")
             if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
               echo "::error::create-release job FAILED ($REL_JOB_CONC) — ENV_BLOCKER"
               echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
@@ -91,7 +94,7 @@ jobs:
             fi
             echo "waiting for release build of ${VER} (${i}/120)..."; sleep 30
           done
-          if [ "$ASSETS_OK" != "1" ] && { [[ "${GITHUB_REF_TYPE}" == "tag" ]] || [ -n "${INPUT_VERSION}" ]; }; then
+          if [ "$ASSETS_OK" != "1" ]; then
             echo "::error::release assets for ${VER} never appeared within 60 min safety cap"
             echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
           fi
@@ -177,7 +180,8 @@ jobs:
         run: |
           REPORT_TEXT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo "MISSING")
-          if [ "$SHAKE_EXIT" = "MISSING" ]; then SHAKE_EXIT=124; fi
+          # No exit file means the suite never started (mint/resolve failed)
+          if [ "$SHAKE_EXIT" = "MISSING" ]; then SHAKE_EXIT=75; fi
           if [ "$SHAKE_EXIT" = "75" ]; then DET="ENV_BLOCKER"
           elif echo "$REPORT_TEXT" | grep -q "TIER1_FAIL=1"; then DET="RELEASE_BLOCKED"
           elif [ -n "$SHAKE_EXIT" ] && [ "$SHAKE_EXIT" != "0" ]; then DET="RELEASE_BLOCKED"
