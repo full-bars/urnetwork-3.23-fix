@@ -217,3 +217,28 @@ func TestHotSwapPreflightReturnsTheGateSpecificReason(t *testing.T) {
 		}
 	})
 }
+
+// TestHotSwapPreflightDistinguishesAnUnreadableUnitType covers the case where
+// systemctl itself fails (not installed, user bus unreachable, polkit denial).
+// Collapsing that into ErrHotSwapUnitNotNotify would tell the operator to
+// re-run the installer to rewrite a unit whose Type= was never actually read,
+// which is a false diagnosis and the wrong remedy.
+func TestHotSwapPreflightDistinguishesAnUnreadableUnitType(t *testing.T) {
+	queryErr := errors.New("Failed to connect to bus: Permission denied")
+	unitTypeFunc = func(Provider) (string, error) { return "", queryErr }
+
+	err := hotSwapPreflight(Provider{Version: "v3.23.0-fix.31.0", Unit: "urnetwork.service"})
+	if err == nil {
+		t.Fatal("hotSwapPreflight = nil, want the systemd query failure")
+	}
+	if errors.Is(err, ErrHotSwapUnitNotNotify) {
+		t.Errorf("query failure misreported as a Type= mismatch: %v", err)
+	}
+	if !errors.Is(err, queryErr) {
+		t.Errorf("hotSwapPreflight = %v, want it to wrap the underlying query error", err)
+	}
+	// The handoff must still be refused, not attempted, when the gate is unknown.
+	if supportsHotSwap(Provider{Version: "v3.23.0-fix.31.0", Unit: "urnetwork.service"}) {
+		t.Error("supportsHotSwap = true on an unreadable unit type; must fail closed")
+	}
+}
