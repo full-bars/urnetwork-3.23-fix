@@ -616,10 +616,22 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if p.Running && p.PID > 0 {
 		if supportsHotSwap(p) {
 			if err := triggerHotSwap(p); err == nil {
-			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
-			hotSwapTriggered = true
+				fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
+				hotSwapTriggered = true
+			} else {
+				fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+			}
 		} else {
-			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+			// Name which gate rejected the handoff. A silent fall-through here
+			// is what makes HotSwap dormancy invisible: the operator sees a
+			// normal restart and has no way to tell that zero-downtime was
+			// skipped, let alone whether the cause is a stale provider or the
+			// unit's Type=.
+			if !hotSwapVersionOK(p) {
+				fmt.Printf("hotswap unsupported by running %s (needs 3.23.0-fix.31 or newer); using service restart\n", providerLabel(p))
+			} else {
+				fmt.Printf("hotswap unavailable for %s (owning unit Type= does not permit handoff); using service restart\n", providerLabel(p))
+			}
 		}
 	}
 
