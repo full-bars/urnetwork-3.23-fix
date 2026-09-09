@@ -13,21 +13,23 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 | | Upstream | This fork |
 | :--- | :--- | :--- |
-| Control-plane dial visibility | Debug level 2 (silent) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
-| Initial contract size | 16 KiB | 128 KiB (lowmem), 256 KiB (balanced), 2 MiB (performance+) |
+| Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
+| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
-| Dead proxy handling | Retry forever (15min loop, no ceiling) | 24h daily retry, 14-day drop (file) or 65min cleanup (URL), persisted state |
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
-| Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
+| Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
+| Proxy lifecycle | None | Continuous health grading (A–F) with auto-retry, backoff, and tiered retirement — file sources drop after 14 days, URL sources after 65 min |
 | Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and optional telemetry (`dev/hub`) |
-| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
-| Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
+| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
+| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
 | Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
-| Binary upgrade | Stop, swap, start (20-60s of downtime) | Zero-downtime HotSwap handoff to a verified candidate, with automatic rollback (requires a `Type=notify` unit, see the release notes) |
+| Binary upgrade | Stop, swap, start (20–60 s of downtime) | Zero-downtime HotSwap handoff to a verified candidate, with automatic rollback (requires a `Type=notify` unit, see the release notes) |
 | Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
 | Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
+| Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
+| Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
 
 ---
 
@@ -51,15 +53,68 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 ## ⚡ Quick Start
 
-Choose your platform:
+### Install
 
-| Platform | Install | Uninstall |
-|----------|---------|-----------|
-| 🐧 Linux (systemd) | [`curl -fSsL https://dl.fullbars.xyz/install.sh \| sh`](https://dl.fullbars.xyz/install.sh) | [`curl -fSsL https://dl.fullbars.xyz/uninstall.sh \| sh`](https://dl.fullbars.xyz/uninstall.sh) |
-| 🍎 macOS (launchd) | [`curl -fSsL https://dl.fullbars.xyz/install-mac.sh \| sh`](https://dl.fullbars.xyz/install-mac.sh) | manual — see [docs/Installation.md](docs/Installation.md) |
-| 🪟 Windows (PowerShell) | [`irm https://dl.fullbars.xyz/install-win.ps1 \| iex`](https://dl.fullbars.xyz/install-win.ps1) | [`irm https://dl.fullbars.xyz/uninstall-win.ps1 \| iex`](https://dl.fullbars.xyz/uninstall-win.ps1) |
-| 🐋 Docker | `docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest` | `docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest` |
-| 🐋 Docker (manage) | [`curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh \| sh`](https://dl.fullbars.xyz/urnet-docker.sh) | `rm /usr/local/bin/urnet-docker` (root) or `rm ~/.local/bin/urnet-docker` (non-root) |
+**🐧 Linux (systemd)**
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+```
+
+**🍎 macOS (launchd)**
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+```
+
+**🪟 Windows (PowerShell)**
+
+```powershell
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
+```
+
+**🐋 Docker**
+
+```sh
+docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+**🐋 Docker (management wrapper)**
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+```
+
+### Uninstall
+
+**🐧 Linux**
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
+```
+
+**🍎 macOS**
+
+Manual — see [docs/Installation.md](docs/Installation.md).
+
+**🪟 Windows (PowerShell)**
+
+```powershell
+irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex
+```
+
+**🐋 Docker**
+
+```sh
+docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+**🐋 Docker (management wrapper)**
+
+```sh
+rm /usr/local/bin/urnet-docker   # root install
+rm ~/.local/bin/urnet-docker     # non-root install
+```
 
 After installation, authenticate and start providing:
 
