@@ -405,8 +405,8 @@ func TestControlState_StatusSnapshot(t *testing.T) {
 	}
 
 	snap := s.statusSnapshot()
-	if len(snap) != 3 {
-		t.Fatalf("statusSnapshot len = %d, want 3", len(snap))
+	if len(snap) != len(controlKeys) {
+		t.Fatalf("statusSnapshot len = %d, want %d (all controlKeys)", len(snap), len(controlKeys))
 	}
 
 	entry, ok := snap["node_name"]
@@ -425,6 +425,12 @@ func TestControlState_StatusSnapshot(t *testing.T) {
 	entry, ok = snap["gogc"]
 	if !ok || entry.Value != "50" || entry.Meta.Source != SourcePending {
 		t.Errorf("gogc: got %+v, ok=%v", entry, ok)
+	}
+
+	// Unoverridden keys should appear with SourceDefault.
+	entry, ok = snap["proxy_self_heal"]
+	if !ok || entry.Meta.Source != SourceDefault {
+		t.Errorf("proxy_self_heal: expected SourceDefault, got %+v, ok=%v", entry, ok)
 	}
 }
 

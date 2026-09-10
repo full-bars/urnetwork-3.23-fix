@@ -258,23 +258,48 @@ func (s *controlState) snapshotV2() controlStateEnvelope {
 	}
 }
 
-// statusSnapshot returns every setting with its value and metadata,
-// intended for status / diagnostic endpoints.
+// statusSnapshot returns every known setting with its value and metadata,
+// intended for status / diagnostic endpoints. Keys not in s.values are
+// resolved from environment or code defaults so the operator always sees
+// the full picture — not just socket-overridden keys.
 func (s *controlState) statusSnapshot() map[string]struct {
 	Value string
 	Meta  configMeta
 } {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// Pre-populate with env or code defaults for all known keys.
+	envDefaults := map[string]string{
+		"ramlogs":      os.Getenv("URNETWORK_RAMLOGS"),
+		"fast_auth":    os.Getenv("URNETWORK_FAST_AUTH"),
+		"metrics":      os.Getenv("URNETWORK_METRICS"),
+		"profile":      os.Getenv("URNETWORK_PROFILE"),
+		"gogc":         os.Getenv("GOGC"),
+		"gomemlimit":   os.Getenv("GOMEMLIMIT"),
+	}
+
 	out := make(map[string]struct {
 		Value string
 		Meta  configMeta
-	}, len(s.values))
-	for k, v := range s.values {
-		out[k] = struct {
-			Value string
-			Meta  configMeta
-		}{Value: v, Meta: s.meta[k]}
+	}, len(controlKeys))
+	for k := range controlKeys {
+		if v, ok := s.values[k]; ok {
+			out[k] = struct {
+				Value string
+				Meta  configMeta
+			}{Value: v, Meta: s.meta[k]}
+		} else if v := envDefaults[k]; v != "" {
+			out[k] = struct {
+				Value string
+				Meta  configMeta
+			}{Value: v, Meta: configMeta{Source: SourceEnv}}
+		} else {
+			out[k] = struct {
+				Value string
+				Meta  configMeta
+			}{Value: "", Meta: configMeta{Source: SourceDefault}}
+		}
 	}
 	return out
 }

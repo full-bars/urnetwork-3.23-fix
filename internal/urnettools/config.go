@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -25,13 +27,41 @@ func cmdConfig(args []string) error {
 
 func runConfig(out io.Writer, args []string) error {
 	jsonMode := false
-	for _, a := range args {
-		if a == "--json" || a == "-j" || a == "--json=true" {
+
+	// Use lenient target parsing — unknown flags (like --json) are preserved
+	// in rest, not rejected.
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+
+	// Check rest for config-specific flags.
+	for _, a := range rest {
+		switch a {
+		case "--json", "-j", "--json=true":
 			jsonMode = true
+		default:
+			return fmt.Errorf("unknown argument: %s", a)
 		}
 	}
 
-	resp, err := dialControlSocket(controlRequest{Cmd: "status"})
+	var resp controlResponse
+	hasSelector := t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != ""
+	if hasSelector {
+		// Explicit target flags — resolve via provider discovery.
+		p, err := selectTarget(Discover(), t)
+		if err != nil {
+			return err
+		}
+		if p.StateDir == "" {
+			return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+		}
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		resp, err = sendSocketRequest(sockPath, controlRequest{Cmd: "status"})
+	} else {
+		// No target flags — use default socket path.
+		resp, err = dialControlSocket(controlRequest{Cmd: "status"})
+	}
 	if err != nil {
 		return err
 	}
@@ -95,17 +125,17 @@ func runConfig(out io.Writer, args []string) error {
 		}
 		rows = append(rows, row)
 
-		if len(row.setting) > wSetting {
-			wSetting = len(row.setting)
+		if rw := utf8.RuneCountInString(row.setting); rw > wSetting {
+			wSetting = rw
 		}
-		if len(row.value) > wValue {
-			wValue = len(row.value)
+		if rw := utf8.RuneCountInString(row.value); rw > wValue {
+			wValue = rw
 		}
-		if len(row.source) > wSource {
-			wSource = len(row.source)
+		if rw := utf8.RuneCountInString(row.source); rw > wSource {
+			wSource = rw
 		}
-		if len(row.since) > wSince {
-			wSince = len(row.since)
+		if rw := utf8.RuneCountInString(row.since); rw > wSince {
+			wSince = rw
 		}
 	}
 

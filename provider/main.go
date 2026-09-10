@@ -1604,7 +1604,7 @@ func runEarningWindows(ctx context.Context) {
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
-			tlog("🔐 [pqe] all-time (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
+			tlog("🔐 [pqe] all-time: pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {

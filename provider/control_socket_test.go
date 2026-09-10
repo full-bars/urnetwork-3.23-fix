@@ -885,8 +885,14 @@ func TestStatusCommand_EmptyState(t *testing.T) {
 	if statusResp.Error != "" {
 		t.Errorf("expected no error on empty state status, got %q", statusResp.Error)
 	}
-	if len(statusResp.Settings) != 0 {
-		t.Errorf("expected 0 settings on empty state, got %d", len(statusResp.Settings))
+	if len(statusResp.Settings) != len(controlKeys) {
+		t.Errorf("expected %d settings on empty state (all controlKeys with defaults), got %d", len(controlKeys), len(statusResp.Settings))
+	}
+	// All settings should have SourceDefault on empty state.
+	for k, info := range statusResp.Settings {
+		if info.Source != string(SourceDefault) && info.Source != string(SourceEnv) {
+			t.Errorf("empty state key %q: expected source default/env, got %q", k, info.Source)
+		}
 	}
 }
 
