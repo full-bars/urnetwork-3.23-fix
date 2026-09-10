@@ -33,17 +33,21 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd   string `json:"cmd"` // "set", "clear", or "get"
-	Key   string `json:"key"`
-	Value string `json:"value,omitempty"`
+	Cmd    string `json:"cmd"` // "set", "clear", "get", or "history"
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Limit  int    `json:"limit,omitempty"`  // for "history" command
+	Cursor string `json:"cursor,omitempty"` // for "history" command
 }
 
 type controlResponse struct {
-	OK           bool   `json:"ok"`
-	Value        string `json:"value,omitempty"`
-	Found        bool   `json:"found,omitempty"`
-	Error        string `json:"error,omitempty"`
-	NeedsRestart bool   `json:"needs_restart,omitempty"`
+	OK           bool           `json:"ok"`
+	Value        string         `json:"value,omitempty"`
+	Found        bool           `json:"found,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	NeedsRestart bool           `json:"needs_restart,omitempty"`
+	Entries      []CommandAudit `json:"entries,omitempty"`
+	NextCursor   string         `json:"next_cursor,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -329,6 +333,14 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// only visible in the CLI, and nothing in the provider's own log
 		// shows the change was registered.
 		tlog("⚙️ [control] set %s=%s (was %s)\n", req.Key, req.Value, formerValue(oldValue, hadOld))
+		// Record audit entry
+		recordAndPersist(CommandAudit{
+			Timestamp: time.Now(),
+			Cmd:       req.Cmd,
+			Key:       req.Key,
+			Value:     req.Value,
+			OK:        true,
+		})
 		return controlResponse{OK: true, NeedsRestart: needsRestart(req.Key)}
 
 	case "clear":
@@ -357,7 +369,26 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 		}
 		tlog("⚙️ [control] cleared %s (was %s)\n", req.Key, formerValue(oldValue, hadOld))
+		// Record audit entry
+		recordAndPersist(CommandAudit{
+			Timestamp: time.Now(),
+			Cmd:       req.Cmd,
+			Key:       req.Key,
+			Value:     oldValue,
+			OK:        true,
+		})
 		return controlResponse{OK: true, NeedsRestart: !liveCleared}
+
+	case "history":
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		entries, nextCursor := globalAuditRing.Entries(limit, req.Cursor)
+		return controlResponse{OK: true, Entries: entries, NextCursor: nextCursor}
 
 	default:
 		return controlResponse{OK: false, Error: fmt.Sprintf("unknown command %q", req.Cmd)}

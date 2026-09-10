@@ -2790,6 +2790,7 @@ func provide(opts docopt.Opts) {
 	mergePendingOverrides(globalControlState)
 	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
+	initAuditRing()
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error
@@ -3871,6 +3872,7 @@ func provide(opts docopt.Opts) {
 	closeDohCache()
 	flushRetentionEvents()
 	FlushPersistentErrors()
+	forceAuditPersist()
 	if metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
