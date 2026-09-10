@@ -18,8 +18,8 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", or "history"
-	Key    string `json:"key"`
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
+	Key    string `json:"key,omitempty"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
@@ -35,15 +35,25 @@ type AuditEntry struct {
 	OK        bool   `json:"ok"`
 }
 
+// SettingInfo is the per-key detail returned by the "status" command.
+type SettingInfo struct {
+	Value  string `json:"value"`
+	Source string `json:"source"`
+	SetAt  string `json:"set_at,omitempty"`
+}
+
+
 // controlResponse is one line response from the control socket.
 type controlResponse struct {
-	OK           bool         `json:"ok"`
-	Value        string       `json:"value,omitempty"`
-	Found        bool         `json:"found,omitempty"`
-	Error        string       `json:"error,omitempty"`
-	NeedsRestart bool         `json:"needs_restart,omitempty"`
-	Entries      []AuditEntry `json:"entries,omitempty"`
-	NextCursor   string       `json:"next_cursor,omitempty"`
+	OK           bool                   `json:"ok"`
+	Value        string                 `json:"value,omitempty"`
+	Found        bool                   `json:"found,omitempty"`
+	Error        string                 `json:"error,omitempty"`
+	NeedsRestart bool                   `json:"needs_restart,omitempty"`
+	Entries      []AuditEntry           `json:"entries,omitempty"`
+	NextCursor   string                 `json:"next_cursor,omitempty"`
+	Settings     map[string]SettingInfo `json:"settings,omitempty"`
+	Raw          []byte                 `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -212,10 +222,36 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 		return controlResponse{}, err
 	}
 	var resp controlResponse
-	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&resp); err != nil {
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
 		return controlResponse{}, err
 	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return controlResponse{}, err
+	}
+	resp.Raw = line
 	return resp, nil
+}
+
+// controlSocketPath returns ~/.urnetwork/provider.sock — the default Unix
+// domain socket path for the provider control plane.
+func controlSocketPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "provider.sock"), nil
+}
+
+// dialControlSocket connects to the provider's control socket
+// (~/.urnetwork/provider.sock), sends the given request, and decodes the response.
+func dialControlSocket(req controlRequest) (controlResponse, error) {
+	sockPath, err := controlSocketPath()
+	if err != nil {
+		return controlResponse{}, err
+	}
+	return sendSocketRequest(sockPath, req)
 }
 
 // controlSocketReachable reports whether the provider's control socket

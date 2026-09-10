@@ -85,6 +85,7 @@ func TestEveryToolsCommandHelpIsPerCommand(t *testing.T) {
 		{"auto-update", "auto-update"},
 		{"auto-start", "auto-start"},
 		{"self-heal", "self-heal"},
+		{"config", "config"},
 	}
 	for _, c := range cmds {
 		checkHelp(t, Run, c.name, []string{c.name}, c.token)

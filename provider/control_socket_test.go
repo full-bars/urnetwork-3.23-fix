@@ -829,3 +829,107 @@ func TestEveryControlKeyClassified(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusCommand(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	// Set values via socket
+	resp, err := dialControlSocket(controlRequest{Cmd: "set", Key: "node_name", Value: "nyc-1"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("set response: %+v", resp)
+	}
+
+	resp, err = dialControlSocket(controlRequest{Cmd: "set", Key: "fast_auth", Value: "on"})
+	if err != nil {
+		t.Fatalf("dial set: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("set response: %+v", resp)
+	}
+
+	// Request status
+	statusResp, err := dialControlSocket(controlRequest{Cmd: "status"})
+	if err != nil {
+		t.Fatalf("dial status: %v", err)
+	}
+	if !statusResp.OK {
+		t.Fatalf("status response: %+v", statusResp)
+	}
+	if statusResp.Settings == nil {
+		t.Fatalf("expected settings map in status response, got nil")
+	}
+
+	nodeInfo, ok := statusResp.Settings["node_name"]
+	if !ok {
+		t.Fatalf("expected node_name in settings map")
+	}
+	if nodeInfo.Value != "nyc-1" {
+		t.Errorf("node_name value = %q, want nyc-1", nodeInfo.Value)
+	}
+	if nodeInfo.Source != string(SourceSocket) {
+		t.Errorf("node_name source = %q, want %q", nodeInfo.Source, SourceSocket)
+	}
+	if nodeInfo.SetAt == nil || nodeInfo.SetAt.IsZero() {
+		t.Errorf("node_name set_at should be set")
+	}
+
+	authInfo, ok := statusResp.Settings["fast_auth"]
+	if !ok {
+		t.Fatalf("expected fast_auth in settings map")
+	}
+	if authInfo.Value != "on" {
+		t.Errorf("fast_auth value = %q, want on", authInfo.Value)
+	}
+	if authInfo.Source != string(SourceSocket) {
+		t.Errorf("fast_auth source = %q, want %q", authInfo.Source, SourceSocket)
+	}
+	if authInfo.SetAt == nil || authInfo.SetAt.IsZero() {
+		t.Errorf("fast_auth set_at should be set")
+	}
+}
+
+func TestStatusCommand_EmptyState(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	statusResp, err := dialControlSocket(controlRequest{Cmd: "status"})
+	if err != nil {
+		t.Fatalf("dial status: %v", err)
+	}
+	if !statusResp.OK {
+		t.Fatalf("status response on empty state: %+v", statusResp)
+	}
+	if statusResp.Error != "" {
+		t.Errorf("expected no error on empty state status, got %q", statusResp.Error)
+	}
+	if len(statusResp.Settings) != len(controlKeys) {
+		t.Errorf("expected %d settings on empty state (all controlKeys with defaults), got %d", len(controlKeys), len(statusResp.Settings))
+	}
+	// All settings should have SourceDefault on empty state.
+	for k, info := range statusResp.Settings {
+		if info.Source != string(SourceDefault) && info.Source != string(SourceEnv) {
+			t.Errorf("empty state key %q: expected source default/env, got %q", k, info.Source)
+		}
+	}
+}
+

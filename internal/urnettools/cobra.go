@@ -44,6 +44,7 @@ Performance & Tuning:
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
   fast-auth [on|off]      Bypass auth rate limiter without restart
+  config [--json]         Show all provider settings with source and age
 
 Session & Identity:
   session save <file>     Export identity + proxy state (encrypted)
@@ -187,6 +188,7 @@ func buildRootCmd() *cobra.Command {
 		newMetricsCmd(),
 		newProfileCmd(),
 		newDashboardCmd(),
+		newConfigCmd(),
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever

@@ -1615,7 +1615,7 @@ func runEarningWindows(ctx context.Context) {
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
-			tlog("🔐 [pqe] all-time (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
+			tlog("🔐 [pqe] all-time: pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -3440,7 +3440,7 @@ func provide(opts docopt.Opts) {
 					// swapping the pointer out from under them is an
 					// unsynchronized race distinct from anything s.mu
 					// protects.
-					globalControlState.replaceAll(reloaded.snapshot())
+					globalControlState.replaceAllWithMeta(reloaded.values, reloaded.meta)
 				}
 				mergePendingOverrides(globalControlState)
 				applyPersistedRuntimeTuning(globalControlState)

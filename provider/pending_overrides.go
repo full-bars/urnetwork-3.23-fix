@@ -97,7 +97,7 @@ func mergePendingOverrides(state *controlState) {
 		var applyErr error
 		switch op.Op {
 		case "set":
-			applyErr = state.set(op.Key, op.Value)
+			applyErr = state.setWithValue(op.Key, op.Value, SourcePending)
 		case "clear":
 			applyErr = state.clear(op.Key)
 		default:
