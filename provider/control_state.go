@@ -74,6 +74,7 @@ var controlKeys = map[string]bool{
 	"gogc":                        true,
 	"profile":                     true,
 	"ramlogs":                     true,
+	"metrics":                     true,
 }
 
 // globalControlState is the single provider-wide instance. Set by

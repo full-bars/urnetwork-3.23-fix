@@ -18,17 +18,32 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd   string `json:"cmd"` // "set", "clear", or "get"
-	Key   string `json:"key"`
-	Value string `json:"value,omitempty"`
+	Cmd    string `json:"cmd"` // "set", "clear", "get", or "history"
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// AuditEntry mirrors the provider's CommandAudit for JSON wire format.
+type AuditEntry struct {
+	Timestamp int64  `json:"timestamp"`
+	Cmd       string `json:"cmd"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Error     string `json:"error,omitempty"`
+	OK        bool   `json:"ok"`
 }
 
 // controlResponse is one line response from the control socket.
 type controlResponse struct {
-	OK    bool   `json:"ok"`
-	Value string `json:"value,omitempty"`
-	Found bool   `json:"found,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK           bool         `json:"ok"`
+	Value        string       `json:"value,omitempty"`
+	Found        bool         `json:"found,omitempty"`
+	Error        string       `json:"error,omitempty"`
+	NeedsRestart bool         `json:"needs_restart,omitempty"`
+	Entries      []AuditEntry `json:"entries,omitempty"`
+	NextCursor   string       `json:"next_cursor,omitempty"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -304,23 +319,23 @@ func removeLegacyFile(stateDir, canonicalKey string) {
 }
 
 // applyControlOverride applies op ("set" or "clear") for key on provider p.
-// Returns (appliedLive, error).
-func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool, error) {
+// Returns (appliedLive, needsRestart, error).
+func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool, bool, error) {
 	canonicalKey, ok := canonicalControlKey(key)
 	if !ok {
-		return false, fmt.Errorf("unknown key %q (see 'urnet-tools set help')", key)
+		return false, false, fmt.Errorf("unknown key %q (see 'urnet-tools set help')", key)
 	}
 	if p.StateDir == "" {
-		return false, fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+		return false, false, fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 	if op == "set" {
 		if err := validateControlValue(canonicalKey, value); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 
 	if dryRun {
-		return false, nil
+		return false, false, nil
 	}
 
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
@@ -332,21 +347,21 @@ func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool,
 
 	if dialErr == nil {
 		if !resp.OK {
-			return false, fmt.Errorf("%s", resp.Error)
+			return false, false, fmt.Errorf("%s", resp.Error)
 		}
 		removeLegacyFile(p.StateDir, canonicalKey)
-		return true, nil
+		return true, resp.NeedsRestart, nil
 	}
 
 	if isSocketUnavailable(dialErr) {
 		if err := queuePendingOverride(p.StateDir, op, canonicalKey, value); err != nil {
-			return false, fmt.Errorf("queue pending override: %w", err)
+			return false, false, fmt.Errorf("queue pending override: %w", err)
 		}
 		removeLegacyFile(p.StateDir, canonicalKey)
-		return false, nil
+		return false, false, nil
 	}
 
-	return false, fmt.Errorf("control socket %s: %w", sockPath, dialErr)
+	return false, false, fmt.Errorf("control socket %s: %w", sockPath, dialErr)
 }
 
 // queryControlOverride retrieves the current value for canonicalKey on provider p. Checks the socket first, then pending_overrides.json, then legacy files.
