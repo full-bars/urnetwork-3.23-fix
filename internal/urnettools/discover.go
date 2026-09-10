@@ -162,7 +162,7 @@ func Discover() []Provider {
 // provider-dashboard{,-py,-rs}.service (unrelated monitoring services, not
 // providers) had them swept into discovery, flooding the same-user
 // candidate list and permanently blocking narrowToAccessible's auto-pick.
-var nonProviderSiblingSuffixes = []string{"hub", "update", "dashboard"}
+var nonProviderSiblingSuffixes = []string{"hub", "update", "sentinel", "dashboard"}
 
 // isProviderArg reports whether an executable path/name is a known provider
 // binary. Matches on basename to be resilient to custom install paths, and
