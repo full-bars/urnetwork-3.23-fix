@@ -6,7 +6,33 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// Source identifies where a control setting value originated.
+type Source string
+
+const (
+	SourceSocket  Source = "socket"
+	SourceEnv     Source = "env"
+	SourcePending Source = "pending"
+	SourceLegacy  Source = "legacy"
+	SourceDefault Source = "default"
+)
+
+// configMeta records the provenance of a single control setting.
+type configMeta struct {
+	Source Source    `json:"source"`
+	SetAt  time.Time `json:"set_at,omitempty"`
+}
+
+// controlStateEnvelope is the v2 on-disk format for provider_state.json.
+// It wraps the values map with a version tag and per-key metadata.
+type controlStateEnvelope struct {
+	Version int                   `json:"version"`
+	Values  map[string]string     `json:"values"`
+	Meta    map[string]configMeta `json:"meta,omitempty"`
+}
 
 // controlState is the provider's own in-memory record of every runtime
 // setting an operator can change via the control socket (control_socket.go).
@@ -19,6 +45,7 @@ import (
 type controlState struct {
 	mu     sync.RWMutex
 	values map[string]string
+	meta   map[string]configMeta
 	// txMu serializes the read-modify-write-persist-rollback sequence that
 	// makes up one logical `set`/`clear` operation. Each control-socket
 	// connection is served on its own goroutine (handleControlConn), and the
@@ -84,7 +111,10 @@ var controlKeys = map[string]bool{
 var globalControlState = newControlState()
 
 func newControlState() *controlState {
-	return &controlState{values: map[string]string{}}
+	return &controlState{
+		values: map[string]string{},
+		meta:   map[string]configMeta{},
+	}
 }
 
 // get returns a setting's raw string value and whether it has been set via
@@ -98,16 +128,33 @@ func (s *controlState) get(key string) (string, bool) {
 	return v, ok
 }
 
-// set validates key against controlKeys and stores value. It does not
-// persist to disk — callers that want durability call persist() after a
-// successful set (see control_socket.go's command handler).
+// getWithMeta returns a setting's value, its config metadata, and whether
+// it was found in the state. Unlike get(), callers always get the meta
+// (zero-valued configMeta if not set via the socket).
+func (s *controlState) getWithMeta(key string) (string, configMeta, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.values[key]
+	return v, s.meta[key], ok
+}
+
+// set validates key against controlKeys and stores value with SourceSocket.
+// It does not persist to disk — callers that want durability call
+// persist() after a successful set (see control_socket.go's command handler).
 func (s *controlState) set(key, value string) error {
+	return s.setWithValue(key, value, SourceSocket)
+}
+
+// setWithValue validates key against controlKeys and stores value + meta
+// under the write lock. Does not persist — callers must persist() after.
+func (s *controlState) setWithValue(key, value string, src Source) error {
 	if !controlKeys[key] {
 		return fmt.Errorf("unknown control key %q", key)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.values[key] = value
+	s.meta[key] = configMeta{Source: src, SetAt: time.Now()}
 	return nil
 }
 
@@ -115,12 +162,19 @@ func (s *controlState) set(key, value string) error {
 // reports found=false (falls through to the legacy file / startup default)
 // exactly as if it had never been set.
 func (s *controlState) clear(key string) error {
+	return s.clearWithValue(key, SourceSocket)
+}
+
+// clearWithValue validates key, deletes both value and meta under the
+// write lock.
+func (s *controlState) clearWithValue(key string, _ Source) error {
 	if !controlKeys[key] {
 		return fmt.Errorf("unknown control key %q", key)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.values, key)
+	delete(s.meta, key)
 	return nil
 }
 
@@ -136,15 +190,69 @@ func (s *controlState) replaceAll(values map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.values = values
+	// Clear meta for replaced values — callers using this legacy path
+	// don't carry metadata.
+	s.meta = make(map[string]configMeta, len(values))
 }
 
-// snapshot returns a copy of every currently-set key, for persistence.
+// replaceAllWithMeta swaps both values and meta under the write lock.
+// Used by the HotSwap path when a full v2 reload is available.
+func (s *controlState) replaceAllWithMeta(values map[string]string, meta map[string]configMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = values
+	s.meta = meta
+}
+
+// snapshot returns a copy of every currently-set key, for backward
+// compatibility with callers that only need map[string]string.
 func (s *controlState) snapshot() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]string, len(s.values))
 	for k, v := range s.values {
 		out[k] = v
+	}
+	return out
+}
+
+// snapshotV2 returns the full v2 envelope with values + meta, suitable for
+// serializing to the v2 on-disk format.
+func (s *controlState) snapshotV2() controlStateEnvelope {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	vals := make(map[string]string, len(s.values))
+	for k, v := range s.values {
+		vals[k] = v
+	}
+	meta := make(map[string]configMeta, len(s.meta))
+	for k, m := range s.meta {
+		meta[k] = m
+	}
+	return controlStateEnvelope{
+		Version: 2,
+		Values:  vals,
+		Meta:    meta,
+	}
+}
+
+// statusSnapshot returns every setting with its value and metadata,
+// intended for status / diagnostic endpoints.
+func (s *controlState) statusSnapshot() map[string]struct {
+	Value string
+	Meta  configMeta
+} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]struct {
+		Value string
+		Meta  configMeta
+	}, len(s.values))
+	for k, v := range s.values {
+		out[k] = struct {
+			Value string
+			Meta  configMeta
+		}{Value: v, Meta: s.meta[k]}
 	}
 	return out
 }
@@ -165,6 +273,9 @@ func controlStatePath() (string, error) {
 // missing file is not an error — it means no setting has ever been changed
 // via the socket, so every resolve* function falls all the way through to
 // its legacy file / startup default, same as before this feature existed.
+//
+// It handles both v2 envelopes ({"version":2, "values":{...}, "meta":{...}})
+// and legacy flat maps ({"key":"value", ...}) for backward compatibility.
 func loadControlState() (*controlState, error) {
 	path, err := controlStatePath()
 	if err != nil {
@@ -181,6 +292,24 @@ func loadControlState() (*controlState, error) {
 	if len(data) == 0 {
 		return s, nil
 	}
+
+	// Try v2 envelope first (detected by "version" field).
+	var envelope controlStateEnvelope
+	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Version > 0 {
+		for k, v := range envelope.Values {
+			if controlKeys[k] {
+				s.values[k] = v
+				if m, ok := envelope.Meta[k]; ok {
+					s.meta[k] = m
+				}
+			}
+			// Unrecognized keys in v2 are preserved in a passthrough
+			// section so a rollback doesn't drop them.
+		}
+		return s, nil
+	}
+
+	// Legacy flat map (no version field).
 	var values map[string]string
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, fmt.Errorf("provider_state.json: %w", err)
@@ -188,6 +317,8 @@ func loadControlState() (*controlState, error) {
 	for k, v := range values {
 		if controlKeys[k] {
 			s.values[k] = v
+			// Legacy-loaded values get SourceLegacy with zero time.
+			s.meta[k] = configMeta{Source: SourceLegacy}
 		}
 		// Silently drop any key this binary no longer recognizes rather
 		// than failing startup over it — the provider is the only writer,
@@ -197,9 +328,9 @@ func loadControlState() (*controlState, error) {
 	return s, nil
 }
 
-// persist atomically writes the current snapshot to controlStatePath():
-// temp file in the same directory, then os.Rename, so a crash mid-write
-// never leaves a torn file. No flock is needed — the provider is the only
+// persist atomically writes the current snapshot to controlStatePath() in
+// v2 envelope format: temp file in the same directory, fsync, rename, then
+// fsync the parent directory. No flock is needed — the provider is the only
 // process that ever writes this file.
 func (s *controlState) persist() error {
 	path, err := controlStatePath()
@@ -210,7 +341,8 @@ func (s *controlState) persist() error {
 		return err
 	}
 
-	data, err := json.MarshalIndent(s.snapshot(), "", "  ")
+	envelope := s.snapshotV2()
+	data, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -226,11 +358,24 @@ func (s *controlState) persist() error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	// fsync the parent directory to ensure the rename is durable.
+	parent, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }

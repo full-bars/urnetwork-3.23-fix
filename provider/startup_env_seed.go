@@ -17,6 +17,14 @@ import (
 // even reached, initGlog() has already made its one-shot, unrepeatable
 // decision from whatever was in the environment.
 //
+// IMPORTANT — env source detection: any future "detect which source set
+// this env var" logic (file vs socket vs systemd vs default) MUST run
+// BEFORE this function. seedEnvFromControlState calls os.Setenv, which
+// overwrites whatever the real source was; after it runs, the provider
+// can no longer tell whether URNETWORK_PROFILE came from an explicit
+// operator override, a systemd drop-in, or this seeding. Source
+// classification must snapshot the original env before the seed writes.
+//
 // This intentionally does NOT call the real mergePendingOverrides() (which
 // persists and deletes pending_overrides.json) — that stays exactly where
 // it is, inside provide(), as the single owner of that file's lifecycle.
