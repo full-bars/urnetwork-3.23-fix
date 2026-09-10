@@ -886,20 +886,31 @@ func main() {
 	// If in auto mode and RAM logs aren't already explicitly on, we audit the disk speed
 	// BEFORE initializing the logger. This allows us to auto-enable it.
 	autoRamLogTriggered := false
+	finishAudit := bannerPhase("System audit")
 	if profile == "auto" && isLongRunningSubcommand() {
 		manualRamLogs := (ramlogs == "1")
 		slowDisk, _ := RunStartupAudit()
 		if slowDisk && !manualRamLogs {
-			tlog("[audit] Disk speed is suboptimal. Auto-enabling RAM logs for performance.\n")
+			finishAudit("slow disk → auto RAM logs", "⚠")
 			os.Setenv("URNETWORK_RAMLOGS", "1")
 			autoRamLogTriggered = true
+		} else {
+			detail := "disk OK"
+			if slowDisk {
+				detail = "slow disk (RAM logs manually set)"
+			}
+			finishAudit(detail)
 		}
 	} else if isLongRunningSubcommand() {
-		// Even if not in auto, run audit for visibility
 		RunStartupAudit()
+		finishAudit("manual profile")
+	} else {
+		finishAudit("not long-running")
 	}
 
+	finishInit := bannerPhase("Logger init")
 	initGlog()
+	finishInit("glog + stderr")
 
 	// If auto-tuner enabled RAM logs, perform the countdown handover now.
 	// Only for the long-running provide process — see isLongRunningSubcommand.
@@ -2720,9 +2731,10 @@ func provide(opts docopt.Opts) {
 	}
 
 	if !isHotSwapCandidate {
-		tlog("❤️ [startup] provider version=%s\n", RequireVersion())
+		finishIdentity := bannerPhase("Identity")
 		host, _ := os.Hostname()
 		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+		finishIdentity(RequireVersion())
 	} else {
 		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
 	}
@@ -2778,10 +2790,13 @@ func provide(opts docopt.Opts) {
 	// provider_state.json; a load failure here just means we start with no
 	// socket-set overrides (every resolve* function falls back to its legacy
 	// file / startup default), not a fatal error.
+	finishControl := bannerPhase("Control state")
 	if loaded, err := loadControlState(); err != nil {
 		tlog("[control] failed to load provider_state.json, starting with no socket-set overrides: %s\n", err)
+		finishControl("loaded (no overrides)", "⚠")
 	} else {
 		globalControlState = loaded
+		finishControl("loaded")
 	}
 	// Apply anything urnet-tools queued while this provider wasn't running
 	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
@@ -3699,8 +3714,9 @@ func provide(opts docopt.Opts) {
 	// final (post prune/rebuild above).
 	setConfiguredProxyCount(len(allProxySettings))
 
+	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {
-		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
+		finishProxy(fmt.Sprintf("%d servers", len(allProxySettings)))
 
 		for _, proxySettings := range allProxySettings {
 			stableID := resolveProxyID(proxyState, proxySettings.Address)
@@ -3755,6 +3771,8 @@ func provide(opts docopt.Opts) {
 				provideWithProxy(proxyCtx, proxySettings, false, isURLSourced)
 			})
 		}
+	} else {
+		finishProxy("no proxies configured", "⚠")
 	}
 
 	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
@@ -3822,11 +3840,7 @@ func provide(opts docopt.Opts) {
 		}()
 	}
 	if 0 < port {
-		fmt.Printf(
-			"Provider %s started. Status on *:%d\n",
-			RequireVersion(),
-			port,
-		)
+		tlog("[startup] status server listening on :%d\n", port)
 		statusServer := &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: &Status{},
@@ -3854,11 +3868,10 @@ func provide(opts docopt.Opts) {
 			}
 		}()
 	} else {
-		fmt.Printf(
-			"Provider %s started\n",
-			RequireVersion(),
-		)
+		tlog("[startup] status server (no port)\n")
 	}
+
+	printReadyUnlessCondensed()
 
 	wg.Wait()
 

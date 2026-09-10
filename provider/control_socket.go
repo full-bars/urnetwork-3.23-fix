@@ -39,6 +39,7 @@ type controlRequest struct {
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
 	Cursor string `json:"cursor,omitempty"` // for "history" command
+	V      int    `json:"v,omitempty"`      // protocol version; 0 = legacy
 }
 
 // settingInfo is the per-key detail returned by the "status" command.
@@ -57,6 +58,7 @@ type controlResponse struct {
 	Entries      []CommandAudit         `json:"entries,omitempty"`
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]settingInfo `json:"settings,omitempty"`
+	Version      int                    `json:"v,omitempty"` // protocol version echoed back
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -143,15 +145,62 @@ func removeStaleSocket(path string) error {
 func handleControlConn(conn net.Conn, state *controlState) {
 	defer conn.Close()
 
+	// 1. Read deadline: 5 seconds per line — prevents slowloris-style
+	//    connections that hold the socket open without sending data.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// 2. Peer credential check (Linux): verify connecting process UID
+	//    matches the provider's UID. Defense-in-depth alongside 0600 perms.
+	if uc, ok := conn.(*net.UnixConn); ok {
+		if err := verifyPeerCredentials(uc); err != nil {
+			tlog("🔒 [control] rejected connection: %s\n", err)
+			return
+		}
+	}
+
 	scanner := bufio.NewScanner(conn)
+	// 3. Max request size: 64 KiB per line. The largest legitimate
+	//    request is a history query with a long cursor — well under 1 KiB.
+	scanner.Buffer(make([]byte, 0, 4*1024), 64*1024)
 	enc := json.NewEncoder(conn)
 	for scanner.Scan() {
+		// Reset deadline for each line on a keep-alive connection.
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+		raw := scanner.Bytes()
+		// 4. Max value size: 4 KiB for the value field alone.
+		if len(raw) > 64*1024 {
+			enc.Encode(controlResponse{OK: false, Error: "request too large (max 64 KiB)"})
+			continue
+		}
+
 		var req controlRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+		if err := json.Unmarshal(raw, &req); err != nil {
 			enc.Encode(controlResponse{OK: false, Error: "invalid request: " + err.Error()})
 			continue
 		}
-		enc.Encode(handleControlRequest(state, req))
+		// 5. Max value size: 4 KiB for set values.
+		if req.Cmd == "set" && len(req.Value) > 4*1024 {
+			enc.Encode(controlResponse{OK: false, Error: "value too large (max 4 KiB)"})
+			continue
+		}
+
+		// 6. Version negotiation: v=1 is current; v=0 is legacy (accepted).
+		if req.V > 1 {
+			enc.Encode(controlResponse{
+				OK:      false,
+				Error:   "unsupported_version",
+				Version: 1,
+			})
+			continue
+		}
+
+		resp := handleControlRequest(state, req)
+		// 7. Echo version in response for v>=1 requests.
+		if req.V >= 1 {
+			resp.Version = 1
+		}
+		enc.Encode(resp)
 	}
 }
 
@@ -250,9 +299,9 @@ func validateControlValue(key, value string) error {
 		}
 	case "profile":
 		switch valLower {
-		case "auto", "eco", "lowmem", "turbo-v4", "turbo-v8":
+		case "auto", "eco", "lowmem", "turbo-v4", "turbo-v8", "v4", "v8":
 		default:
-			return fmt.Errorf("profile: must be auto, eco, lowmem, turbo-v4, or turbo-v8 (got %q)", value)
+			return fmt.Errorf("profile: must be auto, eco, lowmem, turbo-v4, turbo-v8, v4, or v8 (got %q)", value)
 		}
 	case "gomemlimit":
 		if _, err := connect.ParseByteCount(value); err != nil {
@@ -277,6 +326,11 @@ func validateControlValue(key, value string) error {
 	case "node_name":
 		if value == "" {
 			return fmt.Errorf("node_name: must not be empty")
+		}
+		for _, c := range value {
+			if c < 32 || c > 126 {
+				return fmt.Errorf("node_name: must be printable ASCII (got 0x%02x)", c)
+			}
 		}
 	case "report_url":
 		if value != "" {
@@ -332,6 +386,16 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// than persisting garbage that breaks on next restart.
 		if err := validateControlValue(req.Key, req.Value); err != nil {
 			return controlResponse{OK: false, Error: err.Error()}
+		}
+		// Canonicalize profile aliases — v4/v8 pass validation but must
+		// be stored as turbo-v4/turbo-v8 so startup code understands them.
+		if req.Key == "profile" {
+			switch strings.ToLower(req.Value) {
+			case "v4":
+				req.Value = "turbo-v4"
+			case "v8":
+				req.Value = "turbo-v8"
+			}
 		}
 		// Persist-then-commit would be safer in the abstract, but persist()
 		// needs the full snapshot including this change, so: apply, try to

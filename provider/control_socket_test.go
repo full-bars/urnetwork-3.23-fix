@@ -506,6 +506,8 @@ func TestValidateControlValue(t *testing.T) {
 		{"profile", "eco", false},
 		{"profile", "lowmem", false},
 		{"profile", "turbo-v8", false},
+		{"profile", "v4", false},
+		{"profile", "v8", false},
 		{"ramlogs", "on", false},
 		{"ramlogs", "off", false},
 		{"fast_auth", "on", false},
@@ -538,6 +540,7 @@ func TestValidateControlValue(t *testing.T) {
 
 		// invalid values
 		{"node_name", "", true},
+		{"node_name", "has\x00null", true},
 		{"profile", "turbo", true},
 		{"profile", "turbo-v6", true},
 		{"ramlogs", "maybe", true},
@@ -775,6 +778,40 @@ func TestGogcOff_AppliesLive(t *testing.T) {
 // TestEveryControlKeyClassified verifies that every key in controlKeys
 // is either in liveEffectKeys (no restart needed) or explicitly classified
 // as restart-only. This catches accidental omissions when new keys are added.
+// TestProfileAliasCanonicalization verifies that v4/v8 are accepted at the
+// socket level but stored as turbo-v4/turbo-v8 in provider_state.json.
+func TestProfileAliasCanonicalization(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	aliases := map[string]string{
+		"v4": "turbo-v4",
+		"v8": "turbo-v8",
+	}
+	for alias, canonical := range aliases {
+		resp, err := dialControlSocket(controlRequest{Cmd: "set", Key: "profile", Value: alias})
+		if err != nil {
+			t.Fatalf("set profile=%s: %v", alias, err)
+		}
+		if !resp.OK {
+			t.Fatalf("profile=%s should be accepted: %s", alias, resp.Error)
+		}
+		// Verify persisted value is canonical
+		val, found := globalControlState.get("profile")
+		if !found || val != canonical {
+			t.Errorf("profile=%s should persist as %q, got %q (found=%v)", alias, canonical, val, found)
+		}
+	}
+}
+
 func TestEveryControlKeyClassified(t *testing.T) {
 	restartOnly := map[string]bool{
 		"profile": true, // initGlog/SHMLogger one-shot at startup
