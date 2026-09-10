@@ -242,9 +242,9 @@ func validateControlValue(key, value string) error {
 		}
 	case "profile":
 		switch valLower {
-		case "auto", "eco", "lowmem", "turbo-v4", "turbo-v8":
+		case "auto", "eco", "lowmem", "turbo-v4", "turbo-v8", "v4", "v8":
 		default:
-			return fmt.Errorf("profile: must be auto, eco, lowmem, turbo-v4, or turbo-v8 (got %q)", value)
+			return fmt.Errorf("profile: must be auto, eco, lowmem, turbo-v4, turbo-v8, v4, or v8 (got %q)", value)
 		}
 	case "gomemlimit":
 		if _, err := connect.ParseByteCount(value); err != nil {
@@ -269,6 +269,11 @@ func validateControlValue(key, value string) error {
 	case "node_name":
 		if value == "" {
 			return fmt.Errorf("node_name: must not be empty")
+		}
+		for _, c := range value {
+			if c < 32 || c > 126 {
+				return fmt.Errorf("node_name: must be printable ASCII (got 0x%02x)", c)
+			}
 		}
 	case "report_url":
 		if value != "" {
@@ -320,6 +325,16 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// than persisting garbage that breaks on next restart.
 		if err := validateControlValue(req.Key, req.Value); err != nil {
 			return controlResponse{OK: false, Error: err.Error()}
+		}
+		// Canonicalize profile aliases — v4/v8 pass validation but must
+		// be stored as turbo-v4/turbo-v8 so startup code understands them.
+		if req.Key == "profile" {
+			switch strings.ToLower(req.Value) {
+			case "v4":
+				req.Value = "turbo-v4"
+			case "v8":
+				req.Value = "turbo-v8"
+			}
 		}
 		// Persist-then-commit would be safer in the abstract, but persist()
 		// needs the full snapshot including this change, so: apply, try to
