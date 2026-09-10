@@ -39,6 +39,7 @@ type controlRequest struct {
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
 	Cursor string `json:"cursor,omitempty"` // for "history" command
+	V      int    `json:"v,omitempty"`      // protocol version; 0 = legacy
 }
 
 type controlResponse struct {
@@ -49,6 +50,7 @@ type controlResponse struct {
 	NeedsRestart bool           `json:"needs_restart,omitempty"`
 	Entries      []CommandAudit `json:"entries,omitempty"`
 	NextCursor   string         `json:"next_cursor,omitempty"`
+	Version      int            `json:"v,omitempty"` // protocol version echoed back
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -135,15 +137,62 @@ func removeStaleSocket(path string) error {
 func handleControlConn(conn net.Conn, state *controlState) {
 	defer conn.Close()
 
+	// 1. Read deadline: 5 seconds per line — prevents slowloris-style
+	//    connections that hold the socket open without sending data.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// 2. Peer credential check (Linux): verify connecting process UID
+	//    matches the provider's UID. Defense-in-depth alongside 0600 perms.
+	if uc, ok := conn.(*net.UnixConn); ok {
+		if err := verifyPeerCredentials(uc); err != nil {
+			tlog("🔒 [control] rejected connection: %s\n", err)
+			return
+		}
+	}
+
 	scanner := bufio.NewScanner(conn)
+	// 3. Max request size: 64 KiB per line. The largest legitimate
+	//    request is a history query with a long cursor — well under 1 KiB.
+	scanner.Buffer(make([]byte, 0, 4*1024), 64*1024)
 	enc := json.NewEncoder(conn)
 	for scanner.Scan() {
+		// Reset deadline for each line on a keep-alive connection.
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+		raw := scanner.Bytes()
+		// 4. Max value size: 4 KiB for the value field alone.
+		if len(raw) > 64*1024 {
+			enc.Encode(controlResponse{OK: false, Error: "request too large (max 64 KiB)"})
+			continue
+		}
+
 		var req controlRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+		if err := json.Unmarshal(raw, &req); err != nil {
 			enc.Encode(controlResponse{OK: false, Error: "invalid request: " + err.Error()})
 			continue
 		}
-		enc.Encode(handleControlRequest(state, req))
+		// 5. Max value size: 4 KiB for set values.
+		if req.Cmd == "set" && len(req.Value) > 4*1024 {
+			enc.Encode(controlResponse{OK: false, Error: "value too large (max 4 KiB)"})
+			continue
+		}
+
+		// 6. Version negotiation: v=1 is current; v=0 is legacy (accepted).
+		if req.V > 1 {
+			enc.Encode(controlResponse{
+				OK:      false,
+				Error:   "unsupported_version",
+				Version: 1,
+			})
+			continue
+		}
+
+		resp := handleControlRequest(state, req)
+		// 7. Echo version in response for v>=1 requests.
+		if req.V >= 1 {
+			resp.Version = 1
+		}
+		enc.Encode(resp)
 	}
 }
 
