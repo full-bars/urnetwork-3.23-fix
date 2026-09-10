@@ -418,7 +418,11 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, NeedsRestart: !liveCleared}
 
 	case "status":
-		raw := globalControlState.statusSnapshot()
+		st := state
+		if st == nil {
+			st = globalControlState
+		}
+		raw := st.statusSnapshot()
 		settings := make(map[string]settingInfo, len(raw))
 		for k, v := range raw {
 			si := settingInfo{Value: v.Value, Source: string(v.Meta.Source)}

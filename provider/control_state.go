@@ -46,6 +46,10 @@ type controlState struct {
 	mu     sync.RWMutex
 	values map[string]string
 	meta   map[string]configMeta
+	// passthrough preserves unrecognized keys from v2 envelopes across
+	// load -> persist round-trips so a rollback doesn't drop them.
+	passthroughValues map[string]string
+	passthroughMeta   map[string]configMeta
 	// txMu serializes the read-modify-write-persist-rollback sequence that
 	// makes up one logical `set`/`clear` operation. Each control-socket
 	// connection is served on its own goroutine (handleControlConn), and the
@@ -112,8 +116,10 @@ var globalControlState = newControlState()
 
 func newControlState() *controlState {
 	return &controlState{
-		values: map[string]string{},
-		meta:   map[string]configMeta{},
+		values:            map[string]string{},
+		meta:              map[string]configMeta{},
+		passthroughValues: map[string]string{},
+		passthroughMeta:   map[string]configMeta{},
 	}
 }
 
@@ -193,6 +199,8 @@ func (s *controlState) replaceAll(values map[string]string) {
 	// Clear meta for replaced values — callers using this legacy path
 	// don't carry metadata.
 	s.meta = make(map[string]configMeta, len(values))
+	s.passthroughValues = map[string]string{}
+	s.passthroughMeta = map[string]configMeta{}
 }
 
 // replaceAllWithMeta swaps both values and meta under the write lock.
@@ -202,6 +210,8 @@ func (s *controlState) replaceAllWithMeta(values map[string]string, meta map[str
 	defer s.mu.Unlock()
 	s.values = values
 	s.meta = meta
+	s.passthroughValues = map[string]string{}
+	s.passthroughMeta = map[string]configMeta{}
 }
 
 // snapshot returns a copy of every currently-set key, for backward
@@ -221,12 +231,18 @@ func (s *controlState) snapshot() map[string]string {
 func (s *controlState) snapshotV2() controlStateEnvelope {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	vals := make(map[string]string, len(s.values))
+	vals := make(map[string]string, len(s.values)+len(s.passthroughValues))
 	for k, v := range s.values {
 		vals[k] = v
 	}
-	meta := make(map[string]configMeta, len(s.meta))
+	for k, v := range s.passthroughValues {
+		vals[k] = v
+	}
+	meta := make(map[string]configMeta, len(s.meta)+len(s.passthroughMeta))
 	for k, m := range s.meta {
+		meta[k] = m
+	}
+	for k, m := range s.passthroughMeta {
 		meta[k] = m
 	}
 	return controlStateEnvelope{
@@ -302,9 +318,19 @@ func loadControlState() (*controlState, error) {
 				if m, ok := envelope.Meta[k]; ok {
 					s.meta[k] = m
 				}
+			} else {
+				// Unrecognized keys in v2 are preserved in a passthrough
+				// section so a rollback doesn't drop them.
+				s.passthroughValues[k] = v
+				if m, ok := envelope.Meta[k]; ok {
+					s.passthroughMeta[k] = m
+				}
 			}
-			// Unrecognized keys in v2 are preserved in a passthrough
-			// section so a rollback doesn't drop them.
+		}
+		for k, m := range envelope.Meta {
+			if !controlKeys[k] {
+				s.passthroughMeta[k] = m
+			}
 		}
 		return s, nil
 	}
