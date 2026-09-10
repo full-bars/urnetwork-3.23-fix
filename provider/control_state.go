@@ -216,8 +216,8 @@ func (s *controlState) replaceAllWithMeta(values map[string]string, meta map[str
 	defer s.mu.Unlock()
 	s.values = values
 	s.meta = meta
-	s.passthroughValues = map[string]string{}
-	s.passthroughMeta = map[string]configMeta{}
+	// Preserve passthrough maps — loadControlState already loaded them
+	// from disk; resetting here would drop forward-compatible keys.
 }
 
 // snapshot returns a copy of every currently-set key, for backward

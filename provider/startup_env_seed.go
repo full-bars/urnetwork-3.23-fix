@@ -46,7 +46,7 @@ func seedEnvFromControlState() {
 		// "version" field that fails to unmarshal into map[string]string,
 		// so we must try the envelope format first.
 		var envelope controlStateEnvelope
-		if json.Unmarshal(data, &envelope) == nil && envelope.Version > 0 {
+		if json.Unmarshal(data, &envelope) == nil && envelope.Version > 0 && envelope.Values != nil {
 			values = envelope.Values
 		} else {
 			// Decode into a temporary map first: json.Unmarshal can populate
