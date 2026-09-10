@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,9 +108,14 @@ type persistentErrors struct {
 	mu     sync.Mutex
 	counts map[string]uint64
 	path   string
+	dirty  uint64 // new errors since last flush
 }
 
 var persistentErrStore *persistentErrors
+
+// errorFlushTrigger signals the periodic flush goroutine when many errors
+// have accumulated. Buffered so IncrPersistentError never blocks.
+var errorFlushTrigger = make(chan uint64, 1)
 
 func initPersistentErrors() {
 	stateDir := mustStateDir()
@@ -120,12 +124,17 @@ func initPersistentErrors() {
 	}
 	path := filepath.Join(stateDir, "error_counts.json")
 	pe := &persistentErrors{counts: map[string]uint64{}, path: path}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &pe.counts); err != nil {
-			tlog("[metrics] failed to load error counts: %v\n", err)
-		}
+
+	// Load with checksum recovery (primary → .bak → quarantine)
+	var loaded map[string]uint64
+	if ok, err := loadJSONWithRecovery(path, &loaded); ok {
+		pe.counts = loaded
+	} else if err != nil {
+		tlog("[metrics] error loading error counts: %v\n", err)
 	}
+
 	persistentErrStore = pe
+	go pe.periodicFlush()
 }
 
 // IncrPersistentError increments a category's persistent error count.
@@ -135,21 +144,69 @@ func IncrPersistentError(cat string) {
 	}
 	persistentErrStore.mu.Lock()
 	persistentErrStore.counts[cat]++
+	persistentErrStore.dirty++
+	dirty := persistentErrStore.dirty
 	persistentErrStore.mu.Unlock()
+
+	// Signal flush goroutine if threshold reached (non-blocking)
+	if dirty > 100 {
+		select {
+		case errorFlushTrigger <- dirty:
+		default:
+		}
+	}
 }
 
-// FlushPersistentErrors writes the error counts to disk (call on shutdown).
+// periodicFlush writes error_counts.json every 5 minutes or when 100+
+// new errors have accumulated, using atomic writes for crash safety.
+func (pe *persistentErrors) periodicFlush() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			pe.flushAtomic()
+		case <-errorFlushTrigger:
+			pe.flushAtomic()
+		}
+	}
+}
+
+// flushAtomic writes error counts using atomicWriteJSON. Resets dirty counter.
+func (pe *persistentErrors) flushAtomic() {
+	pe.mu.Lock()
+	if pe.dirty == 0 {
+		pe.mu.Unlock()
+		return
+	}
+	snapshot := make(map[string]uint64, len(pe.counts))
+	for k, v := range pe.counts {
+		snapshot[k] = v
+	}
+	pe.dirty = 0
+	pe.mu.Unlock()
+
+	if err := atomicWriteJSON(pe.path, snapshot); err != nil {
+		tlog("[metrics] periodic error flush failed: %v\n", err)
+	}
+}
+
+// FlushPersistentErrors writes error counts to disk atomically (call on shutdown).
 func FlushPersistentErrors() {
 	if persistentErrStore == nil {
 		return
 	}
 	persistentErrStore.mu.Lock()
-	defer persistentErrStore.mu.Unlock()
-	data, err := json.Marshal(persistentErrStore.counts)
-	if err != nil {
-		return
+	snapshot := make(map[string]uint64, len(persistentErrStore.counts))
+	for k, v := range persistentErrStore.counts {
+		snapshot[k] = v
 	}
-	os.WriteFile(persistentErrStore.path, data, 0600)
+	persistentErrStore.dirty = 0
+	persistentErrStore.mu.Unlock()
+
+	if err := atomicWriteJSON(persistentErrStore.path, snapshot); err != nil {
+		tlog("[metrics] shutdown error flush failed: %v\n", err)
+	}
 }
 
 // snapshotErrors returns a copy of the persistent error counts.
