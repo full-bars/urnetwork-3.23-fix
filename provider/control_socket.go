@@ -34,21 +34,29 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", or "history"
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
 	Key    string `json:"key"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
 	Cursor string `json:"cursor,omitempty"` // for "history" command
 }
 
+// settingInfo is the per-key detail returned by the "status" command.
+type settingInfo struct {
+	Value  string     `json:"value"`
+	Source string     `json:"source"`
+	SetAt  *time.Time `json:"set_at,omitempty"`
+}
+
 type controlResponse struct {
-	OK           bool           `json:"ok"`
-	Value        string         `json:"value,omitempty"`
-	Found        bool           `json:"found,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	NeedsRestart bool           `json:"needs_restart,omitempty"`
-	Entries      []CommandAudit `json:"entries,omitempty"`
-	NextCursor   string         `json:"next_cursor,omitempty"`
+	OK           bool                   `json:"ok"`
+	Value        string                 `json:"value,omitempty"`
+	Found        bool                   `json:"found,omitempty"`
+	Error        string                 `json:"error,omitempty"`
+	NeedsRestart bool                   `json:"needs_restart,omitempty"`
+	Entries      []CommandAudit         `json:"entries,omitempty"`
+	NextCursor   string                 `json:"next_cursor,omitempty"`
+	Settings     map[string]settingInfo `json:"settings,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -300,14 +308,15 @@ func applyLiveDefault(key string) error {
 }
 
 func handleControlRequest(state *controlState, req controlRequest) controlResponse {
-	if req.Key == "" {
-		return controlResponse{OK: false, Error: "key is required"}
-	}
+	// Key check moved to individual cases — status and history don't need a key.
 
 	IncrControlCmd(req.Cmd)
 
 	switch req.Cmd {
 	case "get":
+		if req.Key == "" {
+			return controlResponse{OK: false, Error: "key is required"}
+		}
 		value, found := state.get(req.Key)
 		if !controlKeys[req.Key] {
 			return controlResponse{OK: false, Error: fmt.Sprintf("unknown control key %q", req.Key)}
@@ -315,6 +324,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Value: value, Found: found}
 
 	case "set":
+		if req.Key == "" {
+			return controlResponse{OK: false, Error: "key is required"}
+		}
 		// Validate before touching state — reject bad values at the
 		// socket so the operator sees the error immediately, rather
 		// than persisting garbage that breaks on next restart.
@@ -367,6 +379,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, NeedsRestart: needsRestart(req.Key)}
 
 	case "clear":
+		if req.Key == "" {
+			return controlResponse{OK: false, Error: "key is required"}
+		}
 		state.txMu.Lock()
 		defer state.txMu.Unlock()
 		oldValue, hadOld := state.get(req.Key)
@@ -401,6 +416,18 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			OK:        true,
 		})
 		return controlResponse{OK: true, NeedsRestart: !liveCleared}
+
+	case "status":
+		raw := globalControlState.statusSnapshot()
+		settings := make(map[string]settingInfo, len(raw))
+		for k, v := range raw {
+			si := settingInfo{Value: v.Value, Source: string(v.Meta.Source)}
+			if !v.Meta.SetAt.IsZero() {
+				si.SetAt = &v.Meta.SetAt
+			}
+			settings[k] = si
+		}
+		return controlResponse{OK: true, Settings: settings}
 
 	case "history":
 		limit := req.Limit
