@@ -340,7 +340,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 			fmt.Printf("[dry-run] would clear %s for %s and revert to startup default\n", key, providerLabel(p))
 			return nil
 		}
-		appliedLive, err := applyControlOverride(p, "clear", canonicalKey, "", false)
+		appliedLive, needsRestart, err := applyControlOverride(p, "clear", canonicalKey, "", false)
 		if err != nil {
 			return err
 		}
@@ -348,6 +348,9 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 			fmt.Printf("%s cleared for %s (applied live via control socket)\n", key, providerLabel(p))
 		} else {
 			fmt.Printf("%s cleared for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, providerLabel(p))
+		}
+		if needsRestart {
+			fmt.Printf("  ⚠ %s requires a restart to take effect\n", key)
 		}
 		return nil
 	}
@@ -361,7 +364,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		return nil
 	}
 
-	appliedLive, err := applyControlOverride(p, "set", canonicalKey, value, false)
+	appliedLive, needsRestart, err := applyControlOverride(p, "set", canonicalKey, value, false)
 	if err != nil {
 		return err
 	}
@@ -369,6 +372,9 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		fmt.Printf("%s set to %s for %s (applied live via control socket)\n", key, value, providerLabel(p))
 	} else {
 		fmt.Printf("%s set to %s for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, value, providerLabel(p))
+	}
+	if needsRestart {
+		fmt.Printf("  ⚠ %s requires a restart to take effect\n", key)
 	}
 	return nil
 }
@@ -384,7 +390,7 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 			fmt.Printf("[dry-run] would disable fast-auth for %s\n", providerLabel(p))
 			return nil
 		}
-		appliedLive, err := applyControlOverride(p, "clear", "fast_auth", "", false)
+		appliedLive, _, err := applyControlOverride(p, "clear", "fast_auth", "", false)
 		if err != nil {
 			return err
 		}
@@ -399,7 +405,7 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 		fmt.Printf("[dry-run] would enable fast-auth for %s\n", providerLabel(p))
 		return nil
 	}
-	appliedLive, err := applyControlOverride(p, "set", "fast_auth", "on", false)
+	appliedLive, _, err := applyControlOverride(p, "set", "fast_auth", "on", false)
 	if err != nil {
 		return err
 	}

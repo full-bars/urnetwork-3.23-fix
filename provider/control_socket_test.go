@@ -584,18 +584,22 @@ func TestValidateControlValue(t *testing.T) {
 
 func TestNeedsRestart_AutoComputed(t *testing.T) {
 	// Keys that can be applied live — no restart needed
-	liveKeys := []string{"gomemlimit", "gogc"}
+	liveKeys := []string{
+		"gomemlimit", "gogc",
+		"fast_auth", "proxy_self_heal",
+		"report_url", "report_interval",
+		"proxy_url_refresh", "proxy_url_max",
+		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
+		"node_name", "hot_restart",
+	}
 	for _, k := range liveKeys {
 		if needsRestart(k) {
 			t.Errorf("needsRestart(%q) = true, expected false (has live side effect)", k)
 		}
 	}
 
-	// Keys that require restart
-	restartKeys := []string{"profile", "ramlogs", "hot_restart", "node_name",
-		"report_url", "report_interval", "fast_auth", "proxy_self_heal",
-		"proxy_url_max", "proxy_url_refresh", "proxy_dead_cleanup_interval",
-		"proxy_dead_cleanup_scope"}
+	// Keys that genuinely require restart
+	restartKeys := []string{"profile", "ramlogs"}
 	for _, k := range restartKeys {
 		if !needsRestart(k) {
 			t.Errorf("needsRestart(%q) = false, expected true (no live side effect)", k)
@@ -623,8 +627,8 @@ func TestServerSideValidation_RejectsInvalidViaSocket(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("valid set should succeed: %v", resp.Error)
 	}
-	if !resp.NeedsRestart {
-		t.Errorf("node_name should need restart")
+	if resp.NeedsRestart {
+		t.Errorf("node_name should NOT need restart (live key)")
 	}
 
 	// Invalid profile value should be rejected
@@ -729,8 +733,8 @@ func TestClearLiveKey_ReappliesDefault(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("clear node_name failed: %v", resp.Error)
 	}
-	if !resp.NeedsRestart {
-		t.Errorf("clear node_name SHOULD need restart (non-live key)")
+	if resp.NeedsRestart {
+		t.Errorf("clear node_name should NOT need restart (live key)")
 	}
 }
 
@@ -765,5 +769,26 @@ func TestGogcOff_AppliesLive(t *testing.T) {
 	}
 	if !resp.OK {
 		t.Fatalf("gogc=Off should succeed: %v", resp.Error)
+	}
+}
+
+// TestEveryControlKeyClassified verifies that every key in controlKeys
+// is either in liveEffectKeys (no restart needed) or explicitly classified
+// as restart-only. This catches accidental omissions when new keys are added.
+func TestEveryControlKeyClassified(t *testing.T) {
+	restartOnly := map[string]bool{
+		"profile": true, // initGlog/SHMLogger one-shot at startup
+		"ramlogs": true, // stdout/stderr redirect irreversible
+	}
+
+	for key := range controlKeys {
+		isLive := liveEffectKeys[key]
+		isRestart := restartOnly[key]
+		if !isLive && !isRestart {
+			t.Errorf("control key %q is neither in liveEffectKeys nor restartOnly — classify it", key)
+		}
+		if isLive && isRestart {
+			t.Errorf("control key %q is in both liveEffectKeys and restartOnly — pick one", key)
+		}
 	}
 }

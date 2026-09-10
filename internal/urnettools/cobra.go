@@ -1,8 +1,14 @@
 package urnettools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -177,6 +183,10 @@ func buildRootCmd() *cobra.Command {
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 		newIPDetectCmd(),
 		newRenameCmd(),
+		newHistoryCmd(),
+		newMetricsCmd(),
+		newProfileCmd(),
+		newDashboardCmd(),
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
@@ -647,4 +657,461 @@ func newIPDetectCmd() *cobra.Command {
 			return cmdIPDetect(args)
 		},
 	}
+}
+
+func newHistoryCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "history [limit]",
+		Short:              "show command audit trail",
+		Aliases:            []string{"audit"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdHistory(args)
+		},
+	}
+}
+
+func newMetricsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "metrics on|off",
+		Short:              "toggle Prometheus /metrics endpoint",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdMetrics(args, false)
+		},
+	}
+}
+
+func cmdHistory(args []string) error {
+	limit := 50
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n <= 0 {
+			return fmt.Errorf("limit must be a positive integer (got %q)", args[0])
+		}
+		if n > 100 {
+			n = 100
+		}
+		limit = n
+	}
+
+	t, _, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+
+	socketPath := filepath.Join(p.StateDir, "control.sock")
+	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "history", Limit: limit})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("provider returned error: %s", resp.Error)
+	}
+
+	if len(resp.Entries) == 0 {
+		fmt.Println("No audit entries.")
+		return nil
+	}
+
+	fmt.Printf("Last %d audit entries:\n\n", len(resp.Entries))
+	for _, e := range resp.Entries {
+		ts := time.Unix(e.Timestamp, 0)
+		if e.OK {
+			fmt.Printf("[%s] OK  %s %s=%s\n", ts.Format("2006-01-02 15:04:05"), e.Cmd, e.Key, e.Value)
+		} else {
+			fmt.Printf("[%s] ERR %s %s=%s  error: %s\n", ts.Format("2006-01-02 15:04:05"), e.Cmd, e.Key, e.Value, e.Error)
+		}
+	}
+	if resp.NextCursor != "" {
+		fmt.Printf("\nMore entries available. Use 'urnet-tools history' with cursor %s for older entries.\n", resp.NextCursor)
+	}
+	return nil
+}
+
+func cmdMetrics(args []string, dryRun bool) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: urnet-tools metrics on|off")
+	}
+	val := strings.ToLower(args[0])
+	switch val {
+	case "on", "off":
+	default:
+		return fmt.Errorf("usage: urnet-tools metrics on|off (got %q)", args[0])
+	}
+
+	t, _, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+
+	socketPath := filepath.Join(p.StateDir, "control.sock")
+	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "set", Key: "metrics", Value: val})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("provider returned error: %s", resp.Error)
+	}
+	if resp.NeedsRestart {
+		fmt.Printf("✓ Metrics %s (restart required for full effect)\n", val)
+	} else {
+		fmt.Printf("✓ Metrics %s\n", val)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// urnet-tools profile — show or set the memory/GC tuning profile
+// ---------------------------------------------------------------------------
+
+var profileDescriptions = map[string]string{
+	"auto":     "auto-detect hardware and pick the best profile",
+	"turbo-v4": "high throughput, 4-core optimized (large buffers, aggressive GC)",
+	"turbo-v8": "high throughput, 8-core optimized (largest buffers)",
+	"eco":      "low RAM, GC-tuned for memory-constrained systems",
+	"lowmem":   "minimal buffers, shared-memory logs, maximum memory savings",
+}
+
+func newProfileCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "profile [auto|turbo-v4|turbo-v8|eco|lowmem]",
+		Short:              "show or set the memory/GC tuning profile",
+		Aliases:            []string{"profiles"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdProfile(args)
+		},
+	}
+}
+
+func cmdProfile(args []string) error {
+	t, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+
+	// No args or just target flags: show current profile
+	if len(rest) == 0 {
+		return showProfile(p)
+	}
+
+	// Show profiles list
+	if rest[0] == "list" || rest[0] == "ls" {
+		return listProfiles(p)
+	}
+
+	// Set profile
+	profile := rest[0]
+	valid := false
+	for name := range profileDescriptions {
+		if profile == name {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("unknown profile %q — valid: auto, turbo-v4, turbo-v8, eco, lowmem", profile)
+	}
+
+	// Check if provider is running — profile is a startup-time setting
+	if !p.Running {
+		// Queue for next start
+		if err := validateControlValue("profile", profile); err != nil {
+			return err
+		}
+		if err := queuePendingOverride(p.StateDir, "set", "profile", profile); err != nil {
+			return fmt.Errorf("queue pending override: %w", err)
+		}
+		fmt.Printf("Profile set to %s for %s (queued — takes effect on next start)\n", profile, providerLabel(p))
+		return nil
+	}
+
+	// Provider is running — send via socket (will need restart)
+	_, needsRestart, err := applyControlOverride(p, "set", "profile", profile, false)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Profile set to %s for %s\n", profile, providerLabel(p))
+	if needsRestart {
+		fmt.Printf("  ⚠ profile requires a restart to take effect\n")
+		fmt.Printf("    systemctl --user restart %s\n", p.Unit)
+	}
+	return nil
+}
+
+func showProfile(p Provider) error {
+	// Query current profile from socket or pending overrides
+	val, source, found, err := queryControlOverride(p, "profile")
+	if err != nil {
+		return err
+	}
+	if !found {
+		val = "auto (default)"
+		source = "startup"
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "profile:	%s\n", val)
+	fmt.Fprintf(w, "source:	%s\n", source)
+	fmt.Fprintf(w, "running:	%v\n", p.Running)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Available profiles:")
+	for name, desc := range profileDescriptions {
+		marker := "  "
+		if val == name {
+			marker = "→ "
+		}
+		fmt.Fprintf(w, "  %s%-12s %s\n", marker, name, desc)
+	}
+	return w.Flush()
+}
+
+func listProfiles(p Provider) error {
+	val, _, found, _ := queryControlOverride(p, "profile")
+	if !found {
+		val = "auto"
+	}
+
+	fmt.Println("Available profiles:")
+	fmt.Println()
+	for name, desc := range profileDescriptions {
+		marker := "  "
+		if val == name {
+			marker = "→ "
+		}
+		fmt.Printf("  %s%-12s %s\n", marker, name, desc)
+	}
+	fmt.Println()
+	fmt.Printf("Current: %s\n", val)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// urnet-tools dashboard — rich TUI status panel
+// ---------------------------------------------------------------------------
+
+const (
+	colorReset  = "\033[0m"
+	colorBold   = "\033[1m"
+	colorDim    = "\033[2m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorRed    = "\033[31m"
+	colorCyan   = "\033[36m"
+	colorWhite  = "\033[97m"
+)
+
+func newDashboardCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "dashboard [target]",
+		Short:              "rich provider status dashboard",
+		Aliases:            []string{"dash", "panel"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdDashboard(args)
+		},
+	}
+}
+
+func cmdDashboard(args []string) error {
+	t, _, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+
+	bold := colorBold
+	dim := colorDim
+	green := colorGreen
+	yellow := colorYellow
+	red := colorRed
+	cyan := colorCyan
+	reset := colorReset
+
+	// Header
+	fmt.Println()
+	fmt.Printf("%s%s╔══════════════════════════════════════════════════════════╗%s\n", bold, cyan, reset)
+	fmt.Printf("%s%s║  URNetwork Provider Dashboard                          ║%s\n", bold, cyan, reset)
+	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════╝%s\n", bold, cyan, reset)
+	fmt.Println()
+
+	// Status line
+	state := "STOPPED"
+	stateColor := red
+	if p.Running {
+		state = "RUNNING"
+		stateColor = green
+	}
+	fmt.Printf("  %sState:%s   %s%s%s\n", bold, reset, stateColor, state, reset)
+
+	// Version + uptime
+	fmt.Printf("  %sVersion:%s %s\n", bold, reset, p.Version)
+	if p.PID > 0 {
+		fmt.Printf("  %sPID:%s     %d\n", bold, reset, p.PID)
+	}
+
+	// Network identity
+	fmt.Printf("  %sNetwork:%s %s (%s)\n", bold, reset, p.netLabel(), p.NetworkID[:8]+"...")
+
+	// JWT expiry
+	if !p.JWTExpires.IsZero() {
+		remaining := time.Until(p.JWTExpires)
+		expiryColor := green
+		if remaining < 24*time.Hour {
+			expiryColor = yellow
+		}
+		if remaining < 0 {
+			expiryColor = red
+		}
+		fmt.Printf("  %sJWT:%s     %s%sexpires in %s%s\n", bold, reset, expiryColor, dim, remaining.Round(time.Minute), reset)
+	}
+
+	// Control socket
+	socketOK := controlSocketReachable(p)
+	socketColor := green
+	socketText := "reachable"
+	if !socketOK {
+		socketColor = red
+		socketText = "unreachable"
+	}
+	fmt.Printf("  %sSocket:%s  %s%s%s\n", bold, reset, socketColor, socketText, reset)
+
+	// Profile
+	val, _, found, _ := queryControlOverride(p, "profile")
+	profileName := "auto"
+	if found && val != "" {
+		profileName = val
+	}
+	fmt.Printf("  %sProfile:%s %s%s%s\n", bold, reset, cyan, profileName, reset)
+
+	fmt.Println()
+	fmt.Printf("  %s── Active Settings ──%s\n", dim, reset)
+	fmt.Println()
+
+	// Show all active overrides
+	overrides := []struct{ key, desc string }{
+		{"fast_auth", "Fast Auth"},
+		{"proxy_self_heal", "Proxy Self-Heal"},
+		{"hot_restart", "Hot Restart"},
+		{"report_url", "Report URL"},
+		{"report_interval", "Report Interval"},
+		{"proxy_url_max", "Max Proxies"},
+		{"proxy_url_refresh", "URL Refresh"},
+		{"proxy_dead_cleanup_scope", "Dead Cleanup Scope"},
+		{"proxy_dead_cleanup_interval", "Dead Cleanup Interval"},
+		{"node_name", "Node Name"},
+		{"gomemlimit", "Go Memory Limit"},
+		{"gogc", "Go GC Percent"},
+		{"metrics", "Prometheus Metrics"},
+	}
+
+	for _, o := range overrides {
+		val, _, found, _ := queryControlOverride(p, o.key)
+		if found && val != "" {
+			fmt.Printf("  %s%-24s%s %s%s%s\n", bold, o.key+":", reset, yellow, val, reset)
+		}
+	}
+
+	// Pending restart indicators
+	fmt.Println()
+	restartKeys := []string{"profile", "ramlogs"}
+	for _, key := range restartKeys {
+		val, _, found, _ := queryControlOverride(p, key)
+		if found && val != "" && val != "off" && val != "0" {
+			fmt.Printf("  %s⚠ %s requires restart (%s)%s\n", yellow, key, val, reset)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s── Proxy Sources ──%s\n", dim, reset)
+	fmt.Println()
+
+	// Try to read proxy_url.json for source count
+	proxyStatePath := ""
+	if p.StateDir != "" {
+		proxyStatePath = filepath.Join(p.StateDir, "proxy_url.json")
+	}
+	if proxyStatePath != "" {
+		if data, err := os.ReadFile(proxyStatePath); err == nil {
+			var sources []struct {
+				Name   string `json:"name"`
+				Source string `json:"source"`
+			}
+			if json.Unmarshal(data, &sources) == nil && len(sources) > 0 {
+				for _, s := range sources {
+					name := s.Name
+					if name == "" {
+						name = "(unnamed)"
+					}
+					fmt.Printf("  %s•%s %s %s(%s)%s\n", green, reset, name, dim, s.Source, reset)
+				}
+			} else {
+				fmt.Printf("  %s(no proxy sources configured)%s\n", dim, reset)
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s── Quick Actions ──%s\n", dim, reset)
+	fmt.Println()
+	fmt.Printf("  urnet-tools set <key> <value>    Change a setting\n")
+	fmt.Printf("  urnet-tools profile <name>       Switch tuning profile\n")
+	fmt.Printf("  urnet-tools metrics on|off       Toggle Prometheus metrics\n")
+	fmt.Printf("  urnet-tools history              View command audit trail\n")
+	if p.Running && needsRestartNeeded(p) {
+		fmt.Printf("\n  %s⚠ Restart pending: systemctl --user restart %s%s\n", yellow, p.Unit, reset)
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// needsRestartNeeded checks if any startup-only setting has been changed.
+func needsRestartNeeded(p Provider) bool {
+	restartKeys := []string{"profile", "ramlogs"}
+	for _, key := range restartKeys {
+		val, _, found, _ := queryControlOverride(p, key)
+		if found && val != "" && val != "off" && val != "0" {
+			return true
+		}
+	}
+	return false
 }

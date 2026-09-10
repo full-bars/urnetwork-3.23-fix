@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -159,12 +160,28 @@ func formerValue(old string, had bool) string {
 }
 
 // liveEffectKeys tracks which control keys can be applied at runtime
-// without a restart. The set is derived from applyLiveSideEffect's switch
-// cases — when a new key gets a live-apply case, it automatically stops
-// being flagged as needs_restart.
+// without a restart. When a new key gets a live-apply case (either in
+// applyLiveSideEffect or via a resolve* function that reads
+// globalControlState on every call), it should be added here.
+//
+// Keys NOT in this set: profile (initGlog/SHMLogger is one-shot at startup),
+// ramlogs (stdout/stderr redirect is irreversible mid-process).
 var liveEffectKeys = map[string]bool{
+	// Runtime tuning via debug.Set* — immediate effect.
 	"gomemlimit": true,
 	"gogc":       true,
+	// resolve* functions read globalControlState on every call — already live.
+	"fast_auth":                   true,
+	"proxy_self_heal":             true,
+	"report_url":                  true,
+	"report_interval":             true,
+	"proxy_url_refresh":           true,
+	"proxy_url_max":               true,
+	"proxy_dead_cleanup_scope":    true,
+	"proxy_dead_cleanup_interval": true,
+	"node_name":                   true,
+	"hot_restart":                 true,
+	"metrics":                     true,
 }
 
 // needsRestart returns true if setting this key requires a provider restart
@@ -242,6 +259,12 @@ func validateControlValue(key, value string) error {
 			if n < 0 {
 				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
 			}
+		}
+	case "metrics":
+		switch valLower {
+		case "on", "off":
+		default:
+			return fmt.Errorf("metrics: must be on or off (got %q)", value)
 		}
 	case "node_name":
 		if value == "" {
@@ -456,6 +479,42 @@ func applyLiveSideEffect(key, value string) error {
 			}
 			debug.SetGCPercent(percent)
 		}
+	case "metrics":
+		return applyMetricsLive(value)
+	}
+	return nil
+}
+
+// applyMetricsLive starts or stops the Prometheus /metrics listener.
+func applyMetricsLive(value string) error {
+	enabled := strings.EqualFold(value, "on")
+	if enabled && metricsServer == nil {
+		metricsAddr := os.Getenv("URNETWORK_METRICS")
+		if metricsAddr == "" {
+			return fmt.Errorf("metrics on: URNETWORK_METRICS env var not set")
+		}
+		connect.SetExtraMetricsProvider(providerExtraMetrics)
+		connect.SetPersistentErrorFunc(IncrPersistentError)
+		metricsServer = &http.Server{
+			Addr:              metricsAddr,
+			Handler:           connect.PrometheusHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+		}
+		go func() {
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				tlog("[metrics] listener failed: %v\n", err)
+			}
+		}()
+		tlog("[metrics] started Prometheus /metrics on %s\n", metricsAddr)
+	} else if !enabled && metricsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := metricsServer.Shutdown(ctx); err != nil {
+			return fmt.Errorf("metrics off: %w", err)
+		}
+		metricsServer = nil
+		tlog("[metrics] stopped Prometheus /metrics\n")
 	}
 	return nil
 }
