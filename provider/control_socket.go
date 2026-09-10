@@ -159,12 +159,27 @@ func formerValue(old string, had bool) string {
 }
 
 // liveEffectKeys tracks which control keys can be applied at runtime
-// without a restart. The set is derived from applyLiveSideEffect's switch
-// cases — when a new key gets a live-apply case, it automatically stops
-// being flagged as needs_restart.
+// without a restart. When a new key gets a live-apply case (either in
+// applyLiveSideEffect or via a resolve* function that reads
+// globalControlState on every call), it should be added here.
+//
+// Keys NOT in this set: profile (initGlog/SHMLogger is one-shot at startup),
+// ramlogs (stdout/stderr redirect is irreversible mid-process).
 var liveEffectKeys = map[string]bool{
+	// Runtime tuning via debug.Set* — immediate effect.
 	"gomemlimit": true,
 	"gogc":       true,
+	// resolve* functions read globalControlState on every call — already live.
+	"fast_auth":                   true,
+	"proxy_self_heal":             true,
+	"report_url":                  true,
+	"report_interval":             true,
+	"proxy_url_refresh":           true,
+	"proxy_url_max":               true,
+	"proxy_dead_cleanup_scope":    true,
+	"proxy_dead_cleanup_interval": true,
+	"node_name":                   true,
+	"hot_restart":                 true,
 }
 
 // needsRestart returns true if setting this key requires a provider restart
