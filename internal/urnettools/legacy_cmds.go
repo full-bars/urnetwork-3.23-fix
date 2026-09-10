@@ -1149,18 +1149,120 @@ func optimizeFor(goos string) func() error {
 	return optimizeLinux
 }
 
-// optimizeLinux applies the Linux sysctl set: socket buffers, FD limit, and
-// the two connection-churn knobs that matter most for a proxy box — the
-// ephemeral port pool (ip_local_port_range) and TIME_WAIT recycling
-// (tcp_fin_timeout). Runs as root (cmdOptimize self-elevates to root before
-// calling this on Linux), and is atomic: it loads the current values, applies
-// live sysctls, persists, and only reports success when BOTH live apply and
-// the persist file wrote. If any step fails it rolls the already-applied keys
-// back to their prior values so a failure never leaves a half-tuned host
-// (settings live but not persisted, or a partial sysctl set).
+// conntrackMaxForRAM reads /proc/meminfo MemTotal (in kB) and returns the
+// appropriate nf_conntrack_max for this host's RAM. Each conntrack entry
+// consumes ~300 bytes; the table is sized to use ~5% of total RAM.
+func conntrackMaxForRAM() (int, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, fmt.Errorf("read /proc/meminfo: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return 0, fmt.Errorf("parse MemTotal: %q", line)
+			}
+			kb, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return 0, fmt.Errorf("parse MemTotal value %q: %w", fields[1], err)
+			}
+			return conntrackMaxForRAMKB(kb), nil
+		}
+	}
+	return 0, fmt.Errorf("MemTotal not found in /proc/meminfo")
+}
+
+// conntrackMaxForRAMKB maps total RAM in kB to nf_conntrack_max.
+// Brackets sized so conntrack uses ~5% of RAM (~300 bytes per entry).
+func conntrackMaxForRAMKB(ramKB int) int {
+	switch {
+	case ramKB < 1*1024*1024: // <1GB
+		return 131072 // 128K entries ~37MB
+	case ramKB < 4*1024*1024: // 1-4GB
+		return 262144 // 256K entries ~75MB
+	case ramKB < 8*1024*1024: // 4-8GB
+		return 524288 // 512K entries ~150MB
+	case ramKB < 16*1024*1024: // 8-16GB
+		return 1048576 // 1M entries ~300MB
+	case ramKB < 32*1024*1024: // 16-32GB
+		return 2097152 // 2M entries ~600MB
+	default: // >32GB
+		return 4194304 // 4M entries ~1.2GB
+	}
+}
+
+func conntrackMaxStr(max int) string {
+	return strconv.Itoa(max)
+}
+
+// isConntrackAvailable probes whether the nf_conntrack module is loaded
+// by trying to read nf_conntrack_max. This is separate from RAM detection
+// so we can distinguish "conntrack not available" from "can't read RAM".
+func isConntrackAvailable() bool {
+	_, err := exec.Command("sysctl", "-n", "net.netfilter.nf_conntrack_max").Output()
+	return err == nil
+}
+
+// sysctlRead reads a single sysctl key. Returns the trimmed value or an error.
+func sysctlRead(key string) (string, error) {
+	out, err := exec.Command("sysctl", "-n", key).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func conntrackConfBlock(max int, timeout string) string {
+	if max <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+# Conntrack: scaled to this host's total RAM (~%d MB for %d entries).
+# Idle connections older than %ss are reaped to keep the table clean.
+net.netfilter.nf_conntrack_max = %d
+net.netfilter.nf_conntrack_tcp_timeout_established = %s
+`, max*300/1024/1024, max, timeout, max, timeout)
+}
+
+// optimizeLinux applies the Linux sysctl set: socket buffers, FD limit,
+// ephemeral port pool, TIME_WAIT recycling, and conntrack tuning (scaled
+// to this host's total RAM). Runs as root (cmdOptimize self-elevates to
+// root before calling this on Linux), and is atomic: it loads the current
+// values, applies live sysctls, persists, and only reports success when
+// BOTH live apply and the persist file wrote. If any step fails it rolls
+// the already-applied keys back to their prior values so a failure never
+// leaves a half-tuned host (settings live but not persisted, or a partial
+// sysctl set).
 func optimizeLinux() error {
+	// Phase 1: Check if conntrack is available at all (module loaded, sysctl keys exist).
+	conntrackAvail := isConntrackAvailable()
+
+	// Phase 2: Determine conntrack sizing from RAM. Separate from availability
+	// so a RAM read failure doesn't cause us to drop persisted conntrack config.
+	var conntrackMax int
+	var conntrackErr error
+	if conntrackAvail {
+		conntrackMax, conntrackErr = conntrackMaxForRAM()
+		if conntrackErr != nil {
+			// RAM detection failed — try to preserve existing sysctl value
+			// rather than overwriting with 0.
+			if existing, err := sysctlRead("net.netfilter.nf_conntrack_max"); err == nil && existing != "" {
+				fmt.Fprintf(os.Stderr, "optimize: RAM detection failed (%v), preserving existing nf_conntrack_max=%s\n", conntrackErr, existing)
+				conntrackMax = 0 // don't add to writes — existing value stays
+				conntrackErr = nil
+			} else {
+				fmt.Fprintf(os.Stderr, "optimize: RAM detection failed (%v) and no existing conntrack config; skipping conntrack tuning\n", conntrackErr)
+				conntrackMax = 0
+			}
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "optimize: conntrack module not available; skipping conntrack tuning\n")
+	}
+	timeoutEstablished := "3600" // 1 hour idle timeout
+
 	// Key -> desired live value; order matters: apply in this order, roll back
-	// in reverse.
+	// in reverse. Conntrack entries are appended conditionally below.
 	writes := [][]string{
 		{"net.core.rmem_max", "134217728"},
 		{"net.core.wmem_max", "134217728"},
@@ -1168,16 +1270,22 @@ func optimizeLinux() error {
 		{"net.ipv4.ip_local_port_range", "10240 65535"},
 		{"net.ipv4.tcp_fin_timeout", "15"},
 	}
+	if conntrackMax > 0 {
+		writes = append(writes,
+			[]string{"net.netfilter.nf_conntrack_max", conntrackMaxStr(conntrackMax)},
+			[]string{"net.netfilter.nf_conntrack_tcp_timeout_established", timeoutEstablished},
+		)
+	}
+
 	// The conf file mirrors these exact keys so persist and rollback agree.
-	conf := `# URnetwork golden-fleet kernel limits — applied by urnet-tools optimize
-# Ephemeral port pool: lower bound raised from the kernel default (32768)
-# so outbound proxy connections don't collide with well-known service ports.
+	conf := fmt.Sprintf(`# URNetwork proxy-provider kernel tuning — applied by urnet-tools optimize
+# Scaled to this host's total RAM at time of optimize.
 net.ipv4.ip_local_port_range = 10240 65535
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
 fs.file-max = 1000000
 net.ipv4.tcp_fin_timeout = 15
-`
+%s`, conntrackConfBlock(conntrackMax, timeoutEstablished))
 
 	prior := make(map[string]string, len(writes))
 	// Snapshot current values so rollback restores exactly what was there.
