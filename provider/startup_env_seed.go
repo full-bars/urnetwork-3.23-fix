@@ -41,16 +41,25 @@ func seedEnvFromControlState() {
 	values := map[string]string{}
 
 	if data, err := os.ReadFile(mustControlStatePath()); err == nil {
-		// Decode into a temporary map first: json.Unmarshal can populate
-		// fields decoded before a later UnmarshalTypeError, so unmarshaling
-		// straight into values could seed URNETWORK_PROFILE from a
-		// partially-decoded, otherwise-invalid provider_state.json. A literal
-		// JSON "null" decodes successfully but leaves onDisk nil (not just
-		// empty), so only adopt it when non-nil — assigning a nil map to
-		// values would make the "set" overlay below panic on its first write.
-		var onDisk map[string]string
-		if json.Unmarshal(data, &onDisk) == nil && onDisk != nil {
-			values = onDisk
+		// Try v2 envelope first (detected by "version" field), then
+		// fall back to legacy flat map. A v2 envelope has an int
+		// "version" field that fails to unmarshal into map[string]string,
+		// so we must try the envelope format first.
+		var envelope controlStateEnvelope
+		if json.Unmarshal(data, &envelope) == nil && envelope.Version > 0 {
+			values = envelope.Values
+		} else {
+			// Decode into a temporary map first: json.Unmarshal can populate
+			// fields decoded before a later UnmarshalTypeError, so unmarshaling
+			// straight into values could seed URNETWORK_PROFILE from a
+			// partially-decoded, otherwise-invalid provider_state.json. A literal
+			// JSON "null" decodes successfully but leaves onDisk nil (not just
+			// empty), so only adopt it when non-nil — assigning a nil map to
+			// values would make the "set" overlay below panic on its first write.
+			var onDisk map[string]string
+			if json.Unmarshal(data, &onDisk) == nil && onDisk != nil {
+				values = onDisk
+			}
 		}
 	}
 

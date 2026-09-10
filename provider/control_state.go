@@ -161,6 +161,10 @@ func (s *controlState) setWithValue(key, value string, src Source) error {
 	defer s.mu.Unlock()
 	s.values[key] = value
 	s.meta[key] = configMeta{Source: src, SetAt: time.Now()}
+	// Remove from passthrough if it was there — prevents stale passthrough
+	// values from clobbering a live set at persist time.
+	delete(s.passthroughValues, key)
+	delete(s.passthroughMeta, key)
 	return nil
 }
 
@@ -168,12 +172,12 @@ func (s *controlState) setWithValue(key, value string, src Source) error {
 // reports found=false (falls through to the legacy file / startup default)
 // exactly as if it had never been set.
 func (s *controlState) clear(key string) error {
-	return s.clearWithValue(key, SourceSocket)
+	return s.clearWithValue(key)
 }
 
-// clearWithValue validates key, deletes both value and meta under the
-// write lock.
-func (s *controlState) clearWithValue(key string, _ Source) error {
+// clearWithValue validates key, deletes value, meta, and passthrough entries
+// under the write lock.
+func (s *controlState) clearWithValue(key string) error {
 	if !controlKeys[key] {
 		return fmt.Errorf("unknown control key %q", key)
 	}
@@ -181,6 +185,8 @@ func (s *controlState) clearWithValue(key string, _ Source) error {
 	defer s.mu.Unlock()
 	delete(s.values, key)
 	delete(s.meta, key)
+	delete(s.passthroughValues, key)
+	delete(s.passthroughMeta, key)
 	return nil
 }
 
@@ -397,11 +403,11 @@ func (s *controlState) persist() error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
-	// fsync the parent directory to ensure the rename is durable.
-	parent, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
+	// Best-effort directory fsync — don't fail after successful rename.
+	// This breaks on Windows and can cause split-brain if it fails.
+	if parent, err := os.Open(filepath.Dir(path)); err == nil {
+		parent.Sync()
+		parent.Close()
 	}
-	defer parent.Close()
-	return parent.Sync()
+	return nil
 }

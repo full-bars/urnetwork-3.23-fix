@@ -341,17 +341,22 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// concurrent connections can't interleave (see controlState.txMu).
 		state.txMu.Lock()
 		defer state.txMu.Unlock()
-		oldValue, hadOld := state.get(req.Key)
+		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.set(req.Key, req.Value); err != nil {
 			tlog("❌ [control] set %s=%s rejected: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
 		if err := state.persist(); err != nil {
+			// Restore both value and meta to preserve provenance.
+			state.mu.Lock()
 			if hadOld {
-				state.set(req.Key, oldValue)
+				state.values[req.Key] = oldValue
+				state.meta[req.Key] = oldMeta
 			} else {
-				state.clear(req.Key)
+				delete(state.values, req.Key)
+				delete(state.meta, req.Key)
 			}
+			state.mu.Unlock()
 			tlog("❌ [control] set %s=%s failed to persist, rolled back: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
 		}
@@ -384,14 +389,18 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		}
 		state.txMu.Lock()
 		defer state.txMu.Unlock()
-		oldValue, hadOld := state.get(req.Key)
+		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.clear(req.Key); err != nil {
 			tlog("❌ [control] clear %s rejected: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
 		if err := state.persist(); err != nil {
+			// Restore both value and meta to preserve provenance.
 			if hadOld {
-				state.set(req.Key, oldValue)
+				state.mu.Lock()
+				state.values[req.Key] = oldValue
+				state.meta[req.Key] = oldMeta
+				state.mu.Unlock()
 			}
 			tlog("❌ [control] clear %s failed to persist, rolled back: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
@@ -418,11 +427,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, NeedsRestart: !liveCleared}
 
 	case "status":
-		st := state
-		if st == nil {
-			st = globalControlState
-		}
-		raw := st.statusSnapshot()
+		raw := state.statusSnapshot()
 		settings := make(map[string]settingInfo, len(raw))
 		for k, v := range raw {
 			si := settingInfo{Value: v.Value, Source: string(v.Meta.Source)}

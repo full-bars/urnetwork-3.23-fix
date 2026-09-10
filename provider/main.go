@@ -3425,7 +3425,7 @@ func provide(opts docopt.Opts) {
 					// swapping the pointer out from under them is an
 					// unsynchronized race distinct from anything s.mu
 					// protects.
-					globalControlState.replaceAll(reloaded.snapshot())
+					globalControlState.replaceAllWithMeta(reloaded.values, reloaded.meta)
 				}
 				mergePendingOverrides(globalControlState)
 				applyPersistedRuntimeTuning(globalControlState)

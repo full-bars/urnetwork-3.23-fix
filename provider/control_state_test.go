@@ -372,7 +372,7 @@ func TestControlState_ClearWithValue(t *testing.T) {
 		t.Fatalf("expected node_name to be set")
 	}
 
-	if err := s.clearWithValue("node_name", SourceSocket); err != nil {
+	if err := s.clearWithValue("node_name"); err != nil {
 		t.Fatalf("clearWithValue: %v", err)
 	}
 
