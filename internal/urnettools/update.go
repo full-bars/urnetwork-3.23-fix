@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -87,12 +86,12 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
 	all := false
-	// One decision for "nobody is here to answer a prompt", shared by the
-	// target pickers and both confirmation gates below. Keeping these in
-	// lockstep is what stops an update from skipping the picker while still
-	// demanding a prompt.
+	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
+	// Deliberately a separate question from `interactive`: whether anything
+	// is authorized to skip the confirmation prompts. Tying the two together
+	// would enable the numbered picker for a piped run, which cannot answer
+	// it; the picker must stay gated on a real terminal.
 	unattended := unattendedUpdate(force)
-	interactive := !unattended // -f implies non-interactive: no pickers
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -481,23 +480,42 @@ func forceInteractive(force bool) bool {
 	return !force && stdinIsInteractive()
 }
 
-// unattendedUpdate reports whether an update run has no human available to
-// answer a confirmation prompt. Three cases:
+// unattendedUpdate reports whether an update run is authorized to skip the
+// confirmation prompts. Three cases:
 //
-//  1. -f/--force was given → always unattended.
-//  2. stdin is /dev/null (systemd timer) or INVOCATION_ID is set → truly
-//     unattended: no human, no pipe, skip the prompt.
-//  3. stdin is a pipe or redirected file (SSH, scripts, echo y|...) → NOT
-//     unattended: read the pipe for the user's answer.
+//  1. -f/--force was given: always unattended.
+//  2. stdin is /dev/null, or INVOCATION_ID is set (systemd sets it on every
+//     service invocation and nothing else does): no human is reachable, so
+//     skip the prompt.
+//  3. anything else non-interactive, such as a pipe or a redirected file:
+//     NOT unattended. The prompt is attempted and refuses loudly.
 //
-// The weekly urnetwork-update.timer is the reason this exists. Its ExecStart
-// is a bare `urnet-tools update` with no -y, and systemd hands a oneshot
-// /dev/null on stdin, so gating the version prompt on !force alone made
+// The weekly urnetwork-update.timer is why this exists. Its ExecStart is a
+// bare `urnet-tools update` with no -y, and systemd hands a oneshot
+// /dev/null on stdin, so gating the prompt on !force alone made
 // confirmStdinRead refuse the read and the unit exit 1 on every single run.
+// The failure is invisible: it lands weekly on an OnCalendar nobody reads,
+// so nodes quietly stop updating while operators assume they self-update.
 //
-// Critical invariant: piping `echo n | urnet-tools update` must honor the
-// "n", and `ssh host "urnet-tools update"` without -t must NOT auto-apply.
-// Only true /dev/null / systemd invocations skip the prompt.
+// A merely missing terminal is deliberately NOT sufficient. Treating any
+// non-interactive stdin as consent would also cover `ssh node 'urnet-tools
+// update'`, an Ansible task without a pty, nohup and at. On a
+// single-provider box those resolve a target without an explicit flag, so
+// an accidental invocation would update and restart production with no
+// confirmation and no -f. Case 3 keeps those failing loudly.
+//
+// Note what case 3 does NOT do: it does not read the pipe for an answer.
+// `echo y | urnet-tools update` fails with "stdin is not a terminal" rather
+// than proceeding, because confirmStdinRead refuses before reading whenever
+// stdin is not a terminal, and that function is shared with the hub,
+// session and legacy destructive commands which must keep refusing. Scripts
+// pass -y; that is the supported path.
+//
+// Suppressing the prompt costs no audit trail. confirmGateMulti prints the
+// full "about to touch: X, Y" listing to stderr unconditionally, including
+// under -f, precisely so unattended runs leave a record. Only the
+// interactive question is skipped, and the per-provider "already on <tag>"
+// check still short-circuits a run that has nothing to do.
 func unattendedUpdate(force bool) bool {
 	if force {
 		return true
@@ -505,34 +523,38 @@ func unattendedUpdate(force bool) bool {
 	if stdinIsInteractive() {
 		return false
 	}
-	// Non-interactive stdin: check if it's a true systemd/cron invocation
-	// (stdin is /dev/null or INVOCATION_ID is set) vs a pipe with data.
 	if os.Getenv("INVOCATION_ID") != "" {
 		return true
 	}
-	return isDevNull(os.Stdin)
+	return stdinIsDevNull()
 }
 
-// isDevNull reports whether f is /dev/null. Under systemd Type=oneshot,
-// stdin is /dev/null. Piped or redirected stdin is a real file/pipe.
-// Uses device number (1,3 on Linux) rather than mode/size which match
-// pipes and empty files too.
-func isDevNull(f *os.File) bool {
-	stat, err := f.Stat()
+// stdinIsDevNull reports whether stdin is the null device, which is what a
+// systemd oneshot and a cron job hand a process. A pipe or a redirected
+// regular file is not.
+//
+// Compared against os.DevNull via os.SameFile rather than a hardcoded
+// character-device number: the device-number form needs syscall.Stat_t,
+// which does not exist on Windows, so it breaks the cross-platform build
+// that the Windows and macOS lifecycle jobs cover.
+// stdinIsDevNullOverride, when non-nil, replaces the null-device check.
+// Tests need it because `go test` binds the test binary's own stdin to
+// /dev/null, so a test cannot otherwise simulate the pipe case at all.
+var stdinIsDevNullOverride func() bool
+
+func stdinIsDevNull() bool {
+	if stdinIsDevNullOverride != nil {
+		return stdinIsDevNullOverride()
+	}
+	self, err := os.Stdin.Stat()
 	if err != nil {
 		return false
 	}
-	if stat.Mode()&os.ModeCharDevice == 0 {
+	null, err := os.Stat(os.DevNull)
+	if err != nil {
 		return false
 	}
-	// Linux /dev/null is character device 1:3. Check via syscall.
-	type devicer interface{ Sys() interface{} }
-	if d, ok := stat.(devicer); ok {
-		if sys, ok := d.Sys().(*syscall.Stat_t); ok {
-			return sys.Rdev == 0x0300 // major 1, minor 3
-		}
-	}
-	return false
+	return os.SameFile(self, null)
 }
 
 // splitLabels splits a comma-separated label list.
