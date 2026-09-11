@@ -52,7 +52,10 @@ type controlResponse struct {
 	Entries      []AuditEntry           `json:"entries,omitempty"`
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]SettingInfo `json:"settings,omitempty"`
-	Raw          []byte                 `json:"-"`
+	// BuildVersion is the provider's own release version, answered by the
+	// "version" command. Mirrors the provider-side field of the same name.
+	BuildVersion string `json:"build_version,omitempty"`
+	Raw          []byte `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -452,4 +455,31 @@ func queryControlOverride(p Provider, canonicalKey string) (value string, source
 	}
 
 	return "", "", false, nil
+}
+
+// providerVersionFromSocket asks a running provider what version it is, over
+// its own control socket.
+//
+// This is the only source that answers the question directly. Every other one
+// infers it from the filesystem and can be wrong in a way the caller cannot
+// detect: buildinfo is empty on -trimpath release builds, and reading or
+// exec'ing a path is answering "what is on disk under this name?" — which an
+// update's binary swap changes underneath a running process, and which a
+// local user can point somewhere else. The socket is bound by the process
+// itself inside its own state dir, so a reply can only have come from the
+// provider that owns it.
+//
+// Returns ok=false when the provider is too old to know the command, when the
+// socket is not bound, or on any transport error. Callers fall back rather
+// than treat a miss as "no version".
+func providerVersionFromSocket(p Provider) (string, bool) {
+	if p.StateDir == "" {
+		return "", false
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "version"})
+	if err != nil || !resp.OK || resp.BuildVersion == "" {
+		return "", false
+	}
+	return resp.BuildVersion, true
 }
