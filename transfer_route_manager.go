@@ -329,7 +329,13 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
 	for transport, routes := range self.transportRoutes {
 		matchedDestinations, ok := self.transportMatchedDestinations[transport]
 		if !ok {
-			matchedDestinations := map[TransferPath]bool{}
+			// Assign, never redeclare: a ":=" here shadows the outer
+			// matchedDestinations and leaves it the nil map returned by the
+			// failed lookup, which panics on the assignment below. This was
+			// unreachable while transport entries were never deleted;
+			// closeMultiRouteSelector now removes a transport's entry once it
+			// empties, so the miss is reachable.
+			matchedDestinations = map[TransferPath]bool{}
 			self.transportMatchedDestinations[transport] = matchedDestinations
 		}
 

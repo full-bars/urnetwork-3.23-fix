@@ -3918,18 +3918,13 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 			bytes = MessagePoolCopy(transferFrameBytes)
 			defer MessagePoolReturn(bytes)
 		}
-		shared := MessagePoolShareReadOnly(bytes)
-		disposition, err := writeMultiRouteWithCarrier(
+		return writeMultiRouteWithCarrier(
 			writer,
 			self.ctx,
-			shared,
+			MessagePoolShareReadOnly(bytes),
 			self.sendBufferSettings.WriteTimeout,
 			reliableOnly,
 		)
-		if err != nil {
-			MessagePoolReturn(shared)
-		}
-		return disposition, err
 	}
 	if err := self.verifyPeerCertAgainstContract(); err != nil {
 		return transferWriteDisposition{}, err
@@ -3961,20 +3956,20 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		)
 	}
 	defer MessagePoolReturn(wrapped)
-	shared := MessagePoolShareReadOnly(wrapped)
-	disposition, err := writeMultiRouteWithCarrier(
+	return writeMultiRouteWithCarrier(
 		writer,
 		self.ctx,
-		shared,
+		MessagePoolShareReadOnly(wrapped),
 		self.sendBufferSettings.WriteTimeout,
 		reliableOnly,
 	)
-	if err != nil {
-		MessagePoolReturn(shared)
-	}
-	return disposition, err
 }
 
+// writeMultiRouteWithCarrier consumes transferFrameBytes on every path, which
+// is the same contract MultiRouteSelector.Write documents: on failure the
+// frame has already gone back to the message pool. Callers must never return
+// it themselves, or the buffer is freed twice and the pool hands live bytes to
+// a second flow.
 func writeMultiRouteWithCarrier(
 	writer MultiRouteWriter,
 	ctx context.Context,
@@ -3985,6 +3980,9 @@ func writeMultiRouteWithCarrier(
 	if reliableOnly {
 		reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter)
 		if !ok {
+			// The only failure that happens before a writer takes the frame,
+			// so this is the only place the frame is ours to return.
+			MessagePoolReturn(transferFrameBytes)
 			return transferWriteDisposition{}, fmt.Errorf("reliableOnly requested but writer %T does not support it", writer)
 		}
 		success, disposition, err := reliableWriter.writeDetailedReliableOnly(
@@ -4047,13 +4045,13 @@ func writeAckMultiRoute(
 	timeout time.Duration,
 ) error {
 	if reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter); ok {
+		// writeDetailedReliableOnly returns the frame to the pool on every
+		// failure, so returning it here too would free it twice.
 		success, _, err := reliableWriter.writeDetailedReliableOnly(ctx, transferFrameBytes, timeout)
 		if err != nil {
-			MessagePoolReturn(transferFrameBytes)
 			return err
 		}
 		if !success {
-			MessagePoolReturn(transferFrameBytes)
 			return errTransferRouteWriteTimeout
 		}
 		return nil
