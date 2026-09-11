@@ -700,7 +700,7 @@ Description=URnetwork Update
 
 [Service]
 Type=oneshot
-ExecStart=$install_path/bin/urnet-tools update
+ExecStart=$install_path/bin/urnet-tools update -y
 EOF
     
     pr_info "Installing urnetwork-update.timer in %s" "$systemd_update_timer"
