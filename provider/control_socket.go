@@ -34,7 +34,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", or "version"
 	Key    string `json:"key"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
@@ -59,6 +59,10 @@ type controlResponse struct {
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]settingInfo `json:"settings,omitempty"`
 	Version      int                    `json:"v,omitempty"` // protocol version echoed back
+	// BuildVersion is the provider's own release version, answered by the
+	// "version" command. Distinct from Version, which is the control
+	// protocol's version, not the binary's.
+	BuildVersion string `json:"build_version,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -367,6 +371,23 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 	IncrControlCmd(req.Cmd)
 
 	switch req.Cmd {
+	case "version":
+		// The provider answering for itself. Every other way to learn a
+		// running provider's version infers it from the filesystem: read
+		// the binary's buildinfo (empty on -trimpath releases), or exec
+		// something at a path (which an update swaps out from under you,
+		// and which a local user can substitute). Asking the process skips
+		// all of that — it reports what it IS, not what is on disk under
+		// its name.
+		v := Version
+		if v == "" {
+			// A binary built without -ldflags (local `go build`, some CI
+			// paths). Say so rather than returning an empty string a
+			// caller would have to guess the meaning of.
+			v = "dev"
+		}
+		return controlResponse{OK: true, BuildVersion: v}
+
 	case "get":
 		if req.Key == "" {
 			return controlResponse{OK: false, Error: "key is required"}

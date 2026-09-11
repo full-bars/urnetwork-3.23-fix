@@ -932,3 +932,67 @@ func TestStatusCommand_EmptyState(t *testing.T) {
 		}
 	}
 }
+
+// TestControlSocket_VersionCommand_ReturnsBuildVersion verifies that the
+// "version" command returns main.Version (set via -ldflags at build time).
+// When the binary is built normally Version is whatever was injected;
+// here we set it explicitly to prove the command reads it.
+func TestControlSocket_VersionCommand_ReturnsBuildVersion(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	origVersion := Version
+	Version = "1.2.3-test"
+	t.Cleanup(func() { Version = origVersion })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	resp, err := dialControlSocket(controlRequest{Cmd: "version"})
+	if err != nil {
+		t.Fatalf("dial version: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("version response not OK: %+v", resp)
+	}
+	if resp.BuildVersion != "1.2.3-test" {
+		t.Errorf("BuildVersion = %q, want %q", resp.BuildVersion, "1.2.3-test")
+	}
+}
+
+// TestControlSocket_VersionCommand_ReturnsDevWhenEmpty verifies the fallback:
+// when Version is "" (binary built without -ldflags, e.g. local `go build`),
+// the version command must answer "dev" rather than an empty string that
+// callers would have to guess the meaning of.
+func TestControlSocket_VersionCommand_ReturnsDevWhenEmpty(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	origVersion := Version
+	Version = ""
+	t.Cleanup(func() { Version = origVersion })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup, err := startControlSocket(ctx, globalControlState)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+	defer cleanup()
+
+	resp, err := dialControlSocket(controlRequest{Cmd: "version"})
+	if err != nil {
+		t.Fatalf("dial version: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("version response not OK: %+v", resp)
+	}
+	if resp.BuildVersion != "dev" {
+		t.Errorf("BuildVersion = %q, want %q", resp.BuildVersion, "dev")
+	}
+}

@@ -3,9 +3,13 @@
 package urnettools
 
 import (
+	"bufio"
+	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -440,4 +444,134 @@ func TestParseUnitLinesFallsBackToTheNameRule(t *testing.T) {
 	if len(got) != 1 || got[0].Unit != "urnetwork.service" {
 		t.Fatalf("parseUnitLines = %+v, want only urnetwork.service (deny-list still excludes -update)", got)
 	}
+}
+
+// TestDiscoverProcessesSocketVersionWinsOverProc exercises the version
+// resolution priority in discoverProcesses: when the control socket
+// returns a version, it must be used instead of any /proc-derived version.
+// The code checks socket first (if/else-if), so this test proves the socket
+// path is taken when it provides a result. A mock socket at the provider's
+// StateDir returns a specific version; the discovered Provider.Version must
+// match the socket's answer.
+func TestDiscoverProcessesSocketVersionWinsOverProc(t *testing.T) {
+	// H3 validation in discoverProcesses rejects stateDir if it's not under
+	// the process owner's home (resolved from /etc/passwd via processOwner).
+	realU, err := user.Current()
+	if err != nil {
+		t.Skipf("user.Current: %v", err)
+	}
+	fakeHome := filepath.Join(realU.HomeDir, ".test-socket-version-win")
+	if err := os.MkdirAll(fakeHome, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(fakeHome) })
+
+	// Build a minimal binary to act as a provider process.
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "fake-provider")
+	mainGo := filepath.Join(tmpDir, "main.go")
+	if err := os.WriteFile(mainGo, []byte(`package main
+import "time"
+func main() { time.Sleep(60 * time.Second) }
+`), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cmd := exec.Command("go", "build", "-o", binPath, mainGo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build fake provider: %v\n%s", err, out)
+	}
+
+	// The provider's state dir lives under fakeHome.
+	urnDir := filepath.Join(fakeHome, ".urnetwork")
+	if err := os.MkdirAll(urnDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Start the fake provider as a child process with argv[0] = "provider".
+	startCmd := exec.Command(binPath)
+	startCmd.Args = []string{"provider"}
+	if err := startCmd.Start(); err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	defer func() {
+		_ = startCmd.Process.Kill()
+		_ = startCmd.Wait()
+	}()
+
+	// Mock readEnviron so discoverProcesses sees the right HOME.
+	pid := startCmd.Process.Pid
+	origReadEnviron := readEnviron
+	readEnviron = func(p int) map[string]string {
+		if p == pid {
+			return map[string]string{"HOME": fakeHome}
+		}
+		return origReadEnviron(p)
+	}
+	defer func() { readEnviron = origReadEnviron }()
+
+	// Mock socket that responds to "version" with a specific string.
+	sockPath := filepath.Join(urnDir, "provider.sock")
+	startVersionMockSocket(t, sockPath, "from-socket")
+
+	// Poll for the child to appear in /proc (exec may race).
+	var found *Provider
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		providers := discoverProcesses()
+		for i := range providers {
+			if providers[i].PID == pid {
+				found = &providers[i]
+				break
+			}
+		}
+		if found != nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if found == nil {
+		t.Fatalf("discoverProcesses did not find the fake provider (pid %d)", pid)
+	}
+	if found.StateDir == "" {
+		t.Fatal("stateDir is empty — H3 validation rejected fakeHome (must be under process owner's real home)")
+	}
+	if found.Version != "from-socket" {
+		t.Errorf("Version = %q, want %q — socket answer must win over any /proc fallback",
+			found.Version, "from-socket")
+	}
+}
+
+// startVersionMockSocket starts a mock unix socket server at sockPath that
+// responds to "version" cmd with the given version string and OK=true.
+func startVersionMockSocket(t *testing.T, sockPath, version string) {
+	t.Helper()
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen mock socket: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				for scanner.Scan() {
+					var req controlRequest
+					if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+						continue
+					}
+					if req.Cmd == "version" {
+						_ = json.NewEncoder(c).Encode(controlResponse{
+							OK:           true,
+							BuildVersion: version,
+						})
+					}
+				}
+			}(conn)
+		}
+	}()
 }

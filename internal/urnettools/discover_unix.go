@@ -161,7 +161,13 @@ func discoverProcesses() []Provider {
 		// than "what is on disk under this name?", which is the question
 		// callers actually ask.
 		if p.PID > 0 {
-			if handle, err := runningImageHandle(p.PID); err == nil {
+			// Ask the provider first: it is the only source that reports
+			// what the process IS rather than what sits on disk under its
+			// name. Falls through for providers older than the version
+			// command, and for one whose socket never bound.
+			if v, ok := providerVersionFromSocket(p); ok {
+				p.Version = v
+			} else if handle, err := runningImageHandle(p.PID); err == nil {
 				p.Version = providerVersion(handle)
 			}
 		}
