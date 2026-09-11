@@ -50,8 +50,12 @@ func Run(args []string) error {
 				if p.BinaryDeleted {
 					stale = " (disk binary stale — restart needed)"
 				}
+				version := p.Version
+				if version == "" && !p.Running {
+					version = "(no binary)"
+				}
 				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
-					providerLabel(p), p.Version, status, p.PID, stale)
+					providerLabel(p), version, status, p.PID, stale)
 			}
 			return nil
 		}

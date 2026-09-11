@@ -271,12 +271,12 @@ func (s *controlState) statusSnapshot() map[string]struct {
 
 	// Pre-populate with env or code defaults for all known keys.
 	envDefaults := map[string]string{
-		"ramlogs":      os.Getenv("URNETWORK_RAMLOGS"),
-		"fast_auth":    os.Getenv("URNETWORK_FAST_AUTH"),
-		"metrics":      os.Getenv("URNETWORK_METRICS"),
-		"profile":      os.Getenv("URNETWORK_PROFILE"),
-		"gogc":         os.Getenv("GOGC"),
-		"gomemlimit":   os.Getenv("GOMEMLIMIT"),
+		"ramlogs":    os.Getenv("URNETWORK_RAMLOGS"),
+		"fast_auth":  os.Getenv("URNETWORK_FAST_AUTH"),
+		"metrics":    os.Getenv("URNETWORK_METRICS"),
+		"profile":    os.Getenv("URNETWORK_PROFILE"),
+		"gogc":       os.Getenv("GOGC"),
+		"gomemlimit": os.Getenv("GOMEMLIMIT"),
 	}
 
 	out := make(map[string]struct {

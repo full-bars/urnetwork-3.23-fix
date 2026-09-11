@@ -42,7 +42,6 @@ type SettingInfo struct {
 	SetAt  string `json:"set_at,omitempty"`
 }
 
-
 // controlResponse is one line response from the control socket.
 type controlResponse struct {
 	OK           bool                   `json:"ok"`

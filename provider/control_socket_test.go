@@ -932,4 +932,3 @@ func TestStatusCommand_EmptyState(t *testing.T) {
 		}
 	}
 }
-
