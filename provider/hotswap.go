@@ -85,7 +85,56 @@ var (
 	execInPlaceFunc    = execInPlace
 	spawnCandidateFunc = spawnHotSwapCandidate
 	exitFunc           = os.Exit
+	executableFunc     = os.Executable
+	statFunc           = os.Stat
 )
+
+// installPath is the executable path captured at process start, before any
+// updater could move the running binary aside.
+//
+// os.Executable() reads /proc/self/exe, which follows the inode rather than the
+// path. The update flow installs the new build at the provider's binary path
+// and moves the running one to a backup, so from that moment os.Executable()
+// returns the BACKUP path. Spawning that re-executes the old build: the handoff
+// reports success, the operator sees a clean zero-downtime swap, and the
+// provider keeps running the version it was already on.
+//
+// Capturing the path during init pins it while it still names the install
+// location, so a handoff always launches whatever now lives there.
+var installPath = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
+}()
+
+// hotSwapExecutablePath returns the binary a handoff should launch. It prefers
+// the path captured at startup and falls back to the live one when that path
+// has gone (an uninstall mid-handoff), so a handoff never silently launches the
+// build it is supposed to be replacing without saying so.
+func hotSwapExecutablePath() (string, error) {
+	current, err := executableFunc()
+	if err != nil && installPath == "" {
+		return "", err
+	}
+	if installPath == "" {
+		return current, nil
+	}
+	if _, statErr := statFunc(installPath); statErr != nil {
+		if err != nil {
+			return "", fmt.Errorf("install path %s is gone (%v) and the running image is unresolvable: %w", installPath, statErr, err)
+		}
+		tlog("⚠️ [hotswap] Install path %s is gone (%v); falling back to the running image %s. This handoff will NOT change version.\n", installPath, statErr, current)
+		return current, nil
+	}
+	if err == nil && current != installPath {
+		// The running binary was moved aside, which is exactly what an update
+		// does. Launching the install path is the whole point of the handoff.
+		tlog("⚡ [hotswap] Running image moved to %s; launching the install path %s instead.\n", current, installPath)
+	}
+	return installPath, nil
+}
 
 // RegisterCoordinatorCloser registers a callback invoked to yield coordinator sessions
 // during a hot-swap handoff. It returns a cleanup function that must be deferred to prevent leaks.
@@ -298,7 +347,7 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return nil
 	}
 
-	exe, err := os.Executable()
+	exe, err := hotSwapExecutablePath()
 	if err != nil {
 		tlog("❌ [hotswap] Failed to resolve executable path: %v. Aborting handoff.\n", err)
 		return fmt.Errorf("resolve executable: %w", err)
