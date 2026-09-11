@@ -23,6 +23,7 @@ type clientJWTEntryMinimal struct {
 // a table of proxy address → client_id, network_id, minted_at.
 // For "direct" entries, the proxy address is shown as "(direct)".
 func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinimal) {
+	defer w.Flush()
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "(no entries)")
 		return
@@ -41,19 +42,21 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 		if label == "direct" {
 			label = "(direct)"
 		}
-		// Show client_id truncated to 8 chars for readability.
+		// Show full client_id — this subcommand exists specifically to
+		// inspect and correlate client identities.
 		cid := e.ClientID
-		if len(cid) > 8 {
-			cid = cid[:8]
-		}
 		nid := e.NetworkID
 		if len(nid) > 8 {
 			nid = nid[:8]
 		}
-		age := formatDuration(time.Since(e.MintedAt))
+		var age string
+		if e.MintedAt.IsZero() {
+			age = "—"
+		} else {
+			age = formatDuration(time.Since(e.MintedAt))
+		}
 		fmt.Fprintf(w, "%s	%s	%s	%s\n", label, cid, nid, age)
 	}
-	w.Flush()
 }
 
 // formatDuration renders a duration in human-friendly form: seconds if
@@ -75,8 +78,10 @@ func formatDuration(d time.Duration) string {
 }
 
 // loadClientJWTStore reads .client_jwts.json from the given directory and
-// returns its parsed entries. Returns an empty map (not nil) when the file
-// is missing or unreadable — callers should treat that as "no entries".
+// returns its parsed entries. Returns an empty map (not nil) when the file is
+// missing. Read errors (e.g. permission denied) are propagated and not
+// treated as an empty store — this avoids masking access failures as "no
+// entries".
 func loadClientJWTStore(stateDir string) (map[string]clientJWTEntryMinimal, error) {
 	path := filepath.Join(stateDir, ".client_jwts.json")
 	data, err := os.ReadFile(path)
