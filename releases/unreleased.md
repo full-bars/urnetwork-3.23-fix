@@ -1,10 +1,16 @@
 ### **Unreleased (targeting v3.23.0-fix.31.7)**
 
-v3.23.0-fix.31.0 through v3.23.0-fix.31.6 have shipped. See
-[releases/v3.23.0-fix.31.0.md](v3.23.0-fix.31.0.md) for that release's full
-notes and `CHANGELOG.md` for the complete per-tag history. This file covers
-only what has landed on `main` since v3.23.0-fix.31.6, plus one pending pull
-request.
+> [!NOTE]
+> The whole v31 surface is still unreleased in the sense that matters.
+> v3.23.0-fix.31.0 through v3.23.0-fix.31.6 are tags cut to exercise what
+> will eventually ship as v31, not deployments. The fleet runs v30.x, so no
+> v31 change has reached production yet. See
+> [releases/v3.23.0-fix.31.0.md](v3.23.0-fix.31.0.md) for the full v31
+> feature set and `CHANGELOG.md` for the per-tag history.
+
+This file covers what has landed on `main` since the v3.23.0-fix.31.6 tag,
+plus one pending pull request. Everything here is additional to the v31
+feature set in the notes linked above, not a replacement for it.
 
 #### Added
 - **Version stamp for `-trimpath` builds**: every release binary is built
@@ -27,18 +33,30 @@ request.
   on-disk buildinfo for providers too old to know the command or whose
   socket never bound.
 
-#### Pending (not yet merged)
-- **Auto-update timer fix (PR #581, `fix/update-timer-noninteractive`)**:
-  the weekly `urnetwork-update.timer` has never completed an update. Its
-  `ExecStart` is a bare `urnet-tools update` with no `-y`, systemd hands the
-  oneshot unit `/dev/null` on stdin, and the version-choice confirmation was
-  gated only on `!force`, so every run exited 1 on the non-interactive stdin
-  read. Not a v31 regression, it predates v3.23.0-fix.30.9. The fix
-  introduces a single `unattendedUpdate()` decision that both confirmation
-  gates and the target pickers read from, so a non-interactive run no
-  longer demands a prompt it cannot satisfy. The listing of what is about
-  to be touched still prints unconditionally, so unattended runs keep an
-  audit trail; only the interactive question is skipped.
+- **Auto-update timer fix**: the weekly `urnetwork-update.timer` has never
+  completed an update. Its `ExecStart` is a bare `urnet-tools update` with
+  no `-y`, systemd hands the oneshot unit `/dev/null` on stdin, and the
+  version-choice confirmation was gated only on `!force`, so every run
+  exited 1 on the non-interactive stdin read. Not a v31 regression — it
+  predates v3.23.0-fix.30.9, and `scripts/Provider_Install_Linux.sh` still
+  writes that same `ExecStart`. The fix introduces `unattendedUpdate()`,
+  a single decision shared by both confirmation gates and the target
+  pickers. Gate semantics:
+
+  | Condition | Behavior |
+  |-----------|----------|
+  | `-f`/`--force` | Skip prompts |
+  | `INVOCATION_ID` set (systemd) | Skip prompts |
+  | stdin is `/dev/null` (cron) | Skip prompts |
+  | Non-interactive but not `/dev/null` | Refuse (SSH w/o pty, pipes) |
+  | Terminal, no `-f` | Prompt as before |
+
+  Piped answers (`echo y | urnet-tools update`) are **not** read —
+  `confirmStdinRead` is shared with other destructive commands and keeps
+  refusing non-terminal input. The install script should pass `-y` for
+  explicitness. `cmdSelfUpdate` had the identical bug and is fixed too.
+  An update lock (flock on `*.update.lock`) now serializes concurrent
+  updates of the same binary.
 
 > [!IMPORTANT]
 > **Nodes on v3.23.0-fix.30.9 or v3.23.0-fix.31.6 will report a false
