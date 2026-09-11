@@ -21,7 +21,26 @@ import (
 	"testing"
 )
 
+// fakeProviderVersionEnv turns this test binary into a stand-in for a
+// provider binary. running_image_linux_test.go needs a REAL process whose
+// on-disk image can be renamed out from under it, which no fake or seam can
+// simulate: the behaviour under test is the kernel's, not ours. Re-execing
+// the test binary is the standard way to get one without building a fixture.
+const fakeProviderVersionEnv = "URNET_TEST_FAKE_PROVIDER_VERSION"
+
 func TestMain(m *testing.M) {
+	// Helper-subprocess mode: answer --version like a provider binary would,
+	// otherwise block so the caller has a live pid to inspect.
+	if v := os.Getenv(fakeProviderVersionEnv); v != "" {
+		for _, a := range os.Args[1:] {
+			if a == "--version" {
+				os.Stdout.WriteString(v + "\n")
+				os.Exit(0)
+			}
+		}
+		select {}
+	}
+
 	// Isolate every platform-specific config location this package reads,
 	// so no developer/runner state leaks into selection behavior:
 	//   unix:  $HOME + $XDG_CONFIG_HOME (UserHomeDir/UserConfigDir)

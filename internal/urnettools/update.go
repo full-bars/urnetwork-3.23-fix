@@ -657,7 +657,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
-				procExe, perr := runningImagePath(rp.PID)
+				procExe, perr := runningImageHandle(rp.PID)
 				if perr == nil {
 					// providerVersion, not the buildinfo-only variant: every
 					// release binary is built with -trimpath, which strips
@@ -668,7 +668,13 @@ func updateProvider(p Provider, cfg updateConfig) error {
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
 					if procVersion := providerVersion(procExe); procVersion == cfg.Tag {
-						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, procExe)
+						// Report the image's real path, not the /proc
+						// handle the version was read through.
+						shown := procExe
+						if real, rerr := runningImagePath(rp.PID); rerr == nil {
+							shown = real
+						}
+						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, shown)
 						pruneBackups(p.Binary, 2)
 						return nil
 					}

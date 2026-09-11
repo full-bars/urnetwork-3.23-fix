@@ -36,3 +36,11 @@ func runningImagePath(pid int) (string, error) {
 	}
 	return windows.UTF16ToString(buf[:size]), nil
 }
+
+// runningImageHandle returns a path that reads the image pid is running.
+// Windows holds an execute lock on a running image, so it cannot be replaced
+// underneath the process the way a POSIX rename can, and the queried image
+// path stays valid. There is therefore no separate handle to return.
+func runningImageHandle(pid int) (string, error) {
+	return runningImagePath(pid)
+}

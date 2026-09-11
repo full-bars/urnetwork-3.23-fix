@@ -138,12 +138,36 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		// S-C1 fix: use buildinfo-only version resolution for discovered
-		// processes. providerVersionFromExec execs the binary as root —
-		// a local user can plant a real ELF via `exec -a urnetwork-provider
-		// ./malicious` and the magic-byte check passes. Discovery must never
-		// exec a foreign binary. Accept empty version for -trimpath builds.
-		p.Version = providerVersionFromBuildinfo(p.Binary)
+		// Version resolution, and why it is split by liveness.
+		//
+		// S-C1: discovery must never exec a binary named by a filesystem
+		// path. A local user can plant a real ELF there via
+		// `exec -a urnetwork-provider ./malicious` and the magic-byte check
+		// still passes, so p.Binary is only ever read, never run.
+		//
+		// Buildinfo alone, however, cannot answer the question for any
+		// release: every release is built with -trimpath, which strips
+		// -ldflags (and so main.Version) out of buildinfo, and Main.Version
+		// holds a module pseudo-version that isGoPseudoVersion correctly
+		// rejects. So this returned "" for every release build, which is
+		// what left `urnet-tools version` blank and gave HotSwap's version
+		// gate nothing to fall back on.
+		//
+		// For a RUNNING provider there is a third option that is safe
+		// precisely because it is not a filesystem path: /proc/<pid>/exe
+		// names the inode already executing. Nothing a local user does can
+		// substitute it, and it stays readable after an update renames over
+		// the binary — so it answers "what is this process running?" rather
+		// than "what is on disk under this name?", which is the question
+		// callers actually ask.
+		if p.PID > 0 {
+			if handle, err := runningImageHandle(p.PID); err == nil {
+				p.Version = providerVersion(handle)
+			}
+		}
+		if p.Version == "" {
+			p.Version = providerVersionFromBuildinfo(p.Binary)
+		}
 		out = append(out, p)
 	}
 	return out

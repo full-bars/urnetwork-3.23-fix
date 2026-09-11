@@ -14,3 +14,8 @@ import "fmt"
 func runningImagePath(pid int) (string, error) {
 	return "", fmt.Errorf("runningImagePath: unsupported platform (pid %d)", pid)
 }
+
+// runningImageHandle is unsupported wherever runningImagePath is.
+func runningImageHandle(pid int) (string, error) {
+	return "", fmt.Errorf("runningImageHandle: unsupported platform (pid %d)", pid)
+}
