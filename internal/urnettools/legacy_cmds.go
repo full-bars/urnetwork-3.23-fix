@@ -422,6 +422,24 @@ func providerUsesRamlogs(p Provider) bool {
 	if v, _, found, err := queryControlOverride(p, "profile"); err == nil && found && (v == "lowmem" || v == "eco") {
 		return true
 	}
+	// Control state is not the only way RAMLOGS gets turned on, and treating
+	// it as the only way made this command lie: a provider whose unit carries
+	// URNETWORK_RAMLOGS=1 in its body or a drop-in, or a container started with
+	// -e URNETWORK_RAMLOGS=1, redirects its output to /dev/shm while this
+	// function answered "no" and the caller streamed an almost-empty journal.
+	// The provider decides from the environment variable; deciding only from
+	// stored state guarantees the two disagree. Note the shell installer
+	// already reads the drop-in for exactly this key.
+	//
+	// Order is deliberate: the file check is the provider's own observable
+	// behavior, so it settles the question regardless of how the redirect was
+	// configured, and it costs one stat.
+	if ramlogFileActive(p) {
+		return true
+	}
+	if env, err := unitEnvironment(p); err == nil && ramlogsEnvEnabled(env) {
+		return true
+	}
 	return false
 }
 
