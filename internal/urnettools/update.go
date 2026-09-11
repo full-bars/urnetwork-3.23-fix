@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -86,7 +87,12 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// Parse --tag/--digest/--url and batch-selection overrides.
 	var include, exclude []string
 	all := false
-	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
+	// One decision for "nobody is here to answer a prompt", shared by the
+	// target pickers and both confirmation gates below. Keeping these in
+	// lockstep is what stops an update from skipping the picker while still
+	// demanding a prompt.
+	unattended := unattendedUpdate(force)
+	interactive := !unattended // -f implies non-interactive: no pickers
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -219,9 +225,10 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 
-	// Confirm version choice interactively unless -f or dry-run already
-	// covers it (dry-run prints without acting).
-	if !force && !dryRun {
+	// Confirm the version choice only when a human can answer. -f, a
+	// dry-run (which prints without acting) and an unattended run each
+	// cover it already.
+	if !unattended && !dryRun {
 		yes, cerr := confirmVersion(cfg.Tag, chosen)
 		if cerr != nil {
 			return cerr
@@ -232,7 +239,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	}
 
 	// Confirm once for the whole set, listing every provider.
-	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, force, dryRun)
+	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, unattended, dryRun)
 	if err != nil {
 		return err
 	}
@@ -414,7 +421,8 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 		fmt.Printf("would update %s -> %s (sha256 verified)\n", cfg.ToolAsset, cfg.Tag)
 		return nil
 	}
-	if !force {
+	unattended := unattendedUpdate(force)
+	if !unattended {
 		line, err := confirmStdinRead(fmt.Sprintf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag))
 		if err != nil {
 			return fmt.Errorf("read confirmation: %w", err)
@@ -471,6 +479,60 @@ func orDash(s string) string {
 // -f we never prompt — scripts must be fully explicit.
 func forceInteractive(force bool) bool {
 	return !force && stdinIsInteractive()
+}
+
+// unattendedUpdate reports whether an update run has no human available to
+// answer a confirmation prompt. Three cases:
+//
+//  1. -f/--force was given → always unattended.
+//  2. stdin is /dev/null (systemd timer) or INVOCATION_ID is set → truly
+//     unattended: no human, no pipe, skip the prompt.
+//  3. stdin is a pipe or redirected file (SSH, scripts, echo y|...) → NOT
+//     unattended: read the pipe for the user's answer.
+//
+// The weekly urnetwork-update.timer is the reason this exists. Its ExecStart
+// is a bare `urnet-tools update` with no -y, and systemd hands a oneshot
+// /dev/null on stdin, so gating the version prompt on !force alone made
+// confirmStdinRead refuse the read and the unit exit 1 on every single run.
+//
+// Critical invariant: piping `echo n | urnet-tools update` must honor the
+// "n", and `ssh host "urnet-tools update"` without -t must NOT auto-apply.
+// Only true /dev/null / systemd invocations skip the prompt.
+func unattendedUpdate(force bool) bool {
+	if force {
+		return true
+	}
+	if stdinIsInteractive() {
+		return false
+	}
+	// Non-interactive stdin: check if it's a true systemd/cron invocation
+	// (stdin is /dev/null or INVOCATION_ID is set) vs a pipe with data.
+	if os.Getenv("INVOCATION_ID") != "" {
+		return true
+	}
+	return isDevNull(os.Stdin)
+}
+
+// isDevNull reports whether f is /dev/null. Under systemd Type=oneshot,
+// stdin is /dev/null. Piped or redirected stdin is a real file/pipe.
+// Uses device number (1,3 on Linux) rather than mode/size which match
+// pipes and empty files too.
+func isDevNull(f *os.File) bool {
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	if stat.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// Linux /dev/null is character device 1:3. Check via syscall.
+	type devicer interface{ Sys() interface{} }
+	if d, ok := stat.(devicer); ok {
+		if sys, ok := d.Sys().(*syscall.Stat_t); ok {
+			return sys.Rdev == 0x0300 // major 1, minor 3
+		}
+	}
+	return false
 }
 
 // splitLabels splits a comma-separated label list.
