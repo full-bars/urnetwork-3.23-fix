@@ -360,6 +360,49 @@ func TestMessagePoolStackedRefusedSharesEachGetForgiveness(t *testing.T) {
 	}
 }
 
+func TestMessagePoolSummary(t *testing.T) {
+	ResetMessagePoolStats()
+
+	// Get and return enough messages to exercise all pool size buckets.
+	// Each size maps to the smallest pool bucket >= the size:
+	// 1024->2048, 2048->2048, 3000->4096, 8000->16384, 20000->32768, 40000->65536
+	sizes := []int{1024, 2048, 3000, 8000, 20000, 40000}
+	getCount := 100
+	var msgs [][]byte
+	for _, n := range sizes {
+		for range getCount {
+			msgs = append(msgs, MessagePoolGet(n))
+		}
+	}
+
+	// Return them all.
+	for _, m := range msgs {
+		MessagePoolReturn(m)
+	}
+
+	summary := MessagePoolSummary()
+	if len(summary) == 0 {
+		t.Fatal("MessagePoolSummary returned empty slice")
+	}
+
+	// Every bucket should report Taken == Returned (all messages returned).
+	for _, b := range summary {
+		if b.Taken != b.Returned {
+			t.Errorf("bucket %d: taken=%d returned=%d, want taken==returned", b.Size, b.Taken, b.Returned)
+		}
+		if b.Taken == 0 {
+			t.Errorf("bucket %d: taken=0, want nonzero", b.Size)
+		}
+		if b.Size == 0 {
+			t.Errorf("bucket has Size=0")
+		}
+		// Created <= Taken always (Created only on pool miss).
+		if b.Created > b.Taken {
+			t.Errorf("bucket %d: created=%d > taken=%d", b.Size, b.Created, b.Taken)
+		}
+	}
+}
+
 func TestBase64(t *testing.T) {
 	for range 128 {
 		n := mathrand.Intn(512)
