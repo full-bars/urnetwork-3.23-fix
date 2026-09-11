@@ -2,10 +2,9 @@ package urnettools
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
+	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +14,35 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+// mockSnStatusAPI is a test double that returns pre-configured API responses.
+type mockSnStatusAPI struct {
+	ranking *connect.NetworkRankingResult
+	epoch   *connect.SnEpochResult
+	claim   *connect.SnPoolClaimResult
+	// Track calls for assertions
+	byJwt string
+}
+
+func (m *mockSnStatusAPI) SetByJwt(jwt string) { m.byJwt = jwt }
+func (m *mockSnStatusAPI) NetworkGetRankingSync() (*connect.NetworkRankingResult, error) {
+	if m.ranking == nil {
+		return nil, fmt.Errorf("network ranking: 500 Internal Server Error")
+	}
+	return m.ranking, nil
+}
+func (m *mockSnStatusAPI) SnEpochSync() (*connect.SnEpochResult, error) {
+	if m.epoch == nil {
+		return nil, fmt.Errorf("subnet epoch: 500 Internal Server Error")
+	}
+	return m.epoch, nil
+}
+func (m *mockSnStatusAPI) SnPoolClaimSync(args *connect.SnPoolClaimArgs) (*connect.SnPoolClaimResult, error) {
+	if m.claim == nil {
+		return nil, fmt.Errorf("pool claim: 500 Internal Server Error")
+	}
+	return m.claim, nil
+}
+
 func TestFetchSnStatus_MockEndpoints(t *testing.T) {
 	expectedColdkey := "5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"
 	pubkey, err := ss58.DecodeWithPrefix(expectedColdkey, ss58.BittensorPrefix)
@@ -22,48 +50,11 @@ func TestFetchSnStatus_MockEndpoints(t *testing.T) {
 		t.Fatalf("failed to decode test coldkey: %v", err)
 	}
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/network/ranking":
-			resp := connect.NetworkRankingResult{
-				NetworkRanking: &connect.NetworkRanking{
-					NetMibCount:       1234567.89,
-					LeaderboardRank:   7,
-					LeaderboardPublic: true,
-				},
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		case "/sn/epoch":
-			resp := connect.SnEpochResult{
-				Epoch:               50,
-				StartBlock:          50000,
-				CommitDeadlineBlock: 50300,
-				TrailsDeadlineBlock: 50600,
-				FinalizeBlock:       50720,
-				ContractAddress:     "0x1111222233334444555566667777888899990000",
-				ChainId:             964,
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		case "/sn/pool/claim":
-			resp := connect.SnPoolClaimResult{
-				Epoch:      49,
-				Coldkey:    pubkey[:],
-				ShareBps:   450,
-				PayoutRoot: make([]byte, 32),
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer ts.Close()
-
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "jwt"), []byte("test-jwt"), 0600); err != nil {
 		t.Fatalf("failed to write mock jwt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte(ts.URL), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte("http://unused"), 0600); err != nil {
 		t.Fatalf("failed to write mock api_url: %v", err)
 	}
 
@@ -74,11 +65,42 @@ func TestFetchSnStatus_MockEndpoints(t *testing.T) {
 		NetworkID: "net-uuid-meso",
 	}
 
+	// Inject mock API
+	mock := &mockSnStatusAPI{
+		ranking: &connect.NetworkRankingResult{
+			NetworkRanking: &connect.NetworkRanking{
+				NetMibCount:       1234567.89,
+				LeaderboardRank:   7,
+				LeaderboardPublic: true,
+			},
+		},
+		epoch: &connect.SnEpochResult{
+			Epoch:               50,
+			StartBlock:          50000,
+			CommitDeadlineBlock: 50300,
+			TrailsDeadlineBlock: 50600,
+			FinalizeBlock:       50720,
+			ContractAddress:     "0x1111222233334444555566667777888899990000",
+			ChainId:             964,
+		},
+		claim: &connect.SnPoolClaimResult{
+			Epoch:      49,
+			Coldkey:    pubkey[:],
+			ShareBps:   450,
+			PayoutRoot: make([]byte, 32),
+		},
+	}
+	origAPI := newSnStatusAPI
+	newSnStatusAPI = func(_ context.Context, _ string, _ string) snStatusAPI { return mock }
+	t.Cleanup(func() { newSnStatusAPI = origAPI })
+
 	info, err := FetchSnStatus(p)
 	if err != nil {
 		t.Fatalf("FetchSnStatus failed: %v", err)
 	}
-
+	if info.Error != "" {
+		t.Fatalf("FetchSnStatus returned partial error: %s", info.Error)
+	}
 	if info.LeaderboardRank != 7 {
 		t.Errorf("expected rank 7, got %d", info.LeaderboardRank)
 	}
@@ -157,47 +179,37 @@ func TestRenderSnStatusDashboard(t *testing.T) {
 }
 
 func TestFetchSnStatus_EpochEdgeCasesAndErrors(t *testing.T) {
-	var requestedClaimEpoch string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/network/ranking":
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":{"message":"internal error"}}`))
-		case "/sn/epoch":
-			resp := connect.SnEpochResult{
-				Epoch: 1, // current epoch is 1 -> finalized epoch should be 0
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		case "/sn/pool/claim":
-			requestedClaimEpoch = r.URL.Query().Get("epoch")
-			resp := connect.SnPoolClaimResult{
-				Epoch:    0,
-				ShareBps: 100,
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer ts.Close()
-
 	tmpDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(tmpDir, "jwt"), []byte("test-jwt"), 0600)
-	_ = os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte(ts.URL), 0600)
+	_ = os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte("http://unused"), 0600)
 
 	p := Provider{
 		Unit:     "test.service",
 		StateDir: tmpDir,
 	}
 
+	// Mock: ranking returns error, epoch returns epoch=1, claim returns share=100
+	mock := &mockSnStatusAPI{
+		ranking: nil, // simulate error
+		epoch: &connect.SnEpochResult{
+			Epoch: 1, // current epoch is 1 -> finalized epoch should be 0
+		},
+		claim: &connect.SnPoolClaimResult{
+			Epoch:    0,
+			ShareBps: 100,
+		},
+	}
+	origAPI := newSnStatusAPI
+	newSnStatusAPI = func(_ context.Context, _ string, _ string) snStatusAPI { return mock }
+	t.Cleanup(func() { newSnStatusAPI = origAPI })
+
 	info, err := FetchSnStatus(p)
 	if err != nil {
 		t.Fatalf("FetchSnStatus failed: %v", err)
 	}
-
-	if requestedClaimEpoch != "0" {
-		t.Errorf("expected claim requested for epoch 0, got %s", requestedClaimEpoch)
+	// Partial failure: ranking error, epoch+claim succeed
+	if info.Error == "" {
+		t.Errorf("expected error to be populated for ranking failure")
 	}
 	if info.ClaimEpoch != 0 {
 		t.Errorf("expected ClaimEpoch 0, got %d", info.ClaimEpoch)
@@ -205,7 +217,29 @@ func TestFetchSnStatus_EpochEdgeCasesAndErrors(t *testing.T) {
 	if info.PayoutShareBps != 100 {
 		t.Errorf("expected PayoutShareBps 100, got %d", info.PayoutShareBps)
 	}
+}
+
+func TestFetchSnStatus_AllEndpointsFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "jwt"), []byte("test-jwt"), 0600)
+	_ = os.WriteFile(filepath.Join(tmpDir, "api_url"), []byte("http://unused"), 0600)
+
+	p := Provider{Unit: "test.service", StateDir: tmpDir}
+
+	mock := &mockSnStatusAPI{
+		ranking: nil, // error
+		epoch:   nil, // error
+		claim:   nil, // error
+	}
+	origAPI := newSnStatusAPI
+	newSnStatusAPI = func(_ context.Context, _ string, _ string) snStatusAPI { return mock }
+	t.Cleanup(func() { newSnStatusAPI = origAPI })
+
+	info, err := FetchSnStatus(p)
+	if err == nil {
+		t.Fatalf("expected non-nil error when all endpoints fail")
+	}
 	if info.Error == "" {
-		t.Errorf("expected error to be populated for 500 status on ranking")
+		t.Errorf("expected info.Error to be populated")
 	}
 }

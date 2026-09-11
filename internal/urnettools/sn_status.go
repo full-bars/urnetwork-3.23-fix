@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/urfoundation/sn/ss58"
 	"github.com/urnetwork/connect"
@@ -36,6 +35,22 @@ type SnStatusInfo struct {
 	PayoutShareBps    int     `json:"payout_share_bps,omitempty"`
 	ClaimEpoch        uint64  `json:"claim_epoch,omitempty"`
 	Error             string  `json:"error,omitempty"`
+}
+
+// snStatusAPI is the subset of BringYourApi used by FetchSnStatus, testable with a mock.
+type snStatusAPI interface {
+	SetByJwt(string)
+	NetworkGetRankingSync() (*connect.NetworkRankingResult, error)
+	SnEpochSync() (*connect.SnEpochResult, error)
+	SnPoolClaimSync(*connect.SnPoolClaimArgs) (*connect.SnPoolClaimResult, error)
+}
+
+// newSnStatusAPI is a seam for testing; overridden in tests to inject a mock.
+var newSnStatusAPI = func(_ context.Context, apiUrl string, byJwt string) snStatusAPI {
+	strategy := connect.NewClientStrategyWithDefaults(context.Background())
+	api := connect.NewBringYourApi(context.Background(), strategy, apiUrl)
+	api.SetByJwt(byJwt)
+	return api
 }
 
 // cmdSnStatus queries and displays Subnet 25 telemetry for a targeted provider.
@@ -167,14 +182,8 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
-	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
-	api.SetByJwt(byJwt)
-
 	var errs []string
+	api := newSnStatusAPI(context.Background(), apiUrl, byJwt)
 
 	// 1. Fetch Network Ranking
 	rankingRes, err := api.NetworkGetRankingSync()
@@ -239,6 +248,12 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 
 	if len(errs) > 0 {
 		info.Error = strings.Join(errs, "; ")
+		// Return error when both independent API calls failed (ranking + epoch).
+		// Claim is nested inside epoch success, so 2 errors = total failure.
+		// Partial failure: info has some data, info.Error explains what went wrong, nil error.
+		if len(errs) >= 2 {
+			return info, fmt.Errorf("all API calls failed: %s", info.Error)
+		}
 	}
 
 	return info, nil
