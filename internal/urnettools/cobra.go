@@ -64,6 +64,7 @@ Proxy Management:
   proxy trim <N>          Hold running proxies at N, shed worst first
   proxy health            Show dead/degraded proxies + live event log
   proxy traffic           Real-time bandwidth & client session load
+  proxy ids               Client IDs for each proxy (from JWT store)
   proxy summary           Fleet-style summary (sources, health, counts)
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
