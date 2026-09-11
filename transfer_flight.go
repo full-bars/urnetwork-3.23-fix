@@ -213,6 +213,13 @@ func (self *sendFlightController) acknowledgeForKey(
 	key sendSchedulingKey,
 	reserved bool,
 ) {
+	// The reserve is a per-scheduling-key fairness slot, not a byte
+	// allocation: sendForKey grants it outside the byte guard, so release it
+	// outside the byte guard too. Releasing after the guard would strand the
+	// slot forever on a zero-byte acknowledgement.
+	if reserved {
+		self.flowReserveInUse = false
+	}
 	if byteCount <= 0 {
 		return
 	}
@@ -228,9 +235,6 @@ func (self *sendFlightController) acknowledgeForKey(
 				delete(self.messageCountByKey, key)
 			}
 		}
-	}
-	if reserved {
-		self.flowReserveInUse = false
 	}
 	if !self.limited {
 		return
