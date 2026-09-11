@@ -437,6 +437,7 @@ func (r *ProxyReloader) reload() {
 	// non-empty desiredSet, and must not be treated as a source-read error.
 	if len(desiredSet) == 0 {
 		tlog("[proxy] reload skipped: 0 proxies found in source\n")
+		setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
 		return
 	}
 
@@ -719,6 +720,12 @@ func (r *ProxyReloader) reload() {
 		tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)
 	}
 	proxyStateMu.Unlock()
+
+	// Update systemd status counters: the configured count reflects
+	// the full desired set (file/internal + URL cache), and resolution
+	// is OK since we found proxies. These are operator-facing only.
+	setConfiguredProxyCount(len(desiredSet))
+	setProxyResolutionOK()
 
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)

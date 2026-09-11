@@ -96,6 +96,8 @@ func TestNotifyMainPIDStillDistinguishesMissingSocket(t *testing.T) {
 
 func TestSystemdStatusLine(t *testing.T) {
 	resetProxyCounters(t)
+	resetProxyResolutionStatus()
+	t.Cleanup(resetProxyResolutionStatus)
 	cases := []struct {
 		name        string
 		total, live int64
@@ -114,6 +116,77 @@ func TestSystemdStatusLine(t *testing.T) {
 				t.Errorf("systemdStatusLine() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// When total==0 the status line depends on proxyResolutionStatus.
+func TestSystemdStatusLineResolutionStates(t *testing.T) {
+	resetProxyCounters(t)
+	resetProxyResolutionStatus()
+	t.Cleanup(resetProxyResolutionStatus)
+
+	cases := []struct {
+		name   string
+		status int32
+		reason string
+		want   string
+	}{
+		{
+			"pending resolution",
+			proxyResolutionPending, "",
+			"starting: resolving proxies",
+		},
+		{
+			"source unreachable",
+			proxyResolutionFailed, "connection refused",
+			"degraded: proxy source unreachable (connection refused), retrying",
+		},
+		{
+			"failed with long reason is truncated",
+			proxyResolutionFailed, "a very long error message that exceeds the maximum length limit for status line display",
+			"degraded: proxy source unreachable (a very long error message that exceeds the maximum length li...), retrying",
+		},
+		{
+			"empty source",
+			proxyResolutionEmpty, "",
+			"degraded: proxy source returned no usable proxies, retrying",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxiesConfigured.Store(0)
+			proxiesAuthenticated.Store(0)
+			setProxyResolutionStatus(tc.status, tc.reason)
+			if got := systemdStatusLine(); got != tc.want {
+				t.Errorf("systemdStatusLine() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// setConfiguredProxyCount updates the configured total and the status line
+// must reflect it immediately.
+func TestSystemdStatusLineReloadUpdatesTotal(t *testing.T) {
+	resetProxyCounters(t)
+	t.Cleanup(func() { proxiesConfigured.Store(0); proxiesAuthenticated.Store(0) })
+
+	setConfiguredProxyCount(0)
+	if got, want := systemdStatusLine(), "starting: resolving proxies"; got != want {
+		t.Errorf("after setConfiguredProxyCount(0): got %q, want %q", got, want)
+	}
+
+	setConfiguredProxyCount(5)
+	proxiesAuthenticated.Store(3)
+	if got, want := systemdStatusLine(), "partial: 3/5 proxies authenticated"; got != want {
+		t.Errorf("after setConfiguredProxyCount(5): got %q, want %q", got, want)
+	}
+
+	setConfiguredProxyCount(2)
+	// Auth exceeds new configured count — line shows degraded (live < total is
+	// not the case here, but live > total is nonsensical; the line still renders).
+	proxiesAuthenticated.Store(3)
+	if got := systemdStatusLine(); got == "" {
+		t.Errorf("status line must never be empty")
 	}
 }
 
