@@ -552,7 +552,7 @@ func newProxyCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | summary | remove-dead | trim <N>")
+				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | summary | remove-dead | trim <N> | exclude")
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {

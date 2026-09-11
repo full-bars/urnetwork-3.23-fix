@@ -158,7 +158,7 @@ func checkReadableAsUser(path, user string) error {
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | ids | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -187,6 +187,7 @@ Subcommands:
   ids                    client_id per proxy from JWT store (single target)
   remove-dead            remove dead/degraded proxies (single target)
   trim <N>               hold running proxies at N, shed the A-F-worst (single target)
+  exclude                targeting flag, not a subcommand (see 'urnet-tools help')
 
 Examples (proxy add):
   urnet-tools proxy add ~/proxies.txt                 # Linux / macOS

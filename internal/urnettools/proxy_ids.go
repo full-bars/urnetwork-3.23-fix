@@ -19,11 +19,15 @@ type clientJWTEntryMinimal struct {
 	MintedAt  time.Time `json:"minted_at"`
 }
 
-// renderProxyIDs reads the client JWT store for the given provider and prints
-// a table of proxy address → client_id, network_id, minted_at.
+// renderProxyIDs prints a table of proxy address → client_id, network_id, age
+// from the supplied entries (already loaded by the caller from .client_jwts.json).
 // For "direct" entries, the proxy address is shown as "(direct)".
-func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinimal) {
-	defer w.Flush()
+func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinimal) (err error) {
+	defer func() {
+		if ferr := w.Flush(); ferr != nil && err == nil {
+			err = ferr
+		}
+	}()
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "(no entries)")
 		return
@@ -35,7 +39,7 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 	}
 	sort.Strings(keys)
 
-	fmt.Fprintln(w, "PROXY\tCLIENT_ID\tNETWORK_ID\tMINTED_AT")
+	fmt.Fprintln(w, "PROXY	CLIENT_ID	NETWORK_ID	AGE")
 	for _, k := range keys {
 		e := entries[k]
 		label := k
@@ -47,16 +51,17 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 		cid := e.ClientID
 		nid := e.NetworkID
 		if len(nid) > 8 {
-			nid = nid[:8]
+			nid = string([]rune(nid)[:8]) + "…"
 		}
 		var age string
 		if e.MintedAt.IsZero() {
-			age = "—"
+			age = "-"
 		} else {
 			age = formatDuration(time.Since(e.MintedAt))
 		}
 		fmt.Fprintf(w, "%s	%s	%s	%s\n", label, cid, nid, age)
 	}
+	return
 }
 
 // formatDuration renders a duration in human-friendly form: seconds if
@@ -123,6 +128,8 @@ func cmdProxyIDsTarget(p Provider) error {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 8, 2, ' ', 0)
 	fmt.Fprintf(os.Stderr, "Client IDs for %s (from %s/.client_jwts.json):\n", providerLabel(p), stateDir)
-	renderProxyIDs(w, entries)
+	if err := renderProxyIDs(w, entries); err != nil {
+		return err
+	}
 	return nil
 }

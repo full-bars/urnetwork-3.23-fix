@@ -902,7 +902,7 @@ func cmdDockerSession(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
