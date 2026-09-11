@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "runtime/debug"
@@ -158,19 +159,35 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		CreateContractTimeout:       60 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
 		MinResendInterval:           2 * time.Second,
+		RttMinResendInterval:        300 * time.Millisecond,
 		MaxResendInterval:           8 * time.Second,
+		UnreliableMaxResendInterval: 2 * time.Second,
 		// no backoff
 		// ResendBackoffScale: 0,
-		RttScale:         1.2,
-		RttWindowSize:    128,
-		RttWindowTimeout: 60 * time.Second,
-		AckTimeout:       60 * time.Second,
-		IdleTimeout:      300 * time.Second,
+		RttScale:             1.2,
+		RttWindowSize:        128,
+		RttWindowTimeout:     60 * time.Second,
+		AckTimeout:           60 * time.Second,
+		UnreliableAckTimeout: 90 * time.Second,
+		IdleTimeout:          300 * time.Second,
 		// pause on resend for selectively acked messaged
-		SelectiveAckTimeout: 60 * time.Second,
-		SequenceBufferSize:  DefaultTransferBufferSize,
-		AckBufferSize:       DefaultTransferBufferSize,
-		MinMessageByteCount: ByteCount(1),
+		SelectiveAckTimeout:                  60 * time.Second,
+		SelectiveAckGapThreshold:             3,
+		SelectiveAckGapBurstSize:             4,
+		AckTailProbeLimit:                    2,
+		UnreliableInitialFlightByteCount:     8 * 1024,
+		UnreliableMinimumFlightByteCount:     8 * 1024,
+		UnreliableMaximumFlightByteCount:     256 * 1024,
+		UnreliableInitialFlightMessageCount:  8,
+		UnreliableMinimumFlightMessageCount:  4,
+		UnreliableMaximumFlightMessageCount:  256,
+		UnreliableSlowStartGrowthDivisor:     4,
+		UnreliableFlightIncreaseByteCount:    1150,
+		UnreliableFlightIncreaseMessageCount: 1,
+		UnreliableFloorSingleFlight:          false,
+		SequenceBufferSize:                   DefaultTransferBufferSize,
+		AckBufferSize:                        DefaultTransferBufferSize,
+		MinMessageByteCount:                  ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout:            15 * time.Second,
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(4), kib(256)),
@@ -473,6 +490,102 @@ type Client struct {
 	// contractManagerUnsub func()
 	webRtcManagerUnsub func()
 	streamManagerUnsub func()
+
+	unreliableFlightWaitCount           atomic.Uint64
+	unreliableFlightWaitNanoseconds     atomic.Uint64
+	unreliableFlightMaximumWaitNanos    atomic.Uint64
+	unreliableFlightGapCount            atomic.Uint64
+	unreliableFlightTimeoutCount        atomic.Uint64
+	unreliableFlightReductionCount      atomic.Uint64
+	unreliableFlightMaximumBytes        atomic.Uint64
+	unreliableFlightMaximumLimit        atomic.Uint64
+	unreliableFlightMaximumMessages     atomic.Uint64
+	unreliableFlightMaximumMessageLimit atomic.Uint64
+}
+
+var errTransferRouteWriteTimeout = errors.New("Timeout.")
+
+type ClientSendRecoveryStatsSnapshot struct {
+	InitialWriteCount                     uint64
+	InitialFrameCount                     uint64
+	InitialMessageByteCount               uint64
+	TimeoutResendWriteCount               uint64
+	AckPendingResendPreemptCount          uint64
+	CarrierChangeWriteCount               uint64
+	SelectiveGapWriteCount                uint64
+	AckTailProbeWriteCount                uint64
+	CumulativeProbeWriteCount             uint64
+	RecoveryWriteErrorCount               uint64
+	MissingContractWriteCount             uint64
+	MissingContractRequestCount           uint64
+	CompactRecoveryAckCount               uint64
+	CompactRecoveryContractCount          uint64
+	UnreliableFlowIsolationBypassCount    uint64
+	UnreliableNoAckAdmissionBypassCount   uint64
+	UnreliableFlowReserveSelectionCount   uint64
+	UnreliableFlowReserveUseCount         uint64
+	UnreliableFlightWaitCount             uint64
+	UnreliableFlightWaitDuration          time.Duration
+	UnreliableFlightMaximumWaitDuration   time.Duration
+	UnreliableFlightGapCount              uint64
+	UnreliableFlightTimeoutCount          uint64
+	UnreliableFlightReductionCount        uint64
+	UnreliableFlightMaximumByteCount      uint64
+	UnreliableFlightMaximumLimitByteCount uint64
+	UnreliableFlightMaximumMessageCount   uint64
+	UnreliableFlightMaximumMessageLimit   uint64
+}
+
+func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
+	return ClientSendRecoveryStatsSnapshot{
+		UnreliableFlightWaitCount: self.unreliableFlightWaitCount.Load(),
+		UnreliableFlightWaitDuration: time.Duration(
+			self.unreliableFlightWaitNanoseconds.Load(),
+		),
+		UnreliableFlightMaximumWaitDuration: time.Duration(
+			self.unreliableFlightMaximumWaitNanos.Load(),
+		),
+		UnreliableFlightGapCount:              self.unreliableFlightGapCount.Load(),
+		UnreliableFlightTimeoutCount:          self.unreliableFlightTimeoutCount.Load(),
+		UnreliableFlightReductionCount:        self.unreliableFlightReductionCount.Load(),
+		UnreliableFlightMaximumByteCount:      self.unreliableFlightMaximumBytes.Load(),
+		UnreliableFlightMaximumLimitByteCount: self.unreliableFlightMaximumLimit.Load(),
+		UnreliableFlightMaximumMessageCount:   self.unreliableFlightMaximumMessages.Load(),
+		UnreliableFlightMaximumMessageLimit:   self.unreliableFlightMaximumMessageLimit.Load(),
+	}
+}
+
+func (self *Client) observeUnreliableFlightWait(waitDuration time.Duration) {
+	if waitDuration <= 0 {
+		return
+	}
+	waitNanoseconds := uint64(waitDuration)
+	self.unreliableFlightWaitNanoseconds.Add(waitNanoseconds)
+	for maximumWait := self.unreliableFlightMaximumWaitNanos.Load(); maximumWait < waitNanoseconds &&
+		!self.unreliableFlightMaximumWaitNanos.CompareAndSwap(maximumWait, waitNanoseconds); maximumWait = self.unreliableFlightMaximumWaitNanos.Load() {
+	}
+}
+
+func (self *Client) observeUnreliableFlight(controller *sendFlightController) {
+	if controller == nil || !controller.limited {
+		return
+	}
+	byteCount := uint64(max(controller.byteCount, 0))
+	for maximumByteCount := self.unreliableFlightMaximumBytes.Load(); maximumByteCount < byteCount &&
+		!self.unreliableFlightMaximumBytes.CompareAndSwap(maximumByteCount, byteCount); maximumByteCount = self.unreliableFlightMaximumBytes.Load() {
+	}
+	byteLimit := uint64(max(controller.byteLimit, 0))
+	for maximumByteLimit := self.unreliableFlightMaximumLimit.Load(); maximumByteLimit < byteLimit &&
+		!self.unreliableFlightMaximumLimit.CompareAndSwap(maximumByteLimit, byteLimit); maximumByteLimit = self.unreliableFlightMaximumLimit.Load() {
+	}
+	messageCount := uint64(max(controller.messageCount, 0))
+	for maximumMessageCount := self.unreliableFlightMaximumMessages.Load(); maximumMessageCount < messageCount &&
+		!self.unreliableFlightMaximumMessages.CompareAndSwap(maximumMessageCount, messageCount); maximumMessageCount = self.unreliableFlightMaximumMessages.Load() {
+	}
+	messageLimit := uint64(max(controller.messageLimit, 0))
+	for maximumMessageLimit := self.unreliableFlightMaximumMessageLimit.Load(); maximumMessageLimit < messageLimit &&
+		!self.unreliableFlightMaximumMessageLimit.CompareAndSwap(maximumMessageLimit, messageLimit); maximumMessageLimit = self.unreliableFlightMaximumMessageLimit.Load() {
+	}
 }
 
 func NewClientWithDefaults(
@@ -1510,8 +1623,10 @@ type SendBufferSettings struct {
 	CreateContractRetryInterval time.Duration
 
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
-	MinResendInterval time.Duration
-	MaxResendInterval time.Duration
+	MinResendInterval           time.Duration
+	RttMinResendInterval        time.Duration
+	MaxResendInterval           time.Duration
+	UnreliableMaxResendInterval time.Duration
 	// ResendBackoffScale float32
 
 	RttScale         float32
@@ -1519,10 +1634,27 @@ type SendBufferSettings struct {
 	RttWindowTimeout time.Duration
 
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
-	AckTimeout  time.Duration
-	IdleTimeout time.Duration
+	AckTimeout           time.Duration
+	UnreliableAckTimeout time.Duration
+	IdleTimeout          time.Duration
 
-	SelectiveAckTimeout time.Duration
+	SelectiveAckTimeout      time.Duration
+	SelectiveAckGapThreshold int
+	SelectiveAckGapBurstSize int
+	AckTailProbeLimit        int
+
+	UnreliableInitialFlightByteCount     ByteCount
+	UnreliableMinimumFlightByteCount     ByteCount
+	UnreliableMaximumFlightByteCount     ByteCount
+	UnreliableInitialFlightMessageCount  int
+	UnreliableMinimumFlightMessageCount  int
+	UnreliableMaximumFlightMessageCount  int
+	UnreliableSlowStartGrowthDivisor     int
+	UnreliableFlightIncreaseByteCount    ByteCount
+	UnreliableFlightIncreaseMessageCount int
+	UnreliableFloorSingleFlight          bool
+
+	beforeResendCapacityWaitForTest func(sendSequenceId)
 
 	SequenceBufferSize int
 	AckBufferSize      int
@@ -1574,6 +1706,8 @@ type SendBuffer struct {
 
 	sendBufferSettings *SendBufferSettings
 
+	beforeResendCapacityWaitForTest func(sendSequenceId)
+
 	mutex                      sync.Mutex
 	sendSequences              map[sendSequenceId]*SendSequence
 	sendSequencesByDestination map[TransferPath]map[*SendSequence]bool
@@ -1584,13 +1718,14 @@ func NewSendBuffer(ctx context.Context,
 	client *Client,
 	sendBufferSettings *SendBufferSettings) *SendBuffer {
 	return &SendBuffer{
-		ctx:                        ctx,
-		client:                     client,
-		log:                        client.log,
-		sendBufferSettings:         sendBufferSettings,
-		sendSequences:              map[sendSequenceId]*SendSequence{},
-		sendSequencesByDestination: map[TransferPath]map[*SendSequence]bool{},
-		sendSequenceDestinations:   map[*SendSequence]map[TransferPath]bool{},
+		ctx:                             ctx,
+		client:                          client,
+		log:                             client.log,
+		sendBufferSettings:              sendBufferSettings,
+		beforeResendCapacityWaitForTest: sendBufferSettings.beforeResendCapacityWaitForTest,
+		sendSequences:                   map[sendSequenceId]*SendSequence{},
+		sendSequencesByDestination:      map[TransferPath]map[*SendSequence]bool{},
+		sendSequenceDestinations:        map[*SendSequence]map[TransferPath]bool{},
 	}
 }
 
@@ -1936,6 +2071,243 @@ type SendSequence struct {
 	// `EncryptionSessionManager` at construction; released when the sequence
 	// terminates. Nil when encryption is disabled on this client.
 	session *peerEncryptionSession
+
+	flightController           *sendFlightController
+	selectiveGapRecoveryActive bool
+}
+
+func (self *SendSequence) id() sendSequenceId {
+	return sendSequenceId{
+		Destination:         self.destination,
+		IntermediaryIds:     self.intermediaryIds,
+		CompanionContract:   self.companionContract,
+		ForceStream:         self.forceStream,
+		EncryptionRole:      self.encryptionRole,
+		EncryptionCompanion: self.encryptionCompanion,
+	}
+}
+
+func (self *SendSequence) transferFlightPolicy() transferFlightPolicySnapshot {
+	if self.contractMultiRouteWriter != nil {
+		if provider, ok := self.contractMultiRouteWriter.(transferFlightPolicyProvider); ok {
+			return provider.transferFlightPolicy()
+		}
+	}
+	if self.client != nil && self.client.RouteManager() != nil {
+		writer := self.openContractMultiRouteWriter()
+		if provider, ok := writer.(transferFlightPolicyProvider); ok {
+			return provider.transferFlightPolicy()
+		}
+	}
+	return transferFlightPolicySnapshot{}
+}
+
+func (self *SendSequence) unreliableFlightGates(policies ...transferFlightPolicySnapshot) bool {
+	if self.flightController == nil || !self.flightController.limited {
+		return false
+	}
+	var policy transferFlightPolicySnapshot
+	if len(policies) > 0 {
+		policy = policies[0]
+	} else {
+		policy = self.transferFlightPolicy()
+	}
+	return self.flightController.limited && !policy.reliableRouteAvailable
+}
+
+func (self *SendSequence) reliableOnlyWrite(policies ...transferFlightPolicySnapshot) bool {
+	if self.flightController == nil || !self.flightController.limited {
+		return false
+	}
+	var policy transferFlightPolicySnapshot
+	if len(policies) > 0 {
+		policy = policies[0]
+	} else {
+		policy = self.transferFlightPolicy()
+	}
+	if !policy.reliableRouteAvailable {
+		return false
+	}
+	if !self.flightController.canSend() {
+		return true
+	}
+	return self.sendBufferSettings.UnreliableFloorSingleFlight &&
+		self.flightController.atFloor() &&
+		0 < self.flightController.messageCount
+}
+
+func (self *SendSequence) observeCarrierWrite(
+	item *sendItem,
+	disposition transferWriteDisposition,
+) {
+	if item == nil {
+		return
+	}
+	if !disposition.unreliable {
+		if disposition.reliable && !item.unreliableCarrierObserved {
+			item.reliableCarrierObserved = true
+			item.reliableRoute = disposition.route
+			item.hybridReliableCarrierObserved = disposition.hybridReliable
+		} else {
+			item.reliableCarrierObserved = false
+			item.reliableRoute = nil
+			item.hybridReliableCarrierObserved = false
+		}
+		return
+	}
+	item.reliableCarrierObserved = false
+	item.reliableRoute = nil
+	item.hybridReliableCarrierObserved = false
+	item.unreliableCarrierObserved = true
+	if self.sendBufferSettings != nil && 0 < self.sendBufferSettings.UnreliableAckTimeout {
+		item.ackTimeout = max(item.ackTimeout, self.sendBufferSettings.UnreliableAckTimeout)
+	}
+	self.trackUnreliableFlight(item)
+}
+
+func (self *SendSequence) trackUnreliableFlight(item *sendItem) {
+	if item == nil || item.unreliableFlightTracked || self.flightController == nil {
+		return
+	}
+	item.unreliableFlightTracked = true
+	item.unreliableFlowReserve = self.flightController.sendForKey(
+		item.MessageByteCount(),
+		item.schedulingKey,
+	)
+	if self.client != nil {
+		self.client.observeUnreliableFlight(self.flightController)
+	}
+}
+
+func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
+	if item == nil || !item.unreliableFlightTracked || self.flightController == nil {
+		return
+	}
+	item.unreliableFlightTracked = false
+	self.flightController.acknowledgeForKey(
+		item.MessageByteCount(),
+		item.schedulingKey,
+		item.unreliableFlowReserve,
+	)
+	item.unreliableFlowReserve = false
+	if self.client != nil {
+		self.client.observeUnreliableFlight(self.flightController)
+	}
+}
+
+func (self *SendSequence) observeAckRtt(item *sendItem, tag any) {
+	if item == nil || item.unreliableCarrierObserved {
+		return
+	}
+	switch t := tag.(type) {
+	case sequenceTag:
+		if t.set {
+			self.rttWindow.CloseSendTime(t.sendTime)
+		}
+	case *protocol.Tag:
+		if t != nil {
+			self.rttWindow.CloseSendTime(t.SendTime)
+		}
+	}
+}
+
+func (self *SendSequence) observeUnreliableResendTimeout(
+	item *sendItem,
+	policy transferFlightPolicySnapshot,
+) bool {
+	if self.client != nil {
+		self.client.unreliableFlightTimeoutCount.Add(1)
+	}
+	if self.flightController.reduceForLoss() && self.client != nil {
+		self.client.unreliableFlightReductionCount.Add(1)
+	}
+	if !policy.reliableRouteAvailable {
+		if self.client != nil {
+			self.client.observeUnreliableFlight(self.flightController)
+		}
+		return false
+	}
+	self.releaseUnreliableFlight(item)
+	return true
+}
+
+func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bool {
+	reschedule := func(item *sendItem, resendTime time.Time, recoveryKind sendRecoveryKind) {
+		removed := self.resendQueue.RemoveByMessageId(item.messageId)
+		if removed != item {
+			panic(errors.New("Missing selective recovery item"))
+		}
+		item.resendTime = resendTime
+		item.recoveryKind = recoveryKind
+		self.resendQueue.Add(item)
+	}
+
+	selectiveAckCount := 0
+	for _, item := range self.sendItems {
+		if item != nil && item.selectiveAcked {
+			selectiveAckCount += 1
+		}
+	}
+
+	var firstItem *sendItem
+	var gapItem *sendItem
+	threshold := self.sendBufferSettings.SelectiveAckGapThreshold
+	burstSize := self.sendBufferSettings.SelectiveAckGapBurstSize
+	gapRecoveryCount := 0
+	unreliableGapRecovery := false
+	remainingSelectiveAckCount := selectiveAckCount
+	for _, item := range self.sendItems {
+		if item == nil {
+			continue
+		}
+		if firstItem == nil {
+			firstItem = item
+		}
+		if item.selectiveAcked {
+			remainingSelectiveAckCount -= 1
+			continue
+		}
+		if gapItem == nil {
+			gapItem = item
+		}
+		lateNotLost := self.flightController != nil && self.flightController.limited &&
+			item.reliableCarrierObserved && !item.unreliableFlightTracked &&
+			currentTime.Before(item.sendTime.Add(self.rttWindow.ScaledRtt()))
+		if 0 < threshold && gapRecoveryCount < burstSize && !lateNotLost &&
+			!item.selectiveGapRecovered &&
+			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
+			threshold <= remainingSelectiveAckCount {
+			item.selectiveGapRecovered = true
+			self.selectiveGapRecoveryActive = true
+			reschedule(item, currentTime, sendRecoverySelectiveGap)
+			gapRecoveryCount += 1
+			unreliableGapRecovery = unreliableGapRecovery || item.unreliableFlightTracked
+		}
+	}
+	if 0 < gapRecoveryCount {
+		return unreliableGapRecovery
+	}
+
+	if firstItem == nil || !firstItem.selectiveAcked {
+		if !self.selectiveGapRecoveryActive || gapItem == nil ||
+			self.sendBufferSettings.AckTailProbeLimit <= gapItem.ackTailProbeCount {
+			return false
+		}
+		probeTime := currentTime.Add(self.rttWindow.probeRtt(currentTime))
+		if probeTime.Before(gapItem.resendTime) {
+			gapItem.ackTailProbeCount += 1
+			reschedule(gapItem, probeTime, sendRecoveryAckTailProbe)
+		}
+		return false
+	}
+	probeTime := firstItem.sendTime.Add(self.rttWindow.probeRtt(currentTime))
+	if probeTime.Before(currentTime) {
+		probeTime = currentTime
+	}
+	if probeTime.Before(firstItem.resendTime) {
+		reschedule(firstItem, probeTime, sendRecoveryCumulativeProbe)
+	}
+	return false
 }
 
 func NewSendSequence(
@@ -1957,6 +2329,7 @@ func NewSendSequence(
 		sendBufferSettings.RttWindowTimeout,
 		sendBufferSettings.RttScale,
 		sendBufferSettings.MinResendInterval,
+		sendBufferSettings.RttMinResendInterval,
 		sendBufferSettings.MaxResendInterval,
 	)
 
@@ -1984,6 +2357,7 @@ func NewSendSequence(
 		nextSequenceNumber:  0,
 		idleCondition:       NewIdleCondition(),
 		rttWindow:           rttWindow,
+		flightController:    newSendFlightController(sendBufferSettings),
 		contractSeqIndex:    0,
 	}
 	// Never encrypt control-plane traffic. A SendSequence's data source is
@@ -2446,12 +2820,26 @@ func (self *SendSequence) Run() {
 					transferFrameBytes = item.transferFrameBytes
 				}
 
+				reliableOnlyResend := false
+				flightPolicy := self.transferFlightPolicy()
+				if self.flightController != nil {
+					if self.flightController.applyPolicy(flightPolicy) && self.client != nil {
+						self.client.observeUnreliableFlight(self.flightController)
+					}
+				}
+				if item.unreliableFlightTracked {
+					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
+				}
+
 				// resend uses the same path the item was originally sent on
 				resendPath := self.destination.AddSource(self.client.ClientId())
 				resendBytes := transferFrameBytes
 				resendForceUnwrapped := item.forceUnwrapped
+				var disposition transferWriteDisposition
 				c := func() error {
-					return self.writeMaybeWrappedBytes(resendBytes, resendPath, resendForceUnwrapped)
+					var writeErr error
+					disposition, writeErr = self.writeMaybeWrappedBytes(resendBytes, resendPath, resendForceUnwrapped, reliableOnlyResend)
+					return writeErr
 				}
 				if self.log.V(2).Enabled() {
 					TraceWithReturn(
@@ -2470,6 +2858,9 @@ func (self *SendSequence) Run() {
 					if err != nil {
 						self.log.V(1).Infof("[s]resend drop = %s", err)
 					}
+				}
+				if disposition.transportType != "" || disposition.unreliable || disposition.reliable {
+					self.observeCarrierWrite(item, disposition)
 				}
 
 				item.sendCount += 1
@@ -2530,9 +2921,36 @@ func (self *SendSequence) Run() {
 
 		checkpointId := self.idleCondition.Checkpoint()
 
+		flightPolicy := self.transferFlightPolicy()
+		if self.flightController != nil {
+			if self.flightController.applyPolicy(flightPolicy) && self.client != nil {
+				self.client.observeUnreliableFlight(self.flightController)
+			}
+		}
+		reliableRouteAvailable := flightPolicy.reliableRouteAvailable
+		unreliableFlightGates := self.unreliableFlightGates(flightPolicy)
+
 		// approximate since this cannot consider the next message byte size
 		canQueue := func() bool {
-			return self.resendQueue.CanAdd(0, self.sendBufferSettings.ResendQueueMaxByteCount)
+			resendCapacity := self.resendQueue.CanAdd(0, self.sendBufferSettings.ResendQueueMaxByteCount)
+			if !unreliableFlightGates {
+				return resendCapacity
+			}
+			if self.flightController != nil && !self.flightController.canSend() {
+				if reliableRouteAvailable && self.flightController.atFloor() {
+					return resendCapacity
+				}
+				return false
+			}
+			return resendCapacity
+		}
+
+		flightBlocked := unreliableFlightGates && self.flightController != nil && !self.flightController.canSend()
+		if flightBlocked && self.client != nil {
+			self.client.unreliableFlightWaitCount.Add(1)
+		}
+		if (!canQueue() || flightBlocked) && self.sendBuffer != nil && self.sendBuffer.beforeResendCapacityWaitForTest != nil {
+			self.sendBuffer.beforeResendCapacityWaitForTest(self.id())
 		}
 		if !canQueue() {
 			// wait for acks
@@ -3055,8 +3473,12 @@ func (self *SendSequence) sendWithSetContract(
 		item.backstopDeadline = sendTime.Add(self.sendBufferSettings.AckTimeout * 10)
 	}
 
+	reliableOnly := self.reliableOnlyWrite()
+	var disposition transferWriteDisposition
 	c := func() error {
-		return self.writeMaybeWrappedBytes(item.transferFrameBytes, path, item.forceUnwrapped)
+		var writeErr error
+		disposition, writeErr = self.writeMaybeWrappedBytes(item.transferFrameBytes, path, item.forceUnwrapped, reliableOnly)
+		return writeErr
 	}
 	var err error
 	if self.log.V(2).Enabled() {
@@ -3071,6 +3493,9 @@ func (self *SendSequence) sendWithSetContract(
 				v.Infof("[s]drop = %s", err)
 			}
 		}
+	}
+	if err == nil {
+		self.observeCarrierWrite(item, disposition)
 	}
 
 	if ack {
@@ -3232,9 +3657,11 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		return
 	}
 
+	var sTag sequenceTag
 	if tag != nil {
-		self.rttWindow.CloseTag(tag)
+		sTag = sequenceTag{sendTime: tag.SendTime, set: true}
 	}
+	self.observeAckRtt(item, sTag)
 
 	if selective {
 		if v := self.log.V(1); v.Enabled() {
@@ -3248,8 +3675,12 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 			}
 			return
 		}
+		if !item.selectiveAcked {
+			self.releaseUnreliableFlight(item)
+		}
 		item.resendTime = time.Now().Add(self.sendBufferSettings.SelectiveAckTimeout)
 		item.sendTime = time.Now()
+		item.selectiveAcked = true
 		self.resendQueue.Add(item)
 		return
 	}
@@ -3304,6 +3735,9 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 			self.sendItems[i] = nil
 			continue
 		}
+		if !implicitItem.selectiveAcked {
+			self.releaseUnreliableFlight(implicitItem)
+		}
 		// A retained item acknowledged here leaves the queue permanently —
 		// release its share of the R-5 retained-byte budget.
 		if removed.retainAfterAckTimeout {
@@ -3338,6 +3772,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 }
 
 func (self *SendSequence) ackItem(item *sendItem) {
+	self.releaseUnreliableFlight(item)
 	if item.contractId != nil {
 		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
 			itemSendContract.ack(item.messageByteCount)
@@ -3407,6 +3842,7 @@ func (self *SendSequence) dropItem(item *sendItem, err error) {
 // credit) so a delivery failure is not laundered into acked/billed bytes,
 // then fires the error callback and returns the frame to the pool.
 func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
+	self.releaseUnreliableFlight(item)
 	if item.contractId != nil {
 		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
 			itemSendContract.unack(item.messageByteCount)
@@ -3444,8 +3880,9 @@ func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
 // loud error: the frame is dropped (the SendSequence will retry, and
 // eventually time out, rather than transmit application data sealed under
 // the wrong identity).
-func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path TransferPath, forceUnwrapped bool) error {
+func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path TransferPath, forceUnwrapped bool, reliableOnly bool) (transferWriteDisposition, error) {
 	writer := self.openContractMultiRouteWriter()
+	reliableOnly = reliableOnly || self.reliableOnlyWrite(self.transferFlightPolicy())
 	var cipher *sequenceCipher
 	if self.session != nil && !forceUnwrapped {
 		cipher = self.session.Cipher()
@@ -3459,14 +3896,14 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		// (e.g. the session torn down between enqueue and write). Refuse the
 		// write — the item stays queued for resend and the sequence winds down
 		// via its own timeouts — rather than ever emitting plaintext.
-		return fmt.Errorf(
+		return transferWriteDisposition{}, fmt.Errorf(
 			"encryption required but no cipher for peer %s (fail-closed; not sent)",
 			self.destination.DestinationId,
 		)
 	}
 	if cipher == nil {
 		if v := self.log.V(2); v.Enabled() {
-			v.Infof(
+			self.log.Infof(
 				"[s]%s->%s s(%s) write plaintext %d bytes (forceUnwrapped=%t, session=%t, cipher=nil)\n",
 				self.client.ClientTag(),
 				self.destination.DestinationId,
@@ -3479,15 +3916,22 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		bytes := transferFrameBytes
 		if DebugTransferCopyOnWrite {
 			bytes = MessagePoolCopy(transferFrameBytes)
+			defer MessagePoolReturn(bytes)
 		}
-		return writer.Write(self.ctx, MessagePoolShareReadOnly(bytes), self.sendBufferSettings.WriteTimeout)
+		return writeMultiRouteWithCarrier(
+			writer,
+			self.ctx,
+			MessagePoolShareReadOnly(bytes),
+			self.sendBufferSettings.WriteTimeout,
+			reliableOnly,
+		)
 	}
 	if err := self.verifyPeerCertAgainstContract(); err != nil {
-		return err
+		return transferWriteDisposition{}, err
 	}
 	ciphertext, err := cipher.Seal(transferFrameBytes)
 	if err != nil {
-		return fmt.Errorf("outer wrap seal: %w", err)
+		return transferWriteDisposition{}, fmt.Errorf("outer wrap seal: %w", err)
 	}
 	if cipher.ShouldRekey() {
 		// bound the number of messages sealed under one AEAD key (see
@@ -3500,10 +3944,10 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 	// companion session.
 	wrapped, err := buildEncryptedOuterFrameBytes(path, ciphertext, self.session.role.toProtobuf(), self.session.companion)
 	if err != nil {
-		return fmt.Errorf("outer wrap marshal: %w", err)
+		return transferWriteDisposition{}, fmt.Errorf("outer wrap marshal: %w", err)
 	}
 	if v := self.log.V(2); v.Enabled() {
-		v.Infof(
+		self.log.Infof(
 			"[s]%s->%s s(%s) write wrapped %d -> %d bytes\n",
 			self.client.ClientTag(),
 			self.destination.DestinationId,
@@ -3512,7 +3956,107 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		)
 	}
 	defer MessagePoolReturn(wrapped)
-	return writer.Write(self.ctx, MessagePoolShareReadOnly(wrapped), self.sendBufferSettings.WriteTimeout)
+	return writeMultiRouteWithCarrier(
+		writer,
+		self.ctx,
+		MessagePoolShareReadOnly(wrapped),
+		self.sendBufferSettings.WriteTimeout,
+		reliableOnly,
+	)
+}
+
+// writeMultiRouteWithCarrier consumes transferFrameBytes on every path, which
+// is the same contract MultiRouteSelector.Write documents: on failure the
+// frame has already gone back to the message pool. Callers must never return
+// it themselves, or the buffer is freed twice and the pool hands live bytes to
+// a second flow.
+func writeMultiRouteWithCarrier(
+	writer MultiRouteWriter,
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+	reliableOnly bool,
+) (transferWriteDisposition, error) {
+	if reliableOnly {
+		reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter)
+		if !ok {
+			// The only failure that happens before a writer takes the frame,
+			// so this is the only place the frame is ours to return.
+			MessagePoolReturn(transferFrameBytes)
+			return transferWriteDisposition{}, fmt.Errorf("reliableOnly requested but writer %T does not support it", writer)
+		}
+		success, disposition, err := reliableWriter.writeDetailedReliableOnly(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if disposition.transportType == "" {
+			disposition.transportType = TransportTypeUnknown
+		}
+		return disposition, nil
+	}
+	if carrierWriter, ok := writer.(transferCarrierMultiRouteWriter); ok {
+		success, disposition, err := carrierWriter.writeDetailedWithCarrier(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if disposition.transportType == "" {
+			disposition.transportType = TransportTypeUnknown
+		}
+		return disposition, nil
+	}
+	if transportWriter, ok := writer.(TransportMultiRouteWriter); ok {
+		success, transportType, err := transportWriter.WriteDetailedWithTransport(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if transportType == "" {
+			transportType = TransportTypeUnknown
+		}
+		return transferWriteDisposition{transportType: transportType}, nil
+	}
+	return transferWriteDisposition{transportType: TransportTypeUnknown}, writer.Write(ctx, transferFrameBytes, timeout)
+}
+
+func writeAckMultiRoute(
+	writer MultiRouteWriter,
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+) error {
+	if reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter); ok {
+		// writeDetailedReliableOnly returns the frame to the pool on every
+		// failure, so returning it here too would free it twice.
+		success, _, err := reliableWriter.writeDetailedReliableOnly(ctx, transferFrameBytes, timeout)
+		if err != nil {
+			return err
+		}
+		if !success {
+			return errTransferRouteWriteTimeout
+		}
+		return nil
+	}
+	return writer.Write(ctx, transferFrameBytes, timeout)
 }
 
 // verifyPeerCertAgainstContract checks (and caches) that the peer's TLS cert
@@ -3651,6 +4195,17 @@ func (self *SendSequence) Cancel() {
 	self.cancel()
 }
 
+type sendRecoveryKind uint8
+
+const (
+	sendRecoveryNone sendRecoveryKind = iota
+	sendRecoveryCarrierChange
+	sendRecoverySelectiveGap
+	sendRecoveryAckTailProbe
+	sendRecoveryCumulativeProbe
+	sendRecoveryContractMissing
+)
+
 type sendItem struct {
 	transferItem
 
@@ -3677,7 +4232,31 @@ type sendItem struct {
 	// flows where the teardown signal never arrives.
 	backstopDeadline time.Time
 
-	// messageType protocol.MessageType
+	unreliableCarrierObserved     bool
+	reliableCarrierObserved       bool
+	reliableRoute                 Route
+	hybridReliableCarrierObserved bool
+	unreliableFlightTracked       bool
+	unreliableFlowReserve         bool
+	schedulingKey                 sendSchedulingKey
+	ackTimeout                    time.Duration
+	selectiveAcked                bool
+	recoveryKind                  sendRecoveryKind
+	selectiveGapRecovered         bool
+	gapFollowupScheduled          bool
+	ackTailProbeCount             int
+	promotedHead                  bool
+}
+
+func (self *sendItem) MessageByteCount() ByteCount {
+	if len(self.transferFrameBytes) > 0 {
+		return ByteCount(len(self.transferFrameBytes))
+	}
+	return self.messageByteCount
+}
+
+func (self *sendItem) QueueByteCount() ByteCount {
+	return self.MessageByteCount()
 }
 
 func (self *sendItem) messagePoolReturn() {
@@ -4233,7 +4812,8 @@ func (self *ReceiveSequence) Run() {
 					cipher = self.session.Cipher()
 				}
 				if cipher == nil {
-					return multiRouteWriter.Write(
+					return writeAckMultiRoute(
+						multiRouteWriter,
 						self.ctx,
 						MessagePoolShareReadOnly(transferFrameBytes),
 						self.receiveBufferSettings.WriteTimeout,
@@ -4256,7 +4836,8 @@ func (self *ReceiveSequence) Run() {
 					return fmt.Errorf("ack outer wrap marshal: %w", marshalErr)
 				}
 				defer MessagePoolReturn(wrapped)
-				return multiRouteWriter.Write(
+				return writeAckMultiRoute(
+					multiRouteWriter,
 					self.ctx,
 					MessagePoolShareReadOnly(wrapped),
 					self.receiveBufferSettings.WriteTimeout,

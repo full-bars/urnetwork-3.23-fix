@@ -4,10 +4,39 @@ package connect
 
 import (
 	"context"
+	"net"
 
 	"github.com/pion/datachannel"
+	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/webrtc/v4"
 )
+
+type p2pUdpSocketNet struct {
+	transport.Net
+	socketBufferByteCount int
+}
+
+func (n *p2pUdpSocketNet) ListenUDP(network string, loc *net.UDPAddr) (transport.UDPConn, error) {
+	conn, err := n.Net.ListenUDP(network, loc)
+	if err != nil {
+		return nil, err
+	}
+	applyP2pUdpSocketBuffers(conn, n.socketBufferByteCount)
+	return conn, nil
+}
+
+func applyP2pUdpSocketBuffers(connection any, byteCount int) {
+	if byteCount <= 0 {
+		return
+	}
+	if setter, ok := connection.(interface{ SetReadBuffer(int) error }); ok {
+		_ = setter.SetReadBuffer(byteCount)
+	}
+	if setter, ok := connection.(interface{ SetWriteBuffer(int) error }); ok {
+		_ = setter.SetWriteBuffer(byteCount)
+	}
+}
 
 func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebRtcSettings) (*webrtc.PeerConnection, error) {
 	s := webrtc.SettingEngine{}
@@ -23,6 +52,15 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 		settings.FailedTimeout,
 		settings.KeepAliveTimeout,
 	)
+
+	if 0 < settings.UdpSocketBufferByteCount {
+		if stdNet, err := stdnet.NewNet(); err == nil {
+			s.SetNet(&p2pUdpSocketNet{
+				Net:                   stdNet,
+				socketBufferByteCount: int(settings.UdpSocketBufferByteCount),
+			})
+		}
+	}
 
 	if !ipv6Available() {
 		s.SetNetworkTypes([]webrtc.NetworkType{

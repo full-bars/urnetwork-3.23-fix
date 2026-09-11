@@ -27,11 +27,12 @@ func newRttWindowItem(sendTime time.Time, receiveTime time.Time) *rttWindowItem 
 }
 
 type RttWindow struct {
-	log           Logger
-	windowTimeout time.Duration
-	rttScale      float32
-	minScaledRtt  time.Duration
-	maxScaledRtt  time.Duration
+	log             Logger
+	windowTimeout   time.Duration
+	rttScale        float32
+	minScaledRtt    time.Duration
+	rttMinScaledRtt time.Duration
+	maxScaledRtt    time.Duration
 
 	stateLock       sync.Mutex
 	window          []*rttWindowItem
@@ -47,10 +48,21 @@ func NewRttWindow(
 	windowTimeout time.Duration,
 	rttScale float32,
 	minScaledRtt time.Duration,
-	maxScaledRtt time.Duration,
+	rest ...time.Duration,
 ) *RttWindow {
 	if windowSize == 0 {
 		panic(fmt.Errorf("Window size must non-zero: %d", windowSize))
+	}
+	var rttMinScaledRtt, maxScaledRtt time.Duration
+	if len(rest) == 1 {
+		rttMinScaledRtt = minScaledRtt
+		maxScaledRtt = rest[0]
+	} else if len(rest) >= 2 {
+		rttMinScaledRtt = rest[0]
+		maxScaledRtt = rest[1]
+	}
+	if rttMinScaledRtt <= 0 {
+		rttMinScaledRtt = minScaledRtt
 	}
 	window := make([]*rttWindowItem, windowSize)
 
@@ -59,6 +71,7 @@ func NewRttWindow(
 		windowTimeout:   windowTimeout,
 		rttScale:        rttScale,
 		minScaledRtt:    minScaledRtt,
+		rttMinScaledRtt: rttMinScaledRtt,
 		maxScaledRtt:    maxScaledRtt,
 		window:          window,
 		windowTailIndex: 0,
@@ -96,11 +109,24 @@ func (self *RttWindow) openTag(sendTime time.Time) *protocol.Tag {
 }
 
 func (self *RttWindow) CloseTag(tag *protocol.Tag) {
-	self.closeTag(tag, time.Now())
+	if tag != nil {
+		self.closeSendTime(tag.SendTime, time.Now())
+	}
 }
 
 func (self *RttWindow) closeTag(tag *protocol.Tag, receiveTime time.Time) {
-	sendTime := time.UnixMilli(int64(tag.SendTime))
+	if tag != nil {
+		self.closeSendTime(tag.SendTime, receiveTime)
+	}
+}
+
+// CloseSendTime is the allocation-free ACK hot-path form.
+func (self *RttWindow) CloseSendTime(sendTimeUnixMilli uint64) {
+	self.closeSendTime(sendTimeUnixMilli, time.Now())
+}
+
+func (self *RttWindow) closeSendTime(sendTimeUnixMilli uint64, receiveTime time.Time) {
+	sendTime := time.UnixMilli(int64(sendTimeUnixMilli))
 	if receiveTime.Before(sendTime) {
 		// ignore
 		return
@@ -146,15 +172,49 @@ func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
 	self.coalesce(sendTime)
 
 	useRtt := self.rtts.MeanRtt()
+	floor := self.rttMinScaledRtt
+	if floor == 0 || useRtt == 0 {
+		floor = self.minScaledRtt
+	}
 	scaledRtt := min(
 		max(
 			time.Duration(float32(useRtt/time.Millisecond)*self.rttScale)*time.Millisecond,
-			self.minScaledRtt,
+			floor,
 		),
 		self.maxScaledRtt,
 	)
-	self.log.V(2).Infof("[rtt]scaled=%dms\n", scaledRtt/time.Millisecond)
+	if self.log.V(2).Enabled() {
+		self.log.Infof("[rtt]scaled=%dms\n", scaledRtt/time.Millisecond)
+	}
 	return scaledRtt
+}
+
+func (self *RttWindow) ProbeRtt() time.Duration {
+	return self.probeRtt(time.Now())
+}
+
+func (self *RttWindow) probeRtt(probeTime time.Time) time.Duration {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.coalesce(probeTime)
+
+	useRtt := self.rtts.MinRtt()
+	floor := self.rttMinScaledRtt
+	if floor == 0 || useRtt == 0 {
+		floor = self.minScaledRtt
+	}
+	probeRtt := min(
+		max(
+			time.Duration(float32(useRtt/time.Millisecond)*self.rttScale)*time.Millisecond,
+			floor,
+		),
+		self.maxScaledRtt,
+	)
+	if self.log.V(2).Enabled() {
+		self.log.Infof("[rtt]probe=%dms\n", probeRtt/time.Millisecond)
+	}
+	return probeRtt
 }
 
 type rttHeap struct {

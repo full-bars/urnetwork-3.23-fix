@@ -424,6 +424,8 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 		// The worker is lazy and has no idle timer/radio wakeups.
 		SctpNoProgressTimeout: 10 * time.Second,
 
+		UdpSocketBufferByteCount: mib(4),
+
 		DataChannelLabel: "data",
 		IceServerUrls: []string{
 			"stun:openrelay.metered.ca:80",
@@ -459,6 +461,10 @@ type WebRtcSettings struct {
 	// packets, not application callbacks, so transfer send/receive/forward
 	// callbacks retain their synchronous backpressure semantics.
 	SctpNoProgressTimeout time.Duration
+
+	// UdpSocketBufferByteCount, when positive, is requested as the kernel send and
+	// receive buffer of every ICE UDP socket (clamped to rmem_max/wmem_max).
+	UdpSocketBufferByteCount ByteCount
 
 	DataChannelLabel string
 
