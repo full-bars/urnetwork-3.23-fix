@@ -1,14 +1,76 @@
-### **Unreleased (v3.23.0-fix.31.0 Draft)**
+### **Unreleased (targeting v3.23.0-fix.31.7)**
 
-Full draft release notes: [releases/v3.23.0-fix.31.0.md](v3.23.0-fix.31.0.md)
+> [!NOTE]
+> The whole v31 surface is still unreleased in the sense that matters.
+> v3.23.0-fix.31.0 through v3.23.0-fix.31.6 are tags cut to exercise what
+> will eventually ship as v31, not deployments. The fleet runs v30.x, so no
+> v31 change has reached production yet. See
+> [releases/v3.23.0-fix.31.0.md](v3.23.0-fix.31.0.md) for the full v31
+> feature set and `CHANGELOG.md` for the per-tag history.
+
+This file covers what has landed on `main` since the v3.23.0-fix.31.6 tag,
+plus one pending pull request. Everything here is additional to the v31
+feature set in the notes linked above, not a replacement for it.
 
 #### Added
-- **Provider Control Plane & Daemonization (Flagship)**: In-process control state with a local Unix domain socket control plane (`~/.urnetwork/provider.sock`) and a single-owner atomic state file (`~/.urnetwork/provider_state.json`); `urnet-tools set`/`clear`/`get` over the socket, with atomic set/clear (no split-brain), cross-process flocking, and systemd `override.conf` karma (profile, ramlogs, gomemlimit, gogc).
-- **Offline Pending Configuration Queue**: Queues `urnet-tools set` updates to `~/.urnetwork/pending_overrides.json` when the provider is offline (flock-guarded across processes), merging and applying settings one-shot on startup.
-- **Zero-Downtime HotSwap**: In-place binary handover between a running provider and a pre-flight-verified candidate — control-socket and listener transfer, mandatory TAKEOVER-ACK-then-yield, graceful drain, SIGUSR2/`urnet-tools hotswap` + Docker PID-1 in-place `execve` and systemd `Type=notify` handoff, and automatic rollback if the candidate fails to take over.
-- **Systemd Key Convergence**: Migrates `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT`, and `GOGC` into control-socket runtime state.
-- **Public IP Autodetection & Dashboard Rename (PR #534)**: Automatically discovers public IPv4 address with caching, 60s TTL, and concurrent request deduplication; `urnet-tools rename` sets the dashboard display label, and `urnet-tools ip-detect` / the `disable_ip_autodetect` marker disable autodetection.
-- **urnet-tools Multi-Provider UX (one provider per OS user)**: implicit current-user scope on ordinary commands; `providers` (your providers) and `providers --all` (whole box); cross-user `--user`/`--unit` commands self-elevate under `sudo <full binary path>`; `-y`/`--yes` aliases `--force`; `optimize` self-elevates and applies atomically with rollback; actionable manage-time refusals; control-socket liveness in `status`.
-- **JWT Auto-Refresh Transfer Stats Telemetry**: Step 3/3 of JWT rotation reads `paid_bytes_provided` and `unpaid_bytes_provided` from `GET /transfer/stats`, reporting account balances inline in human-readable units (`unpaid: X, paid: Y`).
-- **ICE IPv6 Host Candidate Egress Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent dead cellular routes on Android from blackholing WebRTC traffic.
-- **Automated CFAA Blocklist Synchronizations (PR #540, #542)**: Synchronized Computer Fraud and Abuse Act IP blocklists with upstream definitions.
+- **Version stamp for `-trimpath` builds**: every release binary is built
+  with `-trimpath`, which strips `-ldflags` from Go buildinfo, so
+  `main.Version` cannot be read back out of a stopped release binary.
+  `provider/main.go` now also embeds the version as a plain program-data
+  string literal (`VersionStamp`, set via
+  `-ldflags "-X main.VersionStamp=URNET_VERSION_STAMP=$VERSION"`).
+  `providerVersionFromStamp` in `internal/urnettools/provider.go` scans the
+  binary's raw bytes for the `URNET_VERSION_STAMP=` marker and reads the
+  version back without executing the file, so it works on a stopped
+  provider, a cross-architecture binary, and any `-trimpath` release build.
+- **Control-socket version command**: a running provider now answers a
+  `version` control-socket request with its own build version
+  (`provider/control_socket.go`), reporting `dev` if built without
+  `-ldflags`. `internal/urnettools/discover_unix.go` asks a running
+  provider's socket first when resolving its version, since that is the
+  only source answering "what is this process" rather than inferring it
+  from the filesystem; it falls back to `/proc/<pid>/exe` and then to
+  on-disk buildinfo for providers too old to know the command or whose
+  socket never bound.
+
+- **Auto-update timer fix**: the weekly `urnetwork-update.timer` has never
+  completed an update. Its `ExecStart` is a bare `urnet-tools update` with
+  no `-y`, systemd hands the oneshot unit `/dev/null` on stdin, and the
+  version-choice confirmation was gated only on `!force`, so every run
+  exited 1 on the non-interactive stdin read. Not a v31 regression — it
+  predates v3.23.0-fix.30.9, and `scripts/Provider_Install_Linux.sh` still
+  writes that same `ExecStart`. The fix introduces `unattendedUpdate()`,
+  a single decision shared by both confirmation gates and the target
+  pickers. Gate semantics:
+
+  | Condition | Behavior |
+  |-----------|----------|
+  | `-f`/`--force` | Skip prompts |
+  | `INVOCATION_ID` set (systemd) | Skip prompts |
+  | stdin is `/dev/null` (cron) | Skip prompts |
+  | Non-interactive but not `/dev/null` | Refuse (SSH w/o pty, pipes) |
+  | Terminal, no `-f` | Prompt as before |
+
+  Piped answers (`echo y | urnet-tools update`) are **not** read —
+  `confirmStdinRead` is shared with other destructive commands and keeps
+  refusing non-terminal input. The install script should pass `-y` for
+  explicitness. `cmdSelfUpdate` had the identical bug and is fixed too.
+  An update lock (flock on `*.update.lock`) now serializes concurrent
+  updates of the same binary.
+
+> [!IMPORTANT]
+> **Nodes on v3.23.0-fix.30.9 or v3.23.0-fix.31.6 will report a false
+> "failed to update" even when the upgrade succeeds.** On those builds,
+> resolving a running provider's version under systemd falls through to
+> reading `-ldflags` out of buildinfo, which is stripped by the `-trimpath`
+> release build, so the read comes back empty. `urnet-tools update`'s
+> post-update verification cannot then confirm the new binary took over,
+> and reports the update as failed. Measured on a test node: the restart
+> had taken effect, the process id moved and the unit was active, while the
+> run printed "1 of 1 provider(s) failed to update". The same blind spot
+> also defeats the "already on `<tag>`" skip check, so a node can reinstall
+> the same release repeatedly. This is fixed by the version-stamp and
+> control-socket changes above, but those builds predate the fix. Until a
+> node is updated past this point, verify the outcome with
+> `urnet-tools version` rather than trusting the update command's exit
+> status.
