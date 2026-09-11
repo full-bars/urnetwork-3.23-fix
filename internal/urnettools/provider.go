@@ -6,6 +6,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"context"
 	"debug/buildinfo"
 	"encoding/base64"
@@ -173,6 +174,9 @@ func providerVersion(binary string) string {
 	if v := providerVersionFromBuildinfo(binary); v != "" {
 		return v
 	}
+	if v := providerVersionFromStamp(binary); v != "" {
+		return v
+	}
 	return providerVersionFromExec(binary)
 }
 
@@ -240,6 +244,69 @@ func isGoPseudoVersion(v string) bool {
 // arbitrary attacker-chosen binaries via exec -a argv[0] trick. Without
 // this check, any local user can escalate to root on fleet nodes where
 // the operator runs sudo urnet-tools.
+// providerVersionFromStamp reads a greppable version marker embedded as
+// program data by -ldflags "-X main.VersionStamp=URNET_VERSION_STAMP=...".
+// Unlike buildinfo (stripped by -trimpath) and exec (requires a runnable
+// binary), this reads raw bytes from the file — it works on stopped
+// providers, cross-architecture binaries, and every -trimpath release build.
+const versionStampPrefix = "URNET_VERSION_STAMP="
+
+func providerVersionFromStamp(binary string) string {
+	if !isRecognizedExecutable(binary) {
+		return ""
+	}
+	f, err := os.Open(binary)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	// Read in 64 KB chunks with 1-byte overlap to catch markers split across
+	// chunk boundaries. The marker is short (< 64 bytes) so one overlap
+	// window always captures it.
+	const chunkSize = 64 * 1024
+	buf := make([]byte, chunkSize)
+	prevTail := []byte{}
+	for {
+		n, err := f.Read(buf)
+		if n == 0 {
+			break
+		}
+		chunk := buf[:n]
+		search := append(prevTail, chunk...)
+		// Search for the stamp, skipping false matches where the value
+		// doesn't start with 'v' (all release versions are v-prefixed).
+		off := 0
+		for {
+			idx := bytes.Index(search[off:], []byte(versionStampPrefix))
+			if idx < 0 {
+				break
+			}
+			idx += off
+			rest := search[idx+len(versionStampPrefix):]
+			if len(rest) == 0 || rest[0] != 'v' {
+				off = idx + len(versionStampPrefix)
+				continue
+			}
+			// The value ends at the first NUL, space, or end of available bytes.
+			end := bytes.IndexAny(rest, " \x00\n\r\t")
+			if end < 0 {
+				end = len(rest)
+			}
+			return string(rest[:end])
+		}
+		if len(chunk) > 1 {
+			prevTail = chunk[len(chunk)-1:]
+		} else {
+			prevTail = chunk
+		}
+		if err != nil {
+			break
+		}
+	}
+	return ""
+}
+
 func providerVersionFromExec(binary string) string {
 	// Defense-in-depth: refuse to execute anything that does not look like a
 	// provider binary. Discovery already gates this via isProviderArg before

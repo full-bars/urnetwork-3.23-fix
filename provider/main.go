@@ -161,6 +161,19 @@ func paceMonitor(ctx context.Context) {
 // -ldflags "-X main.Version=$WARP_VERSION-$WARP_VERSION_CODE"
 var Version string
 
+// VersionStamp is an alternative version marker embedded as program data
+// (not buildinfo). Unlike -ldflags main.Version which is stripped by
+// -trimpath, VersionStamp survives because it is a Go string literal written
+// into the binary's data segment. urnet-tools reads this via a file grep
+// when buildinfo is empty (the -trimpath case), enabling version detection
+// on stopped providers and fixing the false "failed to update" on
+// v30.9 -> v31 upgrades.
+// Set via: -ldflags "-X main.VersionStamp=URNET_VERSION_STAMP=$VERSION"
+var VersionStamp string
+
+// VersionStampRef prevents the linker from dead-code eliminating VersionStamp
+// when -trimpath strips buildinfo. The stamp is read by urnet-tools from the
+// binary file to detect the provider version without executing it.
 func init() {
 	// debug.SetGCPercent(10)
 
@@ -2744,6 +2757,9 @@ func provide(opts docopt.Opts) {
 		finishIdentity := bannerPhase("Identity")
 		host, _ := os.Hostname()
 		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+		if VersionStamp != "" {
+			tlog("[startup] version stamp: %s", VersionStamp)
+		}
 		finishIdentity(RequireVersion())
 	} else {
 		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())

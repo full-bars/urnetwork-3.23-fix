@@ -48,7 +48,7 @@ jobs:
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/; then
               echo "Build succeeded"; break
             fi
@@ -65,7 +65,7 @@ jobs:
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/; then
               echo "Build succeeded"; break
             fi
@@ -82,7 +82,7 @@ jobs:
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/; then
               echo "Build succeeded"; break
             fi
@@ -99,7 +99,7 @@ jobs:
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/; then
               echo "Build succeeded"; break
             fi
