@@ -66,9 +66,10 @@ func TestHotSwapExecutablePathUnchangedBinary(t *testing.T) {
 	}
 }
 
-// If the install path has gone, fall back to the running image rather than
-// aborting, but the caller is told the handoff will not change version.
-func TestHotSwapExecutablePathFallsBackWhenInstallPathGone(t *testing.T) {
+// A missing install path aborts. Falling back to the running image would
+// re-execute the build the handoff is meant to replace while reporting a clean
+// zero-downtime swap, which is the failure this function exists to remove.
+func TestHotSwapExecutablePathAbortsWhenInstallPathGone(t *testing.T) {
 	dir := t.TempDir()
 	install := filepath.Join(dir, "urnetwork")
 	running := filepath.Join(dir, "urnetwork.bak")
@@ -78,23 +79,78 @@ func TestHotSwapExecutablePathFallsBackWhenInstallPathGone(t *testing.T) {
 	withExecutableEnv(t, install, running, nil)
 
 	got, err := hotSwapExecutablePath()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("expected an abort when the install path is gone, got %s", got)
 	}
-	if got != running {
-		t.Fatalf("expected the fallback to the running image %s, got %s", running, got)
+	if got != "" {
+		t.Fatalf("expected no path on abort, got %s", got)
 	}
 }
 
-// Nothing was captured at startup, so the running image is all there is.
-func TestHotSwapExecutablePathWithoutCapturedInstallPath(t *testing.T) {
-	withExecutableEnv(t, "", "/proc/self/exe", nil)
+// An install path that exists but cannot be executed aborts too: an updater
+// that has written the binary but not yet marked it executable would otherwise
+// spawn a candidate that dies with a permission error.
+func TestHotSwapExecutablePathAbortsWhenInstallPathNotExecutable(t *testing.T) {
+	dir := t.TempDir()
+	install := filepath.Join(dir, "urnetwork")
+	if err := os.WriteFile(install, []byte("binary"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	withExecutableEnv(t, install, install, nil)
+
+	if _, err := hotSwapExecutablePath(); err == nil {
+		t.Fatal("expected an abort when the install path is not executable")
+	}
+}
+
+// An install path replaced by a directory aborts rather than being spawned.
+func TestHotSwapExecutablePathAbortsWhenInstallPathIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	install := filepath.Join(dir, "urnetwork")
+	if err := os.MkdirAll(install, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	withExecutableEnv(t, install, install, nil)
+
+	if _, err := hotSwapExecutablePath(); err == nil {
+		t.Fatal("expected an abort when the install path is a directory")
+	}
+}
+
+// readlink on /proc/self/exe appends " (deleted)" once the running binary is
+// unlinked, and os.Executable hands that back with a nil error. The suffix must
+// never reach exec.
+func TestHotSwapExecutablePathStripsDeletedSuffix(t *testing.T) {
+	dir := t.TempDir()
+	running := filepath.Join(dir, "urnetwork")
+	if err := os.WriteFile(running, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	withExecutableEnv(t, "", running+" (deleted)", nil)
 
 	got, err := hotSwapExecutablePath()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "/proc/self/exe" {
+	if got != running {
+		t.Fatalf("expected the deleted suffix stripped, got %s", got)
+	}
+}
+
+// Nothing was captured at startup, so the running image is all there is.
+func TestHotSwapExecutablePathWithoutCapturedInstallPath(t *testing.T) {
+	dir := t.TempDir()
+	running := filepath.Join(dir, "urnetwork")
+	if err := os.WriteFile(running, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	withExecutableEnv(t, "", running, nil)
+
+	got, err := hotSwapExecutablePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != running {
 		t.Fatalf("expected the running image, got %s", got)
 	}
 }

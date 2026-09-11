@@ -109,26 +109,67 @@ var installPath = func() string {
 	return exe
 }()
 
-// hotSwapExecutablePath returns the binary a handoff should launch. It prefers
-// the path captured at startup and falls back to the live one when that path
-// has gone (an uninstall mid-handoff), so a handoff never silently launches the
-// build it is supposed to be replacing without saying so.
+// procDeletedSuffix is what readlink("/proc/self/exe") appends once the
+// running binary has been unlinked. os.Executable returns it verbatim, with a
+// nil error, and the resulting path does not exist.
+const procDeletedSuffix = " (deleted)"
+
+// checkExecutable reports whether path can actually be handed to exec. A
+// plain existence check is not enough: an updater that has written the new
+// build but not yet chmod'd it, or an install path replaced by a directory,
+// both pass os.Stat and then fail at spawn. There is an unavoidable TOCTOU
+// window between this and the spawn, so this is a way to fail early with a
+// useful reason, not a guarantee.
+func checkExecutable(path string) error {
+	info, err := statFunc(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s is not executable (mode %s)", path, info.Mode().Perm())
+	}
+	return nil
+}
+
+// hotSwapExecutablePath returns the binary a handoff should launch: the path
+// captured at startup, which is where an updater installs the new build.
+//
+// When that path is unusable the handoff aborts rather than falling back to
+// the running image. A handoff exists to change version; re-executing the
+// build we are trying to replace, while reporting a clean zero-downtime swap,
+// is the exact failure this function was written to remove. Aborting leaves
+// the live provider untouched and lets updateProvider fall through to its
+// service-restart path.
+//
+// Known limitation: os.Executable resolves /proc/self/exe to the real inode,
+// so a deployment that launches the provider through a rotating symlink pins
+// the release directory it resolved to, not the symlink. Replacing the file at
+// the install path (what the updater does) is handled; rotating a symlink
+// above it is not.
 func hotSwapExecutablePath() (string, error) {
-	current, err := executableFunc()
-	if err != nil && installPath == "" {
-		return "", err
+	current, currentErr := executableFunc()
+	if currentErr == nil {
+		current = strings.TrimSuffix(current, procDeletedSuffix)
 	}
+
 	if installPath == "" {
-		return current, nil
-	}
-	if _, statErr := statFunc(installPath); statErr != nil {
-		if err != nil {
-			return "", fmt.Errorf("install path %s is gone (%v) and the running image is unresolvable: %w", installPath, statErr, err)
+		if currentErr != nil {
+			return "", fmt.Errorf("no executable path captured at startup and the running image is unresolvable: %w", currentErr)
 		}
-		tlog("⚠️ [hotswap] Install path %s is gone (%v); falling back to the running image %s. This handoff will NOT change version.\n", installPath, statErr, current)
+		if err := checkExecutable(current); err != nil {
+			return "", fmt.Errorf("no executable path captured at startup and the running image %s is unusable: %w", current, err)
+		}
 		return current, nil
 	}
-	if err == nil && current != installPath {
+
+	if err := checkExecutable(installPath); err != nil {
+		return "", fmt.Errorf("install path %s is unusable, so this handoff could not change version: %w", installPath, err)
+	}
+
+	if currentErr == nil && current != installPath {
 		// The running binary was moved aside, which is exactly what an update
 		// does. Launching the install path is the whole point of the handoff.
 		tlog("⚡ [hotswap] Running image moved to %s; launching the install path %s instead.\n", current, installPath)
