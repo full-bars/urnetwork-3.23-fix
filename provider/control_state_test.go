@@ -558,4 +558,3 @@ func TestControlState_PersistV2Format(t *testing.T) {
 		t.Errorf("meta[fast_auth] = %+v", meta)
 	}
 }
-

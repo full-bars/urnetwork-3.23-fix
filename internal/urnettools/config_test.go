@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,9 @@ func startMockStatusServer(t *testing.T, sockPath string, resp controlResponse) 
 }
 
 func TestConfigCmd_TableOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
@@ -157,6 +161,9 @@ func TestConfigCmd_TableOutput(t *testing.T) {
 }
 
 func TestConfigCmd_JSONOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
@@ -206,6 +213,9 @@ func TestConfigCmd_JSONOutput(t *testing.T) {
 }
 
 func TestConfigCmd_SocketUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -217,6 +227,9 @@ func TestConfigCmd_SocketUnavailable(t *testing.T) {
 }
 
 func TestConfigCmd_ProviderReturnedError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
@@ -238,6 +251,9 @@ func TestConfigCmd_ProviderReturnedError(t *testing.T) {
 }
 
 func TestDialControlSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
