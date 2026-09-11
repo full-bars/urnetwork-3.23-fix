@@ -89,7 +89,13 @@ func hotSwapPreflight(p Provider) error {
 // version is new enough to speak the HotSwap handoff protocol at all.
 func hotSwapVersionOK(p Provider) bool {
 	if p.PID > 0 {
-		if exe, err := runningImagePath(p.PID); err == nil {
+		// runningImageHandle, not runningImagePath: update swaps the binary
+		// on disk BEFORE this preflight runs, so by now the readlink target
+		// names a deleted file and every read through it fails. That left
+		// this returning false on every release build — HotSwap declined
+		// with a version reason no matter how new the running provider was,
+		// and the Type= check below was never even reached.
+		if exe, err := runningImageHandle(p.PID); err == nil {
 			// providerVersion, not the buildinfo-only variant: -trimpath
 			// release builds carry no main.Version in buildinfo, so the
 			// buildinfo-only read fell through to the module pseudo-version
