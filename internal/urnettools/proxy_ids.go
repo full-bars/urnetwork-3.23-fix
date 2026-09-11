@@ -49,9 +49,10 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 		// Show full client_id — this subcommand exists specifically to
 		// inspect and correlate client identities.
 		cid := e.ClientID
+		nidRunes := []rune(e.NetworkID)
 		nid := e.NetworkID
-		if len(nid) > 8 {
-			nid = string([]rune(nid)[:8]) + "…"
+		if len(nidRunes) > 8 {
+			nid = string(nidRunes[:8]) + "…"
 		}
 		var age string
 		if e.MintedAt.IsZero() {

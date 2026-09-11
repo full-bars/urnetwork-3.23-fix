@@ -158,7 +158,7 @@ func checkReadableAsUser(path, user string) error {
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | summary | remove-dead | trim <N>")
 	}
 	sub := args[0]
 	rest := args[1:]
