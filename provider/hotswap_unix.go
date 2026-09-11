@@ -164,6 +164,16 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	}, nil
 }
 
+// checkExecAccess reports whether the calling process can execute the file at
+// path, using syscall.Access with X_OK (1) which checks execute permission
+// according to the caller's real UID/GID.
+func checkExecAccess(path string) error {
+	if err := syscall.Access(path, 1); err != nil { // X_OK = 1
+		return fmt.Errorf("access %s: %w", path, err)
+	}
+	return nil
+}
+
 // getHotSwapChildIPC returns the open IPC file descriptor (fd 3) if this process was launched as a candidate.
 // It verifies that fd 3 is open and is a valid Unix domain socket before claiming candidate mode (F-11).
 func getHotSwapChildIPC() (*os.File, bool) {

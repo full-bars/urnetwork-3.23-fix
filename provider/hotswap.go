@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,7 +86,133 @@ var (
 	execInPlaceFunc    = execInPlace
 	spawnCandidateFunc = spawnHotSwapCandidate
 	exitFunc           = os.Exit
+	executableFunc     = os.Executable
+	statFunc           = os.Stat
+	syscallAccess      = checkExecAccess
 )
+
+// installPath is the executable path captured at process start, before any
+// updater could move the running binary aside.
+//
+// os.Executable() reads /proc/self/exe, which follows the inode rather than the
+// path. The update flow installs the new build at the provider's binary path
+// and moves the running one to a backup, so from that moment os.Executable()
+// returns the BACKUP path. Spawning that re-executes the old build: the handoff
+// reports success, the operator sees a clean zero-downtime swap, and the
+// provider keeps running the version it was already on.
+//
+// Capturing the path during init pins it while it still names the install
+// location, so a handoff always launches whatever now lives there.
+//
+// On Linux, /proc/self/exe appends " (deleted)" when the running binary has
+// been unlinked, yielding a path that does not exist on disk. We strip that
+// suffix here so the captured install path always names the real file location.
+var installPath = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(exe, procDeletedSuffix)
+}()
+
+// procDeletedSuffix is what readlink("/proc/self/exe") appends once the
+// running binary has been unlinked. os.Executable returns it verbatim, with a
+// nil error, and the resulting path does not exist.
+const procDeletedSuffix = " (deleted)"
+
+// checkExecutable reports whether path can actually be handed to exec. A
+// plain existence check is not enough: an updater that has written the new
+// build but not yet chmod'd it, or an install path replaced by a directory,
+// both pass os.Stat and then fail at spawn. There is an unavoidable TOCTOU
+// window between this and the spawn, so this is a way to fail early with a
+// useful reason, not a guarantee.
+//
+// On non-Windows platforms, when a regular file exists but lacks execute
+// permission, checkExecutable attempts the same self-healing chmod 0755 that
+// spawnHotSwapCandidate performs on a spawn failure. This avoids a hard abort
+// that would bypass the repair path and permanently block handoff.
+func checkExecutable(path string) error {
+	info, err := statFunc(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" {
+		// syscall.Access checks whether the calling process actually has
+		// permission to execute the file, according to its real UID/GID.
+		// The mode-bit mask (&0o111) only checks whether ANY execute bit
+		// is set, not whether the caller can use it.
+		if err := syscallAccess(path); err != nil {
+			// Self-healing: if the file is a regular file but lacks
+			// execute permission, repair it rather than aborting the
+			// handoff. spawnHotSwapCandidate already does this on a
+			// spawn failure, but healing here means the handoff can
+			// proceed immediately.
+			if errors.Is(err, os.ErrPermission) {
+				tlog("⚠️ [hotswap-heal] Install path %s missing execute permission; auto-healing chmod 0755...\n", path)
+				if chmodErr := os.Chmod(path, 0o755); chmodErr != nil {
+					return fmt.Errorf("%s is not executable and auto-heal chmod failed: %w", path, chmodErr)
+				}
+				return nil
+			}
+			return fmt.Errorf("%s is not executable: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// hotSwapExecutablePath returns the binary a handoff should launch: the path
+// captured at startup, which is where an updater installs the new build.
+//
+// When that path is unusable the handoff aborts rather than falling back to
+// the running image. A handoff exists to change version; re-executing the
+// build we are trying to replace, while reporting a clean zero-downtime swap,
+// is the exact failure this function was written to remove. Aborting leaves
+// the live provider untouched so the updater's verify loop detects the
+// mismatch and rolls back from backup rather than silently re-executing the
+// same build.
+//
+// Known limitation: os.Executable resolves /proc/self/exe to the real inode,
+// so a deployment that launches the provider through a rotating symlink pins
+// the release directory it resolved to, not the symlink. Replacing the file at
+// the install path (what the updater does) is handled; rotating a symlink
+// above it is not.
+func hotSwapExecutablePath() (string, error) {
+	rawCurrent, currentErr := executableFunc()
+	isDeleted := false
+	var current string
+	if currentErr == nil {
+		isDeleted = strings.HasSuffix(rawCurrent, procDeletedSuffix)
+		current = strings.TrimSuffix(rawCurrent, procDeletedSuffix)
+	}
+
+	if installPath == "" {
+		if currentErr != nil {
+			return "", fmt.Errorf("no executable path captured at startup and the running image is unresolvable: %w", currentErr)
+		}
+		if err := checkExecutable(current); err != nil {
+			return "", fmt.Errorf("no executable path captured at startup and the running image %s is unusable: %w", current, err)
+		}
+		return current, nil
+	}
+
+	if err := checkExecutable(installPath); err != nil {
+		return "", fmt.Errorf("install path %s is unusable, so this handoff could not change version: %w", installPath, err)
+	}
+
+	if currentErr == nil && (isDeleted || current != installPath) {
+		if isDeleted {
+			tlog("⚡ [hotswap] Running image was unlinked on disk; launching the install path %s instead.\n", installPath)
+		} else {
+			// The running binary was moved aside, which is exactly what an update
+			// does. Launching the install path is the whole point of the handoff.
+			tlog("⚡ [hotswap] Running image moved to %s; launching the install path %s instead.\n", current, installPath)
+		}
+	}
+	return installPath, nil
+}
 
 // RegisterCoordinatorCloser registers a callback invoked to yield coordinator sessions
 // during a hot-swap handoff. It returns a cleanup function that must be deferred to prevent leaks.
@@ -298,7 +425,7 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return nil
 	}
 
-	exe, err := os.Executable()
+	exe, err := hotSwapExecutablePath()
 	if err != nil {
 		tlog("❌ [hotswap] Failed to resolve executable path: %v. Aborting handoff.\n", err)
 		return fmt.Errorf("resolve executable: %w", err)
