@@ -121,8 +121,14 @@ func TestFlightControllerReleasesReserveOnNormalAck(t *testing.T) {
 	}
 }
 
-// Only one reserve slot exists. A second key must not be admitted through the
-// reserve while the first holds it.
+// Only one reserve slot exists, and a key that already holds an in-flight
+// message is refused.
+//
+// Note the limit of what this can assert: sendSchedulingKey carries a single
+// `valid` bool, so every valid key compares equal and there is no second,
+// distinct key to contend with. What this pins is the single-occupancy flag
+// and the per-key in-flight guard, not cross-flow fairness, which the key type
+// cannot currently express.
 func TestFlightControllerReserveIsSingleOccupancy(t *testing.T) {
 	controller, key := limitedFlightController(t)
 
@@ -146,10 +152,20 @@ func TestFlightControllerUnreservedAckLeavesReserveHeld(t *testing.T) {
 		t.Fatal("expected the keyed send to take the reserve")
 	}
 
-	controller.acknowledge(256)
+	// Go through acknowledgeForKey with reserved=false rather than the unkeyed
+	// acknowledge helper: the release lives in acknowledgeForKey, so a
+	// regression that cleared the slot regardless of the flag would not show up
+	// through a wrapper that never passes one.
+	controller.acknowledgeForKey(256, key, false)
 
 	if !controller.flowReserveInUse {
 		t.Fatal("an unreserved acknowledgement released the reserve slot")
+	}
+
+	// The unkeyed wrapper must behave the same way.
+	controller.acknowledge(256)
+	if !controller.flowReserveInUse {
+		t.Fatal("the unkeyed acknowledge helper released the reserve slot")
 	}
 }
 

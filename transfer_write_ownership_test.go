@@ -11,13 +11,19 @@ import (
 // failure path returns the frame to the message pool before reporting, so the
 // caller must treat the frame as consumed.
 type ownershipWriter struct {
-	// outcome selects which documented failure the writer reproduces.
+	// failWithError and timeout select which documented failure the writer
+	// reproduces. A writer that does not satisfy
+	// transferReliableOnlyMultiRouteWriter at all is modelled by plainWriter
+	// below, which is the one case where the frame never reaches a writer.
 	failWithError bool
 	timeout       bool
-	// reliableOnlySupported reports whether the writer satisfies
-	// transferReliableOnlyMultiRouteWriter. A writer that does not is the one
-	// case where the frame never reaches a writer at all.
+	// returns counts the frames this writer handed back to the pool, so a
+	// caller that also returns one is visible rather than merely suspected.
 	returns int
+	// held is the frame a successful write took ownership of but has not
+	// released yet, mirroring a real writer that frees asynchronously once the
+	// transmit completes.
+	held []byte
 }
 
 func (self *ownershipWriter) consume(transferFrameBytes []byte) {
@@ -38,7 +44,21 @@ func (self *ownershipWriter) writeDetailedReliableOnly(
 		self.consume(transferFrameBytes)
 		return false, transferWriteDisposition{}, nil
 	}
+	self.held = transferFrameBytes
 	return true, transferWriteDisposition{transportType: TransportTypeUnknown}, nil
+}
+
+// release models the writer finishing its transmit and freeing the frame it
+// took. Production writers do this asynchronously; the test drives it
+// explicitly so ownership stays observable.
+func (self *ownershipWriter) release() bool {
+	if self.held == nil {
+		return false
+	}
+	held := self.held
+	self.held = nil
+	self.returns += 1
+	return MessagePoolReturn(held)
 }
 
 func (self *ownershipWriter) Write(
@@ -201,8 +221,44 @@ func TestWriteMultiRouteWithCarrierSuccessLeavesOwnerReference(t *testing.T) {
 	}
 	// The writer took the shared reference and has not released it yet, so
 	// the owner is not the last holder until the writer releases.
-	if MessagePoolReturn(shared) {
+	if writer.held == nil {
+		t.Fatal("expected the writer to have taken ownership of the frame")
+	}
+	if writer.release() {
 		t.Fatal("expected the writer's reference to be one of two outstanding after a successful write")
 	}
 	assertOwnerReferenceIntact(t, owned, "success path")
+}
+
+// Every other case drives reliableOnly. The unconstrained path goes through a
+// different branch of writeMultiRouteWithCarrier and must obey the same
+// ownership contract.
+func TestWriteMultiRouteWithCarrierUnconstrainedDoesNotDoubleReturnOnError(t *testing.T) {
+	owned, shared := ownedFrame(t)
+	writer := &ownershipWriter{failWithError: true}
+
+	_, err := writeMultiRouteWithCarrier(writer, context.Background(), shared, time.Second, false)
+	if err == nil {
+		t.Fatal("expected the write error to propagate")
+	}
+	if writer.returns != 1 {
+		t.Fatalf("expected the writer to consume the frame once, got %d", writer.returns)
+	}
+	assertOwnerReferenceIntact(t, owned, "unconstrained error path")
+}
+
+// A writer with no carrier or transport support at all falls through to Write,
+// which consumes the frame on failure like every other path.
+func TestWriteMultiRouteWithCarrierUnconstrainedPlainWriterConsumesFrame(t *testing.T) {
+	owned, shared := ownedFrame(t)
+	writer := &plainWriter{}
+
+	_, err := writeMultiRouteWithCarrier(writer, context.Background(), shared, time.Second, false)
+	if err != nil {
+		t.Fatalf("expected the plain write to succeed, got %v", err)
+	}
+	if writer.written != 1 {
+		t.Fatalf("expected the frame to reach the writer once, got %d", writer.written)
+	}
+	assertOwnerReferenceIntact(t, owned, "unconstrained plain writer path")
 }
