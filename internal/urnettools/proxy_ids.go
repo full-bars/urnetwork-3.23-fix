@@ -19,10 +19,15 @@ type clientJWTEntryMinimal struct {
 	MintedAt  time.Time `json:"minted_at"`
 }
 
-// renderProxyIDs reads the client JWT store for the given provider and prints
-// a table of proxy address → client_id, network_id, minted_at.
+// renderProxyIDs prints a table of proxy address → client_id, network_id, age
+// from the supplied entries (already loaded by the caller from .client_jwts.json).
 // For "direct" entries, the proxy address is shown as "(direct)".
-func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinimal) {
+func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinimal) (err error) {
+	defer func() {
+		if ferr := w.Flush(); ferr != nil && err == nil {
+			err = ferr
+		}
+	}()
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "(no entries)")
 		return
@@ -34,26 +39,30 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 	}
 	sort.Strings(keys)
 
-	fmt.Fprintln(w, "PROXY\tCLIENT_ID\tNETWORK_ID\tMINTED_AT")
+	fmt.Fprintln(w, "PROXY	CLIENT_ID	NETWORK_ID	AGE")
 	for _, k := range keys {
 		e := entries[k]
 		label := k
 		if label == "direct" {
 			label = "(direct)"
 		}
-		// Show client_id truncated to 8 chars for readability.
+		// Show full client_id — this subcommand exists specifically to
+		// inspect and correlate client identities.
 		cid := e.ClientID
-		if len(cid) > 8 {
-			cid = cid[:8]
-		}
+		nidRunes := []rune(e.NetworkID)
 		nid := e.NetworkID
-		if len(nid) > 8 {
-			nid = nid[:8]
+		if len(nidRunes) > 8 {
+			nid = string(nidRunes[:8]) + "…"
 		}
-		age := formatDuration(time.Since(e.MintedAt))
+		var age string
+		if e.MintedAt.IsZero() {
+			age = "-"
+		} else {
+			age = formatDuration(time.Since(e.MintedAt))
+		}
 		fmt.Fprintf(w, "%s	%s	%s	%s\n", label, cid, nid, age)
 	}
-	w.Flush()
+	return
 }
 
 // formatDuration renders a duration in human-friendly form: seconds if
@@ -75,8 +84,10 @@ func formatDuration(d time.Duration) string {
 }
 
 // loadClientJWTStore reads .client_jwts.json from the given directory and
-// returns its parsed entries. Returns an empty map (not nil) when the file
-// is missing or unreadable — callers should treat that as "no entries".
+// returns its parsed entries. Returns an empty map (not nil) when the file is
+// missing. Read errors (e.g. permission denied) are propagated and not
+// treated as an empty store — this avoids masking access failures as "no
+// entries".
 func loadClientJWTStore(stateDir string) (map[string]clientJWTEntryMinimal, error) {
 	path := filepath.Join(stateDir, ".client_jwts.json")
 	data, err := os.ReadFile(path)
@@ -118,6 +129,8 @@ func cmdProxyIDsTarget(p Provider) error {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 8, 2, ' ', 0)
 	fmt.Fprintf(os.Stderr, "Client IDs for %s (from %s/.client_jwts.json):\n", providerLabel(p), stateDir)
-	renderProxyIDs(w, entries)
+	if err := renderProxyIDs(w, entries); err != nil {
+		return err
+	}
 	return nil
 }
