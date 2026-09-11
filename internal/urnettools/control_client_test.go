@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -351,5 +352,103 @@ func TestControlClient_InvalidValuesRejected(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "pending_overrides.json")); !os.IsNotExist(err) {
 		t.Fatalf("pending_overrides.json should not have been created for invalid values")
+	}
+}
+
+// TestProviderVersionFromSocket_EmptyStateDir verifies that when the
+// provider has no StateDir (e.g. not yet discovered), the function returns
+// ok=false instead of panicking or trying to connect to a garbage path.
+func TestProviderVersionFromSocket_EmptyStateDir(t *testing.T) {
+	v, ok := providerVersionFromSocket(Provider{})
+	if ok {
+		t.Errorf("expected ok=false for empty StateDir, got version=%q ok=true", v)
+	}
+}
+
+// startVersionMockServer starts a mock unix socket server that handles the
+// "version" command with the given response. The server echoes back whatever
+// controlResponse is provided for every "version" request. It also handles
+// the default "unknown cmd" path for non-version commands.
+func startVersionMockServer(t *testing.T, sockPath string, resp controlResponse) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets not supported on Windows CI")
+	}
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen mock socket: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				for scanner.Scan() {
+					var req controlRequest
+					if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+						_ = json.NewEncoder(c).Encode(controlResponse{OK: false, Error: "bad json"})
+						return
+					}
+					if req.Cmd == "version" {
+						_ = json.NewEncoder(c).Encode(resp)
+					} else {
+						_ = json.NewEncoder(c).Encode(controlResponse{OK: false, Error: "unknown cmd"})
+					}
+				}
+			}(conn)
+		}
+	}()
+}
+
+// TestProviderVersionFromSocket_NonOKResponse verifies that when the provider
+// socket exists but returns ok=false (e.g. a provider older than the version
+// command), the function returns ok=false so the caller falls back.
+func TestProviderVersionFromSocket_NonOKResponse(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "provider.sock")
+	startVersionMockServer(t, sockPath, controlResponse{OK: false, Error: "unknown cmd"})
+
+	p := Provider{StateDir: dir}
+	v, ok := providerVersionFromSocket(p)
+	if ok {
+		t.Errorf("expected ok=false for non-OK response, got version=%q ok=true", v)
+	}
+}
+
+// TestProviderVersionFromSocket_EmptyBuildVersion verifies that when the
+// socket responds OK but build_version is empty (a newer protocol version
+// that omits the field for some reason), the function returns ok=false.
+func TestProviderVersionFromSocket_EmptyBuildVersion(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "provider.sock")
+	startVersionMockServer(t, sockPath, controlResponse{OK: true, BuildVersion: ""})
+
+	p := Provider{StateDir: dir}
+	v, ok := providerVersionFromSocket(p)
+	if ok {
+		t.Errorf("expected ok=false for empty build_version, got version=%q ok=true", v)
+	}
+}
+
+// TestProviderVersionFromSocket_ValidResponse verifies the happy path: the
+// socket returns OK with a non-empty build_version, and the function
+// extracts it correctly.
+func TestProviderVersionFromSocket_ValidResponse(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "provider.sock")
+	startVersionMockServer(t, sockPath, controlResponse{OK: true, BuildVersion: "3.23.1"})
+
+	p := Provider{StateDir: dir}
+	v, ok := providerVersionFromSocket(p)
+	if !ok {
+		t.Fatal("expected ok=true for valid response")
+	}
+	if v != "3.23.1" {
+		t.Errorf("version = %q, want %q", v, "3.23.1")
 	}
 }
