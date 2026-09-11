@@ -297,6 +297,43 @@ func (self *messagePool) Put(poolMessage []byte) {
 	// else no capacity, discard the message
 }
 
+// MessagePoolBucket holds aggregate taken/returned/created counts for one
+// pool size class. All 5 pool sizes are returned by MessagePoolSummary.
+type MessagePoolBucket struct {
+	Size     int
+	Taken    uint64
+	Returned uint64
+	Created  uint64
+}
+
+// MessagePoolSummary returns one MessagePoolBucket per pool size with
+// totals summed across every shard and every tag. Each shard is read
+// under its mutex so the snapshot is consistent.
+func MessagePoolSummary() []MessagePoolBucket {
+	buckets := make([]MessagePoolBucket, 0, 5)
+	for _, pool := range orderedMessagePools() {
+		var taken, returned, created uint64
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					taken += shard.takenTags[tag]
+					returned += shard.returnedTags[tag]
+					created += shard.createdTags[tag]
+				}
+			}()
+		}
+		buckets = append(buckets, MessagePoolBucket{
+			Size:     pool.size,
+			Taken:    taken,
+			Returned: returned,
+			Created:  created,
+		})
+	}
+	return buckets
+}
+
 var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 	pools := []*messagePool{
 		newMessagePool(2048, int(InitialMessagePoolByteCount/ByteCount(2048))),

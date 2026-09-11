@@ -1981,6 +1981,29 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		}
 		tlog("%s\n", healthLine)
 
+		// Message-pool heartbeat: one aggregated line per 5-min tick.
+		if pools := connect.MessagePoolSummary(); pools != nil {
+			var totalTaken, totalReturned, totalCreated uint64
+			for _, b := range pools {
+				totalTaken += b.Taken
+				totalReturned += b.Returned
+				totalCreated += b.Created
+			}
+			if totalTaken > 0 {
+				var outstanding uint64
+				if totalTaken >= totalReturned {
+					outstanding = totalTaken - totalReturned
+				}
+				returnPct := 100 * float64(totalReturned) / float64(totalTaken)
+				var reusePct float64
+				if totalTaken >= totalCreated {
+					reusePct = 100 * float64(totalTaken-totalCreated) / float64(totalTaken)
+				}
+				tlog("❤️ [health][pool] buckets=%d taken=%d returned=%d outstanding=%d return=%.2f%% reuse=%.2f%%\n",
+					len(pools), totalTaken, totalReturned, outstanding, returnPct, reusePct)
+			}
+		}
+
 		if connect.ProxyHealthCount() == 0 {
 			continue // non-proxy mode: no [health][proxies] lines
 		}
