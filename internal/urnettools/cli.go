@@ -831,7 +831,14 @@ func confirmStdinRead(prompt string) (string, error) {
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {
-		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s, current=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir, orDash(p.Version))
+		ver := p.Version
+		if ver == "" && p.Binary != "" {
+			ver = providerVersionFromBuildinfo(p.Binary)
+			if ver == "" {
+				ver = providerVersionFromStamp(p.Binary)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s, current=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir, orDash(ver))
 	}
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")
