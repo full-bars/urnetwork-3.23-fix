@@ -66,6 +66,84 @@ type MultiRouteReader interface {
 	GetInactiveRoutes() []Route
 }
 
+// CarrierReliability describes delivery semantics of a transport/route.
+type CarrierReliability uint8
+
+const (
+	CarrierReliabilityUnknown CarrierReliability = iota
+	CarrierReliabilityReliable
+	CarrierReliabilityUnreliable
+)
+
+type TransferCarrierProperties struct {
+	Unreliable                    bool
+	ReceiveReliability            CarrierReliability
+	UnreliableMaxMessageByteCount int
+	unreliableFlightMessageLimit  int
+	unreliableFlightByteLimit     ByteCount
+}
+
+type TransportType string
+
+const (
+	TransportTypeUnknown   TransportType = "unknown"
+	TransportTypeH3        TransportType = "h3"
+	TransportTypeH1        TransportType = "h1"
+	TransportTypeH3Dns     TransportType = "h3dns"
+	TransportTypeH3DnsPump TransportType = "h3dnspump"
+	TransportTypeP2p       TransportType = "p2p"
+)
+
+type transferWriteDisposition struct {
+	transportType       TransportType
+	unreliable          bool
+	reliable            bool
+	hybridReliable      bool
+	route               Route
+	initiallyBlocked    bool
+	initialWaitDuration time.Duration
+}
+
+type transferFlightPolicySnapshot struct {
+	generation             uint64
+	limited                bool
+	byteLimit              ByteCount
+	messageLimit           int
+	flowIsolation          bool
+	flowReserve            bool
+	h1Only                 bool
+	reliableRouteAvailable bool
+	notify                 <-chan struct{}
+}
+
+type transferCarrierMultiRouteWriter interface {
+	writeDetailedWithCarrier(
+		ctx context.Context,
+		transferFrameBytes []byte,
+		timeout time.Duration,
+	) (bool, transferWriteDisposition, error)
+}
+
+type transferReliableOnlyMultiRouteWriter interface {
+	writeDetailedReliableOnly(
+		ctx context.Context,
+		transferFrameBytes []byte,
+		timeout time.Duration,
+	) (bool, transferWriteDisposition, error)
+}
+
+type TransportMultiRouteWriter interface {
+	WriteDetailedWithTransport(
+		ctx context.Context,
+		transferFrameBytes []byte,
+		timeout time.Duration,
+	) (bool, TransportType, error)
+}
+
+type transferFlightPolicyProvider interface {
+	transferFlightPolicy() transferFlightPolicySnapshot
+}
+
 type RouteManager struct {
 	ctx context.Context
 
@@ -149,15 +227,23 @@ func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 }
 
 func (self *RouteManager) UpdateTransport(transport Transport, routes []Route) {
+	self.UpdateTransportWithProperties(transport, routes, TransferCarrierProperties{})
+}
+
+func (self *RouteManager) UpdateTransportWithProperties(
+	transport Transport,
+	routes []Route,
+	properties TransferCarrierProperties,
+) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	self.writerMatchState.updateTransport(transport, routes)
-	self.readerMatchState.updateTransport(transport, routes)
+	self.writerMatchState.updateTransportWithProperties(transport, routes, properties)
+	self.readerMatchState.updateTransportWithProperties(transport, routes, properties)
 }
 
 func (self *RouteManager) RemoveTransport(transport Transport) {
-	self.UpdateTransport(transport, nil)
+	self.UpdateTransportWithProperties(transport, nil, TransferCarrierProperties{})
 }
 
 // getTransportStats returns the transport's counters across both match
@@ -180,7 +266,8 @@ type MatchState struct {
 	weightedRoutes bool
 	matches        func(Transport, TransferPath) bool
 
-	transportRoutes map[Transport][]Route
+	transportRoutes     map[Transport][]Route
+	transportProperties map[Transport]TransferCarrierProperties
 
 	// destination -> multi route selectors
 	destinationMultiRouteSelectors map[TransferPath]map[*MultiRouteSelector]bool
@@ -198,6 +285,7 @@ func NewMatchState(ctx context.Context, clientTag string, log Logger, weightedRo
 		weightedRoutes:                 weightedRoutes,
 		matches:                        matches,
 		transportRoutes:                map[Transport][]Route{},
+		transportProperties:            map[Transport]TransferCarrierProperties{},
 		destinationMultiRouteSelectors: map[TransferPath]map[*MultiRouteSelector]bool{},
 		transportMatchedDestinations:   map[Transport]map[TransferPath]bool{},
 	}
@@ -248,7 +336,7 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
 		// use the latest matches state
 		if self.matches(transport, destination) {
 			matchedDestinations[destination] = true
-			multiRouteSelector.updateTransport(transport, routes)
+			multiRouteSelector.updateTransportWithProperties(transport, routes, self.transportProperties[transport])
 		}
 	}
 
@@ -257,36 +345,43 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
 
 // closeMultiRouteSelector unregisters the selector from its destination's
 // selector set. The selector's own state and the transport-owned route
-// channels are left untouched.
+// channels are not modified.
 func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
-	// TODO readers do not need to prioritize routes
-
 	destination := multiRouteSelector.destination
+
 	multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]
 	if !ok {
-		// not present
 		return
 	}
+
 	delete(multiRouteSelectors, multiRouteSelector)
 
 	if len(multiRouteSelectors) == 0 {
-		// clean up the destination
 		delete(self.destinationMultiRouteSelectors, destination)
-		for _, matchedDestinations := range self.transportMatchedDestinations {
+		for transport, matchedDestinations := range self.transportMatchedDestinations {
 			delete(matchedDestinations, destination)
+			if len(matchedDestinations) == 0 {
+				delete(self.transportMatchedDestinations, transport)
+			}
 		}
 	}
 }
 
-// updateTransport is called from RouteManager.UpdateTransport, which holds
-// the RouteManager mutex.
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
+	self.updateTransportWithProperties(transport, routes, TransferCarrierProperties{})
+}
+
+func (self *MatchState) updateTransportWithProperties(
+	transport Transport,
+	routes []Route,
+	properties TransferCarrierProperties,
+) {
 	if len(routes) == 0 {
 		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
 			for destination, _ := range currentMatchedDestinations {
 				if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]; ok {
 					for multiRouteSelector, _ := range multiRouteSelectors {
-						multiRouteSelector.updateTransport(transport, nil)
+						multiRouteSelector.updateTransportWithProperties(transport, nil, TransferCarrierProperties{})
 					}
 				}
 			}
@@ -294,7 +389,9 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 
 		delete(self.transportMatchedDestinations, transport)
 		delete(self.transportRoutes, transport)
+		delete(self.transportProperties, transport)
 	} else {
+		self.transportProperties[transport] = properties
 		matchedDestinations := map[TransferPath]bool{}
 
 		currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]
@@ -306,12 +403,12 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 			if self.matches(transport, destination) {
 				matchedDestinations[destination] = true
 				for multiRouteSelector, _ := range multiRouteSelectors {
-					multiRouteSelector.updateTransport(transport, routes)
+					multiRouteSelector.updateTransportWithProperties(transport, routes, properties)
 				}
 			} else if _, ok := currentMatchedDestinations[destination]; ok {
 				// no longer matches
 				for multiRouteSelector, _ := range multiRouteSelectors {
-					multiRouteSelector.updateTransport(transport, nil)
+					multiRouteSelector.updateTransportWithProperties(transport, nil, TransferCarrierProperties{})
 				}
 			}
 		}
@@ -340,27 +437,69 @@ type MultiRouteSelector struct {
 
 	transportUpdate *Monitor
 
-	mutex           sync.Mutex
-	transportRoutes map[Transport][]Route
-	routeStats      map[Route]*RouteStats
-	routeActive     map[Route]bool
-	routeWeight     map[Route]float32
+	mutex                  sync.Mutex
+	generation             uint64
+	transportRoutes        map[Transport][]Route
+	transportProperties    map[Transport]TransferCarrierProperties
+	routeCarrierProperties map[Route]TransferCarrierProperties
+	routeTransportTypes    map[Route]TransportType
+	routeStats             map[Route]*RouteStats
+	routeActive            map[Route]bool
+	routeWeight            map[Route]float32
 }
 
 func NewMultiRouteSelector(ctx context.Context, clientTag string, log Logger, destination TransferPath, weightedRoutes bool) *MultiRouteSelector {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	return &MultiRouteSelector{
-		ctx:             cancelCtx,
-		cancel:          cancel,
-		clientTag:       clientTag,
-		log:             loggerOrDefault(log),
-		destination:     destination,
-		weightedRoutes:  weightedRoutes,
-		transportUpdate: NewMonitor(),
-		transportRoutes: map[Transport][]Route{},
-		routeStats:      map[Route]*RouteStats{},
-		routeActive:     map[Route]bool{},
-		routeWeight:     map[Route]float32{},
+		ctx:                    cancelCtx,
+		cancel:                 cancel,
+		clientTag:              clientTag,
+		log:                    loggerOrDefault(log),
+		destination:            destination,
+		weightedRoutes:         weightedRoutes,
+		transportUpdate:        NewMonitor(),
+		transportRoutes:        map[Transport][]Route{},
+		transportProperties:    map[Transport]TransferCarrierProperties{},
+		routeCarrierProperties: map[Route]TransferCarrierProperties{},
+		routeTransportTypes:    map[Route]TransportType{},
+		routeStats:             map[Route]*RouteStats{},
+		routeActive:            map[Route]bool{},
+		routeWeight:            map[Route]float32{},
+	}
+}
+
+func (self *MultiRouteSelector) unreliableForRoute(route Route) bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return self.routeCarrierProperties[route].Unreliable
+}
+
+func (self *MultiRouteSelector) UnreliableForRoute(route Route) bool {
+	return self.unreliableForRoute(route)
+}
+
+func (self *MultiRouteSelector) transferFlightPolicy() transferFlightPolicySnapshot {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	hasUnreliable := false
+	hasReliable := false
+	for _, routes := range self.transportRoutes {
+		for _, route := range routes {
+			if self.routeActive[route] {
+				if self.routeCarrierProperties[route].Unreliable {
+					hasUnreliable = true
+				} else {
+					hasReliable = true
+				}
+			}
+		}
+	}
+	return transferFlightPolicySnapshot{
+		generation:             self.generation,
+		limited:                hasUnreliable,
+		reliableRouteAvailable: hasReliable,
+		notify:                 self.transportUpdate.NotifyChannel(),
 	}
 }
 
@@ -387,23 +526,22 @@ func (self *MultiRouteSelector) getTransportStats(transport Transport) *RouteSta
 // if weightedRoutes, this applies new priorities and weights. calling this resets all route stats.
 // the reason to reset weightedRoutes is that the weight calculation needs to consider only the stats since the previous weight change
 func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Route) {
+	self.updateTransportWithProperties(transport, routes, TransferCarrierProperties{})
+}
+
+func (self *MultiRouteSelector) updateTransportWithProperties(
+	transport Transport,
+	routes []Route,
+	properties TransferCarrierProperties,
+) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	// activeRoutes := func()([]Route) {
-	//  activeRoutes := []Route{}
-	//  for _, routes := range self.transportRoutes {
-	//      for _, route := range routes {
-	//          if self.routeActive[route] {
-	//              activeRoutes = append(activeRoutes, route)
-	//          }
-	//      }
-	//  }
-	//  return activeRoutes
-	// }
-
-	// preTransportCount := len(self.transportRoutes)
-	// preActiveRouteCount := len(activeRoutes())
+	self.generation++
+	tType := TransportTypeUnknown
+	if tp, ok := transport.(interface{ TransportType() TransportType }); ok {
+		tType = tp.TransportType()
+	}
 
 	if len(routes) == 0 {
 		if currentRoutes, ok := self.transportRoutes[transport]; ok {
@@ -411,13 +549,17 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 				delete(self.routeStats, currentRoute)
 				delete(self.routeActive, currentRoute)
 				delete(self.routeWeight, currentRoute)
+				delete(self.routeCarrierProperties, currentRoute)
+				delete(self.routeTransportTypes, currentRoute)
 			}
 			delete(self.transportRoutes, transport)
+			delete(self.transportProperties, transport)
 		} else {
 			// transport is not active. nothing to do
 			return
 		}
 	} else {
+		self.transportProperties[transport] = properties
 		if currentRoutes, ok := self.transportRoutes[transport]; ok {
 			for _, currentRoute := range currentRoutes {
 				if slices.Index(routes, currentRoute) < 0 {
@@ -425,6 +567,8 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 					delete(self.routeStats, currentRoute)
 					delete(self.routeActive, currentRoute)
 					delete(self.routeWeight, currentRoute)
+					delete(self.routeCarrierProperties, currentRoute)
+					delete(self.routeTransportTypes, currentRoute)
 				}
 			}
 			for _, route := range routes {
@@ -432,11 +576,15 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 					// new route
 					self.routeActive[route] = true
 				}
+				self.routeCarrierProperties[route] = properties
+				self.routeTransportTypes[route] = tType
 			}
 		} else {
 			for _, route := range routes {
 				// new route
 				self.routeActive[route] = true
+				self.routeCarrierProperties[route] = properties
+				self.routeTransportTypes[route] = tType
 			}
 		}
 		// the following will be updated with the new routes in the weighting below
@@ -633,11 +781,105 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []
 
 // MultiRouteWriter
 func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error) {
+	success, _, err := self.writeDetailedWithRoutePolicy(ctx, transferFrameBytes, timeout, false)
+	return success, err
+}
+
+func (self *MultiRouteSelector) writeDetailedWithCarrier(
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+) (bool, transferWriteDisposition, error) {
+	return self.writeDetailedWithRoutePolicy(ctx, transferFrameBytes, timeout, false)
+}
+
+func (self *MultiRouteSelector) writeDetailedReliableOnly(
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+) (bool, transferWriteDisposition, error) {
+	return self.writeDetailedWithRoutePolicy(ctx, transferFrameBytes, timeout, true)
+}
+
+func (self *MultiRouteSelector) writeDetailedReplyWithCarrierPreference(
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+	preferredTransportType TransportType,
+) (bool, transferWriteDisposition, error) {
+	reliableOnly := false
+	if self.transportPotentiallyUnreliable(preferredTransportType) {
+		reliableOnly = true
+	}
+	return self.writeDetailedWithRoutePolicy(ctx, transferFrameBytes, timeout, reliableOnly)
+}
+
+func (self *MultiRouteSelector) transportPotentiallyUnreliable(transportType TransportType) bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	hasReliable := false
+	hasTransportUnreliable := false
+	for transport, routes := range self.transportRoutes {
+		props := self.transportProperties[transport]
+		tType := TransportTypeUnknown
+		if t, ok := transport.(interface{ TransportType() TransportType }); ok {
+			tType = t.TransportType()
+		}
+		for _, route := range routes {
+			if self.routeActive[route] {
+				if !self.routeCarrierProperties[route].Unreliable && !props.Unreliable {
+					hasReliable = true
+				}
+				if tType == transportType && (self.routeCarrierProperties[route].Unreliable || props.Unreliable) {
+					hasTransportUnreliable = true
+				}
+			}
+		}
+	}
+	return hasReliable && hasTransportUnreliable
+}
+
+func (self *MultiRouteSelector) dispositionForRoute(route Route) transferWriteDisposition {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	props := self.routeCarrierProperties[route]
+	tType := self.routeTransportTypes[route]
+	if tType == "" {
+		tType = TransportTypeUnknown
+	}
+	return transferWriteDisposition{
+		transportType: tType,
+		unreliable:    props.Unreliable,
+		reliable:      !props.Unreliable,
+		route:         route,
+	}
+}
+
+func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+	reliableOnly bool,
+) (bool, transferWriteDisposition, error) {
 	// write to the first channel available, in random priority
 	enterTime := time.Now()
 	for {
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
+
+		if reliableOnly {
+			reliableRoutes := make([]Route, 0, len(activeRoutes))
+			for _, route := range activeRoutes {
+				if !self.unreliableForRoute(route) {
+					reliableRoutes = append(reliableRoutes, route)
+				}
+			}
+			if len(reliableRoutes) > 0 {
+				activeRoutes = reliableRoutes
+			}
+		}
 
 		self.log.V(2).Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
@@ -647,7 +889,7 @@ func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrame
 			case route <- transferFrameBytes:
 				self.log.V(2).Infof("[mrw]nb %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
-				return true, nil
+				return true, self.dispositionForRoute(route), nil
 			default:
 			}
 		}
@@ -718,21 +960,21 @@ func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrame
 			switch chosenIndex {
 			case contextDoneIndex:
 				MessagePoolReturn(transferFrameBytes)
-				return false, errors.New("Context done")
+				return false, transferWriteDisposition{}, errors.New("Context done")
 			case doneIndex:
 				MessagePoolReturn(transferFrameBytes)
-				return false, errors.New("Done")
+				return false, transferWriteDisposition{}, errors.New("Done")
 			case transportUpdateIndex:
 				// new routes, try again
 			case timeoutIndex:
 				MessagePoolReturn(transferFrameBytes)
-				return false, nil
+				return false, transferWriteDisposition{}, nil
 			default:
 				// a route
 				routeIndex := chosenIndex - routeStartIndex
 				route := activeRoutes[routeIndex]
 				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
-				return true, nil
+				return true, self.dispositionForRoute(route), nil
 			}
 		}
 	}
@@ -938,17 +1180,27 @@ func (self *sendClientTransport) Downgrade(source TransferPath) {
 
 // conforms to `Transport`
 type sendGatewayTransport struct {
-	transportId Id
+	transportId   Id
+	transportType TransportType
 }
 
 func NewSendGatewayTransport() *sendGatewayTransport {
+	return NewSendGatewayTransportWithType(TransportTypeUnknown)
+}
+
+func NewSendGatewayTransportWithType(transportType TransportType) *sendGatewayTransport {
 	return &sendGatewayTransport{
-		transportId: NewId(),
+		transportId:   NewId(),
+		transportType: transportType,
 	}
 }
 
 func (self *sendGatewayTransport) TransportId() Id {
 	return self.transportId
+}
+
+func (self *sendGatewayTransport) TransportType() TransportType {
+	return self.transportType
 }
 
 func (self *sendGatewayTransport) Priority() int {
@@ -982,17 +1234,27 @@ func (self *sendGatewayTransport) Downgrade(source TransferPath) {
 
 // conforms to `Transport`
 type receiveGatewayTransport struct {
-	transportId Id
+	transportId   Id
+	transportType TransportType
 }
 
 func NewReceiveGatewayTransport() *receiveGatewayTransport {
+	return NewReceiveGatewayTransportWithType(TransportTypeUnknown)
+}
+
+func NewReceiveGatewayTransportWithType(transportType TransportType) *receiveGatewayTransport {
 	return &receiveGatewayTransport{
-		transportId: NewId(),
+		transportId:   NewId(),
+		transportType: transportType,
 	}
 }
 
 func (self *receiveGatewayTransport) TransportId() Id {
 	return self.transportId
+}
+
+func (self *receiveGatewayTransport) TransportType() TransportType {
+	return self.transportType
 }
 
 func (self *receiveGatewayTransport) Priority() int {
