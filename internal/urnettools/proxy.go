@@ -158,7 +158,7 @@ func checkReadableAsUser(path, user string) error {
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | ids | remove-dead | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -184,6 +184,7 @@ Subcommands:
   remove-source <url>    remove a URL proxy source
   health                 proxy health from state files (single target)
   traffic                proxy traffic from state files (single target)
+  ids                    client_id per proxy from JWT store (single target)
   remove-dead            remove dead/degraded proxies (single target)
   trim <N>               hold running proxies at N, shed the A-F-worst (single target)
 
@@ -455,7 +456,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		pasteArgs = append(pasteArgs, positionals...)
 		return providerSubcommand(p, pasteArgs...)
 
-	case "health", "traffic", "remove-dead":
+	case "health", "traffic", "ids", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
 		// silently dropped.
@@ -474,6 +475,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return cmdProxyHealthTarget(p)
 		case "traffic":
 			return cmdProxyTrafficTarget(p)
+		case "ids":
+			return cmdProxyIDsTarget(p)
 		default: // remove-dead
 			if dryRun {
 				fmt.Printf("[dry-run] would remove dead/degraded proxies on %s\n", providerLabel(p))
@@ -482,7 +485,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|refresh|remove-dead|add-source|remove-source|trim)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|ids|refresh|remove-dead|add-source|remove-source|trim)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.
