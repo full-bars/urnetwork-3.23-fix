@@ -55,3 +55,10 @@ func notifySystemdStatus(text string) error {
 func execInPlace(exe string, args []string, env []string) error {
 	return errors.New("execve not supported on Windows")
 }
+
+// checkExecAccess is a no-op stub on Windows. checkExecutable skips the Unix
+// access check entirely for GOOS == "windows", where POSIX execute bits
+// do not exist.
+func checkExecAccess(path string) error {
+	return nil
+}

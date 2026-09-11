@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -87,10 +88,15 @@ func TestHotSwapExecutablePathAbortsWhenInstallPathGone(t *testing.T) {
 	}
 }
 
-// An install path that exists but cannot be executed aborts too: an updater
-// that has written the binary but not yet marked it executable would otherwise
-// spawn a candidate that dies with a permission error.
-func TestHotSwapExecutablePathAbortsWhenInstallPathNotExecutable(t *testing.T) {
+// An install path that exists but lacks execute permission self-heals via
+// chmod 0755 on Unix before the handoff proceeds. This path exists at 0644
+// (e.g. an updater that wrote the binary but hasn't yet set execute bits).
+// The pre-spawn self-heal repairs permissions so the candidate can launch,
+// preserving the hotswap-heal repair path rather than hard-aborting.
+func TestHotSwapExecutablePathSelfHealsWhenInstallPathNotExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execute-bit self-heal is Unix-only")
+	}
 	dir := t.TempDir()
 	install := filepath.Join(dir, "urnetwork")
 	if err := os.WriteFile(install, []byte("binary"), 0o644); err != nil {
@@ -98,8 +104,12 @@ func TestHotSwapExecutablePathAbortsWhenInstallPathNotExecutable(t *testing.T) {
 	}
 	withExecutableEnv(t, install, install, nil)
 
-	if _, err := hotSwapExecutablePath(); err == nil {
-		t.Fatal("expected an abort when the install path is not executable")
+	got, err := hotSwapExecutablePath()
+	if err != nil {
+		t.Fatalf("expected self-heal, got error: %v", err)
+	}
+	if got != install {
+		t.Fatalf("expected %s, got %s", install, got)
 	}
 }
 
@@ -134,6 +144,30 @@ func TestHotSwapExecutablePathStripsDeletedSuffix(t *testing.T) {
 	}
 	if got != running {
 		t.Fatalf("expected the deleted suffix stripped, got %s", got)
+	}
+}
+
+// When the running image was unlinked (Linux deletes-in-place), the handoff
+// logs an informational message distinguishing "unlinked" from "moved" so
+// operators can see when their binary was replaced vs. renamed. The install
+// path still launches the new build.
+func TestHotSwapExecutablePathLogsUnlinkedRunningImage(t *testing.T) {
+	dir := t.TempDir()
+	install := filepath.Join(dir, "urnetwork")
+	running := filepath.Join(dir, "urnetwork.bak")
+	for _, p := range []string{install, running} {
+		if err := os.WriteFile(p, []byte("binary"), 0o755); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	withExecutableEnv(t, install, running+" (deleted)", nil)
+
+	got, err := hotSwapExecutablePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != install {
+		t.Fatalf("expected the handoff to launch the install path %s, got %s", install, got)
 	}
 }
 
