@@ -53,8 +53,15 @@ func TestProxyLaunchStagger(t *testing.T) {
 
 func TestCurrentProviderNetworkID(t *testing.T) {
 	t.Run("no jwt file returns empty", func(t *testing.T) {
-		_, restore := withHome(t)
+		home, restore := withHome(t)
 		defer restore()
+		// currentProviderNetworkID falls back to globalClientJWTStore when no
+		// account JWT is present, and that store is initialised at package
+		// load from the real home directory. Without redirecting it at a temp
+		// path the fallback returns the developer's own network id and this
+		// case only passes on a machine that has never run a provider.
+		restoreStore := withGlobalStore(t, filepath.Join(home, ".client_jwts.json"))
+		defer restoreStore()
 
 		if got := currentProviderNetworkID(); got != "" {
 			t.Errorf("currentProviderNetworkID() = %q, want empty", got)
