@@ -596,6 +596,48 @@ func updateProviderWithRestart(p Provider, cfg updateConfig, stagedTool string) 
 //
 // This is the exact recipe proven on 2026-08-09 for taco's fleet.
 func updateProvider(p Provider, cfg updateConfig) error {
+	// Guard before the lock: an empty binary path would put the lock file at
+	// a relative ".update.lock" in the caller's working directory. runUpdate
+	// validates this for every provider in the batch, but updateProvider is
+	// also called directly, so re-check rather than trust the caller.
+	if p.Binary == "" {
+		return fmt.Errorf("update %s: no resolvable binary path", providerLabel(p))
+	}
+
+	// Serialize concurrent updates of the same binary before doing anything
+	// with side effects.
+	//
+	// This became reachable when the weekly urnetwork-update.timer started
+	// working: while the timer always failed on its stdin prompt it could
+	// never overlap with an operator, so the race was latent. Now the timer
+	// can fire mid-afternoon into the middle of a hand-run `urnet-tools
+	// update` on the same node.
+	//
+	// Unserialized, two runs each back up the binary, each rename over it,
+	// and each restart the unit. The backup names are timestamped so they do
+	// not collide, but the pair can interleave so that the surviving backup
+	// is a copy of the OTHER run's new binary rather than the original, and
+	// that is the copy the rollback path restores. The two restarts also
+	// race the HotSwap takeover handshake, whose failure mode is the one
+	// state this code cannot recover (see the ownership-already-transferred
+	// error below).
+	//
+	// The lock is on the binary rather than the state directory because the
+	// binary is the contended resource: two providers configured to share
+	// one install path must serialize, and two providers with their own
+	// paths need not. p.Binary is guaranteed non-empty here, validated for
+	// every provider in the batch before any of them is touched.
+	//
+	// Blocking, not try-lock: the loser should wait and then find the
+	// release already installed, which the caller's "already on <tag>" check
+	// reports on the next run. Failing instead would make a timer report a
+	// failure for a node that is perfectly up to date.
+	release, lerr := acquireExclusiveLock(p.Binary + ".update.lock")
+	if lerr != nil {
+		return fmt.Errorf("update %s: %w", providerLabel(p), lerr)
+	}
+	defer release()
+
 	// A digest is MANDATORY: without it the downloaded binary is executed
 	// (version check + install, often as the provider user) with no
 	// integrity verification. Check BEFORE any staging side effects — the

@@ -15,10 +15,22 @@ import (
 // update. Mirrors pending_overrides_lock_unix.go's unix.Flock(LOCK_EX)
 // using LockFileEx, since Windows has no flock(2).
 func acquirePendingOverridesLock(queueFile string) (func(), error) {
-	lockPath := queueFile + ".lock"
+	release, err := acquireExclusiveLock(queueFile + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("pending-overrides: %w", err)
+	}
+	return release, nil
+}
+
+// acquireExclusiveLock obtains a blocking, exclusive inter-process lock on
+// lockPath and returns a release function. Mirrors the unix build's
+// unix.Flock(LOCK_EX) using LockFileEx, since Windows has no flock(2).
+// Windows releases the lock when the handle closes, including on process
+// death, so a crash cannot leave a stale lock behind.
+func acquireExclusiveLock(lockPath string) (func(), error) {
 	pathPtr, err := windows.UTF16PtrFromString(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("pending-overrides lock path: %w", err)
+		return nil, fmt.Errorf("lock path %s: %w", lockPath, err)
 	}
 
 	handle, err := windows.CreateFile(
@@ -31,13 +43,13 @@ func acquirePendingOverridesLock(queueFile string) (func(), error) {
 		0,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("open pending-overrides lock file: %w", err)
+		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
 	}
 
 	var overlapped windows.Overlapped
 	if err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
 		windows.CloseHandle(handle)
-		return nil, fmt.Errorf("lock pending-overrides: %w", err)
+		return nil, fmt.Errorf("lock %s: %w", lockPath, err)
 	}
 
 	return func() {
