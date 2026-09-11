@@ -51,7 +51,7 @@ func Run(args []string) error {
 					stale = " (disk binary stale — restart needed)"
 				}
 				version := p.Version
-				if version == "" {
+				if version == "" && !p.Running {
 					version = "(no binary)"
 				}
 				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
