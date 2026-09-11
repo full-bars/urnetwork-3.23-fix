@@ -228,7 +228,7 @@ func providerVersionFromBuildinfo(binary string) string {
 // go.mod carries a trailing +incompatible. A pseudo-version is derived from a
 // commit, never from a provider release tag, so it is never a valid answer to
 // "what version is this provider?".
-var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}(\+incompatible)?$`)
+var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}(\+.*)?$`)
 
 // isGoPseudoVersion reports whether v is a Go module pseudo-version.
 func isGoPseudoVersion(v string) bool {
