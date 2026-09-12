@@ -115,8 +115,10 @@ func (s *proxyEarningsStore) Observe(snapshot map[string]*connect.ProxyBandwidth
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	live := make(map[string]struct{}, len(snapshot))
 	for key, bw := range snapshot {
 		addr := proxyKeyAddress(key)
+		live[addr] = struct{}{}
 		cum := bw.BillableRx.Load() + bw.BillableTx.Load()
 		prev, seen := s.prevCum[addr]
 		s.prevCum[addr] = cum
@@ -124,6 +126,21 @@ func (s *proxyEarningsStore) Observe(snapshot map[string]*connect.ProxyBandwidth
 			continue
 		}
 		s.creditLocked(addr, float64(cum-prev), now)
+	}
+
+	// Drop baselines for addresses that left the snapshot. Without this the
+	// map gains an entry for every address ever seen and loses none, which
+	// on a node churning thousands of URL-sourced proxies grows for the life
+	// of the process. perProxyEarnTracker prunes for the same reason.
+	//
+	// Only the baseline is pruned, never the earnings record: the record is
+	// the point of this store and an offline proxy still has one. Dropping
+	// the baseline costs nothing, because a proxy that returns comes back
+	// with counters reset to zero, which re-baselines on first sight anyway.
+	for addr := range s.prevCum {
+		if _, ok := live[addr]; !ok {
+			delete(s.prevCum, addr)
+		}
 	}
 }
 
@@ -245,9 +262,9 @@ func (s *proxyEarningsStore) Save(now time.Time) error {
 	}
 	s.entries = retained
 
-	// prevCum is keyed by the live proxy set, not by the retained history,
-	// so an evicted address that is still serving keeps its baseline and
-	// does not re-credit its whole cumulative total on the next tick.
+	// prevCum is pruned by Observe against the live snapshot, not here, so
+	// an address evicted from the history but still serving keeps its
+	// baseline and does not re-credit its whole cumulative total.
 	path := s.path
 	s.mu.Unlock()
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -256,5 +257,44 @@ func TestEarningsHistorySummaryOnAFreshNode(t *testing.T) {
 	ranked, topAddr, topScore := earningsHistorySummary(proxies, time.Now())
 	if ranked != 0 || topAddr != "" || topScore != 0 {
 		t.Fatalf("fresh node summary = (%d, %q, %v), want (0, \"\", 0)", ranked, topAddr, topScore)
+	}
+}
+
+// The earnings record must survive a proxy leaving the snapshot, but the
+// delta baseline must not: prevCum gains an entry for every address ever
+// seen, and nothing evicts it. On a node churning thousands of URL-sourced
+// addresses over weeks of uptime that map grows without bound.
+//
+// perProxyEarnTracker prunes both its maps for exactly this reason. This
+// store keeps its history and prunes only the baseline.
+func TestEarningsBaselineDoesNotGrowWithChurn(t *testing.T) {
+	s := newProxyEarningsStore(filepath.Join(t.TempDir(), "earn.json"))
+	now := time.Now()
+
+	// One long-lived proxy earns, then a thousand short-lived addresses
+	// pass through, one per tick, the way a churning URL source behaves.
+	s.Observe(map[string]*connect.ProxyBandwidth{"keeper:1080": bwWith(0)}, now)
+	s.Observe(map[string]*connect.ProxyBandwidth{"keeper:1080": bwWith(5000)}, now)
+
+	for i := 0; i < 1000; i++ {
+		addr := fmt.Sprintf("churn-%d:1080", i)
+		s.Observe(map[string]*connect.ProxyBandwidth{
+			"keeper:1080": bwWith(5000),
+			addr:          bwWith(1),
+		}, now)
+	}
+
+	s.mu.Lock()
+	baselines := len(s.prevCum)
+	s.mu.Unlock()
+
+	// Only the live set from the last call should hold a baseline.
+	if baselines > 2 {
+		t.Errorf("prevCum holds %d baselines after 1000 churned addresses, want at most 2", baselines)
+	}
+
+	// The history itself must be untouched by that pruning.
+	if got := s.Score("keeper:1080", now); got != 5000 {
+		t.Errorf("keeper score = %v, want 5000; pruning the baseline must not touch the record", got)
 	}
 }
