@@ -33,6 +33,8 @@ Core Commands:
   self-update             Update this tool binary itself
   status                  Show provider service status
   logs [all|dump|-i]      Stream logs (all=from start, dump=save, -i=important only)
+  dashboard               Status panel: state, settings, sources, warnings
+  history [limit]         Show the provider's command audit trail
 
 Performance & Tuning:
   turbo <v4|v8|off>       RAISE throughput limits for RAM-rich boxes
@@ -45,6 +47,8 @@ Performance & Tuning:
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
   fast-auth [on|off]      Bypass auth rate limiter without restart
   config [--json]         Show all provider settings with source and age
+  profile [<name>]        Show or set the memory/GC tuning profile
+  metrics <on|off>        Toggle the Prometheus /metrics endpoint (needs URNETWORK_METRICS)
 
 Session & Identity:
   session save <file>     Export identity + proxy state (encrypted)
@@ -65,7 +69,7 @@ Proxy Management:
   proxy health            Show dead/degraded proxies + live event log
   proxy traffic           Real-time bandwidth & client session load
   proxy ids               Client IDs for each proxy (from JWT store)
-  proxy summary           Fleet-style summary (sources, health, counts)
+  summary                 Fleet-style proxy summary (sources, health, counts)
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
@@ -357,12 +361,15 @@ func newSummaryCmd() *cobra.Command {
 }
 
 func newVersionCmd() *cobra.Command {
-	// '-v'/'--version' were dead aliases: Cobra strips '-' tokens before alias
-	// matching, so they never resolve (handled at top level). Keep plain 'version'.
-	return withHelp(newCobraCmd("version", "print this tool's version", nil, func(cmd *cobra.Command, args []string) error {
-		fmt.Println(ToolVersion)
+	// '-v'/'--version' are handled by the top-level dispatcher, not here:
+	// Cobra strips '-' tokens before alias matching, so they never resolve as
+	// aliases. They print the bare tool version. Plain 'version' reports the
+	// provider inventory as well, and shares its implementation with the
+	// dispatcher so the two entry points cannot answer differently.
+	return withHelp(newCobraCmd("version", "print this tool's version and each provider's", nil, func(cmd *cobra.Command, args []string) error {
+		printToolVersionAndProviders()
 		return nil
-	}), "Print the urnet-tools build version and exit. No provider is contacted.", "  urnet-tools version")
+	}), "Print the urnet-tools build version, then every discovered provider and the version it is actually running. This is what to verify an upgrade with, rather than the exit status of 'update'. Use -v for the tool's own version alone.", "  urnet-tools version")
 }
 
 func newDefaultCmd() *cobra.Command {
