@@ -3175,6 +3175,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 		if isBackendDegraded() {
 			contractRetryInterval = 30 * time.Second
 		}
+		// per-destination denial backoff: if this destination keeps denying
+		// contracts, back off longer than the default retry interval.
+		if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > contractRetryInterval {
+			contractRetryInterval = denialBackoff
+		}
 
 		if self.sendContract != nil {
 			// there should be a queued up contract

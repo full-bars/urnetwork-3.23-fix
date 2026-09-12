@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,71 @@ var (
 	ipv6CheckOnce sync.Once
 	ipv6OK        bool
 )
+
+// STUN failure cache: tracks STUN servers that have failed ICE gathering
+// so we can skip them on the next PeerConnection setup.
+var stunFailureCache sync.Map
+
+// stunCacheTTL is how long a failed STUN URL stays blacklisted.
+const stunCacheTTL = 5 * time.Minute
+
+// googleSTUNPrefix matches the Google STUN servers that are kept as
+// a last-resort fallback when all other URLs are filtered out.
+const googleSTUNPrefix = "stun:stun.l.google.com"
+
+// stunURLHealthy returns true if url is not in the failure cache or its
+// entry has expired.
+func stunURLHealthy(url string) bool {
+	v, ok := stunFailureCache.Load(url)
+	if !ok {
+		return true
+	}
+	failedAt := v.(time.Time)
+	return time.Since(failedAt) > stunCacheTTL
+}
+
+// markSTUNFailed records the given STUN URLs as failed at the current time.
+func markSTUNFailed(urls []string) {
+	now := time.Now()
+	for _, u := range urls {
+		stunFailureCache.Store(u, now)
+	}
+}
+
+// clearSTUNSuccess removes all entries from the failure cache. Called when
+// ICE connects successfully because the server landscape may have changed.
+func clearSTUNSuccess() {
+	stunFailureCache.Range(func(key, _ any) bool {
+		stunFailureCache.Delete(key)
+		return true
+	})
+}
+
+// filterSTUNURLs returns the subset of urls that are healthy (not in the
+// failure cache). If filtering removes every URL, at least the Google STUN
+// servers are kept as a fallback.
+func filterSTUNURLs(urls []string) []string {
+	var healthy []string
+	for _, u := range urls {
+		if stunURLHealthy(u) {
+			healthy = append(healthy, u)
+		}
+	}
+	if len(healthy) == 0 {
+		// Keep at least one Google STUN server as fallback.
+		for _, u := range urls {
+			if strings.HasPrefix(u, googleSTUNPrefix) {
+				healthy = append(healthy, u)
+				break
+			}
+		}
+		// If somehow no Google URLs exist, keep the first URL.
+		if len(healthy) == 0 && len(urls) > 0 {
+			healthy = append(healthy, urls[0])
+		}
+	}
+	return healthy
+}
 
 // stunIPv6Addr is an IPv6 address of one of the STUN servers from
 // DefaultWebRtcSettings. Used by ipv6Available to probe whether the host can
@@ -724,10 +790,26 @@ func (self *peerConn) Run() {
 		self.connMonitor.NotifyAll()
 	}()
 
+	var hadCandidate bool
+	self.pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c != nil {
+			hadCandidate = true
+		}
+	})
+
 	self.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		connected := state == webrtc.ICEConnectionStateConnected
 		self.log.V(2).Infof("[peerconn]state=%v (%t)\n", state, connected)
 		self.setConnected(connected)
+
+		if state == webrtc.ICEConnectionStateFailed && !hadCandidate {
+			// No candidates at all means the STUN servers were unreachable.
+			self.log.V(2).Infof("[stun-cache] ICE failed with no candidates, marking %d STUN URLs failed", len(self.settings.IceServerUrls))
+			markSTUNFailed(self.settings.IceServerUrls)
+		}
+		if state == webrtc.ICEConnectionStateConnected {
+			clearSTUNSuccess()
+		}
 	})
 
 	self.addIceCandidates()
