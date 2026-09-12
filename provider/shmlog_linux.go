@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	shmLogPath      = "/dev/shm/urnetwork.log"
-	shmLogMaxSize   = 5 * 1024 * 1024 // 5MB target cap
-	shmLogTrimRatio = 3               // keep newest 1/trimRatio, discard oldest (trimRatio-1)/trimRatio
+	shmLogPath    = "/dev/shm/urnetwork.log"
+	shmLogMaxSize = 5 * 1024 * 1024 // 5MB target cap
+	// keep the newest (trimRatio-1)/trimRatio, discard the oldest 1/trimRatio
+	shmLogTrimRatio = 3
 
 	// Second, smaller buffer holding ONLY high-value lines (see
 	// isImportantLogLine) so the earnings/health signal survives for hours
@@ -70,8 +71,12 @@ func ramlogsTailHintWithTemplate() string {
 
 func initSHMLogger() {
 	shmInitOnce.Do(func() {
-		// O_APPEND preserves log across restarts so post-mortem analysis is possible.
-		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// O_APPEND preserves log across restarts so post-mortem analysis is
+		// possible. O_RDWR rather than O_WRONLY because the trimmer below has
+		// to read the newest portion back out before truncating; on a
+		// write-only descriptor that read fails with EBADF and the trim
+		// destroys the history it is supposed to keep.
+		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open shm log: %v\n", err)
 			return
@@ -104,7 +109,9 @@ func initSHMLogger() {
 		var fMu sync.Mutex
 
 		// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
-		fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// O_RDWR for the same reason as the main log: the trimmer reads before
+		// it truncates.
+		fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		if impErr != nil {
 			fmt.Fprintf(os.Stderr, "failed to open important shm log: %v\n", impErr)
 			fImp = nil
@@ -163,17 +170,14 @@ func initSHMLogger() {
 				for {
 					time.Sleep(5 * time.Second)
 					fImpMu.Lock()
-					fi, err := fImp.Stat()
-					if err == nil && fi.Size() > shmImportantLogMaxSize {
-						keep := fi.Size() * (shmLogTrimRatio - 1) / shmLogTrimRatio
-						b := make([]byte, keep)
-						fImp.ReadAt(b, fi.Size()-keep)
-						fImp.Truncate(0)
-						fImp.Seek(0, 0)
-						fImp.Write(b)
+					err := trimRAMLog(fImp, shmImportantLogMaxSize, shmLogTrimRatio)
+					if err == nil {
+						fImp.Sync()
 					}
-					fImp.Sync()
 					fImpMu.Unlock()
+					if err != nil {
+						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, shmImportantLogPath, err)
+					}
 				}
 			}()
 		}
@@ -187,16 +191,11 @@ func initSHMLogger() {
 			for {
 				time.Sleep(5 * time.Second)
 				fMu.Lock()
-				fi, err := f.Stat()
-				if err == nil && fi.Size() > shmLogMaxSize {
-					keep := fi.Size() * (shmLogTrimRatio - 1) / shmLogTrimRatio
-					b := make([]byte, keep)
-					f.ReadAt(b, fi.Size()-keep)
-					f.Truncate(0)
-					f.Seek(0, 0)
-					f.Write(b)
-				}
+				err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio)
 				fMu.Unlock()
+				if err != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+				}
 			}
 		}()
 
