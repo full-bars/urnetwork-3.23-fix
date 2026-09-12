@@ -184,10 +184,20 @@ func isProviderArg(arg string) bool {
 	// are themselves lowercase, and Linux names we care about are lowercase.
 	base = strings.ToLower(base)
 	for known := range knownBinaries {
-		if base != known && !strings.HasPrefix(base, known+"-") {
+		// Both separators are in use. Systemd units and custom installs use a
+		// hyphen (urnetwork-native), while the Docker image names the binary
+		// by architecture and flavour with underscores
+		// (urnetwork_amd64_stable). Matching only the hyphen form meant the
+		// tool found nothing at all inside a container.
+		if base != known &&
+			!strings.HasPrefix(base, known+"-") &&
+			!strings.HasPrefix(base, known+"_") {
 			continue
 		}
 		rest := strings.TrimPrefix(base, known)
+		// Normalize the separator before the sibling check, so a sibling
+		// cannot slip through by being written with the other one.
+		rest = strings.ReplaceAll(rest, "_", "-")
 		for _, sibling := range nonProviderSiblingSuffixes {
 			if rest == "-"+sibling || strings.HasPrefix(rest, "-"+sibling+"-") {
 				return false
