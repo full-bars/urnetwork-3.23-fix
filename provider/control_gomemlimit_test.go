@@ -64,3 +64,35 @@ func captureControlApplyLog(fn func(string, ...any)) func() {
 	controlApplyLog = fn
 	return func() { controlApplyLog = orig }
 }
+
+// `off` means clear for every tuning key, so it cannot also mean "disable
+// the collector" for gogc without making the dangerous reading the default
+// one. `disabled` is the explicit, self-describing value that reaches
+// SetGCPercent(-1), so nobody gets an unbounded heap by typing the word
+// every other key uses for "remove this".
+func TestGogcDisabledIsAcceptedAndDisablesCollection(t *testing.T) {
+	origGC := debug.SetGCPercent(100)
+	t.Cleanup(func() { debug.SetGCPercent(origGC) })
+
+	if err := validateControlValue("gogc", "disabled"); err != nil {
+		t.Fatalf("validateControlValue(gogc, disabled) = %v, want accepted", err)
+	}
+
+	var logged []string
+	restore := captureControlApplyLog(func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	t.Cleanup(restore)
+
+	if err := applyLiveSideEffect("gogc", "disabled"); err != nil {
+		t.Fatalf("applyLiveSideEffect(gogc, disabled): %v", err)
+	}
+
+	// SetGCPercent returns the previous value; -1 means collection was off.
+	if prev := debug.SetGCPercent(100); prev != -1 {
+		t.Errorf("gogc after 'disabled' = %d, want -1 (collection disabled)", prev)
+	}
+	if !strings.Contains(strings.Join(logged, "\n"), "disabled") {
+		t.Errorf("apply did not announce that collection was disabled; got %q", logged)
+	}
+}

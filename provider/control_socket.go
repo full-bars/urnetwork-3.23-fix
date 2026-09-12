@@ -104,13 +104,30 @@ func startControlSocket(ctx context.Context, state *controlState) (func(), error
 	}()
 
 	go func() {
+		var acceptBackoff time.Duration
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				// Expected on shutdown (ctx.Done() closed ln above); nothing
-				// else to do either way — the listener is gone.
-				return
+				if acceptLoopShouldStop(err) {
+					// The listener is genuinely gone: ctx.Done() closed it
+					// above, or cleanup did.
+					return
+				}
+				// Anything else is transient. Descriptor exhaustion during a
+				// connection spike is the realistic one on a node carrying
+				// thousands of proxies, and returning here would leave the
+				// socket file on disk with nothing listening, locking the
+				// operator out of every live setting until a restart.
+				if acceptBackoff == 0 {
+					acceptBackoff = 5 * time.Millisecond
+				} else if acceptBackoff < time.Second {
+					acceptBackoff *= 2
+				}
+				tlog("⚠️ [control] accept failed, retrying in %s: %v\n", acceptBackoff, err)
+				time.Sleep(acceptBackoff)
+				continue
 			}
+			acceptBackoff = 0
 			go handleControlConn(conn, state)
 		}
 	}()
@@ -147,12 +164,23 @@ func removeStaleSocket(path string) error {
 
 // handleControlConn serves one client connection: one JSON request per
 // line, one JSON response per line, until the client disconnects.
+// acceptLoopShouldStop reports whether an Accept error means the listener is
+// gone for good. Only a closed listener ends the loop; every other error is
+// treated as transient and retried with backoff.
+func acceptLoopShouldStop(err error) bool {
+	return errors.Is(err, net.ErrClosed)
+}
+
 func handleControlConn(conn net.Conn, state *controlState) {
 	defer conn.Close()
 
 	// 1. Read deadline: 5 seconds per line — prevents slowloris-style
 	//    connections that hold the socket open without sending data.
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// SetReadDeadline does not cover writes. Without this, a client that
+	// sends a request and then stops reading blocks the response write
+	// forever, leaking a goroutine and a descriptor per connection.
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 	// 2. Peer credential check (Linux): verify connecting process UID
 	//    matches the provider's UID. Defense-in-depth alongside 0600 perms.
@@ -313,13 +341,17 @@ func validateControlValue(key, value string) error {
 			return fmt.Errorf("gomemlimit: invalid byte count %q: %w", value, err)
 		}
 	case "gogc":
-		if valLower != "off" {
+		// "off" clears the override, the same as every other tuning key.
+		// "disabled" is the explicit value that turns collection off, kept
+		// distinct so the dangerous reading is never what a plain "off"
+		// does.
+		if valLower != "off" && valLower != "disabled" {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be an integer percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 			if n < 0 {
-				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be a non-negative percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 		}
 	case "metrics":
@@ -613,9 +645,9 @@ func applyLiveSideEffect(key, value string) error {
 			controlApplyLog("⚙️ [control] applied gomemlimit=%s\n", value)
 		}
 	case "gogc":
-		if strings.EqualFold(value, "off") {
+		if strings.EqualFold(value, "disabled") || strings.EqualFold(value, "off") {
 			debug.SetGCPercent(-1)
-			controlApplyLog("⚙️ [control] applied gogc=off (garbage collection disabled)\n")
+			controlApplyLog("⚙️ [control] applied gogc=disabled (garbage collection off; heap grows unbounded)\n")
 		} else {
 			percent, err := strconv.Atoi(value)
 			if err != nil {

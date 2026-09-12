@@ -232,7 +232,7 @@ var setKeyHelps = []string{
 	"  cleanup-interval    <duration>    dead proxy cleanup interval (default: 6h, min: 1m)",
 	"  hot-restart         on|off        preserve client JWTs across restarts",
 	"  gomemlimit          <bytes>       Go runtime memory limit (e.g. 256MiB, 1GiB)",
-	"  gogc                <int>|off     Go runtime garbage collection target percentage (default: 100)",
+	"  gogc      <int>|off|disabled     GC target percentage (default: 100). off clears; disabled turns GC off entirely (unbounded heap)",
 	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
 	"  ramlogs             on|off        in-memory ramlogs toggle",
 }
