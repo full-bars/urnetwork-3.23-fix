@@ -390,6 +390,11 @@ var liveDefaults = map[string]string{
 	// runtime treats as unlimited.
 	"gomemlimit": "0",
 	"gogc":       "100",
+	// Without an entry here, clearing metrics called applyLiveDefault, which
+	// returned nil without touching the listener: the endpoint kept serving
+	// while the CLI reported success and no restart needed. That is the
+	// control an operator reaches for when scraping goes wrong.
+	"metrics": "off",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -533,7 +538,11 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		if liveCleared {
 			if err := applyLiveDefault(req.Key); err != nil {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
-				return controlResponse{OK: true, Error: "cleared, but failed to reapply live default: " + err.Error()}
+				// The key is cleared but the running process did not adopt
+				// the default, so the persisted state and the live process
+				// disagree. Reporting OK here made callers that check OK
+				// print success for a half-applied change.
+				return controlResponse{OK: false, NeedsRestart: true, Error: "cleared, but failed to reapply live default: " + err.Error()}
 			}
 		}
 		tlog("⚙️ [control] cleared %s (was %s)\n", req.Key, formerValue(oldValue, hadOld))
