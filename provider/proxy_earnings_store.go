@@ -231,6 +231,7 @@ func (s *proxyEarningsStore) Save(now time.Time) error {
 	type ranked struct {
 		addr  string
 		entry proxyEarningsEntry
+		live  bool
 	}
 	list := make([]ranked, 0, len(s.entries))
 	for addr, e := range s.entries {
@@ -238,12 +239,27 @@ func (s *proxyEarningsStore) Save(now time.Time) error {
 		if score < earningsMinRetainedScore {
 			continue
 		}
-		list = append(list, ranked{addr, proxyEarningsEntry{Score: score, Updated: now}})
+		_, live := s.prevCum[addr]
+		list = append(list, ranked{addr, proxyEarningsEntry{Score: score, Updated: now}, live})
 	}
 
-	// Highest scorers survive the cap. The address tiebreak keeps the
-	// eviction deterministic when scores collide.
+	// Live proxies outrank every offline one, then score, then address for
+	// a deterministic tiebreak.
+	//
+	// Ranking by score alone lets a long-dead proxy holding a large decayed
+	// burst push out a live proxy earning steadily. That is not just a lost
+	// record: the evicted proxy's baseline survives in prevCum because it
+	// is still live, so the next tick creates a fresh entry worth one
+	// tick of traffic, its score is then tiny, and the next save evicts it
+	// again. It resets every save interval while dead proxies hold the
+	// ranking, which is the exact opposite of what this store is for.
+	//
+	// Observe prunes prevCum against the live snapshot, so its key set is
+	// the live proxy set and is the right thing to ask.
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].live != list[j].live {
+			return list[i].live
+		}
 		if list[i].entry.Score != list[j].entry.Score {
 			return list[i].entry.Score > list[j].entry.Score
 		}
@@ -308,7 +324,9 @@ func earningsHistorySummary(
 ) (ranked int, topAddr string, topScore float64) {
 	for _, p := range proxies {
 		score := proxyEarningsScore(p.Address, now)
-		if score <= 0 {
+		// Same cutoff Save uses, so the line cannot count a sub-byte
+		// residue as "has earned" that the next save will drop.
+		if score < earningsMinRetainedScore {
 			continue
 		}
 		ranked++

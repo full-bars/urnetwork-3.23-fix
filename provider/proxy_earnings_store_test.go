@@ -298,3 +298,36 @@ func TestEarningsBaselineDoesNotGrowWithChurn(t *testing.T) {
 		t.Errorf("keeper score = %v, want 5000; pruning the baseline must not touch the record", got)
 	}
 }
+
+// Eviction ranks by score alone, so on a mature node a long-dead proxy
+// holding a large decayed burst outranks a live proxy earning steadily.
+// Dropping a LIVE proxy from the history is not merely a lost record: its
+// baseline survives in prevCum, so the next tick creates a fresh entry
+// worth one minute of traffic, its score is then tiny, and the next save
+// evicts it again. The proxy is trapped resetting every save interval
+// while dead proxies hold the ranking.
+func TestEarningsSaveNeverEvictsALiveProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "earn.json")
+	now := time.Now()
+	s := newProxyEarningsStore(path)
+	s.maxEntries = 1
+
+	// An offline proxy with a large historical score.
+	creditEarningsAt(s, "offline-whale:1080", 900_000_000, now)
+
+	// A live proxy earning modestly. Observing it makes it live: after the
+	// baseline prune, prevCum holds exactly the live set.
+	s.Observe(map[string]*connect.ProxyBandwidth{"live-earner:1080": bwWith(0)}, now)
+	s.Observe(map[string]*connect.ProxyBandwidth{"live-earner:1080": bwWith(1000)}, now)
+
+	if err := s.Save(now); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if got := s.Score("live-earner:1080", now); got == 0 {
+		t.Error("live proxy was evicted; its record would reset every save interval")
+	}
+	if got := s.Score("offline-whale:1080", now); got != 0 {
+		t.Errorf("offline proxy survived the cap at the live proxy's expense (score %v)", got)
+	}
+}
