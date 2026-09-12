@@ -143,11 +143,18 @@ func prioritizeAndScheduleProxies(
 		currentNetworkID = currentProviderNetworkID()
 	}
 	warmthMap := make(map[string]ProxyWarmthTier, len(proxies))
+	// Earnings are read once per proxy rather than inside the comparator:
+	// the store is mutex-guarded and a sort does O(n log n) comparisons, so
+	// reading per comparison would take the lock tens of thousands of times
+	// on a node carrying thousands of proxies.
+	earningsMap := make(map[string]float64, len(proxies))
+	now := time.Now()
 	var warmCount, renewableCount, coldCount int
 
 	for _, s := range proxies {
 		tier := evaluateProxyWarmth(s.Address, currentNetworkID)
 		warmthMap[s.Address] = tier
+		earningsMap[s.Address] = proxyEarningsScore(s.Address, now)
 		switch tier {
 		case WarmthValid:
 			warmCount++
@@ -158,25 +165,50 @@ func prioritizeAndScheduleProxies(
 		}
 	}
 
+	// trusted reports whether an address launches with the file list rather
+	// than behind it. File and internal proxies are trusted by provenance.
+	// A URL-sourced address is trusted once it has actually moved real
+	// billable traffic: at that point it is no longer an unproven address
+	// off a public list, it is a known earner, and making it wait behind
+	// every file proxy costs real throughput during the warmup window.
+	trusted := func(addr string) bool {
+		return proxySourceOf[addr] != "url" || earningsMap[addr] >= earningsPromotionBytes
+	}
+
 	sort.SliceStable(proxies, func(i, j int) bool {
 		addrI := proxies[i].Address
 		addrJ := proxies[j].Address
-		srcI := proxySourceOf[addrI]
-		srcJ := proxySourceOf[addrJ]
 
-		// 1. Primary rule: File-sourced (or internal) proxies before URL-sourced proxies
-		if (srcI != "url") != (srcJ != "url") {
-			return srcI != "url"
+		// 1. Primary rule: trusted provenance dials first. File-sourced and
+		//    internal proxies always qualify; a URL-sourced proven earner
+		//    is promoted into the same group.
+		trustI := trusted(addrI)
+		trustJ := trusted(addrJ)
+		if trustI != trustJ {
+			return trustI
 		}
 
-		// 2. Secondary rule: Higher warmth tier dials first
+		// 2. Secondary rule: Higher warmth tier dials first.
+		//    Warmth stays above earnings deliberately. A cold identity has
+		//    to mint against the rate-limited auth API, so promoting a rich
+		//    cold proxy here would spend a scarce mint slot and stall warm
+		//    identities that could have dialled straight through.
 		tierI := warmthMap[addrI]
 		tierJ := warmthMap[addrJ]
 		if tierI != tierJ {
 			return tierI > tierJ
 		}
 
-		// 3. Stable fallback preserves original order
+		// 3. Tertiary rule: within one group and tier, the bigger earner
+		//    dials first. This is where the ranking does most of its work,
+		//    since the warm tier is where launches are cheap.
+		earnI := earningsMap[addrI]
+		earnJ := earningsMap[addrJ]
+		if earnI != earnJ {
+			return earnI > earnJ
+		}
+
+		// 4. Stable fallback preserves original order
 		return false
 	})
 
