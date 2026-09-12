@@ -78,6 +78,44 @@ entries, with the lowest scorers evicted first.
 
 ---
 
+## ⚙️ Settings Changes (v31+)
+
+Every change that reaches the provider is logged at the provider, so an
+operator can confirm from the node's own log that a setting registered with
+the daemon rather than trusting the CLI's exit code.
+
+```
+⚙️ [control] set profile=v8 (was unset)
+⚙️ [control] cleared profile (was v4)
+[metrics] started Prometheus /metrics on 192.200.0.5:9100
+[metrics] stopped Prometheus /metrics
+```
+
+The failure paths log too, because a refused change is exactly when an
+operator most needs the log to explain why their setting did not take:
+
+```
+❌ [control] set profile=nope rejected: unknown profile
+❌ [control] set gogc=50 failed to persist, rolled back: no space left on device
+⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
+🔒 [control] rejected connection: peer uid does not own this provider
+```
+
+| Line | Meaning |
+|---|---|
+| `set <key>=<value> (was <old>)` | Applied and persisted. `unset` as the old value means the key had no prior setting. |
+| `cleared <key> (was <old>)` | Key removed, default restored. |
+| `rejected` | Validation refused the value. Nothing changed. |
+| `failed to persist, rolled back` | The write failed and the in-memory value was reverted, so the log and the daemon agree. |
+| `persisted but live apply failed` | Stored, but the running process could not adopt it. It takes effect on the next restart. |
+| `🔒 rejected connection` | A peer that does not own this provider tried to use the control socket. |
+
+> [!NOTE]
+> Reads are deliberately silent. `urnet-tools status` polls `get` on every
+> invocation, so logging reads would bury the writes that matter.
+
+---
+
 ## 🧠 Adaptive GC Governor (pressure monitor)
 
 ```text
