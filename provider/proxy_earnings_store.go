@@ -287,6 +287,13 @@ func (s *proxyEarningsStore) Save(now time.Time) error {
 	return atomicWriteJSON(path, out)
 }
 
+// earningsPromotionBytes is the decayed score at which a URL-sourced proxy
+// stops being treated as an unproven address and is ordered alongside the
+// file list. It is an absolute floor rather than a percentile: on a node
+// where nothing earns, nothing should be promoted, and a relative bar would
+// always promote the least-bad address.
+const earningsPromotionBytes = 64 << 20 // 64 MiB
+
 // globalProxyEarningsStore is fed by the same snapshot loop that feeds
 // globalPerProxyEarnTracker and consulted by the launch scheduler.
 var globalProxyEarningsStore = newProxyEarningsStore(proxyEarningsPath())
@@ -320,8 +327,9 @@ func proxyEarningsScore(addr string, now time.Time) float64 {
 // judged against real data rather than a hypothesis.
 func earningsHistorySummary(
 	proxies []*connect.ProxySettings,
+	proxySourceOf map[string]string,
 	now time.Time,
-) (ranked int, topAddr string, topScore float64) {
+) (ranked int, promoted int, topAddr string, topScore float64) {
 	for _, p := range proxies {
 		score := proxyEarningsScore(p.Address, now)
 		// Same cutoff Save uses, so the line cannot count a sub-byte
@@ -330,10 +338,13 @@ func earningsHistorySummary(
 			continue
 		}
 		ranked++
+		if proxySourceOf[p.Address] == "url" && score >= earningsPromotionBytes {
+			promoted++
+		}
 		if score > topScore {
 			topScore = score
 			topAddr = p.Address
 		}
 	}
-	return ranked, topAddr, topScore
+	return ranked, promoted, topAddr, topScore
 }

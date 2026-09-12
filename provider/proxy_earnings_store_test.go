@@ -235,7 +235,7 @@ func TestEarningsHistorySummaryCountsAndRanksTopEarner(t *testing.T) {
 		{Address: "never-earned"},
 	}
 
-	ranked, topAddr, topScore := earningsHistorySummary(proxies, now)
+	ranked, _, topAddr, topScore := earningsHistorySummary(proxies, nil, now)
 
 	if ranked != 2 {
 		t.Errorf("ranked = %d, want 2 (the third proxy has no history)", ranked)
@@ -254,7 +254,7 @@ func TestEarningsHistorySummaryOnAFreshNode(t *testing.T) {
 
 	proxies := []*connect.ProxySettings{{Address: "a"}, {Address: "b"}}
 
-	ranked, topAddr, topScore := earningsHistorySummary(proxies, time.Now())
+	ranked, _, topAddr, topScore := earningsHistorySummary(proxies, nil, time.Now())
 	if ranked != 0 || topAddr != "" || topScore != 0 {
 		t.Fatalf("fresh node summary = (%d, %q, %v), want (0, \"\", 0)", ranked, topAddr, topScore)
 	}

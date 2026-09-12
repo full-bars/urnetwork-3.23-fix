@@ -3728,11 +3728,11 @@ func provide(opts docopt.Opts) {
 
 	// Report the earnings history so an operator can watch it fill in, and
 	// so the ranking that will consume it can be judged against real data.
-	if ranked, topAddr, topScore := earningsHistorySummary(allProxySettings, time.Now()); ranked == 0 {
-		tlog("💰 [startup] earnings history: none yet, still collecting\n")
+	if ranked, promoted, topAddr, topScore := earningsHistorySummary(allProxySettings, proxySourceOf, time.Now()); ranked == 0 {
+		tlog("💰 [startup] earnings ranking: no history yet, launching by warmth and source only\n")
 	} else {
-		tlog("💰 [startup] earnings history: %d of %d proxies have earned, top earner %s at %s\n",
-			ranked, len(allProxySettings), topAddr, formatBytes(uint64(topScore)))
+		tlog("💰 [startup] earnings ranking: %d of %d proxies have earnings history, %d URL-sourced promoted to launch with the file list, top earner %s at %s\n",
+			ranked, len(allProxySettings), promoted, topAddr, formatBytes(uint64(topScore)))
 	}
 
 	// Start the native [direct] connection as proxy[0] unless the operator
