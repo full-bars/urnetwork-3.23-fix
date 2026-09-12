@@ -336,7 +336,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		}
 	}
 
-	if value == "off" && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" && canonicalKey != "gogc" && canonicalKey != "metrics" {
+	if value == "off" && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" && canonicalKey != "metrics" {
 		if dryRun {
 			fmt.Printf("[dry-run] would clear %s for %s and revert to startup default\n", key, providerLabel(p))
 			return nil
