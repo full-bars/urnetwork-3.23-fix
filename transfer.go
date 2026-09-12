@@ -25,9 +25,10 @@ import (
 )
 
 var (
-	dropErrLogThrottle = newLogThrottle(time.Minute)
-	pingLogThrottle    = newLogThrottle(5 * time.Minute)
-	pingErrLogThrottle = newLogThrottle(5 * time.Minute)
+	dropErrLogThrottle   = newLogThrottle(time.Minute)
+	pingLogThrottle      = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
+	auditSendErrThrottle = newLogThrottle(time.Minute)
 )
 
 /*
@@ -6305,7 +6306,13 @@ func (self *SequencePeerAudit) Complete() {
 		[]*protocol.Frame{frame},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err != nil {
-				self.log.Errorf("[c]audit send error = %s", err)
+				if ok, suppressed := auditSendErrThrottle.Allow(time.Now()); ok {
+					if suppressed > 0 {
+						self.log.Errorf("[c]audit send error = %s (%d suppressed)", err, suppressed)
+					} else {
+						self.log.Errorf("[c]audit send error = %s", err)
+					}
+				}
 			}
 		},
 	)
