@@ -361,12 +361,15 @@ func newSummaryCmd() *cobra.Command {
 }
 
 func newVersionCmd() *cobra.Command {
-	// '-v'/'--version' were dead aliases: Cobra strips '-' tokens before alias
-	// matching, so they never resolve (handled at top level). Keep plain 'version'.
-	return withHelp(newCobraCmd("version", "print this tool's version", nil, func(cmd *cobra.Command, args []string) error {
-		fmt.Println(ToolVersion)
+	// '-v'/'--version' are handled by the top-level dispatcher, not here:
+	// Cobra strips '-' tokens before alias matching, so they never resolve as
+	// aliases. They print the bare tool version. Plain 'version' reports the
+	// provider inventory as well, and shares its implementation with the
+	// dispatcher so the two entry points cannot answer differently.
+	return withHelp(newCobraCmd("version", "print this tool's version and each provider's", nil, func(cmd *cobra.Command, args []string) error {
+		printToolVersionAndProviders()
 		return nil
-	}), "Print the urnet-tools build version and exit. No provider is contacted.", "  urnet-tools version")
+	}), "Print the urnet-tools build version, then every discovered provider and the version it is actually running. This is what to verify an upgrade with, rather than the exit status of 'update'. Use -v for the tool's own version alone.", "  urnet-tools version")
 }
 
 func newDefaultCmd() *cobra.Command {

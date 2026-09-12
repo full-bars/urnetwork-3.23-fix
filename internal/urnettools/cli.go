@@ -35,28 +35,7 @@ func Run(args []string) error {
 			fmt.Println(ToolVersion)
 			return nil
 		case "version":
-			fmt.Printf("urnet-tools %s\n", ToolVersion)
-			providers := Discover()
-			if len(providers) == 0 {
-				fmt.Println("  no providers discovered")
-				return nil
-			}
-			for _, p := range providers {
-				status := "running"
-				if !p.Running {
-					status = "stopped"
-				}
-				stale := ""
-				if p.BinaryDeleted {
-					stale = " (disk binary stale — restart needed)"
-				}
-				version := p.Version
-				if version == "" && !p.Running {
-					version = "(no binary)"
-				}
-				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
-					providerLabel(p), version, status, p.PID, stale)
-			}
+			printToolVersionAndProviders()
 			return nil
 		}
 	}
@@ -890,4 +869,40 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 // apply) it returns an error so cmdStatus falls through to the table/panel.
 var renderSystemctlStatus = func(p Provider) error {
 	return fmt.Errorf("systemctl status not available on %s", runtime.GOOS)
+}
+
+// printToolVersionAndProviders implements `urnet-tools version`: the tool's own
+// build, then every discovered provider and the version it is actually running.
+//
+// It is the command the upgrade instructions tell operators to verify with,
+// because it answers "what is running on this box" rather than "what is this
+// binary". `-v` answers the latter and stays a single bare line.
+//
+// It lives in one function because there are two entry points, the dispatcher
+// above and the Cobra command, and they used to disagree: the Cobra one printed
+// the bare version with no inventory. It was unreachable, since the dispatcher
+// returns first, so the divergence was invisible until the intercept moved.
+func printToolVersionAndProviders() {
+	fmt.Printf("urnet-tools %s\n", ToolVersion)
+	providers := Discover()
+	if len(providers) == 0 {
+		fmt.Println("  no providers discovered")
+		return
+	}
+	for _, p := range providers {
+		status := "running"
+		if !p.Running {
+			status = "stopped"
+		}
+		stale := ""
+		if p.BinaryDeleted {
+			stale = " (disk binary stale — restart needed)"
+		}
+		version := p.Version
+		if version == "" && !p.Running {
+			version = "(no binary)"
+		}
+		fmt.Printf("  %s: %s (%s, pid %d)%s\n",
+			providerLabel(p), version, status, p.PID, stale)
+	}
 }
