@@ -368,62 +368,59 @@ func ByteCountHumanReadable(count ByteCount) string {
 }
 
 func ParseByteCount(humanReadable string) (ByteCount, error) {
-	humanReadableLower := strings.ToLower(humanReadable)
-	tibLower := "tib"
-	gibLower := "gib"
-	mibLower := "mib"
-	kibLower := "kib"
-	bLower := "b"
-	if strings.HasSuffix(humanReadableLower, tibLower) {
-		countFloat, err := strconv.ParseFloat(
-			humanReadableLower[0:len(humanReadableLower)-len(tibLower)],
-			64,
-		)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countFloat * 1024 * 1024 * 1024 * 1024), nil
-	} else if strings.HasSuffix(humanReadableLower, gibLower) {
-		countFloat, err := strconv.ParseFloat(
-			humanReadableLower[0:len(humanReadableLower)-len(gibLower)],
-			64,
-		)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countFloat * 1024 * 1024 * 1024), nil
-	} else if strings.HasSuffix(humanReadableLower, mibLower) {
-		countFloat, err := strconv.ParseFloat(
-			humanReadableLower[0:len(humanReadableLower)-len(mibLower)],
-			64,
-		)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countFloat * 1024 * 1024), nil
-	} else if strings.HasSuffix(humanReadableLower, kibLower) {
-		countFloat, err := strconv.ParseFloat(
-			humanReadableLower[0:len(humanReadableLower)-len(kibLower)],
-			64,
-		)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countFloat * 1024), nil
-	} else if strings.HasSuffix(humanReadableLower, bLower) {
-		countFloat, err := strconv.ParseFloat(
-			humanReadableLower[0:len(humanReadableLower)-len(bLower)],
-			64,
-		)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countFloat), nil
-	} else {
-		countInt, err := strconv.ParseInt(humanReadableLower, 10, 63)
-		if err != nil {
-			return ByteCount(0), err
-		}
-		return ByteCount(countInt), nil
+	// Strip spaces (e.g. "1536 mb" → "1536mb") and lowercase.
+	cleaned := strings.ReplaceAll(strings.TrimSpace(humanReadable), " ", "")
+	lower := strings.ToLower(cleaned)
+
+	// Normalize common suffix variants to canonical forms that the
+	// binary parsers below expect: "tib", "gib", "mib", "kib", "b".
+	// Accepts: tib/ti/tb/tbib, gib/gi/gb/gbib, mib/mi/mb/mbib,
+	//          kib/ki/kb/kbib, b (exact).
+	type suffixRule struct {
+		suffix   string
+		divisor  float64 // bytes = number * divisor
+		cutoff   int     // len(lower) - len(normalized suffix) is the number part
+		strip    string  // what we strip from the end to get the number
 	}
+	rules := []suffixRule{
+		// Longest suffixes first — HasSuffix("1536gb", "b") is true,
+		// so "gb" must be checked before "b".
+		{"tib", 1024 * 1024 * 1024 * 1024, 0, ""},
+		{"ti", 1024 * 1024 * 1024 * 1024, 0, ""},
+		{"tb", 1024 * 1024 * 1024 * 1024, 0, ""},
+		{"gib", 1024 * 1024 * 1024, 0, ""},
+		{"gi", 1024 * 1024 * 1024, 0, ""},
+		{"gb", 1024 * 1024 * 1024, 0, ""},
+		{"mib", 1024 * 1024, 0, ""},
+		{"mi", 1024 * 1024, 0, ""},
+		{"mb", 1024 * 1024, 0, ""},
+		{"kib", 1024, 0, ""},
+		{"ki", 1024, 0, ""},
+		{"kb", 1024, 0, ""},
+		{"t", 1024 * 1024 * 1024 * 1024, 0, ""},
+		{"g", 1024 * 1024 * 1024, 0, ""},
+		{"m", 1024 * 1024, 0, ""},
+		{"k", 1024, 0, ""},
+		{"b", 1, 0, ""}, // LAST — bare "b" must not shadow "gb", "mb", etc.
+	}
+	for _, r := range rules {
+		if strings.HasSuffix(lower, r.strip+r.suffix) {
+			numStr := lower[:len(lower)-len(r.strip)-len(r.suffix)]
+			if numStr == "" {
+				return 0, fmt.Errorf("invalid byte count %q: missing number before %q", humanReadable, r.suffix)
+			}
+			countFloat, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid byte count %q: %w", humanReadable, err)
+			}
+			return ByteCount(countFloat * r.divisor), nil
+		}
+	}
+
+	// Bare number: treat as bytes.
+	countInt, err := strconv.ParseInt(lower, 10, 63)
+	if err != nil {
+		return 0, fmt.Errorf("invalid byte count %q: expected a number (e.g. 1536mib, 2gib, 1073741824)", humanReadable)
+	}
+	return ByteCount(countInt), nil
 }

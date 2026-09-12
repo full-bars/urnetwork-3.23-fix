@@ -214,37 +214,63 @@ func TestMultiHopId(t *testing.T) {
 	assert.Equal(t, m3, m4)
 }
 
-func TestByteCount(t *testing.T) {
+func TestParseByteCount(t *testing.T) {
+	tests := []struct {
+		input string
+		want  ByteCount
+	}{
+		// Original formats (backward compat)
+		{"2", 2},
+		{"5B", 5},
+		{"123KiB", 123 * 1024},
+		{"5MiB", 5 * 1024 * 1024},
+		{"1.7GiB", ByteCount(17 * 1024 * 1024 * 1024 / 10)},
+		{"13.1TiB", ByteCount(131 * 1024 * 1024 * 1024 * 1024 / 10)},
+
+		// New: common human suffixes (no "i")
+		{"1536M", 1536 * 1024 * 1024},
+		{"1536m", 1536 * 1024 * 1024},
+		{"2G", 2 * 1024 * 1024 * 1024},
+		{"2GB", 2 * 1024 * 1024 * 1024},
+		{"512MB", 512 * 1024 * 1024},
+		{"100kb", 100 * 1024},
+		{"1K", 1024},
+
+		// New: spaces stripped
+		{"1536 mb", 1536 * 1024 * 1024},
+		{"2 GB", 2 * 1024 * 1024 * 1024},
+
+		// New: "mi", "gi", "ti", "ki" short forms
+		{"1536mi", 1536 * 1024 * 1024},
+		{"2gi", 2 * 1024 * 1024 * 1024},
+		{"100ki", 100 * 1024},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseByteCount(tt.input)
+			if err != nil {
+				t.Fatalf("ParseByteCount(%q) error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseByteCount(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseByteCountErrors(t *testing.T) {
+	bad := []string{"", "abc", "xyz", "1536mibx"}
+	for _, input := range bad {
+		t.Run(input, func(t *testing.T) {
+			_, err := ParseByteCount(input)
+			if err == nil {
+				t.Errorf("ParseByteCount(%q) should have errored", input)
+			}
+		})
+	}
+}
+
+func TestByteCountHumanReadable(t *testing.T) {
 	assert.Equal(t, ByteCountHumanReadable(ByteCount(0)), "0b")
 	assert.Equal(t, ByteCountHumanReadable(ByteCount(5*1024*1024*1024*1024)), "5tib")
-
-	count, err := ParseByteCount("2")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(2))
-	assert.Equal(t, ByteCountHumanReadable(count), "2b")
-
-	count, err = ParseByteCount("5B")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(5))
-	assert.Equal(t, ByteCountHumanReadable(count), "5b")
-
-	count, err = ParseByteCount("123KiB")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(123*1024))
-	assert.Equal(t, ByteCountHumanReadable(count), "123kib")
-
-	count, err = ParseByteCount("5MiB")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(5*1024*1024))
-	assert.Equal(t, ByteCountHumanReadable(count), "5mib")
-
-	count, err = ParseByteCount("1.7GiB")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(17*1024*1024*1024)/ByteCount(10))
-	assert.Equal(t, ByteCountHumanReadable(count), "1.7gib")
-
-	count, err = ParseByteCount("13.1TiB")
-	assert.Equal(t, err, nil)
-	assert.Equal(t, count, ByteCount(131*1024*1024*1024*1024)/ByteCount(10))
-	assert.Equal(t, ByteCountHumanReadable(count), "13.1tib")
 }
