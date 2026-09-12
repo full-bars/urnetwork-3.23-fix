@@ -43,8 +43,8 @@ func TestAuditSendThrottle_CountResetsAfterEmit(t *testing.T) {
 	auditSendErrThrottle = newLogThrottle(time.Minute)
 
 	base := time.Now()
-	auditSendErrThrottle.Allow(base)               // allowed
-	auditSendErrThrottle.Allow(base.Add(time.Second)) // suppressed -> count 1
+	auditSendErrThrottle.Allow(base)                      // allowed
+	auditSendErrThrottle.Allow(base.Add(time.Second))     // suppressed -> count 1
 	auditSendErrThrottle.Allow(base.Add(2 * time.Second)) // suppressed -> count 2
 
 	// Advance past the window on the same instance.
