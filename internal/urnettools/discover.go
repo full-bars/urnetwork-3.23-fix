@@ -197,3 +197,30 @@ func isProviderArg(arg string) bool {
 	}
 	return false
 }
+
+// isExactProviderBinary reports whether arg matches a known binary name
+// exactly (case-insensitive), without the prefix-with-suffix pattern that
+// isProviderArg allows.  Strips .service (systemd unit) and .exe (Windows)
+// before comparing.  Used to decide whether the name-alone fallback is
+// trustworthy: an exact match (e.g. "urnetwork") is a provider by
+// definition, while a prefix match (e.g. "urnetwork-rebind-fairfax2")
+// needs corroborating evidence.
+func isExactProviderBinary(arg string) bool {
+	base := filepath.Base(arg)
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.TrimSuffix(base, ".service")
+	base = strings.ToLower(base)
+	return knownBinaries[base]
+}
+
+// dirExists reports whether path exists and is a directory.  Used as
+// secondary evidence that a unit is a provider when ExecStart is not
+// readable: a service without a .urnetwork state dir is not a provider
+// regardless of its name.
+func dirExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}

@@ -403,9 +403,26 @@ func parseUnitLines(text string, running []Provider, userFor, binaryFor func(uni
 			// provider-dashboard did on 2026-08-17 and urnetwork-sentinel
 			// did on 2026-09-09. ExecStart is evidence rather than a guess,
 			// so where it is readable it decides. Where it is not (empty),
-			// fall back to the name rule and its deny-list.
+			// require a .urnetwork state dir as secondary evidence — a
+			// name-only match is not enough when we cannot verify the
+			// binary (prevents urnetwork-rebind-*, urnetwork-custom-*, etc.
+			// from appearing as phantom providers).
 			if binary != "" && !isProviderArg(binary) {
 				continue
+			}
+			if binary == "" {
+				// ExecStart not readable.  An exact name match
+				// (e.g. "urnetwork") is a provider by definition;
+				// a prefix match (e.g. "urnetwork-rebind-*") needs
+				// corroborating evidence — require a .urnetwork
+				// state dir.  Prevents phantom providers from
+				// non-provider siblings that share the prefix.
+				if !isExactProviderBinary(unit) {
+					user := userFor(unit)
+					if sd := unitStateDir(user); !dirExists(sd) {
+						continue
+					}
+				}
 			}
 		}
 		out = append(out, providerFromUnit(unit, userFor(unit), binary))
