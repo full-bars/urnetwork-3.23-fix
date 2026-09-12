@@ -200,6 +200,12 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
 | `urnet-tools hotswap` | Swap to an updated binary with no downtime (needs a `Type=notify` unit; otherwise `update` falls back to a restart) |
+| `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |
+| `urnet-tools history [limit]` | Read the provider's command audit trail |
+| `urnet-tools dashboard` | Terminal status panel: state, active settings, proxy sources, restart warnings |
+| `urnet-tools metrics on/off` | Toggle the Prometheus `/metrics` endpoint live, no restart |
+| `urnet-tools profile [name]` | Show or set the memory and GC tuning profile |
+| `urnet-tools proxy ids` | Show the `client_id` the platform assigned to each proxy, including `direct` |
 | `urnet-tools rename <name>` | Set the dashboard display label without touching the hostname |
 | `urnet-tools show-ip [on\|off\|status]` | Control whether the public IP is appended to that dashboard label (was `ip-detect`) |
 | `urnet-tools providers [--all]` | List the providers on this box; `--all` (as root) covers every OS user |
@@ -216,6 +222,13 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 ## 📡 Telemetry & Legacy Fleet Dashboard
 
 UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
+
+A Prometheus text-format endpoint is also available. `urnet-tools metrics on`
+enables it on a running provider without a restart. It exposes eleven `urnet_*`
+series covering uptime, active connections, proxy pool size by status,
+per-proxy bytes and clients, errors by category, contracts by result, and Go
+runtime memory and goroutine counts. It binds to loopback by default;
+`URNETWORK_METRICS` binds it on the Tailscale address for remote scraping.
 
 > [!NOTE]
 > **Legacy Central Dashboard:** The multi-node aggregation hub dashboard has been transitioned to an optional add-on. Development and maintenance are tracked on the [`dev/hub`](https://github.com/full-bars/urnetwork-3.23-fix/tree/dev/hub) branch of `urnetwork-3.23-fix` and the [`dev/hub`](https://github.com/full-bars/meso-miner/tree/dev/hub) branch of `meso-miner`. For setup details, see [Hub Setup](docs/Hub-Setup.md).

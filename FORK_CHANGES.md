@@ -67,6 +67,8 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 - `[t]auth error` — Rate-limited (suppressed repeated occurrences)
 - `[contract]oob error` — Rate-limited
 - `[r]drop` — Rate-limited (Added in v3.23.0-fix.15.3)
+- `completeHandshake failed` — Rate-limited per reason class, not per client (Added in v3.23.0-fix.31.0). A per-client throttle still emits one line per client per minute, which on a node carrying a thousand clients is no throttle at all. Keying on the reason class (timeout, canceled, deadline) bounds it to one line a minute per failure type.
+- `[c]audit send error` — Rate-limited globally (Added in v3.23.0-fix.31.0)
 
 **Example**: When auth fails repeatedly, logs show "X suppressed" instead of identical message spam.
 
@@ -75,7 +77,7 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 - Look for "suppressed" or "rate" patterns in logging calls
 - Check if glog has rate-limiting wrappers (e.g., `Infof` vs `Infof_Limited`)
 
-**Status**: ✅ Fully shipped in v3.23.0-fix.15.3.
+**Status**: ✅ Shipped in v3.23.0-fix.15.3; extended to the handshake and audit-send lines in v3.23.0-fix.31.0.
 
 ---
 
