@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -352,7 +353,10 @@ func validateControlValue(key, value string) error {
 // liveDefaults maps live-applied keys to their Go runtime defaults.
 // Used when clearing a key to reapply the default immediately.
 var liveDefaults = map[string]string{
-	"gomemlimit": "0", // Go's default: unlimited
+	// Zero here would be a zero-byte limit, not unlimited. The apply
+	// path maps any non-positive value to math.MaxInt64, which is what the
+	// runtime treats as unlimited.
+	"gomemlimit": "0",
 	"gogc":       "100",
 }
 
@@ -585,6 +589,16 @@ func applyLiveSideEffect(key, value string) error {
 		limit, err := connect.ParseByteCount(value)
 		if err != nil {
 			return fmt.Errorf("gomemlimit: %w", err)
+		}
+		// Zero is not "unlimited" to the Go runtime, it is a zero-byte soft
+		// limit: every allocation then reads as over budget and the runtime
+		// GCs continuously, pegging the CPU until the process is killed.
+		// math.MaxInt64 is the value that means unlimited, and it is what
+		// clearing the key must restore. Applied to any non-positive value,
+		// not just the default, so an operator who sets it to 0 by hand does
+		// not wedge the node either.
+		if limit <= 0 {
+			limit = math.MaxInt64
 		}
 		debug.SetMemoryLimit(limit)
 	case "gogc":
