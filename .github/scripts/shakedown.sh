@@ -1833,6 +1833,90 @@ else
   fi
 fi
 
+# ---------- AB. Command surface coverage ----------
+section "AB. Command surface coverage"
+# Every registered command must actually run. This section exists because two
+# commands shipped that could NEVER work: `metrics` and `history` dialled a
+# socket path the provider does not open, so both failed on a perfectly
+# healthy node with "connect: no such file or directory". Nothing caught it,
+# because this battery exercised ten commands and none of the surface added
+# after it was written.
+#
+# The assertion is deliberately weak on OUTPUT and strict on REACHABILITY: a
+# command may legitimately report that a feature is off or that there is
+# nothing to show, but it must not die because it was never wired up. The
+# three failures below are the ones that mean "this command is broken", not
+# "this node has nothing to report".
+cmd_reachable() {
+  local name="$1"; shift
+  local out rc
+  out=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) "$@" 2>&1); rc=$?
+  if echo "$out" | grep -qiE "unknown command|unknown proxy subcommand|unknown key"; then
+    bad "AB: $name is not wired up (unknown command)"
+    echo "$out" | head -3 | sed 's/^/    | /' | tee -a "$REPORT"
+    return 1
+  fi
+  if echo "$out" | grep -qiE "dial unix .*: connect: no such file or directory"; then
+    bad "AB: $name dialled a socket the provider does not open"
+    echo "$out" | head -3 | sed 's/^/    | /' | tee -a "$REPORT"
+    return 1
+  fi
+  if echo "$out" | grep -qiE "^panic:|fatal error:"; then
+    bad "AB: $name panicked"
+    echo "$out" | head -5 | sed 's/^/    | /' | tee -a "$REPORT"
+    return 1
+  fi
+  ok "AB: $name reachable (exit $rc)"
+  return 0
+}
+
+cmd_reachable "version"        urnet-tools version
+cmd_reachable "-v"             urnet-tools -v
+cmd_reachable "status"         urnet-tools status
+cmd_reachable "providers"      urnet-tools providers
+cmd_reachable "summary"        urnet-tools summary
+cmd_reachable "config"         urnet-tools config
+cmd_reachable "config --json"  urnet-tools config --json
+cmd_reachable "history"        urnet-tools history
+cmd_reachable "history 5"      urnet-tools history 5
+cmd_reachable "dashboard"      urnet-tools dashboard
+cmd_reachable "profile"        urnet-tools profile
+cmd_reachable "usage"          urnet-tools usage
+cmd_reachable "proxy ids"      urnet-tools proxy ids
+cmd_reachable "proxy health"   urnet-tools proxy health
+cmd_reachable "proxy traffic"  urnet-tools proxy traffic
+cmd_reachable "sn-status"      urnet-tools sn-status
+cmd_reachable "show-ip status" urnet-tools show-ip status
+cmd_reachable "set (list all)" urnet-tools set
+
+# `metrics on` legitimately refuses when URNETWORK_METRICS is unset: the
+# listener has no address to bind. That refusal is by design, so assert the
+# command REACHES the provider and refuses for the right reason, rather than
+# failing because it cannot find the socket at all.
+METRICS_OUT=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) urnet-tools metrics on 2>&1 || true)
+if echo "$METRICS_OUT" | grep -qiE "dial unix .*: connect: no such file or directory"; then
+  bad "AB: metrics dialled a socket the provider does not open"
+  echo "$METRICS_OUT" | head -3 | sed 's/^/    | /' | tee -a "$REPORT"
+elif echo "$METRICS_OUT" | grep -qiE "unknown command"; then
+  bad "AB: metrics is not wired up"
+else
+  ok "AB: metrics reaches the provider (refusal without URNETWORK_METRICS is by design)"
+fi
+
+# The help menu is hand maintained and has drifted twice, hiding working
+# commands from every operator who reads --help. The Go tests assert the menu
+# against the registered list; this asserts the binary shipped with them in it.
+HELP_OUT=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) urnet-tools --help 2>&1 || true)
+HELP_MISSING=""
+for c in config history metrics profile dashboard summary hotswap; do
+  echo "$HELP_OUT" | grep -qE "^[[:space:]]{2,}$c([[:space:]]|\[|$)" || HELP_MISSING="$HELP_MISSING $c"
+done
+if [ -n "$HELP_MISSING" ]; then
+  bad "AB: commands work but are invisible in --help:$HELP_MISSING"
+else
+  ok "AB: every checked command appears in --help"
+fi
+
 # ---------- Final: clean shutdown (SHOULD-FIX 15) ----------
 section "Final. Clean shutdown (SIGTERM)"
 STOP_T0=$(date +%s)
