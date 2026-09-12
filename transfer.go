@@ -6308,9 +6308,9 @@ func (self *SequencePeerAudit) Complete() {
 			if err != nil {
 				if ok, suppressed := auditSendErrThrottle.Allow(time.Now()); ok {
 					if suppressed > 0 {
-						self.log.Errorf("[c]audit send error = %s (%d suppressed)\n", err, suppressed)
+						self.log.Errorf("[c]audit send error = %s (%d suppressed)", err, suppressed)
 					} else {
-						self.log.Errorf("[c]audit send error = %s\n", err)
+						self.log.Errorf("[c]audit send error = %s", err)
 					}
 				}
 			}

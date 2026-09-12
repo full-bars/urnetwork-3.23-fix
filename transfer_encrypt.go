@@ -39,7 +39,10 @@ var handshakeErrThrottle sync.Map
 // class are semantically the same failure seen by different clients;
 // different classes are different failures worth seeing separately.
 func handshakeReasonClass(err error) string {
-	s := err.Error()
+	if err == nil {
+		return "other"
+	}
+	s := strings.ToLower(err.Error())
 	if strings.Contains(s, "tls handshake timeout") {
 		return "tls_handshake_timeout"
 	}
@@ -49,6 +52,9 @@ func handshakeReasonClass(err error) string {
 	if strings.Contains(s, "context deadline exceeded") {
 		return "context_deadline"
 	}
+	if strings.Contains(s, "certificate") {
+		return "certificate_error"
+	}
 	return "other"
 }
 
@@ -56,9 +62,16 @@ func handshakeReasonClass(err error) string {
 // may be emitted now for the given reason class. The second return is the
 // count of lines suppressed since the previous allowed one, for the
 // "(N suppressed)" tail.
-func shouldLogHandshakeErr(reason string) (bool, int64) {
+func shouldLogHandshakeErrAt(reason string, now time.Time) (bool, int64) {
+	if v, ok := handshakeErrThrottle.Load(reason); ok {
+		return v.(*logThrottle).Allow(now)
+	}
 	val, _ := handshakeErrThrottle.LoadOrStore(reason, newLogThrottle(time.Minute))
-	return val.(*logThrottle).Allow(time.Now())
+	return val.(*logThrottle).Allow(now)
+}
+
+func shouldLogHandshakeErr(reason string) (bool, int64) {
+	return shouldLogHandshakeErrAt(reason, time.Now())
 }
 
 // Sequence-level encryption between two peers.

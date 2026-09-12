@@ -7,7 +7,8 @@ import (
 )
 
 func TestAuditSendThrottle_FirstCallAllowed(t *testing.T) {
-	// Reset the throttle by replacing it.
+	orig := auditSendErrThrottle
+	t.Cleanup(func() { auditSendErrThrottle = orig })
 	auditSendErrThrottle = newLogThrottle(time.Minute)
 
 	ok, suppressed := auditSendErrThrottle.Allow(time.Now())
@@ -20,38 +21,45 @@ func TestAuditSendThrottle_FirstCallAllowed(t *testing.T) {
 }
 
 func TestAuditSendThrottle_SuppressesWithinWindow(t *testing.T) {
+	orig := auditSendErrThrottle
+	t.Cleanup(func() { auditSendErrThrottle = orig })
 	auditSendErrThrottle = newLogThrottle(time.Minute)
 
-	auditSendErrThrottle.Allow(time.Now()) // first allowed
+	base := time.Now()
+	auditSendErrThrottle.Allow(base) // first allowed
 
 	// Next 5 calls within the window should be suppressed.
-	for i := 0; i < 5; i++ {
-		ok, _ := auditSendErrThrottle.Allow(time.Now())
+	for i := 1; i <= 5; i++ {
+		ok, _ := auditSendErrThrottle.Allow(base.Add(time.Duration(i) * time.Second))
 		if ok {
-			t.Fatalf("call %d within window should be suppressed", i+1)
+			t.Fatalf("call %d within window should be suppressed", i)
 		}
 	}
 }
 
 func TestAuditSendThrottle_CountResetsAfterEmit(t *testing.T) {
+	orig := auditSendErrThrottle
+	t.Cleanup(func() { auditSendErrThrottle = orig })
 	auditSendErrThrottle = newLogThrottle(time.Minute)
 
-	auditSendErrThrottle.Allow(time.Now()) // allowed
-	auditSendErrThrottle.Allow(time.Now()) // suppressed -> count 1
-	auditSendErrThrottle.Allow(time.Now()) // suppressed -> count 2
+	base := time.Now()
+	auditSendErrThrottle.Allow(base)               // allowed
+	auditSendErrThrottle.Allow(base.Add(time.Second)) // suppressed -> count 1
+	auditSendErrThrottle.Allow(base.Add(2 * time.Second)) // suppressed -> count 2
 
-	// Create a new throttle to simulate time passing.
-	auditSendErrThrottle = newLogThrottle(time.Minute)
-	ok, suppressed := auditSendErrThrottle.Allow(time.Now())
+	// Advance past the window on the same instance.
+	ok, suppressed := auditSendErrThrottle.Allow(base.Add(time.Minute + time.Second))
 	if !ok {
-		t.Fatal("fresh throttle should allow first call")
+		t.Fatal("should be allowed after window")
 	}
-	if suppressed != 0 {
-		t.Fatalf("fresh throttle should report 0 suppressed, got %d", suppressed)
+	if suppressed != 2 {
+		t.Fatalf("expected 2 suppressed, got %d", suppressed)
 	}
 }
 
 func TestAuditSendThrottle_ConcurrentAccess(t *testing.T) {
+	orig := auditSendErrThrottle
+	t.Cleanup(func() { auditSendErrThrottle = orig })
 	auditSendErrThrottle = newLogThrottle(time.Minute)
 
 	const goroutines = 50
@@ -72,7 +80,6 @@ func TestAuditSendThrottle_ConcurrentAccess(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
-
 	totalAllowed := int64(0)
 	for _, a := range allowed {
 		totalAllowed += a

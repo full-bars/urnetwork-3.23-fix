@@ -13,17 +13,20 @@ func TestHandshakeReasonClass(t *testing.T) {
 		expected string
 	}{
 		{fmt.Errorf("tls handshake timeout after 30s"), "tls_handshake_timeout"},
+		{fmt.Errorf("net/http: TLS handshake timeout"), "tls_handshake_timeout"},
 		{fmt.Errorf("tls handshake timeout after 1m2s"), "tls_handshake_timeout"},
 		{fmt.Errorf("context canceled"), "context_canceled"},
 		{fmt.Errorf("context deadline exceeded"), "context_deadline"},
 		{fmt.Errorf("connection reset by peer"), "other"},
-		{fmt.Errorf("tls: bad certificate"), "other"},
+		{fmt.Errorf("tls: bad certificate"), "certificate_error"},
+		{fmt.Errorf("certificate signed by unknown authority"), "certificate_error"},
+		{nil, "other"},
 		{fmt.Errorf(""), "other"},
 	}
 	for _, tt := range tests {
 		got := handshakeReasonClass(tt.err)
 		if got != tt.expected {
-			t.Errorf("handshakeReasonClass(%q) = %q, want %q", tt.err.Error(), got, tt.expected)
+			t.Errorf("handshakeReasonClass(%v) = %q, want %q", tt.err, got, tt.expected)
 		}
 	}
 }
@@ -39,6 +42,7 @@ func resetHandshakeThrottles() {
 
 func TestHandshakeThrottle_FirstCallAllowed(t *testing.T) {
 	resetHandshakeThrottles()
+
 	ok, suppressed := shouldLogHandshakeErr("tls_handshake_timeout")
 	if !ok {
 		t.Fatal("first call should be allowed")
@@ -52,58 +56,62 @@ func TestHandshakeThrottle_SuppressesWithinWindow(t *testing.T) {
 	resetHandshakeThrottles()
 
 	base := time.Now()
-	ok, _ := shouldLogHandshakeErr("tls_handshake_timeout")
+
+	ok, suppressed := shouldLogHandshakeErrAt("tls_handshake_timeout", base)
 	if !ok {
 		t.Fatal("first call should be allowed")
 	}
-
-	// Simulate rapid calls within the 1-minute window.
-	suppressedCount := 0
-	for i := 0; i < 10; i++ {
-		ok, _ := shouldLogHandshakeErr("tls_handshake_timeout")
-		if ok {
-			t.Fatalf("call %d within window should be suppressed", i+1)
-		}
-		suppressedCount++
-	}
-	if suppressedCount != 10 {
-		t.Fatalf("expected 10 suppressed calls, got %d", suppressedCount)
-	}
-
-	// After the window, the next call should emit with the count.
-	future := base.Add(2 * time.Minute)
-	// We can't control time.Now() directly, so instead verify the
-	// reset behavior by creating a fresh throttle.
-	resetHandshakeThrottles()
-	ok, suppressed := shouldLogHandshakeErr("tls_handshake_timeout")
-	if !ok {
-		t.Fatal("fresh throttle should allow first call")
-	}
 	if suppressed != 0 {
-		t.Fatalf("fresh throttle should report 0 suppressed, got %d", suppressed)
+		t.Fatalf("first call should report 0 suppressed, got %d", suppressed)
 	}
-	_ = future // used above
+
+	// Simulate rapid calls within the 1-minute window using explicit timestamps.
+	for i := 1; i <= 10; i++ {
+		ok, _ := shouldLogHandshakeErrAt("tls_handshake_timeout", base.Add(time.Duration(i)*time.Second))
+		if ok {
+			t.Fatalf("call %d within window should be suppressed", i)
+		}
+	}
+
+	// After the window, the next call should emit with the suppressed count.
+	ok, suppressed = shouldLogHandshakeErrAt("tls_handshake_timeout", base.Add(2*time.Minute))
+	if !ok {
+		t.Fatal("call after window should be allowed")
+	}
+	if suppressed != 10 {
+		t.Fatalf("expected 10 suppressed, got %d", suppressed)
+	}
 }
 
 func TestHandshakeThrottle_CountResetsAfterEmit(t *testing.T) {
 	resetHandshakeThrottles()
 
+	base := time.Now()
+
 	// Allow the first call.
-	shouldLogHandshakeErr("tls_handshake_timeout")
-
-	// Suppress 3 calls.
-	for i := 0; i < 3; i++ {
-		shouldLogHandshakeErr("tls_handshake_timeout")
-	}
-
-	// Create a new throttle to simulate time passing past the window.
-	resetHandshakeThrottles()
-	ok, suppressed := shouldLogHandshakeErr("tls_handshake_timeout")
+	ok, suppressed := shouldLogHandshakeErrAt("tls_handshake_timeout", base)
 	if !ok {
-		t.Fatal("should be allowed after reset")
+		t.Fatal("first call should be allowed")
 	}
 	if suppressed != 0 {
-		t.Fatalf("fresh throttle should report 0 suppressed, got %d", suppressed)
+		t.Fatalf("first call should report 0 suppressed, got %d", suppressed)
+	}
+
+	// Suppress 3 calls within the window.
+	for i := 1; i <= 3; i++ {
+		ok, _ := shouldLogHandshakeErrAt("tls_handshake_timeout", base.Add(time.Duration(i)*time.Second))
+		if ok {
+			t.Fatalf("call %d within window should be suppressed", i)
+		}
+	}
+
+	// After the window, the next call should emit with suppressed=3.
+	ok, suppressed = shouldLogHandshakeErrAt("tls_handshake_timeout", base.Add(2*time.Minute))
+	if !ok {
+		t.Fatal("should be allowed after window")
+	}
+	if suppressed != 3 {
+		t.Fatalf("expected 3 suppressed, got %d", suppressed)
 	}
 }
 
