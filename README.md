@@ -195,7 +195,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP` |
 | `urnet-tools logs` | You want to stream the current RAMLOGS buffer |
 | `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
-| `urnet-tools proxy summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
+| `urnet-tools summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
