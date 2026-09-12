@@ -242,7 +242,7 @@ func TestPoolHealthLineWording(t *testing.T) {
 			name: "watch names the trend and the consequence",
 			reading: poolHealthReading{Verdict: poolVerdictWatch, Floor: 96,
 				FloorAtWindowStart: 38, RisingFor: 20 * time.Minute, Full: true},
-			inUse:    1204,
+			inUse: 1204,
 			contains: []string{"watch —", "taken and never given back", "up from 38 an hour ago",
 				"memory use grows until the provider restarts", "1204 in use now"},
 		},
