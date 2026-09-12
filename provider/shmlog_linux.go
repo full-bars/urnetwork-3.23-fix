@@ -170,11 +170,14 @@ func initSHMLogger() {
 				for {
 					time.Sleep(5 * time.Second)
 					fImpMu.Lock()
-					if err := trimRAMLog(fImp, shmImportantLogMaxSize, shmLogTrimRatio); err != nil {
-						reportTrimFailure(&impTrimWarned, shmImportantLogPath, err)
+					err := trimRAMLog(fImp, shmImportantLogMaxSize, shmLogTrimRatio)
+					if err == nil {
+						fImp.Sync()
 					}
-					fImp.Sync()
 					fImpMu.Unlock()
+					if err != nil {
+						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, shmImportantLogPath, err)
+					}
 				}
 			}()
 		}
@@ -188,10 +191,11 @@ func initSHMLogger() {
 			for {
 				time.Sleep(5 * time.Second)
 				fMu.Lock()
-				if err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio); err != nil {
-					reportTrimFailure(&mainTrimWarned, shmLogPath, err)
-				}
+				err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio)
 				fMu.Unlock()
+				if err != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+				}
 			}
 		}()
 

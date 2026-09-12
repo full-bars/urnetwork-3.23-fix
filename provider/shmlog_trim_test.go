@@ -5,11 +5,12 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
+	"time"
 )
 
 // openTestLog opens a temp file the way the RAM logger does, so the tests
@@ -219,23 +220,21 @@ func TestReportTrimFailureWarnsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	defer r.Close()
+
 	realStderr := os.Stderr
 	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = realStderr })
-
-	var once sync.Once
+	var warned bool
+	var warnTime time.Time
 	for i := 0; i < 5; i++ {
-		reportTrimFailure(&once, "/dev/shm/test.log", fmt.Errorf("bad file descriptor"))
+		reportTrimFailure(&warned, &warnTime, "/dev/shm/test.log", fmt.Errorf("bad file descriptor"))
 	}
+	os.Stderr = realStderr
 	w.Close()
 
-	out, err := os.ReadFile("/proc/self/fd/" + fmt.Sprint(int(r.Fd())))
+	out, err := io.ReadAll(r)
 	if err != nil {
-		buf := new(bytes.Buffer)
-		if _, cerr := buf.ReadFrom(r); cerr != nil {
-			t.Fatalf("read pipe: %v", cerr)
-		}
-		out = buf.Bytes()
+		t.Fatalf("read pipe: %v", err)
 	}
 	if n := bytes.Count(out, []byte("cannot trim")); n != 1 {
 		t.Errorf("warned %d times, want 1: %q", n, string(out))

@@ -5,16 +5,17 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
-	"sync"
+	"time"
 )
 
-// mainTrimWarned and impTrimWarned keep a failed trim from reporting on every
-// 5-second cycle. A trim failure is a persistent condition, not an event.
+// mainTrimWarned and impTrimWarned track failure state so warnings repeat at
+// a bounded rate rather than being silenced permanently.
 var (
-	mainTrimWarned sync.Once
-	impTrimWarned  sync.Once
+	mainTrimWarned   bool
+	mainTrimWarnTime time.Time
+	impTrimWarned    bool
+	impTrimWarnTime  time.Time
 )
 
 // trimRAMLog bounds a RAM log file by discarding its oldest 1/ratio and
@@ -49,12 +50,15 @@ func trimRAMLog(f *os.File, maxSize int64, ratio int64) error {
 	}
 
 	keep := fi.Size() * (ratio - 1) / ratio
+	if maxKeep := maxSize * (ratio - 1) / ratio; keep > maxKeep {
+		keep = maxKeep
+	}
 	if keep <= 0 {
 		return nil
 	}
 
 	b := make([]byte, keep)
-	if _, err := io.ReadFull(io.NewSectionReader(f, fi.Size()-keep, keep), b); err != nil {
+	if _, err := f.ReadAt(b, fi.Size()-keep); err != nil {
 		// Nothing is written: the oversized file survives intact.
 		return fmt.Errorf("read newest %d bytes: %w", keep, err)
 	}
@@ -68,19 +72,30 @@ func trimRAMLog(f *os.File, maxSize int64, ratio int64) error {
 	if err := f.Truncate(0); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
-	// No Seek before this write: f is O_APPEND, which forces every write to
-	// end-of-file and ignores the offset entirely. After the truncate above,
-	// end-of-file is 0, so this rewrites the file from the start.
+	if _, err := f.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+	// f.Seek after Truncate restores the position to 0, which is defense-in-
+	// depth against a future regression that drops O_APPEND. With O_APPEND
+	// every Write already goes to end-of-file, so the Seek is redundant in
+	// normal operation but prevents a stray positioned write from clobbering
+	// the kept tail.
 	if _, err := f.Write(b); err != nil {
 		return fmt.Errorf("write kept %d bytes: %w", len(b), err)
 	}
 	return nil
 }
 
-// reportTrimFailure writes one warning per condition to the process's stderr,
-// which is the RAM log itself once the redirect is in place.
-func reportTrimFailure(once *sync.Once, path string, err error) {
-	once.Do(func() {
-		fmt.Fprintf(os.Stderr, "[ramlogs] warning: cannot trim %s, leaving it oversized rather than losing history: %v\n", path, err)
-	})
+// reportTrimFailure writes a warning to the process's stderr, which is the
+// RAM log itself once the redirect is in place. Unlike the original sync.Once
+// approach, it re-emits after a 5-minute cooldown so a long-running daemon
+// does not permanently silence the warning.
+func reportTrimFailure(warned *bool, warnTime *time.Time, path string, err error) {
+	now := time.Now()
+	if *warned && now.Sub(*warnTime) < 5*time.Minute {
+		return
+	}
+	*warned = true
+	*warnTime = now
+	fmt.Fprintf(os.Stderr, "[ramlogs] warning: cannot trim %s, leaving it oversized rather than losing history: %v\n", path, err)
 }
