@@ -1847,10 +1847,14 @@ section "AB. Command surface coverage"
 # nothing to show, but it must not die because it was never wired up. The
 # three failures below are the ones that mean "this command is broken", not
 # "this node has nothing to report".
+# Invoked directly, not through runuser, matching every other call site in
+# this script. urnet-tools self-elevates and resolves its own target; routing
+# it through another user depends on a PATH this script never establishes,
+# which would report working commands as broken.
 cmd_reachable() {
   local name="$1"; shift
   local out rc
-  out=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) "$@" 2>&1); rc=$?
+  out=$("$@" 2>&1); rc=$?
   if echo "$out" | grep -qiE "unknown command|unknown proxy subcommand|unknown key"; then
     bad "AB: $name is not wired up (unknown command)"
     echo "$out" | head -3 | sed 's/^/    | /' | tee -a "$REPORT"
@@ -1893,7 +1897,7 @@ cmd_reachable "set (list all)" urnet-tools set
 # listener has no address to bind. That refusal is by design, so assert the
 # command REACHES the provider and refuses for the right reason, rather than
 # failing because it cannot find the socket at all.
-METRICS_OUT=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) urnet-tools metrics on 2>&1 || true)
+METRICS_OUT=$(urnet-tools metrics on 2>&1 || true)
 if echo "$METRICS_OUT" | grep -qiE "dial unix .*: connect: no such file or directory"; then
   bad "AB: metrics dialled a socket the provider does not open"
   echo "$METRICS_OUT" | head -3 | sed 's/^/    | /' | tee -a "$REPORT"
@@ -1906,7 +1910,7 @@ fi
 # The help menu is hand maintained and has drifted twice, hiding working
 # commands from every operator who reads --help. The Go tests assert the menu
 # against the registered list; this asserts the binary shipped with them in it.
-HELP_OUT=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) urnet-tools --help 2>&1 || true)
+HELP_OUT=$(urnet-tools --help 2>&1 || true)
 HELP_MISSING=""
 for c in config history metrics profile dashboard summary hotswap; do
   echo "$HELP_OUT" | grep -qE "^[[:space:]]{2,}$c([[:space:]]|\[|$)" || HELP_MISSING="$HELP_MISSING $c"
