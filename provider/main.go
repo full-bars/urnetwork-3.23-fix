@@ -1654,6 +1654,13 @@ func runEarningWindows(ctx context.Context) {
 		// but keyed by proxy address (delta-based, never cumulative).
 		globalPerProxyEarnTracker.Update(bw)
 
+		// Fold the same snapshot into the persistent earnings history.
+		// Unlike the liveness tracker above, this one never prunes an
+		// address that leaves the snapshot: an offline proxy still has an
+		// earnings record, and that record is the whole point of the store.
+		globalProxyEarningsStore.Observe(bw, time.Now())
+		globalProxyEarningsStore.MaybeSave(time.Now())
+
 		var cum uint64
 		for _, p := range bw {
 			cum += p.BillableRx.Load() + p.BillableTx.Load()
@@ -3703,6 +3710,14 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
+	// Load the per-proxy earnings history. It is loaded here rather than at
+	// package init so a test never picks up the real home directory's
+	// history (the failure mode fixed in #589). Nothing orders launches by
+	// it yet; this build collects and reports it.
+	if err := globalProxyEarningsStore.Load(); err != nil {
+		tlog("⚠️ [earn] could not read proxy earnings history: %v\n", err)
+	}
+
 	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
 	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
 	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
@@ -3710,6 +3725,15 @@ func provide(opts docopt.Opts) {
 	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
 		len(allProxySettings), warmCount, renewableCount, coldCount)
+
+	// Report the earnings history so an operator can watch it fill in, and
+	// so the ranking that will consume it can be judged against real data.
+	if ranked, topAddr, topScore := earningsHistorySummary(allProxySettings, time.Now()); ranked == 0 {
+		tlog("💰 [startup] earnings history: none yet, still collecting\n")
+	} else {
+		tlog("💰 [startup] earnings history: %d of %d proxies have earned, top earner %s at %s\n",
+			ranked, len(allProxySettings), topAddr, formatBytes(uint64(topScore)))
+	}
 
 	// Start the native [direct] connection as proxy[0] unless the operator
 	// has explicitly disabled it. Precedence (highest to lowest):
