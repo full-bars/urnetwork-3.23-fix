@@ -717,7 +717,7 @@ func cmdHistory(args []string) error {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 
-	socketPath := filepath.Join(p.StateDir, "control.sock")
+	socketPath := filepath.Join(p.StateDir, "provider.sock")
 	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "history", Limit: limit})
 	if err != nil {
 		return err
@@ -746,6 +746,15 @@ func cmdHistory(args []string) error {
 	return nil
 }
 
+// sendMetricsToggle asks the provider to set the metrics key over its
+// control socket. Split out of cmdMetrics so the socket path it dials is
+// reachable from a test without going through target discovery: the path
+// was wrong for the whole life of this command and no test could see it.
+func sendMetricsToggle(p Provider, val string) (controlResponse, error) {
+	socketPath := filepath.Join(p.StateDir, "provider.sock")
+	return sendSocketRequest(socketPath, controlRequest{Cmd: "set", Key: "metrics", Value: val})
+}
+
 func cmdMetrics(args []string, dryRun bool) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: urnet-tools metrics on|off")
@@ -770,8 +779,7 @@ func cmdMetrics(args []string, dryRun bool) error {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 
-	socketPath := filepath.Join(p.StateDir, "control.sock")
-	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "set", Key: "metrics", Value: val})
+	resp, err := sendMetricsToggle(p, val)
 	if err != nil {
 		return err
 	}
