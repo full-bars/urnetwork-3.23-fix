@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -477,6 +478,15 @@ func TestReadUsageHistoryValidFiles(t *testing.T) {
 // readUsageHistory returned an empty slice, and the caller printed
 // "No usage history yet" on a permission error.
 func TestReadUsageHistoryEACCES(t *testing.T) {
+	// Windows does not deny reads through directory mode bits, so chmod 0
+	// leaves the directory readable and the case cannot be constructed.
+	// Running as root defeats it for the same reason.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory mode bits do not deny reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
 	dir := t.TempDir()
 	// Make the directory unreadable so os.Open inside it fails with EACCES.
 	if err := os.Chmod(dir, 0o000); err != nil {
