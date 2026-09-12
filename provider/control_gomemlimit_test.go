@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -27,4 +29,38 @@ func TestClearGomemlimitRestoresUnlimitedNotZero(t *testing.T) {
 	if got != math.MaxInt64 {
 		t.Errorf("memory limit after clear = %d, want math.MaxInt64 (unlimited)", got)
 	}
+}
+
+// A live side effect that wedges a node must name itself in the log. The
+// transition is already logged ("cleared gomemlimit (was 2GiB)"), but that
+// says what was removed, not what the runtime now holds. An operator whose
+// node pegs after a clear had nothing tying the symptom to the setting.
+func TestApplyLiveSideEffectLogsTheEffectiveValue(t *testing.T) {
+	orig := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(orig) })
+
+	var logged []string
+	restore := captureControlApplyLog(func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	t.Cleanup(restore)
+
+	if err := applyLiveSideEffect("gomemlimit", "0"); err != nil {
+		t.Fatalf("applyLiveSideEffect: %v", err)
+	}
+
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "gomemlimit") {
+		t.Errorf("apply did not name the key in the log; got %q", joined)
+	}
+	if !strings.Contains(joined, "unlimited") {
+		t.Errorf("apply did not report the effective value; got %q", joined)
+	}
+}
+
+// captureControlApplyLog redirects the apply log for the duration of a test.
+func captureControlApplyLog(fn func(string, ...any)) func() {
+	orig := controlApplyLog
+	controlApplyLog = fn
+	return func() { controlApplyLog = orig }
 }

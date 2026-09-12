@@ -583,6 +583,12 @@ func dialControlSocket(req controlRequest) (controlResponse, error) {
 // is no well-defined "revert to" value to apply live, so clearing one of
 // these two keys only affects the NEXT restart's baseline, same as before
 // this feature existed.
+// controlApplyLog reports what a live side effect actually put into the
+// runtime. It is separate from the "set"/"cleared" transition lines, which
+// say what changed but not what the process now holds: an operator whose
+// node wedged after a clear had nothing tying the symptom to the setting.
+var controlApplyLog = func(format string, args ...any) { tlog(format, args...) }
+
 func applyLiveSideEffect(key, value string) error {
 	switch key {
 	case "gomemlimit":
@@ -601,9 +607,15 @@ func applyLiveSideEffect(key, value string) error {
 			limit = math.MaxInt64
 		}
 		debug.SetMemoryLimit(limit)
+		if limit == math.MaxInt64 {
+			controlApplyLog("⚙️ [control] applied gomemlimit=unlimited (no soft memory limit)\n")
+		} else {
+			controlApplyLog("⚙️ [control] applied gomemlimit=%s\n", value)
+		}
 	case "gogc":
 		if strings.EqualFold(value, "off") {
 			debug.SetGCPercent(-1)
+			controlApplyLog("⚙️ [control] applied gogc=off (garbage collection disabled)\n")
 		} else {
 			percent, err := strconv.Atoi(value)
 			if err != nil {
