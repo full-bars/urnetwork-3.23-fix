@@ -264,7 +264,7 @@ func TestLifecycleCmds_SystemdTargetUnaffectedByDockerPresence(t *testing.T) {
 
 // --- commit 2: the other unit-driving commands get the same guard ---
 
-// TestOtherSystemdCmds_ExplicitContainerTargetRefused pins that hot-restart,
+// TestOtherSystemdCmds_ExplicitContainerTargetRefused pins that
 // session save/load, auto-start, auto-update, uninstall and reinstall all
 // refuse an explicit docker target via guardSystemdProvider (previously they
 // returned a plain not-found — same latent class as the lifecycle HIGH).
@@ -276,7 +276,6 @@ func TestOtherSystemdCmds_ExplicitContainerTargetRefused(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"hot-restart", func() error { return cmdHotRestart([]string{"--unit", "ps"}, true, true) }},
 		{"session", func() error { return cmdSession([]string{"save", "/tmp/x.tgz", "--unit", "ps"}) }},
 		{"auto-start", func() error { return cmdAutoStart([]string{"on", "--unit", "ps"}, false, true) }},
 		{"auto-update", func() error { return cmdAutoUpdate([]string{"daily", "--unit", "ps"}, false, true) }},

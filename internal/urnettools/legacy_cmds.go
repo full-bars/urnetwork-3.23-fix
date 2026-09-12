@@ -54,7 +54,7 @@ func systemctlUserArgs(user string) []string {
 // unit: system units use "systemctl <action> <unit>"; user units are scoped
 // to the owning user's session via systemctlUserArgs. The unit name is
 // ALWAYS the final argument — systemctl errors "Too few arguments" without
-// it (gauntlet finding: hot-restart printed that error; the pre-fix
+// it (gauntlet finding: the pre-fix
 // unitCommandArgs omitted the unit entirely).
 func unitCommandArgs(p Provider, action string, extra ...string) []string {
 	if p.Unit == "" {
@@ -1043,7 +1043,18 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	ok, err := confirmGate(fmt.Sprintf("set %s=%s on %s", profile, mode, providerLabel(p)), p, force, dryRun)
+	// Task 15: when turning off a profile-based tunable (eco/lowmode/turbo/
+	// auto), tuneControlKeyValue maps "off" to profile=off which clears the
+	// ENTIRE profile — not just the one being toggled. eco off on a turbo-v8
+	// node silently drops turbo too. Include the warning in the confirmGate
+	// prompt so operators see it BEFORE confirming.
+	confirmMsg := fmt.Sprintf("set %s=%s on %s and restart provider", profile, mode, providerLabel(p))
+	if mode == "off" && profile != "ramlogs" {
+		if curVal, _, found, qerr := queryControlOverride(p, "profile"); qerr == nil && found && curVal != "" && curVal != "off" {
+			confirmMsg += fmt.Sprintf("\n  WARNING: current profile is %s; setting profile=off will clear it", curVal)
+		}
+	}
+	ok, err := confirmGate(confirmMsg, p, force, dryRun)
 	if err != nil {
 		return err
 	}

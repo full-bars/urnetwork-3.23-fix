@@ -108,12 +108,10 @@ docker exec -it urfix urnet-tools proxy remove --match=dc.decodo.com
 ### 🔏 Managing Exclude Patterns
 
 ```sh
-urnet-tools proxy exclude                        # list active patterns
-urnet-tools proxy exclude bad-isp.example        # add a pattern (blocks future URL fetches)
-urnet-tools proxy exclude bad-isp.example --remove   # delete a pattern
+urnet-tools proxy remove --match=bad-isp.example        # exclude pattern (persists across URL refreshes)
 ```
 
-Active patterns also appear in `urnet-tools proxy summary` under **URL Sources**.
+Active exclusion patterns also appear in `urnet-tools summary` under **URL Sources**.
 
 ## ✂️ Persistent Proxy Trim (Hard Cap & A-F Worst-First Shedding)
 

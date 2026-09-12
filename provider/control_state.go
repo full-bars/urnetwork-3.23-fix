@@ -304,6 +304,19 @@ func (s *controlState) statusSnapshot() map[string]struct {
 	return out
 }
 
+// startupValues returns the env-var values for restart-required keys — the
+// values the running process actually started with. These are set once by
+// seedEnvFromControlState and never change during the process lifetime.
+// The dashboard uses this to distinguish "value was changed since startup"
+// (restart needed) from "value is merely configured" (no restart needed).
+func startupValues() map[string]string {
+	out := map[string]string{
+		"ramlogs": os.Getenv("URNETWORK_RAMLOGS"),
+		"profile": os.Getenv("URNETWORK_PROFILE"),
+	}
+	return out
+}
+
 // controlStatePath returns ~/.urnetwork/provider_state.json — the provider's
 // own private, atomically-written record of every socket-set control key.
 // Unlike the legacy override files, nothing but the provider process itself

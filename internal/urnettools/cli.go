@@ -66,10 +66,9 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 
 // cmdSimpleDelegation handles the pass-through commands (summary):
 // resolve the targeted provider, then delegate the exact subcommand to that
-// provider's binary. report and hot-restart have real implementations (see
-// cmdReport / cmdHotRestart) because the provider binary has no report or
-// hot-restart subcommands — delegating to it printed the provider's auth
-// usage and did nothing (gauntlet findings BUG-4).
+// provider's binary. report has a real implementation (see cmdReport)
+// because the provider binary has no report subcommand — delegating to it
+// printed the provider's auth usage and did nothing (gauntlet finding BUG-4).
 func cmdSimpleDelegation(sub string, args []string) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -125,56 +124,30 @@ func cmdReport(args []string) error {
 	return nil
 }
 
-// writeReportURL writes the hub-report override file for a provider.
-// Extracted from cmdReport so the write itself is directly testable with a
-// Provider struct (no live process needed). The provider's bandwidth
-// reporter re-reads this file every tick.
+// writeReportURL writes the hub-report override via the provider's control
+// socket, falling back to pending_overrides.json when the provider is stopped.
+// For "off", clears the control-state so the provider stops reporting.
 func writeReportURL(p Provider, url string) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks (C2).
-	if err := writeStateFile(p.StateDir, "report_url", []byte(url+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write report_url: %v", err)
+	op := "set"
+	value := url
+	if url == "off" {
+		op = "clear"
+		value = ""
+	}
+	// applyControlOverride handles both the live socket path and the
+	// pending_overrides.json fallback when the provider is stopped — no
+	// need for a legacy file path.
+	if _, _, err := applyControlOverride(p, op, "report_url", value, false); err != nil {
+		return fmt.Errorf("set report_url: %v", err)
 	}
 	return nil
 }
 
-// cmdHotRestart implements `urnet-tools hot-restart [target]`: it restarts
-// the provider's systemd unit. The provider binary has NO hot-restart
-// subcommand — its hot-restart behavior is a config/env toggle
-// (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
-// auth usage and did nothing (gauntlet finding BUG-4). A confirmation gate
-// mirrors cmdRestart: restarting a provider is a production action and must
-// not happen without --force or an explicit "yes".
-func cmdHotRestart(args []string, force, dryRun bool) error {
-	t, rest, err := parseTargetFlagsLenient(args)
-	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, err := selectTarget(providers, t)
-	if err != nil {
-		return err
-	}
-	if err := guardSystemdProvider(p); err != nil {
-		return err
-	}
-	if len(rest) > 0 {
-		return fmt.Errorf("hot-restart takes no arguments (got %v)", rest)
-	}
-	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // dry-run
-	}
-	return unitCommand(p, "restart")
-}
-
 // parseDelegationArgs guards -h/--help for the pass-through commands
-// (summary, report, hot-restart) BEFORE any targeting runs: those commands
+// (summary, report) BEFORE any targeting runs: those commands
 // delegate to the provider binary, so without this guard `--help` would be
 // forwarded and the operation would actually run (the help-never-executes
 // Returns errHelpShown when help was
@@ -222,7 +195,6 @@ Performance & Tuning (single target):
   lowmode <on|off> [target]       🧊  LOW-MEMORY reduced buffers for max RAM savings
   ramlogs <on|off> [target]       📝  RAM LOGS zero disk I/O logging
   optimize [target]               ⚡   apply golden-fleet OS/kernel limits
-  hot-restart [target]            ♻   reuse client_ids across restarts
   fast-auth <on|off|status>       ⚡   manage the auth rate limiter (marker file)
   set <key> [<value>|off]         🔧  runtime tuning override, read live (no restart)
 
@@ -285,7 +257,7 @@ Force (machines/scripts):
 // parseTargetFlagsLenient is like parseTargetFlags but does NOT reject
 // unknown --flags: it only extracts the known targeting flags and leaves
 // everything else (including provider-binary flags like --force) in rest
-// for pass-through. Used by delegation commands (summary/report/hot-restart,
+// for pass-through. Used by delegation commands (summary/report),
 // proxy refresh/remove-dead) where trailing args belong to the provider
 // binary, not this tool.
 func parseTargetFlagsLenient(args []string) (Target, []string, error) {

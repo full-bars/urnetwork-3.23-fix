@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -433,5 +434,103 @@ func TestUsageGraphArgsNoView(t *testing.T) {
 	}
 	if len(targetArgs) != 0 {
 		t.Fatalf("usageGraphArgs(%v, 0) targetArgs = %v, want empty", args, targetArgs)
+	}
+}
+
+// TestReadUsageHistoryNotExistFiles: missing files (including optional .1)
+// must return an empty slice with no error.
+func TestReadUsageHistoryNotExistFiles(t *testing.T) {
+	dir := t.TempDir()
+	snaps, err := readUsageHistory(dir)
+	if err != nil {
+		t.Fatalf("readUsageHistory(empty dir) error = %v, want nil", err)
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("readUsageHistory(empty dir) = %d snaps, want 0", len(snaps))
+	}
+}
+
+// TestReadUsageHistoryValidFiles: a well-formed usage_history.jsonl must be
+// parsed correctly and returned sorted.
+func TestReadUsageHistoryValidFiles(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"ts":"2026-01-01T12:00:00Z","rx":100,"tx":200,"billable_rx":90,"billable_tx":180}
+{"ts":"2026-01-01T13:00:00Z","rx":300,"tx":400,"billable_rx":270,"billable_tx":360}
+`
+	if err := os.WriteFile(dir+"/usage_history.jsonl", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := readUsageHistory(dir)
+	if err != nil {
+		t.Fatalf("readUsageHistory(valid) error = %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("readUsageHistory(valid) = %d snaps, want 2", len(snaps))
+	}
+	if snaps[0].RX != 100 || snaps[1].RX != 300 {
+		t.Fatalf("snap values wrong: got [%d, %d], want [100, 300]", snaps[0].RX, snaps[1].RX)
+	}
+}
+
+// TestReadUsageHistoryEACCES: a non-NotExist open error (e.g. permission
+// denied) must be returned, not silently swallowed. Before the fix,
+// readUsageHistory returned an empty slice, and the caller printed
+// "No usage history yet" on a permission error.
+func TestReadUsageHistoryEACCES(t *testing.T) {
+	dir := t.TempDir()
+	// Make the directory unreadable so os.Open inside it fails with EACCES.
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755) // restore for cleanup
+
+	snaps, err := readUsageHistory(dir)
+	if err == nil {
+		t.Fatalf("readUsageHistory(EACCES dir) error = nil, want non-nil (permission error)")
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("readUsageHistory(EACCES dir) snaps = %d, want 0", len(snaps))
+	}
+}
+
+// TestReadUsageHistoryScannerError: a line exceeding the 1 MiB scanner cap
+// must surface bufio.ErrTooLong, not silently truncate the scan.
+func TestReadUsageHistoryScannerError(t *testing.T) {
+	dir := t.TempDir()
+	// Write a line exactly at the limit (valid) followed by one that
+	// exceeds the 1 MiB cap.
+	valid := `{"ts":"2026-01-01T12:00:00Z","rx":100,"tx":200}`
+	longLine := `{"ts":"2026-01-01T13:00:00Z","rx":` + string(make([]byte, 1<<20+1)) + `}`
+	if err := os.WriteFile(dir+"/usage_history.jsonl", []byte(valid+"\n"+longLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := readUsageHistory(dir)
+	// Should get the valid line PLUS the scanner error.
+	if err == nil {
+		t.Fatal("readUsageHistory(long line) error = nil, want scanner error")
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("readUsageHistory(long line) snaps = %d, want 1 (valid line before error)", len(snaps))
+	}
+}
+
+// TestReadUsageHistoryMalformedLinesSkipped: ragged/partial JSON lines must
+// be skipped without affecting other valid lines.
+func TestReadUsageHistoryMalformedLinesSkipped(t *testing.T) {
+	dir := t.TempDir()
+	content := `not json at all
+{"ts":"2026-01-01T12:00:00Z","rx":100,"tx":200}
+{broken json
+{"ts":"2026-01-01T13:00:00Z","rx":300,"tx":400}
+`
+	if err := os.WriteFile(dir+"/usage_history.jsonl", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := readUsageHistory(dir)
+	if err != nil {
+		t.Fatalf("readUsageHistory(malformed) error = %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("readUsageHistory(malformed) = %d snaps, want 2 (malformed skipped)", len(snaps))
 	}
 }
