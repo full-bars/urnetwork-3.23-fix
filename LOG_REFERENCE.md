@@ -43,6 +43,39 @@ Emitted exactly **once per provider process**, early in the startup sequence bef
 
 The existing `client_id` and `instance_id` lines are printed separately, once per proxy, and are unchanged by this log line.
 
+### Earnings history
+
+```
+💰 [startup] earnings history: 588 of 812 proxies have earned, top earner 203.0.113.9:1080 at 4.1 GB
+💰 [startup] earnings history: none yet, still collecting
+```
+
+Emitted once per process, after the proxy list is resolved. The provider now
+keeps a per-proxy record of billable traffic that survives restarts, and this
+line reports what that record currently holds.
+
+| Field | Meaning |
+|---|---|
+| `N of M proxies have earned` | How many of this launch set the node has ever observed earning. |
+| `top earner` | The highest-scoring proxy and its score. |
+
+The score is billable bytes with a one-week half-life, persisted to
+`~/.urnetwork/proxy_earnings.json` and written at most every 15 minutes. A
+proxy that stops earning decays out of the record on its own, so it reflects
+what earns now rather than what earned once. The file is capped at 20,000
+entries, with the lowest scorers evicted first.
+
+> [!NOTE]
+> Nothing acts on this record yet. Launch order is still decided by warmth
+> and source provenance exactly as before. The history is being collected so
+> that a future ranking can be judged against real data rather than a
+> hypothesis, which means a node needs roughly a week of uptime before the
+> record means much.
+
+> [!NOTE]
+> `none yet, still collecting` is expected on a first run and until the
+> provider has observed billable traffic. It is not an error.
+
 ---
 
 ## 🧠 Adaptive GC Governor (pressure monitor)
