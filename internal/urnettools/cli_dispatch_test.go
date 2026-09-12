@@ -16,7 +16,7 @@ func TestRunHelpEveryCommand(t *testing.T) {
 	cmds := []string{
 		"providers", "list", "ps",
 		"status", "update", "proxy",
-		"summary", "report", "hot-restart", "hotrestart",
+		"summary", "report",
 		"start", "stop", "restart", "logs", "hub",
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
@@ -65,7 +65,6 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 		{"status"},
 		{"summary"},
 		{"report"},
-		{"hot-restart"},
 		{"start"},
 		{"stop"},
 		{"restart"},

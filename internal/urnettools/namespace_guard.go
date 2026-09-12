@@ -67,7 +67,7 @@ func guardLifecycleArgs(cmd string, args []string) (Target, error) {
 // if it were a systemd unit (cross-namespace contamination, LA1 D6).
 //
 // Reachability: this guard is LIVE on every command fed by
-// lifecycleCandidates — start/stop/restart plus hot-restart, session
+// lifecycleCandidates — start/stop/restart, session
 // save/load, auto-start, auto-update, uninstall and reinstall — because
 // lifecycleCandidates widens the candidate pool with docker containers when
 // an explicit target flag was given. It remains defense-in-depth for any

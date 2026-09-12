@@ -1,7 +1,6 @@
 package urnettools
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,7 +41,6 @@ Performance & Tuning:
   eco <on|off>            ECO MODE GC-tuned for low-RAM systems
   lowmode <on|off>        LOW-MEMORY reduced buffers for max RAM savings
   ramlogs <on|off>        RAM LOGS zero disk I/O logging
-  hot-restart <on|off>    restart provider (hot-restart is a config toggle)
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
   fast-auth [on|off]      Bypass auth rate limiter without restart
@@ -64,6 +62,8 @@ Proxy Management:
   proxy paste             Paste raw proxies from stdin, file, or URL
   proxy clear             Remove all configured proxies
   proxy remove            Remove proxies (by addr/match, or all)
+  proxy add-source <url>  Add a URL proxy source (fetched + cached)
+  proxy remove-source <url> Remove a URL proxy source
   proxy refresh [--force] Re-read configs and hot-reload proxies
   proxy trim <N>          Hold running proxies at N, shed worst first
   proxy health            Show dead/degraded proxies + live event log
@@ -170,7 +170,6 @@ func buildRootCmd() *cobra.Command {
 		newLowmodeCmd(),
 		newRamlogsCmd(),
 		newOptimizeCmd(),
-		newHotRestartCmd(),
 		newHotswapCmd(),
 		newFastAuthCmd(),
 		newSetCmd(),
@@ -441,14 +440,6 @@ func newOptimizeCmd() *cobra.Command {
 	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes), then prompts for sudo as needed on Linux and applies both the live settings and the reboot-persisted file. Run it as a normal user — it re-executes itself under sudo.", "  urnet-tools optimize\n  urnet-tools optimize --force")
 }
 
-func newHotRestartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hot-restart", "restart provider (hot-restart is a config toggle)", []string{"hotrestart"}, func(cmd *cobra.Command, args []string) error {
-		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-			return cmdHotRestart(rest, force, dryRun)
-		})
-	}), "Restart the provider's unit in a way that lets it reuse client IDs across the restart. It takes no extra arguments beyond a target, and asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools hot-restart --unit urnetwork-native.service\n  urnet-tools hot-restart --force")
-}
-
 func newHotswapCmd() *cobra.Command {
 	return withHelp(newCobraCmd("hotswap", "zero-downtime in-process binary reload", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
@@ -671,7 +662,7 @@ func newIPDetectCmd() *cobra.Command {
 
 func newHistoryCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "history [limit]",
+		Use:                "history [limit] [--cursor <cursor>]",
 		Short:              "show command audit trail",
 		Aliases:            []string{"audit"},
 		DisableFlagParsing: true,
@@ -698,20 +689,69 @@ func newMetricsCmd() *cobra.Command {
 	}
 }
 
-func cmdHistory(args []string) error {
-	limit := 50
-	if len(args) > 0 {
-		n, err := strconv.Atoi(args[0])
-		if err != nil || n <= 0 {
-			return fmt.Errorf("limit must be a positive integer (got %q)", args[0])
+// isTruthy returns true for any string representation that a human would
+// consider "enabled": on/1/true/yes and their case variants.
+func isTruthy(s string) bool {
+	switch strings.ToLower(s) {
+	case "on", "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// parseHistoryArgs extracts --cursor, target flags, and an optional
+// positional limit from the raw args passed to `history`.
+// It returns the limit (default 50, capped at 100), the cursor string,
+// and the parsed target. Flags are parsed in the correct order so that
+// `history --unit X`, `history 30 --cursor C --unit X`, etc. all work.
+func parseHistoryArgs(args []string) (limit int, cursor string, t Target, err error) {
+	limit = 50
+
+	// First pass: extract --cursor before parseTargetFlags (which
+	// rejects unknown --flags in strict mode).  Handle both
+	// `--cursor X` and `--cursor=X` forms.
+	var filtered []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if v, ok := strings.CutPrefix(a, "--cursor="); ok {
+			if v == "" {
+				return 0, "", t, fmt.Errorf("--cursor requires a value")
+			}
+			cursor = v
+			continue
+		}
+		if a == "--cursor" {
+			if i+1 >= len(args) {
+				return 0, "", t, fmt.Errorf("--cursor requires a value")
+			}
+			cursor = args[i+1]
+			i++
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+
+	// Second pass: extract target flags and the positional limit.
+	t, rest, err := parseTargetFlags(filtered)
+	if err != nil {
+		return 0, "", t, err
+	}
+
+	if len(rest) > 0 {
+		n, parseErr := strconv.Atoi(rest[0])
+		if parseErr != nil || n <= 0 {
+			return 0, "", t, fmt.Errorf("limit must be a positive integer (got %q)", rest[0])
 		}
 		if n > 100 {
 			n = 100
 		}
 		limit = n
 	}
+	return limit, cursor, t, nil
+}
 
-	t, _, err := parseTargetFlags(args)
+func cmdHistory(args []string) error {
+	limit, cursor, t, err := parseHistoryArgs(args)
 	if err != nil {
 		return err
 	}
@@ -725,7 +765,7 @@ func cmdHistory(args []string) error {
 	}
 
 	socketPath := filepath.Join(p.StateDir, "provider.sock")
-	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "history", Limit: limit})
+	resp, err := sendSocketRequest(socketPath, controlRequest{Cmd: "history", Limit: limit, Cursor: cursor})
 	if err != nil {
 		return err
 	}
@@ -748,7 +788,7 @@ func cmdHistory(args []string) error {
 		}
 	}
 	if resp.NextCursor != "" {
-		fmt.Printf("\nMore entries available. Use 'urnet-tools history' with cursor %s for older entries.\n", resp.NextCursor)
+		fmt.Printf("\nMore entries available. Use 'urnet-tools history --cursor %s' for older entries.\n", resp.NextCursor)
 	}
 	return nil
 }
@@ -763,19 +803,18 @@ func sendMetricsToggle(p Provider, val string) (controlResponse, error) {
 }
 
 func cmdMetrics(args []string, dryRun bool) error {
-	if len(args) == 0 {
+	t, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) == 0 {
 		return fmt.Errorf("usage: urnet-tools metrics on|off")
 	}
-	val := strings.ToLower(args[0])
+	val := strings.ToLower(rest[0])
 	switch val {
 	case "on", "off":
 	default:
-		return fmt.Errorf("usage: urnet-tools metrics on|off (got %q)", args[0])
-	}
-
-	t, _, err := parseTargetFlags(args)
-	if err != nil {
-		return err
+		return fmt.Errorf("usage: urnet-tools metrics on|off (got %q)", rest[0])
 	}
 
 	p, err := selectTarget(Discover(), t)
@@ -1068,13 +1107,55 @@ func cmdDashboard(args []string) error {
 		}
 	}
 
-	// Pending restart indicators
-	fmt.Println()
-	restartKeys := []string{"profile", "ramlogs"}
-	for _, key := range restartKeys {
-		val, _, found, _ := queryControlOverride(p, key)
-		if found && val != "" && val != "off" && val != "0" {
-			fmt.Printf("  %s⚠ %s requires restart (%s)%s\n", yellow, key, val, reset)
+	// Pending restart indicators — query the provider's status once to
+	// compare current values against what the process started with.
+	var changedKeys []string
+	var startupValues map[string]string
+	if p.Running {
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		if resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "status"}); err == nil && resp.OK {
+			startupValues = resp.StartupValues
+		}
+		// Keys whose values are boolean-like but may be stored in different
+		// representations ("on" vs "1", "true" vs "yes") across the control
+		// state, pending overrides, and startup env vars.
+		boolKeys := map[string]bool{"ramlogs": true}
+
+		restartKeyList := []string{"profile", "ramlogs"}
+		for _, key := range restartKeyList {
+			curVal, _, found, _ := queryControlOverride(p, key)
+			if !found {
+				// Key was cleared (e.g. "set profile off") but the
+				// running process may still hold the old value.
+				if startupValues != nil && startupValues[key] != "" {
+					changedKeys = append(changedKeys, key)
+				}
+				continue
+			}
+			if startupValues == nil {
+				// Old provider without StartupValues — fall back
+				// to legacy heuristic (warn if non-default).
+				if curVal != "" && curVal != "off" && curVal != "0" {
+					changedKeys = append(changedKeys, key)
+				}
+			} else if boolKeys[key] {
+				// Boolean-like keys: normalize both sides so
+				// "on" vs "1" and "off" vs "0" match correctly.
+				if isTruthy(curVal) != isTruthy(startupValues[key]) {
+					changedKeys = append(changedKeys, key)
+				}
+			} else if curVal != startupValues[key] {
+				changedKeys = append(changedKeys, key)
+			}
+		}
+	}
+	if len(changedKeys) > 0 {
+		fmt.Println()
+		for _, key := range changedKeys {
+			val, _, found, _ := queryControlOverride(p, key)
+			if found && val != "" && val != "off" && val != "0" {
+				fmt.Printf("  %s⚠ %s requires restart (%s)%s\n", yellow, key, val, reset)
+			}
 		}
 	}
 
@@ -1082,28 +1163,16 @@ func cmdDashboard(args []string) error {
 	fmt.Printf("  %s── Proxy Sources ──%s\n", dim, reset)
 	fmt.Println()
 
-	// Try to read proxy_url.json for source count
-	proxyStatePath := ""
+	// Read proxy_url.json for URL sources (must match the provider's
+	// ProxyURLState object shape, not an array).
 	if p.StateDir != "" {
-		proxyStatePath = filepath.Join(p.StateDir, "proxy_url.json")
-	}
-	if proxyStatePath != "" {
-		if data, err := os.ReadFile(proxyStatePath); err == nil {
-			var sources []struct {
-				Name   string `json:"name"`
-				Source string `json:"source"`
+		sources := readProxyURLSources(p.StateDir)
+		if len(sources) > 0 {
+			for _, src := range sources {
+				fmt.Printf("  %s•%s %s\n", green, reset, src)
 			}
-			if json.Unmarshal(data, &sources) == nil && len(sources) > 0 {
-				for _, s := range sources {
-					name := s.Name
-					if name == "" {
-						name = "(unnamed)"
-					}
-					fmt.Printf("  %s•%s %s %s(%s)%s\n", green, reset, name, dim, s.Source, reset)
-				}
-			} else {
-				fmt.Printf("  %s(no proxy sources configured)%s\n", dim, reset)
-			}
+		} else {
+			fmt.Printf("  %s(no proxy sources configured)%s\n", dim, reset)
 		}
 	}
 
@@ -1114,22 +1183,10 @@ func cmdDashboard(args []string) error {
 	fmt.Printf("  urnet-tools profile <name>       Switch tuning profile\n")
 	fmt.Printf("  urnet-tools metrics on|off       Toggle Prometheus metrics\n")
 	fmt.Printf("  urnet-tools history              View command audit trail\n")
-	if p.Running && needsRestartNeeded(p) {
+	if p.Running && len(changedKeys) > 0 {
 		fmt.Printf("\n  %s⚠ Restart pending: systemctl --user restart %s%s\n", yellow, p.Unit, reset)
 	}
 	fmt.Println()
 
 	return nil
-}
-
-// needsRestartNeeded checks if any startup-only setting has been changed.
-func needsRestartNeeded(p Provider) bool {
-	restartKeys := []string{"profile", "ramlogs"}
-	for _, key := range restartKeys {
-		val, _, found, _ := queryControlOverride(p, key)
-		if found && val != "" && val != "off" && val != "0" {
-			return true
-		}
-	}
-	return false
 }

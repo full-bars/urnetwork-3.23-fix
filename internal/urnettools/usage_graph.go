@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -14,7 +15,10 @@ func cmdUsageGraph(targetArgs []string, view string) error {
 	if err != nil {
 		return err
 	}
-	snaps := readUsageHistory(p.StateDir)
+	snaps, histErr := readUsageHistory(p.StateDir)
+	if histErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", histErr)
+	}
 	if len(snaps) == 0 {
 		fmt.Printf("No usage history yet for %s.\n", providerLabel(p))
 		return nil

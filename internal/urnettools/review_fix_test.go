@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,8 +28,8 @@ import (
 // without using the loop variable, testing the same thing 5 times.
 // TestParseDelegationArgsHelpIsSafe below covers the real dispatch paths.
 
-// TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
-// the provider binary, so -h/--help must short-circuit in parseDelegationArgs
+// TestParseDelegationArgsHelpIsSafe: summary/report delegate to the provider
+// binary, so -h/--help must short-circuit in parseDelegationArgs
 // (help printed, nothing delegated) — the C1 invariant for pass-through
 // commands (no test had pinned this).
 func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
@@ -64,7 +65,7 @@ func TestParseTargetFlagsRejectsUnknownFlags(t *testing.T) {
 }
 
 // TestParseTargetFlagsLenientPreserves: the lenient variant keeps unknown
-// --flags for provider-binary pass-through (summary/hot-restart/proxy
+// --flags for provider-binary pass-through (summary/proxy
 // refresh/remove-dead).
 func TestParseTargetFlagsLenientPreserves(t *testing.T) {
 	tg, rest, err := parseTargetFlagsLenient([]string{"--unit", "urnetwork-native.service", "--force"})
@@ -335,39 +336,35 @@ func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
 	}
 }
 
-// TestCmdReportWritesOverrideFile: `report <url>` must write
-// ~/.urnetwork/report_url in the provider's state dir, not delegate to the
-// provider binary (which has no report subcommand — gauntlet BUG-4). This
-// exercises cmdReport end-to-end against a temp StateDir and pins the
-// file content/mode the provider's bandwidth reporter reads.
+// TestCmdReportWritesOverrideFile: `report <url>` must queue a pending
+// override in pending_overrides.json when the provider is stopped, not write
+// a legacy file. The provider's control socket resolves report_url from
+// control-state first; writeReportURL now always goes through
+// applyControlOverride which queues to pending_overrides.json when the
+// socket is unavailable.
 func TestCmdReportWritesOverrideFile(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir, User: "testuser"}
 	// Call the PRODUCTION write helper (tests must call
-	// production logic, not reimplement it). Reverting the write (or its
-	// 0644 mode) must fail this test.
+	// production logic, not reimplement it).
 	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
 		t.Fatalf("writeReportURL: %v", err)
 	}
-	path := filepath.Join(dir, "report_url")
-	b, err := os.ReadFile(path)
+	// The override should be queued in pending_overrides.json.
+	pendingPath := filepath.Join(dir, "pending_overrides.json")
+	b, err := os.ReadFile(pendingPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read pending_overrides.json: %v", err)
 	}
-	if got := strings.TrimSpace(string(b)); got != "http://127.0.0.1:8080" {
-		t.Fatalf("report_url content = %q, want the URL", got)
+	var ops []pendingOp
+	if err := json.Unmarshal(b, &ops); err != nil {
+		t.Fatalf("parse pending_overrides.json: %v", err)
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	if len(ops) != 1 {
+		t.Fatalf("pending ops = %d, want 1", len(ops))
 	}
-	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
-	// norm: root tool + urnetwork-beta service). 0600 would silently break
-	// reporting cross-user.
-	// Windows has no POSIX permissions; Go reports 0666 there. Only assert
-	// the 0644 readable-by-provider-user mode on Unix.
-	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
-		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
+	if ops[0].Op != "set" || ops[0].Key != "report_url" || ops[0].Value != "http://127.0.0.1:8080" {
+		t.Fatalf("pending op = %+v, want set report_url=http://127.0.0.1:8080", ops[0])
 	}
 	// Also verify cmdReport's no-provider error path (must error, never
 	// delegate to a provider binary). Skip on a box that HAS a discoverable
@@ -403,17 +400,11 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 	if args[len(args)-1] != p.Unit {
 		t.Fatalf("unitCommandArgs(restart) = %v, want final arg = unit %q (systemctl errors without it)", args, p.Unit)
 	}
-	// The delegation must NOT be "<provider> hot-restart": assert the Go
-	// tool's command surface no longer routes hot-restart to
-	// cmdSimpleDelegation by checking Run accepts it as a top-level command.
-	if err := Run([]string{"hot-restart", "--help"}); err != nil {
-		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
-	}
 	// The confirm gate must exist: a non-force restart with no stdin (EOF)
 	// must be refused, not silently restart. Test
 	// confirmGate directly — deterministic, no discovery dependency (CI has
-	// no provider; Run(["hot-restart"]) would error at discovery before the
-	// gate, which is env-dependent). cmdHotRestart calls this same gate.
+	// no provider; Run(["restart"]) would error at discovery before the
+	// gate, which is env-dependent).
 	oldStdin := os.Stdin
 	r, w, err := os.Pipe()
 	if err != nil {

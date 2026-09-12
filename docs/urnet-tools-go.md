@@ -67,8 +67,8 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `proxy refresh [target] [--force]` | Reload proxy list into running provider without restarting. `--force` bypasses warmup lockout. |
 | `proxy add-source <url> [target]` | Add live URL proxy source. Fetched and probed immediately. |
 | `proxy remove-source <url> [target]` | Remove URL proxy source. |
-| `proxy exclude [pattern] [--remove] [target]` | Manage persistent proxy exclusion list. |
 | `proxy ids [target]` | **(New in 31.0)** Show the `client_id` the platform assigned to each proxy, including the `direct` transport. Read from the provider's local client-JWT store; the bearer tokens themselves are never printed. |
+| Exclusion via `proxy remove --match=<pattern>` | See `proxy remove` above. `--match=<pattern>` removes matching proxies and persists the pattern so future URL refreshes skip them. There is no `proxy exclude` subcommand. |
 | `proxy health [target]` | Display live health state (Up, Down, Dead, Degraded). |
 | `proxy traffic [target]` | Display bandwidth, billable traffic, and active NAT sessions per proxy. |
 | `proxy remove-dead [target]` | Interactively prune dead and degraded proxies. Honors `--dry-run`. |

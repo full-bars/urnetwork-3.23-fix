@@ -405,7 +405,11 @@ func confirmFingerprint(fp string) bool {
 // preferring CA-chain verification, falling back to the pinned fingerprint.
 func cmdHubTest(p Provider, url string) error {
 	if url == "" {
-		if b, err := os.ReadFile(filepath.Join(p.StateDir, "report_url")); err == nil {
+		// Check control state first (matches provider resolution order),
+		// then fall back to the legacy file.
+		if v, _, found, err := queryControlOverride(p, "report_url"); err == nil && found && v != "" && v != "off" {
+			url = v
+		} else if b, err := os.ReadFile(filepath.Join(p.StateDir, "report_url")); err == nil {
 			url = strings.TrimSpace(string(b))
 		}
 	}

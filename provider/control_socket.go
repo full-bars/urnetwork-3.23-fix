@@ -59,7 +59,14 @@ type controlResponse struct {
 	Entries      []CommandAudit         `json:"entries,omitempty"`
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]settingInfo `json:"settings,omitempty"`
-	Version      int                    `json:"v,omitempty"` // protocol version echoed back
+	// StartupValues maps restart-required keys to the values the running
+	// process actually started with (from env vars set by
+	// seedEnvFromControlState). The dashboard compares these against the
+	// current control-state values to decide whether a restart banner is
+	// warranted — only a VALUE CHANGE since startup, not mere presence,
+	// should trigger the warning.
+	StartupValues map[string]string `json:"startup_values,omitempty"`
+	Version       int               `json:"v,omitempty"` // protocol version echoed back
 	// BuildVersion is the provider's own release version, answered by the
 	// "version" command. Distinct from Version, which is the control
 	// protocol's version, not the binary's.
@@ -566,9 +573,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			settings[k] = si
 		}
-		return controlResponse{OK: true, Settings: settings}
+		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues()}
 
 	case "history":
+		if globalAuditRing == nil {
+			return controlResponse{OK: false, Error: "audit ring not initialized"}
+		}
 		limit := req.Limit
 		if limit <= 0 {
 			limit = 50

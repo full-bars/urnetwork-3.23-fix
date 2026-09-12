@@ -17,7 +17,7 @@ import (
 //	set             read/write/clear runtime tunings in ~/.urnetwork
 //
 // auth and choose-network delegate to the targeted provider binary via
-// providerSubcommand (the same pattern proxy/summary/hot-restart use). They
+// providerSubcommand (the same pattern proxy/summary use). They
 // must NOT run parseGlobalFlags first, because the provider binary's own -f
 // (force-overwrite the JWT) has to reach the provider rather than being
 // consumed by the tool. fast-auth and set are file operations in the
@@ -235,6 +235,7 @@ var setKeyHelps = []string{
 	"  gogc      <int>|off|disabled     GC target percentage (default: 100). off clears; disabled turns GC off entirely (unbounded heap)",
 	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
 	"  ramlogs             on|off        in-memory ramlogs toggle",
+	"  metrics             on|off        enable metrics endpoint",
 }
 
 func printSetHelp() {
@@ -335,7 +336,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		}
 	}
 
-	if value == "off" && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" {
+	if value == "off" && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" && canonicalKey != "metrics" {
 		if dryRun {
 			fmt.Printf("[dry-run] would clear %s for %s and revert to startup default\n", key, providerLabel(p))
 			return nil
@@ -466,6 +467,7 @@ func formatSets(p Provider, want string) error {
 		{"gogc", "gogc"},
 		{"profile", "profile"},
 		{"ramlogs", "ramlogs"},
+		{"metrics", "metrics"},
 	}
 
 	for _, item := range orderedKeys {

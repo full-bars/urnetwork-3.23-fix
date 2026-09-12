@@ -109,7 +109,10 @@ func cmdUsageCards(targetArgs []string) error {
 		return err
 	}
 	stateDir := p.StateDir
-	snaps := readUsageHistory(stateDir)
+	snaps, histErr := readUsageHistory(stateDir)
+	if histErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", histErr)
+	}
 	if len(snaps) == 0 {
 		fmt.Printf("No usage history yet for %s (state dir %s).\n", providerLabel(p), stateDir)
 		fmt.Println("The provider writes an aggregate snapshot each hour; check back after it has run.")

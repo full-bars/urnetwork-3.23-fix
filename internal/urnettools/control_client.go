@@ -52,6 +52,11 @@ type controlResponse struct {
 	Entries      []AuditEntry           `json:"entries,omitempty"`
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]SettingInfo `json:"settings,omitempty"`
+	// StartupValues maps restart-required keys to the values the running
+	// provider actually started with (from env vars set at startup).
+	// The dashboard compares these against current control-state values
+	// to decide whether a restart banner is warranted.
+	StartupValues map[string]string `json:"startup_values,omitempty"`
 	// BuildVersion is the provider's own release version, answered by the
 	// "version" command. Mirrors the provider-side field of the same name.
 	BuildVersion string `json:"build_version,omitempty"`
@@ -98,6 +103,7 @@ var controlKeyCanonical = map[string]string{
 	"profile":                     "profile",
 	"ramlogs":                     "ramlogs",
 	"ram-logs":                    "ramlogs",
+	"metrics":                     "metrics",
 }
 
 // canonicalControlKey resolves any user-supplied key name to the socket's
@@ -145,6 +151,12 @@ func validateControlValue(canonicalKey, value string) error {
 		case "on", "off", "1", "0", "true", "false", "yes", "no":
 		default:
 			return fmt.Errorf("hot_restart: must be on or off (got %q)", value)
+		}
+	case "metrics":
+		switch strings.ToLower(value) {
+		case "on", "off":
+		default:
+			return fmt.Errorf("metrics: must be on or off (got %q)", value)
 		}
 	case "ramlogs":
 		switch strings.ToLower(value) {

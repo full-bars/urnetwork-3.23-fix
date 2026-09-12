@@ -128,6 +128,50 @@ func TestFetchHubCA(t *testing.T) {
 }
 
 // TestURLQueryEscape ensures the onboard token is escaped for a query string.
+// TestCmdHubTest_ReadsControlStateBeforeLegacy verifies the Task 6 fix:
+// cmdHubTest resolves the report URL from control state (pending overrides)
+// before falling back to the legacy file. When both exist, the control
+// state URL wins. The TLS connection fails (no real server), but the error
+// message reveals which URL was resolved.
+func TestCmdHubTest_ReadsControlStateBeforeLegacy(t *testing.T) {
+	t.Run("legacy file only", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "report_url", "https://legacy-only.example.com/hub\n")
+		p := Provider{StateDir: dir, User: "test"}
+		err := cmdHubTest(p, "")
+		if err == nil {
+			t.Fatal("expected error from TLS connection")
+		}
+		// The error should reference the legacy URL's host.
+		if !strings.Contains(err.Error(), "legacy-only.example.com") {
+			t.Errorf("expected error to reference legacy URL host, got: %v", err)
+		}
+	})
+
+	t.Run("control state takes precedence over legacy", func(t *testing.T) {
+		dir := t.TempDir()
+		// Set a legacy report_url with one host.
+		writeFile(t, dir, "report_url", "https://legacy.example.com/hub\n")
+		// Queue a pending override with a DIFFERENT host — this is what
+		// the control socket would store when the provider is running.
+		queueData := `[{"op":"set","key":"report_url","value":"https://control.example.com/hub"}]`
+		writeFile(t, dir, "pending_overrides.json", queueData)
+
+		p := Provider{StateDir: dir, User: "test"}
+		err := cmdHubTest(p, "")
+		if err == nil {
+			t.Fatal("expected error from TLS connection")
+		}
+		// The error must reference the control-state host, NOT the legacy host.
+		if !strings.Contains(err.Error(), "control.example.com") {
+			t.Errorf("expected error to reference control-state URL host, got: %v", err)
+		}
+		if strings.Contains(err.Error(), "legacy.example.com") {
+			t.Errorf("error should NOT reference legacy URL when control state exists, got: %v", err)
+		}
+	})
+}
+
 func TestURLQueryEscape(t *testing.T) {
 	if got := urlQueryEscape("ab+/=cd"); got != "ab%2B%2F%3Dcd" {
 		t.Fatalf("urlQueryEscape = %q", got)

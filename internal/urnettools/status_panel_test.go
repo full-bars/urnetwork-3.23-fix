@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -207,6 +208,110 @@ func TestReadProxyURLSources(t *testing.T) {
 			if got[i] != want[i] {
 				t.Errorf("source[%d] = %q, want %q", i, got[i], want[i])
 			}
+		}
+	})
+}
+
+// TestReadProxyURLSources_ProviderObjectShape verifies the Task 5 fix:
+// the provider writes proxy_url.json as a JSON OBJECT with a "sources"
+// string array plus extra fields (e.g. "cache"). The OLD code tried to
+// unmarshal as []struct{Name, Source string} which silently failed against
+// this object shape, causing the dashboard to always show "no proxy sources
+// configured". The new code uses readProxyURLSources which decodes the
+// object shape correctly.
+func TestReadProxyURLSources_ProviderObjectShape(t *testing.T) {
+	t.Run("provider-shaped with cache field", func(t *testing.T) {
+		dir := t.TempDir()
+		// This is the exact shape the provider writes: an object with
+		// "sources" (string array) and "cache" (object).
+		writeFile(t, dir, "proxy_url.json",
+			`{"sources":["https://proxy-list.example.com/proxies.txt"],"cache":{"https://proxy-list.example.com/proxies.txt":{"etag":"\"abc123\""}}}`)
+		got := readProxyURLSources(dir)
+		want := []string{"https://proxy-list.example.com/proxies.txt"}
+		if len(got) != len(want) {
+			t.Fatalf("got %d sources, want %d: %v", len(got), len(want), got)
+		}
+		if got[0] != want[0] {
+			t.Errorf("source = %q, want %q", got[0], want[0])
+		}
+	})
+
+	t.Run("multiple sources with cache entries", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "proxy_url.json",
+			`{"sources":["https://a.com/list.txt","https://b.com/list.txt"],"cache":{"https://a.com/list.txt":{},"https://b.com/list.txt":{}}}`)
+		got := readProxyURLSources(dir)
+		want := []string{"https://a.com/list.txt", "https://b.com/list.txt"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("source[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("empty sources in provider object returns nil", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "proxy_url.json",
+			`{"sources":[],"cache":{}}`)
+		if got := readProxyURLSources(dir); got != nil {
+			t.Errorf("got %v, want nil for empty sources in provider object", got)
+		}
+	})
+}
+
+// TestWriteReportURL_PendingOverride verifies writeReportURL's offline path:
+// when the provider's control socket is unreachable (provider stopped),
+// writeReportURL queues a pending override in pending_overrides.json instead
+// of writing a legacy file. The provider picks it up on next startup via
+// mergePendingOverrides.
+func TestWriteReportURL_PendingOverride(t *testing.T) {
+	t.Run("no socket queues pending override", func(t *testing.T) {
+		dir := t.TempDir()
+		p := Provider{StateDir: dir}
+		url := "https://hub.example.com/reports"
+		if err := writeReportURL(p, url); err != nil {
+			t.Fatalf("writeReportURL: %v", err)
+		}
+		// The override should be in pending_overrides.json, not a legacy file.
+		b, err := os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
+		if err != nil {
+			t.Fatalf("read pending_overrides.json: %v", err)
+		}
+		var ops []pendingOp
+		if err := json.Unmarshal(b, &ops); err != nil {
+			t.Fatalf("parse pending_overrides.json: %v", err)
+		}
+		if len(ops) != 1 || ops[0].Op != "set" || ops[0].Key != "report_url" || ops[0].Value != url {
+			t.Errorf("pending ops = %+v, want set report_url=%s", ops, url)
+		}
+	})
+
+	t.Run("off queues clear override", func(t *testing.T) {
+		dir := t.TempDir()
+		p := Provider{StateDir: dir}
+		if err := writeReportURL(p, "off"); err != nil {
+			t.Fatalf("writeReportURL off: %v", err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
+		if err != nil {
+			t.Fatalf("read pending_overrides.json: %v", err)
+		}
+		var ops []pendingOp
+		if err := json.Unmarshal(b, &ops); err != nil {
+			t.Fatalf("parse pending_overrides.json: %v", err)
+		}
+		if len(ops) != 1 || ops[0].Op != "clear" || ops[0].Key != "report_url" {
+			t.Errorf("pending ops = %+v, want clear report_url", ops)
+		}
+	})
+
+	t.Run("empty StateDir returns error", func(t *testing.T) {
+		p := Provider{StateDir: ""}
+		if err := writeReportURL(p, "https://example.com"); err == nil {
+			t.Error("expected error for empty StateDir")
 		}
 	})
 }
