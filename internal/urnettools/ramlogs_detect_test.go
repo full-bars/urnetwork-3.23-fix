@@ -41,18 +41,132 @@ func TestRamlogsEnvEnabled(t *testing.T) {
 	}
 }
 
+// TestRamlogsEnvEnabledOverride verifies that the last assignment to
+// URNETWORK_RAMLOGS wins, matching systemd drop-in overlay semantics.
+func TestRamlogsEnvEnabledOverride(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{
+			"last wins on",
+			"URNETWORK_RAMLOGS=0 URNETWORK_RAMLOGS=1",
+			true,
+		},
+		{
+			"last wins off",
+			"URNETWORK_RAMLOGS=1 URNETWORK_RAMLOGS=0",
+			false,
+		},
+		{
+			"drop-in overrides unit body",
+			"URNETWORK_RAMLOGS=on URNETWORK_PROFILE=turbo-v8 URNETWORK_RAMLOGS=off",
+			false,
+		},
+		{
+			"drop-in enables over disabled body",
+			`HOST_HOSTNAME=box URNETWORK_RAMLOGS=0 "URNETWORK_RAMLOGS=1"`,
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ramlogsEnvEnabled(c.env); got != c.want {
+				t.Errorf("ramlogsEnvEnabled(%q) = %v, want %v", c.env, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRamlogsEnvEnabledQuotedValues covers quoted values with spaces and
+// embedded equals signs, which systemd produces for complex Environment= lines.
+func TestRamlogsEnvEnabledQuotedValues(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{
+			"quoted with spaces",
+			`HOST_HOSTNAME=my box URNETWORK_RAMLOGS=1`,
+			true,
+		},
+		{
+			"double-quoted on",
+			`HOST_HOSTNAME="my box" URNETWORK_RAMLOGS="1"`,
+			true,
+		},
+		{
+			"single-quoted on",
+			`HOST_HOSTNAME='my box' URNETWORK_RAMLOGS='true'`,
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ramlogsEnvEnabled(c.env); got != c.want {
+				t.Errorf("ramlogsEnvEnabled(%q) = %v, want %v", c.env, got, c.want)
+			}
+		})
+	}
+}
+
 // TestRamLogPathsFor pins the per-provider path convention and its fallback
 // order, which is what lets a multi-provider box avoid conflating buffers.
 func TestRamLogPathsFor(t *testing.T) {
 	got := ramLogPathsFor(Provider{Binary: "/opt/bin/urnetwork-b"})
-	want := []string{"/dev/shm/urnetwork-b.log", "/dev/shm/urnetwork.log"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("got %v, want %v", got, want)
+	want := []string{"/dev/shm/urnetwork-b.log"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), want, len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 
 	got = ramLogPathsFor(Provider{})
 	if len(got) != 1 || got[0] != "/dev/shm/urnetwork.log" {
 		t.Errorf("no binary: got %v, want the shared path only", got)
+	}
+}
+
+// TestRamLogPathsForBinaryDedup verifies that when the binary basename is
+// "urnetwork", the legacy shared path is not duplicated.
+func TestRamLogPathsForBinaryDedup(t *testing.T) {
+	got := ramLogPathsFor(Provider{Binary: "/opt/bin/urnetwork"})
+	want := []string{"/dev/shm/urnetwork.log"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), want, len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRamLogPathsForDirectoryBinary verifies that a binary path ending in /
+// (a directory) is handled gracefully by filepath.Base.
+func TestRamLogPathsForDirectoryBinary(t *testing.T) {
+	got := ramLogPathsFor(Provider{Binary: "/opt/bin/"})
+	if len(got) == 0 {
+		t.Fatal("expected at least one path")
+	}
+	// filepath.Base("/opt/bin/") returns "bin", so the per-binary path
+	// should be /dev/shm/bin.log.
+	if got[0] != "/dev/shm/bin.log" {
+		t.Errorf("got[0] = %q, want /dev/shm/bin.log", got[0])
+	}
+}
+
+// TestRamLogPathsForNoBinary verifies that an empty binary only returns the
+// legacy shared path.
+func TestRamLogPathsForNoBinary(t *testing.T) {
+	got := ramLogPathsFor(Provider{Binary: ""})
+	if len(got) != 1 || got[0] != "/dev/shm/urnetwork.log" {
+		t.Errorf("got %v, want [/dev/shm/urnetwork.log]", got)
 	}
 }
 
@@ -99,6 +213,23 @@ func TestRamlogFileActiveRules(t *testing.T) {
 				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// TestRamlogFileFreshFutureModTime verifies that a file with a future
+// modification time (clock skew) is not treated as fresh.
+func TestRamlogFileFreshFutureModTime(t *testing.T) {
+	dir := t.TempDir()
+	future := filepath.Join(dir, "future.log")
+	if err := os.WriteFile(future, []byte("data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	futureTime := time.Now().Add(1 * time.Hour)
+	if err := os.Chtimes(future, futureTime, futureTime); err != nil {
+		t.Fatal(err)
+	}
+	if got := ramlogFileFresh(future, true); got {
+		t.Error("future modtime file should not be fresh")
 	}
 }
 

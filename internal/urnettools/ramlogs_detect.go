@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,11 +26,18 @@ const ramlogsEnvKey = "URNETWORK_RAMLOGS"
 // so multi-provider boxes do not conflate outputs, and older builds wrote the
 // shared /dev/shm/urnetwork.log.
 func ramLogPathsFor(p Provider) []string {
-	paths := []string{}
+	var paths []string
 	if p.Binary != "" {
 		paths = append(paths, "/dev/shm/"+filepath.Base(p.Binary)+".log")
 	}
-	return append(paths, "/dev/shm/urnetwork.log")
+	// Only include the legacy shared path when no binary is specified.
+	// When the binary basename is "urnetwork" the per-binary path above
+	// already matches it; any other named binary must not fall back to the
+	// shared path because that causes multi-provider false positives.
+	if p.Binary == "" {
+		paths = append(paths, "/dev/shm/urnetwork.log")
+	}
+	return paths
 }
 
 // ramlogFileActive reports whether a RAM buffer for this provider exists and
@@ -61,7 +69,9 @@ func ramlogFileFresh(path string, running bool) bool {
 	if err != nil || fi.IsDir() || fi.Size() == 0 {
 		return false
 	}
-	return time.Since(fi.ModTime()) <= ramlogsFreshWindow
+	elapsed := time.Since(fi.ModTime())
+	// Guard against clock skew: a future ModTime yields a negative elapsed.
+	return elapsed >= 0 && elapsed <= ramlogsFreshWindow
 }
 
 // unitEnvironment returns the unit's effective Environment= assignments, which
@@ -74,13 +84,15 @@ func unitEnvironment(p Provider) (string, error) {
 		return "", nil
 	}
 	var args []string
-	if isUserUnit(p.Unit) && p.User != "" {
+	if isUserUnit(p.Unit) {
 		args = append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
 		args = append(args, "show", "-p", "Environment", "--value", p.Unit)
 	} else {
 		args = []string{"systemctl", "show", "-p", "Environment", "--value", p.Unit}
 	}
-	out, err := exec.Command(args[0], args[1:]...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, args[0], args[1:]...).Output()
 	if err != nil {
 		return "", err
 	}
@@ -90,16 +102,18 @@ func unitEnvironment(p Provider) (string, error) {
 // ramlogsEnvEnabled parses a systemd Environment= value and reports whether it
 // turns RAMLOGS on. The property is a single space-separated line of KEY=VALUE
 // pairs, with values quoted when they contain spaces.
+//
+// Override semantics: the last assignment to URNETWORK_RAMLOGS wins, matching
+// how systemd overlays drop-in files on top of the unit body.
 func ramlogsEnvEnabled(environment string) bool {
+	enabled := false
 	for _, field := range strings.Fields(environment) {
 		field = strings.Trim(field, `"'`)
 		key, value, found := strings.Cut(field, "=")
 		if !found || strings.TrimSpace(key) != ramlogsEnvKey {
 			continue
 		}
-		if truthyOn(strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))) {
-			return true
-		}
+		enabled = truthyOn(strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`)))
 	}
-	return false
+	return enabled
 }
