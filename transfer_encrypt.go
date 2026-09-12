@@ -27,6 +27,40 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+// handshakeErrThrottle rate-limits completeHandshake-failure log lines to
+// one per minute per reason class (timeout, canceled, etc.), counting
+// suppressed lines. Keying on reason class instead of the per-client id
+// prevents the throttle from emitting once per client on a box with
+// 1000+ distinct clients. See logThrottle for the concurrency contract.
+var handshakeErrThrottle sync.Map
+
+// handshakeReasonClass extracts a coarse reason category from a TLS
+// handshake error, suitable as a throttle key. Two errors with the same
+// class are semantically the same failure seen by different clients;
+// different classes are different failures worth seeing separately.
+func handshakeReasonClass(err error) string {
+	s := err.Error()
+	if strings.Contains(s, "tls handshake timeout") {
+		return "tls_handshake_timeout"
+	}
+	if strings.Contains(s, "context canceled") {
+		return "context_canceled"
+	}
+	if strings.Contains(s, "context deadline exceeded") {
+		return "context_deadline"
+	}
+	return "other"
+}
+
+// shouldLogHandshakeErr reports whether a completeHandshake-failure line
+// may be emitted now for the given reason class. The second return is the
+// count of lines suppressed since the previous allowed one, for the
+// "(N suppressed)" tail.
+func shouldLogHandshakeErr(reason string) (bool, int64) {
+	val, _ := handshakeErrThrottle.LoadOrStore(reason, newLogThrottle(time.Minute))
+	return val.(*logThrottle).Allow(time.Now())
+}
+
 // Sequence-level encryption between two peers.
 //
 // One TLS session per peer-pair (more precisely: per `TransferPath` destination
@@ -1329,7 +1363,14 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 		self.sendIdentityProofOnce(e)
 		self.maybeVerifyPendingPeerIdentityProof(e)
 	} else {
-		self.client.log.Errorf("[tls]%s completeHandshake failed: %s\n", self.logTag, err)
+		reason := handshakeReasonClass(err)
+		if ok, suppressed := shouldLogHandshakeErr(reason); ok {
+			if suppressed > 0 {
+				self.client.log.Errorf("[tls]%s completeHandshake failed: %s (%d suppressed)\n", self.logTag, err, suppressed)
+			} else {
+				self.client.log.Errorf("[tls]%s completeHandshake failed: %s\n", self.logTag, err)
+			}
+		}
 	}
 }
 
