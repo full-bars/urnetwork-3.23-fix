@@ -163,13 +163,16 @@ func validateControlValue(canonicalKey, value string) error {
 			return fmt.Errorf("gomemlimit: invalid byte count %q: %w", value, err)
 		}
 	case "gogc":
-		if value != "off" {
+		// "off" clears the override, as it does for every tuning key.
+		// "disabled" is the distinct value that turns collection off, so a
+		// plain "off" can never hand an operator an unbounded heap.
+		if !strings.EqualFold(value, "off") && !strings.EqualFold(value, "disabled") {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be an integer percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 			if n < 0 {
-				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be a non-negative percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 		}
 	}

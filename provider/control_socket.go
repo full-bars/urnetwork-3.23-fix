@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -103,13 +104,30 @@ func startControlSocket(ctx context.Context, state *controlState) (func(), error
 	}()
 
 	go func() {
+		var acceptBackoff time.Duration
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				// Expected on shutdown (ctx.Done() closed ln above); nothing
-				// else to do either way — the listener is gone.
-				return
+				if acceptLoopShouldStop(err) {
+					// The listener is genuinely gone: ctx.Done() closed it
+					// above, or cleanup did.
+					return
+				}
+				// Anything else is transient. Descriptor exhaustion during a
+				// connection spike is the realistic one on a node carrying
+				// thousands of proxies, and returning here would leave the
+				// socket file on disk with nothing listening, locking the
+				// operator out of every live setting until a restart.
+				if acceptBackoff == 0 {
+					acceptBackoff = 5 * time.Millisecond
+				} else if acceptBackoff < time.Second {
+					acceptBackoff *= 2
+				}
+				tlog("⚠️ [control] accept failed, retrying in %s: %v\n", acceptBackoff, err)
+				time.Sleep(acceptBackoff)
+				continue
 			}
+			acceptBackoff = 0
 			go handleControlConn(conn, state)
 		}
 	}()
@@ -146,12 +164,23 @@ func removeStaleSocket(path string) error {
 
 // handleControlConn serves one client connection: one JSON request per
 // line, one JSON response per line, until the client disconnects.
+// acceptLoopShouldStop reports whether an Accept error means the listener is
+// gone for good. Only a closed listener ends the loop; every other error is
+// treated as transient and retried with backoff.
+func acceptLoopShouldStop(err error) bool {
+	return errors.Is(err, net.ErrClosed)
+}
+
 func handleControlConn(conn net.Conn, state *controlState) {
 	defer conn.Close()
 
 	// 1. Read deadline: 5 seconds per line — prevents slowloris-style
 	//    connections that hold the socket open without sending data.
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// SetReadDeadline does not cover writes. Without this, a client that
+	// sends a request and then stops reading blocks the response write
+	// forever, leaking a goroutine and a descriptor per connection.
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 	// 2. Peer credential check (Linux): verify connecting process UID
 	//    matches the provider's UID. Defense-in-depth alongside 0600 perms.
@@ -312,13 +341,17 @@ func validateControlValue(key, value string) error {
 			return fmt.Errorf("gomemlimit: invalid byte count %q: %w", value, err)
 		}
 	case "gogc":
-		if valLower != "off" {
+		// "off" clears the override, the same as every other tuning key.
+		// "disabled" is the explicit value that turns collection off, kept
+		// distinct so the dangerous reading is never what a plain "off"
+		// does.
+		if valLower != "off" && valLower != "disabled" {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be an integer percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 			if n < 0 {
-				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be a non-negative percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 		}
 	case "metrics":
@@ -352,8 +385,16 @@ func validateControlValue(key, value string) error {
 // liveDefaults maps live-applied keys to their Go runtime defaults.
 // Used when clearing a key to reapply the default immediately.
 var liveDefaults = map[string]string{
-	"gomemlimit": "0", // Go's default: unlimited
+	// Zero here would be a zero-byte limit, not unlimited. The apply
+	// path maps any non-positive value to math.MaxInt64, which is what the
+	// runtime treats as unlimited.
+	"gomemlimit": "0",
 	"gogc":       "100",
+	// Without an entry here, clearing metrics called applyLiveDefault, which
+	// returned nil without touching the listener: the endpoint kept serving
+	// while the CLI reported success and no restart needed. That is the
+	// control an operator reaches for when scraping goes wrong.
+	"metrics": "off",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -497,7 +538,11 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		if liveCleared {
 			if err := applyLiveDefault(req.Key); err != nil {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
-				return controlResponse{OK: true, Error: "cleared, but failed to reapply live default: " + err.Error()}
+				// The key is cleared but the running process did not adopt
+				// the default, so the persisted state and the live process
+				// disagree. Reporting OK here made callers that check OK
+				// print success for a half-applied change.
+				return controlResponse{OK: false, NeedsRestart: true, Error: "cleared, but failed to reapply live default: " + err.Error()}
 			}
 		}
 		tlog("⚙️ [control] cleared %s (was %s)\n", req.Key, formerValue(oldValue, hadOld))
@@ -579,6 +624,12 @@ func dialControlSocket(req controlRequest) (controlResponse, error) {
 // is no well-defined "revert to" value to apply live, so clearing one of
 // these two keys only affects the NEXT restart's baseline, same as before
 // this feature existed.
+// controlApplyLog reports what a live side effect actually put into the
+// runtime. It is separate from the "set"/"cleared" transition lines, which
+// say what changed but not what the process now holds: an operator whose
+// node wedged after a clear had nothing tying the symptom to the setting.
+var controlApplyLog = func(format string, args ...any) { tlog(format, args...) }
+
 func applyLiveSideEffect(key, value string) error {
 	switch key {
 	case "gomemlimit":
@@ -586,10 +637,26 @@ func applyLiveSideEffect(key, value string) error {
 		if err != nil {
 			return fmt.Errorf("gomemlimit: %w", err)
 		}
+		// Zero is not "unlimited" to the Go runtime, it is a zero-byte soft
+		// limit: every allocation then reads as over budget and the runtime
+		// GCs continuously, pegging the CPU until the process is killed.
+		// math.MaxInt64 is the value that means unlimited, and it is what
+		// clearing the key must restore. Applied to any non-positive value,
+		// not just the default, so an operator who sets it to 0 by hand does
+		// not wedge the node either.
+		if limit <= 0 {
+			limit = math.MaxInt64
+		}
 		debug.SetMemoryLimit(limit)
+		if limit == math.MaxInt64 {
+			controlApplyLog("⚙️ [control] applied gomemlimit=unlimited (no soft memory limit)\n")
+		} else {
+			controlApplyLog("⚙️ [control] applied gomemlimit=%s\n", value)
+		}
 	case "gogc":
-		if strings.EqualFold(value, "off") {
+		if strings.EqualFold(value, "disabled") || strings.EqualFold(value, "off") {
 			debug.SetGCPercent(-1)
+			controlApplyLog("⚙️ [control] applied gogc=disabled (garbage collection off; heap grows unbounded)\n")
 		} else {
 			percent, err := strconv.Atoi(value)
 			if err != nil {
