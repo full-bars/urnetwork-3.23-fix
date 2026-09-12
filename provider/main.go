@@ -2017,7 +2017,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				}
 				reading := poolHealth.observe(inUse, totalCreated, interval)
 				tlog("❤️ [health][pool] %s\n",
-					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned, uptime))
+					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned))
 			}
 		}
 

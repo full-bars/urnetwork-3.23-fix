@@ -19,7 +19,7 @@ func TestNewPoolHealthWindowTickSizing(t *testing.T) {
 		{5 * time.Minute, 12, 3, 6},
 		{10 * time.Minute, 6, 2, 3},
 		{time.Minute, 60, 15, 30},
-		{45 * time.Minute, 2, 2, 2},  // ceil, floored at 2 samples
+		{45 * time.Minute, 2, 1, 1},  // ceil: window min 2, rise thresholds min 1
 		{0, 12, 3, 6},                // zero interval falls back to 5m
 		{-1 * time.Minute, 12, 3, 6}, // negative likewise
 	}
@@ -216,7 +216,6 @@ func TestPoolHealthLineWording(t *testing.T) {
 		name     string
 		reading  poolHealthReading
 		inUse    uint64
-		uptime   time.Duration
 		contains []string
 		absent   []string
 	}{
@@ -224,7 +223,6 @@ func TestPoolHealthLineWording(t *testing.T) {
 			name:     "ok stays short",
 			reading:  poolHealthReading{Verdict: poolVerdictOK, Floor: 0, Full: true},
 			inUse:    117,
-			uptime:   3 * time.Hour,
 			contains: []string{"ok —", "117 buffers in use", "none stuck", "2048 allocated since start", "99.65% returned"},
 			absent:   []string{"bug", "restart"},
 		},
@@ -232,22 +230,19 @@ func TestPoolHealthLineWording(t *testing.T) {
 			name:     "ok with a steady nonzero floor says so",
 			reading:  poolHealthReading{Verdict: poolVerdictOK, Floor: 38, Full: true},
 			inUse:    117,
-			uptime:   3 * time.Hour,
 			contains: []string{"38 stuck but holding steady"},
 		},
 		{
 			name:     "warming explains why there is no verdict",
-			reading:  poolHealthReading{Verdict: poolVerdictWarming},
+			reading:  poolHealthReading{Verdict: poolVerdictWarming, WarmingRemaining: 55 * time.Minute},
 			inUse:    117,
-			uptime:   5 * time.Minute,
 			contains: []string{"warming —", "needs 1h of uptime", "55m to go"},
 		},
 		{
 			name: "watch names the trend and the consequence",
 			reading: poolHealthReading{Verdict: poolVerdictWatch, Floor: 96,
 				FloorAtWindowStart: 38, RisingFor: 20 * time.Minute, Full: true},
-			inUse:  1204,
-			uptime: 2 * time.Hour,
+			inUse:    1204,
 			contains: []string{"watch —", "taken and never given back", "up from 38 an hour ago",
 				"memory use grows until the provider restarts", "1204 in use now"},
 		},
@@ -255,8 +250,7 @@ func TestPoolHealthLineWording(t *testing.T) {
 			name: "leak says it is a bug and how long",
 			reading: poolHealthReading{Verdict: poolVerdictLeak, Floor: 512,
 				FloorAtWindowStart: 38, RisingFor: 35 * time.Minute, Full: true},
-			inUse:  4291,
-			uptime: 4 * time.Hour,
+			inUse: 4291,
 			contains: []string{"leak —", "512 buffers taken and never given back",
 				"climbing for 35+ minutes", "bug worth reporting", "4291 in use now"},
 		},
@@ -265,7 +259,6 @@ func TestPoolHealthLineWording(t *testing.T) {
 			reading: poolHealthReading{Verdict: poolVerdictWatch, Floor: 38,
 				FloorAtWindowStart: 38, CreatedRising: true, Full: true},
 			inUse:    117,
-			uptime:   2 * time.Hour,
 			contains: []string{"keeps allocating new buffers", "not coming back"},
 			absent:   []string{"up from 38 an hour ago"},
 		},
@@ -273,7 +266,7 @@ func TestPoolHealthLineWording(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			line := poolHealthLine(c.reading, c.inUse, 2048, 33740, 33622, c.uptime)
+			line := poolHealthLine(c.reading, c.inUse, 2048, 33740, 33622)
 			for _, want := range c.contains {
 				if !strings.Contains(line, want) {
 					t.Errorf("line missing %q:\n%s", want, line)
@@ -297,7 +290,7 @@ func TestPoolHealthLineWording(t *testing.T) {
 // TestPoolHealthLineZeroTaken guards the division: a tick that fires before
 // anything has been taken must not render NaN at an operator.
 func TestPoolHealthLineZeroTaken(t *testing.T) {
-	line := poolHealthLine(poolHealthReading{Verdict: poolVerdictOK, Full: true}, 0, 0, 0, 0, time.Hour)
+	line := poolHealthLine(poolHealthReading{Verdict: poolVerdictOK, Full: true}, 0, 0, 0, 0)
 	if strings.Contains(line, "NaN") {
 		t.Fatalf("NaN in line: %s", line)
 	}
@@ -310,11 +303,68 @@ func TestPoolHealthLineZeroTaken(t *testing.T) {
 // at the boundary, where truncation would otherwise print "0s to go" on the
 // tick before the window fills.
 func TestPoolHealthWarmingRemainingNeverZero(t *testing.T) {
-	for _, uptime := range []time.Duration{59 * time.Minute, 59*time.Minute + 59*time.Second, time.Hour, 2 * time.Hour} {
-		line := poolHealthLine(poolHealthReading{Verdict: poolVerdictWarming}, 10, 64, 100, 90, uptime)
+	for _, remaining := range []time.Duration{0, time.Second, time.Minute} {
+		line := poolHealthLine(poolHealthReading{Verdict: poolVerdictWarming, WarmingRemaining: remaining}, 10, 64, 100, 90)
 		if strings.Contains(line, "(0s to go)") {
-			t.Errorf("uptime %s produced a zero countdown: %s", uptime, line)
+			t.Errorf("WarmingRemaining %s produced a zero countdown: %s", remaining, line)
 		}
+	}
+}
+
+// TestPoolHealthDelayedActivityWarmingRemaining asserts the warming countdown
+// is derived from sample count, not uptime.  When pool activity starts after
+// the one-hour uptime mark, the countdown still reflects the missing samples
+// rather than showing a zero.
+func TestPoolHealthDelayedActivityWarmingRemaining(t *testing.T) {
+	interval := 5 * time.Minute
+	w := newPoolHealthWindow(interval)
+
+	// Fire 11 ticks with zero pool activity (totalTaken == 0 in the caller,
+	// so observe is not called).  Now simulate the first pool activity tick:
+	// only 1 sample in the ring, but uptime is already 55 minutes.
+	w.inUse = appendCapped(w.inUse, 42, w.window)
+	w.floors = appendCapped(w.floors, 42, w.window)
+	w.seeded = true
+
+	remaining := time.Duration(w.window-len(w.inUse)) * interval
+	if remaining < time.Minute {
+		remaining = time.Minute
+	}
+	r := poolHealthReading{
+		Verdict:          poolVerdictWarming,
+		WarmingRemaining: remaining,
+	}
+	if r.WarmingRemaining != 55*time.Minute {
+		t.Fatalf("WarmingRemaining=%s, want 55m (window needs %d more samples)", r.WarmingRemaining, w.window-len(w.inUse))
+	}
+
+	// Render and confirm the countdown is 55m, not 5m.
+	line := poolHealthLine(r, 42, 64, 100, 90)
+	if !strings.Contains(line, "55m to go") {
+		t.Errorf("expected 55m to go, got: %s", line)
+	}
+}
+
+// TestPoolHealthObserveWarmingRemaining asserts observe() computes
+// WarmingRemaining from the sample count.
+func TestPoolHealthObserveWarmingRemaining(t *testing.T) {
+	interval := 5 * time.Minute
+	w := newPoolHealthWindow(interval) // window=12
+
+	r := w.observe(100, 2048, interval) // 1 sample
+	if r.WarmingRemaining != 55*time.Minute {
+		t.Errorf("tick 1: WarmingRemaining=%s, want 55m", r.WarmingRemaining)
+	}
+
+	// Fill 11 more (total 12 = window).
+	for i := 2; i <= 12; i++ {
+		r = w.observe(uint64(100+i), 2048, interval)
+	}
+	if r.WarmingRemaining != 0 {
+		t.Errorf("tick 12: WarmingRemaining=%s, want 0 (window is full)", r.WarmingRemaining)
+	}
+	if !r.Full {
+		t.Error("window should be full after 12 samples")
 	}
 }
 

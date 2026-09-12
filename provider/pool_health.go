@@ -105,6 +105,10 @@ type poolHealthReading struct {
 	// Full is true once the window holds a complete hour of samples. Until
 	// then there is no floor to trust and the verdict is warming.
 	Full bool
+	// WarmingRemaining is how long until the window fills, computed from the
+	// actual sample count rather than uptime.  This stays accurate when pool
+	// activity starts late and the window has been sitting idle.
+	WarmingRemaining time.Duration
 }
 
 // newPoolHealthWindow sizes the rings and thresholds from the heartbeat
@@ -114,17 +118,17 @@ func newPoolHealthWindow(interval time.Duration) *poolHealthWindow {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
-	ticks := func(d time.Duration) int {
+	ticks := func(d time.Duration, minimum int) int {
 		n := int((d + interval - 1) / interval) // ceil
-		if n < 2 {
-			return 2
+		if n < minimum {
+			return minimum
 		}
 		return n
 	}
 	return &poolHealthWindow{
-		window:    ticks(poolFloorWindowDuration),
-		watchRise: ticks(poolWatchRise),
-		leakRise:  ticks(poolLeakRise),
+		window:    ticks(poolFloorWindowDuration, 2),
+		watchRise: ticks(poolWatchRise, 1),
+		leakRise:  ticks(poolLeakRise, 1),
 	}
 }
 
@@ -159,6 +163,13 @@ func (w *poolHealthWindow) observe(inUse uint64, created uint64, interval time.D
 		CreatedRising:      w.createdRise >= w.leakRise,
 		Full:               len(w.inUse) >= w.window,
 	}
+	if !r.Full {
+		remaining := time.Duration(w.window-len(w.inUse)) * interval
+		if remaining < time.Minute {
+			remaining = time.Minute
+		}
+		r.WarmingRemaining = remaining
+	}
 
 	switch {
 	case !r.Full:
@@ -177,7 +188,7 @@ func (w *poolHealthWindow) observe(inUse uint64, created uint64, interval time.D
 // English, then the counts. Healthy ticks stay on one short line; a tick with
 // something to report spends the words to say what the number means and what
 // happens if it keeps moving.
-func poolHealthLine(r poolHealthReading, inUse, created, taken, returned uint64, uptime time.Duration) string {
+func poolHealthLine(r poolHealthReading, inUse, created, taken, returned uint64) string {
 	returnedPct := 0.0
 	if taken > 0 {
 		returnedPct = 100 * float64(returned) / float64(taken)
@@ -186,7 +197,7 @@ func poolHealthLine(r poolHealthReading, inUse, created, taken, returned uint64,
 
 	switch r.Verdict {
 	case poolVerdictWarming:
-		remaining := int((poolFloorWindowDuration - uptime).Minutes())
+		remaining := int(r.WarmingRemaining.Minutes())
 		if remaining < 1 {
 			remaining = 1
 		}
