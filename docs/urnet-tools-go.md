@@ -72,7 +72,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `proxy health [target]` | Display live health state (Up, Down, Dead, Degraded). |
 | `proxy traffic [target]` | Display bandwidth, billable traffic, and active NAT sessions per proxy. |
 | `proxy remove-dead [target]` | Interactively prune dead and degraded proxies. Honors `--dry-run`. |
-| `proxy summary [target]` | Fleet-style summary of proxy counts by source (url, file, internal). |
+| `summary [target]` | Fleet-style summary of proxy counts by source (url, file, internal). Top-level command, not a `proxy` subcommand. |
 
 ### Hub Command Family (v3.23.0-fix.30.4+)
 
@@ -112,8 +112,8 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 |---|---|
 | `config [--json]` | Show every provider setting with the source it came from (`socket`, `env`, `pending`, `legacy`, `default`). The provider is the single source of truth; this is what it actually believes. |
 | `set <key> <value>` | Set a runtime setting over the control socket. Prints `⚠ <key> requires a restart to take effect` when the provider reports the key has no live effect. Queued to `pending_overrides.json` when the provider is down. |
-| `clear <key>` | Clear a runtime setting. Same queueing behavior. |
-| `get <key>` | Read a single setting. Does not log at the provider, because `status` polls it on every invocation. |
+| `set <key>` | Show one setting's current value. Reads are not logged at the provider, because `status` polls them on every invocation. |
+| `set <key> off` | Clear a runtime setting and restore its default. Same queueing behavior. |
 | `history [limit]` | Show the provider's command audit trail from its 1000-entry circular ring. Defaults to the last 50, maximum 100. |
 | `dashboard` | Rich terminal status panel: state indicators, active settings, proxy sources, and restart warnings. Aliases `dash`, `panel`. |
 
