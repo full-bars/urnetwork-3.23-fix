@@ -69,11 +69,18 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 		})
 	}
 
+	// Filter out STUN servers that have failed recently.
+	healthyURLs := filterSTUNURLs(settings.IceServerUrls)
+	if len(healthyURLs) < len(settings.IceServerUrls) {
+		loggerOrDefault(settings.Log).V(2).Infof("[stun-cache] filtered %d/%d STUN URLs (healthy=%v)",
+			len(settings.IceServerUrls)-len(healthyURLs), len(settings.IceServerUrls), healthyURLs)
+	}
+
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
 	return api.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			webrtc.ICEServer{
-				URLs: settings.IceServerUrls,
+				URLs: healthyURLs,
 			},
 		},
 	})

@@ -415,3 +415,156 @@ func TestCreateContract_ClientDoneSkipsFailureRecording(t *testing.T) {
 		t.Fatal("backend failure timestamp set after CreateContract on a closed client; the client.Done() carve-out should skip recording")
 	}
 }
+
+// --- Per-destination denial backoff tests ---
+
+func TestDenialBackoffForCount(t *testing.T) {
+	// 1st denial: no backoff
+	if got := denialBackoffForCount(1); got != 0 {
+		t.Errorf("count=1: got %v, want 0", got)
+	}
+	// 2nd denial: 15 s
+	if got := denialBackoffForCount(2); got != 15*time.Second {
+		t.Errorf("count=2: got %v, want 15s", got)
+	}
+	// 3rd denial: 30 s
+	if got := denialBackoffForCount(3); got != 30*time.Second {
+		t.Errorf("count=3: got %v, want 30s", got)
+	}
+	// 4th denial: 60 s
+	if got := denialBackoffForCount(4); got != 60*time.Second {
+		t.Errorf("count=4: got %v, want 60s", got)
+	}
+	// 10th denial: still 60 s (schedules 4+)
+	if got := denialBackoffForCount(10); got != 60*time.Second {
+		t.Errorf("count=10: got %v, want 60s", got)
+	}
+	// count=0: no backoff
+	if got := denialBackoffForCount(0); got != 0 {
+		t.Errorf("count=0: got %v, want 0", got)
+	}
+}
+
+func TestDenialBackoff_CapAtFiveMinutes(t *testing.T) {
+	// denialBackoffForCount never exceeds 5 minutes regardless of count.
+	// The current schedule maxes at 60 s (4+), which is already < 5 min,
+	// so verify the function's cap logic by confirming 60 s < 5 min.
+	if got := denialBackoffForCount(4); got > 5*time.Minute {
+		t.Errorf("backoff %v exceeds 5-minute cap", got)
+	}
+}
+
+func TestDenial_BackoffForUnknownDestination(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	unknown := NewId()
+	if got := cm.getDenialBackoff(unknown); got != 0 {
+		t.Errorf("unknown dest: got %v, want 0", got)
+	}
+}
+
+func TestDenial_BackoffAfterTwoDenials(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	if got := cm.getDenialBackoff(dest); got != 15*time.Second {
+		t.Errorf("after 2 denials: got %v, want 15s", got)
+	}
+}
+
+func TestDenial_BackoffAfterThreeDenials(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	if got := cm.getDenialBackoff(dest); got != 30*time.Second {
+		t.Errorf("after 3 denials: got %v, want 30s", got)
+	}
+}
+
+func TestDenial_BackoffAfterFourDenials(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	if got := cm.getDenialBackoff(dest); got != 60*time.Second {
+		t.Errorf("after 4 denials: got %v, want 60s", got)
+	}
+}
+
+func TestDenial_ClearDenialResetsCount(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	// After 3 denials we expect 30 s backoff.
+	if got := cm.getDenialBackoff(dest); got != 30*time.Second {
+		t.Fatalf("before clear: got %v, want 30s", got)
+	}
+
+	cm.clearDenial(dest)
+
+	if got := cm.getDenialBackoff(dest); got != 0 {
+		t.Errorf("after clear: got %v, want 0", got)
+	}
+}
+
+func TestDenial_CooldownExpiresAfterInactivity(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	if got := cm.getDenialBackoff(dest); got != 15*time.Second {
+		t.Fatalf("before expiry: got %v, want 15s", got)
+	}
+
+	// Manually set the lastDenial to more than DenialCooldownExpiry ago.
+	cm.mutex.Lock()
+	ds := cm.denialCooldowns[dest]
+	ds.lastDenial = time.Now().Add(-(DenialCooldownExpiry + time.Second))
+	cm.denialCooldowns[dest] = ds
+	cm.mutex.Unlock()
+
+	if got := cm.getDenialBackoff(dest); got != 0 {
+		t.Errorf("after expiry: got %v, want 0", got)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "golang.org/x/net/proxy"
@@ -36,6 +37,64 @@ import (
 
 type HttpPostRawFunction func(ctx context.Context, requestUrl string, requestBodyBytes []byte, byJwt string) ([]byte, error)
 type HttpGetRawFunction func(ctx context.Context, requestUrl string, byJwt string) ([]byte, error)
+
+// ---- adaptive parallel block size ----
+// Process-wide counters track probe outcomes over a rolling 10-second window
+// so that the parallel probe batch shrinks on healthy networks and grows when
+// things degrade.
+var (
+	probeSuccessCount atomic.Int64
+	probeFailureCount atomic.Int64
+	probeWindowStart  atomic.Int64 // UnixNano of current window start
+)
+
+// recordProbeResult registers a single probe outcome and resets the window
+// when more than 10 seconds have elapsed since the window opened.
+func recordProbeResult(success bool) {
+	now := time.Now().UnixNano()
+	start := probeWindowStart.Load()
+	if start == 0 || now-start > 10*int64(time.Second) {
+		if probeWindowStart.CompareAndSwap(start, now) {
+			probeSuccessCount.Store(0)
+			probeFailureCount.Store(0)
+		}
+	}
+	if success {
+		probeSuccessCount.Add(1)
+	} else {
+		probeFailureCount.Add(1)
+	}
+}
+
+// getAdaptiveBlockSize returns a parallel probe count that reflects current
+// network health.  Falls back to defaultSize when no data is available.
+//
+//	>80 % success → 2 (healthy, save goroutines)
+//	50-80 %       → 4 (normal)
+//	<50 %         → 6 (degraded, probe harder)
+func getAdaptiveBlockSize(defaultSize int) int {
+	start := probeWindowStart.Load()
+	if start == 0 {
+		return defaultSize
+	}
+	now := time.Now().UnixNano()
+	if now-start > 10*int64(time.Second) {
+		return defaultSize // window expired, no fresh data
+	}
+	s := probeSuccessCount.Load()
+	f := probeFailureCount.Load()
+	total := s + f
+	if total == 0 {
+		return defaultSize
+	}
+	rate := float64(s) / float64(total)
+	if rate > 0.8 {
+		return 2
+	} else if rate >= 0.5 {
+		return 4
+	}
+	return 6
+}
 
 func DefaultClientStrategySettings() *ClientStrategySettings {
 	return &ClientStrategySettings{
@@ -518,7 +577,36 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 
 			// WeightedShuffle(serialDialers, dialerWeights)
 			slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
-				return a.priority - b.priority
+				// Sort by: grade (if available) → success rate → recency of last success
+				// Grade: lower priority int = higher priority (already in struct)
+				if a.priority != b.priority {
+					return a.priority - b.priority
+				}
+				// Success rate: higher is better
+				aRate := float32(0)
+				bRate := float32(0)
+				aTotal := a.successCount + a.errorCount
+				bTotal := b.successCount + b.errorCount
+				if aTotal > 0 {
+					aRate = float32(a.successCount) / float32(aTotal)
+				}
+				if bTotal > 0 {
+					bRate = float32(b.successCount) / float32(bTotal)
+				}
+				if aRate > bRate {
+					return -1
+				}
+				if aRate < bRate {
+					return 1
+				}
+				// Recency: more recent success = higher priority
+				if a.lastSuccessTime.After(b.lastSuccessTime) {
+					return -1
+				}
+				if a.lastSuccessTime.Before(b.lastSuccessTime) {
+					return 1
+				}
+				return 0
 			})
 			for _, dialer := range serialDialers {
 				select {
@@ -540,7 +628,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 
 			// note parallel dialers is in the original weighted order
 			// WeightedShuffle(parallelDialers, dialerWeights)
-			n := min(len(parallelDialers), self.settings.ParallelBlockSize)
+			n := min(len(parallelDialers), getAdaptiveBlockSize(self.settings.ParallelBlockSize))
 			p += n
 			for _, dialer := range parallelDialers[0:n] {
 				go HandleError(func() {
@@ -568,7 +656,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		}
 
 		if expandedDialers, _ := self.expandExtenderDialers(); 0 < len(expandedDialers) {
-			n := min(len(expandedDialers), self.settings.ParallelBlockSize-p)
+			n := min(len(expandedDialers), getAdaptiveBlockSize(self.settings.ParallelBlockSize)-p)
 			p += n
 			for _, dialer := range expandedDialers[0:n] {
 				go HandleError(func() {
@@ -660,7 +748,33 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 		}
 
 		slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
-			return a.priority - b.priority
+			// Sort by: grade (if available) → success rate → recency of last success
+			if a.priority != b.priority {
+				return a.priority - b.priority
+			}
+			aRate := float32(0)
+			bRate := float32(0)
+			aTotal := a.successCount + a.errorCount
+			bTotal := b.successCount + b.errorCount
+			if aTotal > 0 {
+				aRate = float32(a.successCount) / float32(aTotal)
+			}
+			if bTotal > 0 {
+				bRate = float32(b.successCount) / float32(bTotal)
+			}
+			if aRate > bRate {
+				return -1
+			}
+			if aRate < bRate {
+				return 1
+			}
+			if a.lastSuccessTime.After(b.lastSuccessTime) {
+				return -1
+			}
+			if a.lastSuccessTime.Before(b.lastSuccessTime) {
+				return 1
+			}
+			return 0
 		})
 		for _, dialer := range serialDialers {
 			select {
@@ -739,7 +853,9 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
+		startDial := time.Now()
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		dialDur := time.Since(startDial)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
@@ -748,7 +864,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 			}
 		}
 
-		dialer.Update(handleCtx, err)
+		dialer.Update(handleCtx, err, dialDur)
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
@@ -769,7 +885,9 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
+		startDial := time.Now()
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		dialDur := time.Since(startDial)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
@@ -778,13 +896,15 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		dialer.Update(handleCtx, err)
+		dialer.Update(handleCtx, err, dialDur)
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
+		startDial := time.Now()
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
+		dialDur := time.Since(startDial)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
@@ -793,7 +913,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		dialer.Update(handleCtx, err)
+		dialer.Update(handleCtx, err, dialDur)
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
@@ -808,7 +928,9 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		wsDialer := dialer.WsDialer(self.settings)
+		startDial := time.Now()
 		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
+		dialDur := time.Since(startDial)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]ws dial %s = %s\n", url, err)
@@ -817,7 +939,7 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			}
 		}
 
-		dialer.Update(handleCtx, err)
+		dialer.Update(handleCtx, err, dialDur)
 
 		return &evalResult{
 			wsConn: wsConn,
@@ -1059,6 +1181,10 @@ type clientDialer struct {
 	lastSuccessTime time.Time
 	lastErrorTime   time.Time
 
+	// Composite scoring fields
+	consecutiveErrors int   // error streak (resets on success)
+	avgLatencyNanos   int64 // EMA of response latency in nanoseconds; 0 = no samples
+
 	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
 
@@ -1109,20 +1235,66 @@ func (self *clientDialer) Weight() float32 {
 	defer self.mutex.Unlock()
 
 	c := self.successCount + self.errorCount
+	var baseScore float32
 	if 0 < c {
-		return max(float32(float64(self.successCount)/float64(c)), self.minimumWeight)
+		baseScore = float32(float64(self.successCount) / float64(c))
 	} else {
-		return self.minimumWeight
+		baseScore = self.minimumWeight
 	}
+
+	// Latency factor: penalise slow dialers.  Baseline is 500 ms; anything
+	// faster gets a boost up to 1.2×, anything slower is penalised down to
+	// 0.3×.  When no samples exist the factor is 1.0 (neutral).
+	const baselineLatencyNanos int64 = 500_000_000 // 500 ms
+	latencyFactor := float32(1.0)
+	if self.avgLatencyNanos > 0 {
+		ratio := float32(self.avgLatencyNanos) / float32(baselineLatencyNanos)
+		if ratio < 1.0 {
+			// faster than baseline → boost (max 1.2)
+			latencyFactor = 1.0 + 0.2*(1.0-ratio)
+			if latencyFactor > 1.2 {
+				latencyFactor = 1.2
+			}
+		} else {
+			// slower than baseline → penalise (min 0.3)
+			latencyFactor = 1.0 / (1.0 + 0.5*(ratio-1.0))
+			if latencyFactor < 0.3 {
+				latencyFactor = 0.3
+			}
+		}
+	}
+
+	// Error streak penalty: 0.5^streak.  3 consecutive errors → 0.125×
+	streakPenalty := float32(1.0)
+	for i := 0; i < self.consecutiveErrors; i++ {
+		streakPenalty *= 0.5
+	}
+
+	w := baseScore * latencyFactor * streakPenalty
+	if w < self.minimumWeight {
+		w = self.minimumWeight
+	}
+	return w
 }
 
-func (self *clientDialer) Update(handleCtx context.Context, err error) {
+func (self *clientDialer) Update(handleCtx context.Context, err error, duration time.Duration) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if err == nil {
 		self.successCount += 1
 		self.lastSuccessTime = time.Now()
+		self.consecutiveErrors = 0
+		// Update exponential moving average of latency (α = 0.3)
+		const alpha = 0.3
+		nanos := duration.Nanoseconds()
+		if self.avgLatencyNanos == 0 {
+			self.avgLatencyNanos = nanos
+		} else {
+			self.avgLatencyNanos = int64(alpha*float64(nanos) + (1-alpha)*float64(self.avgLatencyNanos))
+		}
+		// Record probe success for adaptive block size
+		recordProbeResult(true)
 	} else {
 		select {
 		case <-handleCtx.Done():
@@ -1130,6 +1302,9 @@ func (self *clientDialer) Update(handleCtx context.Context, err error) {
 		default:
 			self.errorCount += 1
 			self.lastErrorTime = time.Now()
+			self.consecutiveErrors++
+			// Record probe failure for adaptive block size
+			recordProbeResult(false)
 		}
 	}
 }
@@ -1155,14 +1330,21 @@ func (self *clientDialer) ResetHealth() {
 	self.errorCount = 0
 	self.lastSuccessTime = time.Time{}
 	self.lastErrorTime = time.Time{}
+	self.consecutiveErrors = 0
+	self.avgLatencyNanos = 0
 }
 
 func (self *clientDialer) String() string {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
+	latencyStr := ""
+	if self.avgLatencyNanos > 0 {
+		latencyStr = fmt.Sprintf(" avg=%dms", time.Duration(self.avgLatencyNanos).Milliseconds())
+	}
+
 	if self.extenderConfig != nil {
-		return fmt.Sprintf("extender (%v) success=%d error=%d", self.extenderConfig, self.successCount, self.errorCount)
+		return fmt.Sprintf("extender (%v) success=%d error=%d%s", self.extenderConfig, self.successCount, self.errorCount, latencyStr)
 	} else if self.settings != nil && self.settings.ProxySettings != nil {
 		var clients int64
 		var maxAge time.Duration
@@ -1175,9 +1357,9 @@ func (self *clientDialer) String() string {
 		if clients > 0 {
 			ageStr = fmt.Sprintf(" age=%s", maxAge.Round(time.Second).String())
 		}
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d clients=%d%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, clients, ageStr)
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
 	} else {
-		return fmt.Sprintf("[direct] %s success=%d error=%d", self.description, self.successCount, self.errorCount)
+		return fmt.Sprintf("[direct] %s success=%d error=%d%s", self.description, self.successCount, self.errorCount, latencyStr)
 	}
 }
 
