@@ -1940,6 +1940,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// poolHealth carries the idle-floor history across ticks so the pool line
+	// can report a trend rather than an instant.
+	poolHealth := newPoolHealthWindow(interval)
+
 	// deadConfirmDelay gates confirmed-dead event logging until one pulse cycle has
 	// elapsed, so the startup ramp is not recorded as dead.
 	const deadConfirmDelay = 65 * time.Minute
@@ -1974,6 +1978,20 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
 		dohFailures := connect.GetDohFailureCount()
+
+		// Build identity leads the block: every other line in a tick is only
+		// interpretable once you know which build produced it, and an operator
+		// reading a tail or a pasted log excerpt has no other way to tell.
+		buildVersion := RequireVersion()
+		if buildVersion == "" {
+			buildVersion = "unknown"
+		}
+		buildLine := fmt.Sprintf("🏷️ [health][build] %s profile=%s", buildVersion, profile)
+		if host := heartbeatHostLabel(); host != "" {
+			buildLine += fmt.Sprintf(" host=%s", host)
+		}
+		tlog("%s\n", buildLine)
+
 		healthLine := fmt.Sprintf("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d",
 			uptime, profile, heapMiB, sysMiB, runtime.NumGoroutine(), connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 		if dohFailures > 0 {
@@ -1981,7 +1999,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		}
 		tlog("%s\n", healthLine)
 
-		// Message-pool heartbeat: one aggregated line per 5-min tick.
+		// Message-pool heartbeat: one aggregated line per tick, written so an
+		// operator who has never read message_pool.go can act on it. See
+		// pool_health.go for why the idle floor is the signal and the return
+		// percentage is only context.
 		if pools := connect.MessagePoolSummary(); pools != nil {
 			var totalTaken, totalReturned, totalCreated uint64
 			for _, b := range pools {
@@ -1990,17 +2011,13 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				totalCreated += b.Created
 			}
 			if totalTaken > 0 {
-				var outstanding uint64
+				var inUse uint64
 				if totalTaken >= totalReturned {
-					outstanding = totalTaken - totalReturned
+					inUse = totalTaken - totalReturned
 				}
-				returnPct := 100 * float64(totalReturned) / float64(totalTaken)
-				var reusePct float64
-				if totalTaken >= totalCreated {
-					reusePct = 100 * float64(totalTaken-totalCreated) / float64(totalTaken)
-				}
-				tlog("❤️ [health][pool] buckets=%d taken=%d returned=%d outstanding=%d return=%.2f%% reuse=%.2f%%\n",
-					len(pools), totalTaken, totalReturned, outstanding, returnPct, reusePct)
+				reading := poolHealth.observe(inUse, totalCreated, interval)
+				tlog("❤️ [health][pool] %s\n",
+					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned))
 			}
 		}
 

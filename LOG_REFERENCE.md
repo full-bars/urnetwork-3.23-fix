@@ -200,8 +200,16 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 ## 💓 Health Heartbeat
 
 ```
+[health][build] v3.23.0-fix.31.8 profile=auto host=node-a
 [health] uptime=15m0s profile=auto heap=80MiB sys=255MiB goroutines=2156 connections=998 proxies=1150
 ```
+
+The `[health][build]` line leads every heartbeat tick. It exists so a log tail
+or a pasted excerpt identifies the build that produced it: the startup banner
+scrolls out of a RAM log window, and every other line in the block is only
+interpretable once you know the version. `host` is the node name
+(`URNETWORK_NODE_NAME`, the `~/.urnetwork/node_name` override, `HOST_HOSTNAME`,
+then the kernel hostname).
 
 Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
 
@@ -221,6 +229,45 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
 - `goroutines` climbing steadily while load is flat — likely a goroutine leak (watch for repeated logs that should fire once per process, such as `[tune] auto-profile`).
+
+### 🧠 Message-Pool Health
+
+One line per heartbeat tick, written to be actionable without knowing what a
+message pool is. It leads with a verdict so nothing has to be compared by eye:
+
+```
+[health][pool] ok — 117 buffers in use, none stuck, 2048 allocated since start (99.65% returned)
+[health][pool] warming — 117 buffers in use, 2048 allocated since start (99.65% returned). Stuck-buffer check needs 1h of uptime (41m to go).
+[health][pool] watch — 96 buffers were taken and never given back, up from 38 an hour ago. If this keeps climbing, memory use grows until the provider restarts. 1204 in use now, 4096 allocated since start (99.71% returned).
+[health][pool] leak — 512 buffers taken and never given back, climbing for 35+ minutes. Memory will keep growing until restart. This is a bug worth reporting with this line. 4291 in use now, 8192 allocated since start (99.71% returned).
+```
+
+| Verdict | Meaning |
+|---|---|
+| `warming` | Less than an hour of uptime, so there is no trustworthy baseline yet. No judgement is made. |
+| `ok` | The pool drains to the same baseline every hour. Buffers are being recycled. |
+| `watch` | The baseline has climbed for 15 minutes without interruption, or the pool is still allocating new buffers an hour after startup. |
+| `leak` | The baseline has climbed for 30 minutes without interruption. Memory grows until restart. Report it with the line. |
+
+**Why the percentage is context and not the signal.** `returned` is
+self-normalizing: a leak proportional to throughput keeps it pinned near 100%
+forever, because the denominator grows exactly as fast as the leak. Losing one
+buffer per 10,000 taken reads 99.99% while shedding roughly 1,440 buffers a
+day. The number the verdict actually watches is the *stuck* count, the lowest
+in-use count over the trailing hour. Buffers legitimately in flight come and
+go, so a healthy pool touches a low number at least once an hour; a buffer
+taken and never given back raises that minimum permanently.
+
+The cost is latency. Pre-leak samples must age out of the hour-long window
+before the minimum can move, so a leak present from boot is called about 90
+minutes in. That is deliberate, because a faster signal fires on ordinary load
+steps.
+
+> [!NOTE]
+> This line is independent of `debugTags` in `message_pool.go`, which is a
+> compile-time `false` and gates per-allocation tagging. The heartbeat reads
+> `MessagePoolSummary()`, which works in production builds and does no
+> hot-path work.
 
 ### 💀 Dead-Proxy Health Report
 
