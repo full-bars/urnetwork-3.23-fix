@@ -59,27 +59,10 @@ t "func_check_update: PELICAN unset proceeds past the gate (network attempted)" 
     sh -c "[ -s '$tmp/calls.txt' ]"
 
 # ---------------------------------------------------------------------------
-# 2) do_update PELICAN gate — behavioral, not grep
+# 2) do_update PELICAN gate: the shell urnet-tools is gone from the image; the
+#    Go urnet-tools gate is tested in internal/urnettools
+#    (TestUpdateRefusedUnderPelican, TestSelfUpdateRefusedUnderPelican).
 # ---------------------------------------------------------------------------
-run_do_update_gated() {
-    local pelican="$1" script="$tmp/do_update_test.sh"
-    {
-        echo "uname() { echo \"ARCH-CALL uname \$*\" >> '$tmp/calls2.txt'; command uname \"\$@\"; }"
-        extract_func "$REPO/docker/scripts/urnet-tools.sh" do_update
-        echo 'do_update'
-    } > "$script"
-    : > "$tmp/calls2.txt"
-    if [ -n "$pelican" ]; then PELICAN="$pelican" bash "$script"; else unset PELICAN; bash "$script"; fi
-}
-
-OUT_GATED="$(run_do_update_gated yes 2>&1)"; rc=$?
-t "do_update: PELICAN=yes exits 1"           test "$rc" -eq 1
-t "do_update: PELICAN=yes prints refusal"    sh -c "printf '%s' '$OUT_GATED' | grep -qi 'runtime updates are disabled'"
-t "do_update: PELICAN=yes never reaches arch detection" sh -c "[ ! -s '$tmp/calls2.txt' ]"
-
-run_do_update_gated "" >/dev/null 2>&1 || true
-t "do_update: PELICAN unset proceeds past the gate (arch detection attempted)" \
-    sh -c "[ -s '$tmp/calls2.txt' ]"
 
 # ---------------------------------------------------------------------------
 # 3) State-dir resolution — representative scripts (proxy-health.sh,

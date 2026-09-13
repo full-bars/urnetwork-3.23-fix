@@ -242,7 +242,7 @@ t "basename fallback yields the filename segment" test "$BNAME" = "urnetwork-pro
 # --- Source guard: upstream repos must not appear in fetch URLs ---
 violations=""
 for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.sh \
-         "$HERE"/start_jwt.sh "$HERE"/urnet-tools.sh "$HERE"/pelican_panel.sh; do
+         "$HERE"/start_jwt.sh "$HERE"/pelican_panel.sh; do
     [ -f "$f" ] || continue
     # Any api.github.com/repos/<org>/<repo> that is NOT full-bars is a violation.
     while read -r url; do

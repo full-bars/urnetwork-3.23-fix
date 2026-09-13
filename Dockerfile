@@ -24,8 +24,19 @@ RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     -ldflags "-s -w -X main.Version=${VERSION}" \
     -o provider_bin ./provider/
 
+# The operator tool: the same urnet-tools the release ships for linux, which
+# replaces the shell script this image used to carry.
+RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
+    go build -trimpath \
+    -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+    -o urnet_tools_bin ./cmd/urnet-tools/
+
 # --- Final Stage ---
 FROM alpine:latest
+
+# Lets urnet-docker find provider containers whatever they or their image are
+# named (internal/urnettools/docker.go).
+LABEL io.urnetwork.provider="1"
 
 ARG TARGETARCH
 ARG VERSION=v.unknown
@@ -60,9 +71,9 @@ RUN dos2unix /app/*.sh /app/cgi-bin/stats && chmod +x /app/*.sh /app/cgi-bin/sta
 RUN ln -sf /app/proxy-health.sh /usr/local/bin/proxy-health
 RUN ln -sf /app/proxy-traffic.sh /usr/local/bin/proxy-traffic
 RUN ln -sf /app/logs.sh /usr/local/bin/logs
-RUN ln -sf /app/urnet-tools.sh /usr/local/bin/urnet-tools
+COPY --from=builder /app/urnet_tools_bin /usr/local/bin/urnet-tools
 
-# update_verify.sh is sourced by urnet-tools for digest verification.
+# update_verify.sh is sourced by the start scripts for digest verification.
 RUN ln -sf /app/update_verify.sh /usr/local/bin/update_verify.sh
 
 # Expose the provider binary on PATH as `provider` for `docker exec <c> provider <cmd>`
