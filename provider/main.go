@@ -2788,7 +2788,7 @@ func provide(opts docopt.Opts) {
 	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
 	// and announce readiness to parent via IPC before starting transports.
 	var isHotSwapCandidate bool
-	var hotSwapIPC *os.File
+	var hotSwapIPC io.ReadWriteCloser
 	var candidateAckOnce sync.Once
 	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
 		isHotSwapCandidate = true
@@ -2851,6 +2851,12 @@ func provide(opts docopt.Opts) {
 	// Only arm listener if running as live provider, not while acting as candidate.
 	if !isHotSwapCandidate {
 		startHotSwapSignalListener(ctx, cancel, opts)
+		// Wire the control socket "hotswap" command so urnet-tools can
+		// trigger a handoff on any platform (including Windows, which has
+		// no SIGUSR2).
+		hotSwapTrigger = func() error {
+			return runHotSwapParentHandoff(ctx, cancel, opts)
+		}
 	}
 
 	// Drain buffered retention events before exit so a shutdown racing the
@@ -3475,14 +3481,18 @@ func provide(opts docopt.Opts) {
 			if isHotSwapCandidate && hotSwapIPC != nil {
 				_ = runHotSwapChildAck(hotSwapIPC)
 				// hotSwapIPC is not reassigned: provide()'s deferred Close() also
-				// runs on this same handle, and os.File.Close() is safe to call
-				// twice (the second call just returns os.ErrClosed, which the
-				// deferred call discards). Reassigning to nil here raced with
-				// that deferred read since sync.Once only orders callers of Do,
-				// not the unrelated deferred statement in provide().
+				// runs on this same handle, and Close() on both *os.File (Unix)
+				// and net.Conn (Windows) is safe to call twice (the second call
+				// returns an error that the deferred call discards). Reassigning
+				// to nil here raced with that deferred read since sync.Once only
+				// orders callers of Do, not the unrelated deferred statement in
+				// provide().
 				_ = hotSwapIPC.Close()
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
+				hotSwapTrigger = func() error {
+					return runHotSwapParentHandoff(ctx, cancel, opts)
+				}
 
 				// Wait for the parent to actually release the control socket before
 				// reloading state and binding our own. The parent only closes it when

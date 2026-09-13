@@ -476,6 +476,93 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return ctx.Err()
 	}
 
+	// Branch: Windows — Baton handoff (no execve, no systemd)
+	// On Windows, the candidate takes over traffic via named-pipe IPC, then the
+	// parent yields its coordinator session and drains in-flight streams before
+	// exiting. There is no Docker PID-1 execve path and no systemd to notify.
+	if runtime.GOOS == "windows" {
+		tlog("⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff\n")
+
+		// 1. Send TAKEOVER to candidate FIRST before yielding
+		if err := writeHotswapMessage(session.Writer, HotswapMessage{
+			Type:    HotswapMsgTakeover,
+			PID:     parentPID,
+			Version: RequireVersion(),
+		}); err != nil {
+			tlog("❌ [hotswap] Failed to send TAKEOVER: %v. Aborting handoff; live provider retained.\n", err)
+			session.Kill()
+			return err
+		}
+
+		// 2. Wait for mandatory ACK from candidate before yielding our own
+		// coordinator session. The candidate has not taken over traffic yet,
+		// so if the ACK fails or times out we can still abort with the
+		// parent's transports untouched.
+		ackCh := make(chan readyResult, 1)
+		go func() {
+			msg, err := readHotswapMessage(session.Reader)
+			ackCh <- readyResult{msg, err}
+		}()
+
+		select {
+		case res := <-ackCh:
+			if res.err != nil || res.msg.Type != HotswapMsgAck {
+				tlog("❌ [hotswap] Candidate failed active takeover (%v). Aborting handoff; live provider retained.\n", res.err)
+				session.Kill()
+				return fmt.Errorf("candidate takeover unconfirmed: %v", res.err)
+			}
+			tlog("⚡ [hotswap] Candidate PID %d confirmed active takeover (ACK received)!\n", childPID)
+		case <-time.After(HotSwapAckTimeout):
+			tlog("❌ [hotswap] Candidate takeover ACK timed out (>%s). Aborting handoff; live provider retained.\n", HotSwapAckTimeout)
+			session.Kill()
+			return fmt.Errorf("candidate takeover ACK timed out (>%s)", HotSwapAckTimeout)
+		}
+
+		// 3. Only now yield the live coordinator session: the candidate has
+		// confirmed active takeover, so there is no window where neither
+		// process holds it.
+		yieldCoordinatorSession()
+		flushRetentionEvents()
+
+		// 4. Enter graceful stream drain mode
+		isHotSwapDraining.Store(true)
+		tlog("⚡ [hotswap] Parent PID %d entering graceful stream drain (max %s)...\n", parentPID, HotSwapDrainTimeout)
+
+		go func() {
+			var childWaitCh <-chan error
+			if session.hasChildProcess() {
+				ch := make(chan error, 1)
+				go func() {
+					ch <- session.Wait()
+				}()
+				childWaitCh = ch
+			}
+
+			candidateDied := false
+			select {
+			case <-time.After(HotSwapDrainTimeout):
+			case <-childWaitCh:
+				tlog("⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!\n")
+				candidateDied = true
+			case <-ctx.Done():
+			}
+
+			flushRetentionEvents()
+			lifetimeStore.Flush()
+			isHotSwapDraining.Store(false)
+			cancel()
+			if candidateDied {
+				critLog("FATAL: hotswap candidate died during parent drain; exiting non-zero for supervisor restart")
+				exitFunc(1)
+				return
+			}
+			tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
+			exitFunc(0)
+		}()
+
+		return nil
+	}
+
 	// Branch: Docker Container (PID 1 or container environment) -> In-Place execve
 	isDocker := false
 	if _, err := os.Stat("/.dockerenv"); err == nil {

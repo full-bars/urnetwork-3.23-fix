@@ -589,6 +589,15 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		entries, nextCursor := globalAuditRing.Entries(limit, req.Cursor)
 		return controlResponse{OK: true, Entries: entries, NextCursor: nextCursor}
 
+	case "hotswap":
+		if hotSwapTrigger == nil {
+			return controlResponse{OK: false, Error: "hotswap trigger not available"}
+		}
+		if err := hotSwapTrigger(); err != nil {
+			return controlResponse{OK: false, Error: err.Error()}
+		}
+		return controlResponse{OK: true}
+
 	default:
 		return controlResponse{OK: false, Error: fmt.Sprintf("unknown command %q", req.Cmd)}
 	}
@@ -749,6 +758,13 @@ func resolveMetricsAddr() string {
 // again after a HotSwap candidate's post-takeover reload+merge — the
 // parent's own gomemlimit/gogc runtime.debug calls apply only to the
 // parent's process, not the newly promoted candidate's.
+// hotSwapTrigger is set during provider startup (cmdProvide) to a closure
+// that calls runHotSwapParentHandoff with the live ctx/cancel/opts. The
+// control socket's "hotswap" command calls this instead of duplicating the
+// startup scope. Nil when not set (e.g. tests that don't wire the full
+// startup path).
+var hotSwapTrigger func() error
+
 func applyPersistedRuntimeTuning(state *controlState) {
 	if v, ok := state.get("gomemlimit"); ok && v != "" && v != "off" {
 		if err := applyLiveSideEffect("gomemlimit", v); err != nil {

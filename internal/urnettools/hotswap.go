@@ -222,3 +222,36 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	fmt.Printf("triggered zero-downtime HotSwap on %s (PID %d)\n", providerLabel(p), p.PID)
 	return nil
 }
+
+// triggerHotSwapViaSocket sends {cmd: "hotswap"} over the provider's control
+// socket. This is the cross-platform trigger that works on every OS: Unix,
+// Windows, and anything else with the control socket bound. Used as the
+// primary trigger on Windows and as a fallback on Unix when SIGUSR2 is not
+// available or fails.
+func triggerHotSwapViaSocket(p Provider) error {
+	sockPath := controlSocketPathFromStateDir(p)
+	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "hotswap"})
+	if err != nil {
+		if isSocketUnavailable(err) {
+			return errors.New("provider is not running or control socket is not reachable")
+		}
+		return fmt.Errorf("control socket hotswap: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("hotswap rejected: %s", resp.Error)
+	}
+	return nil
+}
+
+// controlSocketPathFromStateDir returns the control socket path derived
+// from a provider's StateDir, falling back to the default home-based path.
+func controlSocketPathFromStateDir(p Provider) string {
+	if p.StateDir != "" {
+		return p.StateDir + "/provider.sock"
+	}
+	sockPath, err := controlSocketPath()
+	if err != nil {
+		return ""
+	}
+	return sockPath
+}
