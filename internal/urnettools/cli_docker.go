@@ -382,7 +382,10 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	// waitForLiveVersion can detect the bump to the new release.
 	beforeVer := strings.TrimSpace(containerLiveVersion(p.Unit))
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
-	if err := containerExecByName(p.Unit, "urnet-tools", "update"); err != nil {
+	// -f: the confirmation above already happened on the host. The
+	// in-container tool has no terminal to ask on and would refuse at its own
+	// version prompt.
+	if err := containerExecByName(p.Unit, "urnet-tools", "update", "-f"); err != nil {
 		return err
 	}
 	// Older container images stop when the provider process is killed (their
@@ -509,6 +512,10 @@ func waitForLiveVersion(name, prev string, timeoutSec int) (string, bool) {
 // so the literal ${arch} is passed through untampered; only sed's own \$ escape
 // is used to match a literal dollar sign.
 func repairContainerUpdateScript(unit string) error {
+	// Images that ship the Go urnet-tools have no shell script to repair.
+	if exec.Command(dockerCLI(), "exec", unit, "test", "-f", "/app/urnet-tools.sh").Run() != nil {
+		return nil
+	}
 	expr1 := "s|mktemp /tmp/urnetwork-update-XXXXXX.tar.gz|mktemp /tmp/urnetwork-update-XXXXXX|"
 	expr2 := `s|pkill -x "urnetwork_\${arch}_stable"|pkill -f "^/app/urnetwork_\${arch}_stable provide"|`
 	c := exec.Command(dockerCLI(), "exec", unit, "sed", "-i", expr1, "/app/urnet-tools.sh")

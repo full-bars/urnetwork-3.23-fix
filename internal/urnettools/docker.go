@@ -47,7 +47,7 @@ func discoverDockerContainers() []dockerContainer {
 	if err != nil {
 		return nil // docker unavailable or no permission — no containers
 	}
-	var containers []dockerContainer
+	var containers, unmatched []dockerContainer
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
@@ -56,19 +56,64 @@ func discoverDockerContainers() []dockerContainer {
 		if len(parts) < 4 {
 			continue
 		}
-		image := parts[2]
-		name := parts[1]
-		if !isDockerCandidate(image, name) {
-			continue
-		}
-		containers = append(containers, dockerContainer{
+		c := dockerContainer{
 			ID:    parts[0],
-			Name:  name,
-			Image: image,
+			Name:  parts[1],
+			Image: parts[2],
 			State: parts[3],
-		})
+		}
+		if isDockerCandidate(c.Image, c.Name) {
+			containers = append(containers, c)
+		} else {
+			unmatched = append(unmatched, c)
+		}
+	}
+	// The name heuristic misses provider containers with a custom name on a
+	// locally built or retagged image (e.g. `urfix-test` on `mytag:local`), so
+	// check what those containers actually are.
+	if len(unmatched) > 0 {
+		containers = append(containers, inspectProviderContainers(unmatched)...)
 	}
 	return containers
+}
+
+// providerImageLabel is set on this repo's provider image (see Dockerfile),
+// so discovery does not depend on how a container or its image is named.
+const providerImageLabel = "io.urnetwork.provider"
+
+// inspectProviderContainers keeps the containers whose image identifies it
+// as a URnetwork provider: the provider image label, or the provider image's
+// entrypoint, which images built before the label also carry. One batched
+// docker inspect covers them all. dockerProvider still requires a readable
+// account jwt, so an unrelated image that happens to use the same entrypoint
+// path is dropped there.
+func inspectProviderContainers(cs []dockerContainer) []dockerContainer {
+	args := []string{"inspect", "-f", `{{.Id}}|{{index .Config.Labels "` + providerImageLabel + `"}}|{{json .Config.Entrypoint}}`}
+	byID := make(map[string]dockerContainer, len(cs))
+	for _, c := range cs {
+		args = append(args, c.ID)
+		byID[c.ID] = c
+	}
+	// docker inspect exits non-zero if any container vanished since `ps`, but
+	// still prints the ones it found, so use the output either way.
+	out, _ := exec.Command(dockerCLI(), args...).Output()
+	var keep []dockerContainer
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		if c, ok := byID[parts[0]]; ok && isProviderImageMetadata(parts[1], parts[2]) {
+			keep = append(keep, c)
+		}
+	}
+	return keep
+}
+
+// isProviderImageMetadata reports whether a container's label value and JSON
+// entrypoint identify the URnetwork provider image.
+func isProviderImageMetadata(label, entrypointJSON string) bool {
+	return label == "1" || strings.Contains(entrypointJSON, `"/app/entrypoint.sh"`)
 }
 
 // isDockerCandidate reports whether an image/name pair looks like a
