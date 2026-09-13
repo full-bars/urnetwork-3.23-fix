@@ -263,6 +263,10 @@ func parseSecondsOrDuration(s string) (time.Duration, error) {
 
 // cmdIdleUpdate waits for an idle traffic window before invoking cmdUpdate.
 func cmdIdleUpdate(args []string, force, dryRun bool) error {
+	// Refuse under Pelican before any release lookup, prompt or wait.
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 	opts, rest, err := parseIdleArgs(args)
 	if err != nil {
 		return err

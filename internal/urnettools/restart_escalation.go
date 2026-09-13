@@ -168,12 +168,9 @@ func stageToolForEscalation(cfg updateConfig) string {
 	if url == "" {
 		url = toolAssetURL(cfg.Tag, cfg.ToolAsset)
 	}
-	fmt.Printf("downloading %s\n", url)
-	if err := downloadFile(url, sp); err != nil {
-		fmt.Printf("note: staged-restart escalation unavailable (%v)\n", err)
-		return ""
-	}
-	if err := verifySHA256(sp, cfg.ToolDigest); err != nil {
+	// Same mirror-first, digest-verified download as the provider tarball and
+	// the self-update leg, which reuses this staged copy.
+	if err := downloadVerified(url, sp, cfg.ToolDigest, "download tool"); err != nil {
 		fmt.Printf("note: staged-restart escalation unavailable (%v)\n", err)
 		return ""
 	}

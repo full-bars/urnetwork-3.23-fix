@@ -208,6 +208,10 @@ func safeRemoveTarget(path string) bool {
 // reinstall of the targeted provider (the installer handles the complete
 // flow; the Go tool resolves which provider/user to target).
 func cmdReinstall(args []string, force, dryRun bool) error {
+	// Refuse under Pelican before any release lookup, prompt or wait.
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 	// H2 fix: use guardLifecycleArgs to reject leftover positionals.
 	t, err := guardLifecycleArgs("reinstall", args)
 	if err != nil {

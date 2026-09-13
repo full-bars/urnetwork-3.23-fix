@@ -73,6 +73,10 @@ func newStageDir() (string, error) {
 // numbered picker. Non-interactive (no TTY) refuses ambiguity unless an
 // explicit target or --include is given — scripts must be explicit.
 func cmdUpdate(args []string, force, dryRun bool) error {
+	// Refuse under Pelican before any release lookup, prompt or wait.
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 	// LENIENT target parse: update defines its own flags (--tag, --digest,
 	// --url, --include, --exclude, --all) which the loop below
 	// consumes. Strict parsing here would reject them as unknown before
@@ -351,6 +355,10 @@ func runToolSelfUpdate(cfg updateConfig) error {
 // providers run elsewhere (docker hosts) or where `update`'s provider leg
 // should not run.
 func cmdSelfUpdate(args []string, force, dryRun bool) error {
+	// Refuse under Pelican before any release lookup, prompt or wait.
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 	cfg := updateConfig{}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -603,6 +611,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if p.Binary == "" {
 		return fmt.Errorf("update %s: no resolvable binary path", providerLabel(p))
 	}
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 
 	// Serialize concurrent updates of the same binary before doing anything
 	// with side effects.
@@ -658,11 +669,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 	tarball := filepath.Join(cfg.StageDir, cfg.Tag+".tar.gz")
 
-	fmt.Printf("downloading %s\n", url)
-	if err := downloadFile(url, tarball); err != nil {
-		return fmt.Errorf("download: %w", err)
-	}
-	if err := verifySHA256(tarball, cfg.Digest); err != nil {
+	if err := downloadVerified(url, tarball, cfg.Digest, "download"); err != nil {
 		return err
 	}
 	fmt.Println("sha256 verified")
@@ -914,6 +921,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	// Inside a container there is no systemd unit: the image's start script
+	// supervises the provider and relaunches it after a marked exit.
+	if p.Unit == "" && inContainer() {
+		return restartContainerProvider(p)
+	}
 	if p.Unit != "" {
 		// Determine the unit's real scope up front (isUserUnit checks whether
 		// a systemd system unit file exists). A user-owned unit MUST be
@@ -975,6 +987,50 @@ func restartProvider(p Provider) error {
 		return fmt.Errorf("no systemd unit resolved for %s — restart the provider manually (pid %d)", providerLabel(p), p.PID)
 	}
 	return fmt.Errorf("could not restart provider %s — restart the owning unit manually", providerLabel(p))
+}
+
+// Release assets are published on GitHub and mirrored at dl.fullbars.xyz.
+// The mirror is tried first and GitHub is the fallback; every copy must pass
+// the same sha256 check, so the mirror is only a faster path, never a trusted
+// one. A custom --url is used exactly as given.
+const (
+	githubReleaseDownloadPrefix = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/"
+	mirrorReleaseDownloadPrefix = "https://dl.fullbars.xyz/releases/download/"
+)
+
+// mirrorURLFor returns the dl.fullbars.xyz URL for a GitHub release asset
+// URL, or "" when u is not one.
+func mirrorURLFor(u string) string {
+	if !strings.HasPrefix(u, githubReleaseDownloadPrefix) {
+		return ""
+	}
+	return mirrorReleaseDownloadPrefix + strings.TrimPrefix(u, githubReleaseDownloadPrefix)
+}
+
+// downloadFileFunc is downloadFile, overridable in tests.
+var downloadFileFunc = downloadFile
+
+// downloadVerified downloads u into path and verifies digest, trying the
+// mirror first for release assets. A mirror copy that fails to download or
+// fails the digest is discarded and GitHub is tried. label prefixes download
+// errors; digest errors are returned as verifySHA256 reports them.
+func downloadVerified(u, path, digest, label string) error {
+	if m := mirrorURLFor(u); m != "" {
+		fmt.Printf("downloading %s\n", m)
+		err := downloadFileFunc(m, path)
+		if err == nil {
+			if err = verifySHA256(path, digest); err == nil {
+				return nil
+			}
+		}
+		os.Remove(path)
+		fmt.Printf("mirror download failed (%v); trying GitHub\n", err)
+	}
+	fmt.Printf("downloading %s\n", u)
+	if err := downloadFileFunc(u, path); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return verifySHA256(path, digest)
 }
 
 // downloadFile fetches url into path (atomic-ish: temp file + rename).
@@ -1292,6 +1348,9 @@ func selfUpdateTool(cfg updateConfig) error {
 // at exePath (not necessarily os.Executable) from cfg.ToolAssetURL with
 // cfg.ToolDigest verification. See selfUpdateTool for the skip semantics.
 func selfUpdateToolTo(exePath string, cfg updateConfig) error {
+	if pelicanMode() {
+		return errPelicanUpdatesDisabled
+	}
 	if cfg.StageDir == "" {
 		return fmt.Errorf("self-update: stage dir required (real disk, not /tmp)")
 	}
@@ -1330,11 +1389,7 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	if cur, serr := fileSHA256(staged); serr == nil && strings.EqualFold(cur, cfg.ToolDigest) {
 		fmt.Println("staged tool already verified")
 	} else {
-		fmt.Printf("downloading %s\n", url)
-		if err := downloadFile(url, staged); err != nil {
-			return fmt.Errorf("download tool: %w", err)
-		}
-		if err := verifySHA256(staged, cfg.ToolDigest); err != nil {
+		if err := downloadVerified(url, staged, cfg.ToolDigest, "download tool"); err != nil {
 			return err
 		}
 		fmt.Println("tool sha256 verified")

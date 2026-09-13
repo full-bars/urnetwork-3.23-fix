@@ -666,6 +666,13 @@ func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) er
 		fmt.Println("Session staged. Run 'urnet-tools restart' when ready.")
 		return nil
 	}
+	if p.Unit == "" && inContainer() {
+		if err := restartContainerProvider(p); err != nil {
+			return fmt.Errorf("failed to restart %s: %v (session is staged; restart the container)", providerLabel(p), err)
+		}
+		fmt.Printf("Restarted %s with the loaded session.\n", providerLabel(p))
+		return nil
+	}
 	if p.Unit == "" {
 		fmt.Println("Provider has no owning systemd unit; restart it manually.")
 		return nil

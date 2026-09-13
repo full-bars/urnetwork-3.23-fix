@@ -147,6 +147,9 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
+	if err := refuseInContainer("start"); err != nil {
+		return err
+	}
 	p, err := selectLifecycleTarget("start", args, force, dryRun)
 	if err != nil {
 		return err
@@ -166,6 +169,9 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
+	if err := refuseInContainer("stop"); err != nil {
+		return err
+	}
 	p, err := selectLifecycleTarget("stop", args, force, dryRun)
 	if err != nil {
 		return err
@@ -185,6 +191,9 @@ func cmdStop(args []string, force, dryRun bool) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
+	if err := refuseInContainer("restart"); err != nil {
+		return err
+	}
 	p, err := selectLifecycleTarget("restart", args, force, dryRun)
 	if err != nil {
 		return err
@@ -463,6 +472,11 @@ func cmdHub(args []string, force, dryRun bool) error {
 	}
 	sub := args[0]
 	rest := args[1:]
+	if inContainer() {
+		if err := hubContainerRefusal(sub); err != nil {
+			return err
+		}
+	}
 	// LENIENT target parse: `hub install` defines its own --tag= flag
 	// strict parsing previously rejected --tag= before cmdHubInstall saw
 	// it). Unknown --flags are rejected per-subcommand below.
