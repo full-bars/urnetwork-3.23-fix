@@ -278,6 +278,27 @@ func (self *transferQueue[T]) RemoveFirst() T {
 	return item
 }
 
+// UnorderedItems appends the queue's items to buf in whatever order the heap
+// holds them. For a caller that only needs to touch every item, which does not
+// pay for the sort AscendingItems does.
+func (self *transferQueue[T]) UnorderedItems(buf []T) []T {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return append(buf[:0], self.orderedItems...)
+}
+
+// AscendingItems appends the queue's items to buf in the queue's own order,
+// smallest first. The backing store is a heap, so only its head is ordered;
+// a caller that needs the whole run in order pays a sort, and passes its own
+// buffer so a hot path does not allocate per call.
+func (self *transferQueue[T]) AscendingItems(buf []T) []T {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	buf = append(buf[:0], self.orderedItems...)
+	slices.SortFunc(buf, self.cmp)
+	return buf
+}
+
 func (self *transferQueue[T]) PeekFirst() T {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()

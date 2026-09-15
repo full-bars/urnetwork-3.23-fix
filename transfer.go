@@ -215,6 +215,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: MemoryScaledByteCount(mib(2)+kib(512), kib(320)),
 		ReceiveQueueMinByteCount: kib(320),
+		ReceiveHoldPolicy:        ReceiveHoldCommittedPrefix,
 		AllowLegacyNack:          true,
 		MaxOpenReceiveContract:   4,
 		ProtocolVersion:          DefaultProtocolVersion,
@@ -502,6 +503,56 @@ type Client struct {
 	unreliableFlightMaximumLimit        atomic.Uint64
 	unreliableFlightMaximumMessages     atomic.Uint64
 	unreliableFlightMaximumMessageLimit atomic.Uint64
+
+	// receive-hold counters for the committed-prefix policy (THROUGHPUTFIX
+	// §37.20, ported from upstream 609cb1b6). receiveQueueEvictionCount and
+	// receiveQueueEvictionByteCount must stay at zero under
+	// ReceiveHoldCommittedPrefix: an acknowledged item is never discarded,
+	// which is what the policy buys over ReceiveHoldEvict. Under
+	// ReceiveHoldEvict they count a held item removed after it was already
+	// acknowledged, i.e. the withdrawal the committed-prefix policy exists to
+	// remove.
+	receiveQueueEvictionCount     atomic.Uint64
+	receiveQueueEvictionByteCount atomic.Uint64
+	// items evicted while still held tentatively (never acknowledged), so
+	// their removal costs the sender a resend rather than a withdrawal
+	receiveQueueTentativeEvictionCount     atomic.Uint64
+	receiveQueueTentativeEvictionByteCount atomic.Uint64
+	// held items that crossed the commit boundary and were acknowledged
+	receiveQueueCommitCount atomic.Uint64
+}
+
+// ReceiveQueueEvictionCount returns the number of held items that were
+// removed after already being acknowledged. Under ReceiveHoldCommittedPrefix
+// this stays zero; a nonzero value under that policy means the commit
+// boundary's gap estimate under-counted.
+func (self *Client) ReceiveQueueEvictionCount() uint64 {
+	return self.receiveQueueEvictionCount.Load()
+}
+
+// ReceiveQueueEvictionByteCount is the byte-count counterpart of
+// ReceiveQueueEvictionCount.
+func (self *Client) ReceiveQueueEvictionByteCount() uint64 {
+	return self.receiveQueueEvictionByteCount.Load()
+}
+
+// ReceiveQueueTentativeEvictionCount returns the number of held items that
+// were removed while still tentative (unacknowledged, below no withdrawal
+// cost) to admit an earlier arrival.
+func (self *Client) ReceiveQueueTentativeEvictionCount() uint64 {
+	return self.receiveQueueTentativeEvictionCount.Load()
+}
+
+// ReceiveQueueTentativeEvictionByteCount is the byte-count counterpart of
+// ReceiveQueueTentativeEvictionCount.
+func (self *Client) ReceiveQueueTentativeEvictionByteCount() uint64 {
+	return self.receiveQueueTentativeEvictionByteCount.Load()
+}
+
+// ReceiveQueueCommitCount returns the number of held items that crossed the
+// commit boundary and were acknowledged.
+func (self *Client) ReceiveQueueCommitCount() uint64 {
+	return self.receiveQueueCommitCount.Load()
 }
 
 var errTransferRouteWriteTimeout = errors.New("Timeout.")
@@ -4302,6 +4353,31 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 	return q
 }
 
+// ReceiveHoldPolicyKind decides what a full receive hold does with an
+// arrival that is earlier than what it holds (ported from upstream
+// 609cb1b6, THROUGHPUTFIX §37.20).
+type ReceiveHoldPolicyKind int
+
+const (
+	// Keep the hold sequence-earliest by evicting the latest held item, and
+	// acknowledge a held item only once it can no longer be evicted. The
+	// default: an evicted item below the commit boundary is never
+	// acknowledged, so its removal costs the sender a resend rather than a
+	// withdrawal of a selective acknowledgement it is already leasing for
+	// SelectiveAckTimeout.
+	ReceiveHoldCommittedPrefix ReceiveHoldPolicyKind = iota
+	// Evict the latest held item and acknowledge on admission. Kept as an
+	// arm for comparison: an evicted item was already acknowledged, so its
+	// removal is a withdrawal the sender learns of only from an
+	// acknowledgement-tail probe or the SelectiveAckTimeout lease.
+	ReceiveHoldEvict
+	// Refuse the arrival and never evict. Truthful, and it starves at high
+	// overrun because the only way a full hold empties is the head draining
+	// its contiguous prefix, and a middle gap that would extend that prefix
+	// is refused.
+	ReceiveHoldRefuse
+)
+
 type ReceiveBufferSettings struct {
 	GapTimeout  time.Duration
 	IdleTimeout time.Duration
@@ -4325,6 +4401,12 @@ type ReceiveBufferSettings struct {
 	ReceiveQueueMaxByteCount ByteCount
 	ReceiveQueueMinByteCount ByteCount
 	ReceiveQueueBudget       *TransferMemoryBudget
+
+	// ReceiveHoldPolicy decides what a full hold does with an arrival that
+	// is earlier than what it holds (THROUGHPUTFIX §37.20, ported from
+	// upstream 609cb1b6). Defaults to ReceiveHoldCommittedPrefix (the zero
+	// value).
+	ReceiveHoldPolicy ReceiveHoldPolicyKind
 
 	// whether to allow nacks without a contract_id
 	AllowLegacyNack bool
@@ -4591,6 +4673,14 @@ type ReceiveSequence struct {
 
 	receiveQueue       *receiveQueue
 	nextSequenceNumber uint64
+
+	// the largest message the hold has taken, the conservative estimate of
+	// what a missing item below the commit boundary would cost
+	// (committed-prefix hold policy, ported from upstream 609cb1b6).
+	maxHeldByteCount ByteCount
+	// reused by commitHeldPrefix so walking the hold in order allocates
+	// nothing per arrival.
+	heldScratch []*receiveItem
 
 	idleCondition *IdleCondition
 
@@ -4995,6 +5085,13 @@ func (self *ReceiveSequence) Run() {
 					}
 				}
 			}
+			// The delivery point has moved, so items that were held
+			// tentatively may now be safe: fewer items can be missing below
+			// them (committed-prefix hold policy, ported from upstream
+			// 609cb1b6/38d637c5).
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
+			}
 		}
 
 		checkpointId := self.idleCondition.Checkpoint()
@@ -5176,26 +5273,137 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			return self.receiveQueue.CanAdd(byteCount, self.receiveBufferSettings.ReceiveQueueMaxByteCount)
 		}
 
-		// remove later items to fit
-		for !canQueue(receivePack.MessageByteCount) {
-			lastItem := self.receiveQueue.PeekLast()
-			if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
+		// What a full hold does with an arrival earlier than what it holds
+		// (ported from upstream 609cb1b6/38d637c5, THROUGHPUTFIX §37.20).
+		// Refuse never removes anything; evict and committed-prefix both
+		// remove later held items to fit, in sequence order (newest first),
+		// but committed-prefix never removes an item once it has been
+		// acknowledged — that would be a withdrawal the sender is never told
+		// about.
+		if policy := self.receiveBufferSettings.ReceiveHoldPolicy; policy != ReceiveHoldRefuse {
+			for !canQueue(receivePack.MessageByteCount) {
+				lastItem := self.receiveQueue.PeekLast()
+				if lastItem == nil || lastItem.sequenceNumber <= receivePack.Pack.SequenceNumber {
+					break
+				}
+				if policy == ReceiveHoldCommittedPrefix && lastItem.committed {
+					// an acknowledged item is never discarded; the commit
+					// boundary is supposed to make this unreachable, and if
+					// it is reached the gap estimate under-counted
+					break
+				}
 				self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+				if lastItem.committed {
+					self.client.receiveQueueEvictionCount.Add(1)
+					self.client.receiveQueueEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
+				} else {
+					self.client.receiveQueueTentativeEvictionCount.Add(1)
+					self.client.receiveQueueTentativeEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
+				}
 				lastItem.messagePoolReturn()
-			} else {
-				break
 			}
 		}
 
 		if canQueue(receivePack.MessageByteCount) {
+			// the largest frame seen is the conservative gap estimate used by
+			// commitHeldPrefix: over-counting commits fewer items and costs
+			// churn at the boundary, under-counting commits an item that is
+			// later evicted, which is the lie the policy exists to remove
+			self.maxHeldByteCount = max(self.maxHeldByteCount, item.MessageByteCount())
 			self.receiveQueue.Add(item)
-			self.sendAck(sequenceNumber, messageId, true, item.tag, item.unwrapped)
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
+			} else {
+				item.committed = true
+				self.sendAck(sequenceNumber, messageId, true, item.tag, item.unwrapped)
+			}
 			return true, nil
 		} else {
 			self.log.V(1).Infof("[r]drop ack cannot queue %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
 			return false, nil
 		}
 	}
+}
+
+// commitHeldPrefix acknowledges every held item that can no longer be
+// evicted, and only those (THROUGHPUTFIX §37.20, ported from upstream
+// 609cb1b6/38d637c5).
+//
+// An item is evicted only by an earlier arrival at a full hold, so it is safe
+// once every item missing below it could arrive and it would still fit.
+// Sequence numbers are dense, one per Pack, so with the delivery point D and
+// the held items in ascending order the number missing below the i-th is
+// (seq_i - D) - i, and the item is committed when
+//
+//	missing_below(i) x maxFrameBytes + sum of held sizes through i <= capacity
+//
+// The boundary only rises as the head drains, and an item's acknowledgement
+// is sent as it crosses. One second-order cost: a tentative item gives the
+// sender no proving acknowledgement, so a gap just below the boundary
+// recovers on the paced resend rather than on gap recovery.
+func (self *ReceiveSequence) commitHeldPrefix() {
+	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	frameByteCount := max(self.maxHeldByteCount, 1)
+
+	// The whole hold commits together whenever the newest held item would
+	// survive every gap below it filling, which is the ordinary case: a
+	// sender honouring the advertisement never gives the hold more than it
+	// can take, and a hold well under capacity has room for its gaps
+	// whatever the sender does. Deciding that needs only the newest held
+	// item, the count and the byte total, all of which the queue answers
+	// without a walk, and it skips the sort the general case pays on every
+	// out-of-order arrival (THROUGHPUTFIX §37.20, ported from upstream
+	// 38d637c5).
+	heldCount, heldTotal := self.receiveQueue.QueueSize()
+	if heldCount == 0 {
+		return
+	}
+	if newest := self.receiveQueue.PeekLast(); newest != nil {
+		missing := int64(newest.sequenceNumber) -
+			int64(self.nextSequenceNumber) - int64(heldCount-1)
+		if missing < 0 {
+			missing = 0
+		}
+		if ByteCount(missing)*frameByteCount+heldTotal <= capacity {
+			self.heldScratch = self.receiveQueue.UnorderedItems(self.heldScratch)
+			for _, held := range self.heldScratch {
+				if held.committed {
+					continue
+				}
+				self.commitHeldItem(held)
+			}
+			return
+		}
+	}
+
+	// the general path: a hold genuinely under pressure, where the ordering
+	// matters and a sort is unavoidable
+	self.heldScratch = self.receiveQueue.AscendingItems(self.heldScratch)
+	heldByteCount := ByteCount(0)
+	for i, held := range self.heldScratch {
+		heldByteCount += held.MessageByteCount()
+		missing := int64(held.sequenceNumber) - int64(self.nextSequenceNumber) - int64(i)
+		if missing < 0 {
+			missing = 0
+		}
+		if capacity < ByteCount(missing)*frameByteCount+heldByteCount {
+			break
+		}
+		if held.committed {
+			continue
+		}
+		self.commitHeldItem(held)
+	}
+}
+
+// commitHeldItem acknowledges one held item as it crosses the commit
+// boundary.
+func (self *ReceiveSequence) commitHeldItem(held *receiveItem) {
+	held.committed = true
+	self.client.receiveQueueCommitCount.Add(1)
+	self.sendAck(held.sequenceNumber, held.messageId, true, held.tag, held.unwrapped)
 }
 
 func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error) {
@@ -5563,6 +5771,11 @@ type receiveItem struct {
 	// the wire as plaintext (no outer encrypted wrap). Propagated into
 	// the sequenceAck so the ack format mirrors the incoming pack.
 	unwrapped bool
+	// committed is set once this held item has been selectively
+	// acknowledged, which under the committed-prefix hold policy happens
+	// only when it can no longer be evicted (THROUGHPUTFIX §37.20). A
+	// committed item is never discarded.
+	committed bool
 }
 
 func (self *receiveItem) messagePoolReturn() {
