@@ -15,10 +15,10 @@ I want to understand what I'm setting up, choose between Docker and systemd, add
 **What you'll do:** Pick your install method, configure proxies, learn the basic commands.
 
 ## [🚀 Advanced — Production Fleet](advanced.md)
-I'm running multiple servers, tuning performance, setting up the hub dashboard, and need to know what to do when things go wrong.
+I'm running multiple servers, tuning performance, monitoring fleet health, and need to know what to do when things go wrong.
 
 **Time:** varies
-**What you'll learn:** Performance profiles, fleet management, hot-reload, hub setup, troubleshooting.
+**What you'll learn:** Performance profiles, fleet management, hot-reload, troubleshooting.
 
 ---
 

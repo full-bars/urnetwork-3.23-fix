@@ -249,14 +249,13 @@ func TestIsProviderArg(t *testing.T) {
 
 // TestIsProviderArgExcludesKnownSiblings: units/binaries sharing the
 // provider name as a PREFIX but denoting an unrelated sibling service
-// (dashboard apps, the hub, the updater) must never be treated as a
+// (dashboard apps, the updater) must never be treated as a
 // provider. dashboard cases are a live fleet false-positive (2026-08-17):
 // provider-dashboard{,-py,-rs}.service (unrelated monitoring services) were
 // swept into discovery, flooding the same-user candidate list and blocking
 // narrowToAccessible's auto-pick on a box with exactly one real provider.
 func TestIsProviderArgExcludesKnownSiblings(t *testing.T) {
 	nonProviders := []string{
-		"provider-hub",
 		"provider-update",
 		"provider-dashboard",
 		"provider-dashboard-py",

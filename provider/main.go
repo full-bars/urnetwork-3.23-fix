@@ -2991,8 +2991,6 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
-	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
-
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
 	go connect.HandleError(func() {
 		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
@@ -3959,7 +3957,7 @@ func provide(opts docopt.Opts) {
 		statusServer := &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: &Status{},
-			// Matches hub/main.go: guards against Slowloris-style connection
+			// Guards against Slowloris-style connection
 			// exhaustion (dribbled headers, opened-and-idle connections).
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,

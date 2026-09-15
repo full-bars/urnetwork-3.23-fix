@@ -643,7 +643,6 @@ jobs:
             "^transport_p2p_webrtc_android"
             "^connect_filtered_path"
             "^connectctl/"
-            "^hub/"
             "^mobile/"
             "\.aar$"
             "\.xcframework$"

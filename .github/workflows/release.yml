@@ -56,23 +56,6 @@ jobs:
             else echo "Build failed after 3 attempts"; exit 1; fi
           done
 
-      - name: Build hub
-        env:
-          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
-        run: |
-          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
-          for attempt in 1 2 3; do
-            echo "Build attempt $attempt..."
-            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-               go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
-               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub ./hub/; then
-              echo "Build succeeded"; break
-            fi
-            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
-            else echo "Build failed after 3 attempts"; exit 1; fi
-          done
-
       - name: Build urnet-tools (Go tool)
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
@@ -112,12 +95,6 @@ jobs:
         with:
           name: provider-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider
-
-      - name: Upload hub artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hub-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: bin/${{ matrix.goos }}/${{ matrix.goarch }}/hub
 
       - name: Upload urnet-tools artifact
         uses: actions/upload-artifact@v4
@@ -176,18 +153,6 @@ jobs:
         with:
           name: provider-windows-arm64
           path: release_tmp/windows/arm64/
-
-      - name: Download hub linux amd64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-linux-amd64
-          path: hub_tmp/amd64/
-
-      - name: Download hub linux arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-linux-arm64
-          path: hub_tmp/arm64/
 
       - name: Download urnet-tools linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -274,12 +239,6 @@ jobs:
           # Windows providers (downloaded file is named "provider", rename to .exe)
           cp release_tmp/windows/amd64/provider release_tmp/windows/amd64/provider.exe 2>/dev/null || true
           cp release_tmp/windows/arm64/provider release_tmp/windows/arm64/provider.exe 2>/dev/null || true
-          # Stamp hub binaries
-          find hub_tmp -name "hub*" -type f -exec chmod +x {} \;
-          mv hub_tmp/amd64/hub-linux-amd64 hub_tmp/amd64/hub 2>/dev/null || true
-          mv hub_tmp/arm64/hub-linux-arm64 hub_tmp/arm64/hub 2>/dev/null || true
-          cp hub_tmp/amd64/hub urnetwork-hub-${VERSION}-linux-amd64
-          cp hub_tmp/arm64/hub urnetwork-hub-${VERSION}-linux-arm64
           # Stamp tool binaries as standalone release assets named
           # <tool>-<os>-<arch> (e.g. urnet-tools-linux-amd64). The Go tool's
           # self-update + installers fetch exactly this name from the release.
@@ -375,8 +334,6 @@ jobs:
           files: |
             urnetwork-provider-*.tar.gz
             urnetwork-monitoring-*.tar.gz
-            urnetwork-hub-*-linux-amd64
-            urnetwork-hub-*-linux-arm64
             urnet-tools-*
             urnet-docker-*
           draft: false
@@ -450,16 +407,6 @@ jobs:
         with:
           name: provider-windows-arm64
           path: release_tmp/windows/arm64/
-      - name: Download hub linux amd64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-linux-amd64
-          path: release_tmp/linux/amd64/
-      - name: Download hub linux arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hub-linux-arm64
-          path: release_tmp/linux/arm64/
       - name: Download urnet-tools linux amd64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -551,8 +498,6 @@ jobs:
             release_tmp/darwin/arm64/provider \
             release_tmp/windows/amd64/provider \
             release_tmp/windows/arm64/provider \
-            release_tmp/linux/amd64/hub \
-            release_tmp/linux/arm64/hub \
             release_tmp/linux/amd64/urnet-tools \
             release_tmp/linux/arm64/urnet-tools \
             release_tmp/darwin/amd64/urnet-tools \

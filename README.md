@@ -21,7 +21,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
 | Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
-| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and optional telemetry (`dev/hub`) |
+| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
 | Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
@@ -230,7 +230,7 @@ The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
 
 > [!NOTE]
-> **Legacy Central Dashboard:** The multi-node aggregation hub dashboard has been transitioned to an optional add-on. Development and maintenance are tracked on the [`dev/hub`](https://github.com/full-bars/urnetwork-3.23-fix/tree/dev/hub) branch of `urnetwork-3.23-fix` and the [`dev/hub`](https://github.com/full-bars/meso-miner/tree/dev/hub) branch of `meso-miner`. For setup details, see [Hub Setup](docs/Hub-Setup.md).
+> **Fleet Dashboard (Deprecated):** The multi-node aggregation hub dashboard has been removed as of v31.3+. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](docs/Monitoring.md), or Grafana for custom dashboards. Historical documentation is retained at [Hub Setup](docs/Hub-Setup.md) and [Hub Dashboard](docs/Hub-Dashboard.md) for reference.
 
 ---
 
@@ -255,8 +255,9 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - [Node Identity & Dashboard Label](docs/Node-Identity.md)
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
-- [Hub Setup](docs/Hub-Setup.md)
-- [Hub Dashboard](docs/Hub-Dashboard.md)
+- [Monitoring](docs/Monitoring.md)
+- [Hub Setup](docs/Hub-Setup.md) *(deprecated — removed in v31.3+)*
+- [Hub Dashboard](docs/Hub-Dashboard.md) *(deprecated — removed in v31.3+)*
 - [Project Structure](docs/Project-Structure.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)

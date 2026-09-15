@@ -71,7 +71,7 @@ All examples below mount a config volume at `/root/.urnetwork`. With this volume
 
 The examples below use `urfix` as the container name.
 
-#### With proxy benchmarking and bandwidth hub:
+#### With proxy benchmarking:
 
 ```bash
 docker run -d --name urfix \
@@ -80,7 +80,6 @@ docker run -d --name urfix \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -e URNETWORK_PROXY_BENCHMARK=true \
   -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
-  -e URNETWORK_REPORT_URL=http://hub-server:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
@@ -89,10 +88,6 @@ docker run -d --name urfix \
 | `PROXY_URL` | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](Proxy-URL-Sources.md)) |
 | `URNETWORK_PROXY_BENCHMARK=true` | Enables per-proxy latency probes (TCP connect every 5m, SOCKS5 every 15m) |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
-| `URNETWORK_REPORT_URL` | URL for bandwidth hub reporting. Can be changed at runtime via `urnet-tools report <url>` (writes `~/.urnetwork/report_url` via docker exec). |
-
-> [!TIP]
-> `hub-server` above needs to be running the hub itself somewhere. If that host doesn't have systemd (Windows, macOS, or you just prefer containers), the hub can also run in Docker — see [Hub Setup](Hub-Setup.md#running-the-hub-in-docker-windows--mac--any-host).
 
 For additional containers, change the container name and volumes together.
 
@@ -337,7 +332,10 @@ View a single-pane fleet overview showing proxy counts by source (file vs URL), 
 docker exec -it <container> provider proxy summary
 ```
 
-## 📡 Report URL
+## 📡 Report URL (Deprecated)
+
+> [!WARNING]
+> **Deprecated (v31.3+):** Bandwidth hub reporting has been removed. The `report_url` file and `urnet-tools report` command are no longer functional. This section is retained for historical reference.
 
 Set or check the hub report URL at runtime without restarting. Uses `~/.urnetwork/report_url` inside the container:
 

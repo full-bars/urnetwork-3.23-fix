@@ -95,7 +95,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 }
 
 // cmdReport implements `urnet-tools report <url> [target]`: it writes the
-// hub-report URL override file (~/.urnetwork/report_url) in the provider's
+// report URL override file (~/.urnetwork/report_url) in the provider's
 // state dir. The provider's bandwidth reporter re-reads that file every
 // tick, so the change takes effect without a restart. The provider binary
 // has NO report subcommand — delegating to it printed auth usage and did
@@ -134,7 +134,7 @@ func cmdReport(args []string) error {
 	return nil
 }
 
-// writeReportURL writes the hub-report override via the provider's control
+// writeReportURL writes the report override via the provider's control
 // socket, falling back to pending_overrides.json when the provider is stopped.
 // For "off", clears the control-state so the provider stops reporting.
 func writeReportURL(p Provider, url string) error {
@@ -220,20 +220,7 @@ Proxy Management [target]:
   proxy traffic                   📈  real-time bandwidth + client session load
   proxy remove-dead               💀  interactively prune dead/degraded/failing
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
-  report [<url>|off]              📡  set hub report URL at runtime (no restart)
-
-Hub Management [target]:
-  hub set <host:port>             📡  configure hub report URL
-  hub off                         📴  stop reporting to hub (no restart)
-  hub install [--tag=TAG]         📦  install hub as a systemd service
-  hub init [--password PW]        🔐  provision the hub (TLS :8443 + CA cert)
-  hub link <url> [--token]        🔗  fetch hub CA + enable TLS trust
-  hub unlink                      🔓  remove hub trust + stop reporting
-  hub test <url>                  🔍  verify TLS to the hub against saved pin
-  hub onboard-cmd                 📋  mint a fleet onboard-token one-liner
-  hub show-password               👁   print the hub CA password
-  hub update [--tag=TAG]          ⬆   update the hub binary
-  hub open-port <port>            🚪  open a TCP port in firewall (Linux)
+  report [<url>|off]              📡  set report URL at runtime (no restart)
 
 Maintenance [target]:
   reinstall                       🔧  reinstall provider

@@ -81,9 +81,9 @@ Quick jump:
 | `URNETWORK_PPROF` | - | Set to a `host:port` to enable the loopback-only diagnostics server (e.g. `127.0.0.1:6060`). Off by default. Serves `/debug/pprof/*`, `/metrics/pool`, and `/metrics/errors`; only literal loopback IPs are accepted (hostnames are rejected). Pull profiles via an SSH tunnel, e.g. `ssh -L 6060:127.0.0.1:6060 host` then `go tool pprof http://127.0.0.1:6060/debug/pprof/profile`. |
 | `URNETWORK_PROXY_BENCHMARK` | - | Set to `true` to enable per-proxy latency monitoring. Off by default. Probes: TCP connect every 5 min (raw RTT to proxy port), SOCKS5 CONNECT every 15 min (end-to-end through proxy). Staggered startup jitter prevents thundering herd. ~104 GB/month at 10k proxies. |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
-| `URNETWORK_REPORT_URL` | - | HTTP URL of a bandwidth hub server. When set, the provider POSTs a JSON report with per-proxy metrics (Clients, TotalRx/Tx, BillableRx/Tx). See `hub/main.go` for the server. Can be changed at runtime without restart by writing to `~/.urnetwork/report_url` (or using `urnet-tools report <url>`). |
-| `URNETWORK_REPORT_INTERVAL` | `5m` | How often bandwidth reports are posted to `URNETWORK_REPORT_URL`. Accepts Go duration strings such as `30s` or `2m`. Minimum `10s`. The `5m` default keeps the hub's historical SQLite write volume modest across a large fleet; lower it where a more live dashboard matters. |
-| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | Provider heartbeat cadence to the hub (minimum `5s`). Shortening it fleet-wide can thundering-herd the hub. |
+| `URNETWORK_REPORT_URL` | - | *(Deprecated v31.3+)* HTTP URL of a bandwidth hub server. Was used to POST JSON reports with per-proxy metrics. See `docs/Hub-Dashboard.md` for historical reference. |
+| `URNETWORK_REPORT_INTERVAL` | `5m` | *(Deprecated v31.3+)* How often bandwidth reports were posted to `URNETWORK_REPORT_URL`. No longer functional. |
+| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | *(Deprecated v31.3+)* Provider heartbeat cadence to the hub. No longer functional. |
 | `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
 | `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
@@ -187,7 +187,7 @@ You can view the full list of dead and degraded proxies, as well as a live event
 > The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).
 
 > [!NOTE]
-> The status server (served on the provider's `--port`) sets `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s`, matching the hub, so dribbled-header (Slowloris-style) clients cannot hold connections open indefinitely; `WriteTimeout` is deliberately unset so live streams are not killed.
+> The status server (served on the provider's `--port`) sets `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s` to prevent dribbled-header (Slowloris-style) clients from holding connections open indefinitely; `WriteTimeout` is deliberately unset so live streams are not killed.
 
 ## 🩹 Pressure system (self-heal)
 
@@ -207,7 +207,7 @@ These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicte
 - The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
 - An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
 
-Check current state with `urnet-tools self-heal status`, which prints the on/off toggle plus the live score, per-component breakdown, and target pool size from `~/.urnetwork/pressure_status`. The status file also reports `gc_state` and `heap_frac`, the adaptive GC governor's current level and live heap fraction. The same score is included as `pressure` in bandwidth hub reports.
+Check current state with `urnet-tools self-heal status`, which prints the on/off toggle plus the live score, per-component breakdown, and target pool size from `~/.urnetwork/pressure_status`. The status file also reports `gc_state` and `heap_frac`, the adaptive GC governor's current level and live heap fraction.
 
 > [!NOTE]
 > The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core, etc.) are properties of what each metric means — e.g. "a box stalled on memory 60% of the time is exhausted" holds regardless of core count or RAM size. They are not per-server capacity tuning knobs.

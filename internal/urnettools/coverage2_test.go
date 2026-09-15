@@ -168,53 +168,6 @@ func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	}
 }
 
-// TestUnitDropinDirNoUnit: a provider with no owning unit cannot resolve a
-// drop-in directory — writeDropinEnv/removeDropinEnv must fail fast rather
-// than writing to a guessed path.
-func TestUnitDropinDirNoUnit(t *testing.T) {
-	_, err := unitDropinDir(Provider{})
-	if err == nil {
-		t.Fatal("expected error for provider with no unit")
-	}
-	if !contains(err.Error(), "no owning unit") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestUnitDropinDirUnresolvableUser: a user-level unit whose home can't be
-// resolved via getent must error rather than falling back to a relative or
-// guessed path.
-func TestUnitDropinDirUnresolvableUser(t *testing.T) {
-	bogus := "urnet-tools-test-nonexistent-user-9f3a"
-	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service", User: bogus}
-	_, err := unitDropinDir(p)
-	if err == nil {
-		t.Fatal("expected error for unresolvable user home")
-	}
-	if !contains(err.Error(), "cannot resolve home") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestRemoveDropinEnvMissingFile: removing a drop-in that was never written
-// must be a clean no-op, not an error — a provider that never had the
-// setting toggled should be able to run `off` safely.
-func TestRemoveDropinEnvMissingFile(t *testing.T) {
-	// unitDropinDir for a system unit resolves under /etc/systemd/system,
-	// which is not writable in a test sandbox — instead exercise the
-	// documented "file does not exist" branch directly against a synthetic
-	// path via a provider whose unit resolves to a system dir we don't own.
-	// Since we cannot safely write there, assert the specific no-file
-	// message is produced without attempting a restart.
-	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service"}
-	err := removeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL")
-	// System-unit branch: file under /etc/systemd/system/<unit>.d/hub.conf
-	// will not exist, so this must return nil (informational message only).
-	if err != nil {
-		t.Fatalf("removing a nonexistent drop-in should be a clean no-op, got %v", err)
-	}
-}
-
 // TestContainerIDByNameNoDocker: with no docker daemon reachable (or the
 // dockerCLI stubbed to a nonexistent binary), containerIDByName must return
 // "" rather than panicking or propagating the exec error.

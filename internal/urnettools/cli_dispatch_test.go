@@ -17,7 +17,7 @@ func TestRunHelpEveryCommand(t *testing.T) {
 		"providers", "list", "ps",
 		"status", "update", "proxy",
 		"summary", "report",
-		"start", "stop", "restart", "logs", "hub",
+		"start", "stop", "restart", "logs",
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
 		"uninstall", "reinstall",
@@ -150,15 +150,6 @@ func TestRunAutoStartAutoUpdateRequireArgs(t *testing.T) {
 	}
 }
 
-// TestRunHubNoSubcommand: `hub` with no further args must error before any
-// targeting happens.
-func TestRunHubNoSubcommand(t *testing.T) {
-	err := Run([]string{"hub"})
-	if err == nil || !strings.Contains(err.Error(), "requires a subcommand") {
-		t.Errorf("Run([hub]) = %v, want \"requires a subcommand\"", err)
-	}
-}
-
 // TestRunUnknownFlagPropagates: an unknown --flag reaching the strict
 // parseTargetFlags parser (via cmdStatus) must error, proving parseGlobalFlags
 // correctly leaves non-global flags in rest for the subcommand parser.
@@ -225,7 +216,7 @@ func TestRunDockerHelpEveryCommand(t *testing.T) {
 	for _, cmd := range []string{
 		"providers", "list", "ps", "status", "start", "stop", "restart", "logs",
 		"auth", "choose-network", "choose_network", "summary", "report",
-		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "hub", "session",
+		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "session",
 		"proxy",
 	} {
 		for _, flag := range []string{"-h", "--help"} {
@@ -271,7 +262,6 @@ func TestRunDockerNoContainers(t *testing.T) {
 		{"self-heal"},
 		{"set"},
 		{"fast-auth"},
-		{"hub"},
 		{"session"},
 	} {
 		err := RunDocker(args)
@@ -550,7 +540,6 @@ func TestUsageContainsExpectedSections(t *testing.T) {
 		"Core Commands",
 		"Performance",
 		"Proxy Management",
-		"Hub Management",
 		"Maintenance",
 		"Targeting rules",
 		"Force",

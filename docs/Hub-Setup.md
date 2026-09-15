@@ -1,6 +1,12 @@
 # Hub Setup Guide
 
-The Hub is a standalone dashboard binary that aggregates bandwidth and health reports from every provider node in your fleet into one live view. This guide covers installing it, pointing providers at it, securing it, and keeping it running.
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub dashboard has been removed from the codebase. This document is retained for historical reference only. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](Monitoring.md), or Grafana for custom dashboards.
+
+> [!CAUTION]
+> **All instructions below are historical and non-actionable.** The `hub/` package and all `hub` subcommands (`hub install`, `hub init`, `hub link`, `hub set`, `hub off`, etc.) have been removed from the codebase as of v31.3+. The content below is retained solely as a historical reference for operators who previously ran the hub. Do not attempt to follow these steps on a current build.
+
+The Hub is a standalone dashboard binary that aggregated bandwidth and health reports from every provider node in your fleet into one live view.
 
 > [!TIP]
 > For a full feature tour (dashboard columns, SSE, JSON API, report format), see [Hub-Dashboard.md](Hub-Dashboard.md). This page is the setup walkthrough.

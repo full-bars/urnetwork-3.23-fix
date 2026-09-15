@@ -150,7 +150,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	}
 	switch sub {
 	case "on", "off":
-		// Mirrors the audit-trail + confirm convention used by hub set/off and
+		// Mirrors the audit-trail + confirm convention used by report set/off and
 		// the tune commands: even -f prints the target line to stderr; without
 		// -f the operator must type an explicit yes.
 		ok, err := confirmGate("fast-auth "+sub+" "+providerLabel(p), p, force, dryRun)
@@ -221,7 +221,7 @@ var setKeyFiles = map[string]string{
 
 // setKeyHelps describes each key for `set help` / usage.
 var setKeyHelps = []string{
-	"  node-name           <string>      node name reported to the fleet hub (default: hostname)",
+	"  node-name           <string>      node name reported to the fleet (default: hostname)",
 	"  report-url          <url>|off     bandwidth report destination URL",
 	"  report-interval     <duration>    bandwidth report cadence (default: 5m, min: 10s)",
 	"  fast-auth           on|off        bypass auth rate limiter",

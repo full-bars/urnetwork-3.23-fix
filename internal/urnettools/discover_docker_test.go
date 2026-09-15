@@ -32,7 +32,6 @@ func TestIsProviderArgStillRejectsSiblingsWithUnderscores(t *testing.T) {
 	for _, name := range []string{
 		"urnetwork_sentinel_update",
 		"urnetwork_update",
-		"urnetwork_hub",
 	} {
 		if isProviderArg(name) {
 			t.Errorf("isProviderArg(%q) = true, want false; it is a non-provider sibling", name)

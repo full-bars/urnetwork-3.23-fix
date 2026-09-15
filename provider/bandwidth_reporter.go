@@ -3,15 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
-	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +15,6 @@ import (
 	"runtime/metrics"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -67,7 +62,7 @@ type systemMetrics struct {
 
 // proxyStatus is the compact per-proxy fields a heartbeat carries — status
 // and contract counters only, no byte-level detail. json tags must match
-// hub/main.go's proxyStatus.
+// the upstream proxyStatus.
 type proxyStatus struct {
 	ID                string `json:"id"`
 	Status            string `json:"status"`
@@ -76,10 +71,10 @@ type proxyStatus struct {
 }
 
 // heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
-// bandwidthReport: no byte-level detail, just enough for the hub to keep
+// bandwidthReport: no byte-level detail, just enough for the server to keep
 // "last seen", the Mbps rate, and per-proxy status/contracts live between
 // the much less frequent full /api/report ticks (5-15m default). Its json
-// tags must stay in sync with hub/main.go's heartbeatReport. Proxies is
+// tags must stay in sync with the upstream heartbeatReport. Proxies is
 // sparse by the time it's marshaled — see filterChangedProxies, applied by
 // runHeartbeatReporter before sending.
 type heartbeatReport struct {
@@ -94,8 +89,8 @@ type heartbeatReport struct {
 }
 
 // reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
-// can write at any time to set, change, or disable (write "off") the hub
-// target without restarting the provider. It takes precedence over
+// can write at any time to set, change, or disable (write "off") the
+// report target without restarting the provider. It takes precedence over
 // URNETWORK_REPORT_URL, which is read once at process start and otherwise
 // can't be changed without a restart.
 func reportURLOverridePath() (string, error) {
@@ -109,12 +104,12 @@ func reportURLOverridePath() (string, error) {
 // reportURLOverrideOff is the literal override-file content that force-
 // disables reporting, distinct from a blank file (which is a no-op that
 // falls back to envFallback — see resolveReportURL). This lets urnet-tools
-// hub off turn reporting off for an already-running process without a
-// restart, the same way hub set/link turn it on.
+// report off turn reporting off for an already-running process without a
+// restart, the same way report set/link turn it on.
 const reportURLOverrideOff = "off"
 
 // resolveReportURL checks the control-socket state first (see
-// control_state.go — set live via `urnet-tools hub set/off`), then falls
+// control_state.go — set live via `urnet-tools report set/off`), then falls
 // back to the legacy override file, then to envFallback. Re-resolved on
 // every call so a change takes effect on the reporter's next tick.
 // envFallback is the value captured from URNETWORK_REPORT_URL at startup,
@@ -142,7 +137,7 @@ func resolveReportURL(envFallback string) string {
 }
 
 // nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
-// write at any time to change the node identity reported to the hub without
+// write at any time to change the node identity reported to the fleet without
 // restarting. An empty file or missing file falls back to the startup hostname.
 func nodeNameOverridePath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -173,7 +168,7 @@ func resolveNodeName(startupName string) string {
 }
 
 // reportIntervalOverridePath returns ~/.urnetwork/report_interval, a file an
-// operator can write at any time to change the hub report cadence without
+// operator can write at any time to change the report cadence without
 // restarting the provider. It takes precedence over URNETWORK_REPORT_INTERVAL,
 // which is read once at process start.
 func reportIntervalOverridePath() (string, error) {
@@ -210,20 +205,18 @@ func resolveReportInterval(startupInterval time.Duration) time.Duration {
 }
 
 // runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
-// system metrics to the fleet hub. The target is re-resolved every tick via
+// system metrics to the fleet. The target is re-resolved every tick via
 // resolveReportURL, so writing a URL (or "off") to ~/.urnetwork/report_url
-// turns reporting on, off, or repoints it at a different hub without a
+// turns reporting on, off, or repoints it at a different target without a
 // restart; envReportURL is only the startup-time fallback used when that
 // file doesn't exist or is blank. It is a best-effort telemetry loop: failures are logged but never
 // retried beyond the next tick. The cadence defaults to 5m and is
 // overridable via URNETWORK_REPORT_INTERVAL (min 10s). The 5m default keeps
-// the hub's historical SQLite write volume modest across a large fleet; set a
+// the server's historical SQLite write volume modest across a large fleet; set a
 // shorter interval where a more live dashboard matters. The bandwidthReport /
-// proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
-// here in sync with hub/main.go.
+// proxyReport JSON shape mirrors what the server decodes, so keep the json tags
+// here in sync with the upstream.
 func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
-	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
-
 	interval := 5 * time.Minute
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 10*time.Second {
@@ -233,7 +226,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	_ = interval // keep the variable for resolveReportInterval; client created per tick below
 
 	// startup jitter so a fleet that restarts together doesn't post on the same
-	// wall-clock boundary and thundering-herd the hub. mirrors the proxy
+	// wall-clock boundary and thundering-herd the server. mirrors the proxy
 	// benchmark probes' jittered start.
 	select {
 	case <-ctx.Done():
@@ -252,7 +245,6 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	var client *http.Client
 	activeReportURL := ""
 	activeInterval := interval
-	var activeCACert []byte // nil = not yet read, empty = no CA cert
 	for {
 		select {
 		case <-ctx.Done():
@@ -274,13 +266,11 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		activeHost := resolveNodeName(host)
 
 		reportURL := resolveReportURL(envReportURL)
-		caCert, _ := loadHubCACert()
-		if reportURL != activeReportURL || !bytes.Equal(caCert, activeCACert) {
-			activeCACert = caCert
+		if reportURL != activeReportURL {
 			client = newClientForURL(reportURL)
 			activeReportURL = reportURL
 			if reportURL == "" {
-				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
+				tlog("[report] reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
 				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, activeInterval, nodeID)
 			}
@@ -314,20 +304,17 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if hubToken != "" {
-			req.Header.Set("Authorization", "Bearer "+hubToken)
-		}
 		resp, err := client.Do(req)
 		if err != nil {
 			tlog("[report] post failed: %v\n", err)
 			continue
 		}
-		// surface a rejecting hub instead of silently treating any response as
+		// surface a rejecting server instead of silently treating any response as
 		// success. without this a 401/404/5xx looks identical to a 200 and the
 		// fleet dashboard goes stale with no signal on the provider side. the
 		// report cadence already rate-limits this, so log every occurrence.
 		if resp.StatusCode/100 != 2 {
-			tlog("[report] hub rejected report: %s\n", resp.Status)
+			tlog("[report] server rejected report: %s\n", resp.Status)
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -435,14 +422,14 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 }
 
 // maxHeartbeatBackoff caps how far consecutive-failure backoff can stretch
-// the heartbeat interval. A fleet-wide hub outage on a flaky link (e.g.
+// the heartbeat interval. A fleet-wide server outage on a flaky link (e.g.
 // Detroit) should quiet down to at most one attempt every 5m per node
 // rather than retrying every base interval indefinitely.
 const maxHeartbeatBackoff = 5 * time.Minute
 
 // nextHeartbeatInterval doubles the wait for each consecutive heartbeat
 // failure (base, 2x, 4x, 8x, ...), capped at maxHeartbeatBackoff, so a
-// fleet doesn't retry-storm a hub that's down or unreachable. Resets to
+// fleet doesn't retry-storm a server that's down or unreachable. Resets to
 // base as soon as a heartbeat succeeds (consecutiveFailures back to 0).
 func nextHeartbeatInterval(base time.Duration, consecutiveFailures int) time.Duration {
 	if consecutiveFailures <= 0 {
@@ -514,8 +501,8 @@ func filterChangedProxies(prev map[string]proxyStatus, current []proxyStatus) ([
 	return changed, next
 }
 
-// postHeartbeat marshals and POSTs a heartbeat to the hub. Returns true on 2xx.
-func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken string, hb heartbeatReport) bool {
+// postHeartbeat marshals and POSTs a heartbeat to the report URL. Returns true on 2xx.
+func postHeartbeat(ctx context.Context, client *http.Client, apiURL string, hb heartbeatReport) bool {
 	body, err := json.Marshal(hb)
 	if err != nil {
 		return false
@@ -525,9 +512,6 @@ func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken st
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if hubToken != "" {
-		req.Header.Set("Authorization", "Bearer "+hubToken)
-	}
 	resp, err := client.Do(req)
 	ok := err == nil && resp.StatusCode/100 == 2
 	if err == nil {
@@ -538,16 +522,14 @@ func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken st
 }
 
 // runHeartbeatReporter periodically POSTs a lightweight liveness/rate ping
-// to the hub's /api/heartbeat, on a much shorter cadence than
+// to the server's /api/heartbeat, on a much shorter cadence than
 // runBandwidthReporter's full /api/report (default 15s vs 5m). It shares
-// resolveReportURL/resolveNodeName with the full reporter so hub target and
-// node name changes apply to both without a restart. The hub only accepts a
+// resolveReportURL/resolveNodeName with the full reporter so report target and
+// node name changes apply to both without a restart. The server only accepts a
 // heartbeat for a node it already knows about (established by a prior full
-// report), so an all-heartbeats-rejected hub log is expected right after a
+// report), so an all-heartbeats-rejected server log is expected right after a
 // provider restart until the first /api/report lands.
 func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
-	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
-
 	baseInterval := 15 * time.Second
 	if s := os.Getenv("URNETWORK_HEARTBEAT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 5*time.Second {
@@ -568,10 +550,10 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 	defer func() { ticker.Stop() }()
 
 	// The client is cached across ticks and only rebuilt when the target
-	// hub URL changes, so a 15s heartbeat cadence doesn't pay a fresh
+	// report URL changes, so a 15s heartbeat cadence doesn't pay a fresh
 	// TCP+TLS handshake every tick the way a client-per-request would — at
 	// fleet scale (dozens of nodes) that handshake cost is what actually
-	// stresses a hub on a flaky link, not the ~200-byte JSON payload.
+	// stresses a server on a flaky link, not the ~200-byte JSON payload.
 	var client *http.Client
 	var activeReportURL string
 	consecutiveFailures := 0
@@ -606,7 +588,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 		const maxHeartbeatProxies = 200
 		if len(changedProxies) <= maxHeartbeatProxies {
 			hb.Proxies = changedProxies
-			allOK := postHeartbeat(ctx, client, apiURL, hubToken, hb)
+			allOK := postHeartbeat(ctx, client, apiURL, hb)
 			if allOK {
 				prevProxyStatus = nextProxyStatus
 				consecutiveFailures = 0
@@ -622,7 +604,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 				}
 				batch := changedProxies[i:end]
 				hb.Proxies = batch
-				if ok := postHeartbeat(ctx, client, apiURL, hubToken, hb); ok {
+				if ok := postHeartbeat(ctx, client, apiURL, hb); ok {
 					for _, p := range batch {
 						prevProxyStatus[p.ID] = nextProxyStatus[p.ID]
 					}
@@ -638,7 +620,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 			}
 		}
 
-		// A flaky link to the hub (e.g. an outage) shouldn't have every
+		// A flaky link to the server (e.g. an outage) shouldn't have every
 		// node in the fleet retry-storming it every base interval — back
 		// off the next tick's wait on consecutive failures, capped, and
 		// snap straight back to baseInterval the moment it recovers.
@@ -666,306 +648,27 @@ func parseProxyIndex(key string) int {
 	return n
 }
 
-func hubPinPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "hub.pin"), nil
-}
-
-func loadPinnedFPs() map[string]bool {
-	pins := map[string]bool{}
-	path, err := hubPinPath()
-	if err != nil {
-		return pins
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return pins
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			pins[line] = true
-		}
-	}
-	return pins
-}
-
-var loggedLegacyPinDeprecation atomic.Bool
-
 func newClientForURL(reportURL string) *http.Client {
 	if !strings.HasPrefix(reportURL, "https://") {
 		return &http.Client{Timeout: 10 * time.Second}
 	}
 
-	// CA-based verification
-	if pool, ok := loadHubCAPool(); ok {
-		serverName := ""
-		if u, err := url.Parse(reportURL); err == nil {
-			if host := u.Hostname(); host != "" && net.ParseIP(host) == nil {
-				serverName = host
-			}
-		}
-		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					MinVersion:         tls.VersionTLS12,
-					InsecureSkipVerify: true, // we verify via VerifyConnection
-					VerifyConnection:   verifyHubChain(pool, serverName),
-				},
-			},
-		}
-	}
-
-	// Legacy fingerprint pinning (deprecated)
-	pins := loadPinnedFPs()
-	if len(pins) > 0 {
-		if loggedLegacyPinDeprecation.CompareAndSwap(false, true) {
-			tlog("[hub] hub.pin is deprecated — re-run 'urnet-tools hub link' to switch to CA-based trust\n")
-		}
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("no peer certificates")
-			}
-			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(cs.PeerCertificates[0].Raw))
-			if pins[fp] {
-				return nil
-			}
-			return fmt.Errorf("certificate fingerprint %s is not pinned", fp)
-		}
-		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
-			},
-		}
-	}
-
-	// Try system CA pool (works with Cloudflare Tunnel, Caddy+LE, etc.)
+	// Clone DefaultTransport to inherit ProxyFromEnvironment, HTTP/2,
+	// and sane dial/TLS defaults. A bare &http.Transport{} loses all of
+	// these, breaking proxies behind corporate firewalls and degrading
+	// performance to HTTP/1.1 only.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if pool, err := x509.SystemCertPool(); err == nil {
+		tr.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+		}
 		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
-					RootCAs:    pool,
-				},
-			},
+			Timeout:   10 * time.Second,
+			Transport: tr,
 		}
 	}
 
-	// Fail closed - no trust material
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					return fmt.Errorf("no hub CA installed — run 'urnet-tools hub link https://hub:port' or hub onboarding before using HTTPS")
-				},
-			},
-		},
-	}
-}
-
-func hubCACertPath() (string, error) {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, ".urnetwork", "hub_ca.pem"), nil
-}
-
-func loadHubCACert() ([]byte, bool) {
-	path, err := hubCACertPath()
-	if err != nil {
-		return nil, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
-
-func loadHubCAPool() (*x509.CertPool, bool) {
-	data, ok := loadHubCACert()
-	if !ok {
-		return nil, false
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, false
-	}
-	return pool, true
-}
-
-// bootstrapHubCA fetches the hub's CA certificate at provider startup using
-// the hub token, so Docker users can deploy containers already authenticated
-// to their hub without running urnet-tools hub link manually.
-//
-// It tries a certificate-verified fetch first (system trust store) — this is
-// the fully safe path and covers hubs behind Cloudflare Tunnel or Caddy+LE
-// with a publicly-trusted cert; the hub token is never sent over an
-// unverified connection there. Only if that fails (the common case for a
-// direct password-derived CA hub, whose leaf isn't in any public trust store
-// yet) does it fall back to an unverified fetch, which is a TOFU bootstrap:
-// the token is sent before the hub's identity can be confirmed, and a
-// network attacker present at that exact moment could read it or hand back a
-// forged CA cert. That fallback is intentionally kept (it's what makes
-// zero-touch Docker bootstrap possible at all) but is logged loudly so it's
-// never a silent tradeoff — operators who can't accept it on their network
-// should run 'urnet-tools hub link' manually instead, which requires an
-// explicit onboard token rather than the standing fleet-wide hub token.
-//
-// Once the CA cert is written to hub_ca.pem, newClientForURL picks it up for
-// proper chain verification on all subsequent requests.
-func bootstrapHubCA(ctx context.Context, reportURL, hubToken string) {
-	if reportURL == "" || hubToken == "" {
-		return
-	}
-	if !strings.HasPrefix(reportURL, "https://") {
-		return
-	}
-
-	caPath, err := hubCACertPath()
-	if err != nil {
-		tlog("[hub] CA cert path error: %v\n", err)
-		return
-	}
-
-	if _, err := os.Stat(caPath); err == nil {
-		return
-	}
-
-	apiURL, err := url.JoinPath(reportURL, "/api/ca-cert")
-	if err != nil {
-		tlog("[hub] bootstrap URL error: %v\n", err)
-		return
-	}
-
-	tlog("[hub] bootstrapping CA cert from %s\n", apiURL)
-
-	caPEM, ok := fetchHubCACert(ctx, apiURL, hubToken, &http.Client{Timeout: 10 * time.Second})
-	if !ok {
-		tlog("[hub] WARNING: verified CA cert fetch failed (expected for a direct password-derived CA hub) — falling back to an unverified fetch. The hub token will be sent before the hub's identity is confirmed. Only safe if hub and provider share a trusted network at boot; run 'urnet-tools hub link %s' manually instead if you can't accept that.\n", reportURL)
-		insecureClient := &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		caPEM, ok = fetchHubCACert(ctx, apiURL, hubToken, insecureClient)
-		if !ok {
-			return
-		}
-	}
-
-	if err := writeHubCACertAtomic(caPath, caPEM); err != nil {
-		tlog("[hub] bootstrap CA cert write error: %v\n", err)
-		return
-	}
-
-	tlog("[hub] CA cert installed from hub token bootstrap\n")
-}
-
-// fetchHubCACert performs the actual GET against /api/ca-cert and extracts
-// ca_pem from the response. Errors are logged by the caller (the verified
-// attempt fails silently into the caller's fallback branch; the caller logs
-// once there instead of twice).
-func fetchHubCACert(ctx context.Context, apiURL, hubToken string, client *http.Client) (string, bool) {
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		tlog("[hub] bootstrap request error: %v\n", err)
-		return "", false
-	}
-	req.Header.Set("Authorization", "Bearer "+hubToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		tlog("[hub] bootstrap CA cert rejected: %s — %s\n", resp.Status, strings.TrimSpace(string(body)))
-		return "", false
-	}
-
-	var result struct {
-		CAPEM string `json:"ca_pem"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		tlog("[hub] bootstrap CA cert parse error: %v\n", err)
-		return "", false
-	}
-
-	if result.CAPEM == "" {
-		tlog("[hub] bootstrap CA cert response missing ca_pem\n")
-		return "", false
-	}
-
-	return result.CAPEM, true
-}
-
-// writeHubCACertAtomic writes the CA cert via temp-file-then-rename so a
-// crash or power loss mid-write can never leave a truncated hub_ca.pem on
-// disk — the bootstrap's "skip if the file already exists" check in
-// bootstrapHubCA depends on that file only ever existing in a complete state.
-func writeHubCACertAtomic(caPath, caPEM string) error {
-	dir := filepath.Dir(caPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(dir, ".hub_ca.pem.tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once the rename below succeeds
-
-	if _, err := tmp.WriteString(caPEM + "\n"); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpPath, caPath)
-}
-
-func verifyHubChain(pool *x509.CertPool, serverName string) func(cs tls.ConnectionState) error {
-	return func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("no peer certificates")
-		}
-
-		intermediates := x509.NewCertPool()
-		for _, cert := range cs.PeerCertificates[1:] {
-			intermediates.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
-		}
-
-		opts := x509.VerifyOptions{
-			Roots:         pool,
-			Intermediates: intermediates,
-			DNSName:       serverName,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}
-		if _, err := cs.PeerCertificates[0].Verify(opts); err != nil {
-			return fmt.Errorf("hub CA verification failed (%w) — the hub may have been redeployed with a different password; re-run 'urnet-tools hub link' or hub onboarding", err)
-		}
-		return nil
-	}
+	// Fall back to system default (no custom root CAs)
+	return &http.Client{Timeout: 10 * time.Second}
 }

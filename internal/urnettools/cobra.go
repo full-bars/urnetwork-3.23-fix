@@ -71,24 +71,11 @@ Proxy Management:
   proxy ids               Client IDs for each proxy (from JWT store)
   summary                 Fleet-style proxy summary (sources, health, counts)
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
-  report [<url>|off]      Set hub report URL
+  report [<url>|off]      Set report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
   show-ip [on|off|status] Show public IP on the dashboard label (was: ip-detect)
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
-
-Hub Management:
-  hub init                        Initialize hub and generate CA certificate
-  hub link <url> [--token]        Fetch CA cert and pin the hub identity
-  hub unlink                      Revert to HTTP (remove pin + CA cert)
-  hub test [<url>]                Probe TLS connection, verify cert
-  hub set <host:port>             Set legacy HTTP hub report URL
-  hub off                         Stop reporting to hub (no restart)
-  hub onboard-cmd                 Mint 15-min join token, print curl/sh line
-  hub show-password               Show CA password (printed once after init)
-  hub open-port <port>            Open port in firewall
-  hub install [--docker]          Install hub as service
-  hub update [--docker]           Update hub to latest version
 
 Maintenance:
   reinstall                     Reinstall provider
@@ -179,7 +166,6 @@ func buildRootCmd() *cobra.Command {
 		newDirectCmd(),
 		newUsageCmd(),
 		newReportCmd(),
-		newHubCmd(),
 		newReinstallCmd(),
 		newUninstallCmd(),
 		newAutoUpdateCmd(),
@@ -565,7 +551,7 @@ func newProxyCmd() *cobra.Command {
 }
 
 func newReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report", "set hub report URL", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("report", "set report URL", nil, func(cmd *cobra.Command, args []string) error {
 		rest, err := parseDelegationArgs(args)
 		if err == errHelpShown {
 			return nil
@@ -574,15 +560,7 @@ func newReportCmd() *cobra.Command {
 			return err
 		}
 		return cmdReport(rest)
-	}), "Set the hub report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
-}
-
-func newHubCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hub", "Hub Management", nil, func(cmd *cobra.Command, args []string) error {
-		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-			return cmdHub(rest, force, dryRun)
-		})
-	}), "Manage the hub, which aggregates bandwidth reports from providers. set and off point a provider's reporting at a URL or remove it; install and init provision the hub service and its TLS certificate authority; link and unlink trust or untrust a hub from a provider; test verifies TLS connectivity; onboard-cmd mints a short-lived onboard token; show-password prints the CA password; update reinstalls the hub binary; open-port opens a firewall port for it. Most mutating actions ask for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools hub set http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools hub link https://hub.example.com:8443 --unit urnetwork-native.service\n  urnet-tools hub off --unit urnetwork-native.service")
+	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
 }
 
 func newReinstallCmd() *cobra.Command {

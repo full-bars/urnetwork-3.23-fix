@@ -1,5 +1,8 @@
 # 📊 Bandwidth Hub Dashboard
 
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub dashboard has been removed from the codebase. This document is retained for historical reference only. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](Monitoring.md), or Grafana for custom dashboards.
+
 ![Hub Dashboard Preview](hub-dashboard-preview.png)
 
 A live fleet monitoring dashboard that aggregates bandwidth reports from all provider nodes. The hub runs as a standalone binary, accepts periodic POSTs to `/api/report`, and renders an HTML dashboard at the root path.

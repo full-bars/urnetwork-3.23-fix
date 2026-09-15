@@ -16,7 +16,7 @@ urnetwork-3.23-fix/
 │   ├── proxy_reload.go           # SIGHUP-triggered hot-reload of proxy list
 │   ├── proxy_state.go            # In-memory proxy registry with startup stagger
 │   ├── proxy_benchmark.go        # Optional per-proxy SOCKS5 latency probes
-│   ├── bandwidth_reporter.go     # Posts bandwidth metrics to hub dashboard
+│   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
@@ -40,10 +40,7 @@ urnetwork-3.23-fix/
 │   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
-├── hub/                          # Fleet bandwidth dashboard server
-│   ├── main.go                   # HTTP server: /api/report ingress, dashboard render
-│   ├── main_test.go              # 18 unit tests for rate calculation and state logic
-│   └── Dockerfile                # Containerized hub (Windows/Mac/any host, no systemd needed)
+├── hub/                          # [REMOVED v31.3+] Fleet bandwidth dashboard server (deprecated)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
@@ -84,7 +81,7 @@ urnetwork-3.23-fix/
 │   ├── target.go                # Targeting (--unit/--user/--network/--network-id/--state-dir)
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
-│   ├── legacy_cmds.go           # Parity commands (lifecycle, tuning, hub, optimize)
+│   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
 │   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
 │   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)
@@ -105,8 +102,8 @@ urnetwork-3.23-fix/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
-│   ├── Hub-Setup.md
-│   ├── Hub-Dashboard.md
+│   ├── Hub-Setup.md              # [deprecated v31.3+]
+│   ├── Hub-Dashboard.md          # [deprecated v31.3+]
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md
@@ -131,7 +128,6 @@ urnetwork-3.23-fix/
 │   ├── release.yml               # Tags a new release, scans (VirusTotal + ClamAV), uploads provider binaries
 │   ├── shakedown.yml             # Pre-release shakedown: fresh-droplet install + proxy + URL + docker test on v3.23.0-fix.* tags
 │   ├── shakedown-sweeper.yml     # Every 15 min: destroy orphaned shakedown-ci droplets >3h, reap stale SSH keys
-│   ├── hub-build.yml             # Build + push the hub Docker image
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
 │   └── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
 │

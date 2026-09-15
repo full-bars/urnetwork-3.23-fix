@@ -65,7 +65,6 @@ def scan_path_to_asset(path):
     elif "windows" in parts:
         platform = "Windows"
     elif "amd64" in parts or "arm64" in parts:
-        # hub_tmp/amd64/hub and hub_tmp/arm64/hub — infer Linux
         platform = "Linux"
     arch = ""
     if "arm64" in parts:
@@ -76,8 +75,6 @@ def scan_path_to_asset(path):
     # Special names for display — match against extension-stripped basename
     if basename_stripped == "provider":
         display = "urnetwork-provider"
-    elif basename_stripped == "hub":
-        display = "urnetwork-hub"
     elif basename_stripped == "urnet-tools":
         display = "urnet-tools"
     elif basename_stripped == "urnet-docker":

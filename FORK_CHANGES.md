@@ -601,7 +601,7 @@ If a new upstream version introduces changes to files in the "Modified" list abo
 URNETWORK_REPORT_URL=http://HUB_IP:8080
 ```
 
-**Status**: ✅ Shipped in v3.23.0-fix.19.
+**Status**: ✅ Shipped in v3.23.0-fix.19. ⚠️ **Deprecated** — hub removed in v31.3+ (see §164).
 
 ---
 
@@ -681,7 +681,7 @@ Once the `✓ done` line is logged, `paceMonitor` exits. No further `[pace]` out
 - `runBandwidthReporter`: non-2xx HTTP responses now log `[report] hub rejected report: <status>` instead of silently moving on.
 - Added random startup jitter (0 to one full interval) before the first report POST. Without this, all providers that restart together (e.g., after a fleet update) post on the same wall-clock boundary, spiking the hub. Mirrors the existing jitter pattern in `proxy_benchmark.go`.
 
-**Status**: ✅ Shipped in v3.23.0-fix.21.2 (PR #80, #82).
+**Status**: ✅ Shipped in v3.23.0-fix.21.2 (PR #80, #82). ⚠️ **Deprecated** — hub removed in v31.3+ (see §164).
 
 ---
 
@@ -1101,7 +1101,7 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 - Rendered in three places: per-proxy detail table (`Yes`/`No` badge), per-node summary row (`X/Y` earning count), and the top fleet summary bar (fleet-wide total)
 - No wire format or SQLite schema change — purely a hub-side computed/rendered signal
 
-**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #124).
+**Status**: ✅ Shipped in v3.23.0-fix.24.9 (PR #124). ⚠️ **Deprecated** — hub removed in v31.3+ (see §164).
 
 ---
 
@@ -1479,7 +1479,7 @@ The TCP connect probe now performs a full SOCKS5 handshake (`0x05 0x01 0x00` gre
 
 **Files Modified**: `hub/main.go` (template + static JS/CSS), `hub/node_info.go`
 
-**Status**: ✅ Merged `main` (2026-07-02). PRs #186, #187, #188.
+**Status**: ✅ Merged `main` (2026-07-02). PRs #186, #187, #188. ⚠️ **Deprecated** — hub removed in v31.3+ (see §164).
 
 ### 64e. DNS Cache, Dial Timeout, Connecting-State Cleanup (PR #190)
 
@@ -3405,3 +3405,20 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Security Hardening (v31.1–v31.2)**: Root peer check rejects non-root HotSwap candidates. JSON error response on connection rejection for machine-readable diagnostics. Docker execve argument sanitization prevents injection through crafted binary paths.
 
 **Impact**: v31.x brings full Windows parity, production-grade observability, resilient update verification, and tighter security boundaries — all while preserving zero-downtime upgrades on Linux.
+
+---
+
+## 164. Hub Removal (v31.3+)
+
+**Purpose**: The standalone bandwidth hub dashboard (`hub/` package) has been deprecated and removed from the codebase. The hub was an optional fleet-aggregation dashboard for multi-node environments, but maintenance burden and limited adoption no longer justify its inclusion.
+
+**What was removed**:
+- The `hub/` package (standalone dashboard server)
+- Hub-specific reporting endpoints (`urnet-tools hub set`, `hub link`, `hub unlink`, `hub off`). The generic `report` command (`urnet-tools report set/off/status`) and HTTP POST reporting to any configured `report_url` or `URNETWORK_REPORT_URL` target **are preserved** — `bandwidth_reporter.go` still exists and posts to any configured fleet endpoint.
+- Hub-related CLI commands: `hub init`, `hub link`, `hub unlink`, `hub test`, `hub install`, `hub update`, `hub onboard-cmd`, `hub show-password`, `hub open-port`, `hub set`, `hub off`
+
+**Affects fork sections**: Sections 23 (Bandwidth Hub Dashboard), 29 (Hub Report Visibility & Reporter Startup Jitter), 52 (Hub Dashboard Per-Proxy Earning Column), and 64 (Hub TLS, Live Heartbeat, SSE Dashboard Push) are **archived** — retained for historical accuracy but no longer applicable.
+
+**Alternative for fleet visibility**: Use Prometheus metrics (`urnet-tools metrics on`) and the built-in Grafana monitoring bundle for fleet-wide observability. See [Monitoring](docs/Monitoring.md).
+
+**Status**: ✅ Shipped in v31.3.

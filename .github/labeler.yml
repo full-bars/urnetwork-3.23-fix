@@ -18,11 +18,6 @@
           - "connectctl/**"
           - "extender/**"
 
-"area:hub":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "hub/**"
-
 "area:docker":
   - changed-files:
       - any-glob-to-any-file:

@@ -82,7 +82,7 @@ type ProxyURLEntry struct {
 	// entry (distinct from LastProbe, which is also bumped by liveness-only
 	// re-checks — fetch re-encounters and reaper demotions). Mirror of the
 	// paid store's ProxyEntry.LastGraded so fleet grading surfaces an honest
-	// "when was this actually graded" timestamp on the hub dashboard.
+	// "when was this actually graded" timestamp on the dashboard.
 	LastGraded time.Time `json:"last_graded,omitempty"`
 }
 
@@ -373,7 +373,7 @@ func applyProxyGradeToEntry(entry *ProxyURLEntry, g proxyURLGrade, gradedAt time
 		// Stamp the grade time ONLY on a genuine stage-1 verdict. A
 		// socks5-only or undecidable probe never reaches here, so
 		// LastGraded stays at its prior value (or zero = never graded)
-		// and the hub dashboard never shows a fresh-looking timestamp
+		// and the dashboard never shows a fresh-looking timestamp
 		// for a proxy whose grade did not actually change.
 		entry.LastGraded = gradedAt
 	}

@@ -398,7 +398,7 @@ func parseUnitLines(text string, running []Provider, userFor, binaryFor func(uni
 			binary = binaryFor(unit)
 			// Corroborate the name match against what the unit actually
 			// runs. Matching on name alone requires a deny-list of every
-			// sibling program that shares the provider prefix (hub, update,
+			// sibling program that shares the provider prefix (update,
 			// dashboard, sentinel, ...), which is unbounded: each new one is
 			// a fresh false positive that floods the same-user candidate
 			// list and blocks narrowToAccessible's auto-pick, as

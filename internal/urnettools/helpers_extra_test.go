@@ -434,15 +434,6 @@ func TestProviderUsesRamlogsNoUnit(t *testing.T) {
 	}
 }
 
-// TestWriteDropinEnvNoUnit covers writeDropinEnv's propagation of the
-// unitDropinDir error for a provider with no owning unit.
-func TestWriteDropinEnvNoUnit(t *testing.T) {
-	err := writeDropinEnv(Provider{}, "hub.conf", "URNETWORK_REPORT_URL=http://x")
-	if err == nil || !strings.Contains(err.Error(), "no owning unit") {
-		t.Errorf("writeDropinEnv(no unit) = %v, want \"no owning unit\"", err)
-	}
-}
-
 // TestIsELFExecutable covers the ELF-magic sanity check used before trusting
 // a freshly downloaded binary (real ELF bytes, plain text, and a missing
 // file).
@@ -487,19 +478,6 @@ func TestRuntimeGOARCH(t *testing.T) {
 	}
 	if got != strings.ToLower(got) {
 		t.Errorf("runtimeGOARCH() = %q, want lowercase", got)
-	}
-}
-
-// TestRestartAfterDropinNoUnit covers the empty-unit guard of
-// restartAfterDropin: it must reject BEFORE any systemctl invocation with
-// the same "no owning systemd unit" error unitCommand uses.
-func TestRestartAfterDropinNoUnit(t *testing.T) {
-	err := restartAfterDropin(Provider{})
-	if err == nil {
-		t.Error("restartAfterDropin with an empty unit name should error")
-	}
-	if !strings.Contains(err.Error(), "no owning systemd unit") {
-		t.Errorf("error should name the missing unit, got: %v", err)
 	}
 }
 

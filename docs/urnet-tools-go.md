@@ -76,6 +76,9 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 ### Hub Command Family (v3.23.0-fix.30.4+)
 
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub commands have been removed from `urnet-tools`. This section is retained for historical reference only.
+
 | Command | What it does |
 |---|---|
 | `hub init` | Initialize and configure the bandwidth hub service on this machine. Prompts for password (min 8 chars) or reads from stdin. |
@@ -99,7 +102,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Set live bandwidth hub reporting URL (`report off` disables). |
+| `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`; `v4` and `v8` are accepted aliases). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
@@ -187,6 +190,9 @@ urnet-tools session load /path/to/backup.urnsession --allow-different-account
 - **Permission Hardening:** Unpacks files with `0700` directory permissions and `0600` file permissions, automatically chowning them to the unit owner when run with elevated privileges.
 
 ### 3. Hub Setup and Verification
+
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub commands and bandwidth reporting have been removed. This section is retained for historical reference.
 
 Full lifecycle management for centralized bandwidth reporting:
 

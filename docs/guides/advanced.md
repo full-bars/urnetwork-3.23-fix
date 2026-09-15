@@ -2,7 +2,7 @@
 
 > **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · [🧭 Intermediate](intermediate.md) · **🚀 Advanced**
 
-This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
+This guide covers multi-server fleet management, performance tuning, fleet monitoring, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
 > [!NOTE]
 > This guide is Linux/Docker-focused because some commands are Linux-specific for hardware reasons:
@@ -18,7 +18,7 @@ This guide covers multi-server fleet management, performance tuning, the hub das
 
 - [Performance Profiles](#-performance-profiles)
 - [Fleet Management](#-fleet-management)
-- [Hub Dashboard](#-hub-dashboard)
+- [Hub Dashboard (Deprecated)](#-hub-dashboard-deprecated) *(v31.3+ — retained for reference)*
 - [Hot-Reload & Proxy Management](#-hot-reload--proxy-management)
 - [Memory & GC Tuning](#-memory--gc-tuning)
 - [Logging & Forensics](#-logging--forensics)
@@ -110,33 +110,37 @@ The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
 
 ---
 
-## 📊 Hub Dashboard
+## 📊 Hub Dashboard (Deprecated)
 
-Set up a hub server for fleet-wide visibility:
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle. Historical hub documentation: [Hub Setup](../Hub-Setup.md), [Hub Dashboard](../Hub-Dashboard.md).
+
+> [!CAUTION]
+> **The hub commands and setup instructions below are historical and non-actionable.** The `hub/` package has been removed from this codebase. The commands shown here (`hub install`, `hub init`, `hub link`, etc.) no longer exist. They are retained only as a reference for operators who previously ran the hub and may need to understand the old setup.
 
 ```sh
+# Historical — these commands no longer exist in v31.3+
 urnet-tools hub install
 urnet-tools hub init
 urnet-tools hub onboard-cmd    # mints a one-time onboard token
 ```
 
-Then on each provider node:
+Then on each provider node (historical):
 
 ```sh
+# Historical — these commands no longer exist in v31.3+
 urnet-tools hub link <https://hub-host:port> --token <onboard-token>
 ```
 
-The hub dashboard (port 8080) shows:
+The hub dashboard (port 8080) **used to** show:
 - Live Mbps throughput per node
 - Billable traffic (hourly/daily/monthly)
 - Contract win rates
 - Per-proxy drilldown by address
 - Active client sessions
 
-> 💡 Dashboard is accessible at `http://<hub-ip>:8080/`
-
 > [!WARNING]
-> **Running the hub on the same host as a provider?** The hub defaults to port `:8080`, and a provider's `ENABLE_VNSTAT=true` stats page (on by default) also binds container port `8080`. Colocated on the same machine, whichever starts second fails to bind. Remap one of them — Docker hub: `hub install --docker --port 8081`; Docker provider: publish vnstat on a different host port or set `ENABLE_VNSTAT=false`; bare-metal hub: use a `systemctl --user edit urnetwork-hub.service` drop-in to override `-addr :8080` rather than editing the generated unit directly (a future `hub install` will regenerate it). See [Hub-Dashboard.md](../Hub-Dashboard.md) for the exact drop-in. Separate hosts are unaffected.
+> **These instructions are historical.** The hub has been fully removed — no deployment, port mapping, or colocated-host guidance applies any longer.
 
 ---
 
@@ -278,9 +282,6 @@ tail -f /dev/shm/urnetwork.log
 ### Fleet-wide checks
 
 ```sh
-# Check the hub dashboard
-curl http://<hub-ip>:8080/
-
 # Check a specific node
 ssh user@<node-ip> "urnet-tools proxy summary"
 ```

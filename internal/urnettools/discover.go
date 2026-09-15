@@ -185,7 +185,7 @@ func Discover() []Provider {
 // provider binary name in a unit/exe name but denote a DIFFERENT, non-
 // provider service that happens to share the prefix — never a provider
 // itself, so isProviderArg must exclude it rather than match it. Checked as
-// a suffix (-hub, -update) or as the segment immediately after the "-"
+// a suffix (-update) or as the segment immediately after the "-"
 // (-dashboard, -dashboard-py, -dashboard-rs, ...) since dashboard apps get
 // their own per-language unit names.
 //

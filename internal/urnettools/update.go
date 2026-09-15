@@ -542,7 +542,7 @@ func forceInteractive(force bool) bool {
 // Note what case 3 does NOT do: it does not read the pipe for an answer.
 // `echo y | urnet-tools update` fails with "stdin is not a terminal" rather
 // than proceeding, because confirmStdinRead refuses before reading whenever
-// stdin is not a terminal, and that function is shared with the hub,
+// stdin is not a terminal, and that function is shared with the
 // session and legacy destructive commands which must keep refusing. Scripts
 // pass -y; that is the supported path.
 //
@@ -716,7 +716,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 
 	// Structural sanity-check the staged binary WITHOUT executing it.
 	// Running a freshly downloaded artifact (e.g. `staged --version`) is
-	// code execution of a remote file — the same class of defect the hub
+	// code execution of a remote file — the same class of defect the
 	// path guards with isRecognizedExecutable. sha256
 	// already guarantees the artifact matches the requested tag, so an
 	// ELF/Mach-O/PE magic check is the right ceiling here: it confirms we
