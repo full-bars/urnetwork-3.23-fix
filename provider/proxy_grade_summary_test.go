@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // Tests for the periodic A-F grade summary (design 2026-08-09): config
