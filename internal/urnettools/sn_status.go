@@ -140,13 +140,14 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 	}
 
 	jwtPath := filepath.Join(stateDir, "jwt")
-	jwtBytes, err := os.ReadFile(jwtPath)
+	jwtBytes, err := readStateFileNoFollow(stateDir, "jwt")
 	if errors.Is(err, os.ErrNotExist) {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			jwtPath = filepath.Join(home, ".urnetwork", "jwt")
-			jwtBytes, err = os.ReadFile(jwtPath)
-		}
+		// Do NOT fall back to os.UserHomeDir — under sudo that resolves
+		// to /root, so a missing target JWT would silently send the
+		// OPERATOR's (root's) credential to whatever api_url the target's
+		// state dir names (possibly attacker-controlled). Credentials must
+		// only ever travel with the provider identity they belong to.
+		return nil, fmt.Errorf("no authentication JWT found at %s: %w. Run 'urnet-tools auth' first", jwtPath, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("no authentication JWT found at %s: %w. Run 'urnet-tools auth' first", jwtPath, err)
@@ -154,7 +155,9 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 	byJwt := strings.TrimSpace(string(jwtBytes))
 
 	apiUrl := "https://api.bringyour.com"
-	if urlBytes, err := os.ReadFile(filepath.Join(stateDir, "api_url")); err == nil {
+	// api_url decides where the JWT is sent, so read it without following a
+	// planted symlink too.
+	if urlBytes, err := readStateFileNoFollow(stateDir, "api_url"); err == nil {
 		if trimmed := strings.TrimSpace(string(urlBytes)); trimmed != "" {
 			apiUrl = trimmed
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -255,10 +256,20 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 		return controlResponse{}, err
 	}
 	var resp controlResponse
-	reader := bufio.NewReader(conn)
+	// Cap the response read: provider.sock can be attacker-replaced (it
+	// lives in a user-owned dir), so an unbounded read lets a hostile socket
+	// stream gigabytes into memory within the 5s deadline. The
+	// provider's real replies are short (a few KB at most); reading through
+	// an io.LimitReader bounds the allocation AND the newline scan, and a
+	// response that fills the budget without a newline is a protocol error.
+	const maxSocketResponse = 1 << 20 // 1 MiB
+	reader := bufio.NewReader(io.LimitReader(conn, maxSocketResponse+1))
 	line, err := reader.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		return controlResponse{}, err
+	}
+	if len(line) > maxSocketResponse {
+		return controlResponse{}, fmt.Errorf("control socket response from %s exceeds %d bytes — refusing (possible hostile socket)", sockPath, maxSocketResponse)
 	}
 	if err := json.Unmarshal(line, &resp); err != nil {
 		return controlResponse{}, err
@@ -354,17 +365,34 @@ func queuePendingOverride(stateDir, op, key, value string) error {
 		tmp.Close()
 		return err
 	}
+	// Set the mode on the OPEN file (f.Chmod) instead of a second
+	// path-based os.Chmod after close: the path-based call follows
+	// symlinks, so a user who swaps tmpName for a symlink between the
+	// close and the chmod (inotify on close makes this winnable) gets any
+	// file chmod'ed world-readable. The open fd names the file we just
+	// created, so f.Chmod cannot be redirected.
+	// Set the mode on the OPEN file (f.Chmod) and chown on the OPEN fd
+	// (fchown) before close: both are fd-based, so a user who swaps tmpName
+	// for a symlink between close and the post-close chown cannot redirect
+	// the operation to an arbitrary file.
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := chownFdLikeStateOwner(stateDir, int(tmp.Fd())); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
-	_ = chownLikeStateOwner(stateDir, tmpName)
+	// rename the already-chowned file into place
 	if err := os.Rename(tmpName, queueFile); err != nil {
 		return err
 	}
-	_ = chownLikeStateOwner(stateDir, queueFile)
+	// File was fchowned on the open fd before close; no post-rename path-based
+	// chown is needed (and path-based chown on the renamed file would re-open
+	// a TOCTOU window).
 	return nil
 }
 
@@ -423,6 +451,19 @@ func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool,
 	}
 
 	if isSocketUnavailable(dialErr) {
+		// A provider the tool believes is RUNNING must have a live control
+		// socket; an unreachable one means the record is a ghost (e.g. a
+		// container process misattributed to the host — see the discovery
+		// namespace filter) or the provider is mid-crash. Queuing to a
+		// guessed host state-dir in that case both fabricates a state dir
+		// (os.MkdirAll below creates e.g. /root/.urnetwork) and prints a
+		// fake "queued" success for a config that will never apply.
+		// Only STOPPED providers are legitimately queued-to.
+		if p.Running {
+			return false, false, fmt.Errorf(
+				"provider %s is running (pid %d) but its control socket %s is unreachable — not queuing a change that would never apply; check whether this provider is actually running on this host (docker container misattribution?) or restart it",
+				providerLabel(p), p.PID, sockPath)
+		}
 		if err := queuePendingOverride(p.StateDir, op, canonicalKey, value); err != nil {
 			return false, false, fmt.Errorf("queue pending override: %w", err)
 		}

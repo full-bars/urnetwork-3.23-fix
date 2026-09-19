@@ -185,6 +185,38 @@ func consumeDockerBareTarget(providers []Provider, t Target, rest []string) (Tar
 	return t, rest
 }
 
+// consumeDockerTrailingTarget promotes a trailing bare positional that matches
+// a discovered container name to the target when no explicit target flag was
+// given, provided there are at least minPositionals non-flag positional
+// arguments present. Commands like `session <save|load> <file> [target]` require
+// 3 non-flag positionals before consuming a trailing target, so a file operand
+// that shares a name with a container (e.g. `session save urnet-test`) is preserved
+// as the file argument rather than stripped as a target.
+func consumeDockerTrailingTarget(providers []Provider, t Target, rest []string, minPositionals int) (Target, []string) {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+		return t, rest
+	}
+	var nonFlags []int
+	for i, a := range rest {
+		if !strings.HasPrefix(a, "-") {
+			nonFlags = append(nonFlags, i)
+		}
+	}
+	if len(nonFlags) < minPositionals || len(nonFlags) == 0 {
+		return t, rest
+	}
+	lastIdx := nonFlags[len(nonFlags)-1]
+	for _, p := range providers {
+		if p.Unit == rest[lastIdx] {
+			t.Unit = rest[lastIdx]
+			out := append([]string{}, rest[:lastIdx]...)
+			out = append(out, rest[lastIdx+1:]...)
+			return t, out
+		}
+	}
+	return t, rest
+}
+
 // cmdDockerProviders lists every provider container on the box.
 func cmdDockerProviders(args []string) error {
 	providers := DiscoverDocker()
@@ -281,6 +313,19 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 	}
 	split := 0
 	for split < len(args) && strings.HasPrefix(args[split], "-") {
+		// Accept the equals form (--unit=X) alongside the space form, so
+		// `urnet-docker exec --unit=X -- cmd` behaves like the rest of the
+		// suite, where --flag=value is accepted everywhere.
+		if strings.HasPrefix(args[split], "--") {
+			eqName, _, hasEq := strings.Cut(args[split], "=")
+			switch eqName {
+			case "--unit", "--user", "--network", "--network-id", "--state-dir":
+				if hasEq {
+					split++
+					continue
+				}
+			}
+		}
 		switch args[split] {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
@@ -713,10 +758,14 @@ func cmdDockerLogs(args []string) error {
 // cmdDockerAuth delegates provider authentication into the container.
 func cmdDockerAuth(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 1)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -866,10 +915,14 @@ func cmdDockerFastAuth(args []string) error {
 // cmdDockerSession delegates interactive session save/load into the container.
 func cmdDockerSession(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 3)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -1066,10 +1119,14 @@ func dockerCopyInto(container, hostFile, destPath string) error {
 // cmdDockerSnStatus queries Subnet 25 telemetry inside the targeted container.
 func cmdDockerSnStatus(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err

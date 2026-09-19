@@ -100,7 +100,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 // tick, so the change takes effect without a restart. The provider binary
 // has NO report subcommand — delegating to it printed auth usage and did
 // nothing (gauntlet finding BUG-4).
-func cmdReport(args []string) error {
+func cmdReport(args []string, dryRun, force bool) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
@@ -114,8 +114,11 @@ func cmdReport(args []string) error {
 	// report is a mutating control-socket command, so it needs the same
 	// elevation as status/summary — without it, verifyPeerCredentials
 	// rejects the root-connected socket (BUG: "connection reset by peer").
-	if elevated, err := maybeElevateForCrossUser("report", p, args, false, false); elevated {
-		return err
+	// Elevation never applies to dry runs (they plan, they don't act).
+	if !dryRun {
+		if elevated, err := maybeElevateForCrossUser("report", p, args, force, false); elevated {
+			return err
+		}
 	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "report URL")
@@ -126,6 +129,20 @@ func cmdReport(args []string) error {
 	url := rest[0]
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	if dryRun {
+		fmt.Printf("[dry-run] would set report URL for %s to %q\n", providerLabel(p), url)
+		return nil
+	}
+	// Mutating state change without a typed confirmation: every other
+	// state-write (set, tune, fast-auth) confirms. The provider's bandwidth
+	// reporter acts on this within a tick, so it is not read-only.
+	ok, err := confirmGate(fmt.Sprintf("set report URL for %s to %q", providerLabel(p), url), p, force, dryRun)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // declined
 	}
 	if err := writeReportURL(p, url); err != nil {
 		return err

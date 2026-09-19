@@ -22,8 +22,18 @@ func newDirectCmd() *cobra.Command {
 		Example: `  urnet-tools direct off
   urnet-tools direct off --unit urnetwork-native.service
   urnet-tools direct on`,
-		Args: cobra.MaximumNArgs(1),
+		// Without this, cobra consumes the root persistent flags
+		// (--unit/--user/--network/--state-dir/-f/-n) BEFORE the handler
+		// runs, so `direct off --unit B` and `direct off -n` silently lose
+		// their target and dry-run — wrong-provider or destructive behavior.
+		// Every other command routes through newCobraCmd which sets this;
+		// direct was the holdout.
+		DisableFlagParsing: true,
+		Args:               cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 				return cmdDirectToggle(rest, force, dryRun)
 			})
@@ -98,11 +108,15 @@ func cmdDirectToggle(args []string, force, dryRun bool) error {
 	if err := chownLikeStateOwner(p.StateDir, toggleDir); err != nil {
 		return fmt.Errorf("could not set owner on direct toggle dir: %v", err)
 	}
-	if err := os.WriteFile(togglePath, []byte(val), 0600); err != nil {
+	// writeStateFile (O_NOFOLLOW) rather than os.WriteFile: the toggle path
+	// sits in a user-owned directory, so a planted symlink
+	// (~/.urnetwork/direct -> /etc/shadow) would otherwise let root
+	// truncate an arbitrary file.
+	//
+	// Ownership is set on the open descriptor (writeStateFileOwned), not by a
+	// second lookup of togglePath that the provider user could redirect.
+	if err := writeStateFileOwned(filepath.Dir(togglePath), filepath.Base(togglePath), []byte(val), 0600, p.StateDir); err != nil {
 		return fmt.Errorf("could not write direct toggle for %s: %v", providerLabel(p), err)
-	}
-	if err := chownLikeStateOwner(p.StateDir, togglePath); err != nil {
-		return fmt.Errorf("could not set owner on direct toggle file: %v", err)
 	}
 
 	if p.Running {
@@ -158,5 +172,8 @@ func writeReloadTrigger(path string) error {
 		fmt.Sscanf(string(b), "%d", &seq)
 	}
 	seq++
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", seq)), 0600)
+	// Write via the symlink-safe helper (O_NOFOLLOW): the file sits in a
+	// user-owned state dir, and a planted symlink must not let root
+	// overwrite an arbitrary target.
+	return writeStateFile(filepath.Dir(path), filepath.Base(path), []byte(fmt.Sprintf("%d\n", seq)), 0600)
 }

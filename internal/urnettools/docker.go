@@ -1,10 +1,16 @@
 package urnettools
 
 import (
+	"archive/tar"
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // dockerContainer describes a discovered docker container running a
@@ -72,13 +78,21 @@ func discoverDockerContainers() []dockerContainer {
 }
 
 // isDockerCandidate reports whether an image/name pair looks like a
-// URnetwork provider container (including meso-miner images).
+// URnetwork provider container. "meso"/"miner" were previously matched
+// anywhere in the image or name (meso-miner images), but that substring is
+// far too broad — unrelated mining/monitoring containers got pulled into
+// DiscoverDocker and the docker picker. Only accept those markers in
+// the narrow, evidence-bearing forms: an urnetwork/urnet image reference or
+// container name, or an explicitly "meso-miner"/"meso_miner" flavoured
+// image tag/repo.
 func isDockerCandidate(image, name string) bool {
 	il := strings.ToLower(image)
 	nl := strings.ToLower(name)
-	return strings.Contains(il, "urnetwork") || strings.Contains(nl, "urnet") ||
-		strings.Contains(il, "meso") || strings.Contains(nl, "meso") ||
-		strings.Contains(il, "miner") || strings.Contains(nl, "miner")
+	if strings.Contains(il, "urnetwork") || strings.Contains(nl, "urnet") {
+		return true
+	}
+	return strings.Contains(il, "meso-miner") || strings.Contains(il, "meso_miner") ||
+		strings.Contains(nl, "meso-miner") || strings.Contains(nl, "meso_miner")
 }
 
 // containerStateDir resolves the provider state dir inside the container:
@@ -105,14 +119,152 @@ func containerEnv(c dockerContainer, key string) string {
 	return ""
 }
 
-// containerReadFile runs `docker exec <c> cat <path>` and returns output.
+// containerReadFile reads a file FROM a container. docker exec requires a
+// RUNNING container, which silently dropped stopped providers from
+// DiscoverDocker — making `urnet-docker start <stopped>` untargetable.
+// docker cp works against stopped containers too (it reads the container's
+// filesystem snapshot, no running process needed), so prefer it: copy to a
+// temp file on the host and read that. `docker cp CONTAINER:path -` streams
+// a TAR archive to stdout (not raw file content), which is why the stream
+// is extracted with archive/tar rather than returned verbatim; falling back
+// to docker exec keeps the RUNNING-container edge where cp disagrees.
 func containerReadFile(c dockerContainer, path string) (string, error) {
-	cmd := exec.Command(dockerCLI(), "exec", c.ID, "cat", path)
-	out, err := cmd.CombinedOutput()
+	// The cp stream is a tar archive: the file (capped at containerFileMax)
+	// plus header/padding/trailer overhead.
+	if out, _, err := runCapped(exec.Command(dockerCLI(), "cp", c.ID+":"+path, "-"), containerFileMax+containerTarOverhead); err == nil {
+		if s, terr := extractSingleFileContent(out); terr == nil {
+			return s, nil
+		}
+	}
+	out, stderr, err := runCapped(exec.Command(dockerCLI(), "exec", c.ID, "cat", path), containerFileMax)
 	if err != nil {
-		return "", fmt.Errorf("docker exec cat %s: %w (%s)", path, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("docker cp/exec cat %s: %w (%s)", path, err, strings.TrimSpace(stderr))
 	}
 	return string(out), nil
+}
+
+// containerFileMax caps how much of a container file is read: identity files
+// are tiny, and the container's contents are not trusted.
+const (
+	containerFileMax     = 1 << 20
+	containerTarOverhead = 64 << 10
+)
+
+// errOutputTooLarge is returned by runCapped when the command wrote more
+// than the allowed number of stdout bytes.
+var errOutputTooLarge = errors.New("command output exceeds size limit")
+
+// errCommandTimeout is returned by runCapped when the command did not finish
+// within its deadline.
+var errCommandTimeout = errors.New("command timed out")
+
+// containerReadTimeout bounds one docker cp / docker exec cat. A FIFO (or any
+// file that never yields data) makes cat hold stdout open forever, and the
+// bounded read below would then block before Wait ever runs.
+const containerReadTimeout = 20 * time.Second
+
+// runCapped runs cmd and returns its stdout, refusing to buffer more than
+// max bytes: the reader is bounded while the process is still writing, and
+// the process is killed once the limit is exceeded, so a huge file inside a
+// container cannot force an arbitrarily large allocation. Stderr is kept
+// (truncated to 4 KiB) for error messages only.
+func runCapped(cmd *exec.Cmd, max int64) ([]byte, string, error) {
+	return runCappedTimeout(cmd, max, containerReadTimeout)
+}
+
+// runCappedTimeout is runCapped with an explicit deadline. When the deadline
+// passes the process is killed, which closes its stdout and unblocks the read.
+func runCappedTimeout(cmd *exec.Cmd, max int64, timeout time.Duration) ([]byte, string, error) {
+	stderr := &cappedBuffer{max: 4096}
+	cmd.Stderr = stderr
+	// Safety net: never let Wait hang on a grandchild that still holds the
+	// stderr pipe after the process itself has been killed.
+	cmd.WaitDelay = 2 * time.Second
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, "", err
+	}
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		_ = pipe.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	defer timer.Stop()
+	data, readErr := io.ReadAll(io.LimitReader(pipe, max+1))
+	if timedOut.Load() {
+		_ = pipe.Close()
+		_ = cmd.Wait()
+		return nil, stderr.String(), errCommandTimeout
+	}
+	if readErr != nil || int64(len(data)) > max {
+		_ = cmd.Process.Kill()
+		// Close our read end first so a child still writing gets SIGPIPE
+		// instead of blocking Wait on a full pipe.
+		_ = pipe.Close()
+		_ = cmd.Wait()
+		if readErr != nil {
+			return nil, stderr.String(), readErr
+		}
+		return nil, stderr.String(), errOutputTooLarge
+	}
+	if err := cmd.Wait(); err != nil {
+		if timedOut.Load() {
+			return nil, stderr.String(), errCommandTimeout
+		}
+		return nil, stderr.String(), err
+	}
+	return data, stderr.String(), nil
+}
+
+// cappedBuffer is an io.Writer that keeps only the first max bytes.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			b.buf.Write(p[:room])
+		} else {
+			b.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string { return b.buf.String() }
+
+// extractSingleFileContent pulls the content of the single regular file a
+// `docker cp CONTAINER:path -` tar stream carries. Docker writes exactly one
+// entry per file copy (plus a trailing directory entry for directory
+// sources); anything else is a caller error.
+func extractSingleFileContent(tarBytes []byte) (string, error) {
+	r := bytes.NewReader(tarBytes)
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return "", fmt.Errorf("docker cp tar stream contained no file entry")
+		}
+		if err != nil {
+			return "", fmt.Errorf("parse docker cp tar stream: %w", err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			data, err := io.ReadAll(io.LimitReader(tr, 1<<20)) // 1 MiB cap: identity files are tiny
+			if err != nil {
+				return "", fmt.Errorf("read %s from docker cp tar stream: %w", hdr.Name, err)
+			}
+			return string(data), nil
+		}
+		// Directory / other entry types: keep scanning for the regular file.
+	}
 }
 
 // dockerProvider builds a host-facing Provider from a container by reading

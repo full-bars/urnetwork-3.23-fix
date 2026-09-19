@@ -21,6 +21,8 @@ func TestDockerUpdateDispatchViaShim(t *testing.T) {
 	jwt := "header.eyJORVRXT1JLX05BTUUiOiJ0YWNvZ29uemFsZXozMDAwIiwibmV0d29ya19pZCI6IjAxOWMzYzBjLTQzNmMtNmI4Yi02OGEzLTJkMjFkZDQ4YTUwYyIsImV4cCI6MTc4ODM0NDc2Mn0.sig"
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"ps\" ]; then echo 'abc123|urnet-test|urnetwork:latest|running'; exit 0; fi\n" +
+		"if [ \"$1\" = \"cp\" ] && [ \"$2\" = \"abc123:/root/.urnetwork/jwt\" ] && [ \"$3\" = \"-\" ]; then\n" +
+		"  tf=$(mktemp); printf '%s' '" + jwt + "' > \"$tf\"; tar cf - -C \"$(dirname \"$tf\")\" \"$(basename \"$tf\")\"; rm -f \"$tf\"; exit 0; fi\n" +
 		"if [ \"$1\" = \"exec\" ] && [ \"$2\" = \"abc123\" ] && [ \"$3\" = \"cat\" ]; then echo '" + jwt + "'; exit 0; fi\n" +
 		"echo \"$*\" >> \"$DOCKER_SHIM_LOG\"\nexit 0\n"
 	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {

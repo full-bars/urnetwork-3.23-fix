@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -167,14 +168,19 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 const releaseCacheTTL = 5 * time.Minute
 
 // cachedLatest caches the latest release lookup so repeated invocations in
-// a short window don't hammer the API.
+// a short window don't hammer the API. Mutex-guarded: the CLI is mostly
+// sequential but tests and future concurrent callers (multi-provider batch
+// update) can race on the two package vars.
 var (
 	cachedLatest     *releaseInfo
 	cachedLatestTime time.Time
+	latestReleaseMu  sync.Mutex
 )
 
 // latestRelease returns the latest release, using the short cache.
 func latestRelease() (*releaseInfo, error) {
+	latestReleaseMu.Lock()
+	defer latestReleaseMu.Unlock()
 	if cachedLatest != nil && time.Since(cachedLatestTime) < releaseCacheTTL {
 		return cachedLatest, nil
 	}

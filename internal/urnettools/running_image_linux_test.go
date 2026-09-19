@@ -17,6 +17,7 @@ package urnettools
 // though its target string does not.
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,72 @@ import (
 	"testing"
 	"time"
 )
+
+// rewriteVersionStamp overwrites the FIRST embedded URNET_VERSION_STAMP=...
+// value that actually looks like a release version (v-prefixed) with the
+// requested version. Used by the fake-provider fixtures so the read-only
+// version scanner deterministically resolves the fake version rather than
+// the tool's own embedded one.
+//
+// Two constraints keep the rewritten payload a valid ELF:
+//  1. Only v-prefixed values are rewritten — the binary also contains the
+//     prefix as part of unrelated string data (e.g. "…=floating"), and
+//     rewriting that would corrupt a string literal mid-file.
+//  2. The replacement must be exactly the same byte length as the original
+//     value: inserting or removing bytes in the middle of an ELF shifts
+//     every section offset after it, producing a binary the loader cannot
+//     run. All release versions in this suite are the same length
+//     (v3.23.0-fix.XX.0), so the rewrite is a byte-for-byte overlay; when
+//     the new version is shorter it is padded with spaces (a valid
+//     terminator for the stamp scan) up to the original length, and when
+//     longer the stamp is appended at the end instead — appended bytes after
+//     the ELF image are ignored by the loader.
+func rewriteVersionStamp(payload []byte, version string) []byte {
+	prefix := []byte(versionStampPrefix)
+	searchFrom := 0
+	for {
+		i := bytes.Index(payload[searchFrom:], prefix)
+		if i < 0 {
+			break
+		}
+		i += searchFrom
+		start := i + len(prefix)
+		end := len(payload)
+		for j := start; j < len(payload); j++ {
+			if payload[j] == ' ' || payload[j] == '\n' || payload[j] == 0 {
+				end = j
+				break
+			}
+		}
+		old := payload[start:end]
+		// Same rule as scanVersionStamp: a stamp value is 'v' then a digit.
+		// A 'v'-then-letter span (the prefix constant sitting next to an
+		// unrelated string in rodata) is not a stamp and must not be the one
+		// overwritten, or the scanner would read a different, later stamp.
+		if len(old) > 1 && old[0] == 'v' && old[1] >= '0' && old[1] <= '9' {
+			// Byte-for-byte overlay within the original span.
+			if len(version) <= len(old) {
+				out := make([]byte, len(payload))
+				copy(out, payload)
+				copy(out[start:], version)
+				for k := start + len(version); k < end; k++ {
+					out[k] = ' ' // pad to original length; terminator for the scan
+				}
+				return out
+			}
+			// New version longer than the embedded slot: append at end. The
+			// scanner returns the FIRST valid stamp, so the original must be
+			// made invalid first (v -> x) or it would win over the appended one.
+			out := make([]byte, len(payload))
+			copy(out, payload)
+			out[start] = 'x'
+			return append(out, append([]byte("\n"+versionStampPrefix), []byte(version+"\n")...)...)
+		}
+		searchFrom = i + 1
+	}
+	// No v-prefixed stamp present: append one.
+	return append(payload, append([]byte("\n"+versionStampPrefix), []byte(version+"\n")...)...)
+}
 
 // startSwappedFakeProvider copies the test binary to dir/urnetwork, starts it
 // as a stand-in provider reporting version, then renames a fresh copy over it
@@ -41,6 +108,20 @@ func startSwappedFakeProvider(t *testing.T, version string) int {
 	if err != nil {
 		t.Fatalf("read test binary: %v", err)
 	}
+
+	// Embed the version as the same raw byte marker release builds carry
+	// (URNET_VERSION_STAMP=... via -ldflags -X). providerVersionReadOnly
+	// resolves versions by scanning those bytes — it must NOT exec the
+	// probed binary (exec'ing a discovered /proc/<pid>/exe would run an
+	// attacker-chosen ELF as root).
+	//
+	// The test binary is itself a release-stamped build, so its embedded
+	// stamp would otherwise win the scan and report the TOOL's version, not
+	// the requested fake one. Rewrite any embedded stamp value to the
+	// requested version so the read-only scanner deterministically resolves
+	// `version`. Trailing bytes after the ELF image are ignored by the
+	// dynamic loader, so the payload stays runnable.
+	payload = rewriteVersionStamp(payload, version)
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "urnetwork")
@@ -127,7 +208,7 @@ func TestProviderVersionReadsThroughHandleAfterSwap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runningImagePath: %v", err)
 	}
-	if got := providerVersion(stale); got != "" {
+	if got := providerVersionReadOnly(stale); got != "" {
 		t.Fatalf("expected no version through the deleted target, got %q", got)
 	}
 
@@ -136,8 +217,8 @@ func TestProviderVersionReadsThroughHandleAfterSwap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runningImageHandle: %v", err)
 	}
-	if got := providerVersion(handle); got != want {
-		t.Fatalf("providerVersion through handle = %q, want %q", got, want)
+	if got := providerVersionReadOnly(handle); got != want {
+		t.Fatalf("providerVersionReadOnly through handle = %q, want %q", got, want)
 	}
 }
 

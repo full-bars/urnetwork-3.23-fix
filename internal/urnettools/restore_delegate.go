@@ -145,6 +145,13 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	// Cross-user elevation for mutating forms (on/off); status is read-only
+	// and needs no elevation.
+	if (sub == "on" || sub == "off") && !dryRun {
+		if elevated, err := maybeElevateForCrossUser("fast-auth", p, args, force, dryRun); elevated {
+			return err
+		}
+	}
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
@@ -278,6 +285,17 @@ func cmdSet(args []string, force, dryRun bool) error {
 	p, err := selectTarget(Discover(), t)
 	if err != nil {
 		return err
+	}
+	// Cross-user elevation: an unprivileged caller targeting another user's
+	// provider must re-exec under sudo BEFORE trying to write its state dir,
+	// or the mutation fails with a raw permission error. Mirror the
+	// status/logs/report pattern. Read-only forms (no key / key only) don't
+	// elevate because they cannot mutate.
+	needsElevation := len(rest) >= 2
+	if needsElevation && !dryRun {
+		if elevated, err := maybeElevateForCrossUser("set", p, args, force, dryRun); elevated {
+			return err
+		}
 	}
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))

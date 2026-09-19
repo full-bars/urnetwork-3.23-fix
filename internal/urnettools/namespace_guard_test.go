@@ -12,6 +12,10 @@ import (
 // never act on a docker-namespaced provider.
 
 func TestGuardLifecycleArgs_LeftoverPositionalIsHardError(t *testing.T) {
+	orig := discoverDockerFn
+	discoverDockerFn = func() []Provider { return nil }
+	defer func() { discoverDockerFn = orig }()
+
 	for _, cmd := range []string{"start", "stop", "restart"} {
 		_, err := guardLifecycleArgs(cmd, []string{"ps"})
 		if err == nil {

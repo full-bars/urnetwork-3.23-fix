@@ -89,9 +89,18 @@ func runConfig(out io.Writer, args []string) error {
 				return err
 			}
 			if narrowed {
-				fmt.Fprintf(out, "Note: %d providers found; only user=%s is accessible without root — showing its config.\n", len(providers), p.User)
-				if !jsonMode {
-					fmt.Fprintf(out, " To inspect all of them: urnet-tools providers --all (as root)\n")
+				// Human note goes to STDOUT only in table mode: in JSON mode it
+				// would precede the JSON document and invalidate it for
+				// automation. Human forensics still deserve the context,
+				// so echo the note to stderr in JSON mode — never mixed into
+				// the machine-readable stream.
+				note := fmt.Sprintf("Note: %d providers found; only user=%s is accessible without root — showing its config.", len(providers), p.User)
+				if jsonMode {
+					fmt.Fprintln(os.Stderr, note)
+					fmt.Fprintln(os.Stderr, " To inspect all of them: urnet-tools providers --all (as root)")
+				} else {
+					fmt.Fprintln(out, note)
+					fmt.Fprintln(out, " To inspect all of them: urnet-tools providers --all (as root)")
 				}
 			}
 			if p.StateDir == "" {

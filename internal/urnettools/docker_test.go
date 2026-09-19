@@ -120,8 +120,9 @@ func TestSplitExecArgs(t *testing.T) {
 		{"help-after-target-no-sep", []string{"--unit", "x", "-h"}, nil, nil, "help shown"},
 		// command-first multi-arg form still works
 		{"command-first-multi-arg", []string{"urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"}, nil, []string{"urnet-tools", "proxy", "add", "--proxy_file=/tmp/p.txt"}, ""},
-		// equals-form is NOT recognized (pre-existing limitation, documented)
-		{"equals-form-rejected", []string{"--unit=x", "cmd"}, nil, nil, "unknown flag"},
+		// equals-form IS recognized: --unit=x parses to the same target as the
+		// space form, matching the rest of the suite's --flag=value convention.
+		{"equals-form-accepted", []string{"--unit=x", "cmd"}, []string{"--unit=x"}, []string{"cmd"}, ""},
 		// target flags after -- are forwarded verbatim (not parsed)
 		{"inner-target-like-flag-forwarded", []string{"--", "--unit", "y", "cmd"}, nil, []string{"--unit", "y", "cmd"}, ""},
 		{"target-then-sep-then-inner-target", []string{"--unit", "x", "--", "--unit", "y"}, []string{"--unit", "x"}, []string{"--unit", "y"}, ""},

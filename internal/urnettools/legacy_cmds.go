@@ -129,6 +129,14 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 	if err != nil {
 		return Provider{}, err
 	}
+	// The docker-namespace guard MUST run before any cross-user elevation:
+	// a non-root operator running `stop --unit ps` against a docker target
+	// must get "use urnet-docker" immediately, not a sudo prompt for a
+	// namespace the systemd tool cannot act on. Guard before elevate so the
+	// conflict is resolved with zero privileges spent.
+	if err := guardSystemdProvider(p); err != nil {
+		return Provider{}, err
+	}
 	// Managing another user's provider requires root; re-exec under sudo.
 	// A dry run plans without acting and needs no root, so it never elevates.
 	if !dryRun {
@@ -138,9 +146,6 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 	}
 	if narrowed {
 		printLifecycleNarrowedNote(len(providers), p, verb)
-	}
-	if err := guardSystemdProvider(p); err != nil {
-		return Provider{}, err
 	}
 	return p, nil
 }
@@ -280,6 +285,58 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	return fmt.Errorf("%s", b.String())
 }
 
+// validateLogsTarget performs the pre-journalctl sanity checks for cmdLogs:
+// a provider with NO systemd unit cannot be followed through journald (an
+// empty unit would build `journalctl -fu ""`, which journalctl rejects with
+// "Failed to add filter for units: Invalid argument"). Returns an actionable
+// error naming the docker namespace when the provider is container-attributed
+// so the operator is pointed at `urnet-docker logs` instead of a raw
+// journalctl failure.
+func validateLogsTarget(p Provider) error {
+	if p.Unit != "" {
+		return nil
+	}
+	hint := ""
+	if isDockerProvider(p) {
+		hint = " — it is a container provider; use `urnet-docker logs " + providerLabel(p) + "`"
+	} else {
+		hint = " — the provider has no systemd unit to follow in journald"
+	}
+	return fmt.Errorf("provider %s has no systemd unit%s", providerLabel(p), hint)
+}
+
+// logsPlatformCheck runs the pre-journalctl checks for cmdLogs. Windows is
+// decided FIRST: it has no systemd/journalctl and its providers never carry a
+// unit, so the no-unit validation below would turn the intended "not
+// supported" notice into a hard error. handled=true means the command is
+// finished (nil error) and the caller must not continue.
+func logsPlatformCheck(p Provider, goos string) (handled bool, err error) {
+	if goos == "windows" {
+		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
+		return true, nil
+	}
+	// No systemd unit = nothing journald can follow. Fail with an
+	// actionable message (docker hint when it's a container provider)
+	// instead of building `journalctl -fu ""`, which journalctl rejects
+	// with a raw "Failed to add filter for units: Invalid argument".
+	if err := validateLogsTarget(p); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// journalctlArgsGuard refuses to build journalctl argv for a provider with an
+// empty unit: journalctl -fu "" errors with "Invalid argument", and the guard
+// must fail fast inside the CLI rather than forward a command journalctl is
+// guaranteed to reject. Returns nil when a unit exists (callers then use
+// journalctlArgs).
+func journalctlArgsGuard(p Provider) error {
+	if p.Unit == "" {
+		return fmt.Errorf("provider %s has no systemd unit — nothing to follow in journald", providerLabel(p))
+	}
+	return nil
+}
+
 // cmdLogs streams logs for the provider: RAMLOGS-aware (reads the provider's
 // own RAM buffer) when the unit has URNETWORK_RAMLOGS=1 / a RAM profile,
 // else journald. An optional trailing positional N (e.g. `logs --unit foo
@@ -290,10 +347,20 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	lines := 250
+	numSeen := false
 	for _, a := range rest {
 		if n, err := strconv.Atoi(a); err == nil && n > 0 && n < 1000000 {
 			lines = n
+			numSeen = true
+			continue
 		}
+		// Reject anything that is not a valid line-count positional instead
+		// of silently swallowing it: `logs --unit X garbage` or a stray flag
+		// would otherwise be dropped with no notice.
+		return fmt.Errorf("logs: unexpected argument %q (expected a line count, e.g. 'logs 500')", a)
+	}
+	if numSeen && len(rest) > 1 {
+		return fmt.Errorf("logs: too many arguments (expected one optional line count, got %d)", len(rest))
 	}
 	providers := Discover()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -324,10 +391,8 @@ func cmdLogs(args []string) error {
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	// Windows has no systemd/journalctl — print a diagnostic and exit cleanly.
-	if runtime.GOOS == "windows" {
-		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
-		return nil
+	if handled, err := logsPlatformCheck(p, runtime.GOOS); handled || err != nil {
+		return err
 	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid).

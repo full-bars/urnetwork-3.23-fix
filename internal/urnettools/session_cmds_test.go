@@ -237,6 +237,13 @@ func TestDecryptTamperedRejected(t *testing.T) {
 // TestSessionForceSurvivesDispatch: -f must be consumed by cmdSession, not
 // rejected as an extra argument (the reason session bypasses parseGlobalFlags).
 func TestSessionForceSurvivesDispatch(t *testing.T) {
+	origD, origS := discoverDockerFn, discoverSystemdFn
+	discoverDockerFn = func() []Provider { return nil }
+	discoverSystemdFn = func() []Provider { return nil }
+	defer func() {
+		discoverDockerFn, discoverSystemdFn = origD, origS
+	}()
+
 	err := Run([]string{"session", "load", "/nonexistent-session-file", "-f"})
 	if err == nil {
 		t.Fatal("expected an error (file or provider), got nil")
@@ -253,12 +260,45 @@ func TestSessionForceSurvivesDispatch(t *testing.T) {
 // TestSessionDryRunAccepted: -n/--dry-run is accepted by cmdSession (routes to
 // the confirm gate), not rejected as an unknown extra argument.
 func TestSessionDryRunAccepted(t *testing.T) {
+	origD, origS := discoverDockerFn, discoverSystemdFn
+	discoverDockerFn = func() []Provider { return nil }
+	discoverSystemdFn = func() []Provider { return nil }
+	defer func() {
+		discoverDockerFn, discoverSystemdFn = origD, origS
+	}()
+
 	err := Run([]string{"session", "load", "/nonexistent-session-file", "-n"})
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
 	if strings.Contains(err.Error(), "takes no extra arguments") {
 		t.Fatalf("-n was not consumed by cmdSession: %v", err)
+	}
+}
+
+// TestSessionLoadNonexistentFileNoDiscovery: on dry-run load with a
+// missing file, provider discovery must NOT be invoked at all. The file
+// check happens before lifecycleCandidates() so docker/systemd are never
+// contacted for a trivially rejected command.
+func TestSessionLoadNonexistentFileNoDiscovery(t *testing.T) {
+	dockerCalled := false
+	systemdCalled := false
+	origD, origS := discoverDockerFn, discoverSystemdFn
+	discoverDockerFn = func() []Provider { dockerCalled = true; return nil }
+	discoverSystemdFn = func() []Provider { systemdCalled = true; return nil }
+	defer func() {
+		discoverDockerFn, discoverSystemdFn = origD, origS
+	}()
+
+	err := Run([]string{"session", "load", "/nonexistent-session-file", "-n"})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if dockerCalled {
+		t.Error("docker discovery was called before file validation")
+	}
+	if systemdCalled {
+		t.Error("systemd discovery was called before file validation")
 	}
 }
 

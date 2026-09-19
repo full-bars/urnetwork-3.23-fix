@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,17 +308,59 @@ func untarGz(pt []byte) (map[string][]byte, error) {
 
 // collectSessionFiles reads the identity files that exist under a state dir
 // into a name->bytes map (only present files are included, matching legacy).
-func collectSessionFiles(stateDir string) map[string][]byte {
+//
+// Only an absent file is skipped. A symlink, permission or I/O failure is an
+// error: skipping it would let `session save` report success with a bundle
+// that lacks (say) the jwt, which `session load` then rejects as invalid.
+func collectSessionFiles(stateDir string) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	for _, name := range sessionFiles {
-		b, err := os.ReadFile(filepath.Join(stateDir, name))
+		b, err := readStateFileNoFollow(stateDir, name)
 		if err != nil {
-			continue
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read session file %s: %w", name, err)
 		}
 		out[name] = b
 	}
-	return out
+	return out, nil
 }
+
+// readStateFileNoFollow reads a state file WITHOUT following symlinks: the
+// provider's state dir is user-owned, so a planted symlink
+// (proxy -> /etc/shadow) would otherwise hand root's credential-adjacent
+// files or arbitrary file contents to the bundling/backup code.
+// Returns an error for symlinks, directories and unreadable files so the
+// caller can refuse or skip explicitly.
+//
+// Uses O_NOFOLLOW open (via openStateFileNoFollow) so the check and the read
+// happen atomically: no TOCTOU window between Lstat and ReadFile. The
+// guarantee covers the FINAL path component only: ancestors of stateDir are
+// followed, because legitimate system paths are often symlinks (macOS /var,
+// /home -> /var/home). stateDir itself comes from discovery, not from
+// attacker-supplied input.
+func readStateFileNoFollow(stateDir, name string) ([]byte, error) {
+	f, err := openStateFileNoFollow(stateDir, name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	// The provider user controls these files, so a privileged save or backup
+	// must not allocate whatever size they claim.
+	b, err := io.ReadAll(io.LimitReader(f, maxStateFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxStateFileBytes {
+		return nil, fmt.Errorf("%s exceeds the %d byte state file limit", name, maxStateFileBytes)
+	}
+	return b, nil
+}
+
+// maxStateFileBytes bounds one state file read (jwt, proxy list, client jwt
+// store, ...); the largest legitimate one is a proxy list of a few MiB.
+const maxStateFileBytes = 32 << 20
 
 // sessionHasJWT reports whether a decrypted bundle carries a jwt, the
 // identity that load requires before it will stage anything.
@@ -453,6 +496,24 @@ Examples:
 	if len(targetRest) > 0 {
 		return fmt.Errorf("session takes no extra arguments (got %v)", targetRest)
 	}
+	// Validate the session file BEFORE resolving a provider. On load, the
+	// file must exist; checking first avoids invoking docker/systemd
+	// discovery (which can hang when daemons are absent) for a trivially
+	// rejected command. On save, the file is an output target — create
+	// its parent dir eagerly so the dry-run path can report the target.
+	//
+	// The file is opened ONCE here and its bytes read from that descriptor:
+	// os.Stat accepts directories and FIFOs (a FIFO would block the later
+	// read forever), and a second pathname lookup lets the file be swapped
+	// between validation and use.
+	var bundle []byte
+	if action == "load" {
+		b, err := readSessionLoadFile(file)
+		if err != nil {
+			return err
+		}
+		bundle = b
+	}
 	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
 		return err
@@ -468,7 +529,7 @@ Examples:
 		// M5 fix: thread dryRun and force into cmdSessionSave.
 		return cmdSessionSave(p, file, dryRun, force)
 	case "load":
-		return cmdSessionLoad(p, file, force, dryRun, allowDiff)
+		return cmdSessionLoad(p, bundle, force, dryRun, allowDiff)
 	default:
 		return fmt.Errorf("session action must be 'save' or 'load' (got %q)", action)
 	}
@@ -478,7 +539,10 @@ Examples:
 func cmdSessionSave(p Provider, outFile string, dryRun, force bool) error {
 	fmt.Fprintln(os.Stderr, "WARNING: this bundle contains full identity and reputation credentials for this provider. Treat it like a password.")
 	if dryRun {
-		files := collectSessionFiles(p.StateDir)
+		files, err := collectSessionFiles(p.StateDir)
+		if err != nil {
+			return err
+		}
 		fmt.Printf("[dry-run] would save %d session files from %s to %s\n", len(files), p.StateDir, outFile)
 		return nil
 	}
@@ -496,7 +560,10 @@ func cmdSessionSave(p Provider, outFile string, dryRun, force bool) error {
 	if strings.TrimSpace(pass) == "" {
 		return errors.New("passphrase cannot be empty")
 	}
-	files := collectSessionFiles(p.StateDir)
+	files, err := collectSessionFiles(p.StateDir)
+	if err != nil {
+		return err
+	}
 	if len(files) == 0 {
 		return fmt.Errorf("no session files found under %s", p.StateDir)
 	}
@@ -576,12 +643,12 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 		return "", err
 	}
 	for _, name := range sessionFiles {
-		b, err := os.ReadFile(filepath.Join(p.StateDir, name))
+		b, err := readStateFileNoFollow(p.StateDir, name)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue // absent, fine
 			}
-			return "", fmt.Errorf("backup %s: %v", name, err) // unreadable/perm: fail, do not silently skip (MEDIUM)
+			return "", fmt.Errorf("backup %s: %v", name, err) // unreadable/perm/symlink: fail, do not silently skip (MEDIUM)
 		}
 		if err := writeStateFile(backupDir, name, b, 0o600); err != nil {
 			return "", fmt.Errorf("backup %s: %v", name, err)
@@ -623,17 +690,44 @@ func stageSessionFiles(p Provider, files map[string][]byte, allowDiff bool) (str
 	return backupDir, nil
 }
 
+// maxSessionBundleBytes bounds a session bundle read: it holds a handful of
+// small identity files, so anything larger is not a bundle.
+const maxSessionBundleBytes = 64 << 20
+
+// readSessionLoadFile opens path once (non-blocking, so a FIFO cannot hang
+// the open), requires the OPENED file to be a regular file, and reads the
+// bundle from that same descriptor.
+func readSessionLoadFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblockFlag, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("session file %q not found", path)
+		}
+		return nil, fmt.Errorf("session file %q not accessible: %v", path, err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("session file %q not accessible: %v", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("session file %q is not a regular file", path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxSessionBundleBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read session file %q: %v", path, err)
+	}
+	if len(b) > maxSessionBundleBytes {
+		return nil, fmt.Errorf("session file %q is too large (> %d bytes)", path, maxSessionBundleBytes)
+	}
+	return b, nil
+}
+
 // cmdSessionLoad decrypts a session bundle and stages it into the provider's
 // state dir via stageSessionFiles, then prompts to restart so the provider
 // picks the session up at its staged-session apply on startup.
-func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) error {
-	bundle, err := os.ReadFile(inFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("session file %q not found", inFile)
-		}
-		return err
-	}
+// bundle is the already-read encrypted file content (see readSessionLoadFile).
+func cmdSessionLoad(p Provider, bundle []byte, force, dryRun, allowDiff bool) error {
 	pass, err := readPassphrase("Enter passphrase: ")
 	if err != nil {
 		return err

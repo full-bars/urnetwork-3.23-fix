@@ -374,7 +374,7 @@ func TestCmdReportWritesOverrideFile(t *testing.T) {
 	if len(Discover()) != 0 {
 		t.Skip("requires a box with zero discoverable providers")
 	}
-	err = cmdReport([]string{"http://127.0.0.1:8080"})
+	err = cmdReport([]string{"http://127.0.0.1:8080"}, false, false)
 	if err == nil {
 		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
 	}

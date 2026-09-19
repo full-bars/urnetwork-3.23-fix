@@ -102,7 +102,7 @@ func hotSwapVersionOK(p Provider) bool {
 			// and handed isHotSwapSupportedVersion a string that can never
 			// parse as a release, leaving supportsHotSwap permanently false
 			// on every release binary.
-			if ver := providerVersion(exe); ver != "" {
+			if ver := providerVersionReadOnly(exe); ver != "" {
 				return isHotSwapSupportedVersion(ver)
 			}
 		}

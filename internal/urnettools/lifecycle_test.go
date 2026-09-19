@@ -398,6 +398,54 @@ func TestConsumeDockerBareTarget(t *testing.T) {
 	}
 }
 
+// TestConsumeDockerTrailingTarget verifies that commands with leading positional
+// arguments (e.g. auth [<auth-code>] [target], session <save|load> <file> [target])
+// correctly resolve a trailing container name instead of dropping it or choking.
+func TestConsumeDockerTrailingTarget(t *testing.T) {
+	providers := []Provider{
+		{Unit: "urnet-test"},
+		{Unit: "urfix-auto"},
+	}
+	cases := []struct {
+		name     string
+		rest     []string
+		minPos   int
+		wantUnit string
+		wantRest []string
+	}{
+		{"auth trailing target", []string{"secret-auth-123", "urnet-test"}, 1, "urnet-test", []string{"secret-auth-123"}},
+		{"auth no code target only", []string{"urnet-test"}, 1, "urnet-test", []string{}},
+		{"auth code only no target", []string{"secret-auth-123"}, 1, "", []string{"secret-auth-123"}},
+		{"session save trailing target", []string{"save", "backup.tar.gz", "urfix-auto"}, 3, "urfix-auto", []string{"save", "backup.tar.gz"}},
+		{"session load flags and trailing target", []string{"load", "-f", "backup.tar.gz", "urnet-test"}, 3, "urnet-test", []string{"load", "-f", "backup.tar.gz"}},
+		{"flag after trailing target skipped", []string{"save", "backup.tar.gz", "urnet-test", "--force"}, 3, "urnet-test", []string{"save", "backup.tar.gz", "--force"}},
+		{"already targeted untouched", []string{"save", "backup.tar.gz", "urnet-test"}, 3, "urfix-auto", []string{"save", "backup.tar.gz", "urnet-test"}},
+		{"session save file matching container preserved", []string{"save", "urnet-test"}, 3, "", []string{"save", "urnet-test"}},
+		{"session load file matching container preserved", []string{"load", "urnet-test"}, 3, "", []string{"load", "urnet-test"}},
+		{"session save with 3 operands and matching file", []string{"save", "urnet-test", "urfix-auto"}, 3, "urfix-auto", []string{"save", "urnet-test"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var tgt Target
+			if c.name == "already targeted untouched" {
+				tgt.Unit = "urfix-auto"
+			}
+			gotT, gotRest := consumeDockerTrailingTarget(providers, tgt, c.rest, c.minPos)
+			if gotT.Unit != c.wantUnit {
+				t.Fatalf("Unit = %q, want %q (rest %v)", gotT.Unit, c.wantUnit, c.rest)
+			}
+			if len(gotRest) != len(c.wantRest) {
+				t.Fatalf("rest = %v, want %v", gotRest, c.wantRest)
+			}
+			for i := range gotRest {
+				if gotRest[i] != c.wantRest[i] {
+					t.Fatalf("rest = %v, want %v", gotRest, c.wantRest)
+				}
+			}
+		})
+	}
+}
+
 // TestCmdTuneConsentMentionsRestart: the confirmGate prompt for turbo/eco/lowmode
 // must name the restart so operators (and fleet scripts using -f) know that
 // setting a profile restarts the provider.

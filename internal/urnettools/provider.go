@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -180,6 +181,25 @@ func providerVersion(binary string) string {
 	return providerVersionFromExec(binary)
 }
 
+// providerVersionReadOnly resolves a provider version WITHOUT executing the
+// binary: buildinfo first, then the raw stamp scan. Callers that hand this a
+// path derived from /proc/<pid>/exe of an arbitrary discovered process MUST
+// use this variant — exec'ing that path runs whatever ELF the process owner
+// launched under a provider-ish argv[0] (the `exec -a provider ./evil` local
+// privilege escalation), and a magic-byte check is not authorization. The
+// exec fallback lives only in providerVersion, which is for the operator's
+// OWN on-disk provider binary (update reconciliation), never for a path
+// another user can influence.
+func providerVersionReadOnly(binary string) string {
+	if binary == "" {
+		return ""
+	}
+	if v := providerVersionFromBuildinfo(binary); v != "" {
+		return v
+	}
+	return providerVersionFromStamp(binary)
+}
+
 // providerVersionFromBuildinfo extracts the version from Go build info
 // without executing the binary. Returns "" when no version is recorded
 // (e.g. -trimpath builds).
@@ -260,51 +280,77 @@ func providerVersionFromStamp(binary string) string {
 		return ""
 	}
 	defer f.Close()
+	return scanVersionStamp(f)
+}
 
-	// Read in 64 KB chunks with 1-byte overlap to catch markers split across
-	// chunk boundaries. The marker is short (< 64 bytes) so one overlap
-	// window always captures it.
+// maxStampValue bounds a stamp value: release versions are short, and the
+// bound is what lets the scanner keep a small fixed overlap between reads.
+const maxStampValue = 256
+
+// scanVersionStamp scans r for versionStampPrefix followed by a v-prefixed
+// value. Reads are 64 KiB chunks and each search window carries the last
+// len(prefix)+maxStampValue bytes of the previous one, so a stamp whose
+// prefix or value straddles a chunk boundary is still found whole. A value is
+// only accepted once its terminator (NUL, whitespace) or EOF is seen, so a
+// value cut off at a chunk edge is never returned truncated.
+func scanVersionStamp(r io.Reader) string {
 	const chunkSize = 64 * 1024
+	keep := len(versionStampPrefix) + maxStampValue
 	buf := make([]byte, chunkSize)
-	prevTail := []byte{}
+	var tail []byte
 	for {
-		n, err := f.Read(buf)
-		if n == 0 {
-			break
-		}
-		chunk := buf[:n]
-		search := append(prevTail, chunk...)
-		// Search for the stamp, skipping false matches where the value
-		// doesn't start with 'v' (all release versions are v-prefixed).
-		off := 0
-		for {
-			idx := bytes.Index(search[off:], []byte(versionStampPrefix))
-			if idx < 0 {
+		n, err := r.Read(buf)
+		atEOF := err != nil // io.EOF or a read error: no more data to wait for
+		if n > 0 || atEOF {
+			search := make([]byte, 0, len(tail)+n)
+			search = append(search, tail...)
+			search = append(search, buf[:n]...)
+			// Search for the stamp, skipping false matches where the value
+			// doesn't start with 'v' (all release versions are v-prefixed).
+			off := 0
+			for {
+				idx := bytes.Index(search[off:], []byte(versionStampPrefix))
+				if idx < 0 {
+					break
+				}
+				idx += off
+				rest := search[idx+len(versionStampPrefix):]
+				// A stamp value is a version: "v" then a digit. This also
+				// rejects the prefix constant sitting next to an unrelated
+				// string in rodata (e.g. inside this tool's own binary).
+				if (len(rest) > 0 && rest[0] != 'v') || (len(rest) > 1 && (rest[1] < '0' || rest[1] > '9')) {
+					off = idx + len(versionStampPrefix)
+					continue
+				}
+				// The value ends at the first NUL, space, or newline.
+				end := bytes.IndexAny(rest, " \x00\n\r\t")
+				switch {
+				case end >= 0 && len(rest) > 0:
+					return string(rest[:end])
+				case len(rest) >= maxStampValue:
+					off = idx + len(versionStampPrefix) // implausibly long: not a stamp
+					continue
+				case atEOF:
+					if len(rest) > 1 {
+						return string(rest)
+					}
+					off = idx + len(versionStampPrefix)
+					continue
+				}
+				// Unterminated and possibly continuing in the next chunk:
+				// it is inside the retained tail, so stop and read more.
 				break
 			}
-			idx += off
-			rest := search[idx+len(versionStampPrefix):]
-			if len(rest) == 0 || rest[0] != 'v' {
-				off = idx + len(versionStampPrefix)
-				continue
+			if len(search) > keep {
+				tail = append(tail[:0], search[len(search)-keep:]...)
+			} else {
+				tail = append(tail[:0], search...)
 			}
-			// The value ends at the first NUL, space, or end of available bytes.
-			end := bytes.IndexAny(rest, " \x00\n\r\t")
-			if end < 0 {
-				end = len(rest)
-			}
-			return string(rest[:end])
 		}
-		if len(chunk) > 1 {
-			prevTail = chunk[len(chunk)-1:]
-		} else {
-			prevTail = chunk
-		}
-		if err != nil {
-			break
+		if atEOF {
+			return ""
 		}
 	}
-	return ""
 }
 
 func providerVersionFromExec(binary string) string {

@@ -12,7 +12,11 @@ func TestCmdSelfHealRoundTrip(t *testing.T) {
 	stateDir := t.TempDir()
 
 	// Mock discovery to return a provider with our temp state dir.
+	// Both docker and systemd must be mocked — lifecycleCandidates calls
+	// both when an explicit target flag is present, and a bare docker ps
+	// hangs in CI without a docker daemon.
 	origDiscover := discoverSystemdFn
+	origDocker := discoverDockerFn
 	discoverSystemdFn = func() []Provider {
 		return []Provider{{
 			User:     "test-user",
@@ -21,7 +25,11 @@ func TestCmdSelfHealRoundTrip(t *testing.T) {
 			Running:  true,
 		}}
 	}
-	defer func() { discoverSystemdFn = origDiscover }()
+	discoverDockerFn = func() []Provider { return nil }
+	defer func() {
+		discoverSystemdFn = origDiscover
+		discoverDockerFn = origDocker
+	}()
 
 	// status with no marker -> off
 	if err := cmdSelfHeal([]string{"status", "--state-dir", stateDir}); err != nil {

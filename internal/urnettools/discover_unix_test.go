@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -557,11 +558,6 @@ func TestDiscoverProcessesSocketVersionWinsOverProc(t *testing.T) {
 	if err != nil {
 		t.Skipf("user.Current: %v", err)
 	}
-	fakeHome := filepath.Join(realU.HomeDir, ".test-socket-version-win")
-	if err := os.MkdirAll(fakeHome, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(fakeHome) })
 
 	// Build a minimal binary to act as a provider process.
 	tmpDir := t.TempDir()
@@ -578,15 +574,21 @@ func main() { time.Sleep(60 * time.Second) }
 		t.Fatalf("go build fake provider: %v\n%s", err, out)
 	}
 
-	// The provider's state dir lives under fakeHome.
-	urnDir := filepath.Join(fakeHome, ".urnetwork")
+	// The provider's state dir lives under the process owner's real home
+	// (ownerHome from /proc/<pid>), NOT under the mocked env HOME. The
+	// discovery code prefers kernel uid home over env HOME for security.
+	// Use a unique subdirectory to avoid conflicting with any real provider.
+	urnDir := filepath.Join(realU.HomeDir, ".urnetwork", "test-socket-version-"+strconv.Itoa(os.Getpid()))
 	if err := os.MkdirAll(urnDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(urnDir) })
 
-	// Start the fake provider as a child process with argv[0] = "provider".
+	// Start the fake provider as a child process with argv[0] = "provider"
+	// and --state-dir pointing to our unique test directory so the argv
+	// scan picks it up (H3 validation allows it since it's under ownerHome).
 	startCmd := exec.Command(binPath)
-	startCmd.Args = []string{"provider"}
+	startCmd.Args = []string{"provider", "--state-dir", urnDir}
 	if err := startCmd.Start(); err != nil {
 		t.Fatalf("start fake provider: %v", err)
 	}
@@ -595,12 +597,13 @@ func main() { time.Sleep(60 * time.Second) }
 		_ = startCmd.Wait()
 	}()
 
-	// Mock readEnviron so discoverProcesses sees the right HOME.
+	// Mock readEnviron so discoverProcesses sees a DIFFERENT HOME than the
+	// kernel owner's real home. The discovery must ignore this and use ownerHome.
 	pid := startCmd.Process.Pid
 	origReadEnviron := readEnviron
 	readEnviron = func(p int) map[string]string {
 		if p == pid {
-			return map[string]string{"HOME": fakeHome}
+			return map[string]string{"HOME": "/tmp/fake-home-that-must-be-ignored"}
 		}
 		return origReadEnviron(p)
 	}
@@ -671,4 +674,18 @@ func startVersionMockSocket(t *testing.T, sockPath, version string) {
 			}(conn)
 		}
 	}()
+}
+
+// TestClassifyContainerByNamespaceAndCgroupPure deterministically guards the
+// pure decision core of inForeignContainer.
+func TestClassifyContainerByNamespaceAndCgroupPure(t *testing.T) {
+	if classifyContainerByNamespaceAndCgroup(false, "0::/system.slice/docker-x.scope") {
+		t.Error("same-namespace process must not be classified as a container")
+	}
+	if !classifyContainerByNamespaceAndCgroup(true, "0::/system.slice/docker-x.scope") {
+		t.Error("foreign-ns + docker cgroup must classify as a container")
+	}
+	if classifyContainerByNamespaceAndCgroup(true, "0::/user.slice/user-1000.slice/app.slice/urnetwork.service") {
+		t.Error("foreign-ns + plain systemd cgroup must NOT classify as a container")
+	}
 }
