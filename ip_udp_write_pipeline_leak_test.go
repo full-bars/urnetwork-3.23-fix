@@ -31,6 +31,10 @@ import (
 func TestUdpSequenceWritePipelineDrainsBuffersOnCancel(t *testing.T) {
 	ResetMessagePoolStats()
 
+	// Baseline BEFORE the exercising loop: delta must measure what THIS
+	// flow's buffers did, not arrive-during-window noise.
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
+
 	udpBufferSettings := DefaultUdpBufferSettings()
 	udpBufferSettings.SequenceBufferSize = 1
 	udpBufferSettings.WriteTimeout = 2 * time.Second
@@ -101,12 +105,10 @@ func TestUdpSequenceWritePipelineDrainsBuffersOnCancel(t *testing.T) {
 		}
 	}
 
-	stats := MessagePoolStats()
-	ratio, ok := stats[2048][0]
-	if !ok {
-		t.Fatalf("no message pool stats recorded for size 2048 tag 0")
-	}
-	if ratio < 1.0 {
-		t.Fatalf("leaked pooled buffers: return ratio = %f, want 1.0 (all taken buffers returned)", ratio)
+	taken, returned := waitForPoolBalance(t, 2048)
+	takenDelta := taken - baseTaken
+	returnedDelta := returned - baseReturned
+	if takenDelta != returnedDelta {
+		t.Fatalf("write-pipeline cancel unbalanced the pool: taken_delta=%d returned_delta=%d (want equal; leak and double-return both fail here)", takenDelta, returnedDelta)
 	}
 }

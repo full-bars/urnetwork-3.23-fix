@@ -207,6 +207,13 @@ func TestMessagePoolShardTagConcurrent(t *testing.T) {
 	const goroutines = 16
 	const iterations = 500
 
+	// The shards' per-tag counters are GLOBAL across the whole test binary,
+	// and with debugTags on, every other test's allocations stamp their own
+	// caller-hash tags — which can collide with this test's explicit 1..16
+	// range. Reset the counters first so the absolute assertions below are
+	// true for THIS test's activity alone.
+	ResetMessagePoolStats()
+
 	done := make(chan bool)
 
 	for i := range goroutines {

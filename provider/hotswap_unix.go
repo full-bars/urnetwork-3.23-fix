@@ -141,22 +141,31 @@ func checkExecAccess(path string) error {
 // getHotSwapChildIPC returns the open IPC file descriptor (fd 3) if this process was launched as a candidate.
 // It verifies that fd 3 is open and is a valid Unix domain socket before claiming candidate mode (F-11).
 func getHotSwapChildIPC() (*os.File, bool) {
+	// Go's cmd.ExtraFiles are mapped to descriptors starting at 3.
+	return getHotSwapChildIPCFromFd(3)
+}
+
+// getHotSwapChildIPCFromFd is getHotSwapChildIPC with the descriptor number
+// made explicit, so tests can exercise the validation without touching the
+// process's real fd 3. Closing or wrapping an arbitrary low descriptor in a
+// test process double-closes whatever Go object owns it, and the number is
+// then reused by unrelated sockets.
+func getHotSwapChildIPCFromFd(fd int) (*os.File, bool) {
 	if os.Getenv(EnvHotSwap) != "1" {
 		return nil, false
 	}
 
 	var stat syscall.Stat_t
-	if err := syscall.Fstat(3, &stat); err != nil {
-		tlog("⚠️ [hotswap] %s=1 is set but descriptor 3 is invalid (%v); starting as normal provider\n", EnvHotSwap, err)
+	if err := syscall.Fstat(fd, &stat); err != nil {
+		tlog("⚠️ [hotswap] %s=1 is set but descriptor %d is invalid (%v); starting as normal provider\n", EnvHotSwap, fd, err)
 		return nil, false
 	}
 	if stat.Mode&syscall.S_IFMT != syscall.S_IFSOCK {
-		tlog("⚠️ [hotswap] %s=1 is set but descriptor 3 is not a socket; starting as normal provider\n", EnvHotSwap)
+		tlog("⚠️ [hotswap] %s=1 is set but descriptor %d is not a socket; starting as normal provider\n", EnvHotSwap, fd)
 		return nil, false
 	}
 
-	// Go's cmd.ExtraFiles are mapped to descriptors starting at 3.
-	ipcFile := os.NewFile(uintptr(3), "hotswap-child-ipc")
+	ipcFile := os.NewFile(uintptr(fd), "hotswap-child-ipc")
 	return ipcFile, true
 }
 

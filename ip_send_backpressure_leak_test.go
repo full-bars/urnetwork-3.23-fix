@@ -24,6 +24,12 @@ import (
 func TestUdp4BufferSendReturnsPacketOnBackpressureDrop(t *testing.T) {
 	ResetMessagePoolStats()
 
+	// Baseline captured BEFORE the exercising code: the assertion compares
+	// the DELTA the flow itself produced, so a permanent leak (buffers taken
+	// and never returned) shows up as takenDelta > returnedDelta. Capturing
+	// the baseline after the flow would make the assertion tautological.
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -72,13 +78,14 @@ func TestUdp4BufferSendReturnsPacketOnBackpressureDrop(t *testing.T) {
 	// is verifying (the drop path's own cleanup).
 	MessagePoolReturn(seedPacket)
 
-	stats := MessagePoolStats()
-	ratio, ok := stats[2048][0]
-	if !ok {
-		t.Fatalf("no message pool stats recorded for size 2048 tag 0")
-	}
-	if ratio < 1.0 {
-		t.Fatalf("leaked pooled buffer on backpressure drop: return ratio = %f, want 1.0", ratio)
+	taken, returned := waitForPoolBalance(t, 2048)
+	takenDelta := taken - baseTaken
+	returnedDelta := returned - baseReturned
+	// Equality in BOTH directions: a leak (takenDelta > returnedDelta) and a
+	// double-return (returnedDelta > takenDelta) both corrupt the pool and
+	// must fail the test.
+	if takenDelta != returnedDelta {
+		t.Fatalf("backpressure drop unbalanced the pool: taken_delta=%d returned_delta=%d (want equal; leak and double-return both fail here)", takenDelta, returnedDelta)
 	}
 }
 
@@ -100,6 +107,11 @@ func TestUdp4BufferSendReturnsPacketOnBackpressureDrop(t *testing.T) {
 // tcpSend returns, the packet must already be fully returned exactly once.
 func TestTcp4BufferSendNonSynDropDoesNotDoubleReturn(t *testing.T) {
 	ResetMessagePoolStats()
+
+	// Baseline BEFORE the exercising flow — see the sibling test: the delta
+	// comparison must measure what THIS flow did, not what arrived in the
+	// window already (which would make the assertion vacuous).
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -134,12 +146,13 @@ func TestTcp4BufferSendNonSynDropDoesNotDoubleReturn(t *testing.T) {
 		t.Fatal("packet was still returnable after tcpSend — it was not returned as part of the non-SYN drop")
 	}
 
-	stats := MessagePoolStats()
-	ratio, ok := stats[2048][0]
-	if !ok {
-		t.Fatalf("no message pool stats recorded for size 2048 tag 0")
-	}
-	if ratio != 1.0 {
-		t.Fatalf("return ratio = %f, want exactly 1.0 (double-return corrupts the pool just as much as a leak)", ratio)
+	taken, returned := waitForPoolBalance(t, 2048)
+	takenDelta := taken - baseTaken
+	returnedDelta := returned - baseReturned
+	// Equality, not just leak-direction: a double-return makes returnedDelta
+	// exceed takenDelta and must fail too (the packet is acquired once and
+	// freed exactly once by tcpSend).
+	if takenDelta != returnedDelta {
+		t.Fatalf("non-SYN drop unbalanced the pool: taken_delta=%d returned_delta=%d (want equal; leak and double-return both fail here)", takenDelta, returnedDelta)
 	}
 }

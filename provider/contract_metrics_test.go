@@ -341,6 +341,7 @@ func TestRegisterContractCallbackRespawnSurvivesOldTeardown(t *testing.T) {
 	// Simulates a proxy respawn at the same stable index: the old spawn's
 	// deferred teardown must not tear down the replacement's registration.
 	const index = -900002
+	resetContractMetricsForIndex(t, index)
 	clientA := newTestConnectClient(t)
 	clientB := newTestConnectClient(t)
 
@@ -395,6 +396,8 @@ func TestRegisterContractCallbackDistinctIndicesAreIndependent(t *testing.T) {
 	// Two proxies at different stable indices must never share a metrics
 	// entry or interfere with each other's lifecycle.
 	const indexX, indexY = -900003, -900004
+	resetContractMetricsForIndex(t, indexX)
+	resetContractMetricsForIndex(t, indexY)
 	clientX := newTestConnectClient(t)
 	clientY := newTestConnectClient(t)
 
@@ -427,4 +430,16 @@ func TestRegisterContractCallbackDistinctIndicesAreIndependent(t *testing.T) {
 	if a, _ := my.snapshot(); a != 1 {
 		t.Fatalf("index Y acquired = %d, want 1 (unaffected by index X's teardown)", a)
 	}
+}
+
+// resetContractMetricsForIndex removes the shared metrics entry for one stable
+// index so a test is deterministic under -count=N. globalContractMetrics is a
+// process-global registry; without this, a second in-process iteration sees
+// the previous iteration's acquired/denied counts (getOrCreate reuses the
+// entry), making "acquired, want 1" fail with 2.
+func resetContractMetricsForIndex(t *testing.T, index int) {
+	t.Helper()
+	globalContractMetrics.mu.Lock()
+	delete(globalContractMetrics.items, index)
+	globalContractMetrics.mu.Unlock()
 }

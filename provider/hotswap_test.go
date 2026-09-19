@@ -365,7 +365,9 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 	})
 
 	// Simulate candidate announcing READY on childFile
+	childDone := make(chan struct{})
 	go func() {
+		defer close(childDone)
 		childReader := bufio.NewReader(childFile)
 		_ = writeHotswapMessage(childFile, HotswapMessage{
 			Type:    HotswapMsgReady,
@@ -389,6 +391,12 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 		// success
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for in-place execve call")
+	}
+
+	select {
+	case <-childDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for candidate goroutine to finish")
 	}
 
 	if !coordinatorYielded {
@@ -747,12 +755,26 @@ func TestGetHotSwapChildIPCValidation(t *testing.T) {
 		t.Errorf("expected isChild=false when %s is unset", EnvHotSwap)
 	}
 
-	// If env var is set but fd 3 is not a socket, returns false (F-11)
+	// If env var is set but the descriptor is not a socket, returns false
+	// (F-11). Never touch the real fd 3 here: in the test process it belongs
+	// to some live Go object, and closing it behind that object's back makes
+	// the owner double-close the number after it has been reused by an
+	// unrelated socket (this used to break later tests' loopback listeners).
 	os.Setenv(EnvHotSwap, "1")
-	// On arbitrary process fd 3 is typically either closed or not a socket
-	_ = syscall.Close(3)
-	if _, isChild := getHotSwapChildIPC(); isChild {
-		t.Errorf("expected isChild=false when fd 3 is invalid/closed")
+
+	// An invalid descriptor number.
+	if _, isChild := getHotSwapChildIPCFromFd(1 << 20); isChild {
+		t.Errorf("expected isChild=false for an invalid descriptor")
+	}
+
+	// A valid descriptor that is not a socket (a regular file we own).
+	f, err := os.CreateTemp(t.TempDir(), "notsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, isChild := getHotSwapChildIPCFromFd(int(f.Fd())); isChild {
+		t.Errorf("expected isChild=false for a non-socket descriptor")
 	}
 }
 

@@ -737,6 +737,7 @@ func TestSendEncryptedControlReturnsPoolBufferOnCancel(t *testing.T) {
 	// ratio for the bucket the EC marshals into stays at 1.0 across a run
 	// that exercises the cancel path.
 	ResetMessagePoolStats()
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
 
 	// A client whose SendBuffer ctx we cancel so Pack fails; the call ctx
 	// passed to SendEncryptedControl stays live so the function proceeds
@@ -774,12 +775,10 @@ func TestSendEncryptedControlReturnsPoolBufferOnCancel(t *testing.T) {
 
 	// Every attempt took a buffer (ProtoMarshal) and must have returned it.
 	// All EncryptedControls of this size land in the 2048 pool bucket.
-	stats := MessagePoolStats()
-	ratio, ok := stats[2048][0]
-	if !ok {
-		t.Fatal("expected the 2048 pool bucket to be exercised")
-	}
-	if ratio < 0.99 {
-		t.Fatalf("pool bucket 2048 return ratio = %.2f after %d cancel-path attempts — pooled buffers leaked (want ~1.0)", ratio, attempts)
+	taken, returned := waitForPoolBalance(t, 2048)
+	takenDelta := taken - baseTaken
+	returnedDelta := returned - baseReturned
+	if takenDelta != returnedDelta {
+		t.Fatalf("pool bucket 2048 after %d cancel-path attempts unbalanced: taken_delta=%d returned_delta=%d (want equal; leak and double-return both fail here)", attempts, takenDelta, returnedDelta)
 	}
 }

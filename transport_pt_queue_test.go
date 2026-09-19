@@ -193,6 +193,7 @@ func TestCombineTrim(t *testing.T) {
 // that time out before all fragments arrive, not just drop the item.
 func TestCombineRemoveOlderReturnsPooledBuffers(t *testing.T) {
 	ResetMessagePoolStats()
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
 
 	settings := DefaultPacketTranslationSettings()
 	cq := newCombineQueue(settings)
@@ -212,14 +213,15 @@ func TestCombineRemoveOlderReturnsPooledBuffers(t *testing.T) {
 	cq.RemoveOlder(time.Now().Add(time.Second))
 	assert.Equal(t, cq.Len(), 0)
 
-	ratios := MessagePoolStats()[2048]
-	assert.Equal(t, ratios[0], float32(1))
+	taken, returned := waitForPoolBalance(t, 2048)
+	assert.Equal(t, taken-baseTaken, returned-baseReturned)
 }
 
 // regression test: a duplicate/retransmitted fragment index must return the
 // buffer it replaces, not just overwrite the slot and drop the reference.
 func TestCombineDuplicateIndexReturnsPooledBuffer(t *testing.T) {
 	ResetMessagePoolStats()
+	baseTaken, baseReturned := waitForPoolBalance(t, 2048)
 
 	settings := DefaultPacketTranslationSettings()
 	cq := newCombineQueue(settings)
@@ -245,8 +247,8 @@ func TestCombineDuplicateIndexReturnsPooledBuffer(t *testing.T) {
 	// clean up the still-outstanding second fragment slot
 	cq.RemoveOlder(time.Now().Add(time.Second))
 
-	ratios := MessagePoolStats()[2048]
-	assert.Equal(t, ratios[0], float32(1))
+	taken, returned := waitForPoolBalance(t, 2048)
+	assert.Equal(t, taken-baseTaken, returned-baseReturned)
 }
 
 func TestPump(t *testing.T) {

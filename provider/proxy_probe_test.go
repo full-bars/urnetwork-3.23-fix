@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -17,6 +18,14 @@ func listenSocks5Once(t *testing.T) (addr string, cleanup func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Liveness barrier: complete one full greeting exchange from the test
+	// itself before returning. The accept loop may not be scheduled yet, and
+	// a probe that arrives in that window can fail, trip the reaper's 3-fail
+	// TLS-verify blacklist, and the just-started fake gets marked dead —
+	// flaking every caller that probes right after (the
+	// TestFetchAndMergeProxyURLs cache==2 assertions). Dialing through the
+	// loop and reading its 0x05 0x00 reply proves both the listener AND the
+	// handler goroutine are live.
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -33,6 +42,28 @@ func listenSocks5Once(t *testing.T) (addr string, cleanup func()) {
 			}(conn)
 		}
 	}()
+	probe, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		ln.Close()
+		t.Fatalf("liveness probe dial failed: %v", err)
+	}
+	if _, err := probe.Write([]byte{0x05, 0x00, 0x00}); err != nil {
+		probe.Close()
+		ln.Close()
+		t.Fatalf("liveness probe write failed: %v", err)
+	}
+	greeting := make([]byte, 2)
+	if _, err := io.ReadFull(probe, greeting); err != nil {
+		probe.Close()
+		ln.Close()
+		t.Fatalf("liveness probe: accept loop did not reply to greeting: %v", err)
+	}
+	if greeting[0] != 0x05 || greeting[1] != 0x00 {
+		probe.Close()
+		ln.Close()
+		t.Fatalf("liveness probe: unexpected greeting % x", greeting)
+	}
+	probe.Close()
 	return ln.Addr().String(), func() { ln.Close() }
 }
 

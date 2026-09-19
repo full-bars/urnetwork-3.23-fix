@@ -1,0 +1,60 @@
+name: Lifecycle stress
+
+# The regular test workflow runs every test once, in source order. That misses
+# two classes of bug this project has hit in the proxy lifecycle code:
+#
+#   1. Interleaving bugs: a superseded goroutine unwinding while its
+#      replacement starts (credential rotation, reload). These pass or fail by
+#      scheduling luck, so a single run proves little; the race detector plus
+#      many repetitions shakes them out.
+#   2. Order dependence: a test that corrupts process-global state (a closed
+#      file descriptor, a leaked goroutine) breaks a later, unrelated test.
+#      Shuffling changes the order every run and prints the seed, so a failure
+#      reproduces with `go test -shuffle=<seed>`.
+
+on:
+  pull_request:
+    paths:
+      - 'provider/**'
+      - 'message_pool*.go'
+      - 'proxy_health.go'
+      - '.github/workflows/lifecycle-stress.yml'
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Reload and rotation lifecycle, race detector, repeated
+        run: |
+          go test ./provider/ -short -race -count=25 -timeout 20m \
+            -run 'TestReload_|Rotat|SameAuth|Unregister|DeleteProxyCancel|Seed|TestProxyAdd'
+
+      - name: Whole provider package in shuffled order
+        run: |
+          # -shuffle=on with -v prints "-test.shuffle <seed>"; on failure rerun
+          # locally with `-shuffle=<seed>` to get the same order.
+          set -o pipefail
+          go test ./provider/ -short -shuffle=on -count=3 -timeout 20m -v 2>&1 \
+            | tee /tmp/shuffle.log \
+            | grep -E "^(-test.shuffle|--- FAIL|FAIL|ok|panic)"
