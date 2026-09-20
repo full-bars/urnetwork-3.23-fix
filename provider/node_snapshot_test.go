@@ -196,6 +196,8 @@ func TestDeriveIdleHint(t *testing.T) {
 	}{
 		{"no proxies wins", SnapshotProxies{}, authUp, "no proxies configured"},
 		{"all dead or connecting", SnapshotProxies{Connecting: 12, Dead: 46}, authUp, "all 58 proxies dead or connecting"},
+		{"lone connection connecting", SnapshotProxies{Connecting: 1}, authUp, "the only connection is dead or connecting"},
+		{"lone connection dead", SnapshotProxies{Dead: 1}, authUp, "the only connection is dead or connecting"},
 		{"auth failing, first increase at 10s", up, authUp, "auth failing for 4 min"},
 		{"auth decrease is not failing", up, authDown, "no contracts acquired in the last 10 min"},
 		{"no contracts", up, flat, "no contracts acquired in the last 10 min"},
