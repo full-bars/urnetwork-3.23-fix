@@ -86,3 +86,12 @@ func TestPrometheusHandlerUptimePositive(t *testing.T) {
 		t.Error("missing uptime metric")
 	}
 }
+
+func TestContractsAcquiredTotalTracksIncrements(t *testing.T) {
+	before := ContractsAcquiredTotal()
+	IncrContractAcquired()
+	IncrContractAcquired()
+	if got := ContractsAcquiredTotal(); got != before+2 {
+		t.Fatalf("ContractsAcquiredTotal = %d, want %d", got, before+2)
+	}
+}

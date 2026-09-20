@@ -63,6 +63,10 @@ func IncrContractAcquired() { globalProm.contractsIn.Add(1) }
 // IncrContractDenied increments the contract-denied counter.
 func IncrContractDenied() { globalProm.contractsOut.Add(1) }
 
+// ContractsAcquiredTotal returns the number of contracts acquired so far, the
+// value exported as urnet_contracts_total{result="acquired"}.
+func ContractsAcquiredTotal() int64 { return globalProm.contractsIn.Load() }
+
 // ExtraMetricsProvider is set by the provider package to inject metrics
 // that only the provider has access to (PQE counts, grades, churn, etc.).
 // Called on every /metrics scrape. Return nil to skip extra metrics.
