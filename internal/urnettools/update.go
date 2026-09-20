@@ -812,6 +812,10 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		migratedUnit = migrated
 	}
 
+	// Leave the restart reason for the provider's next start, whichever of
+	// HotSwap or a plain restart follows (best effort, never aborts the update).
+	recordRestartReason(p, restartReasonUpdate)
+
 	// Attempt zero-downtime HotSwap first if supported on running process.
 	// hotSwapPreflight decides, and its error IS the operator-facing reason:
 	// gating on a bool here (as an earlier revision did) discarded that

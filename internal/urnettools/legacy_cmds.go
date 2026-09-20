@@ -207,6 +207,8 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run
 	}
+	// Leave the reason for the provider's next start (best effort).
+	recordRestartReason(p, restartReasonManual)
 	if runtime.GOOS == "windows" {
 		return cmdRestartWindows(p, force, dryRun)
 	}
